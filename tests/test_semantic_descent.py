@@ -14,6 +14,7 @@ from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoalTargetPolicy,
 )
 from nominal_refactor_advisor.detectors import (
+    DetectorCacheGranularity,
     DetectorConfig,
     DerivedMetricCountBoilerplateDetector,
     DuplicateVisitorMethodBodyDetector,
@@ -40,6 +41,7 @@ from nominal_refactor_advisor.semantic_descent import (
     SemanticAuthorityKind,
     PresentationProjectionKind,
     SemanticAuthorityMirrorPolicy,
+    SemanticDescentGraphCacheIdentity,
     build_finding_backed_semantic_descent_graph,
     build_semantic_descent_graph,
     semantic_descent_finding_projection_id,
@@ -114,7 +116,11 @@ def test_semantic_descent_graph_flags_manual_class_family_projection(
     projection = graph.projection_catalog.projection_for_edge(certificate.edge)
 
     assert projection.label == "HANDLERS"
-    assert set(certificate.edge.matched_tokens) >= {"alpha", "beta"}
+    assert set(certificate.edge.match.tokens) >= {"alpha", "beta"}
+    assert {
+        fact.name
+        for fact in graph.fact_authority_index.facts_for_edge(certificate.edge)
+    } == {"AlphaHandler", "BetaHandler"}
     assert any(
         token.value == "alpha" and token.role is PresentationTokenRole.DICT_KEY
         for token in projection.tokens
@@ -161,6 +167,34 @@ def test_semantic_mirror_detector_reports_authority_and_projection(
     assert finding.metrics.plan_class_key_pairs == (
         "LoadStep='load'",
         "SaveStep='save'",
+    )
+
+
+def test_semantic_mirror_detector_uses_semantic_descent_context_signature(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "class Step:\n"
+        "    pass\n"
+        "\n"
+        "class LoadStep(Step):\n"
+        "    pass\n"
+        "\n"
+        "STEP_TABLE = {'load': LoadStep}\n",
+    )
+    modules = tuple(parse_python_modules(tmp_path))
+
+    assert (
+        SemanticMirrorWithoutDescentDetector.cache_granularity
+        is DetectorCacheGranularity.CONTEXTUAL_GLOBAL
+    )
+    assert (
+        SemanticMirrorWithoutDescentDetector.context_signature(
+            modules,
+            DetectorConfig(),
+        )
+        == SemanticDescentGraphCacheIdentity.from_modules(modules).cache_token
     )
 
 
@@ -3177,7 +3211,7 @@ def test_semantic_descent_reports_constructor_catalog_schema_projection(
     projection = graph.projection_catalog.projection_for_edge(certificate.edge)
 
     assert projection.label == "REGISTRATION_SHAPE_CONSTRUCTORS"
-    assert set(certificate.edge.matched_tokens) >= {
+    assert set(certificate.edge.match.tokens) >= {
         "file_path",
         "lineno",
         "registry_name",

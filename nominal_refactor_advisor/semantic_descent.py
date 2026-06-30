@@ -544,12 +544,66 @@ class SemanticAuthorityAffinityPolicy:
 
 
 @dataclass(frozen=True)
+class SemanticMirrorMatch:
+    """Fact/token overlap carried by one semantic mirror edge."""
+
+    fact_refs: tuple[SemanticFactReference, ...]
+    tokens: tuple[str, ...]
+    coverage_ratio: float
+
+    @classmethod
+    def from_facts(cls, facts: tuple[SemanticFact, ...]) -> "SemanticMirrorMatch":
+        return cls(
+            fact_refs=tuple(
+                SemanticFactReference(fact.authority_id, fact.fact_id) for fact in facts
+            ),
+            tokens=sorted_tuple(
+                {
+                    variant
+                    for fact in facts
+                    for variant in normalized_name_variants(fact.name)
+                }
+            ),
+            coverage_ratio=1.0,
+        )
+
+    @classmethod
+    def from_authority_matches(
+        cls,
+        facts: tuple[SemanticFact, ...],
+        matches_by_fact_id: dict[str, set[str]],
+    ) -> "SemanticMirrorMatch | None":
+        if len(facts) < 2:
+            return None
+        fact_refs = tuple(
+            SemanticFactReference(fact.authority_id, fact.fact_id)
+            for fact in facts
+            if fact.fact_id in matches_by_fact_id
+        )
+        if len(fact_refs) < 2:
+            return None
+        tokens: set[str] = set()
+        for fact_ref in fact_refs:
+            tokens.update(matches_by_fact_id[fact_ref.fact_id])
+        coverage_ratio = len(fact_refs) / len(facts)
+        if coverage_ratio < 0.5 and len(fact_refs) < 3:
+            return None
+        return cls(
+            fact_refs=fact_refs,
+            tokens=sorted_tuple(tokens),
+            coverage_ratio=coverage_ratio,
+        )
+
+    @property
+    def fact_count(self) -> int:
+        return len(self.fact_refs)
+
+
+@dataclass(frozen=True)
 class MirrorEdge(SemanticAuthorityProjectionReference):
     """Candidate relation between a raw projection and a nominal authority."""
 
-    matched_fact_ids: tuple[str, ...]
-    matched_tokens: tuple[str, ...]
-    coverage_ratio: float
+    match: SemanticMirrorMatch
 
 
 @dataclass(frozen=True)
@@ -559,14 +613,12 @@ class SemanticMirrorEdgeCandidate:
     projection: PresentationProjection
     authority: SemanticAuthority
     facts: tuple[SemanticFact, ...]
-    matched_fact_ids: tuple[str, ...]
-    matched_tokens: tuple[str, ...]
-    coverage_ratio: float
+    match: SemanticMirrorMatch
 
     @cached_property
     def matched_facts(self) -> tuple[SemanticFact, ...]:
-        matched_fact_ids = frozenset(self.matched_fact_ids)
-        return tuple(fact for fact in self.facts if fact.fact_id in matched_fact_ids)
+        fact_ids = frozenset(ref.fact_id for ref in self.match.fact_refs)
+        return tuple(fact for fact in self.facts if fact.fact_id in fact_ids)
 
     @cached_property
     def branch_like_projection(self) -> bool:
@@ -636,7 +688,7 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
     ) -> bool:
         return not (
             candidate.projection.kind is PresentationProjectionKind.BRANCH_LITERAL
-            and len(candidate.matched_fact_ids) <= 2
+            and candidate.match.fact_count <= 2
             and not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
                 candidate.authority,
@@ -668,8 +720,8 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
-            candidate.coverage_ratio < 1.0
-            and len(candidate.matched_fact_ids) <= 2
+            candidate.match.coverage_ratio < 1.0
+            and candidate.match.fact_count <= 2
             and not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
                 candidate.authority,
@@ -680,7 +732,7 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
             candidate.branch_like_projection
             and not context.projection_semantics.dataclass_branch_has_field_syntax(
                 candidate.projection,
-                frozenset(candidate.matched_tokens),
+                frozenset(candidate.match.tokens),
             )
             and not context.projection_semantics.has_qualified_authority_reference(
                 candidate.projection,
@@ -703,7 +755,7 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         ):
             return False
         return not (
-            candidate.coverage_ratio < 1.0
+            candidate.match.coverage_ratio < 1.0
             and (
                 context.dataclass_descent.projection_descends_to_any_dataclass_authority(
                     candidate.projection,
@@ -751,7 +803,7 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
             candidate.branch_like_projection
             and not context.projection_semantics.enum_branch_has_case_syntax(
                 candidate.projection,
-                frozenset(candidate.matched_tokens),
+                frozenset(candidate.match.tokens),
             )
             and not candidate.authority_affinity.has_authority_affinity()
             and not context.projection_semantics.has_qualified_authority_reference(
@@ -761,7 +813,7 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
         ):
             return False
         return not (
-            len(candidate.matched_fact_ids) <= 2
+            candidate.match.fact_count <= 2
             and not candidate.authority_affinity.has_authority_affinity()
             and not context.projection_semantics.has_qualified_authority_reference(
                 candidate.projection,
@@ -814,6 +866,12 @@ class SemanticFactAuthorityIndex:
 
     def facts_for_authority(self, authority_id: str) -> tuple[SemanticFact, ...]:
         return self.by_authority_id[authority_id]
+
+    def fact(self, fact_id: str) -> SemanticFact:
+        return self.by_id[fact_id]
+
+    def facts_for_edge(self, edge: MirrorEdge) -> tuple[SemanticFact, ...]:
+        return tuple(self.fact(fact_ref.fact_id) for fact_ref in edge.match.fact_refs)
 
 
 @dataclass(frozen=True)
@@ -1089,9 +1147,9 @@ class SemanticDescentCertificateSummary(SemanticRecord):
             projection_owner_symbol=projection.owner_symbol,
             file_path=projection.location.file_path,
             line=projection.location.line,
-            matched_fact_count=len(edge.matched_fact_ids),
-            coverage_ratio=edge.coverage_ratio,
-            matched_tokens=edge.matched_tokens,
+            matched_fact_count=edge.match.fact_count,
+            coverage_ratio=edge.match.coverage_ratio,
+            matched_tokens=edge.match.tokens,
             missing_derivation_path=certificate.missing_derivation_path,
         )
 
@@ -1143,7 +1201,7 @@ class SemanticDescentGraphReport(SemanticRecord):
                 for certificate in sorted_tuple(
                     graph.certificates,
                     key=lambda item: (
-                        -len(item.edge.matched_fact_ids),
+                        -item.edge.match.fact_count,
                         graph.authority_catalog.authority_for_edge(item.edge).name,
                         graph.projection_catalog.projection_for_edge(item.edge).label,
                     ),
@@ -1395,15 +1453,7 @@ class FindingBackedMirrorEdgeProjection:
         return MirrorEdge(
             authority_id=authority.authority_id,
             projection_id=projection.projection_id,
-            matched_fact_ids=tuple(fact.fact_id for fact in facts),
-            matched_tokens=sorted_tuple(
-                {
-                    variant
-                    for fact in facts
-                    for variant in normalized_name_variants(fact.name)
-                }
-            ),
-            coverage_ratio=1.0,
+            match=SemanticMirrorMatch.from_facts(facts),
         )
 
 
@@ -2749,7 +2799,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         return sorted_tuple(
             edges,
             key=lambda item: (
-                -len(item.matched_fact_ids),
+                -item.match.fact_count,
                 item.authority_id,
                 item.projection_id,
             ),
@@ -2816,26 +2866,14 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         facts: tuple[SemanticFact, ...],
         matches_by_fact_id: dict[str, set[str]],
     ) -> MirrorEdge | None:
-        if len(facts) < 2:
-            return None
-        matched_fact_ids = [
-            fact.fact_id for fact in facts if fact.fact_id in matches_by_fact_id
-        ]
-        if len(matched_fact_ids) < 2:
-            return None
-        matched_tokens: set[str] = set()
-        for fact_id in matched_fact_ids:
-            matched_tokens.update(matches_by_fact_id[fact_id])
-        coverage_ratio = len(matched_fact_ids) / len(facts)
-        if coverage_ratio < 0.5 and len(matched_fact_ids) < 3:
+        match = SemanticMirrorMatch.from_authority_matches(facts, matches_by_fact_id)
+        if match is None:
             return None
         candidate = SemanticMirrorEdgeCandidate(
             projection=projection,
             authority=authority,
             facts=facts,
-            matched_fact_ids=tuple(matched_fact_ids),
-            matched_tokens=sorted_tuple(matched_tokens),
-            coverage_ratio=coverage_ratio,
+            match=match,
         )
         policy = self.policy_catalog.policy_for_authority(authority)
         if not policy.edge_is_admissible(self.resolution_context, candidate):
@@ -2845,9 +2883,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         return MirrorEdge(
             authority_id=authority.authority_id,
             projection_id=projection.projection_id,
-            matched_fact_ids=candidate.matched_fact_ids,
-            matched_tokens=candidate.matched_tokens,
-            coverage_ratio=coverage_ratio,
+            match=candidate.match,
         )
 
 

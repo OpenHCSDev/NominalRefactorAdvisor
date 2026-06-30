@@ -213,9 +213,7 @@ class DescentCertificateFindingAuthority:
         self,
         certificates: tuple[DescentCertificate, ...],
     ) -> int:
-        return sum(
-            len(certificate.edge.matched_fact_ids) for certificate in certificates
-        )
+        return sum(certificate.edge.match.fact_count for certificate in certificates)
 
     def authority_kinds(
         self,

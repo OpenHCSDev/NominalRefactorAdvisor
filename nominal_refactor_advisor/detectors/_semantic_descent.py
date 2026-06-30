@@ -8,6 +8,7 @@ from typing import ClassVar
 from metaclass_registry import AutoRegisterMeta
 
 from ._base import (
+    ContextualGlobalCacheContract,
     DetectorConfig,
     SemanticMirrorIssueDetector,
     high_confidence_certified_spec,
@@ -26,6 +27,7 @@ from ..semantic_descent import (
     PresentationProjection,
     SemanticAuthority,
     SemanticDescentGraph,
+    SemanticDescentGraphCacheIdentity,
     SemanticFact,
     build_semantic_descent_graph,
     normalized_name_variants,
@@ -112,7 +114,10 @@ class AliasOverlapClassKeySourceResolver(SemanticMirrorClassKeySourceResolver):
         return None
 
 
-class SemanticMirrorWithoutDescentDetector(SemanticMirrorIssueDetector):
+class SemanticMirrorWithoutDescentDetector(
+    ContextualGlobalCacheContract,
+    SemanticMirrorIssueDetector,
+):
     """Report presentation projections that mirror a nominal semantic authority."""
 
     detector_priority = -100
@@ -138,6 +143,15 @@ class SemanticMirrorWithoutDescentDetector(SemanticMirrorIssueDetector):
         ),
     )
 
+    @classmethod
+    def context_signature(
+        cls,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> str:
+        del cls, config
+        return SemanticDescentGraphCacheIdentity.from_modules(modules).cache_token
+
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
@@ -156,8 +170,7 @@ class SemanticMirrorWithoutDescentDetector(SemanticMirrorIssueDetector):
         edge = certificate.edge
         authority = graph.authority_catalog.authority_for_edge(edge)
         projection = graph.projection_catalog.projection_for_edge(edge)
-        facts_by_id = {fact.fact_id: fact for fact in graph.facts}
-        matched_facts = tuple(facts_by_id[fact_id] for fact_id in edge.matched_fact_ids)
+        matched_facts = graph.fact_authority_index.facts_for_edge(edge)
         matched_names = tuple(fact.name for fact in matched_facts)
         summary = (
             f"`{projection.label}` mirrors {len(matched_facts)} member(s) of "
@@ -177,13 +190,13 @@ class SemanticMirrorWithoutDescentDetector(SemanticMirrorIssueDetector):
             capability_gap=self._capability_gap(authority),
             relation_context=(
                 f"{projection.kind.value} has semantic overlap "
-                f"{edge.matched_tokens} with {authority.kind.value} "
+                f"{edge.match.tokens} with {authority.kind.value} "
                 f"`{authority.name}`; {certificate.missing_derivation_path}"
             ),
             scaffold=self._scaffold(authority),
             codemod_patch=self._codemod_patch(authority, matched_facts),
             metrics=self._metrics(
-                authority, projection, matched_facts, edge.matched_tokens
+                authority, projection, matched_facts, edge.match.tokens
             ),
         )
 
