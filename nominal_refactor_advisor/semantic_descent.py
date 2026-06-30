@@ -52,6 +52,7 @@ from .models import (
     RegistrationMetrics,
     SourceLocation,
 )
+from .name_algebra import CLASS_NAME_ALGEBRA
 from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
 from .semantic_identity import SemanticRoleIdentityToken
 
@@ -1444,17 +1445,14 @@ class FindingBackedAuthorityProjection:
             authority_evidence_index_by_detector_id,
         )
         authority_id = semantic_descent_finding_authority_id(finding)
-        if authority_evidence_index_by_detector_id.get(finding.detector_id) is None:
-            authority_name = (
-                FindingMetricsSemanticProjection.authority_name_for(finding.metrics)
-                or FindingBackedAuthorityNameProjection.authority_name(
-                    authority_location
-                )
-            )
-        else:
-            authority_name = FindingBackedAuthorityNameProjection.authority_name(
-                authority_location
-            )
+        authority_name = FindingBackedAuthorityNameProjection.authority_name(
+            finding,
+            authority_location,
+            prefer_metric_authority=(
+                authority_evidence_index_by_detector_id.get(finding.detector_id)
+                is None
+            ),
+        )
         return SemanticAuthority(
             authority_id=authority_id,
             kind=SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
@@ -1486,11 +1484,35 @@ class FindingBackedAuthorityNameProjection:
     """Project finding evidence symbols onto the nominal owner they imply."""
 
     @classmethod
-    def authority_name(cls, location: SourceLocation) -> str:
-        return (
-            FindingAuthorityNamePolicy.first_specific_name(
-                *cls._authority_name_candidates(location.symbol)
+    def authority_name(
+        cls,
+        finding: RefactorFinding,
+        location: SourceLocation,
+        *,
+        prefer_metric_authority: bool,
+    ) -> str:
+        metric_candidates = (
+            cls._metric_authority_candidates(finding.metrics)
+            if prefer_metric_authority
+            else ()
+        )
+        evidence_candidates = cls._evidence_owner_candidates(finding)
+        location_candidates = cls._authority_name_candidates(location.symbol)
+        authority_candidates = (
+            (
+                *metric_candidates[:1],
+                *evidence_candidates,
+                *location_candidates,
+                *metric_candidates[1:],
             )
+            if prefer_metric_authority
+            else (
+                *location_candidates,
+                *evidence_candidates,
+            )
+        )
+        return (
+            FindingAuthorityNamePolicy.first_specific_name(*authority_candidates)
             or location.symbol
         )
 
@@ -1500,6 +1522,46 @@ class FindingBackedAuthorityNameProjection:
             return (symbol,)
         owner, _member = symbol.split(".", 1)
         return (owner, symbol)
+
+    @staticmethod
+    def _metric_authority_candidates(
+        metrics: FindingMetrics,
+    ) -> tuple[str | None, ...]:
+        projection = FindingMetricsSemanticProjection.projection_for(metrics)
+        if projection is None:
+            return ()
+        return projection.authority_name_candidate_names(metrics)
+
+    @classmethod
+    def _evidence_owner_candidates(
+        cls,
+        finding: RefactorFinding,
+    ) -> tuple[str, ...]:
+        owner_names = tuple(
+            cls._symbol_owner_name(location.symbol) for location in finding.evidence
+        )
+        owner_names = tuple(name for name in owner_names if name)
+        common_prefix = CLASS_NAME_ALGEBRA.public_name_from_tokens(
+            CLASS_NAME_ALGEBRA.longest_common_token_prefix(owner_names)
+        )
+        common_suffix = CLASS_NAME_ALGEBRA.public_name_from_tokens(
+            CLASS_NAME_ALGEBRA.longest_common_token_suffix(owner_names)
+        )
+        multi_owner_candidates = tuple(
+            dict.fromkeys(
+                (
+                    common_prefix,
+                    common_suffix,
+                    *owner_names,
+                )
+            )
+        )
+        return owner_names if len(owner_names) <= 1 else multi_owner_candidates
+
+    @classmethod
+    def _symbol_owner_name(cls, symbol: str) -> str:
+        owner = symbol.split(":", 1)[0]
+        return cls._authority_name_candidates(owner)[0]
 
 
 class FindingBackedPresentationProjection:

@@ -277,7 +277,7 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
     assert certificate.missing_derivation_path == finding.relation_context
 
 
-def test_finding_backed_graph_rejects_generic_metric_authority_names() -> None:
+def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_authority() -> None:
     finding = RefactorFinding(
         detector_id="local_role_case_logic",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -302,7 +302,65 @@ def test_finding_backed_graph_rejects_generic_metric_authority_names() -> None:
         authority_evidence_index_by_detector_id={},
     )
 
-    assert graph.authorities[0].name == "local_role_case_logic"
+    assert graph.authorities[0].name == "local_cases"
+
+
+def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping_name() -> None:
+    first = RefactorFinding(
+        detector_id="generic_role_case_table",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Concrete role-case tables should move behind one generic axis authority",
+        summary="codemod plan command cases mirror a shared authority",
+        why="case literals repeat a semantic fact family",
+        capability_gap="one authority-owned role-case projection",
+        relation_context="case table lacks an authority-derived projection",
+        evidence=(
+            SourceLocation(
+                "pkg/cli.py",
+                10,
+                "CodemodSynthesizePlanCliCommand:role_cases:applied,diff",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="generic_role_case_table",
+            source_name="codemod,command,plan",
+            field_names=("applied", "diff"),
+        ),
+    )
+    second = RefactorFinding(
+        detector_id="generic_role_case_table",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title=first.title,
+        summary="codemod class plan command cases mirror a shared authority",
+        why=first.why,
+        capability_gap=first.capability_gap,
+        relation_context=first.relation_context,
+        evidence=(
+            SourceLocation(
+                "pkg/cli.py",
+                20,
+                "CodemodSynthesizeClassPlanCliCommand:role_cases:applied,diff",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="generic_role_case_table",
+            source_name="codemod,command,plan",
+            field_names=("applied", "diff"),
+        ),
+    )
+
+    graph = build_finding_backed_semantic_descent_graph(
+        (first, second),
+        semantic_mirror_detector_ids=frozenset(),
+        authority_evidence_index_by_detector_id={},
+    )
+
+    assert {authority.name for authority in graph.authorities} == {
+        "CodemodSynthesizePlanCliCommand",
+        "CodemodSynthesizeClassPlanCliCommand",
+    }
 
 
 def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
