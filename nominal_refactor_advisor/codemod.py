@@ -12224,6 +12224,8 @@ class CodemodPlanSequenceContinuationReport:
 class FindingRecipeActionKey:
     """Stable semantic key for one finding-backed recipe action."""
 
+    subject_separator: ClassVar[str] = "::"
+
     detector_id: str
     file_path: str
     subject_name: str
@@ -12249,6 +12251,24 @@ class FindingRecipeActionKey:
             "file_path": self.file_path,
             "subject_name": self.subject_name,
         }
+
+    @classmethod
+    def child_subject(cls, parent_subject: str, child_subject: str) -> str:
+        return f"{parent_subject}{cls.subject_separator}{child_subject}"
+
+    def conflicts_with(self, other: "FindingRecipeActionKey") -> bool:
+        return self.file_path == other.file_path and self.subject_conflicts_with(
+            other.subject_name
+        )
+
+    def subject_conflicts_with(self, other_subject: str) -> bool:
+        if self.subject_name == other_subject:
+            return True
+        return self.subject_name.startswith(
+            f"{other_subject}{self.subject_separator}",
+        ) or other_subject.startswith(
+            f"{self.subject_name}{self.subject_separator}",
+        )
 
 
 @dataclass(frozen=True)
@@ -12542,7 +12562,11 @@ class FindingRecipeSynthesisAttempt:
         if self.synthesizer is not None:
             raw_action_keys = self.synthesizer.action_keys_for_finding(self.finding)
             action_keys = tuple(
-                key for key in raw_action_keys if key not in self.seen_action_keys
+                key
+                for key in raw_action_keys
+                if not any(
+                    key.conflicts_with(seen_key) for seen_key in self.seen_action_keys
+                )
             )
             if not raw_action_keys:
                 result_status = FindingRecipeSynthesisStatus.NO_ACTION_KEYS
@@ -15714,6 +15738,69 @@ class RecipeMetadataAuthority(SharedRecipeIdSuffixRecipeReasonBase, ABC):
     """Class-level recipe identity metadata shared by recipe synthesizer families."""
 
 
+@dataclass(frozen=True)
+class ClassAssignmentDeletionRecipePlan:
+    """Executable deletion facts for one class-assignment finding."""
+
+    action_keys: tuple[FindingRecipeActionKey, ...]
+    assignment_names: tuple[str, ...]
+    class_subject: str
+    source_path: str
+
+    @classmethod
+    def from_parts(
+        cls,
+        action_keys: tuple[FindingRecipeActionKey, ...],
+        assignment_names: tuple[str, ...],
+        class_subject: str | None,
+    ) -> "ClassAssignmentDeletionRecipePlan | None":
+        if not action_keys or class_subject is None or not assignment_names:
+            return None
+        source_paths = tuple(
+            dict.fromkeys(action_key.file_path for action_key in action_keys)
+        )
+        if len(source_paths) != 1:
+            return None
+        return cls(
+            action_keys=action_keys,
+            assignment_names=assignment_names,
+            class_subject=class_subject,
+            source_path=source_paths[0],
+        )
+
+    def has_assignments(self, context: CodemodSelectorContext) -> bool:
+        target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            file_paths=(self.source_path,),
+            qualnames=(self.class_subject,),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return False
+        node = context.ast_target_nodes_by_id[target_ids[0]]
+        if not isinstance(node, ast.ClassDef):
+            return False
+        return set(self.assignment_names) <= set(
+            ClassAssignmentDeletionFindingRecipeSynthesizer.assigned_names(node)
+        )
+
+    def to_recipe(
+        self,
+        finding: RefactorFinding,
+        metadata: RecipeMetadataAuthority,
+    ) -> RefactorRecipe:
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-{metadata.recipe_id_suffix}",
+            reason=metadata.recipe_reason,
+        )
+        for assignment_name in self.assignment_names:
+            recipe = recipe.delete_class_assignment(
+                self.class_subject,
+                assignment_name,
+                source_path=self.source_path,
+            )
+        return recipe
+
+
 class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
     EvaluatedFindingRecipeSynthesizer
 ):
@@ -16144,30 +16231,22 @@ class ClassAssignmentDeletionFindingRecipeSynthesizer(
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        action_keys = self.action_keys_for_finding(finding)
-        assignment_names = self.assignment_names_for_finding(finding)
-        if len(action_keys) != 1:
-            return None
-        if not assignment_names:
-            return None
-        action_key = action_keys[0]
-        if context is not None and not self.action_key_has_assignments(
-            context,
-            action_key,
-            assignment_names,
-        ):
-            return None
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
-            reason=self.recipe_reason,
+        return (
+            Maybe.of(self.deletion_plan_for_finding(finding))
+            .filter(lambda plan: context is None or plan.has_assignments(context))
+            .map(lambda plan: plan.to_recipe(finding, self))
+            .unwrap_or_none()
         )
-        for assignment_name in assignment_names:
-            recipe = recipe.delete_class_assignment(
-                action_key.subject_name,
-                assignment_name,
-                source_path=action_key.file_path,
-            )
-        return recipe
+
+    def deletion_plan_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> ClassAssignmentDeletionRecipePlan | None:
+        return ClassAssignmentDeletionRecipePlan.from_parts(
+            self.action_keys_for_finding(finding),
+            self.assignment_names_for_finding(finding),
+            self.class_subject_for_finding(finding),
+        )
 
     @abstractmethod
     def assignment_names_for_finding(
@@ -16183,30 +16262,27 @@ class ClassAssignmentDeletionFindingRecipeSynthesizer(
         evidence = FindingPrimaryEvidence(finding).source_location
         if evidence is None:
             return ()
+        assignment_names = self.assignment_names_for_finding(finding)
+        if not assignment_names:
+            return ()
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
-            ((evidence.file_path, evidence.symbol),),
+            (
+                (
+                    evidence.file_path,
+                    FindingRecipeActionKey.child_subject(
+                        evidence.symbol,
+                        assignment_name,
+                    ),
+                )
+                for assignment_name in assignment_names
+            ),
         )
 
     @staticmethod
-    def action_key_has_assignments(
-        context: CodemodSelectorContext,
-        action_key: FindingRecipeActionKey,
-        assignment_names: tuple[str, ...],
-    ) -> bool:
-        target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.CLASS,),
-            file_paths=(action_key.file_path,),
-            qualnames=(action_key.subject_name,),
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return False
-        node = context.ast_target_nodes_by_id[target_ids[0]]
-        if not isinstance(node, ast.ClassDef):
-            return False
-        return set(assignment_names) <= set(
-            ClassAssignmentDeletionFindingRecipeSynthesizer.assigned_names(node)
-        )
+    def class_subject_for_finding(finding: RefactorFinding) -> str | None:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        return None if evidence is None else evidence.symbol
 
     @staticmethod
     def assigned_names(node: ast.ClassDef) -> tuple[str, ...]:
