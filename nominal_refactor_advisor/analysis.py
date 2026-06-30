@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import os
 from pathlib import Path
@@ -36,6 +36,7 @@ from .cache_paths import (
     ParseCacheDirectory,
     analysis_cache_sibling,
     default_analysis_cache_dir,
+    semantic_descent_cache_sibling,
 )
 from .detectors import (
     ContextualGlobalCacheContract,
@@ -49,7 +50,11 @@ from .detectors import (
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
-from .semantic_descent import SemanticDescentGraph, build_semantic_descent_graph
+from .semantic_descent import (
+    SemanticDescentGraph,
+    build_semantic_descent_graph,
+    load_cached_semantic_descent_graph_for_roots,
+)
 
 
 @dataclass(frozen=True)
@@ -520,6 +525,7 @@ def analyze_modules(
     config: DetectorConfig | None = None,
     *,
     analysis_workers: int = 1,
+    semantic_descent_source: "SemanticDescentGraphAnalysisSource | None" = None,
 ) -> list[RefactorFinding]:
     """Run all registered detectors against parsed modules."""
 
@@ -530,6 +536,7 @@ def analyze_modules(
         config,
         detector_types=detector_types,
         analysis_workers=analysis_workers,
+        semantic_descent_source=semantic_descent_source,
     )
 
 
@@ -539,16 +546,68 @@ def analyze_detector_types(
     *,
     detector_types: tuple[type[IssueDetector], ...],
     analysis_workers: int = 1,
+    semantic_descent_source: "SemanticDescentGraphAnalysisSource | None" = None,
 ) -> list[RefactorFinding]:
     """Run selected detector classes against parsed modules."""
 
-    return DetectorTypeShardRunner.from_modules(
-        modules=tuple(modules),
-        config=config,
-        detector_types=detector_types,
-        analysis_workers=analysis_workers,
-        minimum_auto_work_items=64,
-    ).sorted_findings()
+    graph_detector_types = tuple(
+        detector_type
+        for detector_type in detector_types
+        if issubclass(detector_type, SemanticDescentGraphIssueDetector)
+    )
+    non_graph_detector_types = tuple(
+        detector_type
+        for detector_type in detector_types
+        if not issubclass(detector_type, SemanticDescentGraphIssueDetector)
+    )
+    findings: list[RefactorFinding] = []
+    if non_graph_detector_types:
+        findings.extend(
+            DetectorTypeShardRunner.from_modules(
+                modules=tuple(modules),
+                config=config,
+                detector_types=non_graph_detector_types,
+                analysis_workers=analysis_workers,
+                minimum_auto_work_items=64,
+            ).sorted_findings()
+        )
+    if graph_detector_types:
+        graph_source = semantic_descent_source or SemanticDescentGraphAnalysisSource()
+        graph = graph_source.graph_for_modules(modules)
+        for detector_type in graph_detector_types:
+            detector = detector_type()
+            findings.extend(
+                detector._collect_findings_from_graph(graph, modules, config)
+            )
+    return SortedFindingsAuthority.sort(findings, detector_types=detector_types)
+
+
+@dataclass(frozen=True)
+class SemanticDescentGraphAnalysisSource:
+    """Authority for semantic-descent graph context during detector execution."""
+
+    cached_graph: SemanticDescentGraph | None = None
+    cache_dir: Path | None = None
+    cache_roots: tuple[Path, ...] = ()
+    source_policy: PythonSourcePathPolicy | None = None
+    use_cache: bool = True
+
+    def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
+        if self.cached_graph is not None:
+            return self.cached_graph
+        if self.use_cache and self.cache_dir is not None and self.cache_roots:
+            cached_graph = load_cached_semantic_descent_graph_for_roots(
+                self.cache_roots,
+                cache_dir=self.cache_dir,
+                source_policy=self.source_policy,
+            )
+            if cached_graph is not None:
+                return cached_graph
+        return build_semantic_descent_graph(
+            modules,
+            cache_dir=self.cache_dir,
+            use_cache=self.use_cache,
+        )
 
 
 @dataclass(frozen=True)
@@ -597,6 +656,7 @@ class AnalysisCacheResolutionAuthority:
         analysis_cache_dir: Path | None,
         analysis_workers: int,
         source_policy: PythonSourcePathPolicy | None,
+        semantic_descent_source: SemanticDescentGraphAnalysisSource,
     ) -> None:
         self._roots = roots
         self._modules = modules
@@ -605,6 +665,7 @@ class AnalysisCacheResolutionAuthority:
         self._analysis_cache_dir = analysis_cache_dir
         self._analysis_workers = analysis_workers
         self._source_policy = source_policy
+        self._semantic_descent_source = semantic_descent_source
 
     @property
     def cache_result(self) -> CachedAnalysisResult:
@@ -657,6 +718,7 @@ class AnalysisCacheResolutionAuthority:
                 config=self._config,
                 analysis_cache=analysis_cache,
                 analysis_workers=self._analysis_workers,
+                semantic_descent_source=self._semantic_descent_source,
             ).result()
             findings = incremental_result.findings
             analysis_cache.store(cache_identity, findings)
@@ -692,12 +754,14 @@ class IncrementalAnalysisCacheResolver:
         config: DetectorConfig,
         analysis_cache: AnalysisFindingCache,
         analysis_workers: int,
+        semantic_descent_source: SemanticDescentGraphAnalysisSource,
     ) -> None:
         self._cache_identity = cache_identity
         self._modules = modules
         self._config = config
         self._analysis_cache = analysis_cache
         self._analysis_workers = analysis_workers
+        self._semantic_descent_source = semantic_descent_source
         self._detector_types = default_detector_types_for_analysis()
         self._detector_partition = DetectorTypePartition.from_detector_types(
             self._detector_types
@@ -806,6 +870,7 @@ class IncrementalAnalysisCacheResolver:
                 self._config,
                 detector_types=self._detector_partition.per_module_detector_types,
                 analysis_workers=1,
+                semantic_descent_source=self._semantic_descent_source,
             )
             for module in missing_modules
         ]
@@ -944,7 +1009,9 @@ class IncrementalAnalysisCacheResolver:
 
     def _semantic_descent_context_graph(self) -> SemanticDescentGraph:
         if self._semantic_descent_graph is None:
-            self._semantic_descent_graph = build_semantic_descent_graph(self._modules)
+            self._semantic_descent_graph = (
+                self._semantic_descent_source.graph_for_modules(self._modules)
+            )
         return self._semantic_descent_graph
 
     def _global_detector_context_signature(self) -> str:
@@ -1025,6 +1092,7 @@ def analyze_modules_with_cache(
     analysis_cache_dir: Path | None = None,
     analysis_workers: int = 1,
     source_policy: PythonSourcePathPolicy | None = None,
+    semantic_descent_source: SemanticDescentGraphAnalysisSource | None = None,
 ) -> CachedAnalysisResult:
     """Run detector analysis with a persistent finding cache when configured."""
 
@@ -1043,6 +1111,9 @@ def analyze_modules_with_cache(
         analysis_cache_dir=analysis_cache_dir,
         analysis_workers=analysis_workers,
         source_policy=source_policy,
+        semantic_descent_source=(
+            semantic_descent_source or SemanticDescentGraphAnalysisSource()
+        ),
     )
     return AnalysisCacheStatusStrategy.for_status(cache_result.cache_status).result(
         authority
@@ -1132,6 +1203,26 @@ def analysis_cache_dir_for_root(
     return default_analysis_cache_dir(root)
 
 
+def semantic_descent_source_for_parse_cache(
+    roots: tuple[Path, ...],
+    parse_cache_dir: Path | None,
+    use_cache: bool,
+    source_policy: PythonSourcePathPolicy | None,
+) -> SemanticDescentGraphAnalysisSource:
+    """Build the default graph source aligned with the parse-cache authority."""
+
+    return SemanticDescentGraphAnalysisSource(
+        cache_dir=(
+            semantic_descent_cache_sibling(parse_cache_dir)
+            if use_cache and parse_cache_dir is not None
+            else None
+        ),
+        cache_roots=roots,
+        source_policy=source_policy,
+        use_cache=use_cache,
+    )
+
+
 class FastCacheReusePolicy(StrEnum):
     """Correctness contract for fast cache reuse before full parsing."""
 
@@ -1149,6 +1240,9 @@ class CachedPathAnalysisRequest(ParseCacheDirectory):
     analysis_workers: int
     source_policy: PythonSourcePathPolicy | None
     reuse_policy: FastCacheReusePolicy = FastCacheReusePolicy.EXACT_ONLY
+    semantic_descent_source: SemanticDescentGraphAnalysisSource = field(
+        default_factory=SemanticDescentGraphAnalysisSource
+    )
 
     @property
     def analysis_cache_dir(self) -> Path | None:
@@ -1250,6 +1344,7 @@ class FastCachedPathAnalysisAuthority:
             changed_modules,
             self._request.config,
             analysis_workers=self._request.analysis_workers,
+            semantic_descent_source=self._request.semantic_descent_source,
         )
 
     def _changed_modules(self, changed_paths: frozenset[str]) -> list[ParsedModule]:
@@ -1318,6 +1413,12 @@ def analyze_path(
 ) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
     config = config or DetectorConfig()
+    semantic_descent_source = semantic_descent_source_for_parse_cache(
+        (root,),
+        cache_dir,
+        use_parse_cache,
+        source_policy,
+    )
     fast_result = FastCachedPathAnalysisAuthority(
         CachedPathAnalysisRequest(
             roots=(root,),
@@ -1327,6 +1428,7 @@ def analyze_path(
             parse_workers=parse_workers,
             analysis_workers=analysis_workers,
             source_policy=source_policy,
+            semantic_descent_source=semantic_descent_source,
         )
     ).result()
     if fast_result is not None:
@@ -1349,6 +1451,7 @@ def analyze_path(
         ),
         analysis_workers=analysis_workers,
         source_policy=source_policy,
+        semantic_descent_source=semantic_descent_source,
     ).findings
 
 
@@ -1364,6 +1467,12 @@ def analyze_paths(
 ) -> list[RefactorFinding]:
     """Parse multiple filesystem roots and return sorted refactor findings."""
     config = config or DetectorConfig()
+    semantic_descent_source = semantic_descent_source_for_parse_cache(
+        roots,
+        cache_dir,
+        use_parse_cache,
+        source_policy,
+    )
     fast_result = FastCachedPathAnalysisAuthority(
         CachedPathAnalysisRequest(
             roots=roots,
@@ -1373,6 +1482,7 @@ def analyze_paths(
             parse_workers=parse_workers,
             analysis_workers=analysis_workers,
             source_policy=source_policy,
+            semantic_descent_source=semantic_descent_source,
         )
     ).result()
     if fast_result is not None:
@@ -1396,6 +1506,7 @@ def analyze_paths(
         ),
         analysis_workers=analysis_workers,
         source_policy=source_policy,
+        semantic_descent_source=semantic_descent_source,
     ).findings
 
 

@@ -26,6 +26,7 @@ from .analysis import (
     CachedPathAnalysisRequest,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
+    SemanticDescentGraphAnalysisSource,
     analysis_cache_dir_for_root,
     analyze_lean_export,
     analyze_modules_with_cache,
@@ -5344,11 +5345,17 @@ def main() -> int:
         parse_cache_dir,
         args.use_parse_cache,
     )
+    source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
     semantic_descent_cache_dir = SemanticDescentCacheDirAuthority(
         parse_cache_dir=parse_cache_dir,
         use_parse_cache=args.use_parse_cache,
     ).cache_dir()
-    source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
+    semantic_descent_analysis_source = SemanticDescentGraphAnalysisSource(
+        cache_dir=semantic_descent_cache_dir,
+        cache_roots=roots,
+        source_policy=source_policy,
+        use_cache=args.use_parse_cache,
+    )
     if args.predict_scan:
         SingleRootModeAuthority(
             parser=parser,
@@ -5477,6 +5484,7 @@ def main() -> int:
                     if preparse_cache_mode is JsonPreparseCachePayloadMode.LOOP_SUMMARY
                     else FastCacheReusePolicy.EXACT_ONLY
                 ),
+                semantic_descent_source=semantic_descent_analysis_source,
             )
             fast_cache_authority = FastCachedPathAnalysisAuthority(fast_cache_request)
             if (
@@ -5545,6 +5553,7 @@ def main() -> int:
                     analysis_cache_dir=analysis_cache_dir,
                     analysis_workers=args.analysis_workers,
                     source_policy=source_policy,
+                    semantic_descent_source=semantic_descent_analysis_source,
                 )
                 unfiltered_findings = analysis_result.findings
                 analysis_cache_status = analysis_result.cache_status
