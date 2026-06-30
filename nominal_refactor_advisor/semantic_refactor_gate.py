@@ -209,6 +209,16 @@ class DescentCertificateFindingAuthority:
             (finding.detector_id,)
         )
 
+    def group_key_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> "SemanticRefactorFindingGroupKey":
+        return SemanticRefactorFindingGroupKey(
+            priority_tier=priority_tier_for_detector_ids((finding.detector_id,)),
+            authority_candidate=self.authority_candidate_for_finding(finding),
+            missing_derivation_path=self.missing_derivation_path_for_finding(finding),
+        )
+
     def matched_fact_count(
         self,
         certificates: tuple[DescentCertificate, ...],
@@ -250,6 +260,36 @@ class FindingRemovalPrediction:
                 "predicted_removed_finding_count": self.removed_count,
             }
         )
+
+
+@dataclass(frozen=True)
+class SemanticRefactorFindingGroupKey:
+    """Graph-derived identity for one semantic gate work item."""
+
+    priority_tier: str
+    authority_candidate: str
+    missing_derivation_path: str
+
+
+@dataclass(frozen=True)
+class SemanticRefactorFindingGroupAuthority:
+    """Group SSOT findings by descent-graph authority rather than detector title."""
+
+    finding_descent_graph: SemanticDescentGraph
+
+    def groups(
+        self,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[tuple[RefactorFinding, ...], ...]:
+        certificate_authority = DescentCertificateFindingAuthority(
+            self.finding_descent_graph
+        )
+        groups: dict[SemanticRefactorFindingGroupKey, list[RefactorFinding]] = (
+            defaultdict(list)
+        )
+        for finding in findings:
+            groups[certificate_authority.group_key_for_finding(finding)].append(finding)
+        return tuple(tuple(group) for group in groups.values())
 
 
 @dataclass(frozen=True)
@@ -400,7 +440,9 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         certificates = certificate_authority.certificates_for_findings(findings)
         label = first_finding.title
         if len(findings) > 1:
-            label = f"{label} ({len(findings)} authority candidates)"
+            label = f"{label} ({len(findings)} raw signals)"
+        if len(authority_candidates) == 1:
+            label = f"{authority_candidates[0]} semantic descent boundary"
         return cls(
             source="ssot_finding",
             priority_tier=priority_tier_for_detector_ids(detector_ids),
@@ -640,6 +682,9 @@ class SemanticRefactorGateReport(SemanticRecord):
         ssot_findings: tuple[RefactorFinding, ...],
         finding_descent_graph: SemanticDescentGraph,
     ) -> tuple[SemanticRefactorGateWorkItem, ...]:
+        finding_group_authority = SemanticRefactorFindingGroupAuthority(
+            finding_descent_graph
+        )
         items = (
             *(
                 SemanticRefactorGateWorkItem.from_authority_target(target)
@@ -650,21 +695,10 @@ class SemanticRefactorGateReport(SemanticRecord):
                     group,
                     finding_descent_graph=finding_descent_graph,
                 )
-                for group in SemanticRefactorGateReport._ssot_finding_groups(
-                    ssot_findings
-                )
+                for group in finding_group_authority.groups(ssot_findings)
             ),
         )
         return tuple(sorted(items, key=lambda item: item.priority_rank))
-
-    @staticmethod
-    def _ssot_finding_groups(
-        ssot_findings: tuple[RefactorFinding, ...],
-    ) -> tuple[tuple[RefactorFinding, ...], ...]:
-        groups: dict[tuple[str, str], list[RefactorFinding]] = defaultdict(list)
-        for finding in ssot_findings:
-            groups[(finding.detector_id, finding.title)].append(finding)
-        return tuple(tuple(group) for group in groups.values())
 
     def finding_payload(self) -> list[JsonObject]:
         """Return the JSON `findings` surface when the gate is active."""

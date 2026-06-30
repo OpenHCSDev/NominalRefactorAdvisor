@@ -22651,12 +22651,29 @@ class InlineLiteralDispatchFindingRecipeSynthesizer(
 
 
 class RuntimeSemanticBranchChainFindingRecipeSynthesizer(
-    LiteralDispatchFindingRecipeSynthesizer
+    SharedActionKeysForFindingMixin,
+    LiteralDispatchFindingRecipeSynthesizer,
 ):
     """Build recipes for unambiguous runtime semantic branch chains."""
 
     detector_id = "runtime_semantic_branch_chain"
     case_key_attribute: ClassVar[str] = "runtime_case"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        literal_dispatch_evaluation = super().evaluate_recipe_for_finding(
+            finding,
+            context,
+        )
+        if literal_dispatch_evaluation.recipe is not None:
+            return literal_dispatch_evaluation
+        return BranchSemanticMirrorRecipeStrategy().evaluate_recipe_for_finding(
+            finding,
+            context,
+        )
 
 
 def autoregister_base_name(

@@ -1447,10 +1447,14 @@ class FindingBackedAuthorityProjection:
         if authority_evidence_index_by_detector_id.get(finding.detector_id) is None:
             authority_name = (
                 FindingMetricsSemanticProjection.authority_name_for(finding.metrics)
-                or authority_location.symbol
+                or FindingBackedAuthorityNameProjection.authority_name(
+                    authority_location
+                )
             )
         else:
-            authority_name = authority_location.symbol
+            authority_name = FindingBackedAuthorityNameProjection.authority_name(
+                authority_location
+            )
         return SemanticAuthority(
             authority_id=authority_id,
             kind=SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
@@ -1476,6 +1480,26 @@ class FindingBackedAuthorityProjection:
         if evidence_index is not None and evidence_index < len(finding.evidence):
             return finding.evidence[evidence_index]
         return FindingBackedPresentationProjection.projection_location(finding)
+
+
+class FindingBackedAuthorityNameProjection:
+    """Project finding evidence symbols onto the nominal owner they imply."""
+
+    @classmethod
+    def authority_name(cls, location: SourceLocation) -> str:
+        return (
+            FindingAuthorityNamePolicy.first_specific_name(
+                *cls._authority_name_candidates(location.symbol)
+            )
+            or location.symbol
+        )
+
+    @staticmethod
+    def _authority_name_candidates(symbol: str) -> tuple[str, ...]:
+        if "." not in symbol:
+            return (symbol,)
+        owner, _member = symbol.split(".", 1)
+        return (owner, symbol)
 
 
 class FindingBackedPresentationProjection:

@@ -19083,9 +19083,11 @@ def test_semantic_gate_ranks_larger_boundary_groups_before_label_order() -> None
     ).to_dict()
     work_queue = cast(list[dict[str, object]], payload["findings"])
 
-    assert work_queue[0]["label"] == "Z large boundary group (2 authority candidates)"
+    assert work_queue[0]["label"] == "LargeBoundary semantic descent boundary"
+    assert work_queue[0]["authority_candidate"] == "LargeBoundary"
     assert work_queue[0]["predicted_removed_finding_count"] == 2
-    assert work_queue[1]["label"] == "A small authority branch"
+    assert work_queue[1]["label"] == "SmallAuthority semantic descent boundary"
+    assert work_queue[1]["authority_candidate"] == "SmallAuthority"
 
 
 def test_semantic_gate_ranks_certificate_breadth_before_raw_group_size() -> None:
@@ -19141,10 +19143,12 @@ def test_semantic_gate_ranks_certificate_breadth_before_raw_group_size() -> None
     ).to_dict()
     work_queue = cast(list[dict[str, object]], payload["findings"])
 
-    assert work_queue[0]["label"] == "Z broad semantic certificate"
+    assert work_queue[0]["label"] == "BroadAuthority semantic descent boundary"
+    assert work_queue[0]["authority_candidate"] == "BroadAuthority"
     assert work_queue[0]["matched_fact_count"] == 5
     assert work_queue[0]["predicted_removed_finding_count"] == 1
-    assert work_queue[1]["label"] == "A narrow raw-count group (2 authority candidates)"
+    assert work_queue[1]["label"] == "NarrowAuthority semantic descent boundary"
+    assert work_queue[1]["authority_candidate"] == "NarrowAuthority"
     assert work_queue[1]["matched_fact_count"] == 2
     assert work_queue[1]["predicted_removed_finding_count"] == 2
 
