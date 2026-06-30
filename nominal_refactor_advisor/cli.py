@@ -87,6 +87,7 @@ from .codemod import (
     SourceIndexTargetSelector,
     SourceRewriteTarget,
     apply_codemod_simulation,
+    codemod_class_plan_from_findings,
     codemod_plan_from_findings,
     codemod_candidates_from_impact_ranking,
     codemod_dsl_example_plan_payload,
@@ -498,6 +499,15 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-synthesize-class-plan",),
+            action="store_true",
+            help=(
+                "Scan paths, cluster findings into graph-derived refactor classes, "
+                "and emit executable DSL plans plus evidence selectors and "
+                "replacement scaffolds for each class."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-synthesize-document-only",),
             action="store_true",
             help=(
@@ -776,8 +786,9 @@ _CLI_ARGUMENT_SPECS = (
             dest="codemod_goal_detectors",
             default=[],
             help=(
-                "Restrict --codemod-refactor-goal and --codemod-synthesize-plan "
-                "to findings from this detector (can be repeated)."
+                "Restrict --codemod-refactor-goal, --codemod-synthesize-plan, "
+                "and --codemod-synthesize-class-plan to findings from this detector "
+                "(can be repeated)."
             ),
         ),
         CliArgumentSpec(
@@ -1842,6 +1853,7 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             args.codemod_compose_plans is not None,
             args.codemod_compose_sequence is not None,
             args.codemod_synthesize_plan,
+            args.codemod_synthesize_class_plan,
             args.codemod_replacement_plan is not None,
             bool(SelectedOperationTargetSelectorSource.selected_sources(args)),
             args.codemod_fixpoint,
@@ -2953,6 +2965,7 @@ class CodemodProjectedFindingReporter(ABC):
         *,
         enabled: bool,
         source_sequence: CodemodPlanSequence | None = None,
+        expected_removed_finding_ids: tuple[str, ...] = (),
     ) -> CodemodProjectedFindingReport | None:
         if not enabled:
             return None
@@ -2963,6 +2976,7 @@ class CodemodProjectedFindingReporter(ABC):
             config=self.config,
             roots=self.roots,
             source_sequence=source_sequence,
+            expected_removed_finding_ids=expected_removed_finding_ids,
         ).report()
 
     def write_continuation_plan_if_requested(
@@ -4304,6 +4318,7 @@ class CodemodScanQueryMode:
     """Validated family of scan-backed codemod DSL query modes."""
 
     synthesize_plan: bool
+    synthesize_class_plan: bool
     source_index: bool
     selector_path: Path | None
     target_source_selector_path: Path | None
@@ -4318,6 +4333,7 @@ class CodemodScanQueryMode:
     def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
         return cls(
             synthesize_plan=args.codemod_synthesize_plan,
+            synthesize_class_plan=args.codemod_synthesize_class_plan,
             source_index=args.codemod_source_index,
             selector_path=args.codemod_resolve_selector,
             target_source_selector_path=args.codemod_target_source,
@@ -4370,6 +4386,7 @@ class CodemodScanQueryMode:
         return sum(
             (
                 self.synthesize_plan,
+                self.synthesize_class_plan,
                 self.source_index,
                 self.selector_path is not None,
                 self.target_source_selector_path is not None,
@@ -4394,7 +4411,8 @@ class CodemodScanQueryMode:
         if self.mode_count <= 1:
             return
         parser.error(
-            "--codemod-synthesize-plan, --codemod-source-index, "
+            "--codemod-synthesize-plan, --codemod-synthesize-class-plan, "
+            "--codemod-source-index, "
             "--codemod-resolve-selector, --codemod-target-source, and "
             "--codemod-replacement-plan, and --codemod-selected-operation-plan "
             "are mutually exclusive"
@@ -4594,6 +4612,9 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
             projected_findings = self.optional_projected_finding_report(
                 simulation.simulation,
                 enabled=self.args.codemod_project_findings,
+                expected_removed_finding_ids=(
+                    finding_recipe_plan.expected_removed_finding_ids
+                ),
             )
             if projected_findings is not None:
                 payload["projected_findings"] = projected_findings.to_dict()
@@ -4676,6 +4697,31 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
             return False
         simulation.document_simulation.apply()
         return True
+
+
+class CodemodSynthesizeClassPlanCliCommand(CodemodScanQueryCliCommand):
+    """Emit graph-clustered finding-backed codemod plans with scaffolds."""
+
+    command_id = "codemod_synthesize_class_plan"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_synthesize_class_plan
+
+    def run(self) -> int:
+        snapshot = self.required_source_snapshot()
+        report = codemod_class_plan_from_findings(
+            self.findings,
+            root=self.roots[0],
+            selector_context=snapshot,
+            detector_ids=tuple(self.args.codemod_goal_detectors),
+        )
+        write_cli_json_artifact(
+            self.args.codemod_plan_out,
+            report.finding_plan.document.to_dict(),
+        )
+        print(json.dumps(report.to_dict(), indent=2))
+        return 0
 
 
 class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):

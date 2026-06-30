@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import copy
 import difflib
 import hashlib
 import importlib.util
@@ -38,6 +39,12 @@ from .assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
 from .ast_tools import BuiltinCallName, ParsedModule
+from .candidate_collection_semantics import (
+    AstStreamLoopComponents,
+    NamedFunctionLoopComponents,
+    ast_stream_loop_components,
+    named_function_loop_components,
+)
 from .class_index import ClassFamilyIndex, build_class_family_index
 from .collection_algebra import sorted_tuple
 from .impact_ranking import (
@@ -61,6 +68,11 @@ from .models import (
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .observation_graph import StructuralExecutionLevel
 from .patterns import PatternId
+from .planner import (
+    RefactorExecutionClass,
+    RefactorExecutionPlanReport,
+    build_refactor_execution_plan,
+)
 from .product_record_schema import (
     ProductRecordDeclaredNameExtractor,
     ProductRecordSchemaCallKind,
@@ -71,7 +83,7 @@ from .registry_identity import (
     class_name_registry_key,
 )
 from .semantic_algebra import DispatchAxisExpression
-from .semantic_match import Maybe
+from .semantic_match import Maybe, single_item
 from .source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
@@ -14477,6 +14489,203 @@ class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
         }
 
 
+@dataclass(frozen=True)
+class FindingRecipeClassPlan(CodemodJsonReport):
+    """One graph-clustered smell class with executable DSL planning context."""
+
+    execution_class: RefactorExecutionClass
+    selector: FindingEvidenceTargetSelector
+    replacement_scaffold: CodemodReplacementPlanScaffoldReport
+    synthesis_records: tuple[FindingRecipeSynthesisRecord, ...]
+    document: CodemodPlanDocument
+
+    @property
+    def finding_ids(self) -> tuple[str, ...]:
+        return self.execution_class.finding_ids
+
+    @property
+    def finding_count(self) -> int:
+        return self.execution_class.finding_count
+
+    @property
+    def expected_removed_finding_ids(self) -> tuple[str, ...]:
+        return tuple(
+            record.finding_id
+            for record in self.synthesis_records
+            if record.status is FindingRecipeSynthesisStatus.PLANNED
+        )
+
+    @property
+    def expected_removed_finding_count(self) -> int:
+        return len(self.expected_removed_finding_ids)
+
+    @property
+    def status_counts(self) -> JsonObject:
+        counts: dict[str, int] = {}
+        for record in self.synthesis_records:
+            key = record.status.value
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    @classmethod
+    def from_execution_class(
+        cls,
+        execution_class: RefactorExecutionClass,
+        records: Iterable[FindingRecipeSynthesisRecord],
+        context: CodemodSourceSnapshot,
+    ) -> "FindingRecipeClassPlan":
+        finding_ids = frozenset(execution_class.finding_ids)
+        class_records = tuple(
+            record for record in records if record.finding_id in finding_ids
+        )
+        selector = FindingEvidenceTargetSelector(execution_class.finding_ids)
+        return cls(
+            execution_class=execution_class,
+            selector=selector,
+            replacement_scaffold=context.replacement_plan_scaffold_report(selector),
+            synthesis_records=class_records,
+            document=cls.document_from_records(class_records),
+        )
+
+    @staticmethod
+    def document_from_records(
+        records: Iterable[FindingRecipeSynthesisRecord],
+    ) -> CodemodPlanDocument:
+        recipes = tuple(
+            record.evaluation.recipe
+            for record in records
+            if record.status is FindingRecipeSynthesisStatus.PLANNED
+            and record.evaluation.recipe is not None
+        )
+        if not recipes:
+            return CodemodPlanDocument()
+        return CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe(
+                    recipe_id="finding-class-codemod-plan",
+                    rewrites=tuple(
+                        rewrite for recipe in recipes for rewrite in recipe.rewrites
+                    ),
+                    operations=tuple(
+                        operation for recipe in recipes for operation in recipe.operations
+                    ),
+                    reason="Batch one graph-clustered smell class into one executable plan.",
+                ),
+            )
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "class_id": self.execution_class.class_id,
+            "subsystem": self.execution_class.subsystem,
+            "finding_ids": self.finding_ids,
+            "finding_count": self.finding_count,
+            "expected_removed_finding_ids": self.expected_removed_finding_ids,
+            "expected_removed_finding_count": self.expected_removed_finding_count,
+            "batch_priority": self.execution_class.batch_priority,
+            "parallel_group": self.execution_class.parallel_group,
+            "pattern_sequence": self.execution_class.pattern_sequence.to_dict(),
+            "first_batch_move": self.execution_class.first_batch_move,
+            "first_codemod_hint": self.execution_class.first_codemod_hint,
+            "selector": self.selector.to_dict(),
+            "selector_resolution": (
+                self.replacement_scaffold.selector_resolution.to_dict()
+            ),
+            "replacement_scaffold": self.replacement_scaffold.to_dict(),
+            "document": self.document.to_dict(),
+            "synthesis_status_counts": self.status_counts,
+            "synthesis_records": tuple(
+                record.to_dict() for record in self.synthesis_records
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipeClassPlanReport(CodemodJsonReport):
+    """Executable plan mode grouped by graph-derived refactor classes."""
+
+    execution_plan: RefactorExecutionPlanReport
+    finding_plan: FindingRecipePlan
+    classes: tuple[FindingRecipeClassPlan, ...]
+
+    @property
+    def class_count(self) -> int:
+        return len(self.classes)
+
+    @property
+    def executable_class_count(self) -> int:
+        return sum(1 for class_plan in self.classes if class_plan.document.has_recipes)
+
+    @property
+    def expected_removed_finding_ids(self) -> tuple[str, ...]:
+        return tuple(
+            finding_id
+            for class_plan in self.classes
+            for finding_id in class_plan.expected_removed_finding_ids
+        )
+
+    @property
+    def expected_removed_finding_count(self) -> int:
+        return len(self.expected_removed_finding_ids)
+
+    @classmethod
+    def from_findings(
+        cls,
+        findings: Iterable[RefactorFinding],
+        *,
+        root: Path,
+        context: CodemodSourceSnapshot,
+        detector_ids: Iterable[str] = (),
+    ) -> "FindingRecipeClassPlanReport":
+        finding_tuple = tuple(findings)
+        finding_plan = codemod_plan_from_findings(
+            finding_tuple,
+            detector_ids=detector_ids,
+            selector_context=context,
+        )
+        execution_plan = build_refactor_execution_plan(list(finding_tuple), root)
+        return cls(
+            execution_plan=execution_plan,
+            finding_plan=finding_plan,
+            classes=tuple(
+                FindingRecipeClassPlan.from_execution_class(
+                    execution_class,
+                    finding_plan.records,
+                    context,
+                )
+                for execution_class in execution_plan.classes
+            ),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "class_count": self.class_count,
+            "executable_class_count": self.executable_class_count,
+            "expected_removed_finding_ids": self.expected_removed_finding_ids,
+            "expected_removed_finding_count": self.expected_removed_finding_count,
+            "execution_plan": self.execution_plan.to_dict(),
+            "finding_recipe_plan": self.finding_plan.to_dict(),
+            "classes": tuple(class_plan.to_dict() for class_plan in self.classes),
+        }
+
+
+def codemod_class_plan_from_findings(
+    findings: Iterable[RefactorFinding],
+    *,
+    root: Path,
+    selector_context: CodemodSourceSnapshot,
+    detector_ids: Iterable[str] = (),
+) -> FindingRecipeClassPlanReport:
+    """Group executable finding-backed plans by graph-derived refactor class."""
+
+    return FindingRecipeClassPlanReport.from_findings(
+        findings,
+        root=root,
+        context=selector_context,
+        detector_ids=detector_ids,
+    )
+
+
 class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
     """Registry-backed bridge from advisor findings to executable recipes."""
 
@@ -15324,6 +15533,612 @@ class SharedActionKeysForFindingMixin:
             finding,
             ((evidence.file_path, dispatch_evidence_subject(evidence.symbol)),),
         )
+
+
+def _statement_is_empty_list_assignment(
+    statement: ast.stmt,
+) -> str | None:
+    if isinstance(statement, ast.Assign):
+        if len(statement.targets) != 1:
+            return None
+        target_name = _name_id(statement.targets[0])
+        value = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        target_name = _name_id(statement.target)
+        value = statement.value
+    else:
+        return None
+    if target_name is None or value is None:
+        return None
+    if isinstance(value, ast.List) and not value.elts:
+        return target_name
+    if isinstance(value, ast.Call) and _call_name(value.func) == "list":
+        return target_name if not value.args and not value.keywords else None
+    return None
+
+
+def _return_accumulator_sort_key(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    accumulator_name: str,
+) -> tuple[bool, ast.expr | None] | None:
+    body = _trim_docstring_body(node.body)
+    if not body or not isinstance(body[-1], ast.Return):
+        return None
+    value = body[-1].value
+    if not isinstance(value, ast.Call) or not value.args:
+        return None
+    if _name_id(value.args[0]) != accumulator_name:
+        return None
+    call_name = _call_name(value.func)
+    if call_name == "tuple" and len(value.args) == 1 and not value.keywords:
+        return False, None
+    if call_name != "sorted_tuple" or len(value.args) != 1:
+        return None
+    sort_key = None
+    for keyword in value.keywords:
+        if keyword.arg != "key":
+            return None
+        sort_key = keyword.value
+    return True, sort_key
+
+
+def _append_call_payload(node: ast.AST, accumulator_name: str) -> ast.expr | None:
+    if not isinstance(node, ast.Expr):
+        return None
+    call = node.value
+    if not isinstance(call, ast.Call):
+        return None
+    if call.args and isinstance(call.func, ast.Attribute):
+        if (
+            _name_id(call.func.value) == accumulator_name
+            and call.func.attr == "append"
+            and len(call.args) == 1
+            and not call.keywords
+        ):
+            return call.args[0]
+    return None
+
+
+def _first_function_parameter_name(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
+    parameters = tuple((*node.args.posonlyargs, *node.args.args))
+    if not parameters:
+        return None
+    return parameters[0].arg
+
+
+def _negative_isinstance_guard_type(
+    statement: ast.stmt,
+    node_name: str,
+) -> ast.expr | None:
+    if not isinstance(statement, ast.If):
+        return None
+    test = statement.test
+    if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
+        return None
+    call = test.operand
+    if not isinstance(call, ast.Call):
+        return None
+    if _call_name(call.func) != "isinstance":
+        return None
+    if len(call.args) != 2 or call.keywords:
+        return None
+    if _name_id(call.args[0]) != node_name:
+        return None
+    guard_body = _trim_docstring_body(statement.body)
+    if len(guard_body) != 1:
+        return None
+    guard_statement = guard_body[0]
+    if not isinstance(guard_statement, ast.Continue | ast.Return):
+        return None
+    return call.args[1]
+
+
+def _without_negative_isinstance_guard(
+    body: Iterable[ast.stmt],
+    node_name: str,
+) -> tuple[list[ast.stmt], ast.expr]:
+    statements = list(body)
+    for index, statement in enumerate(statements):
+        node_type = _negative_isinstance_guard_type(statement, node_name)
+        if node_type is None:
+            continue
+        return [*statements[:index], *statements[index + 1 :]], node_type
+    return statements, ast.Attribute(
+        value=ast.Name(id="ast", ctx=ast.Load()),
+        attr="AST",
+        ctx=ast.Load(),
+    )
+
+
+class _CollectorProjectionBodyTransformer(ast.NodeTransformer):
+    def __init__(self, accumulator_name: str) -> None:
+        self.accumulator_name = accumulator_name
+        self.loop_depth = 0
+        self.append_rewrite_count = 0
+        self.illegal_top_level_break = False
+
+    def visit(self, node: ast.AST) -> ast.AST:
+        if isinstance(node, ast.For | ast.AsyncFor | ast.While):
+            return self._visit_loop(node)
+        return super().visit(node)
+
+    def _visit_loop(self, node: ast.For | ast.AsyncFor | ast.While) -> ast.AST:
+        self.loop_depth += 1
+        try:
+            return self.generic_visit(node)
+        finally:
+            self.loop_depth -= 1
+
+    def visit_Expr(self, node: ast.Expr) -> ast.AST:
+        payload = _append_call_payload(node, self.accumulator_name)
+        if payload is None:
+            return self.generic_visit(node)
+        self.append_rewrite_count += 1
+        return ast.copy_location(ast.Expr(value=ast.Yield(value=payload)), node)
+
+    def visit_Continue(self, node: ast.Continue) -> ast.AST:
+        if self.loop_depth == 0:
+            return ast.copy_location(ast.Return(value=None), node)
+        return node
+
+    def visit_Break(self, node: ast.Break) -> ast.AST:
+        if self.loop_depth == 0:
+            self.illegal_top_level_break = True
+        return node
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollectorExtractionCore(ABC):
+    """Common identity fields for collector extraction planning."""
+
+    target: AstTargetDigest
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    accumulator_name: str
+    return_uses_sort: bool
+    sort_key: ast.expr | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollectorExtractionShape(CollectorExtractionCore):
+    """Parsed shape for manual accumulator-backed collectors."""
+
+    body: tuple[ast.stmt, ...]
+
+    @classmethod
+    def from_target(
+        cls,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "CollectorExtractionShape | None":
+        if node.decorator_list:
+            return None
+        body = tuple(_trim_docstring_body(node.body))
+        accumulator_names = tuple(
+            name
+            for statement in body
+            if (name := _statement_is_empty_list_assignment(statement)) is not None
+        )
+        if len(accumulator_names) != 1:
+            return None
+        accumulator_name = accumulator_names[0]
+        return_shape = _return_accumulator_sort_key(node, accumulator_name)
+        if return_shape is None:
+            return None
+        return_uses_sort, sort_key = return_shape
+        return cls(
+            target=target,
+            node=node,
+            accumulator_name=accumulator_name,
+            return_uses_sort=return_uses_sort,
+            sort_key=sort_key,
+            body=body,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollectorExtraction(
+    CollectorExtractionCore,
+    ABC,
+    metaclass=AutoRegisterMeta,
+):
+    """Common executable source rewrite for collector traversal extraction."""
+
+    __registry__: ClassVar[dict[str, type["CollectorExtraction"]]] = {}
+    __registry_key__ = "helper_role_name"
+    __skip_if_no_key__ = True
+
+    helper_role_name: ClassVar[str]
+    collector_recipe_id_suffix: ClassVar[str]
+    collector_recipe_reason: ClassVar[str]
+    collector_recipe_rationale: ClassVar[str]
+
+    @property
+    def helper_name(self) -> str:
+        return f"{self.node.name}_{self.helper_role_name}"
+
+    @classmethod
+    def from_registered_target(
+        cls,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "CollectorExtraction | None":
+        for extraction_type in cls.__registry__.values():
+            extraction = extraction_type.from_target(target, node)
+            if extraction is not None:
+                return extraction
+        return None
+
+    @classmethod
+    @abstractmethod
+    def from_target(
+        cls,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "CollectorExtraction | None":
+        raise NotImplementedError
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe | None:
+        replacement_source = self.replacement_source()
+        if replacement_source is None:
+            return None
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-{self.collector_recipe_id_suffix}",
+            reason=self.collector_recipe_reason,
+        ).replace_target(
+            replacement_source,
+            target_identifier=self.target.target_id,
+            rationale=self.collector_recipe_rationale,
+        )
+
+    def replacement_source(self) -> str | None:
+        helper_body = self.helper_body()
+        if helper_body is None:
+            return None
+        helper = ast.FunctionDef(
+            name=self.helper_name,
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg=name) for name in self.helper_parameter_names()],
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[],
+            ),
+            body=helper_body,
+            decorator_list=[],
+            returns=None,
+            type_comment=None,
+        )
+        rewritten_collector = copy.deepcopy(self.node)
+        rewritten_collector.body = self.collector_body()
+        ast.fix_missing_locations(helper)
+        ast.fix_missing_locations(rewritten_collector)
+        return f"{ast.unparse(helper)}\n\n\n{ast.unparse(rewritten_collector)}"
+
+    @abstractmethod
+    def helper_parameter_names(self) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def helper_body(self) -> list[ast.stmt] | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def collector_body(self) -> list[ast.stmt]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class NamedFunctionCollectorExtraction(CollectorExtraction):
+    """Executable extraction of a manual named-function collector loop."""
+
+    helper_role_name: ClassVar[str] = "for_function"
+    collector_recipe_id_suffix: ClassVar[str] = "extract-named-function-collector"
+    collector_recipe_reason: ClassVar[str] = (
+        "Route manual named-function collector traversal through shared collector algebra."
+    )
+    collector_recipe_rationale: ClassVar[str] = (
+        "Extract named-function collector residue behind shared traversal algebra."
+    )
+
+    loop_components: NamedFunctionLoopComponents
+
+    @classmethod
+    def from_target(
+        cls,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "NamedFunctionCollectorExtraction | None":
+        shape = CollectorExtractionShape.from_target(target, node)
+        if shape is None:
+            return None
+        loops = tuple(
+            components
+            for statement in shape.body
+            if (components := named_function_loop_components(statement)) is not None
+        )
+        if len(loops) != 1:
+            return None
+        loop_components = loops[0]
+        return cls(
+            target=shape.target,
+            node=shape.node,
+            accumulator_name=shape.accumulator_name,
+            loop_components=loop_components,
+            return_uses_sort=shape.return_uses_sort,
+            sort_key=shape.sort_key,
+        )
+
+    def helper_parameter_names(self) -> tuple[str, ...]:
+        return (
+            self.loop_components.module_parameter_name,
+            self.loop_components.qualname_parameter_name,
+            self.loop_components.function_parameter_name,
+        )
+
+    def helper_body(self) -> list[ast.stmt] | None:
+        body = copy.deepcopy(self.loop_components.loop.body)
+        transformer = _CollectorProjectionBodyTransformer(self.accumulator_name)
+        rewritten_body = [transformer.visit(statement) for statement in body]
+        if transformer.illegal_top_level_break:
+            return None
+        if transformer.append_rewrite_count == 0:
+            return None
+        return [
+            statement
+            for statement in rewritten_body
+            if isinstance(statement, ast.stmt)
+        ]
+
+    def collector_body(self) -> list[ast.stmt]:
+        call = ast.Call(
+            func=ast.Name(id="_collect_named_function_candidates", ctx=ast.Load()),
+            args=[
+                ast.Name(
+                    id=self.loop_components.module_parameter_name,
+                    ctx=ast.Load(),
+                ),
+                ast.Name(id=self.helper_name, ctx=ast.Load()),
+            ],
+            keywords=[],
+        )
+        if self.return_uses_sort and self.sort_key is not None:
+            call.keywords.append(
+                ast.keyword(arg="sort_key", value=copy.deepcopy(self.sort_key))
+            )
+        return [ast.Return(value=call)]
+
+
+@dataclass(frozen=True, kw_only=True)
+class AstStreamCollectorExtraction(CollectorExtraction):
+    """Executable extraction of a manual AST stream collector loop."""
+
+    helper_role_name: ClassVar[str] = "for_node"
+    collector_recipe_id_suffix: ClassVar[str] = "extract-ast-stream-collector"
+    collector_recipe_reason: ClassVar[str] = (
+        "Route manual AST stream collector traversal through shared collector algebra."
+    )
+    collector_recipe_rationale: ClassVar[str] = (
+        "Extract AST stream collector residue behind shared traversal algebra."
+    )
+
+    module_parameter_name: str
+    loop_components: AstStreamLoopComponents
+
+    @classmethod
+    def from_target(
+        cls,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "AstStreamCollectorExtraction | None":
+        return (
+            Maybe.of(CollectorExtractionShape.from_target(target, node))
+            .combine(
+                lambda _shape: _first_function_parameter_name(node),
+                lambda shape, module_parameter_name: (
+                    shape,
+                    module_parameter_name,
+                ),
+            )
+            .combine(
+                lambda shape_and_module: single_item(
+                    tuple(
+                        components
+                        for statement in shape_and_module[0].body
+                        if (
+                            components := ast_stream_loop_components(statement)
+                        )
+                        is not None
+                    )
+                ),
+                lambda shape_and_module, loop_components: cls(
+                    target=shape_and_module[0].target,
+                    node=shape_and_module[0].node,
+                    module_parameter_name=shape_and_module[1],
+                    accumulator_name=shape_and_module[0].accumulator_name,
+                    loop_components=loop_components,
+                    return_uses_sort=shape_and_module[0].return_uses_sort,
+                    sort_key=shape_and_module[0].sort_key,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    def helper_parameter_names(self) -> tuple[str, ...]:
+        return (
+            self.module_parameter_name,
+            self.loop_components.node_parameter_name,
+        )
+
+    def helper_body(self) -> list[ast.stmt] | None:
+        body, _node_type = _without_negative_isinstance_guard(
+            copy.deepcopy(self.loop_components.loop.body),
+            self.loop_components.node_parameter_name,
+        )
+        transformer = _CollectorProjectionBodyTransformer(self.accumulator_name)
+        rewritten_body = [transformer.visit(statement) for statement in body]
+        if transformer.illegal_top_level_break:
+            return None
+        if transformer.append_rewrite_count == 0:
+            return None
+        return [
+            statement
+            for statement in rewritten_body
+            if isinstance(statement, ast.stmt)
+        ]
+
+    def collector_body(self) -> list[ast.stmt]:
+        traversal_match = self.loop_components.traversal_match
+        _body, node_type = _without_negative_isinstance_guard(
+            copy.deepcopy(self.loop_components.loop.body),
+            self.loop_components.node_parameter_name,
+        )
+        call = ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(
+                    id="CANDIDATE_COLLECTION_AUTHORITY",
+                    ctx=ast.Load(),
+                ),
+                attr="ast_node_candidates",
+                ctx=ast.Load(),
+            ),
+            args=[
+                ast.Name(id=self.module_parameter_name, ctx=ast.Load()),
+                copy.deepcopy(traversal_match.root_expression),
+                copy.deepcopy(node_type),
+                ast.Name(id=self.helper_name, ctx=ast.Load()),
+            ],
+            keywords=[],
+        )
+        if not traversal_match.traversal_type.emits_default_traversal:
+            call.keywords.append(
+                ast.keyword(
+                    arg="traversal",
+                    value=copy.deepcopy(traversal_match.traversal_expression),
+                )
+            )
+        if self.return_uses_sort and self.sort_key is not None:
+            call.keywords.append(
+                ast.keyword(arg="sort_key", value=copy.deepcopy(self.sort_key))
+            )
+        return [ast.Return(value=call)]
+
+
+class NamedFunctionCollectorBoilerplateFindingRecipeSynthesizer(
+    SharedActionKeysForFindingMixin,
+    EvaluatedFindingRecipeSynthesizer,
+):
+    """Build recipes that extract manual named-function collectors."""
+
+    detector_id = "named_function_collector_boilerplate"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="named-function collector extraction requires source context"
+            )
+        extraction = self.extraction_for_finding(finding, context)
+        if extraction is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "named-function collector extraction requires one list "
+                    "accumulator, one _iter_named_functions(module) loop, and "
+                    "one tuple/sorted_tuple return of that accumulator"
+                )
+            )
+        recipe = extraction.recipe_for(finding)
+        if recipe is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "named-function collector extraction could not rewrite the "
+                    "collector residue safely"
+                )
+            )
+        return FindingRecipeEvaluation(recipe=recipe)
+
+    def extraction_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> NamedFunctionCollectorExtraction | None:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return None
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=evidence.file_path,
+            qualname=dispatch_evidence_subject(evidence.symbol),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return NamedFunctionCollectorExtraction.from_target(target, node)
+
+
+class AstStreamCollectorBoilerplateFindingRecipeSynthesizer(
+    SharedActionKeysForFindingMixin,
+    EvaluatedFindingRecipeSynthesizer,
+):
+    """Build recipes that extract manual AST stream collectors."""
+
+    detector_id = "ast_stream_collector_boilerplate"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="AST stream collector extraction requires source context"
+            )
+        extraction = self.extraction_for_finding(finding, context)
+        if extraction is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "AST stream collector extraction requires either a named-function "
+                    "collector loop or one top-level ast.walk/_walk_nodes loop over "
+                    "a returned list accumulator"
+                )
+            )
+        recipe = extraction.recipe_for(finding)
+        if recipe is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "AST stream collector extraction could not rewrite the collector "
+                    "residue safely"
+                )
+            )
+        return FindingRecipeEvaluation(recipe=recipe)
+
+    def extraction_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> CollectorExtraction | None:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return None
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=evidence.file_path,
+            qualname=dispatch_evidence_subject(evidence.symbol),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return CollectorExtraction.from_registered_target(target, node)
 
 
 class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
@@ -21857,6 +22672,7 @@ class FindingRecipePlanBuilder:
         expected_removed_finding_ids = []
         synthesis_records: list[FindingRecipeSynthesisRecord] = []
         seen_action_keys: set[FindingRecipeActionKey] = set()
+        claimed_rewrites: list[PlannedSourceRewrite] = []
         for finding in self.scoped_findings():
             attempt = FindingRecipeSynthesisAttempt(
                 finding=finding,
@@ -21865,18 +22681,101 @@ class FindingRecipePlanBuilder:
                 seen_action_keys=frozenset(seen_action_keys),
             )
             result = attempt.evaluate()
-            synthesis_records.append(result.record_for(attempt))
             if not result.planned_result:
+                synthesis_records.append(result.record_for(attempt))
                 continue
             if result.recipe is None:
                 raise RuntimeError("planned synthesis result must include a recipe")
+            overlap_reason = self.overlap_rejection_reason(
+                result.recipe,
+                claimed_rewrites,
+                selector_context,
+            )
+            if overlap_reason:
+                synthesis_records.append(
+                    FindingRecipeSynthesisRecord.for_finding(
+                        finding,
+                        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
+                        synthesizer=attempt.synthesizer,
+                        action_keys=result.action_keys,
+                        evaluation=FindingRecipeEvaluation(
+                            rejection_reason=overlap_reason,
+                        ),
+                        reason=overlap_reason,
+                    )
+                )
+                continue
+            synthesis_records.append(result.record_for(attempt))
             recipes.append(result.recipe)
             expected_removed_finding_ids.append(finding.stable_id)
             seen_action_keys.update(result.action_keys)
+            claimed_rewrites.extend(
+                self.planned_rewrites_for_recipe(result.recipe, selector_context)
+            )
         return FindingRecipePlan(
             document=CodemodPlanDocument(recipes=self.merged_recipes(recipes)),
             expected_removed_finding_ids=tuple(expected_removed_finding_ids),
             report=FindingRecipeSynthesisReport(tuple(synthesis_records)),
+        )
+
+    def overlap_rejection_reason(
+        self,
+        recipe: RefactorRecipe,
+        claimed_rewrites: Iterable[PlannedSourceRewrite],
+        selector_context: CodemodSelectorContext | None,
+    ) -> str:
+        planned_rewrites = self.planned_rewrites_for_recipe(recipe, selector_context)
+        if not planned_rewrites:
+            return ""
+        claimed_rewrite_tuple = tuple(claimed_rewrites)
+        for planned_rewrite in planned_rewrites:
+            planned_target = self.rewrite_target(planned_rewrite, selector_context)
+            if planned_target is None:
+                continue
+            for claimed_rewrite in claimed_rewrite_tuple:
+                claimed_target = self.rewrite_target(claimed_rewrite, selector_context)
+                if claimed_target is None:
+                    continue
+                if not self.targets_overlap(planned_target, claimed_target):
+                    continue
+                return (
+                    "planned source rewrite overlaps an earlier synthesized recipe: "
+                    f"{planned_target.qualname!r} overlaps {claimed_target.qualname!r} "
+                    f"in {planned_target.file_path!r}"
+                )
+        return ""
+
+    @staticmethod
+    def planned_rewrites_for_recipe(
+        recipe: RefactorRecipe,
+        selector_context: CodemodSelectorContext | None,
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if selector_context is None:
+            return ()
+        try:
+            return recipe.source_rewrite_batch(
+                selector_context.source_index,
+                selector_context.sources_by_file_path,
+                selector_context=selector_context,
+            )
+        except (KeyError, ValueError):
+            return ()
+
+    @staticmethod
+    def rewrite_target(
+        rewrite: PlannedSourceRewrite,
+        selector_context: CodemodSelectorContext | None,
+    ) -> AstTargetDigest | None:
+        if selector_context is None:
+            return None
+        return selector_context.source_index.target_by_id.get(rewrite.target_id)
+
+    @staticmethod
+    def targets_overlap(first: AstTargetDigest, second: AstTargetDigest) -> bool:
+        return (
+            first.file_path == second.file_path
+            and first.line <= second.end_line
+            and second.line <= first.end_line
         )
 
     def merged_recipes(

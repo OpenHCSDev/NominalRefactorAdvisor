@@ -101,6 +101,8 @@ from nominal_refactor_advisor.codemod import (
     CodemodStrategyRegistry,
     CodemodTargetSelector,
     DEFAULT_CODEMOD_REWRITE_BUILDERS,
+    FindingRecipeClassPlan,
+    FindingRecipeClassPlanReport,
     FindingEvidenceTargetSelector,
     InheritanceEdgeTargetSelector,
     RefactorRecipe,
@@ -113,6 +115,7 @@ from nominal_refactor_advisor.codemod import (
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
     apply_codemod_simulation,
+    codemod_class_plan_from_findings,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
@@ -9152,6 +9155,48 @@ def test_detects_named_function_collector_boilerplate(tmp_path: Path) -> None:
     assert "_collect_named_function_candidates" in (findings[0].scaffold or "")
 
 
+def test_named_function_collector_boilerplate_synthesizes_shared_traversal_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef _local_candidates(module):\n    candidates = []\n    for qualname, function in _iter_named_functions(module):\n        if qualname.startswith("_"):\n            continue\n        candidates.append(\n            LocalCandidate(\n                file_path=str(module.path),\n                line=function.lineno,\n                function_name=qualname,\n            )\n        )\n    return tuple(candidates)\n',
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        item
+        for item in analyze_modules(modules)
+        if item.detector_id == "named_function_collector_boilerplate"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    record = plan.records[0]
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    after_findings = tuple(
+        item
+        for item in analyze_modules(
+            simulation.document_simulation.required_after_snapshot.parsed_modules
+        )
+        if item.detector_id == "named_function_collector_boilerplate"
+    )
+
+    assert record.status.value == "planned"
+    assert (
+        record.synthesizer_name
+        == "NamedFunctionCollectorBoilerplateFindingRecipeSynthesizer"
+    )
+    assert plan.expected_removed_finding_count == 1
+    assert "def _local_candidates_for_function(module, qualname, function):" in rewritten
+    assert "return _collect_named_function_candidates" in rewritten
+    assert "yield LocalCandidate" in rewritten
+    assert after_findings == ()
+    assert simulation.is_clean is True
+
+
 def test_detects_ast_stream_collector_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -9168,6 +9213,49 @@ def test_detects_ast_stream_collector_boilerplate(tmp_path: Path) -> None:
     assert "LocalCandidate" in findings[0].summary
     assert "local_items" in findings[0].summary
     assert "_collect_ast_node_candidates" in (findings[0].scaffold or "")
+
+
+def test_ast_stream_collector_boilerplate_synthesizes_shared_traversal_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _local_candidates(module):\n    local_items = []\n    for node in _walk_nodes(module.module):\n        if not isinstance(node, ast.Call):\n            continue\n        local_items.append(\n            LocalCandidate(\n                file_path=str(module.path),\n                line=node.lineno,\n                function_name=ast.unparse(node.func),\n            )\n        )\n    return tuple(local_items)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        item
+        for item in analyze_modules(modules)
+        if item.detector_id == "ast_stream_collector_boilerplate"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    record = plan.records[0]
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    after_findings = tuple(
+        item
+        for item in analyze_modules(
+            simulation.document_simulation.required_after_snapshot.parsed_modules
+        )
+        if item.detector_id == "ast_stream_collector_boilerplate"
+    )
+
+    assert record.status.value == "planned"
+    assert (
+        record.synthesizer_name
+        == "AstStreamCollectorBoilerplateFindingRecipeSynthesizer"
+    )
+    assert plan.expected_removed_finding_count == 1
+    assert "def _local_candidates_for_node(module, node):" in rewritten
+    assert "CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates" in rewritten
+    assert "ast.Call" in rewritten
+    assert "yield LocalCandidate" in rewritten
+    assert after_findings == ()
+    assert simulation.is_clean is True
 
 
 def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
@@ -16050,6 +16138,154 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     )
 
 
+def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
+
+    moved_spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Semantic fact mirrors outside owner",
+        "Semantic fact should be owned once.",
+        "single nominal owner",
+        "parallel declaration mirrors one fact",
+    )
+    eliminated_spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Manual registry mirrors class family",
+        "Class family should own its registry.",
+        "derive registry from class family",
+        "explicit registry repeats class membership",
+    )
+    before_moved = moved_spec.build(
+        "semantic_mirror_without_descent",
+        "Alpha mirrors the semantic fact.",
+        (SourceLocation((tmp_path / "before.py").as_posix(), 3, "Alpha.run"),),
+    )
+    after_moved = moved_spec.build(
+        "semantic_mirror_without_descent",
+        "Beta mirrors the semantic fact.",
+        (SourceLocation((tmp_path / "after.py").as_posix(), 4, "Beta.run"),),
+    )
+    before_eliminated = eliminated_spec.build(
+        "manual_class_registration",
+        "REGISTRY mirrors AlphaHandler/BetaHandler.",
+        (SourceLocation((tmp_path / "registry.py").as_posix(), 2, "REGISTRY"),),
+    )
+
+    delta = CodemodFindingClassDelta.from_findings(
+        (before_moved, before_eliminated),
+        (after_moved,),
+        expected_removed_finding_ids=(
+            before_moved.stable_id,
+            before_eliminated.stable_id,
+        ),
+    )
+    payload = delta.to_dict()
+    statuses_by_title = {
+        change["signature"]["title"]: change["status"]
+        for change in payload["changes"]
+    }
+
+    assert payload["moved_class_count"] == 1
+    assert payload["eliminated_class_count"] == 1
+    assert statuses_by_title["Semantic fact mirrors outside owner"] == "moved"
+    assert statuses_by_title["Manual registry mirrors class family"] == "eliminated"
+
+
+def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nREGISTRY = {}\n\n\n"
+            "class AlphaHandler:\n"
+            "    pass\n\n\n"
+            "class BetaHandler:\n"
+            "    pass\n\n\n"
+            "REGISTRY['alpha'] = AlphaHandler\n"
+            "REGISTRY['beta'] = BetaHandler\n"
+        ),
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules, DetectorConfig())
+        if finding.detector_id == "manual_class_registration"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    report = codemod_class_plan_from_findings(
+        findings,
+        root=tmp_path,
+        selector_context=snapshot,
+    )
+    payload = report.to_dict()
+    class_payload = payload["classes"][0]
+    recipe = class_payload["document"]["recipes"][0]
+    operation = recipe["operations"][0]
+
+    assert isinstance(report, FindingRecipeClassPlanReport)
+    assert isinstance(report.classes[0], FindingRecipeClassPlan)
+    assert payload["class_count"] == 1
+    assert payload["executable_class_count"] == 1
+    assert payload["expected_removed_finding_count"] == 1
+    assert class_payload["selector"]["selector"] == "finding_evidence_target"
+    assert class_payload["replacement_scaffold"]["selected_count"] >= 1
+    assert class_payload["synthesis_status_counts"]["planned"] == 1
+    assert recipe["recipe_id"] == "finding-class-codemod-plan"
+    assert operation["operation"] == "convert_manual_registry_to_autoregister"
+
+
+def test_module_cli_synthesizes_class_plan_with_scaffolds(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nREGISTRY = {}\n\n\n"
+            "class AlphaHandler:\n"
+            "    pass\n\n\n"
+            "class BetaHandler:\n"
+            "    pass\n\n\n"
+            "REGISTRY['alpha'] = AlphaHandler\n"
+            "REGISTRY['beta'] = BetaHandler\n"
+        ),
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-synthesize-class-plan",
+            "--codemod-goal-detector",
+            "manual_class_registration",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    class_payload = payload["classes"][0]
+
+    assert result.returncode == 0, result.stderr
+    assert payload["class_count"] == 1
+    assert payload["executable_class_count"] == 1
+    assert class_payload["selector"]["selector"] == "finding_evidence_target"
+    assert class_payload["replacement_scaffold"]["selected_count"] >= 1
+    assert (
+        class_payload["document"]["recipes"][0]["operations"][0]["operation"]
+        == "convert_manual_registry_to_autoregister"
+    )
+
+
 def test_module_cli_simulates_projected_findings_with_executable_continuation(
     tmp_path: Path,
 ) -> None:
@@ -16170,6 +16406,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodAuthoringWorkflowReadiness
     from nominal_refactor_advisor import CodemodFindingChangeCarrier
     from nominal_refactor_advisor import CodemodFindingChangeProjection
+    from nominal_refactor_advisor import CodemodFindingClassChange
+    from nominal_refactor_advisor import CodemodFindingClassDelta
+    from nominal_refactor_advisor import CodemodFindingClassSignature
+    from nominal_refactor_advisor import CodemodFindingClassStatus
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFixpointWorkflowPlan
     from nominal_refactor_advisor import CodemodFixpointReplayPlan
@@ -16201,6 +16441,8 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodWorkflowPlanKind
     from nominal_refactor_advisor import CodemodWorkflowScanRequest
     from nominal_refactor_advisor import ParseCacheRequest
+    from nominal_refactor_advisor import FindingRecipeClassPlan
+    from nominal_refactor_advisor import FindingRecipeClassPlanReport
     from nominal_refactor_advisor import NominalBoundaryExtractionGoalTargetPolicy
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
@@ -16265,9 +16507,15 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     )
 
     assert CodemodFindingChangeCarrier.__name__ == "CodemodFindingChangeCarrier"
+    assert CodemodFindingClassChange.__name__ == "CodemodFindingClassChange"
+    assert CodemodFindingClassDelta.__name__ == "CodemodFindingClassDelta"
+    assert CodemodFindingClassSignature.__name__ == "CodemodFindingClassSignature"
+    assert CodemodFindingClassStatus.MOVED.value == "moved"
     assert finding_change.expected_removed_finding_count == 1
     assert finding_change.to_dict()["finding_delta"]["removed_finding_ids"] == ("a",)
     assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
+    assert FindingRecipeClassPlan.__name__ == "FindingRecipeClassPlan"
+    assert FindingRecipeClassPlanReport.__name__ == "FindingRecipeClassPlanReport"
     assert CodemodGuardedWorkflowRequest.__name__ == "CodemodGuardedWorkflowRequest"
     assert CodemodFixpointReplayPlan.__name__ == "CodemodFixpointReplayPlan"
     assert CodemodPlanSequence.__name__ == "CodemodPlanSequence"
@@ -22245,6 +22493,33 @@ def test_detects_formal_boundary_string_registry_mirrored_with_generated_artifac
     assert "lean_runtime_policy_bundle.json" in finding.summary
     assert "3 formal-boundary string ids" in finding.summary
     assert "GeneratedFormalBoundaryIdAuthority" in (finding.scaffold or "")
+
+
+def test_detects_generated_boundary_semantic_constant_mirror(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/generated/policy_ids.py",
+        '# generated from policy schema\n\nPOLICY_PROFILE_ID = "axis_policy_profile"\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        '\nPOLICY_PROFILE_ID = "axis_policy_profile"\n\n\ndef profile_id():\n    return POLICY_PROFILE_ID\n',
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "generated_boundary_semantic_constant_mirror"
+        )
+    )
+
+    assert "POLICY_PROFILE_ID" in finding.summary
+    assert "generated semantic constant value" in finding.summary
+    assert "generated catalog or nominal authority" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:

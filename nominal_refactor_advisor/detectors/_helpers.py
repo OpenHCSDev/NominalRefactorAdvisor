@@ -15,6 +15,10 @@ from ..factorization import (
     ResidueHookNamesCarrier,
     factorization_axis_catalog_certificate,
 )
+from ..candidate_collection_semantics import (
+    AstStreamTraversal,
+    named_function_loop_components,
+)
 from ..product_record_schema import (
     ProductRecordDeclaredNameExtractor,
     ProductRecordSchemaCallKind,
@@ -12225,9 +12229,7 @@ def _inline_candidate_renderer_declaration_candidates(
     )
 
 
-_NAMED_FUNCTION_ITERATOR_NAME = "_iter_named_functions"
 _CANDIDATE_ACCUMULATOR_NAME = "candidates"
-_AST_STREAM_CALL_NAMES = frozenset({"ast.walk", "_walk_nodes"})
 _APPEND_METHOD_NAME = "append"
 
 
@@ -12249,10 +12251,7 @@ def _assigns_candidate_accumulator(node: ast.AST) -> bool:
 
 
 def _is_named_function_iteration(node: ast.For) -> bool:
-    return (
-        isinstance(node.iter, ast.Call)
-        and _call_name(node.iter.func) == _NAMED_FUNCTION_ITERATOR_NAME
-    )
+    return named_function_loop_components(node) is not None
 
 
 class _CandidateAppendConstructorNameStep(RegisteredEffectStep):
@@ -12517,8 +12516,8 @@ def _ast_stream_call_name(node: ast.AST) -> str | None:
     call = as_ast(node, ast.Call)
     if call is None:
         return None
-    call_name = _call_name(call.func)
-    return call_name if call_name in _AST_STREAM_CALL_NAMES else None
+    traversal_match = AstStreamTraversal.first_match(call)
+    return traversal_match.call_name if traversal_match is not None else None
 
 
 def _ast_stream_collector_boilerplate_candidates(
