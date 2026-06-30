@@ -14314,6 +14314,114 @@ def test_apply_selected_targets_builder_accepts_template_sequence(
     assert module_path.read_text().count("modern(value)") == 2
 
 
+def test_extract_methods_to_class_operation_lifts_methods_into_peer_class(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass SourceAuthority:\n"
+        "    def keep(self):\n"
+        "        return 'keep'\n\n"
+        "    def resolve(self, value):\n"
+        "        return self.index[value]\n\n"
+        "    @staticmethod\n"
+        "    def normalize(value):\n"
+        "        return value.strip()\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "extract-method-owner",
+                        "operations": [
+                            {
+                                "operation": "extract_methods_to_class",
+                                "target_qualname": "SourceAuthority",
+                                "file_path": module_path.as_posix(),
+                                "destination_class_name": "ResolutionAuthority",
+                                "method_names": ["resolve", "normalize"],
+                                "field_declaration_sources": ["index: dict[str, str]"],
+                                "class_base_names": ["BaseAuthority"],
+                                "class_decorator_sources": ["@dataclass(frozen=True)"],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    document = load_codemod_plan_document(plan_path)
+
+    operation_payload = document.recipes[0].operations[0].to_dict()
+    assert operation_payload["operation"] == "extract_methods_to_class"
+    assert operation_payload["destination_class_name"] == "ResolutionAuthority"
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is True
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert (
+        "@dataclass(frozen=True)\nclass ResolutionAuthority(BaseAuthority):"
+        in rewritten
+    )
+    assert "    index: dict[str, str]\n\n    def resolve(self, value):" in rewritten
+    assert "    @staticmethod\n    def normalize(value):" in rewritten
+    assert "class SourceAuthority:\n    def keep(self):" in rewritten
+    assert rewritten.index("class ResolutionAuthority") < rewritten.index(
+        "class SourceAuthority"
+    )
+    assert rewritten.count("def resolve") == 1
+    assert rewritten.count("def normalize") == 1
+
+
+def test_extract_methods_to_class_builder_simulates_method_owner_extraction(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass SourceAuthority:\n"
+        "    def resolve(self, value):\n"
+        "        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = RefactorRecipe(
+        recipe_id="extract-method-owner",
+    ).extract_methods_to_class(
+        "SourceAuthority",
+        "ResolutionAuthority",
+        ("resolve",),
+        source_path=module_path.as_posix(),
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is True
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "class ResolutionAuthority:\n    def resolve(self, value):" in rewritten
+    assert "class SourceAuthority:\n    pass\n" in rewritten
+
+
 def test_apply_selected_targets_rejects_selection_count_underflow(
     tmp_path: Path,
 ) -> None:

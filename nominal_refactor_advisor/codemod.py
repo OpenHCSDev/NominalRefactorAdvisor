@@ -83,6 +83,8 @@ from .taxonomy import CertificationLevel
 from .taxonomy import ConfidenceLevel
 
 JsonScalar: TypeAlias = str | int | float | bool | None
+ExtractableMethodNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
+ExtractableMethodNodes: TypeAlias = tuple[ExtractableMethodNode, ...]
 
 
 class JsonObject(dict[str, "JsonValue"]):
@@ -243,6 +245,7 @@ class RefactorRecipeOperationKind(StrEnum):
     DISPATCH_TO_POLYMORPHISM = "dispatch_to_polymorphism"
     ENSURE_IMPORT = "ensure_import"
     EXTRACT_AUTHORITY = "extract_authority"
+    EXTRACT_METHODS_TO_CLASS = "extract_methods_to_class"
     INSERT_AFTER_TARGET = "insert_after_target"
     INSERT_AFTER_IMPORTS = "insert_after_imports"
     INSERT_BEFORE_TARGET = "insert_before_target"
@@ -283,8 +286,11 @@ INSERT_CARRIER_PAYLOAD_FIELD = "insert_carrier"
 CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD = "case_key_attribute"
 CLASS_NAMES_PAYLOAD_FIELD = "class_names"
 CLASS_KEY_PAIRS_PAYLOAD_FIELD = "class_key_pairs"
+CLASS_BASE_NAMES_PAYLOAD_FIELD = "class_base_names"
+CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD = "class_decorator_sources"
 DECLARATION_NAMES_PAYLOAD_FIELD = "declaration_names"
 DESTINATION_PATH_PAYLOAD_FIELD = "destination_path"
+DESTINATION_CLASS_NAME_PAYLOAD_FIELD = "destination_class_name"
 SYMBOL_QUALNAMES_PAYLOAD_FIELD = "symbol_qualnames"
 METHOD_NAMES_PAYLOAD_FIELD = "method_names"
 METHOD_NAME_PAYLOAD_FIELD = "method_name"
@@ -3672,6 +3678,10 @@ class SourceNodeSpan:
     def end_line(self) -> int:
         return self.node.end_lineno or self.node.lineno
 
+    @property
+    def line_span(self) -> "SourceLineSpan":
+        return SourceLineSpan(start_line=self.start_line, end_line=self.end_line)
+
 
 @dataclass(frozen=True)
 class SourceTextGeometry:
@@ -4129,6 +4139,22 @@ class MethodNamePayloadMixin(ABC):
         if not isinstance(operation, MethodNamePayloadMixin):
             raise TypeError("method_name binding requires method-name operation")
         return operation.method_name
+
+
+class FieldDeclarationSourcesPayloadMixin(ABC):
+    """Operation mixin whose payload exposes generated field declarations."""
+
+    field_declaration_sources: tuple[str, ...]
+
+    @staticmethod
+    def field_declaration_sources_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, FieldDeclarationSourcesPayloadMixin):
+            raise TypeError(
+                "field_declaration_sources binding requires field-declaration operation"
+            )
+        return operation.field_declaration_sources
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4910,7 +4936,10 @@ class ClassMemberPromotedBase(ClassMemberPromotionSpec):
     @property
     def source(self) -> str:
         members = tuple(
-            self.statement_type(statement).source_from(self.source_text)
+            SourceNodeSpan(
+                statement,
+                SourceNodeDecoratorPolicy.INCLUDE,
+            ).line_span.source_from(self.source_text)
             for statement in self.source_class.body
             if self.statement_type(statement).name in self.member_names
         )
@@ -5105,10 +5134,6 @@ class ClassMemberPromotionStatement(ABC, metaclass=AutoRegisterMeta):
     def end_line(self) -> int:
         return self.statement.end_lineno or self.statement.lineno
 
-    def source_from(self, source: str) -> str:
-        lines = source.splitlines(keepends=True)
-        return "".join(lines[self.start_line - 1 : self.end_line])
-
 
 @dataclass(frozen=True)
 class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
@@ -5156,6 +5181,311 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
         if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return ""
         return ast.dump(self.statement, include_attributes=False)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtractMethodsToClassOperation(
+    FieldDeclarationSourcesPayloadMixin,
+    RefactorRecipeOperation,
+):
+    """Extract selected methods from one class into a generated peer authority class."""
+
+    destination_class_name: str
+    extracted_method_names: tuple[str, ...]
+    field_declaration_sources: tuple[str, ...] = ()
+    class_base_names: tuple[str, ...] = ()
+    class_decorator_sources: tuple[str, ...] = ()
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return operation_payload_bindings(
+            (
+                (
+                    DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
+                    DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
+                    ExtractMethodsToClassOperation.destination_class_name_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    METHOD_NAMES_PAYLOAD_FIELD,
+                    "extracted_method_names",
+                    ExtractMethodsToClassOperation.extracted_method_names_from_operation,
+                    OperationPayloadReader.required_string_tuple,
+                ),
+                (
+                    FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
+                    FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
+                    FieldDeclarationSourcesPayloadMixin.field_declaration_sources_from_operation,
+                    OperationPayloadReader.string_tuple_or_empty,
+                ),
+                (
+                    CLASS_BASE_NAMES_PAYLOAD_FIELD,
+                    CLASS_BASE_NAMES_PAYLOAD_FIELD,
+                    ExtractMethodsToClassOperation.class_base_names_from_operation,
+                    OperationPayloadReader.string_tuple_or_empty,
+                ),
+                (
+                    CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD,
+                    CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD,
+                    ExtractMethodsToClassOperation.class_decorator_sources_from_operation,
+                    OperationPayloadReader.string_tuple_or_empty,
+                ),
+            )
+        )
+
+    @staticmethod
+    def destination_class_name_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ExtractMethodsToClassOperation):
+            raise TypeError("destination_class_name binding requires method extraction")
+        return operation.destination_class_name
+
+    @staticmethod
+    def extracted_method_names_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ExtractMethodsToClassOperation):
+            raise TypeError("method_names binding requires method extraction")
+        return operation.extracted_method_names
+
+    @staticmethod
+    def class_base_names_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ExtractMethodsToClassOperation):
+            raise TypeError("class_base_names binding requires method extraction")
+        return operation.class_base_names
+
+    @staticmethod
+    def class_decorator_sources_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ExtractMethodsToClassOperation):
+            raise TypeError(
+                "class_decorator_sources binding requires method extraction"
+            )
+        return operation.class_decorator_sources
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        target_identifier, target_digest, node = self.target_node(
+            source_index,
+            source_by_path,
+        )
+        del target_identifier
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError("extract_methods_to_class requires a class target")
+        self.validate(source_index, target_digest, node)
+        method_nodes = self.selected_method_nodes(node)
+        class_would_be_empty = len(method_nodes) == len(node.body)
+        return (
+            self.destination_class_insertion(target_digest, node, source_by_path),
+            *self.method_deletions(target_digest, method_nodes, class_would_be_empty),
+        )
+
+    def validate(
+        self,
+        source_index: SourceIndex,
+        target_digest: AstTargetDigest,
+        node: ast.ClassDef,
+    ) -> None:
+        if node.decorator_list:
+            raise ValueError(
+                "extract_methods_to_class does not yet support decorated source classes"
+            )
+        if not self.destination_class_name.isidentifier():
+            raise ValueError(
+                "Destination class name must be an identifier: "
+                f"{self.destination_class_name!r}"
+            )
+        duplicate_method_names = tuple(
+            name
+            for name in self.extracted_method_names
+            if self.extracted_method_names.count(name) > 1
+        )
+        if duplicate_method_names:
+            raise ValueError(
+                f"Method extraction names are duplicated: {duplicate_method_names!r}"
+            )
+        for method_name in self.extracted_method_names:
+            if not method_name.isidentifier():
+                raise ValueError(f"Method name must be an identifier: {method_name!r}")
+        self.validate_generated_class_header()
+        if self.destination_class_exists(source_index, target_digest.file_path):
+            raise ValueError(
+                f"Destination class {self.destination_class_name!r} already exists "
+                f"in {target_digest.file_path!r}"
+            )
+        self.selected_method_nodes(node)
+
+    def validate_generated_class_header(self) -> None:
+        for class_decorator_source in self.class_decorator_sources:
+            ast.parse(f"{class_decorator_source}\nclass _GeneratedProbe:\n    pass\n")
+        base_suffix = (
+            f"({', '.join(self.class_base_names)})" if self.class_base_names else ""
+        )
+        ast.parse(f"class _GeneratedProbe{base_suffix}:\n    pass\n")
+        field_source = "".join(
+            self.indented_source_lines(self.field_declaration_sources)
+        )
+        if field_source:
+            ast.parse(f"class _GeneratedProbe:\n{field_source}")
+
+    def destination_class_exists(
+        self,
+        source_index: SourceIndex,
+        source_path: str,
+    ) -> bool:
+        return any(
+            target.file_path == source_path
+            and target.is_class
+            and target.matches_symbol(self.destination_class_name)
+            for target in source_index.ast_targets
+        )
+
+    def selected_method_nodes(
+        self,
+        node: ast.ClassDef,
+    ) -> ExtractableMethodNodes:
+        methods_by_name = {
+            statement.name: statement
+            for statement in node.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        missing_names = tuple(
+            method_name
+            for method_name in self.extracted_method_names
+            if method_name not in methods_by_name
+        )
+        if missing_names:
+            raise ValueError(f"Source class does not define methods {missing_names!r}")
+        return tuple(
+            methods_by_name[method_name] for method_name in self.extracted_method_names
+        )
+
+    def destination_class_insertion(
+        self,
+        target_digest: AstTargetDigest,
+        node: ast.ClassDef,
+        source_by_path: Mapping[str, str],
+    ) -> SourceLineReplacement:
+        source = source_by_path[target_digest.file_path]
+        method_nodes = self.selected_method_nodes(node)
+        return SourceLineReplacement(
+            file_path=target_digest.file_path,
+            start_line=target_digest.line,
+            end_line=target_digest.line - 1,
+            replacement_lines=SourceTargetEditor.source_lines(
+                f"{self.destination_class_source(source, method_nodes)}\n"
+            ),
+            rationale=self.rationale
+            or (
+                f"Extract methods {self.extracted_method_names!r} from "
+                f"{target_digest.qualname!r} into {self.destination_class_name!r}."
+            ),
+        )
+
+    def destination_class_source(
+        self,
+        source: str,
+        method_nodes: ExtractableMethodNodes,
+    ) -> str:
+        sections: list[tuple[str, ...]] = []
+        field_lines = self.indented_source_lines(self.field_declaration_sources)
+        if field_lines:
+            sections.append(field_lines)
+        sections.extend(
+            self.indented_method_source_lines(source, node) for node in method_nodes
+        )
+        body_lines: list[str] = []
+        for index, section in enumerate(sections):
+            if index:
+                body_lines.append("\n")
+            body_lines.extend(section)
+        return "".join(
+            (
+                *self.decorator_lines,
+                self.class_header_line,
+                *body_lines,
+            )
+        ).rstrip()
+
+    @property
+    def decorator_lines(self) -> tuple[str, ...]:
+        return tuple(
+            line
+            for decorator_source in self.class_decorator_sources
+            for line in SourceTargetEditor.source_lines(decorator_source)
+        )
+
+    @property
+    def class_header_line(self) -> str:
+        base_suffix = (
+            f"({', '.join(self.class_base_names)})" if self.class_base_names else ""
+        )
+        return f"class {self.destination_class_name}{base_suffix}:\n"
+
+    @staticmethod
+    def indented_source_lines(source_blocks: Iterable[str]) -> tuple[str, ...]:
+        return tuple(
+            f"    {line}" if line.strip() else line
+            for source_block in source_blocks
+            for line in SourceTargetEditor.source_lines(source_block)
+        )
+
+    @staticmethod
+    def indented_method_source_lines(
+        source: str,
+        node: ExtractableMethodNode,
+    ) -> tuple[str, ...]:
+        source_block = SourceNodeSpan(
+            node,
+            SourceNodeDecoratorPolicy.INCLUDE,
+        ).line_span.source_from(source)
+        return SourceTargetEditor.source_lines(
+            textwrap.indent(textwrap.dedent(source_block).rstrip(), "    ")
+        )
+
+    def method_deletions(
+        self,
+        target_digest: AstTargetDigest,
+        method_nodes: ExtractableMethodNodes,
+        class_would_be_empty: bool,
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = []
+        for index, method_node in enumerate(method_nodes):
+            replacements.append(
+                SourceNodeSpan(
+                    method_node,
+                    SourceNodeDecoratorPolicy.INCLUDE,
+                ).line_span.line_replacement(
+                    file_path=target_digest.file_path,
+                    replacement_lines=self.replacement_lines_for_deleted_method(
+                        class_would_be_empty,
+                        index,
+                    ),
+                    rationale=self.rationale
+                    or (
+                        f"Delete extracted method {method_node.name!r} from "
+                        f"{target_digest.qualname!r}."
+                    ),
+                )
+            )
+        return tuple(replacements)
+
+    @staticmethod
+    def replacement_lines_for_deleted_method(
+        class_would_be_empty: bool,
+        deletion_index: int,
+    ) -> tuple[str, ...]:
+        if class_would_be_empty and deletion_index == 0:
+            return ("    pass\n",)
+        return ()
 
 
 _ENUM_BASE_NAMES = frozenset(("Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"))
@@ -5270,7 +5600,10 @@ class SemanticCarrierSourceAuthority:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CollapseFieldsToCarrierOperation(RefactorRecipeOperation):
+class CollapseFieldsToCarrierOperation(
+    FieldDeclarationSourcesPayloadMixin,
+    RefactorRecipeOperation,
+):
     """Collapse duplicated class fields into a generated nominal carrier."""
 
     carrier_name: str
@@ -5301,7 +5634,7 @@ class CollapseFieldsToCarrierOperation(RefactorRecipeOperation):
                 (
                     FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
                     FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
-                    CollapseFieldsToCarrierOperation.field_declaration_sources_from_operation,
+                    FieldDeclarationSourcesPayloadMixin.field_declaration_sources_from_operation,
                     OperationPayloadReader.required_string_tuple,
                 ),
                 (
@@ -5342,16 +5675,6 @@ class CollapseFieldsToCarrierOperation(RefactorRecipeOperation):
         if not isinstance(operation, CollapseFieldsToCarrierOperation):
             raise TypeError("class_names binding requires field carrier collapse")
         return operation.class_names
-
-    @staticmethod
-    def field_declaration_sources_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, CollapseFieldsToCarrierOperation):
-            raise TypeError(
-                "field_declaration_sources binding requires field carrier collapse"
-            )
-        return operation.field_declaration_sources
 
     @staticmethod
     def carrier_base_names_from_operation(
@@ -10338,6 +10661,25 @@ class SourceLineSpan:
     start_line: int
     end_line: int
 
+    def source_from(self, source: str) -> str:
+        source_lines = source.splitlines(keepends=True)
+        return "".join(source_lines[self.start_line - 1 : self.end_line])
+
+    def line_replacement(
+        self,
+        *,
+        file_path: str,
+        replacement_lines: tuple[str, ...] = (),
+        rationale: str = "",
+    ) -> SourceLineReplacement:
+        return SourceLineReplacement(
+            file_path=file_path,
+            start_line=self.start_line,
+            end_line=self.end_line,
+            replacement_lines=replacement_lines,
+            rationale=rationale,
+        )
+
     def expanded_for_surrounding_fmt_block(self, source: str) -> "SourceLineSpan":
         lines = source.splitlines()
         if (
@@ -10993,6 +11335,32 @@ class RefactorRecipe:
             ),
             authority_source=authority_source,
             call_replacements=tuple(call_replacements),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def extract_methods_to_class(
+        self,
+        source_class_qualname: str,
+        destination_class_name: str,
+        method_names: Iterable[str],
+        *,
+        source_path: str | None = None,
+        field_declaration_sources: Iterable[str] = (),
+        class_base_names: Iterable[str] = (),
+        class_decorator_sources: Iterable[str] = (),
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ExtractMethodsToClassOperation(
+            target=SourceRewriteTarget(
+                qualname=source_class_qualname,
+                source_path=source_path,
+            ),
+            destination_class_name=destination_class_name,
+            extracted_method_names=tuple(method_names),
+            field_declaration_sources=tuple(field_declaration_sources),
+            class_base_names=tuple(class_base_names),
+            class_decorator_sources=tuple(class_decorator_sources),
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
