@@ -935,6 +935,57 @@ def build_refactor_execution_plan(
     )
 
 
+def build_refactor_execution_plan_from_groups(
+    finding_groups: Sequence[Sequence[RefactorFinding]],
+    root: Path,
+) -> RefactorExecutionPlanReport:
+    """Build execution classes from caller-supplied semantic finding groups."""
+
+    clusters = tuple(
+        _FindingCluster(
+            subsystem=_subsystem_name(finding_tuple, root),
+            findings=finding_tuple,
+            evidence=_FINDING_PROJECTION.combined_evidence(finding_tuple),
+        )
+        for group in finding_groups
+        for finding_tuple in (sorted_tuple(group, key=lambda finding: finding.stable_id),)
+        if finding_tuple
+    )
+    finding_tuple = tuple(finding for cluster in clusters for finding in cluster.findings)
+    if not finding_tuple:
+        return RefactorExecutionPlanReport(
+            classes=(),
+            edges=(),
+            total_finding_count=0,
+            connected_component_count=0,
+            parallel_group_count=0,
+        )
+    edges = _execution_graph_edges(finding_tuple, root)
+    class_inputs = [
+        _execution_class_input(cluster, root, edges) for cluster in clusters
+    ]
+    ordered_inputs = sorted(
+        class_inputs,
+        key=lambda row: (
+            -row.batch_priority,
+            row.subsystem,
+            row.finding_ids,
+        ),
+    )
+    parallel_groups = _assign_parallel_groups(ordered_inputs)
+    execution_classes = tuple(
+        _execution_class_from_input(row, parallel_group=parallel_groups[index])
+        for index, row in enumerate(ordered_inputs)
+    )
+    return RefactorExecutionPlanReport(
+        classes=execution_classes,
+        edges=edges,
+        total_finding_count=len(finding_tuple),
+        connected_component_count=len(execution_classes),
+        parallel_group_count=len(set(parallel_groups)) if parallel_groups else 0,
+    )
+
+
 def _cluster_findings(
     findings: list[RefactorFinding], root: Path
 ) -> list[_FindingCluster]:

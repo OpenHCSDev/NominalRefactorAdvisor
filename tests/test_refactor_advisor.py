@@ -16347,6 +16347,108 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
 
 
+def test_codemod_class_plan_groups_semantic_findings_by_authority(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "pkg/first.py"
+    second_path = tmp_path / "pkg/second.py"
+    _write_module(
+        tmp_path,
+        "pkg/first.py",
+        (
+            "class FirstAxisConsumer:\n"
+            "    role_cases = {'applied': 1, 'diff': 2}\n"
+        ),
+    )
+    _write_module(
+        tmp_path,
+        "pkg/second.py",
+        (
+            "class SecondAxisConsumer:\n"
+            "    role_cases = {'applied': 3, 'diff': 4}\n"
+        ),
+    )
+    first = RefactorFinding(
+        detector_id="generic_role_case_table",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Concrete role-case tables should move behind one generic axis authority",
+        summary="first consumer mirrors role cases",
+        why="case literals repeat a semantic fact family",
+        capability_gap="one generic case-table authority owned by the broader semantic axis",
+        relation_context=(
+            "case-table literals are algebraically confusable under the same "
+            "broad owner/context token axes"
+        ),
+        evidence=(
+            SourceLocation(
+                first_path.as_posix(),
+                2,
+                "FirstAxisConsumer.role_cases",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="generic_role_case_table",
+            source_name="AxisRoleAuthority",
+            field_names=("applied", "diff"),
+        ),
+    )
+    second = RefactorFinding(
+        detector_id=first.detector_id,
+        pattern_id=first.pattern_id,
+        title=first.title,
+        summary="second consumer mirrors role cases",
+        why=first.why,
+        capability_gap=first.capability_gap,
+        relation_context=first.relation_context,
+        evidence=(
+            SourceLocation(
+                second_path.as_posix(),
+                2,
+                "SecondAxisConsumer.role_cases",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="generic_role_case_table",
+            source_name="AxisRoleAuthority",
+            field_names=("applied", "diff"),
+        ),
+    )
+    unrelated = RefactorFinding(
+        detector_id="unrelated_cleanup_detector",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Unrelated cleanup finding",
+        summary="not part of the semantic role-case class",
+        why="unrelated evidence should not leak into detector-scoped class plans",
+        capability_gap="separate cleanup",
+        relation_context="ordinary cleanup finding",
+        evidence=(
+            SourceLocation(
+                first_path.as_posix(),
+                1,
+                "FirstAxisConsumer",
+            ),
+        ),
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (first, second, unrelated))
+
+    report = codemod_class_plan_from_findings(
+        (first, second, unrelated),
+        root=tmp_path,
+        selector_context=snapshot,
+        detector_ids=("generic_role_case_table",),
+    )
+    payload = report.to_dict()
+    class_payload = payload["classes"][0]
+
+    assert payload["class_count"] == 1
+    assert class_payload["finding_count"] == 2
+    assert set(class_payload["finding_ids"]) == {first.stable_id, second.stable_id}
+    assert unrelated.stable_id not in class_payload["finding_ids"]
+
+
 def test_module_cli_synthesizes_class_plan_with_scaffolds(
     tmp_path: Path,
 ) -> None:

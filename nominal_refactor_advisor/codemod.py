@@ -72,6 +72,7 @@ from .planner import (
     RefactorExecutionClass,
     RefactorExecutionPlanReport,
     build_refactor_execution_plan,
+    build_refactor_execution_plan_from_groups,
 )
 from .product_record_schema import (
     ProductRecordDeclaredNameExtractor,
@@ -83,6 +84,10 @@ from .registry_identity import (
     class_name_registry_key,
 )
 from .semantic_algebra import DispatchAxisExpression
+from .semantic_descent import (
+    build_finding_backed_semantic_descent_graph,
+    semantic_descent_finding_projection_id,
+)
 from .semantic_match import Maybe, single_item
 from .source_index import (
     AstTargetDigest,
@@ -14697,12 +14702,17 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         detector_ids: Iterable[str] = (),
     ) -> "FindingRecipeClassPlanReport":
         finding_tuple = tuple(findings)
+        detector_id_set = frozenset(detector_ids)
+        planning_findings = tuple(
+            finding
+            for finding in finding_tuple
+            if not detector_id_set or finding.detector_id in detector_id_set
+        )
         finding_plan = codemod_plan_from_findings(
-            finding_tuple,
-            detector_ids=detector_ids,
+            planning_findings,
             selector_context=context,
         )
-        execution_plan = build_refactor_execution_plan(list(finding_tuple), root)
+        execution_plan = cls.execution_plan_for_findings(planning_findings, root)
         return cls(
             execution_plan=execution_plan,
             finding_plan=finding_plan,
@@ -14714,6 +14724,84 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
                 )
                 for execution_class in execution_plan.classes
             ),
+        )
+
+    @classmethod
+    def execution_plan_for_findings(
+        cls,
+        findings: tuple[RefactorFinding, ...],
+        root: Path,
+    ) -> RefactorExecutionPlanReport:
+        semantic_groups = cls.semantic_descent_finding_groups(findings, root)
+        if semantic_groups is None:
+            return build_refactor_execution_plan(list(findings), root)
+        return build_refactor_execution_plan_from_groups(semantic_groups, root)
+
+    @staticmethod
+    def semantic_descent_finding_groups(
+        findings: tuple[RefactorFinding, ...],
+        root: Path,
+    ) -> tuple[tuple[RefactorFinding, ...], ...] | None:
+        from .detectors import IssueDetector
+
+        semantic_detector_ids = IssueDetector.semantic_mirror_detector_ids()
+        semantic_findings = tuple(
+            finding
+            for finding in findings
+            if finding.detector_id in semantic_detector_ids
+        )
+        if not semantic_findings:
+            return None
+        ordinary_findings = tuple(
+            finding
+            for finding in findings
+            if finding.detector_id not in semantic_detector_ids
+        )
+        graph = build_finding_backed_semantic_descent_graph(
+            semantic_findings,
+            semantic_mirror_detector_ids=semantic_detector_ids,
+            authority_evidence_index_by_detector_id=(
+                IssueDetector.semantic_mirror_authority_evidence_indices()
+            ),
+        )
+        certificates_by_projection_id = {
+            certificate.edge.projection_id: certificate
+            for certificate in graph.certificates
+        }
+        grouped: dict[tuple[str, str], list[RefactorFinding]] = defaultdict(list)
+        for finding in semantic_findings:
+            projection_id = semantic_descent_finding_projection_id(finding)
+            certificate = certificates_by_projection_id.get(projection_id)
+            if certificate is None:
+                group_key = (finding.title, finding.relation_context)
+            else:
+                group_key = (
+                    graph.authority_catalog.authority_for_edge(certificate.edge).name,
+                    certificate.missing_derivation_path,
+                )
+            grouped[group_key].append(finding)
+        ordinary_groups = FindingRecipeClassPlanReport.ordinary_finding_groups(
+            ordinary_findings,
+            root,
+        )
+        semantic_groups = tuple(
+            tuple(group_findings)
+            for _group_key, group_findings in sorted(grouped.items())
+        )
+        return (*semantic_groups, *ordinary_groups)
+
+    @staticmethod
+    def ordinary_finding_groups(
+        findings: tuple[RefactorFinding, ...],
+        root: Path,
+    ) -> tuple[tuple[RefactorFinding, ...], ...]:
+        if not findings:
+            return ()
+        findings_by_id = {finding.stable_id: finding for finding in findings}
+        execution_plan = build_refactor_execution_plan(list(findings), root)
+        return tuple(
+            tuple(findings_by_id[finding_id] for finding_id in execution_class.finding_ids)
+            for execution_class in execution_plan.classes
         )
 
     def to_dict(self) -> JsonObject:
