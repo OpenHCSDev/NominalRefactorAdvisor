@@ -351,10 +351,14 @@ UNKNOWN_CONFIDENCE_BASIS = "unknown"
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceRewriteDelta:
+class ReplacementSource:
+    replacement_source: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceRewriteDelta(ReplacementSource):
     """Replacement source and operation shared by planned and simulated rewrites."""
 
-    replacement_source: str
     operation: RewriteOperation = RewriteOperation.REPLACE_TARGET
     rationale: str = ""
 
@@ -3583,17 +3587,13 @@ class SourceRewritePlanItem:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceRewritePlanRow(SourceRewritePlanItem):
+class SourceRewritePlanRow(ReplacementSource, SourceRewritePlanItem):
     """Validated source rewrite row shared by recipe and boundary parsing."""
-
-    replacement_source: str
 
 
 @dataclass(frozen=True, kw_only=True)
-class AuthorityBoundaryRewrite(SourceRewritePlanItem):
+class AuthorityBoundaryRewrite(ReplacementSource, SourceRewritePlanItem):
     """Caller-supplied rewrite for one source-index target."""
-
-    replacement_source: str
 
     def to_dict(self) -> JsonObject:
         return {
@@ -3640,10 +3640,8 @@ class AuthorityBoundaryPlan:
 
 
 @dataclass(frozen=True, kw_only=True)
-class RefactorRecipeRewrite(SourceRewritePlanItem):
+class RefactorRecipeRewrite(ReplacementSource, SourceRewritePlanItem):
     """One recipe step that replaces a source-index target."""
-
-    replacement_source: str
 
     def planned_rewrite(self, source_index: SourceIndex) -> PlannedSourceRewrite:
         target_identifier = self.target.required_identifier(source_index)
@@ -3687,12 +3685,11 @@ class SourceLineReplacement:
 
 
 @dataclass(frozen=True)
-class SourceOffsetReplacement:
+class SourceOffsetReplacement(ReplacementSource):
     """Replacement of one character-offset span inside a source string."""
 
     start_offset: int
     end_offset: int
-    replacement_source: str
 
     @classmethod
     def from_offsets(
@@ -15235,11 +15232,10 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
 
 
 @dataclass(frozen=True)
-class IdentityKeywordForwardingCallRewrite:
+class IdentityKeywordForwardingCallRewrite(ReplacementSource):
     """One same-name forwarding shell call site rewritten to the callee authority."""
 
     target: AstTargetDigest
-    replacement_source: str
 
 
 @dataclass(frozen=True)

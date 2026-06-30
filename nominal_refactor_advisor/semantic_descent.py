@@ -720,6 +720,21 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
+            candidate.match.fact_count <= 2
+            and not context.projection_semantics.has_authority_affinity(
+                candidate.projection,
+                candidate.authority,
+            )
+            and not context.projection_semantics.has_qualified_authority_reference(
+                candidate.projection,
+                candidate.authority,
+            )
+            and context.fact_specificity.matched_facts_are_reused_roles(
+                candidate.matched_facts
+            )
+        ):
+            return False
+        if (
             candidate.match.coverage_ratio < 1.0
             and candidate.match.fact_count <= 2
             and not context.projection_semantics.has_authority_affinity(
@@ -835,6 +850,7 @@ class _FactTokenReference(SemanticFactReference):
 
 FactsByAuthorityId: TypeAlias = dict[str, tuple[SemanticFact, ...]]
 AuthorityIdsByName: TypeAlias = dict[str, tuple[str, ...]]
+AuthorityIdsByFactName: TypeAlias = dict[tuple[SemanticFactKind, str], frozenset[str]]
 FactRefsByToken: TypeAlias = dict[str, tuple[_FactTokenReference, ...]]
 FactMatchesByAuthority: TypeAlias = dict[str, dict[str, set[str]]]
 ConstructionAuthorityCacheKey: TypeAlias = tuple[str, str]
@@ -872,6 +888,39 @@ class SemanticFactAuthorityIndex:
 
     def facts_for_edge(self, edge: MirrorEdge) -> tuple[SemanticFact, ...]:
         return tuple(self.fact(fact_ref.fact_id) for fact_ref in edge.match.fact_refs)
+
+
+@dataclass(frozen=True)
+class SemanticFactSpecificityIndex:
+    """Score whether matched facts identify a specific authority or generic roles."""
+
+    facts: tuple[SemanticFact, ...]
+
+    @cached_property
+    def authority_ids_by_fact_name(self) -> AuthorityIdsByFactName:
+        authority_ids: dict[tuple[SemanticFactKind, str], set[str]] = {}
+        for fact in self.facts:
+            authority_ids.setdefault((fact.kind, fact.name), set()).add(
+                fact.authority_id
+            )
+        return {
+            key: frozenset(value)
+            for key, value in sorted(
+                authority_ids.items(),
+                key=lambda item: (item[0][0].value, item[0][1]),
+            )
+        }
+
+    def fact_is_reused_role(self, fact: SemanticFact) -> bool:
+        return len(self.authority_ids_by_fact_name[(fact.kind, fact.name)]) > 1
+
+    def matched_facts_are_reused_roles(
+        self,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> bool:
+        return bool(matched_facts) and all(
+            self.fact_is_reused_role(fact) for fact in matched_facts
+        )
 
 
 @dataclass(frozen=True)
@@ -1084,6 +1133,10 @@ class SemanticDescentGraphSpace:
     @cached_property
     def fact_token_index(self) -> SemanticFactTokenIndex:
         return SemanticFactTokenIndex(self.facts)
+
+    @cached_property
+    def fact_specificity_index(self) -> SemanticFactSpecificityIndex:
+        return SemanticFactSpecificityIndex(self.facts)
 
     @cached_property
     def facts_by_authority_id(self) -> FactsByAuthorityId:
@@ -2740,6 +2793,7 @@ class SemanticMirrorResolutionContext:
 
     projection_semantics: ProjectionSemanticAuthority
     dataclass_descent: DataclassProjectionDescentAuthority
+    fact_specificity: SemanticFactSpecificityIndex
 
 
 @dataclass(frozen=True)
@@ -2780,6 +2834,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         return SemanticMirrorResolutionContext(
             projection_semantics=self.projection_semantics,
             dataclass_descent=self.dataclass_descent,
+            fact_specificity=self.fact_specificity_index,
         )
 
     def edges(self) -> tuple[MirrorEdge, ...]:

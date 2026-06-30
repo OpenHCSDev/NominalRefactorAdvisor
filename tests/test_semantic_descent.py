@@ -3430,6 +3430,48 @@ def test_semantic_descent_ignores_partial_schema_overlap_for_owned_payload(
     )
 
 
+def test_semantic_descent_ignores_low_specificity_full_schema_overlap(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RewriteDelta:\n"
+        "    operation: str\n"
+        "    rationale: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class OperationManifest:\n"
+        "    operation: str\n"
+        "    description: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class PlanItem:\n"
+        "    target: str\n"
+        "    rationale: str\n"
+        "\n"
+        "class ManifestRenderer:\n"
+        "    def example_payload(self):\n"
+        "        payload = {\n"
+        "            'operation': self.operation,\n"
+        "            'rationale': 'explain the edit',\n"
+        "        }\n"
+        "        return payload\n",
+    )
+
+    graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+
+    rewrite_delta_authority = next(
+        authority for authority in graph.authorities if authority.name == "RewriteDelta"
+    )
+    assert not any(
+        certificate.edge.authority_id == rewrite_delta_authority.authority_id
+        for certificate in graph.certificates
+    )
+
+
 def test_semantic_descent_ignores_prose_payload_literals(
     tmp_path: Path,
 ) -> None:
