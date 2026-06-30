@@ -187,6 +187,13 @@ class PresentationProjectionKind(StrEnum):
     BRANCH_LITERAL = "branch_literal"
     MATCH_LITERAL = "match_literal"
 
+    @property
+    def is_branch_like(self) -> bool:
+        return self in (
+            type(self).BRANCH_LITERAL,
+            type(self).MATCH_LITERAL,
+        )
+
 
 class PresentationTokenKind(StrEnum):
     """Source syntax category for one normalized presentation token."""
@@ -384,6 +391,24 @@ class PresentationAuthorityConstruction:
     field_tokens: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ProjectionOwnerSymbol:
+    """Nominal projection-owner symbol, including module-level ownership."""
+
+    module_owner_value: ClassVar[str] = "<module>"
+    value: str
+
+    @property
+    def module_level(self) -> bool:
+        return self.value == self.module_owner_value
+
+    @property
+    def qualname_parts(self) -> tuple[str, ...]:
+        if self.module_level:
+            return ()
+        return tuple(self.value.split("."))
+
+
 ConstructionAuthorityPredicate: TypeAlias = Callable[
     [PresentationAuthorityConstruction, SemanticAuthority],
     bool,
@@ -445,6 +470,10 @@ class PresentationProjection(SemanticProjectionReference):
     @cached_property
     def normalized_tokens(self) -> tuple[str, ...]:
         return sorted_tuple({token.value for token in self.tokens})
+
+    @cached_property
+    def owner(self) -> ProjectionOwnerSymbol:
+        return ProjectionOwnerSymbol(self.owner_symbol)
 
 
 class ProjectionSuppressionIntent(StrEnum):
@@ -541,10 +570,7 @@ class SemanticMirrorEdgeCandidate:
 
     @cached_property
     def branch_like_projection(self) -> bool:
-        return self.projection.kind in (
-            PresentationProjectionKind.BRANCH_LITERAL,
-            PresentationProjectionKind.MATCH_LITERAL,
-        )
+        return self.projection.kind.is_branch_like
 
     @cached_property
     def authority_affinity(self) -> SemanticAuthorityAffinityPolicy:
@@ -2688,9 +2714,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         self,
         projection: PresentationProjection,
     ) -> str | None:
-        if projection.owner_symbol == "<module>":
-            return None
-        parts = projection.owner_symbol.split(".")
+        parts = projection.owner.qualname_parts
         for end_index in range(len(parts), 0, -1):
             owner_qualname = ".".join(parts[:end_index])
             symbol = self.class_index.symbol_for(
