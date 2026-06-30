@@ -18145,6 +18145,67 @@ def test_semantic_gate_ranks_larger_boundary_groups_before_label_order() -> None
     assert work_queue[1]["label"] == "A small authority branch"
 
 
+def test_semantic_gate_ranks_certificate_breadth_before_raw_group_size() -> None:
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Authority boundary",
+        "source of truth drift must be collapsed",
+        "single authority boundary",
+        "same fact family has multiple writable surfaces",
+    )
+    narrow_one = spec.build(
+        "repeated_builder_calls",
+        "narrow branch one",
+        (SourceLocation("module.py", 10, "NarrowAuthority.alpha"),),
+        title="A narrow raw-count group",
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="NarrowProjectionOne",
+            source_name="NarrowAuthority",
+            field_names=("alpha",),
+        ),
+    )
+    narrow_two = spec.build(
+        "repeated_builder_calls",
+        "narrow branch two",
+        (SourceLocation("module.py", 20, "NarrowAuthority.beta"),),
+        title="A narrow raw-count group",
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="NarrowProjectionTwo",
+            source_name="NarrowAuthority",
+            field_names=("beta",),
+        ),
+    )
+    broad = spec.build(
+        "repeated_builder_calls",
+        "broad semantic certificate",
+        (SourceLocation("module.py", 30, "BroadAuthority.mapping"),),
+        title="Z broad semantic certificate",
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="BroadProjection",
+            source_name="BroadAuthority",
+            field_names=("alpha", "beta", "gamma", "delta", "epsilon"),
+        ),
+    )
+
+    payload = JsonPayloadBuilder(
+        findings=[narrow_one, narrow_two, broad],
+        plans=[],
+        modules=[],
+        payload_sections=JsonPayloadProfile.agent.sections,
+    ).to_dict()
+    work_queue = cast(list[dict[str, object]], payload["findings"])
+
+    assert work_queue[0]["label"] == "Z broad semantic certificate"
+    assert work_queue[0]["matched_fact_count"] == 5
+    assert work_queue[0]["predicted_removed_finding_count"] == 1
+    assert work_queue[1]["label"] == "A narrow raw-count group (2 authority candidates)"
+    assert work_queue[1]["matched_fact_count"] == 2
+    assert work_queue[1]["predicted_removed_finding_count"] == 2
+
+
 def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -18192,6 +18253,10 @@ def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     assert work_queue[0]["authority_candidate"] == "Handler"
     assert work_queue[0]["detector_ids"] == ("semantic_mirror_without_descent",)
     assert work_queue[0]["finding_ids"] == (critical.stable_id,)
+    assert work_queue[0]["certificate_count"] == 1
+    assert work_queue[0]["matched_fact_count"] == 2
+    assert work_queue[0]["authority_kinds"] == ("finding_declared_authority",)
+    assert work_queue[0]["projection_kinds"] == ("detector_finding",)
     assert gate_queue[0] == work_queue[0]
     assert raw_payload["supporting_raw_findings"][0]["stable_id"] == critical.stable_id
 

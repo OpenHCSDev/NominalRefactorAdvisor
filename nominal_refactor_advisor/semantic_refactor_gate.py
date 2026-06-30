@@ -86,8 +86,8 @@ def cleanup_followup_findings(
 class SemanticRefactorGateMode(SemanticRecord):
     """Advisor run mode policy for authority-boundary-first scans."""
 
-    include_impact_ranking: bool
-    semantic_refactor_gate: bool
+    load_bearing_ranking_enabled: bool
+    semantic_gate_report_enabled: bool
     raw_findings: bool
 
     @classmethod
@@ -99,15 +99,15 @@ class SemanticRefactorGateMode(SemanticRecord):
         raw_findings: bool,
     ) -> "SemanticRefactorGateMode":
         return cls(
-            include_impact_ranking=include_impact_ranking,
-            semantic_refactor_gate=semantic_refactor_gate,
+            load_bearing_ranking_enabled=include_impact_ranking,
+            semantic_gate_report_enabled=semantic_refactor_gate,
             raw_findings=raw_findings,
         )
 
     def require_authority_boundary_mode(self) -> None:
-        if self.include_impact_ranking:
+        if self.load_bearing_ranking_enabled:
             return
-        if self.semantic_refactor_gate:
+        if self.semantic_gate_report_enabled:
             return
         if self.raw_findings:
             return
@@ -153,11 +153,86 @@ class SemanticRefactorGateTrajectory(SemanticRecord):
 
 
 @dataclass(frozen=True)
+class DescentCertificateFindingAuthority:
+    """Authority for selecting finding-backed descent certificates."""
+
+    graph: SemanticDescentGraph
+
+    def certificate_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> DescentCertificate | None:
+        certificates = self.certificates_for_findings((finding,))
+        if certificates:
+            return certificates[0]
+        return None
+
+    def certificates_for_findings(
+        self,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[DescentCertificate, ...]:
+        projection_ids = frozenset(
+            semantic_descent_finding_projection_id(finding) for finding in findings
+        )
+        return tuple(
+            certificate
+            for certificate in self.graph.certificates
+            if certificate.edge.projection_id in projection_ids
+        )
+
+    def authority_candidate_for_finding(self, finding: RefactorFinding) -> str:
+        certificate = self.certificate_for_finding(finding)
+        if certificate is not None:
+            return self.graph.authority_by_id[certificate.edge.authority_id].name
+        if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
+            return finding.title
+        if finding.evidence:
+            return finding.evidence[0].symbol
+        return finding.title
+
+    def missing_derivation_path_for_finding(self, finding: RefactorFinding) -> str:
+        certificate = self.certificate_for_finding(finding)
+        if certificate is not None:
+            return certificate.missing_derivation_path
+        if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
+            return finding.relation_context
+        return SemanticRefactorGateWorkItem.missing_derivation_path_for_detectors(
+            (finding.detector_id,)
+        )
+
+    def matched_fact_count(
+        self,
+        certificates: tuple[DescentCertificate, ...],
+    ) -> int:
+        return sum(
+            len(certificate.edge.matched_fact_ids) for certificate in certificates
+        )
+
+    def authority_kinds(
+        self,
+        certificates: tuple[DescentCertificate, ...],
+    ) -> tuple[str, ...]:
+        return _unique_strings(
+            self.graph.authority_by_id[certificate.edge.authority_id].kind.value
+            for certificate in certificates
+        )
+
+    def projection_kinds(
+        self,
+        certificates: tuple[DescentCertificate, ...],
+    ) -> tuple[str, ...]:
+        return _unique_strings(
+            self.graph.projection_by_id[certificate.edge.projection_id].kind.value
+            for certificate in certificates
+        )
+
+
+@dataclass(frozen=True)
 class SemanticRefactorAuthorityTarget(SemanticRecord):
     """One load-bearing authority target exposed by the semantic refactor gate."""
 
     opportunity_kind: str
-    opportunity_label: str
+    authority_candidate: str
     priority_tier: str
     detector_ids: tuple[str, ...]
     actionability: str
@@ -174,7 +249,7 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
         applicability = candidate.applicability
         return cls(
             opportunity_kind=candidate.opportunity_key.kind,
-            opportunity_label=candidate.opportunity_key.label,
+            authority_candidate=candidate.opportunity_key.label,
             priority_tier=priority_tier_for_detector_ids(
                 candidate.opportunity.detector_ids
             ),
@@ -190,7 +265,7 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
         return (
             (
                 f"     {index}. {self.opportunity_kind} "
-                f"`{self.opportunity_label}` -> "
+                f"`{self.authority_candidate}` -> "
                 f"{self.predicted_removed_finding_count} finding(s), "
                 f"{self.target_count} target(s), "
                 f"{self.actionability}, priority {self.priority_tier}"
@@ -215,6 +290,10 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
     finding_ids: tuple[str, ...]
     target_count: int
     predicted_removed_finding_count: int
+    certificate_count: int
+    matched_fact_count: int
+    authority_kinds: tuple[str, ...]
+    projection_kinds: tuple[str, ...]
     agent_action: str
     evidence_symbols: tuple[str, ...]
 
@@ -226,9 +305,9 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         return cls(
             source="impact_candidate",
             priority_tier=target.priority_tier,
-            label=target.opportunity_label,
-            authority_candidate=target.opportunity_label,
-            authority_candidates=(target.opportunity_label,),
+            label=target.authority_candidate,
+            authority_candidate=target.authority_candidate,
+            authority_candidates=(target.authority_candidate,),
             missing_derivation_path=cls.missing_derivation_path_for_detectors(
                 target.detector_ids
             ),
@@ -237,6 +316,10 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             finding_ids=(),
             target_count=target.target_count,
             predicted_removed_finding_count=target.predicted_removed_finding_count,
+            certificate_count=0,
+            matched_fact_count=0,
+            authority_kinds=(),
+            projection_kinds=(),
             agent_action=target.agent_action,
             evidence_symbols=(),
         )
@@ -265,14 +348,18 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         finding_descent_graph: SemanticDescentGraph,
     ) -> "SemanticRefactorGateWorkItem":
         first_finding = findings[0]
+        certificate_authority = DescentCertificateFindingAuthority(
+            finding_descent_graph
+        )
         authority_candidates = _unique_strings(
-            _authority_candidate_for_finding(finding, finding_descent_graph)
+            certificate_authority.authority_candidate_for_finding(finding)
             for finding in findings
         )
         evidence_symbols = _unique_strings(
             location.symbol for finding in findings for location in finding.evidence
         )
         detector_ids = _unique_strings(finding.detector_id for finding in findings)
+        certificates = certificate_authority.certificates_for_findings(findings)
         label = first_finding.title
         if len(findings) > 1:
             label = f"{label} ({len(findings)} authority candidates)"
@@ -282,15 +369,18 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             label=label,
             authority_candidate=authority_candidates[0],
             authority_candidates=authority_candidates,
-            missing_derivation_path=_missing_derivation_path_for_finding(
-                first_finding,
-                finding_descent_graph,
+            missing_derivation_path=(
+                certificate_authority.missing_derivation_path_for_finding(first_finding)
             ),
             detector_ids=detector_ids,
             actionability="semantic_agent_refactor",
             finding_ids=tuple(finding.stable_id for finding in findings),
             target_count=max(1, len(evidence_symbols)),
             predicted_removed_finding_count=len(findings),
+            certificate_count=len(certificates),
+            matched_fact_count=certificate_authority.matched_fact_count(certificates),
+            authority_kinds=certificate_authority.authority_kinds(certificates),
+            projection_kinds=certificate_authority.projection_kinds(certificates),
             agent_action=(
                 "Design the nominal authority boundary named by this finding, "
                 "then derive the mirrored surface from that authority before "
@@ -300,10 +390,12 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         )
 
     @property
-    def priority_rank(self) -> tuple[int, int, int, int, str]:
+    def priority_rank(self) -> tuple[int, int, int, int, int, int, str]:
         return (
             int(not detector_ids_have_semantic_mirror_role(self.detector_ids)),
             int(not priority_tier_has_ssot_authority_role(self.priority_tier)),
+            -self.matched_fact_count,
+            -self.certificate_count,
             -self.predicted_removed_finding_count,
             -self.target_count,
             self.label,
@@ -581,6 +673,12 @@ class SemanticRefactorGateReport(SemanticRecord):
             )
             lines.append(f"        authority candidate: {item.authority_candidate}")
             lines.append(f"        missing descent: {item.missing_derivation_path}")
+            if item.certificate_count:
+                lines.append(
+                    "        descent certificates: "
+                    f"{item.certificate_count}, matched facts: "
+                    f"{item.matched_fact_count}"
+                )
         return tuple(lines)
 
     def _footer_lines(self) -> tuple[str, ...]:
@@ -599,45 +697,6 @@ class SemanticRefactorGateReport(SemanticRecord):
                 f"{raw_findings_instruction}"
             ),
         )
-
-
-def _authority_candidate_for_finding(
-    finding: RefactorFinding,
-    finding_descent_graph: SemanticDescentGraph,
-) -> str:
-    certificate = _descent_certificate_for_finding(finding, finding_descent_graph)
-    if certificate is not None:
-        return finding_descent_graph.authority_by_id[certificate.edge.authority_id].name
-    if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
-        return finding.title
-    if finding.evidence:
-        return finding.evidence[0].symbol
-    return finding.title
-
-
-def _descent_certificate_for_finding(
-    finding: RefactorFinding,
-    finding_descent_graph: SemanticDescentGraph,
-) -> DescentCertificate | None:
-    projection_id = semantic_descent_finding_projection_id(finding)
-    for certificate in finding_descent_graph.certificates:
-        if certificate.edge.projection_id == projection_id:
-            return certificate
-    return None
-
-
-def _missing_derivation_path_for_finding(
-    finding: RefactorFinding,
-    finding_descent_graph: SemanticDescentGraph,
-) -> str:
-    certificate = _descent_certificate_for_finding(finding, finding_descent_graph)
-    if certificate is not None:
-        return certificate.missing_derivation_path
-    if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
-        return finding.relation_context
-    return SemanticRefactorGateWorkItem.missing_derivation_path_for_detectors(
-        (finding.detector_id,)
-    )
 
 
 def _unique_strings(values: Iterable[str]) -> tuple[str, ...]:
