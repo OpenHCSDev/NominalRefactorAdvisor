@@ -967,6 +967,301 @@ def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
     assert simulation.is_clean is True
 
 
+def test_parallel_primitive_carrier_synthesis_collapses_exact_dataclass_fields(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLocationEvidenceProperty:\n"
+        "    file_attribute_name: str\n"
+        "    line_attribute_name: str\n"
+        "    symbol_attribute_name: str\n"
+        "    descriptor_only: bool\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLocationEvidencePropertyCandidate:\n"
+        "    file_attribute_name: str\n"
+        "    line_attribute_name: str\n"
+        "    symbol_attribute_name: str\n"
+        "    candidate_only: int\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        detector_id="parallel_primitive_carrier",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Parallel primitive fields should become a nominal carrier",
+        summary="primitive source location roles repeat across records",
+        why="parallel primitive fields mirror one source-location authority",
+        capability_gap="single nominal carrier for correlated primitive roles",
+        relation_context=(
+            "same primitive identity role bundle is repeated across record classes"
+        ),
+        evidence=(
+            SourceLocation(
+                module_path.as_posix(),
+                4,
+                "SourceLocationEvidenceProperty",
+            ),
+            SourceLocation(
+                module_path.as_posix(),
+                11,
+                "SourceLocationEvidencePropertyCandidate",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="parallel_primitive_carrier",
+            field_names=(
+                "file_attribute_name",
+                "line_attribute_name",
+                "symbol_attribute_name",
+            ),
+            identity_field_names=(
+                "file_attribute",
+                "line_attribute",
+                "symbol_attribute",
+            ),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "ParallelPrimitiveCarrierFindingRecipeSynthesizer"
+    )
+    assert operation["operation"] == "collapse_fields_to_carrier"
+    assert operation["carrier_name"] == "SourceLocationEvidencePropertyBase"
+    assert "class SourceLocationEvidencePropertyBase:" in rewritten
+    assert (
+        "class SourceLocationEvidenceProperty(SourceLocationEvidencePropertyBase):"
+        in rewritten
+    )
+    assert (
+        "class SourceLocationEvidencePropertyCandidate("
+        "SourceLocationEvidencePropertyBase):"
+    ) in rewritten
+    assert rewritten.count("file_attribute_name: str") == 1
+    assert rewritten.count("line_attribute_name: str") == 1
+    assert rewritten.count("symbol_attribute_name: str") == 1
+    assert simulation.is_clean is True
+
+
+def test_parallel_primitive_carrier_rejects_mismatched_field_defaults(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLocationEvidenceProperty:\n"
+        "    file_attribute_name: str = 'file_path'\n"
+        "    line_attribute_name: str = 'line'\n"
+        "    symbol_attribute_name: str = 'symbol'\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLocationEvidencePropertyCandidate:\n"
+        "    file_attribute_name: str\n"
+        "    line_attribute_name: str\n"
+        "    symbol_attribute_name: str\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        detector_id="parallel_primitive_carrier",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Parallel primitive fields should become a nominal carrier",
+        summary="primitive source location roles repeat across records",
+        why="parallel primitive fields mirror one source-location authority",
+        capability_gap="single nominal carrier for correlated primitive roles",
+        relation_context=(
+            "same primitive identity role bundle is repeated across record classes"
+        ),
+        evidence=(
+            SourceLocation(
+                module_path.as_posix(),
+                4,
+                "SourceLocationEvidenceProperty",
+            ),
+            SourceLocation(
+                module_path.as_posix(),
+                10,
+                "SourceLocationEvidencePropertyCandidate",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="parallel_primitive_carrier",
+            field_names=(
+                "file_attribute_name",
+                "line_attribute_name",
+                "symbol_attribute_name",
+            ),
+            identity_field_names=(
+                "file_attribute",
+                "line_attribute",
+                "symbol_attribute",
+            ),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert (
+        plan.records[0].reason
+        == "parallel primitive carrier collapse only supports exact matching "
+        "field declarations"
+    )
+    assert not plan.document.recipes
+
+
+def test_parallel_primitive_carrier_rejects_positional_constructors(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class AlphaAxisSource:\n"
+        "    family_name: str\n"
+        "    constructor_name: str\n"
+        "    extra_keyword_names: tuple[str, ...]\n"
+        "    alpha_only: int\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class AlphaAxisFamily:\n"
+        "    family_name: str\n"
+        "    constructor_name: str\n"
+        "    extra_keyword_names: tuple[str, ...]\n"
+        "    family_only: int\n"
+        "\n"
+        "def build_source():\n"
+        "    return AlphaAxisSource('Family', 'Ctor', (), 1)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        detector_id="parallel_primitive_carrier",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Parallel primitive fields should become a nominal carrier",
+        summary="primitive axis roles repeat across records",
+        why="parallel primitive fields mirror one axis authority",
+        capability_gap="single nominal carrier for correlated primitive roles",
+        relation_context=(
+            "same primitive identity role bundle is repeated across record classes"
+        ),
+        evidence=(
+            SourceLocation(module_path.as_posix(), 4, "AlphaAxisSource"),
+            SourceLocation(module_path.as_posix(), 11, "AlphaAxisFamily"),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="parallel_primitive_carrier",
+            field_names=(
+                "family_name",
+                "constructor_name",
+                "extra_keyword_names",
+            ),
+            identity_field_names=(
+                "family",
+                "constructor",
+                "extra_keyword",
+            ),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert (
+        plan.records[0].reason
+        == "parallel primitive carrier collapse requires keyword-only constructor "
+        "call sites"
+    )
+    assert not plan.document.recipes
+
+
+def test_parallel_primitive_carrier_rejects_existing_partial_carrier_overlap(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SpecAxisEntry:\n"
+        "    constructor_name: str\n"
+        "    axis_pairs: tuple[str, ...]\n"
+        "    extra_keyword_names: tuple[str, ...]\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SpecAxisSource:\n"
+        "    family_name: str\n"
+        "    constructor_name: str\n"
+        "    extra_keyword_names: tuple[str, ...]\n"
+        "    source_only: int\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SpecAxisFamily:\n"
+        "    family_name: str\n"
+        "    constructor_name: str\n"
+        "    extra_keyword_names: tuple[str, ...]\n"
+        "    family_only: int\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        detector_id="parallel_primitive_carrier",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Parallel primitive fields should become a nominal carrier",
+        summary="primitive axis roles repeat across records",
+        why="parallel primitive fields mirror one axis authority",
+        capability_gap="single nominal carrier for correlated primitive roles",
+        relation_context=(
+            "same primitive identity role bundle is repeated across record classes"
+        ),
+        evidence=(
+            SourceLocation(module_path.as_posix(), 10, "SpecAxisSource"),
+            SourceLocation(module_path.as_posix(), 17, "SpecAxisFamily"),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="parallel_primitive_carrier",
+            field_names=(
+                "family_name",
+                "constructor_name",
+                "extra_keyword_names",
+            ),
+            identity_field_names=(
+                "family",
+                "constructor",
+                "extra_keyword",
+            ),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert (
+        plan.records[0].reason
+        == "parallel primitive carrier collapse would create a partial carrier "
+        "mirror of existing class SpecAxisEntry"
+    )
+    assert not plan.document.recipes
+
+
 def test_repeated_field_synthesis_preserves_prefix_and_suffix_in_carrier_name(
     tmp_path: Path,
 ) -> None:

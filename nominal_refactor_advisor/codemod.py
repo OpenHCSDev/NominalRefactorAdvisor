@@ -12614,7 +12614,19 @@ def _field_family_base_name_from_tokens(tokens: tuple[str, ...]) -> str:
     return f"{name}Base"
 
 
-class RepeatedFieldFamilyFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesizer):
+class SingleSourcePathFindingMixin:
+    @staticmethod
+    def source_path(finding: RefactorFinding) -> str | None:
+        file_paths = frozenset(evidence.file_path for evidence in finding.evidence)
+        if len(file_paths) != 1:
+            return None
+        return next(iter(file_paths))
+
+
+class RepeatedFieldFamilyFindingRecipeSynthesizer(
+    SingleSourcePathFindingMixin,
+    EvaluatedFindingRecipeSynthesizer,
+):
     """Build executable carrier-collapse recipes for dataclass field families."""
 
     detector_id = "repeated_field_family"
@@ -12808,12 +12820,451 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
             ),
         )
 
+
+@dataclass(frozen=True)
+class ParallelPrimitiveCarrierRecipeParts:
+    """Executable carrier-collapse facts for one exact primitive bundle."""
+
+    source_path: str
+    carrier_name: str
+    class_names: tuple[str, ...]
+    field_declarations: tuple[str, ...]
+    carrier_dataclass_arguments: tuple[str, ...]
+
+
+class ParallelPrimitiveCarrierRejection(Exception):
+    """Typed safety rejection for exact primitive-carrier extraction."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
+    SingleSourcePathFindingMixin, EvaluatedFindingRecipeSynthesizer
+):
+    """Collapse exact primitive role bundles into a nominal carrier."""
+
+    detector_id = "parallel_primitive_carrier"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
+        if rejection_reason:
+            return FindingRecipeEvaluation(rejection_reason=rejection_reason)
+        if parts is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "parallel primitive carrier collapse found no recipe parts"
+                )
+            )
+        return FindingRecipeEvaluation(
+            recipe=RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-collapse-primitive-carrier",
+                reason=(
+                    "Collapse exact repeated primitive role fields into a nominal "
+                    "carrier."
+                ),
+            ).collapse_fields_to_carrier(
+                parts.source_path,
+                carrier_name=parts.carrier_name,
+                class_names=parts.class_names,
+                field_declaration_sources=parts.field_declarations,
+                carrier_dataclass_arguments=parts.carrier_dataclass_arguments,
+            )
+        )
+
+    def recipe_parts_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> tuple[ParallelPrimitiveCarrierRecipeParts | None, str]:
+        try:
+            return self.required_recipe_parts(finding, context), ""
+        except ParallelPrimitiveCarrierRejection as rejection:
+            return None, rejection.reason
+
+    def required_recipe_parts(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> ParallelPrimitiveCarrierRecipeParts:
+        resolved_context = self.required_context(context)
+        metrics = self.required_metrics(finding)
+        source_path = self.required_source_path(finding)
+        class_names = self.required_class_names(finding)
+        targets = self.required_targets(
+            resolved_context,
+            source_path=source_path,
+            class_names=class_names,
+        )
+        carrier_dataclass_arguments = self.required_dataclass_arguments(targets)
+        field_declarations = self.required_field_declarations(
+            targets,
+            metrics.plan_field_names,
+        )
+        source = resolved_context.sources_by_file_path[source_path]
+        self.require_keyword_only_constructors(source, class_names)
+        self.require_no_partial_carrier_overlap(
+            resolved_context,
+            source_path=source_path,
+            class_names=class_names,
+            field_names=metrics.plan_field_names,
+        )
+        carrier_name = self.required_carrier_name(class_names)
+        self.require_available_carrier_name(
+            resolved_context,
+            source_path=source_path,
+            carrier_name=carrier_name,
+        )
+        return ParallelPrimitiveCarrierRecipeParts(
+            source_path=source_path,
+            carrier_name=carrier_name,
+            class_names=class_names,
+            field_declarations=field_declarations,
+            carrier_dataclass_arguments=carrier_dataclass_arguments,
+        )
+
     @staticmethod
-    def source_path(finding: RefactorFinding) -> str | None:
-        file_paths = frozenset(evidence.file_path for evidence in finding.evidence)
-        if len(file_paths) != 1:
+    def required_context(
+        context: CodemodSelectorContext | None,
+    ) -> CodemodSelectorContext:
+        if context is None:
+            raise ParallelPrimitiveCarrierRejection(
+                "parallel primitive carrier collapse requires a source selector context"
+            )
+        return context
+
+    @staticmethod
+    def required_metrics(finding: RefactorFinding) -> MappingMetrics:
+        if not isinstance(finding.metrics, MappingMetrics):
+            raise ParallelPrimitiveCarrierRejection(
+                "parallel primitive carrier collapse requires mapping metrics"
+            )
+        return finding.metrics
+
+    def required_source_path(self, finding: RefactorFinding) -> str:
+        source_path = self.source_path(finding)
+        if source_path is None:
+            raise ParallelPrimitiveCarrierRejection(
+                "parallel primitive carrier collapse requires one source file"
+            )
+        return source_path
+
+    def required_class_names(self, finding: RefactorFinding) -> tuple[str, ...]:
+        class_names = self.class_names(finding)
+        if len(class_names) < 2:
+            raise ParallelPrimitiveCarrierRejection(
+                "parallel primitive carrier collapse requires at least two class witnesses"
+            )
+        return class_names
+
+    @staticmethod
+    def required_targets(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        class_names: tuple[str, ...],
+    ) -> ClassMemberPromotionTargets:
+        targets = ClassMemberPromotionTargets.resolve_or_none(
+            context,
+            source_path=source_path,
+            class_names=class_names,
+        )
+        if targets is None:
+            raise ParallelPrimitiveCarrierRejection(
+                ClassMemberPromotionTargets.unresolved_class_target_reason(
+                    context,
+                    source_path=source_path,
+                    class_names=class_names,
+                ),
+            )
+        if not targets.supports_base_rewrites():
+            raise ParallelPrimitiveCarrierRejection(
+                (
+                    "parallel primitive carrier collapse target has unsupported "
+                    "class header"
+                ),
+            )
+        return targets
+
+    @staticmethod
+    def required_dataclass_arguments(
+        targets: ClassMemberPromotionTargets,
+    ) -> tuple[str, ...]:
+        carrier_dataclass_arguments = RepeatedFieldFamilyFindingRecipeSynthesizer.carrier_dataclass_arguments_or_none(
+            targets
+        )
+        if carrier_dataclass_arguments is None:
+            raise ParallelPrimitiveCarrierRejection(
+                (
+                    "parallel primitive carrier collapse requires matching "
+                    "dataclass decorator arguments"
+                ),
+            )
+        return carrier_dataclass_arguments
+
+    def required_field_declarations(
+        self,
+        targets: ClassMemberPromotionTargets,
+        field_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        field_declarations = self.field_declarations_or_none(
+            targets,
+            field_names,
+        )
+        if field_declarations is None:
+            raise ParallelPrimitiveCarrierRejection(
+                (
+                    "parallel primitive carrier collapse only supports exact "
+                    "matching field declarations"
+                ),
+            )
+        return field_declarations
+
+    def require_keyword_only_constructors(
+        self,
+        source: str,
+        class_names: tuple[str, ...],
+    ) -> None:
+        if not self.has_keyword_only_constructors(source, class_names):
+            raise ParallelPrimitiveCarrierRejection(
+                (
+                    "parallel primitive carrier collapse requires keyword-only "
+                    "constructor call sites"
+                ),
+            )
+
+    def require_no_partial_carrier_overlap(
+        self,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        class_names: tuple[str, ...],
+        field_names: tuple[str, ...],
+    ) -> None:
+        overlap_class = self.overlapping_non_target_class_name(
+            context,
+            source_path=source_path,
+            class_names=class_names,
+            field_names=field_names,
+        )
+        if overlap_class is not None:
+            raise ParallelPrimitiveCarrierRejection(
+                (
+                    "parallel primitive carrier collapse would create a partial "
+                    f"carrier mirror of existing class {overlap_class}"
+                ),
+            )
+
+    def required_carrier_name(self, class_names: tuple[str, ...]) -> str:
+        carrier_name = self.carrier_name_or_none(class_names)
+        if carrier_name is None:
+            raise ParallelPrimitiveCarrierRejection(
+                (
+                    "parallel primitive carrier collapse requires a shared "
+                    "class-name prefix or suffix"
+                ),
+            )
+        return carrier_name
+
+    @staticmethod
+    def require_available_carrier_name(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        carrier_name: str,
+    ) -> None:
+        if ClassMemberPromotionTargets.matching_class_targets(
+            context.source_index,
+            source_path=source_path,
+            class_name=carrier_name,
+        ):
+            raise ParallelPrimitiveCarrierRejection(
+                (
+                    "parallel primitive carrier collapse will not overwrite an "
+                    f"existing {carrier_name} class"
+                ),
+            )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        source_path = self.source_path(finding)
+        if source_path is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((source_path, class_name) for class_name in self.class_names(finding)),
+        )
+
+    @staticmethod
+    def class_names(finding: RefactorFinding) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                dispatch_evidence_subject(evidence.symbol)
+                for evidence in finding.evidence
+            )
+        )
+
+    @staticmethod
+    def carrier_name_or_none(class_names: tuple[str, ...]) -> str | None:
+        prefix_tokens = (
+            ParallelPrimitiveCarrierFindingRecipeSynthesizer.longest_common_raw_prefix(
+                class_names
+            )
+        )
+        suffix_tokens = (
+            ParallelPrimitiveCarrierFindingRecipeSynthesizer.longest_common_raw_suffix(
+                class_names
+            )
+        )
+        tokens = prefix_tokens or suffix_tokens
+        if not tokens:
             return None
-        return next(iter(file_paths))
+        return f"{CLASS_NAME_ALGEBRA.public_name_from_tokens(tokens)}Base"
+
+    @staticmethod
+    def raw_name_tokens(name: str) -> tuple[str, ...]:
+        return tuple(
+            token.lower()
+            for token in re.findall(
+                "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
+                name.lstrip("_"),
+            )
+        )
+
+    @classmethod
+    def longest_common_raw_prefix(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return cls.longest_common_raw_tokens(values, reverse=False)
+
+    @classmethod
+    def longest_common_raw_suffix(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return cls.longest_common_raw_tokens(values, reverse=True)
+
+    @classmethod
+    def longest_common_raw_tokens(
+        cls,
+        values: tuple[str, ...],
+        *,
+        reverse: bool,
+    ) -> tuple[str, ...]:
+        sequences = tuple(
+            (
+                tuple(reversed(cls.raw_name_tokens(value)))
+                if reverse
+                else cls.raw_name_tokens(value)
+            )
+            for value in values
+        )
+        if not sequences or not all(sequences):
+            return ()
+        shared_tokens: list[str] = []
+        for index, token in enumerate(sequences[0]):
+            if all(
+                index < len(sequence) and sequence[index] == token
+                for sequence in sequences
+            ):
+                shared_tokens.append(token)
+                continue
+            break
+        if reverse:
+            return tuple(reversed(shared_tokens))
+        return tuple(shared_tokens)
+
+    @classmethod
+    def field_declarations_or_none(
+        cls,
+        targets: ClassMemberPromotionTargets,
+        field_names: tuple[str, ...],
+    ) -> tuple[str, ...] | None:
+        declaration_maps = tuple(
+            cls.direct_declaration_map(
+                targets.source_for(class_target.file_path),
+                class_target.node,
+            )
+            for class_target in targets.targets
+        )
+        declarations = []
+        for field_name in field_names:
+            field_declarations = tuple(
+                declaration_map.get(field_name) for declaration_map in declaration_maps
+            )
+            if any(declaration is None for declaration in field_declarations):
+                return None
+            concrete_declarations = tuple(
+                declaration
+                for declaration in field_declarations
+                if declaration is not None
+            )
+            if len(set(concrete_declarations)) != 1:
+                return None
+            declarations.append(concrete_declarations[0])
+        return tuple(declarations)
+
+    @staticmethod
+    def has_keyword_only_constructors(
+        source: str,
+        class_names: tuple[str, ...],
+    ) -> bool:
+        class_name_set = frozenset(class_names)
+        module = ast.parse(source)
+        return not any(
+            isinstance(node, ast.Call)
+            and _call_name(node.func) in class_name_set
+            and bool(node.args)
+            for node in ast.walk(module)
+        )
+
+    @classmethod
+    def overlapping_non_target_class_name(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        class_names: tuple[str, ...],
+        field_names: tuple[str, ...],
+    ) -> str | None:
+        target_class_names = frozenset(class_names)
+        field_name_set = frozenset(field_names)
+        source = context.sources_by_file_path[source_path]
+        for target in context.source_index.ast_targets:
+            if not target.is_class:
+                continue
+            if target.file_path != source_path:
+                continue
+            if (
+                target.qualname in target_class_names
+                or target.name in target_class_names
+            ):
+                continue
+            node = context.ast_target_nodes_by_id.get(target.target_id)
+            if not isinstance(node, ast.ClassDef):
+                continue
+            overlap = field_name_set.intersection(
+                cls.direct_declaration_map(source, node)
+            )
+            if len(overlap) >= 2:
+                return target.qualname
+        return None
+
+    @staticmethod
+    def direct_declaration_map(source: str, node: ast.ClassDef) -> dict[str, str]:
+        declaration_by_name: dict[str, str] = {}
+        for statement in node.body:
+            if not isinstance(statement, ast.AnnAssign):
+                continue
+            if not isinstance(statement.target, ast.Name):
+                continue
+            source_segment = ast.get_source_segment(source, statement)
+            if source_segment is None:
+                return {}
+            declaration_by_name[statement.target.id] = source_segment.strip()
+        return declaration_by_name
 
 
 @dataclass(frozen=True)
@@ -14572,6 +15023,7 @@ class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
 
 
 class RepeatedMethodPromotionFindingRecipeSynthesizer(
+    SingleSourcePathFindingMixin,
     EvaluatedFindingRecipeSynthesizer,
     ABC,
 ):
@@ -14690,13 +15142,6 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
         if not class_names or not method_names:
             return None
         return class_names, method_names
-
-    @staticmethod
-    def source_path(finding: RefactorFinding) -> str | None:
-        file_paths = frozenset(evidence.file_path for evidence in finding.evidence)
-        if len(file_paths) != 1:
-            return None
-        return next(iter(file_paths))
 
     @staticmethod
     def methods_are_identical(
