@@ -4553,7 +4553,54 @@ class CodemodScanQueryCliCommand(
         return None
 
 
-class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
+class CodemodSynthesisExecutionCliCommand(CodemodScanQueryCliCommand, ABC):
+    """Shared execution surface for finding-backed synthesis commands."""
+
+    def with_optional_synthesis_authoring(
+        self,
+        payload: JsonObject,
+        plan: FindingRecipePlan,
+    ) -> JsonObject:
+        if not self.args.codemod_synthesis_authoring:
+            return payload
+        return plan.with_authoring_payload(payload)
+
+    @property
+    def synthesis_execution_requested(self) -> bool:
+        return (
+            self.args.codemod_preflight
+            or self.args.codemod_diff
+            or self.args.codemod_simulate
+            or self.args.codemod_apply
+        )
+
+    def write_authoring_bundle_if_requested(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        plan: FindingRecipePlan,
+    ) -> JsonObject | None:
+        output_dir = self.args.codemod_authoring_bundle_out
+        if output_dir is None:
+            return None
+        return CodemodAuthoringBundleWriter(
+            output_dir=output_dir,
+            snapshot=snapshot,
+            plan=plan,
+            roots=self.roots,
+            cwd=Path.cwd(),
+        ).write()
+
+    def apply_synthesized_plan(
+        self,
+        simulation: "FindingRecipePlanSimulation",
+    ) -> bool:
+        if not self.args.codemod_apply:
+            return False
+        simulation.document_simulation.apply()
+        return True
+
+
+class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
     """Emit finding-backed executable codemod recipes."""
 
     command_id = "codemod_synthesize_plan"
@@ -4640,24 +4687,6 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
         print(json.dumps(payload, indent=2))
         return 0
 
-    def with_optional_synthesis_authoring(
-        self,
-        payload: JsonObject,
-        plan: FindingRecipePlan,
-    ) -> JsonObject:
-        if not self.args.codemod_synthesis_authoring:
-            return payload
-        return plan.with_authoring_payload(payload)
-
-    @property
-    def synthesis_execution_requested(self) -> bool:
-        return (
-            self.args.codemod_preflight
-            or self.args.codemod_diff
-            or self.args.codemod_simulate
-            or self.args.codemod_apply
-        )
-
     def require_valid_document_only_mode(self) -> None:
         if not self.args.codemod_synthesize_document_only:
             return
@@ -4673,33 +4702,8 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
                 "--codemod-synthesize-document-only"
             )
 
-    def write_authoring_bundle_if_requested(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        plan: FindingRecipePlan,
-    ) -> JsonObject | None:
-        output_dir = self.args.codemod_authoring_bundle_out
-        if output_dir is None:
-            return None
-        return CodemodAuthoringBundleWriter(
-            output_dir=output_dir,
-            snapshot=snapshot,
-            plan=plan,
-            roots=self.roots,
-            cwd=Path.cwd(),
-        ).write()
 
-    def apply_synthesized_plan(
-        self,
-        simulation: "FindingRecipePlanSimulation",
-    ) -> bool:
-        if not self.args.codemod_apply:
-            return False
-        simulation.document_simulation.apply()
-        return True
-
-
-class CodemodSynthesizeClassPlanCliCommand(CodemodScanQueryCliCommand):
+class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
     """Emit graph-clustered finding-backed codemod plans with scaffolds."""
 
     command_id = "codemod_synthesize_class_plan"
@@ -4720,7 +4724,53 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodScanQueryCliCommand):
             self.args.codemod_plan_out,
             report.finding_plan.document.to_dict(),
         )
-        print(json.dumps(report.to_dict(), indent=2))
+        if self.args.codemod_preflight:
+            preflight = report.finding_plan.preflight_snapshot(snapshot)
+            payload = {
+                **report.to_dict(),
+                "preflight_report": preflight.preflight_report.to_dict(),
+                "is_clean": preflight.is_clean,
+            }
+            payload = self.with_optional_synthesis_authoring(
+                payload,
+                report.finding_plan,
+            )
+            print(json.dumps(payload, indent=2))
+            return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
+        if self.synthesis_execution_requested:
+            simulation = report.finding_plan.simulate_snapshot(snapshot)
+            unified_diff = snapshot.unified_diff(simulation.simulation)
+            applied = self.apply_synthesized_plan(simulation)
+            if self.args.codemod_diff and not self.args.json:
+                print(unified_diff, end="")
+                return CodemodSynthesisExitCodeAuthority(
+                    simulation.is_clean
+                ).exit_code()
+            payload = {
+                **report.to_dict(),
+                "simulation_result": simulation.to_dict(),
+                "applied": applied,
+                "unified_diff": unified_diff,
+            }
+            projected_findings = self.optional_projected_finding_report(
+                simulation.simulation,
+                enabled=self.args.codemod_project_findings,
+                expected_removed_finding_ids=(
+                    report.finding_plan.expected_removed_finding_ids
+                ),
+            )
+            if projected_findings is not None:
+                payload["projected_findings"] = projected_findings.to_dict()
+                self.write_continuation_plan_if_requested(projected_findings)
+            payload = self.with_optional_synthesis_authoring(
+                payload,
+                report.finding_plan,
+            )
+            print(json.dumps(payload, indent=2))
+            return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
+        payload = report.to_dict()
+        payload = self.with_optional_synthesis_authoring(payload, report.finding_plan)
+        print(json.dumps(payload, indent=2))
         return 0
 
 

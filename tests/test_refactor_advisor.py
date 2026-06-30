@@ -16286,6 +16286,52 @@ def test_module_cli_synthesizes_class_plan_with_scaffolds(
     )
 
 
+def test_module_cli_class_plan_simulates_projected_finding_class_delta(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nREGISTRY = {}\n\n\n"
+            "class AlphaHandler:\n"
+            "    pass\n\n\n"
+            "class BetaHandler:\n"
+            "    pass\n\n\n"
+            "REGISTRY['alpha'] = AlphaHandler\n"
+            "REGISTRY['beta'] = BetaHandler\n"
+        ),
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-synthesize-class-plan",
+            "--codemod-goal-detector",
+            "manual_class_registration",
+            "--codemod-simulate",
+            "--codemod-project-findings",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    projected = payload["projected_findings"]
+
+    assert result.returncode == 0, result.stderr
+    assert payload["class_count"] == 1
+    assert payload["simulation_result"]["simulation"]["parse_valid"]
+    assert "finding_class_delta" in projected
+    assert projected["finding_delta"]["fulfilled_expected_removals"]
+    assert projected["finding_class_delta"]["eliminated_class_count"] >= 1
+
+
 def test_module_cli_simulates_projected_findings_with_executable_continuation(
     tmp_path: Path,
 ) -> None:
