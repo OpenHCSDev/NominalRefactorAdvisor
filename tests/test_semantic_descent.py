@@ -517,6 +517,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     simulation = plan.simulate_snapshot(snapshot)
     operation = plan.document.to_dict()["recipes"][0]["operations"][0]
     record = plan.records[0]
+    repair_plan = record.semantic_repair_plan
 
     assert plan.expected_removed_finding_count == 1
     assert record.detector_id == "semantic_mirror_without_descent"
@@ -527,6 +528,17 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert operation["registry_name"] == "STEP_TABLE"
     assert operation["class_key_pairs"] == ("LoadStep='load'", "SaveStep='save'")
+    assert repair_plan is not None
+    assert repair_plan.repair_kind == "registration"
+    assert repair_plan.operation_kinds == ("convert_manual_registry_to_autoregister",)
+    repaired_finding = next(
+        finding for finding in findings if finding.stable_id == repair_plan.finding_id
+    )
+    assert repair_plan.missing_derivation_path == repaired_finding.relation_context
+    assert (
+        repair_plan.to_dict()["missing_derivation_path"]
+        == repaired_finding.relation_context
+    )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
 

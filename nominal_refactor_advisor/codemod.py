@@ -192,12 +192,17 @@ class FindingRecipeSynthesisStatus(StrEnum):
         *,
         action_keys: tuple["FindingRecipeActionKey", ...] = (),
         recipe: "RefactorRecipe | None" = None,
+        evaluation: "FindingRecipeEvaluation | None" = None,
         reason: str,
     ) -> "FindingRecipeSynthesisResult":
         return FindingRecipeSynthesisResult(
             status=self,
+            evaluation=(
+                evaluation
+                if evaluation is not None
+                else FindingRecipeEvaluation(recipe=recipe)
+            ),
             action_keys=action_keys,
-            recipe=recipe,
             reason=reason,
         )
 
@@ -13114,6 +13119,68 @@ class FindingRecipeActionKey:
 
 
 @dataclass(frozen=True)
+class SemanticDescentRepairPlan:
+    """Finding-backed semantic repair intent compiled into DSL operations."""
+
+    finding: RefactorFinding
+    repair_kind: str
+    action_keys: tuple[FindingRecipeActionKey, ...]
+    recipe: RefactorRecipe
+
+    @classmethod
+    def from_recipe(
+        cls,
+        finding: RefactorFinding,
+        *,
+        repair_kind: str,
+        action_keys: tuple[FindingRecipeActionKey, ...],
+        recipe: RefactorRecipe,
+    ) -> "SemanticDescentRepairPlan":
+        return cls(
+            finding=finding,
+            repair_kind=repair_kind,
+            action_keys=action_keys,
+            recipe=recipe,
+        )
+
+    @property
+    def finding_id(self) -> str:
+        return self.finding.stable_id
+
+    @property
+    def detector_id(self) -> str:
+        return self.finding.detector_id
+
+    @property
+    def missing_derivation_path(self) -> str:
+        return self.finding.relation_context
+
+    @property
+    def plan_id(self) -> str:
+        return f"{self.finding_id}-{self.repair_kind}"
+
+    @property
+    def operation_kinds(self) -> tuple[str, ...]:
+        return tuple(
+            operation.operation_kind().value for operation in self.recipe.operations
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "plan_id": self.plan_id,
+            "finding_id": self.finding_id,
+            "detector_id": self.detector_id,
+            "repair_kind": self.repair_kind,
+            "missing_derivation_path": self.missing_derivation_path,
+            "action_keys": tuple(
+                action_key.to_dict() for action_key in self.action_keys
+            ),
+            "operation_kinds": self.operation_kinds,
+            "recipe_id": self.recipe.recipe_id,
+        }
+
+
+@dataclass(frozen=True)
 class FindingRecipeSynthesisRecordIdentity:
     """Shared identity and source hints for synthesis record views."""
 
@@ -13219,9 +13286,9 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
 
     summary: str
     capability_gap: str
+    evaluation: "FindingRecipeEvaluation"
     synthesizer_name: str = ""
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
-    recipe_id: str = ""
     reason: str = ""
 
     @classmethod
@@ -13232,9 +13299,12 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
         *,
         synthesizer: "FindingRecipeSynthesizer | None" = None,
         action_keys: tuple[FindingRecipeActionKey, ...] = (),
-        recipe: RefactorRecipe | None = None,
+        evaluation: "FindingRecipeEvaluation | None" = None,
         reason: str = "",
     ) -> "FindingRecipeSynthesisRecord":
+        evaluated_recipe = (
+            evaluation if evaluation is not None else FindingRecipeEvaluation()
+        )
         return cls(
             finding_id=finding.stable_id,
             detector_id=finding.detector_id,
@@ -13244,15 +13314,26 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
             codemod_patch=finding.codemod_patch or "",
             summary=finding.summary,
             capability_gap=finding.capability_gap,
+            evaluation=evaluated_recipe,
             synthesizer_name="" if synthesizer is None else type(synthesizer).__name__,
             action_keys=action_keys,
-            recipe_id="" if recipe is None else recipe.recipe_id,
             reason=reason,
         )
 
     @property
     def evidence_selector(self) -> FindingEvidenceTargetSelector:
         return FindingEvidenceTargetSelector(finding_ids=(self.finding_id,))
+
+    @property
+    def recipe_id(self) -> str:
+        recipe = self.evaluation.recipe
+        if recipe is None:
+            return ""
+        return recipe.recipe_id
+
+    @property
+    def semantic_repair_plan(self) -> SemanticDescentRepairPlan | None:
+        return self.evaluation.semantic_repair_plan
 
     def authoring_record(self) -> FindingRecipeSynthesisAuthoringRecord:
         return FindingRecipeSynthesisAuthoringRecord(
@@ -13278,6 +13359,11 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
                 action_key.to_dict() for action_key in self.action_keys
             ),
             "recipe_id": self.recipe_id,
+            "semantic_repair_plan": (
+                None
+                if self.semantic_repair_plan is None
+                else self.semantic_repair_plan.to_dict()
+            ),
             "reason": self.reason,
             "scaffold": self.scaffold,
             "codemod_patch": self.codemod_patch,
@@ -13357,13 +13443,17 @@ class FindingRecipeSynthesisResult:
     """Outcome of evaluating one finding against executable DSL bridges."""
 
     status: FindingRecipeSynthesisStatus
+    evaluation: "FindingRecipeEvaluation"
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
-    recipe: RefactorRecipe | None = None
     reason: str = ""
 
     @property
     def planned_result(self) -> bool:
         return self.status is FindingRecipeSynthesisStatus.PLANNED
+
+    @property
+    def recipe(self) -> RefactorRecipe | None:
+        return self.evaluation.recipe
 
     def record_for(
         self,
@@ -13374,7 +13464,7 @@ class FindingRecipeSynthesisResult:
             self.status,
             synthesizer=attempt.synthesizer,
             action_keys=self.action_keys,
-            recipe=self.recipe,
+            evaluation=self.evaluation,
             reason=self.reason,
         )
 
@@ -13384,6 +13474,7 @@ class FindingRecipeEvaluation:
     """Single safety-pass result for one finding-backed recipe attempt."""
 
     recipe: RefactorRecipe | None = None
+    semantic_repair_plan: SemanticDescentRepairPlan | None = None
     rejection_reason: str = ""
 
 
@@ -13399,7 +13490,7 @@ class FindingRecipeSynthesisAttempt:
     def evaluate(self) -> FindingRecipeSynthesisResult:
         result_status = FindingRecipeSynthesisStatus.NO_SYNTHESIZER
         result_action_keys: tuple[FindingRecipeActionKey, ...] = ()
-        result_recipe: RefactorRecipe | None = None
+        result_evaluation = FindingRecipeEvaluation()
         result_reason = result_status.default_reason
         if self.synthesizer is not None:
             raw_action_keys = self.synthesizer.action_keys_for_finding(self.finding)
@@ -13430,11 +13521,11 @@ class FindingRecipeSynthesisAttempt:
                     result_reason = evaluation.rejection_reason
                 else:
                     result_status = FindingRecipeSynthesisStatus.PLANNED
-                    result_recipe = evaluation.recipe
+                    result_evaluation = evaluation
                     result_reason = result_status.default_reason
         return result_status.result(
             action_keys=result_action_keys,
-            recipe=result_recipe,
+            evaluation=result_evaluation,
             reason=result_reason,
         )
 
@@ -17967,6 +18058,44 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
     ) -> tuple[FindingRecipeActionKey, ...]:
         raise NotImplementedError
 
+    def repair_kind(self) -> str:
+        return _suffix_trimmed_class_name_registry_key(type(self).__name__, type(self))
+
+    def repair_plan_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> SemanticDescentRepairPlan | None:
+        recipe = self.recipe_for_finding(finding, context)
+        if recipe is None:
+            return None
+        return self.repair_plan_from_recipe(finding, recipe)
+
+    def repair_plan_from_recipe(
+        self,
+        finding: RefactorFinding,
+        recipe: RefactorRecipe,
+    ) -> SemanticDescentRepairPlan | None:
+        action_keys = self.action_keys_for_finding(finding)
+        if not action_keys:
+            return None
+        return SemanticDescentRepairPlan.from_recipe(
+            finding,
+            repair_kind=self.repair_kind(),
+            action_keys=action_keys,
+            recipe=recipe,
+        )
+
+    def evaluation_from_recipe(
+        self,
+        finding: RefactorFinding,
+        recipe: RefactorRecipe,
+    ) -> FindingRecipeEvaluation:
+        return FindingRecipeEvaluation(
+            recipe=recipe,
+            semantic_repair_plan=self.repair_plan_from_recipe(finding, recipe),
+        )
+
     def rejection_reason_for_finding(
         self,
         finding: RefactorFinding,
@@ -17980,9 +18109,12 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        recipe = self.recipe_for_finding(finding, context)
-        if recipe is not None:
-            return FindingRecipeEvaluation(recipe=recipe)
+        repair_plan = self.repair_plan_for_finding(finding, context)
+        if repair_plan is not None:
+            return FindingRecipeEvaluation(
+                recipe=repair_plan.recipe,
+                semantic_repair_plan=repair_plan,
+            )
         return FindingRecipeEvaluation(
             rejection_reason=self.rejection_reason_for_finding(finding, context)
         )
@@ -20318,7 +20450,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         if builder is not None:
             builder_recipe = builder.recipe()
             if builder_recipe is not None:
-                return FindingRecipeEvaluation(recipe=builder_recipe)
+                return self.evaluation_from_recipe(finding, builder_recipe)
             return FindingRecipeEvaluation(
                 rejection_reason=self.rejection_reason_from_builder(
                     finding,
@@ -20327,7 +20459,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
             )
         recipe = self.enum_subset_recipe_for_finding(finding, context)
         if recipe is not None:
-            return FindingRecipeEvaluation(recipe=recipe)
+            return self.evaluation_from_recipe(finding, recipe)
         return FindingRecipeEvaluation(
             rejection_reason=self.rejection_reason_from_builder(
                 finding,
@@ -20553,7 +20685,7 @@ class BranchSemanticMirrorRecipeStrategy(
             )
         recipe = builder.recipe()
         if recipe is not None:
-            return FindingRecipeEvaluation(recipe=recipe)
+            return self.evaluation_from_recipe(finding, recipe)
         return FindingRecipeEvaluation(rejection_reason=builder.rejection_reason())
 
     @staticmethod
