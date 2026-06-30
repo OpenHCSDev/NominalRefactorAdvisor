@@ -24,6 +24,7 @@ from metaclass_registry import AutoRegisterMeta
 from .analysis import (
     AnalysisPathScope,
     CachedPathAnalysisRequest,
+    FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
     analysis_cache_dir_for_root,
     analyze_lean_export,
@@ -5471,6 +5472,11 @@ def main() -> int:
                 parse_workers=args.parse_workers,
                 analysis_workers=args.analysis_workers,
                 source_policy=source_policy,
+                reuse_policy=(
+                    FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL
+                    if preparse_cache_mode is JsonPreparseCachePayloadMode.LOOP_SUMMARY
+                    else FastCacheReusePolicy.EXACT_ONLY
+                ),
             )
             fast_cache_authority = FastCachedPathAnalysisAuthority(fast_cache_request)
             if (

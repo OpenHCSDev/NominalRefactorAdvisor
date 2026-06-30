@@ -14,7 +14,10 @@ from typing import cast
 import pytest
 
 from nominal_refactor_advisor.analysis import (
+    CachedPathAnalysisRequest,
     DetectorAnalysisWorkerPlan,
+    FastCacheReusePolicy,
+    FastCachedPathAnalysisAuthority,
     SortedFindingsAuthority,
     analyze_modules,
     analyze_modules_with_cache,
@@ -6606,6 +6609,111 @@ def test_analyze_paths_partial_cache_parses_changed_file_only(
     }
     assert local_calls == {"a.py": 1, "b.py": 2}
     assert global_module_batches == [("a.py", "b.py"), ("a.py", "b.py")]
+
+
+def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/a.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg/b.py", "\nclass Beta:\n    pass\n")
+    root = tmp_path / "pkg"
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    local_calls: dict[str, int] = {}
+    global_module_batches: list[tuple[str, ...]] = []
+    finding_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Evidence-local cache",
+        "evidence-local cache",
+        "evidence-local cache",
+        "evidence-local cache",
+    )
+
+    class CountingPerModuleDetector(base_detectors.PerModuleIssueDetector):
+        detector_id = "evidence_local_per_module"
+
+        def _findings_for_module(
+            self,
+            module: ParsedModule,
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            module_name = module.path.name
+            local_calls[module_name] = local_calls.get(module_name, 0) + 1
+            return [
+                finding_spec.build(
+                    self.detector_id,
+                    f"local {module_name}",
+                    (SourceLocation(str(module.path), 2, module_name),),
+                )
+            ]
+
+    class CountingGlobalDetector(base_detectors.IssueDetector):
+        detector_id = "evidence_local_global"
+
+        def _collect_findings(
+            self,
+            modules: list[ParsedModule],
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            module_names = tuple(module.path.name for module in modules)
+            global_module_batches.append(module_names)
+            return [
+                finding_spec.build(
+                    self.detector_id,
+                    f"global {module.path.name}",
+                    (SourceLocation(str(module.path), 1, "global"),),
+                )
+                for module in modules
+            ]
+
+    for registry_key, detector_type in tuple(
+        base_detectors.IssueDetector.__registry__.items()
+    ):
+        if detector_type in (CountingPerModuleDetector, CountingGlobalDetector):
+            del base_detectors.IssueDetector.__registry__[registry_key]
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (CountingPerModuleDetector, CountingGlobalDetector),
+    )
+
+    first_findings = analyze_paths(
+        (root,),
+        DetectorConfig(),
+        cache_dir=cache_dir,
+    )
+    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+
+    fast_result = FastCachedPathAnalysisAuthority(
+        CachedPathAnalysisRequest(
+            roots=(root,),
+            config=DetectorConfig(),
+            parse_cache_dir=cache_dir,
+            use_parse_cache=True,
+            parse_workers=1,
+            analysis_workers=1,
+            source_policy=None,
+            reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
+        )
+    ).result()
+
+    assert fast_result is not None
+    assert fast_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert {finding.summary for finding in first_findings} == {
+        "global a.py",
+        "global b.py",
+        "local a.py",
+        "local b.py",
+    }
+    assert {finding.summary for finding in fast_result.findings} == {
+        "global a.py",
+        "global b.py",
+        "local a.py",
+        "local b.py",
+    }
+    assert local_calls == {"a.py": 1, "b.py": 2}
+    assert global_module_batches == [("a.py", "b.py"), ("b.py",)]
 
 
 def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(

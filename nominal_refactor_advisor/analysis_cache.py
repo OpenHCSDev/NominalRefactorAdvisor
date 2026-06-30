@@ -49,6 +49,13 @@ class AnalysisCacheStatus(StrEnum):
     MISS = "miss"
 
 
+class AnalysisLatestPointerPolicy(StrEnum):
+    """Persistence policy for the latest raw-source cache pointer."""
+
+    UPDATE = "update"
+    PRESERVE = "preserve"
+
+
 @dataclass(frozen=True)
 class AnalysisCacheLookup:
     """Result of consulting the persistent finding cache."""
@@ -647,6 +654,10 @@ class AnalysisFindingCache:
         self,
         identity: AnalysisCacheEntryIdentity,
         findings: list[RefactorFinding],
+        *,
+        latest_pointer_policy: AnalysisLatestPointerPolicy = (
+            AnalysisLatestPointerPolicy.UPDATE
+        ),
     ) -> None:
         storage = self.storage()
         if storage is None:
@@ -660,7 +671,8 @@ class AnalysisFindingCache:
                     AnalysisFindingSummary.from_findings(findings),
                     storage,
                 )
-                self._store_latest(identity, findings, storage)
+                if latest_pointer_policy is AnalysisLatestPointerPolicy.UPDATE:
+                    self._store_latest(identity, findings, storage)
         except OSError:
             return
 

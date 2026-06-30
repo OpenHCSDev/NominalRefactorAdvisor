@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from enum import StrEnum
 import os
 from pathlib import Path
 from typing import ClassVar
@@ -18,6 +19,7 @@ from .analysis_cache import (
     AnalysisFindingSummary,
     AnalysisCacheStatus,
     AnalysisFindingCache,
+    AnalysisLatestPointerPolicy,
     ContextualModuleAnalysisCacheIdentity,
     GlobalDetectorAnalysisCacheIdentity,
     GlobalModuleContextSignature,
@@ -659,7 +661,11 @@ class AnalysisCacheResolutionAuthority:
             findings = incremental_result.findings
             analysis_cache.store(cache_identity, findings)
             if semantic_cache_identity != cache_identity:
-                analysis_cache.store(semantic_cache_identity, findings)
+                analysis_cache.store(
+                    semantic_cache_identity,
+                    findings,
+                    latest_pointer_policy=AnalysisLatestPointerPolicy.PRESERVE,
+                )
             return CachedAnalysisResult(
                 findings,
                 incremental_result.cache_status,
@@ -1126,6 +1132,13 @@ def analysis_cache_dir_for_root(
     return default_analysis_cache_dir(root)
 
 
+class FastCacheReusePolicy(StrEnum):
+    """Correctness contract for fast cache reuse before full parsing."""
+
+    EXACT_ONLY = "exact_only"
+    EVIDENCE_LOCAL_PARTIAL = "evidence_local_partial"
+
+
 @dataclass(frozen=True, kw_only=True)
 class CachedPathAnalysisRequest(ParseCacheDirectory):
     """Nominal request for cache-first filesystem path analysis."""
@@ -1135,6 +1148,7 @@ class CachedPathAnalysisRequest(ParseCacheDirectory):
     parse_workers: int
     analysis_workers: int
     source_policy: PythonSourcePathPolicy | None
+    reuse_policy: FastCacheReusePolicy = FastCacheReusePolicy.EXACT_ONLY
 
     @property
     def analysis_cache_dir(self) -> Path | None:
@@ -1179,17 +1193,12 @@ class FastCachedPathAnalysisAuthority:
             source_policy=self._request.source_policy,
         )
 
-    @staticmethod
-    def _can_reuse_previous(cache_result: CachedAnalysisResult) -> bool:
+    def _can_reuse_previous(self, cache_result: CachedAnalysisResult) -> bool:
         return bool(
-            cache_result.cache_identity is not None
+            self._request.reuse_policy is FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL
+            and cache_result.cache_identity is not None
             and cache_result.previous_cache_identity is not None
             and cache_result.previous_findings
-            # Evidence-local reuse only reparses changed files. Global detectors need
-            # the full semantic context, so they must use the exact incremental path.
-            and not DetectorTypePartition.from_detector_types(
-                default_detector_types_for_analysis()
-            ).has_global_detectors
         )
 
     def _partial_result(
@@ -1205,6 +1214,9 @@ class FastCachedPathAnalysisAuthority:
             cache_result.previous_cache_identity,
         )
         changed_findings = self._changed_findings(changed_paths)
+        # Evidence-local reuse keeps previous findings whose evidence did not touch
+        # changed paths, then reruns all detector families on changed modules. This
+        # is intentionally a fast loop result, not a proof of full-context absence.
         findings = SortedFindingsAuthority.sort(
             [
                 *EvidenceLocalFindingReuseAuthority.unchanged_findings(
