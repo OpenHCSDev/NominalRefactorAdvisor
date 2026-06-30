@@ -4397,7 +4397,9 @@ class MirroredConstructorValidationDetector(PerModuleIssueDetector):
         return findings
 
 
-class RepeatedBuilderCallDetector(CrossModuleCandidateDetector[BuilderCallShape]):
+class RepeatedBuilderCallDetector(
+    FlattenedModuleCollectorCandidateDetector[BuilderCallShape],
+):
     detector_id = "repeated_builder_calls"
     ssot_authority_boundary = True
     finding_spec = certified_spec(
@@ -4410,23 +4412,10 @@ class RepeatedBuilderCallDetector(CrossModuleCandidateDetector[BuilderCallShape]
         _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[BuilderCallShape]:
-        del config
-        items = (
-            item
-            for module in modules
-            for item in _module_builder_call_shapes(module)
-        )
-        return tuple(
-            sorted(
-                items,
-                key=lambda item: (item.file_path, item.lineno, item.symbol),
-            )
-        )
+    candidate_collector = staticmethod(_module_builder_call_shapes)
+    candidate_sort_key = staticmethod(
+        lambda item: (item.file_path, item.lineno, item.symbol)
+    )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -4597,8 +4586,53 @@ class DeclaredFieldExtractionSite:
         }
 
 
+def _declared_field_extraction_sites(
+    module: ParsedModule,
+) -> tuple[DeclaredFieldExtractionSite, ...]:
+    sites: list[DeclaredFieldExtractionSite] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+            self.function_stack: list[str] = []
+
+        @property
+        def owner_symbol(self) -> str:
+            if self.function_stack:
+                return ".".join((*self.class_stack, *self.function_stack))
+            if self.class_stack:
+                return ".".join(self.class_stack)
+            return "<module>"
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.function_stack.append(node.name)
+            self.generic_visit(node)
+            self.function_stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node: ast.Call) -> None:
+            site = _declared_field_extraction_site(
+                module,
+                node,
+                self.owner_symbol,
+                len(sites),
+            )
+            if site is not None:
+                sites.append(site)
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return tuple(sites)
+
+
 class DeclaredFieldExtractionFanoutDetector(
-    CrossModuleCandidateDetector[DeclaredFieldExtractionSite],
+    FlattenedModuleCollectorCandidateDetector[DeclaredFieldExtractionSite],
 ):
     ssot_authority_boundary = True
     finding_spec = certified_spec(
@@ -4615,23 +4649,10 @@ class DeclaredFieldExtractionFanoutDetector(
         _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[DeclaredFieldExtractionSite]:
-        del config
-        items = (
-            item
-            for module in modules
-            for item in _declared_field_extraction_sites(module)
-        )
-        return tuple(
-            sorted(
-                items,
-                key=lambda item: (item.file_path, item.lineno, item.owner_symbol),
-            )
-        )
+    candidate_collector = staticmethod(_declared_field_extraction_sites)
+    candidate_sort_key = staticmethod(
+        lambda item: (item.file_path, item.lineno, item.owner_symbol)
+    )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -4734,51 +4755,6 @@ def _declared_field_extraction_authority_plans(
     )
     best_nodes = FactorizationLattice.from_plans(plans).best_antichain()
     return tuple(node.plan for node in best_nodes)
-
-
-def _declared_field_extraction_sites(
-    module: ParsedModule,
-) -> tuple[DeclaredFieldExtractionSite, ...]:
-    sites: list[DeclaredFieldExtractionSite] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-            self.function_stack: list[str] = []
-
-        @property
-        def owner_symbol(self) -> str:
-            if self.function_stack:
-                return ".".join((*self.class_stack, *self.function_stack))
-            if self.class_stack:
-                return ".".join(self.class_stack)
-            return "<module>"
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self.function_stack.append(node.name)
-            self.generic_visit(node)
-            self.function_stack.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_Call(self, node: ast.Call) -> None:
-            site = _declared_field_extraction_site(
-                module,
-                node,
-                self.owner_symbol,
-                len(sites),
-            )
-            if site is not None:
-                sites.append(site)
-            self.generic_visit(node)
-
-    Visitor().visit(module.module)
-    return tuple(sites)
 
 
 def _declared_field_extraction_site(
@@ -7460,8 +7436,7 @@ class PrivateReferenceContextSignatureFacet(ABC, metaclass=AutoRegisterMeta):
         detector_type: type["PrivateReferenceContextualDetector"],
     ) -> "PrivateReferenceContextSignatureFacets":
         accessed_names = frozenset(
-            detector_type._candidate_items_for_private_reference_context.__code__
-            .co_names
+            detector_type._candidate_items_for_private_reference_context.__code__.co_names
         )
         return tuple(
             facet_type
@@ -7568,9 +7543,7 @@ class SurfaceFunctionPrivateReferenceSignatureFacet(
         )
 
 
-class ClassFamilyPrivateReferenceSignatureFacet(
-    PrivateReferenceContextSignatureFacet
-):
+class ClassFamilyPrivateReferenceSignatureFacet(PrivateReferenceContextSignatureFacet):
     facet_name = "class_family"
     context_property_names = ("class_index",)
 
@@ -11428,7 +11401,9 @@ class PublicApiPrivateDelegateShellDetector(IssueDetector):
 
 
 class PublicApiPrivateDelegateFamilyDetector(
-    CrossModuleCandidateDetector[PublicApiPrivateDelegateFamilyCandidate],
+    ConfiguredCrossModuleCollectorCandidateDetector[
+        PublicApiPrivateDelegateFamilyCandidate
+    ],
 ):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -11440,12 +11415,7 @@ class PublicApiPrivateDelegateFamilyDetector(
         _ACCESSOR_WRAPPER_INTERFACE_IDENTITY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[PublicApiPrivateDelegateFamilyCandidate]:
-        return _public_api_private_delegate_family_candidates(modules, config)
+    candidate_collector = staticmethod(_public_api_private_delegate_family_candidates)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig

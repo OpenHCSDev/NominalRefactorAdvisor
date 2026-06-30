@@ -23,6 +23,7 @@ import inspect
 import re
 import textwrap
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -325,7 +326,6 @@ CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD = "candidate_collector_scope"
 CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD = "candidate_collector_uses_config"
 CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD = "candidate_item_sort_attributes"
 CANDIDATE_TYPE_NAME_PAYLOAD_FIELD = "candidate_type_name"
-CONTEXTUAL_DETECTOR_BASE_NAME_PAYLOAD_FIELD = "contextual_detector_base_name"
 DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
 DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
 SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID = "semantic_tag_tuple_boilerplate"
@@ -6716,6 +6716,8 @@ class RequestedImportStatement:
             return False
         if existing_statement.module != self.statement.module:
             return False
+        if any(alias.name == "*" for alias in existing_statement.names):
+            return True
         return all(
             alias.is_satisfied_by(existing_statement.names) for alias in self.aliases
         )
@@ -6800,6 +6802,8 @@ class RequestedImportSet:
                 existing.names
             )
         )
+        if any(alias.name == "*" for alias in existing.names):
+            return None
         if not missing_aliases:
             return None
         module_name = ImportFromModuleName.from_node(existing).source
@@ -8010,20 +8014,30 @@ class CandidateCollectorMethodSpec:
     collector_uses_config: bool
     item_sort_attributes: tuple[str, ...]
 
-    def maybe_delete_config_source(self, continued: str) -> str:
-        if self.collector_uses_config:
-            return ""
-        return f"{continued}del config\n"
+    @property
+    def sort_key_source(self) -> str:
+        sort_key_items = ", ".join(
+            f"item.{attribute_name}" for attribute_name in self.item_sort_attributes
+        )
+        if len(self.item_sort_attributes) == 1:
+            return f"{sort_key_items},"
+        return sort_key_items
 
-    def modules_call_source(self) -> str:
-        if self.collector_uses_config:
-            return f"{self.collector_name}(modules, config)"
-        return f"{self.collector_name}(modules)"
 
-    def module_item_call_source(self) -> str:
-        if self.collector_uses_config:
-            return f"{self.collector_name}(module, config)"
-        return f"{self.collector_name}(module)"
+@dataclass(frozen=True)
+class CandidateCollectorBaseNameSet:
+    """Base class names for one candidate collector scope."""
+
+    unconfigured: str
+    configured: str
+
+    def for_config_usage(self, uses_config: bool) -> str:
+        if uses_config:
+            return self.configured
+        return self.unconfigured
+
+    def as_tuple(self) -> tuple[str, str]:
+        return (self.unconfigured, self.configured)
 
 
 class CandidateCollectorScopeSource(ABC, metaclass=AutoRegisterMeta):
@@ -8034,6 +8048,7 @@ class CandidateCollectorScopeSource(ABC, metaclass=AutoRegisterMeta):
     __skip_if_no_key__ = True
 
     scope_key: ClassVar[str | None] = None
+    collector_base_names: ClassVar[CandidateCollectorBaseNameSet]
 
     @classmethod
     def require(cls, scope_key: str) -> type["CandidateCollectorScopeSource"]:
@@ -8043,73 +8058,61 @@ class CandidateCollectorScopeSource(ABC, metaclass=AutoRegisterMeta):
         return scope_source
 
     @classmethod
-    @abstractmethod
-    def method_body(cls, spec: CandidateCollectorMethodSpec, continued: str) -> str:
-        raise NotImplementedError
+    def import_source(cls, spec: CandidateCollectorMethodSpec) -> str:
+        base_name = cls.collector_base_names.for_config_usage(
+            spec.collector_uses_config
+        )
+        return f"from ._base import {base_name}"
+
+    @classmethod
+    def class_declaration_source(
+        cls,
+        spec: CandidateCollectorMethodSpec,
+        class_indentation: str,
+    ) -> str:
+        indent = f"{class_indentation}    "
+        declarations = (
+            f"{indent}candidate_collector = staticmethod({spec.collector_name})\n"
+        )
+        if spec.item_sort_attributes:
+            declarations += (
+                f"{indent}candidate_sort_key = staticmethod(\n"
+                f"{indent}    lambda item: ({spec.sort_key_source})\n"
+                f"{indent})\n"
+            )
+        return f"{declarations}\n"
+
+    @classmethod
+    def registered_base_names(cls) -> frozenset[str]:
+        return frozenset(
+            base_name
+            for scope_source in cls.__registry__.values()
+            for base_name in scope_source.possible_base_names()
+        )
+
+    @classmethod
+    def possible_base_names(cls) -> tuple[str, str]:
+        return cls.collector_base_names.as_tuple()
 
 
 class WholeModuleCandidateCollectorScopeSource(CandidateCollectorScopeSource):
     """Generate a candidate method from a whole-module-list collector."""
 
     scope_key = "modules"
-
-    @classmethod
-    def method_body(cls, spec: CandidateCollectorMethodSpec, continued: str) -> str:
-        del cls
-        return (
-            spec.maybe_delete_config_source(continued)
-            + f"{continued}return {spec.modules_call_source()}\n"
-        )
+    collector_base_names = CandidateCollectorBaseNameSet(
+        unconfigured="CrossModuleCollectorCandidateDetector",
+        configured="ConfiguredCrossModuleCollectorCandidateDetector",
+    )
 
 
 class PerModuleItemCandidateCollectorScopeSource(CandidateCollectorScopeSource):
     """Generate a candidate method by flattening one-module item collectors."""
 
     scope_key = "module_items"
-
-    @classmethod
-    def method_body(cls, spec: CandidateCollectorMethodSpec, continued: str) -> str:
-        del cls
-        item_projection = (
-            f"{continued}items = (\n"
-            f"{continued}    item\n"
-            f"{continued}    for module in modules\n"
-            f"{continued}    for item in {spec.module_item_call_source()}\n"
-            f"{continued})\n"
-        )
-        return (
-            spec.maybe_delete_config_source(continued)
-            + item_projection
-            + PerModuleItemCandidateCollectorScopeSource.item_return_source(
-                spec,
-                continued,
-            )
-        )
-
-    @staticmethod
-    def item_return_source(
-        spec: CandidateCollectorMethodSpec,
-        continued: str,
-    ) -> str:
-        if not spec.item_sort_attributes:
-            return f"{continued}return tuple(items)\n"
-        sort_key_items = ", ".join(
-            f"item.{attribute_name}"
-            for attribute_name in spec.item_sort_attributes
-        )
-        sort_key = (
-            f"{sort_key_items},"
-            if len(spec.item_sort_attributes) == 1
-            else sort_key_items
-        )
-        return (
-            f"{continued}return tuple(\n"
-            f"{continued}    sorted(\n"
-            f"{continued}        items,\n"
-            f"{continued}        key=lambda item: ({sort_key}),\n"
-            f"{continued}    )\n"
-            f"{continued})\n"
-        )
+    collector_base_names = CandidateCollectorBaseNameSet(
+        unconfigured="FlattenedModuleCollectorCandidateDetector",
+        configured="ConfiguredFlattenedModuleCollectorCandidateDetector",
+    )
 
 
 class CandidateCacheDetectorProtocolSource:
@@ -8117,12 +8120,25 @@ class CandidateCacheDetectorProtocolSource:
 
     candidate_method_name: ClassVar[str] = "_candidate_items"
     collect_anchor_method_name: ClassVar[str] = "_collect_findings"
+    candidate_collector_assignment_name: ClassVar[str] = "candidate_collector"
+    candidate_sort_key_assignment_name: ClassVar[str] = "candidate_sort_key"
+    contextual_candidate_base_names: ClassVar[frozenset[str]] = frozenset(
+        ("CrossModuleCandidateDetector",)
+    )
 
     @classmethod
     def class_def_has_candidate_method(cls, node: ast.ClassDef) -> bool:
-        return any(
-            cls.is_function_named(statement, cls.candidate_method_name)
-            for statement in node.body
+        return cls.candidate_method(node) is not None
+
+    @classmethod
+    def candidate_method(cls, node: ast.ClassDef) -> ast.FunctionDef | None:
+        return next(
+            (
+                statement
+                for statement in node.body
+                if cls.is_function_named(statement, cls.candidate_method_name)
+            ),
+            None,
         )
 
     @classmethod
@@ -8140,6 +8156,42 @@ class CandidateCacheDetectorProtocolSource:
     def is_function_named(statement: ast.stmt, method_name: str) -> bool:
         return isinstance(statement, ast.FunctionDef) and statement.name == method_name
 
+    @classmethod
+    def class_def_has_collector_assignment(cls, node: ast.ClassDef) -> bool:
+        return cls.class_def_has_assignment(
+            node,
+            cls.candidate_collector_assignment_name,
+        )
+
+    @classmethod
+    def class_def_has_assignment(cls, node: ast.ClassDef, assignment_name: str) -> bool:
+        return any(
+            cls.statement_assigns_name(statement, assignment_name)
+            for statement in node.body
+        )
+
+    @staticmethod
+    def statement_assigns_name(statement: ast.stmt, assignment_name: str) -> bool:
+        if isinstance(statement, ast.AnnAssign):
+            return (
+                isinstance(statement.target, ast.Name)
+                and statement.target.id == assignment_name
+            )
+        if not isinstance(statement, ast.Assign):
+            return False
+        return any(
+            isinstance(target, ast.Name) and target.id == assignment_name
+            for target in statement.targets
+        )
+
+    @classmethod
+    def is_contextual_candidate_base_source(cls, base_source: str) -> bool:
+        base_name = base_source.split("[", 1)[0]
+        return base_name in (
+            cls.contextual_candidate_base_names
+            | CandidateCollectorScopeSource.registered_base_names()
+        )
+
 
 @dataclass(frozen=True, kw_only=True)
 class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
@@ -8150,9 +8202,8 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
     candidate_collector_scope: str = "modules"
     candidate_collector_uses_config: bool = False
     candidate_item_sort_attributes: tuple[str, ...] = ()
-    contextual_detector_base_name: str = "CrossModuleCandidateDetector"
     replaced_base_name: str = "IssueDetector"
-    import_source: str = "from ._base import CrossModuleCandidateDetector"
+    import_source: str = ""
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
@@ -8199,14 +8250,6 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
                 constructor_value_reader=OperationPayloadReader.string_tuple_or_empty,
             ),
             PayloadBinding(
-                field_name=CONTEXTUAL_DETECTOR_BASE_NAME_PAYLOAD_FIELD,
-                constructor_argument_name="contextual_detector_base_name",
-                value_projector=(
-                    ExposeGlobalCandidateCacheContextOperation.contextual_detector_base_name_from_operation
-                ),
-                constructor_value_reader=OperationPayloadReader.required_string,
-            ),
-            PayloadBinding(
                 field_name=BASE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name="replaced_base_name",
                 value_projector=(
@@ -8250,10 +8293,6 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
             candidate_item_sort_attributes=payload.string_tuple_or_empty(
                 CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD,
             ),
-            contextual_detector_base_name=cls.contextual_detector_base_from_payload(
-                payload,
-                CONTEXTUAL_DETECTOR_BASE_NAME_PAYLOAD_FIELD,
-            ),
             replaced_base_name=cls.replaced_base_from_payload(
                 payload,
                 BASE_NAME_PAYLOAD_FIELD,
@@ -8272,16 +8311,6 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
         value = payload.optional_string(field_name)
         if value is None:
             return WholeModuleCandidateCollectorScopeSource.scope_key
-        return value
-
-    @staticmethod
-    def contextual_detector_base_from_payload(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> str:
-        value = payload.optional_string(field_name)
-        if value is None:
-            return "CrossModuleCandidateDetector"
         return value
 
     @staticmethod
@@ -8319,73 +8348,57 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
     def candidate_type_name_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
-        return (
-            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
-            .candidate_type_name
-        )
+        return ExposeGlobalCandidateCacheContextOperation._required_operation(
+            operation
+        ).candidate_type_name
 
     @staticmethod
     def candidate_collector_name_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
-        return (
-            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
-            .candidate_collector_name
-        )
+        return ExposeGlobalCandidateCacheContextOperation._required_operation(
+            operation
+        ).candidate_collector_name
 
     @staticmethod
     def candidate_collector_scope_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
-        return (
-            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
-            .candidate_collector_scope
-        )
+        return ExposeGlobalCandidateCacheContextOperation._required_operation(
+            operation
+        ).candidate_collector_scope
 
     @staticmethod
     def candidate_collector_uses_config_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
-        return (
-            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
-            .candidate_collector_uses_config
-        )
+        return ExposeGlobalCandidateCacheContextOperation._required_operation(
+            operation
+        ).candidate_collector_uses_config
 
     @staticmethod
     def candidate_item_sort_attributes_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
-        return (
-            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
-            .candidate_item_sort_attributes
-        )
-
-    @staticmethod
-    def contextual_detector_base_name_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        return (
-            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
-            .contextual_detector_base_name
-        )
+        return ExposeGlobalCandidateCacheContextOperation._required_operation(
+            operation
+        ).candidate_item_sort_attributes
 
     @staticmethod
     def replaced_base_name_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
-        return (
-            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
-            .replaced_base_name
-        )
+        return ExposeGlobalCandidateCacheContextOperation._required_operation(
+            operation
+        ).replaced_base_name
 
     @staticmethod
     def import_source_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
-        return (
-            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
-            .import_source
-        )
+        return ExposeGlobalCandidateCacheContextOperation._required_operation(
+            operation
+        ).import_source
 
     def operation_payload(self) -> JsonObject:
         return {
@@ -8398,16 +8411,34 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
             CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD: (
                 self.candidate_item_sort_attributes
             ),
-            CONTEXTUAL_DETECTOR_BASE_NAME_PAYLOAD_FIELD: (
-                self.contextual_detector_base_name
-            ),
             BASE_NAME_PAYLOAD_FIELD: self.replaced_base_name,
             IMPORT_SOURCE_PAYLOAD_FIELD: self.import_source,
         }
 
     @property
+    def candidate_method_spec(self) -> CandidateCollectorMethodSpec:
+        return CandidateCollectorMethodSpec(
+            collector_name=self.candidate_collector_name,
+            collector_uses_config=self.candidate_collector_uses_config,
+            item_sort_attributes=self.candidate_item_sort_attributes,
+        )
+
+    @property
+    def scope_source(self) -> type[CandidateCollectorScopeSource]:
+        return CandidateCollectorScopeSource.require(self.candidate_collector_scope)
+
+    @property
     def contextual_base_source(self) -> str:
-        return f"{self.contextual_detector_base_name}[{self.candidate_type_name}]"
+        base_name = self.scope_source.collector_base_names.for_config_usage(
+            self.candidate_method_spec.collector_uses_config
+        )
+        return f"{base_name}" f"[{self.candidate_type_name}]"
+
+    @property
+    def required_import_source(self) -> str:
+        if self.import_source:
+            return self.import_source
+        return self.scope_source.import_source(self.candidate_method_spec)
 
     def line_replacements(
         self,
@@ -8422,19 +8453,23 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
         source_path = target_digest.file_path
         source = source_by_path[source_path]
         replacements: list[SourceLineReplacement] = []
-        if self.import_source:
+        import_source = self.required_import_source
+        if import_source:
             replacements.extend(
                 self.required_import_replacements(
                     source_index,
                     source_by_path,
                     source_path,
-                    import_source=self.import_source,
+                    import_source=import_source,
                     default_rationale=(
                         "Import the contextual candidate detector cache base."
                     ),
                 )
             )
         replacements.extend(self.class_header_replacements(node, source_path, source))
+        replacements.extend(
+            self.candidate_declaration_replacements(node, source_path, source)
+        )
         replacements.extend(
             self.candidate_method_replacements(node, source_path, source)
         )
@@ -8450,12 +8485,14 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
         base_items = header_authority.base_items
         if self.contextual_base_source in base_items:
             return ()
-        if self.replaced_base_name in base_items:
+        if any(self.should_replace_base_item(base_item) for base_item in base_items):
             updated_base_items = tuple(
-                self.contextual_base_source
-                if base_name == self.replaced_base_name
-                else base_name
-                for base_name in base_items
+                (
+                    self.contextual_base_source
+                    if self.should_replace_base_item(base_item)
+                    else base_item
+                )
+                for base_item in base_items
             )
         else:
             updated_base_items = (*base_items, self.contextual_base_source)
@@ -8470,13 +8507,24 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
             ),
         )
 
-    def candidate_method_replacements(
+    def should_replace_base_item(self, base_item: str) -> bool:
+        if base_item == self.replaced_base_name:
+            return True
+        if base_item.startswith(f"{self.replaced_base_name}["):
+            return True
+        return CandidateCacheDetectorProtocolSource.is_contextual_candidate_base_source(
+            base_item
+        )
+
+    def candidate_declaration_replacements(
         self,
         node: ast.ClassDef,
         source_path: str,
         source: str,
     ) -> tuple[SourceLineReplacement, ...]:
-        if CandidateCacheDetectorProtocolSource.class_def_has_candidate_method(node):
+        if CandidateCacheDetectorProtocolSource.class_def_has_collector_assignment(
+            node
+        ):
             return ()
         header_authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
         anchor = CandidateCacheDetectorProtocolSource.collect_findings_anchor(node)
@@ -8491,31 +8539,35 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
                 start_line=insertion_line,
                 end_line=insertion_line - 1,
                 replacement_lines=SourceTargetEditor.source_lines(
-                    self.candidate_method_source(header_authority.indentation)
+                    self.scope_source.class_declaration_source(
+                        self.candidate_method_spec,
+                        header_authority.indentation,
+                    )
                 ),
                 rationale=self.rationale
-                or "Expose the detector candidate projection as cache context.",
+                or "Declare the detector candidate collector cache context.",
             ),
         )
 
-    def candidate_method_source(self, class_indentation: str) -> str:
-        indent = f"{class_indentation}    "
-        continued = f"{indent}    "
-        spec = CandidateCollectorMethodSpec(
-            collector_name=self.candidate_collector_name,
-            collector_uses_config=self.candidate_collector_uses_config,
-            item_sort_attributes=self.candidate_item_sort_attributes,
-        )
-        config_line = CandidateCollectorScopeSource.require(
-            self.candidate_collector_scope
-        ).method_body(spec, continued)
+    def candidate_method_replacements(
+        self,
+        node: ast.ClassDef,
+        source_path: str,
+        source: str,
+    ) -> tuple[SourceLineReplacement, ...]:
+        del source
+        method = CandidateCacheDetectorProtocolSource.candidate_method(node)
+        if method is None:
+            return ()
         return (
-            f"{indent}def _candidate_items(\n"
-            f"{continued}self,\n"
-            f"{continued}modules: list[ParsedModule],\n"
-            f"{continued}config: DetectorConfig,\n"
-            f"{indent}) -> Sequence[{self.candidate_type_name}]:\n"
-            f"{config_line}\n"
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=method.lineno,
+                end_line=method.end_lineno or method.lineno,
+                replacement_lines=(),
+                rationale=self.rationale
+                or "Delete leaf detector candidate traversal now owned by base.",
+            ),
         )
 
 
@@ -12012,27 +12064,156 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
     def _coalesced_replacements(
         replacements: Iterable[SourceLineReplacement],
     ) -> tuple[SourceLineReplacement, ...]:
-        replacements_by_source: dict[
-            tuple[str, int, int, tuple[str, ...]], SourceLineReplacement
-        ] = {}
+        replacements_by_span: dict[
+            tuple[str, int, int], list[SourceLineReplacement]
+        ] = defaultdict(list)
         for replacement in replacements:
-            key = (
+            replacements_by_span[
                 replacement.file_path,
                 replacement.start_line,
                 replacement.end_line,
-                replacement.replacement_lines,
+            ].append(replacement)
+        return tuple(
+            RefactorRecipeOperationCompiler._coalesced_same_span_replacement(
+                tuple(span_replacements)
             )
-            existing = replacements_by_source.get(key)
-            if existing is None:
-                replacements_by_source[key] = replacement
-                continue
-            replacements_by_source[key] = replace(
-                existing,
+            for span_replacements in replacements_by_span.values()
+        )
+
+    @staticmethod
+    def _coalesced_same_span_replacement(
+        replacements: tuple[SourceLineReplacement, ...],
+    ) -> SourceLineReplacement:
+        first = replacements[0]
+        if len(replacements) == 1:
+            return first
+        replacement_line_sets = {
+            replacement.replacement_lines for replacement in replacements
+        }
+        if len(replacement_line_sets) == 1:
+            return replace(
+                first,
                 rationale=_joined_rationales(
-                    (existing.rationale, replacement.rationale)
+                    replacement.rationale for replacement in replacements
                 ),
             )
-        return tuple(replacements_by_source.values())
+        content_insertion_replacement = (
+            RefactorRecipeOperationCompiler._coalesced_content_insertion_replacement(
+                replacements
+            )
+        )
+        if content_insertion_replacement is not None:
+            return content_insertion_replacement
+        merged_import_replacement = (
+            RefactorRecipeOperationCompiler._coalesced_import_replacement(replacements)
+        )
+        if merged_import_replacement is not None:
+            return merged_import_replacement
+        insertion_replacement = (
+            RefactorRecipeOperationCompiler._coalesced_insertion_replacement(
+                replacements
+            )
+        )
+        if insertion_replacement is not None:
+            return insertion_replacement
+        return first
+
+    @staticmethod
+    def _coalesced_content_insertion_replacement(
+        replacements: tuple[SourceLineReplacement, ...],
+    ) -> SourceLineReplacement | None:
+        first = replacements[0]
+        if first.start_line <= first.end_line:
+            return None
+        content_replacements = tuple(
+            replacement for replacement in replacements if replacement.replacement_lines
+        )
+        if len(content_replacements) != 1:
+            return None
+        return replace(
+            content_replacements[0],
+            rationale=_joined_rationales(
+                replacement.rationale for replacement in replacements
+            ),
+        )
+
+    @staticmethod
+    def _coalesced_import_replacement(
+        replacements: tuple[SourceLineReplacement, ...],
+    ) -> SourceLineReplacement | None:
+        import_from_nodes = tuple(
+            RefactorRecipeOperationCompiler._single_import_from_node(
+                replacement.replacement_lines
+            )
+            for replacement in replacements
+        )
+        if any(node is None for node in import_from_nodes):
+            return None
+        first_node = import_from_nodes[0]
+        if first_node is None:
+            return None
+        if not all(
+            RequestedImportSet.imports_from_same_module(first_node, node)
+            for node in import_from_nodes
+            if node is not None
+        ):
+            return None
+        aliases_by_key: dict[tuple[str, str | None], ast.alias] = {}
+        for node in import_from_nodes:
+            if node is None:
+                return None
+            for alias in node.names:
+                aliases_by_key.setdefault((alias.name, alias.asname), alias)
+        first = replacements[0]
+        return replace(
+            first,
+            replacement_lines=SourceTargetEditor.source_lines(
+                ImportFromSource(
+                    module_name=ImportFromModuleName.from_node(first_node).source,
+                    aliases=tuple(aliases_by_key.values()),
+                ).source
+            ),
+            rationale=_joined_rationales(
+                replacement.rationale for replacement in replacements
+            ),
+        )
+
+    @staticmethod
+    def _coalesced_insertion_replacement(
+        replacements: tuple[SourceLineReplacement, ...],
+    ) -> SourceLineReplacement | None:
+        first = replacements[0]
+        if first.start_line <= first.end_line:
+            return None
+        replacement_lines = tuple(
+            line
+            for replacement in replacements
+            for line in replacement.replacement_lines
+        )
+        if not replacement_lines:
+            return None
+        return replace(
+            first,
+            replacement_lines=replacement_lines,
+            rationale=_joined_rationales(
+                replacement.rationale for replacement in replacements
+            ),
+        )
+
+    @staticmethod
+    def _single_import_from_node(
+        replacement_lines: tuple[str, ...],
+    ) -> ast.ImportFrom | None:
+        try:
+            module = ast.parse("".join(replacement_lines), filename="<replacement>")
+        except SyntaxError:
+            return None
+        if len(module.body) != 1:
+            return None
+        statement = module.body[0]
+        if not isinstance(statement, ast.ImportFrom):
+            return None
+        return statement
 
     def _merged_replacement_groups(
         self,
@@ -12445,9 +12626,8 @@ class RefactorRecipe:
         candidate_collector_scope: str = "modules",
         candidate_collector_uses_config: bool = False,
         candidate_item_sort_attributes: Iterable[str] = (),
-        contextual_detector_base_name: str = "CrossModuleCandidateDetector",
         replaced_base_name: str = "IssueDetector",
-        import_source: str = "from ._base import CrossModuleCandidateDetector",
+        import_source: str = "",
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = ExposeGlobalCandidateCacheContextOperation(
@@ -12460,7 +12640,6 @@ class RefactorRecipe:
             candidate_collector_scope=candidate_collector_scope,
             candidate_collector_uses_config=candidate_collector_uses_config,
             candidate_item_sort_attributes=tuple(candidate_item_sort_attributes),
-            contextual_detector_base_name=contextual_detector_base_name,
             replaced_base_name=replaced_base_name,
             import_source=import_source,
             rationale=rationale or self.reason,

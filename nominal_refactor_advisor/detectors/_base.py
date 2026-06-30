@@ -218,7 +218,9 @@ SemanticTagEnum = type[CapabilityTag] | type[ObservationTag]
 _SEMANTIC_TAG_CONSTANT_NAME_RE = re.compile(
     r"_[A-Z0-9_]+_(?:CAPABILITY|OBSERVATION)_TAGS"
 )
-_SEMANTIC_TAG_ENUMS: tuple[SemanticTagEnum, ...] = tuple(LabeledStrEnum.__subclasses__())
+_SEMANTIC_TAG_ENUMS: tuple[SemanticTagEnum, ...] = tuple(
+    LabeledStrEnum.__subclasses__()
+)
 
 
 def _semantic_tag_constant_suffix_for_enum(tag_enum: SemanticTagEnum) -> str:
@@ -891,6 +893,8 @@ ProductAxisPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 
 def _attribute_projection(attribute_name: str) -> Callable[[object], AttributeValueT]:
     return cast(Callable[[object], AttributeValueT], attrgetter(attribute_name))
+
+
 ResolvedTypeNamePartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 SelfCastAliasPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 SemanticRoleNameOptions: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
@@ -1144,7 +1148,10 @@ def _contextual_global_candidate_signature(
             (
                 detector_type.__module__,
                 detector_type.__qualname__,
-                tuple(_stable_context_signature_text(candidate) for candidate in candidates),
+                tuple(
+                    _stable_context_signature_text(candidate)
+                    for candidate in candidates
+                ),
             )
         )
     )
@@ -1193,6 +1200,9 @@ CrossModuleCandidateCollector = Callable[
 ConfiguredCrossModuleCandidateCollector = Callable[
     [Sequence[ParsedModule], DetectorConfig], Sequence[CandidateItemT]
 ]
+CandidateSortKeyValue: TypeAlias = str | int | float
+CandidateSortKey: TypeAlias = tuple[CandidateSortKeyValue, ...]
+CandidateSortKeyFunction = Callable[[CandidateItemT], CandidateSortKey]
 DetectorCollector: TypeAlias = (
     ModuleCandidateCollector[CandidateItemT]
     | ConfiguredModuleCandidateCollector[CandidateItemT]
@@ -1203,6 +1213,7 @@ DetectorCollector: TypeAlias = (
 
 class CandidateCollectorScope(StrEnum):
     MODULE = "module"
+    FLATTENED_MODULE = "flattened_module"
     CROSS_MODULE = "cross_module"
 
 
@@ -1376,6 +1387,75 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
         return type(self).candidate_collector(modules, config)
 
 
+class SortedCandidateItemsMixin(Generic[CandidateItemT]):
+    """Optional class-level sorting for flattened candidate collectors."""
+
+    candidate_sort_key: ClassVar[CandidateSortKeyFunction[CandidateItemT] | None] = None
+
+    @classmethod
+    def _sorted_candidate_items(
+        cls,
+        items: tuple[CandidateItemT, ...],
+    ) -> tuple[CandidateItemT, ...]:
+        if cls.candidate_sort_key is None:
+            return items
+        return sorted_tuple(items, key=cls.candidate_sort_key)
+
+
+class FlattenedModuleCollectorCandidateDetector(
+    SortedCandidateItemsMixin[CandidateItemT],
+    DerivedCandidateCollectorMixin[CandidateItemT],
+    CrossModuleCandidateDetector[CandidateItemT],
+    Generic[CandidateItemT],
+    ABC,
+):
+    """Cross-module detector backed by one-module candidate collection."""
+
+    collector_scope: ClassVar[CandidateCollectorScope | None] = (
+        CandidateCollectorScope.FLATTENED_MODULE
+    )
+    candidate_collector: ClassVar[ModuleCandidateCollector[CandidateItemT]]
+
+    def _candidate_items(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> Sequence[CandidateItemT]:
+        del config
+        return type(self)._sorted_candidate_items(
+            tuple(
+                item
+                for module in modules
+                for item in type(self).candidate_collector(module)
+            )
+        )
+
+
+class ConfiguredFlattenedModuleCollectorCandidateDetector(
+    SortedCandidateItemsMixin[CandidateItemT],
+    DerivedCandidateCollectorMixin[CandidateItemT],
+    CrossModuleCandidateDetector[CandidateItemT],
+    Generic[CandidateItemT],
+    ABC,
+):
+    """Cross-module detector backed by configured one-module collection."""
+
+    collector_scope: ClassVar[CandidateCollectorScope | None] = (
+        CandidateCollectorScope.FLATTENED_MODULE
+    )
+    collector_uses_config: ClassVar[bool] = True
+    candidate_collector: ClassVar[ConfiguredModuleCandidateCollector[CandidateItemT]]
+
+    def _candidate_items(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> Sequence[CandidateItemT]:
+        return type(self)._sorted_candidate_items(
+            tuple(
+                item
+                for module in modules
+                for item in type(self).candidate_collector(module, config)
+            )
+        )
+
+
 def _detector_name_from_candidate_type(candidate_type: type[object]) -> str:
     return f"{candidate_type.__name__.removesuffix('Candidate')}Detector"
 
@@ -1404,9 +1484,7 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
 _DEFAULT_DETECTOR_DECLARATION_OPTIONS = DetectorDeclarationOptions()
 
 
-class DetectorDeclarationOptionKwargs(
-    TypedDict, Generic[CandidateItemT], total=False
-):
+class DetectorDeclarationOptionKwargs(TypedDict, Generic[CandidateItemT], total=False):
     detector_name: str | None
     detector_base: type[IssueDetector]
     candidate_collector: DetectorCollector[CandidateItemT]
@@ -7455,7 +7533,10 @@ class RegistryConsumerSymbolProjection:
                     continue
                 for node in _walk_nodes(function):
                     attribute = as_ast(node, ast.Attribute)
-                    if attribute is None or attribute.attr not in lookup_method_name_set:
+                    if (
+                        attribute is None
+                        or attribute.attr not in lookup_method_name_set
+                    ):
                         continue
                     if name_id(attribute.value) == family_name:
                         consumer_symbols.add(qualname)
@@ -7672,11 +7753,21 @@ class ProjectionSurfaceRoleCaseAuthority:
     @classmethod
     def role_cases(cls):
         return (
-            ProjectionSurfaceRoleCase('surface_name', "__all__", "module_all_tuple"),
-            ProjectionSurfaceRoleCase('surface_kind', _REGISTRY_PROJECTION_EXPORT_ROSTER, "module_all_tuple"),
-            ProjectionSurfaceRoleCase('surface_kind', _REGISTRY_PROJECTION_MAPPING_KINDS, "mapping_literal"),
-            ProjectionSurfaceRoleCase('projection_role', "test_params", "pytest_param_tuple"),
-            ProjectionSurfaceRoleCase('projection_role', ("cli_choices", "config_choices", "ui_options"), "choices_tuple"),
+            ProjectionSurfaceRoleCase("surface_name", "__all__", "module_all_tuple"),
+            ProjectionSurfaceRoleCase(
+                "surface_kind", _REGISTRY_PROJECTION_EXPORT_ROSTER, "module_all_tuple"
+            ),
+            ProjectionSurfaceRoleCase(
+                "surface_kind", _REGISTRY_PROJECTION_MAPPING_KINDS, "mapping_literal"
+            ),
+            ProjectionSurfaceRoleCase(
+                "projection_role", "test_params", "pytest_param_tuple"
+            ),
+            ProjectionSurfaceRoleCase(
+                "projection_role",
+                ("cli_choices", "config_choices", "ui_options"),
+                "choices_tuple",
+            ),
         )
 
     @classmethod
@@ -7704,8 +7795,14 @@ class SurfaceRoleRoleCaseAuthority:
     @classmethod
     def role_cases(cls):
         return (
-            SurfaceRoleRoleCase('surface_kind', (_REGISTRY_PROJECTION_KEY_ROSTER, _REGISTRY_PROJECTION_TYPE_ROSTER), "option_roster"),
-            SurfaceRoleRoleCase('surface_kind', _REGISTRY_PROJECTION_MAPPING_KINDS, "lookup_projection"),
+            SurfaceRoleRoleCase(
+                "surface_kind",
+                (_REGISTRY_PROJECTION_KEY_ROSTER, _REGISTRY_PROJECTION_TYPE_ROSTER),
+                "option_roster",
+            ),
+            SurfaceRoleRoleCase(
+                "surface_kind", _REGISTRY_PROJECTION_MAPPING_KINDS, "lookup_projection"
+            ),
         )
 
     @classmethod
@@ -7736,8 +7833,25 @@ class CoverageCoordinatesRoleCaseAuthority:
     @classmethod
     def role_cases(cls):
         return (
-            CoverageCoordinatesRoleCase('surface_kind', (_REGISTRY_PROJECTION_KEY_ROSTER, _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX), (lambda axis_values: max(axis_values['key_count'], 1), lambda axis_values: len(axis_values['shared_key_names']))),
-            CoverageCoordinatesRoleCase('surface_kind', _REGISTRY_PROJECTION_TYPE_SURFACE_KINDS, (lambda axis_values: max(axis_values['type_count'], 1), lambda axis_values: len(axis_values['shared_type_names']))),
+            CoverageCoordinatesRoleCase(
+                "surface_kind",
+                (
+                    _REGISTRY_PROJECTION_KEY_ROSTER,
+                    _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX,
+                ),
+                (
+                    lambda axis_values: max(axis_values["key_count"], 1),
+                    lambda axis_values: len(axis_values["shared_key_names"]),
+                ),
+            ),
+            CoverageCoordinatesRoleCase(
+                "surface_kind",
+                _REGISTRY_PROJECTION_TYPE_SURFACE_KINDS,
+                (
+                    lambda axis_values: max(axis_values["type_count"], 1),
+                    lambda axis_values: len(axis_values["shared_type_names"]),
+                ),
+            ),
         )
 
     @classmethod
@@ -7745,7 +7859,11 @@ class CoverageCoordinatesRoleCaseAuthority:
         for role_case in cls.role_cases():
             if role_case.matches(axis_values):
                 return role_case.values(axis_values)
-        return (max(axis_values['key_count'] + axis_values['type_count'], 1), len(axis_values['shared_key_names']) + len(axis_values['shared_type_names']))
+        return (
+            max(axis_values["key_count"] + axis_values["type_count"], 1),
+            len(axis_values["shared_key_names"])
+            + len(axis_values["shared_type_names"]),
+        )
 
 
 class _RegistryProjectionSurfaceAnalyzer:
@@ -7851,7 +7969,9 @@ class _RegistryProjectionSurfaceAnalyzer:
         for role_name, terms in self.role_terms:
             if any((term in text for term in terms)):
                 return role_name
-        return SurfaceRoleRoleCaseAuthority.surface_role(file_path=file_path, surface_name=surface_name, surface_kind=surface_kind)
+        return SurfaceRoleRoleCaseAuthority.surface_role(
+            file_path=file_path, surface_name=surface_name, surface_kind=surface_kind
+        )
 
     def subset_policy_hint(self, surface_name: str) -> str | None:
         lowered_name = surface_name.lower()
@@ -7867,7 +7987,11 @@ class _RegistryProjectionSurfaceAnalyzer:
     def materialization_rule(
         self, *, surface_name: str, surface_kind: str, projection_role: str
     ) -> str:
-        return ProjectionSurfaceRoleCaseAuthority.materialization_rule(surface_name=surface_name, surface_kind=surface_kind, projection_role=projection_role)
+        return ProjectionSurfaceRoleCaseAuthority.materialization_rule(
+            surface_name=surface_name,
+            surface_kind=surface_kind,
+            projection_role=projection_role,
+        )
 
     def coverage_coordinates(
         self,
@@ -7885,7 +8009,15 @@ class _RegistryProjectionSurfaceAnalyzer:
         missing_type_names = sorted_tuple(
             frozenset(proof.registered_type_names) - frozenset(shared_type_names)
         )
-        denominator, numerator = CoverageCoordinatesRoleCaseAuthority.coverage_coordinates(surface_kind=surface_kind, shared_key_names=shared_key_names, shared_type_names=shared_type_names, key_count=key_count, type_count=type_count)
+        denominator, numerator = (
+            CoverageCoordinatesRoleCaseAuthority.coverage_coordinates(
+                surface_kind=surface_kind,
+                shared_key_names=shared_key_names,
+                shared_type_names=shared_type_names,
+                key_count=key_count,
+                type_count=type_count,
+            )
+        )
         return (
             key_count,
             type_count,
@@ -12552,6 +12684,7 @@ class OwnerFunctionFamilyCompressionSurface(FunctionFamilyCompressionSurface):
     owner_parameter_name: str
     owner_attribute_names: tuple[str, ...]
 
+
 @dataclass(frozen=True)
 class ClosedAxisConversionMatrixCandidate(
     FunctionFamilyLineSurface, LineWitnessCandidate
@@ -12808,7 +12941,9 @@ class GlobalInheritanceOptimizationCandidate(
 
 @dataclass(frozen=True)
 class SemanticOverlapABCResidueAxisCatalogCandidate(
-    ABCOptimizerMethodFamilyEvidenceSurface, LineWitnessCandidate, ClassFamilyWitnessCarrier
+    ABCOptimizerMethodFamilyEvidenceSurface,
+    LineWitnessCandidate,
+    ClassFamilyWitnessCarrier,
 ):
     residue_kind_names: tuple[str, ...]
     residue_site_count: int

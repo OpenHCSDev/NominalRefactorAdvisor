@@ -287,7 +287,7 @@ declare_candidate_rule_detector(
 
 
 class ExistingNominalAuthorityReuseDetector(
-    CrossModuleCandidateDetector[ExistingNominalAuthorityReuseCandidate],
+    CrossModuleCollectorCandidateDetector[ExistingNominalAuthorityReuseCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -298,13 +298,7 @@ class ExistingNominalAuthorityReuseDetector(
         _NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[ExistingNominalAuthorityReuseCandidate]:
-        del config
-        return _existing_nominal_authority_reuse_candidates(modules)
+    candidate_collector = staticmethod(_existing_nominal_authority_reuse_candidates)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -358,7 +352,9 @@ class ExistingNominalAuthorityReuseDetector(
 
 
 class NominalAuthorityImplementationRetreatDetector(
-    CrossModuleCandidateDetector[NominalAuthorityImplementationRetreatCandidate],
+    CrossModuleCollectorCandidateDetector[
+        NominalAuthorityImplementationRetreatCandidate
+    ],
 ):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -369,13 +365,9 @@ class NominalAuthorityImplementationRetreatDetector(
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_VIRTUAL_MEMBERSHIP_CAPABILITY_TAGS,
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[NominalAuthorityImplementationRetreatCandidate]:
-        del config
-        return _nominal_authority_implementation_retreat_candidates(modules)
+    candidate_collector = staticmethod(
+        _nominal_authority_implementation_retreat_candidates
+    )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig

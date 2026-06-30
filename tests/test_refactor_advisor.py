@@ -2354,6 +2354,38 @@ def test_refactor_recipe_ensure_import_merges_existing_from_import(
     assert "    CapabilityTag,\n    ObservationTag,\n    LabeledStrEnum,\n" in rewritten
 
 
+def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from ._base import *\n"
+        "\n\n"
+        "class LocalDetector(IssueDetector):\n"
+        "    pass\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    simulation = (
+        RefactorRecipe(recipe_id="star-import-satisfied")
+        .ensure_import(
+            module_path.as_posix(),
+            "from ._base import CrossModuleCollectorCandidateDetector\n",
+        )
+        .simulate(
+            source_index,
+            source_by_path,
+            backend=CodemodBackend.AST_SPAN,
+        )
+    )
+
+    assert simulation.simulation.applied_rewrite_count == 0
+
+
 def test_expose_global_candidate_cache_context_operation(
     tmp_path: Path,
 ) -> None:
@@ -2398,10 +2430,14 @@ def test_expose_global_candidate_cache_context_operation(
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert "CrossModuleCandidateDetector" in rewritten
-    assert "class AlphaDetector(CrossModuleCandidateDetector[Candidate]):" in rewritten
-    assert "def _candidate_items(" in rewritten
-    assert "return _candidates(modules, config)" in rewritten
+    assert "ConfiguredCrossModuleCollectorCandidateDetector" in rewritten
+    assert (
+        "class AlphaDetector("
+        "ConfiguredCrossModuleCollectorCandidateDetector[Candidate]"
+        "):"
+    ) in rewritten
+    assert "candidate_collector = staticmethod(_candidates)" in rewritten
+    assert "def _candidate_items(" not in rewritten
 
 
 def test_operation_compiler_coalesces_identical_line_replacements(
@@ -2464,11 +2500,71 @@ def test_operation_compiler_coalesces_identical_line_replacements(
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert rewritten.count("CrossModuleCandidateDetector") == 3
-    assert rewritten.count("    CrossModuleCandidateDetector,\n") == 1
-    assert "for item in _alpha_candidates(module)" in rewritten
-    assert "for item in _beta_candidates(module)" in rewritten
-    assert "key=lambda item: (item.name,)" in rewritten
+    assert rewritten.count("FlattenedModuleCollectorCandidateDetector") == 3
+    assert rewritten.count("    FlattenedModuleCollectorCandidateDetector,\n") == 1
+    assert "candidate_collector = staticmethod(_alpha_candidates)" in rewritten
+    assert "candidate_collector = staticmethod(_beta_candidates)" in rewritten
+    assert rewritten.count("lambda item: (item.name,)") == 2
+    assert "def _candidate_items(" not in rewritten
+
+
+def test_expose_global_candidate_cache_context_collapses_existing_candidate_method(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/detectors.py"
+    _write_module(
+        tmp_path,
+        "pkg/detectors.py",
+        "from ._base import (\n"
+        "    CrossModuleCandidateDetector,\n"
+        "    DetectorConfig,\n"
+        "    ParsedModule,\n"
+        ")\n"
+        "\n\n"
+        "class Candidate:\n"
+        "    pass\n"
+        "\n\n"
+        "def _candidates(modules):\n"
+        "    return ()\n"
+        "\n\n"
+        "class AlphaDetector(CrossModuleCandidateDetector[Candidate]):\n"
+        "    def _candidate_items(\n"
+        "        self,\n"
+        "        modules: list[ParsedModule],\n"
+        "        config: DetectorConfig,\n"
+        "    ):\n"
+        "        del config\n"
+        "        return _candidates(modules)\n"
+        "\n"
+        "    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig):\n"
+        "        return []\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    simulation = (
+        RefactorRecipe("contextualize-existing-alpha")
+        .expose_global_candidate_cache_context(
+            "AlphaDetector",
+            source_path=module_path.as_posix(),
+            candidate_type_name="Candidate",
+            candidate_collector_name="_candidates",
+        )
+        .simulate(
+            source_index,
+            source_by_path,
+            backend=CodemodBackend.AST_SPAN,
+        )
+    )
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert (
+        "class AlphaDetector(CrossModuleCollectorCandidateDetector[Candidate]):"
+        in rewritten
+    )
+    assert "candidate_collector = staticmethod(_candidates)" in rewritten
+    assert "def _candidate_items(" not in rewritten
 
 
 def test_refactor_recipe_replaces_module_assignment(

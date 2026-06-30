@@ -23,6 +23,7 @@ from ._base import (
     SourceLocation,
     high_confidence_spec,
     CrossModuleCandidateDetector,
+    CrossModuleCollectorCandidateDetector,
 )
 from ._helpers import (
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
@@ -1200,7 +1201,7 @@ def _available_abstraction_reuse_candidates(
 
 
 class AvailableAbstractionReuseDetector(
-    CrossModuleCandidateDetector[AvailableAbstractionReuseCandidate],
+    CrossModuleCollectorCandidateDetector[AvailableAbstractionReuseCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.STAGED_ORCHESTRATION,
@@ -1216,13 +1217,7 @@ class AvailableAbstractionReuseDetector(
         (ObservationTag.NORMALIZED_AST, ObservationTag.METHOD_ROLE),
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[AvailableAbstractionReuseCandidate]:
-        del config
-        return _available_abstraction_reuse_candidates(modules)
+    candidate_collector = staticmethod(_available_abstraction_reuse_candidates)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -1263,7 +1258,7 @@ class AvailableAbstractionReuseDetector(
 
 
 class AvailableCarrierReuseDetector(
-    CrossModuleCandidateDetector[AvailableCarrierReuseCandidate],
+    CrossModuleCollectorCandidateDetector[AvailableCarrierReuseCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -1282,13 +1277,7 @@ class AvailableCarrierReuseDetector(
         ),
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[AvailableCarrierReuseCandidate]:
-        del config
-        return _available_carrier_reuse_candidates(modules)
+    candidate_collector = staticmethod(_available_carrier_reuse_candidates)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -1343,7 +1332,7 @@ class AvailableCarrierReuseDetector(
 
 
 class CarrierCompositionRetreatDetector(
-    CrossModuleCandidateDetector[CarrierCompositionRetreatCandidate],
+    CrossModuleCollectorCandidateDetector[CarrierCompositionRetreatCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -1362,13 +1351,7 @@ class CarrierCompositionRetreatDetector(
         ),
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[CarrierCompositionRetreatCandidate]:
-        del config
-        return _carrier_composition_retreat_candidates(modules)
+    candidate_collector = staticmethod(_carrier_composition_retreat_candidates)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -1416,7 +1399,7 @@ class CarrierCompositionRetreatDetector(
 
 
 class ParallelPrimitiveCarrierDetector(
-    CrossModuleCandidateDetector[ParallelPrimitiveCarrierCandidate],
+    CrossModuleCollectorCandidateDetector[ParallelPrimitiveCarrierCandidate],
 ):
     ssot_authority_boundary = True
     finding_spec = high_confidence_spec(
@@ -1436,13 +1419,7 @@ class ParallelPrimitiveCarrierDetector(
         ),
     )
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[ParallelPrimitiveCarrierCandidate]:
-        del config
-        return _parallel_primitive_carrier_candidates(modules)
+    candidate_collector = staticmethod(_parallel_primitive_carrier_candidates)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
