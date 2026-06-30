@@ -17917,9 +17917,20 @@ class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
             name
             for statement in node.body
             if isinstance(statement, ast.AnnAssign) and statement.value is None
+            if cls.is_classvar_annotation(statement.annotation)
             for name in cls.assignment_target_name(statement)
             if name not in cls.registry_declaration_names()
         )
+
+    @classmethod
+    def is_classvar_annotation(cls, annotation: ast.AST) -> bool:
+        if isinstance(annotation, ast.Name):
+            return annotation.id == "ClassVar"
+        if isinstance(annotation, ast.Attribute):
+            return annotation.attr == "ClassVar"
+        if isinstance(annotation, ast.Subscript):
+            return cls.is_classvar_annotation(annotation.value)
+        return False
 
     @staticmethod
     def assignment_target_name(statement: ast.AnnAssign) -> tuple[str, ...]:
@@ -19324,8 +19335,21 @@ class MappingSemanticMirrorRecipeBuilder(
         raise NotImplementedError
 
 
-class LocalRoleCaseConstructibleItem(ABC):
+class LocalRoleCaseConstructibleItem(ABC, metaclass=AutoRegisterMeta):
     """Nominal contract for rendered role-case rows."""
+
+    __registry__: ClassVar[
+        dict[str, type["LocalRoleCaseConstructibleItem"]]
+    ] = {}
+    __registry_key__ = "registry_key"
+
+    @staticmethod
+    def _registry_key(name: str, cls: type[object]) -> str:
+        del cls
+        return name
+
+    __key_extractor__ = staticmethod(_registry_key)
+    __skip_if_no_key__ = True
 
     @abstractmethod
     def construction_source(self, item_class_name: str) -> str:
@@ -19593,6 +19617,19 @@ class LocalRoleCaseBranchAuthorityExtraction(
     prelude_source: str = ""
 
     def role_case_item_class_source(self, item_class_name: str) -> str:
+        if len(self.parameter_names) == 1:
+            return (
+                f"class {item_class_name}:\n"
+                "    def __init__(self, axis_name, expected_value, result):\n"
+                "        self.axis_name = axis_name\n"
+                "        self.expected_value = expected_value\n"
+                "        self.result = result\n"
+                "\n"
+                "    def matches(self, axis_value):\n"
+                "        if isinstance(self.expected_value, (frozenset, list, set, tuple)):\n"
+                "            return axis_value in self.expected_value\n"
+                "        return axis_value == self.expected_value\n"
+            )
         return (
             f"class {item_class_name}:\n"
             "    def __init__(self, axis_name, expected_value, result):\n"
@@ -19608,6 +19645,16 @@ class LocalRoleCaseBranchAuthorityExtraction(
         )
 
     def role_case_behavior_method_source(self) -> str:
+        if len(self.parameter_names) == 1:
+            parameter_name = self.parameter_names[0]
+            return (
+                "    @classmethod\n"
+                f"    def {self.owner_function_name}(cls, {parameter_name}):\n"
+                "        for role_case in cls.role_cases():\n"
+                f"            if role_case.matches({parameter_name}):\n"
+                "                return role_case.result\n"
+                f"        return {self.default_source}\n"
+            )
         return (
             "    @classmethod\n"
             f"    def {self.owner_function_name}(cls, **axis_values):\n"
@@ -19879,8 +19926,8 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         return (
             "local role-case logic extraction requires either one simple function "
             "body with a local string-keyed mapping and a return of mapping.get(axis), "
-            "or an ordered if/return suffix chain whose literal guards compare "
-            "function parameters to expected case values"
+            "or a single-parameter ordered if/return suffix chain whose literal "
+            "guards compare that parameter to expected case values"
         )
 
     @cached_property
@@ -19953,8 +20000,6 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         return (
             self.mapping_extraction_for(source_path, node)
             or self.branch_extraction_for(source_path, node)
-            or self.assignment_branch_extraction_for(source_path, node)
-            or self.guard_return_extraction_for(source_path, node)
         )
 
     def source_segments_for(self, source_path: str) -> SourceLineSegmentAuthority:
@@ -20019,7 +20064,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         if default_source is None:
             return None
         parameter_names = FunctionParameterProjection.public_names(node)
-        if not parameter_names:
+        if len(parameter_names) != 1:
             return None
         parameter_name_set = frozenset(parameter_names)
         items: list[LocalRoleCaseBranchItem] = []
@@ -20048,6 +20093,8 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 return None
             items.extend(condition_items)
         if not self.branch_items_cover_finding(tuple(items)):
+            return None
+        if any(item.axis_name != parameter_names[0] for item in items):
             return None
         return LocalRoleCaseBranchAuthorityExtraction(
             items=tuple(items),
