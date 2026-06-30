@@ -20681,12 +20681,18 @@ class ClassFamilyCollectionProjection:
 
 
 @dataclass(frozen=True)
-class ClassFamilyCollectionSemanticMirrorRecipeParts:
-    """Executable recipe facts for a subclass-collection semantic mirror."""
+class SemanticMirrorAuthorityLocation:
+    """Shared file and symbol identity for semantic-mirror authority imports."""
 
     projection_path: str
     authority_path: str
     authority_name: str
+
+
+@dataclass(frozen=True)
+class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLocation):
+    """Executable recipe facts for a subclass-collection semantic mirror."""
+
     assignment_name: str
     assignment_source: str
 
@@ -20938,12 +20944,8 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class SemanticMirrorAuthorityImportSource:
+class SemanticMirrorAuthorityImportSource(SemanticMirrorAuthorityLocation):
     """Render import source for projection files that need an authority class."""
-
-    projection_path: str
-    authority_path: str
-    authority_name: str
 
     def source(self) -> str:
         relative_module = self.relative_module_name()
