@@ -12036,7 +12036,7 @@ class FunctionSignatureSourceAuthority:
 
 @dataclass(frozen=True)
 class _RecipeReplacementGroup:
-    target_id: str
+    target: AstTargetDigest
     replacements: tuple[SourceLineReplacement, ...]
 
 
@@ -12221,7 +12221,7 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
     ) -> tuple[_RecipeReplacementGroup, ...]:
         groups = [
             _RecipeReplacementGroup(
-                target_id=self._smallest_enclosing_target_id((replacement,)),
+                target=self._smallest_enclosing_target((replacement,)),
                 replacements=(replacement,),
             )
             for replacement in replacements
@@ -12235,7 +12235,7 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
                     merged_groups.append(group)
                     continue
                 previous = merged_groups[-1]
-                if not self._target_spans_overlap(previous.target_id, group.target_id):
+                if not self._target_spans_overlap(previous.target, group.target):
                     merged_groups.append(group)
                     continue
                 merged_groups[-1] = self._merge_groups(previous, group)
@@ -12247,13 +12247,13 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         self,
         group: _RecipeReplacementGroup,
     ) -> PlannedSourceRewrite:
-        target = self.source_index.target_by_id[group.target_id]
+        target = group.target
         replacement_source = SourceTargetEditor(
             self.sources_by_file_path,
             target,
         ).replacement_source(group.replacements)
         return PlannedSourceRewrite(
-            target_id=group.target_id,
+            target_id=target.target_id,
             replacement_source=replacement_source,
             rationale=_joined_rationales(
                 replacement.rationale for replacement in group.replacements
@@ -12267,14 +12267,14 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
     ) -> _RecipeReplacementGroup:
         replacements = (*first.replacements, *second.replacements)
         return _RecipeReplacementGroup(
-            target_id=self._smallest_enclosing_target_id(replacements),
+            target=self._smallest_enclosing_target(replacements),
             replacements=replacements,
         )
 
-    def _smallest_enclosing_target_id(
+    def _smallest_enclosing_target(
         self,
         replacements: tuple[SourceLineReplacement, ...],
-    ) -> str:
+    ) -> AstTargetDigest:
         file_paths = {replacement.file_path for replacement in replacements}
         if len(file_paths) != 1:
             raise ValueError("Recipe operation groups must not cross source files")
@@ -12300,11 +12300,13 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
                 target.line,
                 target.qualname,
             ),
-        ).target_id
+        )
 
-    def _target_spans_overlap(self, first_id: str, second_id: str) -> bool:
-        first = self.source_index.target_by_id[first_id]
-        second = self.source_index.target_by_id[second_id]
+    @staticmethod
+    def _target_spans_overlap(
+        first: AstTargetDigest,
+        second: AstTargetDigest,
+    ) -> bool:
         return (
             first.file_path == second.file_path
             and first.line <= second.end_line
@@ -12315,7 +12317,7 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         self,
         group: _RecipeReplacementGroup,
     ) -> tuple[str, int, int, str]:
-        target = self.source_index.target_by_id[group.target_id]
+        target = group.target
         return (target.file_path, target.line, target.end_line, target.qualname)
 
 
