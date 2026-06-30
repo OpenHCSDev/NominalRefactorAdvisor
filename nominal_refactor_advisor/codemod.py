@@ -1313,6 +1313,16 @@ class SourceRewriteTarget:
         }
 
 
+@dataclass(frozen=True, kw_only=True)
+class SourceRewriteTargetReference:
+    """Shared owner for DSL records that reference source-index targets."""
+
+    target: SourceRewriteTarget = field(default_factory=SourceRewriteTarget)
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (self.target,)
+
+
 @dataclass(frozen=True)
 class CodemodSelectorContext:
     """Shared semantic selection context for recipe synthesis."""
@@ -3061,10 +3071,9 @@ class SourceRewritePlanPayload:
 
 
 @dataclass(frozen=True)
-class RecipeCallReplacement:
+class RecipeCallReplacement(SourceRewriteTargetReference):
     """One exact call-site replacement inside an authority extraction recipe."""
 
-    target: SourceRewriteTarget
     old_source: str
     new_source: str
 
@@ -3574,10 +3583,9 @@ def operation_payload_bindings(
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceRewritePlanItem:
+class SourceRewritePlanItem(SourceRewriteTargetReference):
     """Common target and rationale state for source rewrite plan items."""
 
-    target: SourceRewriteTarget = field(default_factory=SourceRewriteTarget)
     rationale: str = ""
 
     def rationale_text(self, default: str) -> str:
@@ -6508,6 +6516,16 @@ class ExtractAuthorityOperation(RefactorRecipeOperation):
             )
         return tuple(
             replacement.to_dict() for replacement in operation.call_replacements
+        )
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (
+            *super().referenced_source_targets(),
+            *(
+                target
+                for replacement in self.call_replacements
+                for target in replacement.referenced_source_targets()
+            ),
         )
 
     def line_replacements(
@@ -12332,6 +12350,13 @@ class RefactorRecipe:
     operations: tuple[RefactorRecipeOperation, ...] = ()
     reason: str = ""
 
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return tuple(
+            target
+            for item in (*self.rewrites, *self.operations)
+            for target in item.referenced_source_targets()
+        )
+
     def replace_target(
         self,
         replacement_source: str,
@@ -13085,6 +13110,13 @@ class CodemodPlanDocument:
     def has_architecture_guards(self) -> bool:
         return not self.guard_suite.is_empty
 
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return tuple(
+            target
+            for recipe in self.recipes
+            for target in recipe.referenced_source_targets()
+        )
+
     def source_rewrite_batch(
         self,
         source_index: SourceIndex,
@@ -13242,6 +13274,28 @@ class CodemodPlanSequence:
     @property
     def has_multiple_stages(self) -> bool:
         return len(self.documents) > 1
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return tuple(
+            target
+            for document in self.documents
+            for target in document.referenced_source_targets()
+        )
+
+    def explicit_source_paths(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                target.source_path
+                for target in self.referenced_source_targets()
+                if target.source_path is not None
+            )
+        )
+
+    @property
+    def has_unresolved_source_targets(self) -> bool:
+        return any(
+            target.source_path is None for target in self.referenced_source_targets()
+        )
 
     def source_rewrite_batch_from_snapshot(
         self,

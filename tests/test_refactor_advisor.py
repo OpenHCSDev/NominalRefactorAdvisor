@@ -64,6 +64,7 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.class_index import build_class_family_index
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
+from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import JsonPayloadBuilder
 from nominal_refactor_advisor.cli import JsonPayloadProfile
@@ -2978,6 +2979,73 @@ def test_refactor_recipe_extracts_authority(
     assert "def old_helper" not in rewritten
     assert "class HelperAuthority" in rewritten
     assert "HelperAuthority.normalize(value)" in rewritten
+
+
+def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
+    tmp_path: Path,
+) -> None:
+    helper_path = tmp_path / "pkg/helpers.py"
+    parser_path = tmp_path / "pkg/parser.py"
+    _write_module(
+        tmp_path,
+        "pkg/helpers.py",
+        "def old_helper(value):\n" "    return value.strip()\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/parser.py",
+        "from .helpers import old_helper\n\n\n"
+        "class Parser:\n"
+        "    def parse(self, value):\n"
+        "        return old_helper(value)\n",
+    )
+    sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe(recipe_id="multi-file-authority").extract_authority(
+                    "old_helper",
+                    (
+                        "class HelperAuthority:\n"
+                        "    @staticmethod\n"
+                        "    def normalize(value):\n"
+                        "        return value.strip()\n"
+                    ),
+                    source_path=helper_path.as_posix(),
+                    call_replacements=(
+                        RecipeCallReplacement(
+                            target=SourceRewriteTarget(
+                                qualname="Parser.parse",
+                                source_path=parser_path.as_posix(),
+                            ),
+                            old_source="old_helper(value)",
+                            new_source="HelperAuthority.normalize(value)",
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    snapshot = CodemodRecipePlanFastSourceSnapshot(
+        sequence=sequence,
+        roots=(tmp_path,),
+        cwd=tmp_path,
+    ).optional_snapshot()
+
+    assert sequence.explicit_source_paths() == (
+        helper_path.as_posix(),
+        parser_path.as_posix(),
+    )
+    assert sequence.has_unresolved_source_targets is False
+    assert snapshot is not None
+    assert set(snapshot.sources_by_file_path) == {
+        helper_path.as_posix(),
+        parser_path.as_posix(),
+    }
+    assert {target.qualname for target in snapshot.source_index.ast_targets} >= {
+        "old_helper",
+        "Parser.parse",
+    }
 
 
 def test_codemod_plan_document_simulates_and_applies_recipes(

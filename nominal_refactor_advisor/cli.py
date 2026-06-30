@@ -78,6 +78,7 @@ from .codemod import (
     RefactorRecipeOperationPlanTemplate,
     RefactorRecipeOperationTemplate,
     RefactorRecipeRewrite,
+    SourcePathCandidateAuthority,
     SourceIndexTargetSelector,
     SourceRewriteTarget,
     apply_codemod_simulation,
@@ -3843,9 +3844,8 @@ class CodemodCliExecution(
         "--codemod-apply require codemod candidates or recipe rewrites"
     )
     impact_candidates: CodemodCandidateSelection
-    codemod_plan_sequence: CodemodPlanSequence
+    execution_request: "CodemodPlanExecutionRequest"
     architecture_guard_evaluator: ArchitectureGuardSourceEvaluator
-    execution_mode: "CodemodExecutionMode"
     modules: list[ParsedModule]
     findings: list[RefactorFinding]
     config: DetectorConfig
@@ -3853,15 +3853,15 @@ class CodemodCliExecution(
 
     @property
     def requested(self) -> bool:
-        return self.execution_mode.requested
+        return self.execution_request.mode.requested
 
     def run(self) -> int | None:
         if not self.requested:
             return None
         snapshot = self.required_source_snapshot()
-        if self.execution_mode.preflight:
+        if self.execution_request.mode.preflight:
             return self.emit_preflight_report(
-                self.codemod_plan_sequence.preflight_snapshot(snapshot)
+                self.execution_request.sequence.preflight_snapshot(snapshot)
             )
         try:
             simulation, architecture_guard_report, plan_sequence_simulation = (
@@ -3896,8 +3896,8 @@ class CodemodCliExecution(
         ArchitectureGuardReport | None,
         CodemodPlanSequenceSimulation | None,
     ]:
-        if not self.impact_candidates and self.codemod_plan_sequence.has_recipes:
-            plan_sequence_simulation = self.codemod_plan_sequence.simulate_snapshot(
+        if not self.impact_candidates and self.execution_request.sequence.has_recipes:
+            plan_sequence_simulation = self.execution_request.sequence.simulate_snapshot(
                 snapshot
             )
             return (
@@ -3909,8 +3909,8 @@ class CodemodCliExecution(
             self.candidate_rewrite_batch()
         )
         active_snapshot = snapshot.with_simulation(candidate_simulation)
-        if self.codemod_plan_sequence.has_recipes:
-            plan_sequence_simulation = self.codemod_plan_sequence.simulate_snapshot(
+        if self.execution_request.sequence.has_recipes:
+            plan_sequence_simulation = self.execution_request.sequence.simulate_snapshot(
                 active_snapshot
             )
             simulation = CodemodSimulationReport.combine(
@@ -3931,7 +3931,7 @@ class CodemodCliExecution(
         self,
         report: CodemodOperationPreflightReport,
     ) -> int:
-        if self.execution_mode.json_report_requested(self.args.json):
+        if self.execution_request.mode.json_report_requested(self.args.json):
             print(
                 json.dumps(
                     CodemodPreflightFailurePayload(report).to_dict(),
@@ -3969,7 +3969,7 @@ class CodemodCliExecution(
         self,
         plan_sequence_simulation: CodemodPlanSequenceSimulation,
     ) -> ArchitectureGuardReport | None:
-        if not self.codemod_plan_sequence.has_architecture_guards:
+        if not self.execution_request.sequence.has_architecture_guards:
             return None
         return plan_sequence_simulation.architecture_guard_report
 
@@ -3979,7 +3979,7 @@ class CodemodCliExecution(
         simulation: CodemodSimulationReport,
         architecture_guard_report: ArchitectureGuardReport,
     ) -> int:
-        if self.execution_mode.json_report_requested(self.args.json):
+        if self.execution_request.mode.json_report_requested(self.args.json):
             print(
                 json.dumps(
                     CodemodSimulationPayload(
@@ -3992,7 +3992,7 @@ class CodemodCliExecution(
                 )
             )
         else:
-            if self.execution_mode.diff_text_requested:
+            if self.execution_request.mode.diff_text_requested:
                 print(
                     snapshot.unified_diff(simulation),
                     end="",
@@ -4005,7 +4005,7 @@ class CodemodCliExecution(
         simulation: CodemodSimulationReport,
         plan_sequence_simulation: CodemodPlanSequenceSimulation | None,
     ) -> bool:
-        if not self.execution_mode.apply:
+        if not self.execution_request.mode.apply:
             return False
         if plan_sequence_simulation is not None:
             plan_sequence_simulation.apply()
@@ -4021,7 +4021,7 @@ class CodemodCliExecution(
         architecture_guard_report: ArchitectureGuardReport | None,
         plan_sequence_simulation: CodemodPlanSequenceSimulation | None,
     ) -> None:
-        if self.execution_mode.json_report_requested(self.args.json):
+        if self.execution_request.mode.json_report_requested(self.args.json):
             payload = CodemodSimulationPayload(
                 simulation,
                 applied=applied,
@@ -4032,7 +4032,7 @@ class CodemodCliExecution(
                 payload["plan_sequence_simulation"] = plan_sequence_simulation.to_dict()
             projected_findings = self.optional_projected_finding_report(
                 simulation,
-                enabled=self.execution_mode.project_findings,
+                enabled=self.execution_request.mode.project_findings,
                 source_sequence=(
                     plan_sequence_simulation.sequence
                     if plan_sequence_simulation is not None
@@ -4048,7 +4048,7 @@ class CodemodCliExecution(
                     indent=2,
                 )
             )
-        elif self.execution_mode.diff_text_requested:
+        elif self.execution_request.mode.diff_text_requested:
             print(
                 snapshot.unified_diff(simulation),
                 end="",
@@ -4065,7 +4065,7 @@ class CodemodCliExecution(
         snapshot: CodemodSourceSnapshot,
         simulation: CodemodSimulationReport,
     ) -> str | None:
-        if not self.execution_mode.unified_diff_requested:
+        if not self.execution_request.mode.unified_diff_requested:
             return None
         return self.unified_diff(snapshot, simulation)
 
@@ -4136,6 +4136,24 @@ class CodemodExecutionMode:
         parser.error(
             "--codemod-diff, --codemod-preflight, --codemod-simulate, and "
             "--codemod-apply are mutually exclusive"
+        )
+
+
+@dataclass(frozen=True)
+class CodemodPlanExecutionRequest:
+    """Codemod plan plus execution mode consumed by execution authorities."""
+
+    sequence: CodemodPlanSequence
+    mode: CodemodExecutionMode
+
+    @property
+    def exact_recipe_execution(self) -> bool:
+        return (
+            self.mode.requested
+            and not self.mode.project_findings
+            and self.sequence.has_recipes
+            and not self.sequence.has_authority_boundaries
+            and not self.sequence.has_architecture_guards
         )
 
 
@@ -4294,6 +4312,96 @@ class CodemodScanQueryMode:
             "--codemod-resolve-selector, --codemod-target-source, and "
             "--codemod-replacement-plan, and --codemod-selected-operation-plan "
             "are mutually exclusive"
+        )
+
+
+@dataclass(frozen=True)
+class CodemodRecipePlanSourceFile(SourcePathCandidateAuthority):
+    """Resolve one explicit recipe source path to a readable Python file."""
+
+    @classmethod
+    def from_roots(
+        cls,
+        requested_path: str,
+        roots: tuple[Path, ...],
+        cwd: Path,
+    ) -> "CodemodRecipePlanSourceFile":
+        return cls(
+            requested_path=requested_path,
+            candidate_paths=cls.candidate_paths_for(requested_path, roots, cwd),
+        )
+
+    def source_mapping_entry(self) -> tuple[str, str] | None:
+        file_path = self.unique_existing_file_path()
+        if file_path is None:
+            return None
+        return (file_path, Path(file_path).read_text(encoding="utf-8"))
+
+    def unique_existing_file_path(self) -> str | None:
+        paths_by_resolved_path: dict[Path, str] = {}
+        for file_path in self.candidate_paths:
+            path = Path(file_path)
+            expanded_path = path.expanduser()
+            if expanded_path.is_file():
+                paths_by_resolved_path.setdefault(
+                    expanded_path.resolve(),
+                    expanded_path.as_posix(),
+                )
+        if len(paths_by_resolved_path) != 1:
+            return None
+        return tuple(paths_by_resolved_path.values())[0]
+
+    @staticmethod
+    def candidate_paths_for(
+        requested_path: str,
+        roots: tuple[Path, ...],
+        cwd: Path,
+    ) -> tuple[str, ...]:
+        requested = Path(requested_path)
+        if requested.is_absolute():
+            return (requested.as_posix(),)
+        return tuple(
+            path.as_posix()
+            for path in dict.fromkeys(
+                (cwd / requested, *(root / requested for root in roots), requested)
+            )
+        )
+
+
+@dataclass(frozen=True)
+class CodemodRecipePlanFastSourceSnapshot:
+    """Build a narrow source snapshot for exact recipe plans with file paths."""
+
+    sequence: CodemodPlanSequence
+    roots: tuple[Path, ...]
+    cwd: Path
+
+    def optional_snapshot(self) -> CodemodSourceSnapshot | None:
+        if self.sequence.has_unresolved_source_targets:
+            return None
+        source_by_path = self.source_mapping()
+        if source_by_path is None:
+            return None
+        return CodemodSourceSnapshot.from_source_mapping(source_by_path)
+
+    def source_mapping(self) -> dict[str, str] | None:
+        entries = tuple(self.source_mapping_entries())
+        if len(entries) != len(self.sequence.explicit_source_paths()):
+            return None
+        return dict(entries)
+
+    def source_mapping_entries(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            entry
+            for requested_path in self.sequence.explicit_source_paths()
+            for entry in (
+                CodemodRecipePlanSourceFile.from_roots(
+                    requested_path=requested_path,
+                    roots=self.roots,
+                    cwd=self.cwd,
+                ).source_mapping_entry(),
+            )
+            if entry is not None
         )
 
 
@@ -4978,6 +5086,10 @@ def main() -> int:
         if args.codemod_plan is not None
         else CodemodPlanSequence()
     )
+    codemod_execution_request = CodemodPlanExecutionRequest(
+        sequence=codemod_plan_sequence,
+        mode=codemod_execution_mode,
+    )
     if (
         codemod_requested
         and not explicit_impact_ranking_request
@@ -5111,6 +5223,37 @@ def main() -> int:
         ).require_authority_boundary_mode()
     except SemanticRefactorGateModeError as error:
         parser.error(str(error))
+
+    fast_codemod_source_snapshot = None
+    if (
+        codemod_execution_request.exact_recipe_execution
+        and not args.include_impact_ranking
+        and not args.codemod_fixpoint
+        and codemod_workflow_plan is None
+        and args.codemod_refactor_goal is None
+        and args.import_lean_export is None
+        and not codemod_scan_query_mode.requested
+    ):
+        fast_codemod_source_snapshot = CodemodRecipePlanFastSourceSnapshot(
+            sequence=codemod_execution_request.sequence,
+            roots=roots,
+            cwd=Path.cwd(),
+        ).optional_snapshot()
+    if fast_codemod_source_snapshot is not None:
+        fast_codemod_execution_result = CodemodCliExecution(
+            parser=parser,
+            args=args,
+            source_snapshot=fast_codemod_source_snapshot,
+            impact_candidates=None,
+            execution_request=codemod_execution_request,
+            architecture_guard_evaluator=ArchitectureGuardSourceEvaluator([], ()),
+            modules=[],
+            findings=[],
+            config=config,
+            roots=roots,
+        ).run()
+        if fast_codemod_execution_result is not None:
+            return fast_codemod_execution_result
 
     if args.import_lean_export is None:
         preparse_cache_policy = JsonSummaryPreparseCachePolicy(
@@ -5370,9 +5513,8 @@ def main() -> int:
         args=args,
         source_snapshot=source_snapshot,
         impact_candidates=codemod_candidates,
-        codemod_plan_sequence=codemod_plan_sequence,
+        execution_request=codemod_execution_request,
         architecture_guard_evaluator=architecture_guard_evaluator,
-        execution_mode=codemod_execution_mode,
         modules=modules,
         findings=findings,
         config=config,
