@@ -109,6 +109,8 @@ from .codemod_authoring import (
     CodemodAuthoringWorkflowReadiness,
 )
 from .codemod_workflow import (
+    CodemodClassPlanProjectedDelta,
+    CodemodClassPlanProjectedDeltaReport,
     CodemodFindingChangeCarrier,
     CodemodFindingChangeProjection,
     CodemodFindingClassChange,

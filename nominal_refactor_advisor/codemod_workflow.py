@@ -25,6 +25,8 @@ from .codemod import (
     CodemodPlanSequenceContinuationReport,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
+    FindingRecipeClassPlan,
+    FindingRecipeClassPlanReport,
     FindingRecipePlan,
     FindingRecipeSynthesisBoundary,
     FindingRecipeSynthesisReport,
@@ -518,6 +520,17 @@ class CodemodFindingClassDelta:
             for status in CodemodFindingClassStatus
             if self.count_status(status)
         }
+
+    def changes_for_before_ids(
+        self,
+        finding_ids: tuple[str, ...],
+    ) -> tuple[CodemodFindingClassChange, ...]:
+        selected_ids = frozenset(finding_ids)
+        return tuple(
+            change
+            for change in self.changes
+            if selected_ids.intersection(change.before_finding_ids)
+        )
 
     def to_dict(self) -> JsonObject:
         return {
@@ -1382,6 +1395,15 @@ class CodemodProjectedFindingReport:
             plan=projected_snapshot.plan_from_findings(after_findings),
         )
 
+    def class_plan_delta_report(
+        self,
+        class_plan_report: FindingRecipeClassPlanReport,
+    ) -> "CodemodClassPlanProjectedDeltaReport":
+        return CodemodClassPlanProjectedDeltaReport(
+            class_plan_report=class_plan_report,
+            projected_finding_report=self,
+        )
+
     def to_dict(self) -> JsonObject:
         after_findings = self.after_findings
         projected_snapshot = self.after_scan.source_snapshot
@@ -1395,6 +1417,90 @@ class CodemodProjectedFindingReport:
             "projected_source_index": projected_snapshot.source_index.to_dict(),
             "projected_finding_recipe_plan": continuation_report.plan.to_dict(),
             "projected_finding_continuation": continuation_report.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodClassPlanProjectedDelta:
+    """Projected before/after finding-class result for one execution class plan."""
+
+    class_plan: FindingRecipeClassPlan
+    changes: tuple[CodemodFindingClassChange, ...]
+
+    @classmethod
+    def from_class_plan(
+        cls,
+        class_plan: FindingRecipeClassPlan,
+        finding_class_delta: CodemodFindingClassDelta,
+    ) -> "CodemodClassPlanProjectedDelta":
+        return cls(
+            class_plan=class_plan,
+            changes=finding_class_delta.changes_for_before_ids(
+                class_plan.finding_ids
+            ),
+        )
+
+    @property
+    def status_counts(self) -> JsonObject:
+        return {
+            status.value: sum(1 for change in self.changes if change.status is status)
+            for status in CodemodFindingClassStatus
+            if any(change.status is status for change in self.changes)
+        }
+
+    @property
+    def fulfilled_expected_removals(self) -> bool:
+        surviving_ids = {
+            finding_id
+            for change in self.changes
+            for finding_id in change.after_finding_ids
+        }
+        return not any(
+            finding_id in surviving_ids
+            for finding_id in self.class_plan.expected_removed_finding_ids
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "class_id": self.class_plan.execution_class.class_id,
+            "finding_ids": self.class_plan.finding_ids,
+            "expected_removed_finding_ids": (
+                self.class_plan.expected_removed_finding_ids
+            ),
+            "expected_removed_finding_count": (
+                self.class_plan.expected_removed_finding_count
+            ),
+            "fulfilled_expected_removals": self.fulfilled_expected_removals,
+            "status_counts": self.status_counts,
+            "changes": tuple(change.to_dict() for change in self.changes),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodClassPlanProjectedDeltaReport:
+    """Join simulated finding-class deltas back onto synthesized class plans."""
+
+    class_plan_report: FindingRecipeClassPlanReport
+    projected_finding_report: CodemodProjectedFindingReport
+
+    @property
+    def finding_class_delta(self) -> CodemodFindingClassDelta:
+        return self.projected_finding_report.finding_class_delta
+
+    @property
+    def class_deltas(self) -> tuple[CodemodClassPlanProjectedDelta, ...]:
+        return tuple(
+            CodemodClassPlanProjectedDelta.from_class_plan(
+                class_plan,
+                self.finding_class_delta,
+            )
+            for class_plan in self.class_plan_report.classes
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "class_count": len(self.class_deltas),
+            "classes": tuple(class_delta.to_dict() for class_delta in self.class_deltas),
         }
 
 

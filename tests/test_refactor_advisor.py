@@ -16533,6 +16533,8 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     )
     payload = json.loads(result.stdout)
     projected = payload["projected_findings"]
+    class_projection = payload["class_plan_projected_deltas"]
+    class_delta = class_projection["classes"][0]
 
     assert result.returncode == 0, result.stderr
     assert payload["class_count"] == 1
@@ -16540,6 +16542,10 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert "finding_class_delta" in projected
     assert projected["finding_delta"]["fulfilled_expected_removals"]
     assert projected["finding_class_delta"]["eliminated_class_count"] >= 1
+    assert class_projection["class_count"] == 1
+    assert class_delta["fulfilled_expected_removals"] is True
+    assert class_delta["status_counts"]["eliminated"] >= 1
+    assert class_delta["changes"][0]["status"] == "eliminated"
 
 
 def test_module_cli_simulates_projected_findings_with_executable_continuation(
@@ -16660,6 +16666,8 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodAuthoringWorkflowModel
     from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
     from nominal_refactor_advisor import CodemodAuthoringWorkflowReadiness
+    from nominal_refactor_advisor import CodemodClassPlanProjectedDelta
+    from nominal_refactor_advisor import CodemodClassPlanProjectedDeltaReport
     from nominal_refactor_advisor import CodemodFindingChangeCarrier
     from nominal_refactor_advisor import CodemodFindingChangeProjection
     from nominal_refactor_advisor import CodemodFindingClassChange
@@ -16769,6 +16777,11 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodFindingClassStatus.MOVED.value == "moved"
     assert finding_change.expected_removed_finding_count == 1
     assert finding_change.to_dict()["finding_delta"]["removed_finding_ids"] == ("a",)
+    assert CodemodClassPlanProjectedDelta.__name__ == "CodemodClassPlanProjectedDelta"
+    assert (
+        CodemodClassPlanProjectedDeltaReport.__name__
+        == "CodemodClassPlanProjectedDeltaReport"
+    )
     assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
     assert FindingRecipeClassPlan.__name__ == "FindingRecipeClassPlan"
     assert FindingRecipeClassPlanReport.__name__ == "FindingRecipeClassPlanReport"

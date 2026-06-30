@@ -4763,6 +4763,9 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
             )
             if projected_findings is not None:
                 payload["projected_findings"] = projected_findings.to_dict()
+                payload["class_plan_projected_deltas"] = (
+                    projected_findings.class_plan_delta_report(report).to_dict()
+                )
                 self.write_continuation_plan_if_requested(projected_findings)
             payload = self.with_optional_synthesis_authoring(
                 payload,
