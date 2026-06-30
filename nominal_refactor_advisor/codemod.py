@@ -20962,6 +20962,8 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         return (
             self.mapping_extraction_for(source_path, node)
             or self.branch_extraction_for(source_path, node)
+            or self.assignment_branch_extraction_for(source_path, node)
+            or self.guard_return_extraction_for(source_path, node)
         )
 
     def source_segments_for(self, source_path: str) -> SourceLineSegmentAuthority:

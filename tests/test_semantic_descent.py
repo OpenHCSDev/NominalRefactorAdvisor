@@ -675,18 +675,31 @@ def test_semantic_mirror_role_branch_chain_synthesizes_authority_recipe(
         for recipe in plan.document.to_dict()["recipes"]
         for operation in recipe["operations"]
     )
+    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
 
     assert record.detector_id == "local_role_case_logic"
-    assert record.status.value == "rejected_by_safety_check"
-    assert (
-        "single-parameter ordered if/return suffix chain whose literal guards "
-        "compare that parameter to expected case values"
-        in record.reason
-    )
-    assert operation_kinds == ()
-    assert plan.expected_removed_finding_count == 0
+    assert record.status.value == "planned"
+    assert operation_kinds == ("insert_before_target", "replace_function_body")
+    assert "ProjectionSurfaceRoleCaseAuthority" in rewritten_source
+    assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 0
+    assert simulation.simulation.applied_rewrite_count == 1
+
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    authority = namespace["ProjectionSurfaceAuthority"]()
+    assert authority.materialization_rule("name", "key_to_type", "unused") == (
+        "mapping_literal"
+    )
+    assert authority.materialization_rule("name", "other", "test_params") == (
+        "pytest_param_tuple"
+    )
+    assert authority.materialization_rule("name", "other", "cli_choices") == (
+        "choices_tuple"
+    )
+    assert authority.materialization_rule("name", "other", "unmatched") == (
+        "sorted_tuple"
+    )
 
 
 def test_runtime_authority_branch_chain_synthesizes_authority_recipe(
@@ -766,19 +779,28 @@ def test_runtime_authority_guard_returns_synthesize_authority_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
+    rendered_plan = plan.document.to_dict()
+    operation_kinds = tuple(
+        operation["operation"]
+        for recipe in rendered_plan["recipes"]
+        for operation in recipe["operations"]
+    )
+    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
 
     assert record.detector_id == "runtime_authority_branch_semantics"
-    assert record.status.value == "rejected_by_safety_check"
-    assert (
-        record.reason
-        == "local role-case logic extraction requires either one simple function "
-        "body with a local string-keyed mapping and a return of mapping.get(axis), "
-        "or a single-parameter ordered if/return suffix chain whose literal "
-        "guards compare that parameter to expected case values"
-    )
-    assert plan.expected_removed_finding_count == 0
+    assert record.status.value == "planned"
+    assert operation_kinds == ("insert_before_target", "replace_function_body")
+    assert "SelectRuntimePayloadRoleCaseAuthority" in rewritten_source
+    assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 0
+    assert simulation.simulation.applied_rewrite_count == 1
+
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    authority = namespace["RuntimePolicyAuthority"]()
+    assert authority.select_runtime_payload((), 10) is None
+    assert authority.select_runtime_payload(("a", "b"), 1) is None
+    assert authority.select_runtime_payload(("a", "b"), 3) == "a,b"
 
 
 def test_runtime_assignment_branch_chain_synthesizes_authority_recipe(
@@ -818,19 +840,28 @@ def test_runtime_assignment_branch_chain_synthesizes_authority_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
+    rendered_plan = plan.document.to_dict()
+    operation_kinds = tuple(
+        operation["operation"]
+        for recipe in rendered_plan["recipes"]
+        for operation in recipe["operations"]
+    )
+    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
 
     assert record.detector_id == "runtime_semantic_branch_chain"
-    assert record.status.value == "rejected_by_safety_check"
-    assert (
-        record.reason
-        == "local role-case logic extraction requires either one simple function "
-        "body with a local string-keyed mapping and a return of mapping.get(axis), "
-        "or a single-parameter ordered if/return suffix chain whose literal "
-        "guards compare that parameter to expected case values"
-    )
-    assert plan.expected_removed_finding_count == 0
+    assert record.status.value == "planned"
+    assert operation_kinds == ("insert_before_target", "replace_function_body")
+    assert "CoverageCoordinatesRoleCaseAuthority" in rewritten_source
+    assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 0
+    assert simulation.simulation.applied_rewrite_count == 1
+
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    analyzer = namespace["ProjectionSurfaceAnalyzer"]()
+    assert analyzer.coverage_coordinates("key_roster", ("a", "b"), ("c",)) == 2 / 3
+    assert analyzer.coverage_coordinates("type_roster", ("a", "b"), ("c",)) == 1 / 5
+    assert analyzer.coverage_coordinates("other", ("a", "b"), ("c",)) == 3 / 8
 
 
 def test_inherited_autoregister_config_synthesizes_assignment_deletions(
