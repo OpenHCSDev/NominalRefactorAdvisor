@@ -8,8 +8,8 @@ from typing import ClassVar
 from metaclass_registry import AutoRegisterMeta
 
 from ._base import (
-    ContextualGlobalCacheContract,
     DetectorConfig,
+    SemanticDescentGraphIssueDetector,
     SemanticMirrorIssueDetector,
     high_confidence_certified_spec,
 )
@@ -115,7 +115,7 @@ class AliasOverlapClassKeySourceResolver(SemanticMirrorClassKeySourceResolver):
 
 
 class SemanticMirrorWithoutDescentDetector(
-    ContextualGlobalCacheContract,
+    SemanticDescentGraphIssueDetector,
     SemanticMirrorIssueDetector,
 ):
     """Report presentation projections that mirror a nominal semantic authority."""
@@ -155,8 +155,16 @@ class SemanticMirrorWithoutDescentDetector(
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        del config
         graph = build_semantic_descent_graph(modules)
+        return self._collect_findings_from_graph(graph, modules, config)
+
+    def _collect_findings_from_graph(
+        self,
+        graph: SemanticDescentGraph,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del modules, config
         return [
             self._finding_for_certificate(graph, certificate)
             for certificate in graph.certificates

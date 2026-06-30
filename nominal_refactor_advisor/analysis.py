@@ -41,11 +41,13 @@ from .detectors import (
     DetectorCacheGranularity,
     DetectorConfig,
     IssueDetector,
+    SemanticDescentGraphIssueDetector,
     default_detectors,
 )
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
+from .semantic_descent import SemanticDescentGraph, build_semantic_descent_graph
 
 
 @dataclass(frozen=True)
@@ -695,6 +697,7 @@ class IncrementalAnalysisCacheResolver:
             self._detector_types
         )
         self._global_module_context_signature: str | None = None
+        self._semantic_descent_graph: SemanticDescentGraph | None = None
 
     def result(self) -> IncrementalAnalysisResult:
         per_module_findings = self._per_module_findings()
@@ -916,7 +919,15 @@ class IncrementalAnalysisCacheResolver:
                 hit_count += 1
                 findings.extend(cache_lookup.findings)
                 continue
-            detector_findings = detector_type().detect(self._modules, self._config)
+            detector = detector_type()
+            if isinstance(detector, SemanticDescentGraphIssueDetector):
+                detector_findings = detector._collect_findings_from_graph(
+                    self._semantic_descent_context_graph(),
+                    self._modules,
+                    self._config,
+                )
+            else:
+                detector_findings = detector.detect(self._modules, self._config)
             self._analysis_cache.store(identity, detector_findings)
             findings.extend(detector_findings)
 
@@ -924,6 +935,11 @@ class IncrementalAnalysisCacheResolver:
             AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
         )
         return IncrementalAnalysisResult(findings, cache_status)
+
+    def _semantic_descent_context_graph(self) -> SemanticDescentGraph:
+        if self._semantic_descent_graph is None:
+            self._semantic_descent_graph = build_semantic_descent_graph(self._modules)
+        return self._semantic_descent_graph
 
     def _global_detector_context_signature(self) -> str:
         if self._global_module_context_signature is None:

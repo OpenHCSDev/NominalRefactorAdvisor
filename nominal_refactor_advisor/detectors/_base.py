@@ -31,6 +31,7 @@ from typing import (
     Iterable,
     ParamSpec,
     Sequence,
+    TYPE_CHECKING,
     TypedDict,
     TypeAlias,
     TypeVar,
@@ -91,6 +92,10 @@ from ..factorization import ResidueHookNamesCarrier
 from ..semantic_shape_algebra import (
     InjectiveTypeRegistryProof,
 )
+
+if TYPE_CHECKING:
+    from ..semantic_descent import SemanticDescentGraph
+
 from ..ast_tools import (
     AccessorWrapperCandidate,
     AccessorWrapperObservationFamily,
@@ -861,6 +866,19 @@ class ContextualGlobalCacheContract(ABC):
     def context_signature(
         cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
     ) -> str:
+        raise NotImplementedError
+
+
+class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
+    """Detector contract for findings derived from the cached descent graph."""
+
+    @abstractmethod
+    def _collect_findings_from_graph(
+        self,
+        graph: "SemanticDescentGraph",
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
         raise NotImplementedError
 
 

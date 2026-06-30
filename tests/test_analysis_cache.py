@@ -31,9 +31,14 @@ from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     IssueDetector,
     PerModuleIssueDetector,
+    SemanticDescentGraphIssueDetector,
 )
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.semantic_descent import (
+    SemanticDescentGraph,
+    build_semantic_descent_graph,
+)
 
 
 class CountingSemanticCacheDetector(IssueDetector):
@@ -197,6 +202,93 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
     assert second_result.cache_status is AnalysisCacheStatus.PARTIAL
     assert candidate_calls == 3
     assert finding_calls == 2
+
+
+def test_contextual_global_graph_detectors_share_semantic_descent_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    cache_dir = tmp_path / ".nra-cache" / "analysis"
+    graph_cache_finding_spec = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Graph cache",
+        why="graph cache",
+        capability_gap="graph cache",
+        relation_context="graph cache",
+    )
+    graph_build_count = 0
+    graph_ids: list[int] = []
+    registered_test_detectors: list[type[IssueDetector]] = []
+
+    def counting_graph_builder(modules: list) -> SemanticDescentGraph:
+        nonlocal graph_build_count
+        graph_build_count += 1
+        return build_semantic_descent_graph(modules)
+
+    class FirstGraphDetector(SemanticDescentGraphIssueDetector, IssueDetector):
+        detector_id = "first_graph_cache_detector"
+        finding_spec = graph_cache_finding_spec
+
+        @classmethod
+        def context_signature(
+            cls,
+            modules: tuple,
+            config: DetectorConfig,
+        ) -> str:
+            del cls, modules, config
+            return "shared-graph-context"
+
+        def _collect_findings(
+            self, modules: list, config: DetectorConfig
+        ) -> list[RefactorFinding]:
+            del modules, config
+            raise AssertionError("graph-backed detector should receive graph evidence")
+
+        def _collect_findings_from_graph(
+            self,
+            graph: SemanticDescentGraph,
+            modules: list,
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del modules, config
+            graph_ids.append(id(graph))
+            return []
+
+    class SecondGraphDetector(FirstGraphDetector):
+        detector_id = "second_graph_cache_detector"
+
+    registered_test_detectors.extend((FirstGraphDetector, SecondGraphDetector))
+
+    def unregister_test_detectors() -> None:
+        for registry_key, detector_type in tuple(IssueDetector.__registry__.items()):
+            if detector_type in registered_test_detectors:
+                del IssueDetector.__registry__[registry_key]
+
+    try:
+        monkeypatch.setattr(
+            "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+            lambda: (FirstGraphDetector, SecondGraphDetector),
+        )
+        monkeypatch.setattr(
+            "nominal_refactor_advisor.analysis.build_semantic_descent_graph",
+            counting_graph_builder,
+        )
+        result = analyze_modules_with_cache(
+            (package_root,),
+            parse_python_module_roots((package_root,)),
+            DetectorConfig(),
+            analysis_cache_dir=cache_dir,
+        )
+    finally:
+        unregister_test_detectors()
+
+    assert result.cache_status is AnalysisCacheStatus.MISS
+    assert graph_build_count == 1
+    assert len(graph_ids) == 2
+    assert len(set(graph_ids)) == 1
 
 
 def test_global_detector_shard_survives_detector_registry_expansion(
