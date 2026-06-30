@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from functools import cache
 import hashlib
 from itertools import combinations
 from operator import attrgetter
@@ -53,6 +54,16 @@ class _FindingCluster:
     subsystem: str
     findings: tuple[RefactorFinding, ...]
     evidence: tuple[SourceLocation, ...]
+
+    @classmethod
+    def from_findings(
+        cls, findings: tuple[RefactorFinding, ...], root: Path
+    ) -> "_FindingCluster":
+        return cls(
+            subsystem=SubsystemNameProjection(findings, root).name(),
+            findings=findings,
+            evidence=_FINDING_PROJECTION.combined_evidence(findings),
+        )
 
 
 @dataclass(frozen=True)
@@ -908,10 +919,14 @@ def build_refactor_execution_plan(
             parallel_group_count=0,
         )
     finding_tuple = tuple(findings)
-    edges = _execution_graph_edges(finding_tuple, root)
-    clusters = ExecutionPartitionPlanner(root).clusters(findings)
+    relation_graph = _FindingRelationGraph.from_findings(finding_tuple, root)
+    clusters = ExecutionPartitionPlanner(root).clusters(
+        findings,
+        relation_graph=relation_graph,
+    )
     class_inputs = [
-        _execution_class_input(cluster, root, edges) for cluster in clusters
+        ExecutionClassInputAuthority(cluster, root, relation_graph).input()
+        for cluster in clusters
     ]
     ordered_inputs = sorted(
         class_inputs,
@@ -928,7 +943,7 @@ def build_refactor_execution_plan(
     )
     return RefactorExecutionPlanReport(
         classes=execution_classes,
-        edges=edges,
+        edges=relation_graph.edges,
         total_finding_count=len(findings),
         connected_component_count=len(execution_classes),
         parallel_group_count=len(set(parallel_groups)) if parallel_groups else 0,
@@ -942,11 +957,7 @@ def build_refactor_execution_plan_from_groups(
     """Build execution classes from caller-supplied semantic finding groups."""
 
     clusters = tuple(
-        _FindingCluster(
-            subsystem=_subsystem_name(finding_tuple, root),
-            findings=finding_tuple,
-            evidence=_FINDING_PROJECTION.combined_evidence(finding_tuple),
-        )
+        _FindingCluster.from_findings(finding_tuple, root)
         for group in finding_groups
         for finding_tuple in (sorted_tuple(group, key=lambda finding: finding.stable_id),)
         if finding_tuple
@@ -960,9 +971,10 @@ def build_refactor_execution_plan_from_groups(
             connected_component_count=0,
             parallel_group_count=0,
         )
-    edges = _execution_graph_edges(finding_tuple, root)
+    relation_graph = _FindingRelationGraph.from_findings(finding_tuple, root)
     class_inputs = [
-        _execution_class_input(cluster, root, edges) for cluster in clusters
+        ExecutionClassInputAuthority(cluster, root, relation_graph).input()
+        for cluster in clusters
     ]
     ordered_inputs = sorted(
         class_inputs,
@@ -979,7 +991,7 @@ def build_refactor_execution_plan_from_groups(
     )
     return RefactorExecutionPlanReport(
         classes=execution_classes,
-        edges=edges,
+        edges=relation_graph.edges,
         total_finding_count=len(finding_tuple),
         connected_component_count=len(execution_classes),
         parallel_group_count=len(set(parallel_groups)) if parallel_groups else 0,
@@ -987,11 +999,17 @@ def build_refactor_execution_plan_from_groups(
 
 
 def _cluster_findings(
-    findings: list[RefactorFinding], root: Path
+    findings: list[RefactorFinding],
+    root: Path,
+    relation_graph: _FindingRelationGraph | None = None,
 ) -> list[_FindingCluster]:
     if not findings:
         return []
 
+    graph = relation_graph or _FindingRelationGraph.from_findings(tuple(findings), root)
+    finding_index_by_id = {
+        finding.stable_id: index for index, finding in enumerate(findings)
+    }
     parents = list(range(len(findings)))
 
     def find(index: int) -> int:
@@ -1006,9 +1024,10 @@ def _cluster_findings(
         if left_root != right_root:
             parents[right_root] = left_root
 
-    for left_index, right_index in combinations(range(len(findings)), 2):
-        relation = _finding_relation(findings[left_index], findings[right_index], root)
-        if relation.weight >= 3:
+    for edge in graph.edges:
+        left_index = finding_index_by_id.get(edge.left_finding_id)
+        right_index = finding_index_by_id.get(edge.right_finding_id)
+        if left_index is not None and right_index is not None:
             union(left_index, right_index)
 
     grouped: dict[int, list[RefactorFinding]] = defaultdict(list)
@@ -1020,31 +1039,230 @@ def _cluster_findings(
         ordered_findings = sorted_tuple(
             group_findings,
             key=lambda finding: (
-                _subsystem_name((finding,), root),
+                SubsystemNameProjection((finding,), root).name(),
                 finding.pattern_id,
                 finding.title,
             ),
         )
         clusters.append(
-            _FindingCluster(
-                subsystem=_subsystem_name(ordered_findings, root),
-                findings=ordered_findings,
-                evidence=_FINDING_PROJECTION.combined_evidence(ordered_findings),
-            )
+            _FindingCluster.from_findings(ordered_findings, root)
         )
     return sorted(
         clusters, key=lambda cluster: (cluster.subsystem, len(cluster.findings))
     )
 
 
-def _relation_score(left: RefactorFinding, right: RefactorFinding, root: Path) -> int:
-    return _finding_relation(left, right, root).weight
-
-
 @dataclass(frozen=True)
 class _FindingRelation:
     weight: int
     reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _FindingRelationFacts:
+    finding: RefactorFinding
+    paths: frozenset[Path]
+    relative_parent_parts: tuple[tuple[str, ...], ...]
+    capability_labels: frozenset[str]
+    symbol_roots: frozenset[str]
+
+    @classmethod
+    def from_finding(
+        cls, finding: RefactorFinding, root: Path
+    ) -> "_FindingRelationFacts":
+        paths = frozenset(_evidence_paths(finding))
+        return cls(
+            finding=finding,
+            paths=paths,
+            relative_parent_parts=tuple(
+                _safe_relative(path, root).parent.parts for path in sorted(paths)
+            ),
+            capability_labels=frozenset(tag.label for tag in finding.capability_tags),
+            symbol_roots=frozenset(_symbol_roots(finding)),
+        )
+
+    def relation_to(self, right: "_FindingRelationFacts") -> _FindingRelation:
+        score = 0
+        reasons: list[str] = []
+        shared_paths = self.paths & right.paths
+        if shared_paths:
+            score += 3
+            reasons.append(
+                "shared evidence file: "
+                + ", ".join(str(path) for path in sorted(shared_paths))
+            )
+        common_depth = self.common_dir_depth(right)
+        if common_depth:
+            depth_weight = min(common_depth, 2)
+            score += depth_weight
+            reasons.append(f"common directory depth {common_depth} (+{depth_weight})")
+        shared_capabilities = self.capability_labels & right.capability_labels
+        if shared_capabilities:
+            score += 1
+            reasons.append(
+                "shared capabilities: "
+                + ", ".join(sorted(shared_capabilities))
+            )
+        left_pattern = self.finding.pattern_id
+        right_pattern = right.finding.pattern_id
+        if _patterns_are_synergistic(left_pattern, right_pattern):
+            score += 1
+            reasons.append(
+                f"synergistic patterns {left_pattern.value}/{right_pattern.value}"
+            )
+        shared_roots = self.symbol_roots & right.symbol_roots
+        if shared_roots:
+            score += 1
+            reasons.append("shared symbol roots: " + ", ".join(sorted(shared_roots)))
+        return _FindingRelation(weight=score, reasons=tuple(reasons))
+
+    def common_dir_depth(self, right: "_FindingRelationFacts") -> int:
+        depth = 0
+        for left_parts in self.relative_parent_parts:
+            for right_parts in right.relative_parent_parts:
+                depth = max(depth, _common_prefix_length(left_parts, right_parts))
+        return depth
+
+
+@dataclass(frozen=True)
+class _FindingRelationGraph:
+    edges: tuple[RefactorExecutionEdge, ...]
+    edge_by_finding_pair: dict[tuple[str, str], RefactorExecutionEdge]
+    facts_by_finding_id: dict[str, _FindingRelationFacts]
+
+    @classmethod
+    def from_findings(
+        cls, findings: tuple[RefactorFinding, ...], root: Path
+    ) -> "_FindingRelationGraph":
+        facts = tuple(
+            _FindingRelationFacts.from_finding(finding, root) for finding in findings
+        )
+        edges = []
+        for left, right in combinations(facts, 2):
+            relation = left.relation_to(right)
+            if relation.weight < 3:
+                continue
+            left_id, right_id = sorted(
+                (left.finding.stable_id, right.finding.stable_id)
+            )
+            edges.append(
+                RefactorExecutionEdge(
+                    left_finding_id=left_id,
+                    right_finding_id=right_id,
+                    weight=relation.weight,
+                    reasons=relation.reasons,
+                )
+            )
+        ordered_edges = sorted_tuple(
+            edges,
+            key=lambda edge: (edge.left_finding_id, edge.right_finding_id),
+        )
+        return cls(
+            edges=ordered_edges,
+            edge_by_finding_pair={
+                (edge.left_finding_id, edge.right_finding_id): edge
+                for edge in ordered_edges
+            },
+            facts_by_finding_id={fact.finding.stable_id: fact for fact in facts},
+        )
+
+    def internal_edges_for(
+        self, finding_ids: tuple[str, ...]
+    ) -> tuple[RefactorExecutionEdge, ...]:
+        return tuple(
+            edge
+            for left_id, right_id in combinations(finding_ids, 2)
+            if (edge := self.edge_by_finding_pair.get((left_id, right_id))) is not None
+        )
+
+
+@dataclass(frozen=True)
+class SubsystemNameProjection:
+    findings: tuple[RefactorFinding, ...]
+    root: Path
+
+    def name(self) -> str:
+        paths = self.paths()
+        if not paths:
+            return self.root.name
+        prefix = self.common_parent_prefix(paths)
+        if prefix:
+            return str(Path(*prefix))
+        first = _safe_relative(paths[0], self.root)
+        if first.parent != Path("."):
+            return str(first.parent)
+        return first.stem
+
+    def paths(self) -> tuple[Path, ...]:
+        return tuple(
+            path for finding in self.findings for path in _evidence_paths(finding)
+        )
+
+    def common_parent_prefix(self, paths: tuple[Path, ...]) -> tuple[str, ...]:
+        parents = tuple(_safe_relative(path, self.root).parent.parts for path in paths)
+        prefix: list[str] = []
+        for parts in zip(*parents):
+            if all(part == parts[0] for part in parts):
+                prefix.append(parts[0])
+                continue
+            break
+        return tuple(prefix)
+
+
+@dataclass(frozen=True)
+class ExecutionClassInputAuthority:
+    cluster: _FindingCluster
+    root: Path
+    relation_graph: _FindingRelationGraph
+
+    def input(self) -> _ExecutionClassInput:
+        plan = _plan_for_cluster(self.cluster)
+        finding_ids = sorted_tuple(
+            finding.stable_id for finding in self.cluster.findings
+        )
+        internal_edges = self.relation_graph.internal_edges_for(finding_ids)
+        file_paths = frozenset(_evidence_paths_for_findings(self.cluster.findings))
+        symbol_roots = self.symbol_roots()
+        possible_edge_count = len(finding_ids) * max(len(finding_ids) - 1, 0) // 2
+        internal_edge_weight = sum(edge.weight for edge in internal_edges)
+        graph_density = (
+            0.0
+            if possible_edge_count == 0
+            else round(len(internal_edges) / possible_edge_count, 3)
+        )
+        batch_priority = _execution_batch_priority(
+            plan,
+            finding_count=len(finding_ids),
+            internal_edge_weight=internal_edge_weight,
+        )
+        return _ExecutionClassInput(
+            class_id=_execution_class_id(finding_ids),
+            subsystem=self.cluster.subsystem,
+            finding_ids=finding_ids,
+            finding_count=len(finding_ids),
+            evidence_file_count=len(file_paths),
+            evidence_site_count=len(self.cluster.evidence),
+            symbol_root_count=len(symbol_roots),
+            internal_edge_count=len(internal_edges),
+            internal_edge_weight=internal_edge_weight,
+            graph_density=graph_density,
+            batch_priority=batch_priority,
+            pattern_sequence=plan.pattern_sequence,
+            first_batch_move=_first_batch_move(plan),
+            first_codemod_hint=_first_codemod_hint(plan),
+            supporting_findings=plan.supporting_findings,
+            evidence=self.cluster.evidence,
+            file_paths=file_paths,
+        )
+
+    def symbol_roots(self) -> frozenset[str]:
+        return frozenset(
+            root_symbol
+            for finding in self.cluster.findings
+            for root_symbol in self.relation_graph.facts_by_finding_id[
+                finding.stable_id
+            ].symbol_roots
+        )
 
 
 @dataclass(frozen=True)
@@ -1078,9 +1296,18 @@ class ExecutionPartitionPlanner(SemanticRecord):
 
     root: Path
 
-    def clusters(self, findings: list[RefactorFinding]) -> list[_FindingCluster]:
+    def clusters(
+        self,
+        findings: list[RefactorFinding],
+        *,
+        relation_graph: _FindingRelationGraph | None = None,
+    ) -> list[_FindingCluster]:
         execution_clusters: list[_FindingCluster] = []
-        for cluster in _cluster_findings(findings, self.root):
+        for cluster in _cluster_findings(
+            findings,
+            self.root,
+            relation_graph=relation_graph,
+        ):
             execution_clusters.extend(self.partition_cluster(cluster))
         return sorted(
             execution_clusters,
@@ -1131,79 +1358,10 @@ class ExecutionPartitionPlanner(SemanticRecord):
         return paths[0]
 
 
-def _finding_relation(
-    left: RefactorFinding, right: RefactorFinding, root: Path
-) -> _FindingRelation:
-    score = 0
-    reasons: list[str] = []
-    left_paths = set(_evidence_paths(left))
-    right_paths = set(_evidence_paths(right))
-    shared_paths = left_paths & right_paths
-    if shared_paths:
-        score += 3
-        reasons.append(
-            "shared evidence file: "
-            + ", ".join(str(path) for path in sorted(shared_paths))
-        )
-    common_depth = _max_common_dir_depth(left_paths, right_paths, root)
-    if common_depth:
-        depth_weight = min(common_depth, 2)
-        score += depth_weight
-        reasons.append(f"common directory depth {common_depth} (+{depth_weight})")
-    shared_capabilities = set(left.capability_tags) & set(right.capability_tags)
-    if shared_capabilities:
-        score += 1
-        reasons.append(
-            "shared capabilities: "
-            + ", ".join(sorted(tag.label for tag in shared_capabilities))
-        )
-    if _patterns_are_synergistic(left.pattern_id, right.pattern_id):
-        score += 1
-        reasons.append(
-            f"synergistic patterns {left.pattern_id.value}/{right.pattern_id.value}"
-        )
-    shared_roots = _symbol_roots(left) & _symbol_roots(right)
-    if shared_roots:
-        score += 1
-        reasons.append("shared symbol roots: " + ", ".join(sorted(shared_roots)))
-    return _FindingRelation(weight=score, reasons=tuple(reasons))
-
-
-def _execution_graph_edges(
-    findings: tuple[RefactorFinding, ...],
-    root: Path,
-) -> tuple[RefactorExecutionEdge, ...]:
-    edges: list[RefactorExecutionEdge] = []
-    for left, right in combinations(findings, 2):
-        relation = _finding_relation(left, right, root)
-        if relation.weight < 3:
-            continue
-        left_id = left.stable_id
-        right_id = right.stable_id
-        if right_id < left_id:
-            left_id, right_id = right_id, left_id
-        edges.append(
-            RefactorExecutionEdge(
-                left_finding_id=left_id,
-                right_finding_id=right_id,
-                weight=relation.weight,
-                reasons=relation.reasons,
-            )
-        )
-    return sorted_tuple(
-        edges,
-        key=lambda edge: (edge.left_finding_id, edge.right_finding_id),
-    )
-
-
 def _patterns_are_synergistic(left: PatternId, right: PatternId) -> bool:
     return right in PATTERN_CATALOG.synergy_with(
         left
     ) or left in PATTERN_CATALOG.synergy_with(right)
-
-
-def _shared_symbol_roots(left: RefactorFinding, right: RefactorFinding) -> bool:
-    return bool(_symbol_roots(left) & _symbol_roots(right))
 
 
 def _symbol_roots(finding: RefactorFinding) -> set[str]:
@@ -1214,93 +1372,6 @@ def _symbol_roots(finding: RefactorFinding) -> set[str]:
         if root and (not root.startswith("<")):
             roots.add(root)
     return roots
-
-
-def _max_common_dir_depth(
-    left_paths: set[Path], right_paths: set[Path], root: Path
-) -> int:
-    depth = 0
-    for left in left_paths:
-        left_parts = _safe_relative(left, root).parent.parts
-        for right in right_paths:
-            right_parts = _safe_relative(right, root).parent.parts
-            depth = max(depth, _common_prefix_length(left_parts, right_parts))
-    return depth
-
-
-def _subsystem_name(findings: tuple[RefactorFinding, ...], root: Path) -> str:
-    paths = [path for finding in findings for path in _evidence_paths(finding)]
-    if not paths:
-        return root.name
-
-    parents = [_safe_relative(path, root).parent.parts for path in paths]
-    prefix: list[str] = []
-    for parts in zip(*parents):
-        if all(part == parts[0] for part in parts):
-            prefix.append(parts[0])
-        else:
-            break
-
-    if prefix:
-        return str(Path(*prefix))
-
-    first = _safe_relative(paths[0], root)
-    if first.parent != Path("."):
-        return str(first.parent)
-    return first.stem
-
-
-def _execution_class_input(
-    cluster: _FindingCluster,
-    root: Path,
-    edges: tuple[RefactorExecutionEdge, ...],
-) -> _ExecutionClassInput:
-    plan = _plan_for_cluster(cluster)
-    finding_ids = sorted_tuple(finding.stable_id for finding in cluster.findings)
-    finding_id_set = frozenset(finding_ids)
-    internal_edges = tuple(
-        edge
-        for edge in edges
-        if edge.left_finding_id in finding_id_set
-        and edge.right_finding_id in finding_id_set
-    )
-    file_paths = frozenset(_evidence_paths_for_findings(cluster.findings))
-    symbol_roots = frozenset(
-        root_symbol
-        for finding in cluster.findings
-        for root_symbol in _symbol_roots(finding)
-    )
-    possible_edge_count = len(finding_ids) * max(len(finding_ids) - 1, 0) // 2
-    internal_edge_weight = sum(edge.weight for edge in internal_edges)
-    graph_density = (
-        0.0
-        if possible_edge_count == 0
-        else round(len(internal_edges) / possible_edge_count, 3)
-    )
-    batch_priority = _execution_batch_priority(
-        plan,
-        finding_count=len(finding_ids),
-        internal_edge_weight=internal_edge_weight,
-    )
-    return _ExecutionClassInput(
-        class_id=_execution_class_id(finding_ids),
-        subsystem=cluster.subsystem,
-        finding_ids=finding_ids,
-        finding_count=len(finding_ids),
-        evidence_file_count=len(file_paths),
-        evidence_site_count=len(cluster.evidence),
-        symbol_root_count=len(symbol_roots),
-        internal_edge_count=len(internal_edges),
-        internal_edge_weight=internal_edge_weight,
-        graph_density=graph_density,
-        batch_priority=batch_priority,
-        pattern_sequence=plan.pattern_sequence,
-        first_batch_move=_first_batch_move(plan),
-        first_codemod_hint=_first_codemod_hint(plan),
-        supporting_findings=plan.supporting_findings,
-        evidence=cluster.evidence,
-        file_paths=file_paths,
-    )
 
 
 def _execution_class_id(finding_ids: tuple[str, ...]) -> str:
@@ -1994,12 +2065,18 @@ def _evidence_paths(finding: RefactorFinding) -> tuple[Path, ...]:
 
 
 def _safe_relative(path: Path, root: Path) -> Path:
-    if root.is_file():
-        root = root.parent
+    root = _relative_root(root)
     try:
         return path.relative_to(root)
     except ValueError:
         return path
+
+
+@cache
+def _relative_root(root: Path) -> Path:
+    if root.is_file():
+        return root.parent
+    return root
 
 
 def _common_prefix_length(left: tuple[str, ...], right: tuple[str, ...]) -> int:

@@ -151,6 +151,7 @@ from .codemod_workflow import (
 )
 from .models import (
     AnalysisReport,
+    EvidenceSymbol,
     ImpactDelta,
     OutcomeEstimate,
     RefactorFinding,

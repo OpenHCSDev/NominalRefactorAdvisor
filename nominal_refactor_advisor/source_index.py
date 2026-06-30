@@ -632,7 +632,7 @@ class EvidenceTargetResolver:
 
     def target_ids_for_evidence(self, evidence: SourceLocation) -> tuple[str, ...]:
         file_targets = self._targets_in_file(evidence.file_path)
-        symbol = evidence.symbol.rsplit(":", 1)[0]
+        symbol = evidence.subject_symbol
         symbol_matches = tuple(
             target
             for target in file_targets

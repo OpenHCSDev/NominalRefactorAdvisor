@@ -1611,6 +1611,48 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
     ) == ("Alpha.run",)
 
 
+def test_finding_evidence_selector_resolves_role_case_owner_subject(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class ProjectionSurfaceAuthority:\n"
+        "    ROLE_CASES = {'alpha': 1, 'beta': 2}\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        detector_id="generic_role_case_table",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Concrete role-case tables should move behind one generic axis authority",
+        summary="ProjectionSurfaceAuthority repeats concrete role-case literals.",
+        why="role-case literals should resolve to the owning source target",
+        capability_gap="one generic role-case authority",
+        relation_context="role-case evidence subject resolution",
+        evidence=(
+            SourceLocation(
+                module_path.as_posix(),
+                1,
+                "ProjectionSurfaceAuthority:role_cases:alpha,beta",
+            ),
+        ),
+    )
+    source_index = build_source_index(modules, (finding,))
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        class_family_index=build_class_family_index(modules),
+    )
+
+    selected = FindingEvidenceTargetSelector.from_findings((finding,)).select(context)
+
+    assert tuple(
+        source_index.target_by_id[target_id].qualname
+        for target_id in selected.target_ids
+    ) == ("ProjectionSurfaceAuthority",)
+
+
 def test_synthesis_records_expose_evidence_selectors(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

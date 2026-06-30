@@ -55,6 +55,7 @@ from .impact_ranking import (
 from .models import (
     BranchCountMetrics,
     DerivedCountMetricShape,
+    EvidenceSymbol,
     FieldFamilyMetrics,
     FindingMetrics,
     ImpactDelta,
@@ -15503,7 +15504,7 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
     def class_names(finding: RefactorFinding) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
-                dispatch_evidence_subject(evidence.symbol)
+                EvidenceSymbol(evidence.symbol).subject
                 for evidence in finding.evidence
             )
         )
@@ -15685,7 +15686,7 @@ class SharedActionKeysForFindingMixin:
             return ()
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
-            ((evidence.file_path, dispatch_evidence_subject(evidence.symbol)),),
+            ((evidence.file_path, EvidenceSymbol(evidence.symbol).subject),),
         )
 
 
@@ -16227,7 +16228,7 @@ class NamedFunctionCollectorBoilerplateFindingRecipeSynthesizer(
             return None
         target_ids = SourceIndexTargetSelector.for_function_or_method(
             file_path=evidence.file_path,
-            qualname=dispatch_evidence_subject(evidence.symbol),
+            qualname=EvidenceSymbol(evidence.symbol).subject,
         ).target_ids(context)
         if len(target_ids) != 1:
             return None
@@ -16284,7 +16285,7 @@ class AstStreamCollectorBoilerplateFindingRecipeSynthesizer(
             return None
         target_ids = SourceIndexTargetSelector.for_function_or_method(
             file_path=evidence.file_path,
-            qualname=dispatch_evidence_subject(evidence.symbol),
+            qualname=EvidenceSymbol(evidence.symbol).subject,
         ).target_ids(context)
         if len(target_ids) != 1:
             return None
@@ -16335,7 +16336,7 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         if len(resolved_paths) != 1:
             return None, "identity keyword forwarding collapse requires one source file"
         source_path = next(iter(resolved_paths))
-        wrapper_qualname = dispatch_evidence_subject(evidence.symbol)
+        wrapper_qualname = EvidenceSymbol(evidence.symbol).subject
         wrapper = self.wrapper_target(context, source_path, wrapper_qualname)
         if wrapper is None:
             return None, "identity keyword forwarding collapse cannot resolve wrapper"
@@ -16950,7 +16951,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         if constructor_name is None:
             return ()
         subjects = {
-            (evidence.file_path, dispatch_evidence_subject(evidence.symbol))
+            (evidence.file_path, EvidenceSymbol(evidence.symbol).subject)
             for evidence in finding.evidence
         }
         subjects.add((finding.evidence[0].file_path, constructor_name))
@@ -17122,7 +17123,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
     @staticmethod
     def single_owner_qualname(finding: RefactorFinding) -> str | None:
         subjects = {
-            dispatch_evidence_subject(evidence.symbol) for evidence in finding.evidence
+            EvidenceSymbol(evidence.symbol).subject for evidence in finding.evidence
         }
         if len(subjects) != 1:
             return None
@@ -17730,7 +17731,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         evidence_symbols: tuple[str, ...],
     ) -> tuple[RepeatedAuthorityTargetRewrite, ...]:
         target_qualnames = sorted_tuple(
-            {dispatch_evidence_subject(symbol) for symbol in evidence_symbols}
+            {EvidenceSymbol(symbol).subject for symbol in evidence_symbols}
         )
         rewrites = []
         for target_qualname in target_qualnames:
@@ -17838,7 +17839,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
     ) -> tuple[ast.Call, ...]:
         calls: list[ast.Call] = []
         target_qualnames = sorted_tuple(
-            {dispatch_evidence_subject(symbol) for symbol in evidence_symbols}
+            {EvidenceSymbol(symbol).subject for symbol in evidence_symbols}
         )
         for target_qualname in target_qualnames:
             target = cls.function_target(context, source_path, target_qualname)
@@ -21255,7 +21256,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         self,
         evidence: SourceLocation,
     ) -> LocalRoleCaseLogicRecipeParts | None:
-        function_qualname = dispatch_evidence_subject(evidence.symbol)
+        function_qualname = EvidenceSymbol(evidence.symbol).subject
         resolved_source_path = SourcePathResolutionAuthority.from_source_index(
             evidence.file_path,
             self.source_index,
@@ -21854,7 +21855,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         evidence = FindingPrimaryEvidence(self.finding).source_location
         if evidence is None:
             return "RoleCase"
-        function_name = dispatch_evidence_subject(evidence.symbol).rsplit(".", 1)[-1]
+        function_name = EvidenceSymbol(evidence.symbol).subject.rsplit(".", 1)[-1]
         return _pascal_case_identifier(function_name) or "RoleCase"
 
     @staticmethod
@@ -23020,7 +23021,7 @@ class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
             return ()
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
-            ((evidence.file_path, dispatch_evidence_subject(evidence.symbol)),),
+            ((evidence.file_path, EvidenceSymbol(evidence.symbol).subject),),
         )
 
 
@@ -23090,10 +23091,6 @@ def dispatch_strategy_base_name(function_name: str) -> str:
     if function_suffix:
         return f"{function_suffix}DispatchCase"
     return "DispatchCase"
-
-
-def dispatch_evidence_subject(symbol: str) -> str:
-    return symbol.split(":", 1)[0]
 
 
 def shared_pascal_suffix(class_names: tuple[str, ...]) -> str:

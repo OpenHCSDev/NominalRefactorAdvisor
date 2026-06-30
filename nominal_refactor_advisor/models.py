@@ -62,10 +62,25 @@ class SourceLineReference:
 
 
 @dataclass(frozen=True)
+class EvidenceSymbol(SemanticRecord):
+    """Structured view of a detector evidence symbol."""
+
+    value: str
+
+    @property
+    def subject(self) -> str:
+        return self.value.split(":", 1)[0]
+
+
+@dataclass(frozen=True)
 class SourceLocation(SourceLineReference, SemanticRecord):
     """One evidence site in source code."""
 
     symbol: str
+
+    @property
+    def subject_symbol(self) -> str:
+        return EvidenceSymbol(self.symbol).subject
 
     @classmethod
     def file_path_field_name(cls) -> str:
