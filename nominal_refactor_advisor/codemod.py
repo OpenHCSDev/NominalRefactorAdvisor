@@ -75,7 +75,6 @@ from .source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
     SourceIndex,
-    build_source_index,
     build_source_index_artifacts,
     iter_statement_definition_nodes,
 )
@@ -1294,11 +1293,19 @@ class CodemodSelectorContext:
     source_index: SourceIndex
     sources_by_file_path: Mapping[str, str] = field(default_factory=dict)
     class_family_index: ClassFamilyIndex | None = None
+    module_node_cache: Mapping[str, ast.Module] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     ast_target_node_cache: Mapping[str, "_TargetNode"] | None = field(
         default=None,
         repr=False,
         compare=False,
     )
+    _direct_class_declaration_indexes_by_file_path: dict[
+        str, "ClassDirectDeclarationIndex"
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     @property
     def source_file_paths(self) -> tuple[str, ...]:
@@ -1332,6 +1339,31 @@ class CodemodSelectorContext:
             self.sources_by_file_path,
         ).nodes_by_target_identifier()
 
+    @cached_property
+    def module_nodes_by_file_path(self) -> dict[str, ast.Module]:
+        if self.module_node_cache is not None:
+            return dict(self.module_node_cache)
+        return {
+            file_path: ast.parse(source, filename=file_path)
+            for file_path, source in self.sources_by_file_path.items()
+        }
+
+    def direct_class_declaration_index_for_file(
+        self,
+        file_path: str,
+    ) -> "ClassDirectDeclarationIndex":
+        cache = self._direct_class_declaration_indexes_by_file_path
+        if file_path not in cache:
+            cache[file_path] = ClassDirectDeclarationIndex.from_context_file(
+                self,
+                file_path,
+            )
+        return cache[file_path]
+
+    @cached_property
+    def positional_call_name_index(self) -> "PositionalCallNameIndex":
+        return PositionalCallNameIndex.from_module_nodes(self.module_nodes_by_file_path)
+
 
 @dataclass(frozen=True)
 class ResolvedClassTarget:
@@ -1354,6 +1386,184 @@ class ResolvedClassTarget:
 
 
 @dataclass(frozen=True)
+class SourceByteSpan:
+    """Validated UTF-8 byte span over one parsed source buffer."""
+
+    start_line_index: int
+    end_line_index: int
+    start_byte: int
+    end_byte: int
+
+    @classmethod
+    def from_node(
+        cls,
+        node: ast.expr | ast.stmt,
+    ) -> "SourceByteSpan | None":
+        if node.end_lineno is None or node.end_col_offset is None:
+            return None
+        return cls(
+            start_line_index=node.lineno - 1,
+            end_line_index=node.end_lineno - 1,
+            start_byte=node.col_offset,
+            end_byte=node.end_col_offset,
+        )
+
+    def fits_lines(self, lines: tuple[str, ...]) -> bool:
+        return (
+            self.start_line_index >= 0
+            and self.end_line_index >= self.start_line_index
+            and self.end_line_index < len(lines)
+        )
+
+    @property
+    def single_line(self) -> bool:
+        return self.start_line_index == self.end_line_index
+
+    def segment(self, lines: tuple[str, ...]) -> str:
+        if self.single_line:
+            return self.line_segment(
+                lines[self.start_line_index],
+                start_byte=self.start_byte,
+                end_byte=self.end_byte,
+            )
+        return "".join(
+            (
+                self.line_segment(
+                    lines[self.start_line_index],
+                    start_byte=self.start_byte,
+                    end_byte=None,
+                ),
+                *lines[self.start_line_index + 1 : self.end_line_index],
+                self.line_segment(
+                    lines[self.end_line_index],
+                    start_byte=0,
+                    end_byte=self.end_byte,
+                ),
+            )
+        )
+
+    @staticmethod
+    def line_segment(
+        line: str,
+        *,
+        start_byte: int,
+        end_byte: int | None,
+    ) -> str:
+        return line.encode("utf-8")[start_byte:end_byte].decode("utf-8")
+
+
+@dataclass(frozen=True)
+class SourceLineSegmentAuthority:
+    """Project parsed AST statement spans into exact source text."""
+
+    source: str
+
+    @cached_property
+    def lines(self) -> tuple[str, ...]:
+        return tuple(self.source.splitlines(keepends=True))
+
+    def segment_for_node(self, node: ast.expr | ast.stmt) -> str | None:
+        span = SourceByteSpan.from_node(node)
+        if span is None or not span.fits_lines(self.lines):
+            return None
+        return span.segment(self.lines)
+
+    def segment_for_statement(self, node: ast.stmt) -> str | None:
+        return self.segment_for_node(node)
+
+
+@dataclass(frozen=True)
+class DirectClassDeclarationAuthority:
+    """Project direct annotated class fields to exact source declarations."""
+
+    source_segments: SourceLineSegmentAuthority
+    node: ast.ClassDef
+
+    def declarations_by_name(self) -> dict[str, str]:
+        declaration_by_name: dict[str, str] = {}
+        for statement in self.node.body:
+            if not isinstance(statement, ast.AnnAssign):
+                continue
+            if not isinstance(statement.target, ast.Name):
+                continue
+            source_segment = self.source_segments.segment_for_statement(statement)
+            if source_segment is None:
+                return {}
+            declaration_by_name[statement.target.id] = source_segment.strip()
+        return declaration_by_name
+
+
+@dataclass(frozen=True)
+class ClassDirectDeclarationIndex:
+    """Direct class field declarations keyed by source-index target id."""
+
+    declarations_by_target_id: Mapping[str, Mapping[str, str]]
+
+    @classmethod
+    def from_context_file(
+        cls,
+        context: CodemodSelectorContext,
+        file_path: str,
+    ) -> "ClassDirectDeclarationIndex":
+        targets_by_file = context.source_index.targets_by_file
+        if not targets_by_file.contains_file(file_path):
+            return cls(declarations_by_target_id={})
+        source = context.sources_by_file_path.get(file_path)
+        if source is None:
+            return cls(declarations_by_target_id={})
+        source_segments = SourceLineSegmentAuthority(source)
+        declarations_by_target_id: dict[str, Mapping[str, str]] = {}
+        nodes_by_target_id = context.ast_target_nodes_by_id
+        for target in targets_by_file[file_path]:
+            if not target.is_class:
+                continue
+            node = nodes_by_target_id.get(target.target_id)
+            if not isinstance(node, ast.ClassDef):
+                continue
+            declarations_by_target_id[target.target_id] = (
+                DirectClassDeclarationAuthority(
+                    source_segments=source_segments,
+                    node=node,
+                ).declarations_by_name()
+            )
+        return cls(declarations_by_target_id=declarations_by_target_id)
+
+
+@dataclass(frozen=True)
+class PositionalCallNameIndex:
+    """Names called with positional arguments, keyed by source file."""
+
+    names_by_file_path: Mapping[str, frozenset[str]]
+
+    @classmethod
+    def from_module_nodes(
+        cls,
+        module_nodes_by_file_path: Mapping[str, ast.Module],
+    ) -> "PositionalCallNameIndex":
+        return cls(
+            names_by_file_path={
+                file_path: cls.positional_call_names(module_node)
+                for file_path, module_node in module_nodes_by_file_path.items()
+            }
+        )
+
+    @staticmethod
+    def positional_call_names(module_node: ast.Module) -> frozenset[str]:
+        return frozenset(
+            call_name
+            for node in ast.walk(module_node)
+            if isinstance(node, ast.Call) and node.args
+            for call_name in (_call_name(node.func),)
+            if call_name is not None
+        )
+
+    def contains_any(self, file_path: str, call_names: Iterable[str]) -> bool:
+        return bool(
+            self.names_by_file_path.get(file_path, frozenset()).intersection(call_names)
+        )
+
+
+@dataclass(frozen=True)
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
 
@@ -1362,11 +1572,18 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         cls,
         source_by_path: Mapping[str, str],
     ) -> "CodemodSourceSnapshot":
-        modules = _parsed_modules_from_source_mapping(source_by_path)
+        modules = tuple(_parsed_modules_from_source_mapping(source_by_path))
+        source_index_artifacts = build_source_index_artifacts(modules, ())
         return cls(
-            source_index=build_source_index(modules, ()),
+            source_index=source_index_artifacts.source_index,
             sources_by_file_path=dict(source_by_path),
             class_family_index=build_class_family_index(modules),
+            module_node_cache={
+                Path(module.path).as_posix(): module.module for module in modules
+            },
+            ast_target_node_cache=(
+                source_index_artifacts.target_artifacts.node_cache.nodes_by_target_id
+            ),
         )
 
     @classmethod
@@ -1387,6 +1604,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 str(module.path): module.source for module in module_tuple
             },
             class_family_index=build_class_family_index(module_tuple),
+            module_node_cache={
+                Path(module.path).as_posix(): module.module for module in module_tuple
+            },
             ast_target_node_cache=(
                 source_index_artifacts.target_artifacts.node_cache.nodes_by_target_id
             ),
@@ -4374,6 +4594,8 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
             source_index=context.source_index,
             sources_by_file_path=context.sources_by_file_path,
             class_family_index=context.class_family_index,
+            module_node_cache=context.module_nodes_by_file_path,
+            ast_target_node_cache=nodes_by_target_id,
             targets=tuple(
                 cls.class_target(
                     context.source_index,
@@ -4409,6 +4631,8 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
             source_index=context.source_index,
             sources_by_file_path=context.sources_by_file_path,
             class_family_index=context.class_family_index,
+            module_node_cache=context.module_nodes_by_file_path,
+            ast_target_node_cache=nodes_by_target_id,
             targets=tuple(targets),
         )
 
@@ -12903,11 +13127,15 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
         )
         carrier_dataclass_arguments = self.required_dataclass_arguments(targets)
         field_declarations = self.required_field_declarations(
+            resolved_context,
             targets,
             metrics.plan_field_names,
         )
-        source = resolved_context.sources_by_file_path[source_path]
-        self.require_keyword_only_constructors(source, class_names)
+        self.require_keyword_only_constructors(
+            resolved_context,
+            source_path=source_path,
+            class_names=class_names,
+        )
         self.require_no_partial_carrier_overlap(
             resolved_context,
             source_path=source_path,
@@ -13009,10 +13237,12 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
 
     def required_field_declarations(
         self,
+        context: CodemodSelectorContext,
         targets: ClassMemberPromotionTargets,
         field_names: tuple[str, ...],
     ) -> tuple[str, ...]:
         field_declarations = self.field_declarations_or_none(
+            context,
             targets,
             field_names,
         )
@@ -13027,10 +13257,16 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
 
     def require_keyword_only_constructors(
         self,
-        source: str,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
         class_names: tuple[str, ...],
     ) -> None:
-        if not self.has_keyword_only_constructors(source, class_names):
+        if not self.has_keyword_only_constructors(
+            context,
+            source_path=source_path,
+            class_names=class_names,
+        ):
             raise ParallelPrimitiveCarrierRejection(
                 (
                     "parallel primitive carrier collapse requires keyword-only "
@@ -13176,16 +13412,18 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
             return tuple(reversed(shared_tokens))
         return tuple(shared_tokens)
 
-    @classmethod
+    @staticmethod
     def field_declarations_or_none(
-        cls,
+        context: CodemodSelectorContext,
         targets: ClassMemberPromotionTargets,
         field_names: tuple[str, ...],
     ) -> tuple[str, ...] | None:
         declaration_maps = tuple(
-            cls.direct_declaration_map(
-                targets.source_for(class_target.file_path),
-                class_target.node,
+            context.direct_class_declaration_index_for_file(
+                class_target.file_path,
+            ).declarations_by_target_id.get(
+                class_target.target.target_id,
+                {},
             )
             for class_target in targets.targets
         )
@@ -13208,16 +13446,14 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
 
     @staticmethod
     def has_keyword_only_constructors(
-        source: str,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
         class_names: tuple[str, ...],
     ) -> bool:
-        class_name_set = frozenset(class_names)
-        module = ast.parse(source)
-        return not any(
-            isinstance(node, ast.Call)
-            and _call_name(node.func) in class_name_set
-            and bool(node.args)
-            for node in ast.walk(module)
+        return not context.positional_call_name_index.contains_any(
+            source_path,
+            class_names,
         )
 
     @classmethod
@@ -13231,40 +13467,24 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
     ) -> str | None:
         target_class_names = frozenset(class_names)
         field_name_set = frozenset(field_names)
-        source = context.sources_by_file_path[source_path]
-        for target in context.source_index.ast_targets:
+        targets_by_file = context.source_index.targets_by_file
+        if not targets_by_file.contains_file(source_path):
+            return None
+        declaration_index = context.direct_class_declaration_index_for_file(source_path)
+        for target in targets_by_file[source_path]:
             if not target.is_class:
-                continue
-            if target.file_path != source_path:
                 continue
             if (
                 target.qualname in target_class_names
                 or target.name in target_class_names
             ):
                 continue
-            node = context.ast_target_nodes_by_id.get(target.target_id)
-            if not isinstance(node, ast.ClassDef):
-                continue
             overlap = field_name_set.intersection(
-                cls.direct_declaration_map(source, node)
+                declaration_index.declarations_by_target_id.get(target.target_id, {})
             )
             if len(overlap) >= 2:
                 return target.qualname
         return None
-
-    @staticmethod
-    def direct_declaration_map(source: str, node: ast.ClassDef) -> dict[str, str]:
-        declaration_by_name: dict[str, str] = {}
-        for statement in node.body:
-            if not isinstance(statement, ast.AnnAssign):
-                continue
-            if not isinstance(statement.target, ast.Name):
-                continue
-            source_segment = ast.get_source_segment(source, statement)
-            if source_segment is None:
-                return {}
-            declaration_by_name[statement.target.id] = source_segment.strip()
-        return declaration_by_name
 
 
 @dataclass(frozen=True)
@@ -16837,6 +17057,18 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         del finding, context
         return "semantic mirror strategy returned no executable recipe"
 
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        recipe = self.recipe_for_finding(finding, context)
+        if recipe is not None:
+            return FindingRecipeEvaluation(recipe=recipe)
+        return FindingRecipeEvaluation(
+            rejection_reason=self.rejection_reason_for_finding(finding, context)
+        )
+
 
 class TypedMetricSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy, ABC):
     """Semantic mirror strategy selected by finding metric carrier type."""
@@ -17738,15 +17970,21 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     mapping_name: ClassVar[str] = "local_role_case_logic"
     finding: RefactorFinding
+    _source_segments_by_path: dict[str, SourceLineSegmentAuthority] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def recipe(self) -> RefactorRecipe | None:
-        parts = self.parts()
+        parts = self.extracted_parts
         if parts is None:
             return None
         return parts.recipe_for(self.finding)
 
     def rejection_reason(self) -> str:
-        if self.parts() is not None:
+        if self.extracted_parts is not None:
             return "local role-case logic has an executable extraction recipe"
         return (
             "local role-case logic extraction requires either one simple function "
@@ -17754,6 +17992,10 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             "or an ordered if/return suffix chain whose literal guards compare "
             "function parameters to expected case values"
         )
+
+    @cached_property
+    def extracted_parts(self) -> LocalRoleCaseLogicRecipeParts | None:
+        return self.parts()
 
     def parts(self) -> LocalRoleCaseLogicRecipeParts | None:
         evidence = FindingPrimaryEvidence(self.finding).source_location
@@ -17825,6 +18067,14 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             or self.guard_return_extraction_for(source_path, node)
         )
 
+    def source_segments_for(self, source_path: str) -> SourceLineSegmentAuthority:
+        cache = self._source_segments_by_path
+        if source_path not in cache:
+            cache[source_path] = SourceLineSegmentAuthority(
+                self.sources_by_file_path[source_path]
+            )
+        return cache[source_path]
+
     def mapping_extraction_for(
         self,
         source_path: str,
@@ -17871,11 +18121,11 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         default_statement = body[branch_stop]
         if not isinstance(default_statement, ast.Return):
             return None
-        source = self.sources_by_file_path[source_path]
-        prelude_source = self.prelude_source(source, body[:branch_start])
+        source_segments = self.source_segments_for(source_path)
+        prelude_source = self.prelude_source(source_segments, body[:branch_start])
         if prelude_source is None:
             return None
-        default_source = self.node_source(source, default_statement.value)
+        default_source = self.node_source(source_segments, default_statement.value)
         if default_source is None:
             return None
         parameter_names = FunctionParameterProjection.public_names(node)
@@ -17892,11 +18142,11 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 statement.body[0], ast.Return
             ):
                 return None
-            result_source = self.node_source(source, statement.body[0].value)
+            result_source = self.node_source(source_segments, statement.body[0].value)
             if result_source is None:
                 return None
             condition_items = self.branch_items_for_condition(
-                source,
+                source_segments,
                 statement.test,
                 result_source,
             )
@@ -17928,14 +18178,14 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         branch_statement = body[-2]
         if not isinstance(branch_statement, ast.If):
             return None
-        source = self.sources_by_file_path[source_path]
-        prelude_source = self.prelude_source(source, body[:-2])
+        source_segments = self.source_segments_for(source_path)
+        prelude_source = self.prelude_source(source_segments, body[:-2])
         if prelude_source is None:
             return None
-        return_source = self.statement_source(source, body[-1])
+        return_source = self.statement_source(source_segments, body[-1])
         if return_source is None:
             return None
-        chain = self.assignment_branch_chain(source, branch_statement)
+        chain = self.assignment_branch_chain(source_segments, branch_statement)
         if chain is None:
             return None
         items, default_item, assignment_names = chain
@@ -17963,23 +18213,23 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         window = LocalRoleGuardReturnWindow.from_body(body)
         if window is None:
             return None
-        source = self.sources_by_file_path[source_path]
+        source_segments = self.source_segments_for(source_path)
         prelude_statements = window.prelude_statements(body)
         guard_statements = window.guard_statements(body)
         tail_statements = window.tail_statements(body)
-        prelude_source = self.prelude_source(source, prelude_statements)
-        tail_source = self.prelude_source(source, tail_statements)
+        prelude_source = self.prelude_source(source_segments, prelude_statements)
+        tail_source = self.prelude_source(source_segments, tail_statements)
         if prelude_source is None or tail_source is None:
             return None
         value_names = self.guard_value_names(
-            source,
+            source_segments,
             node,
             prelude_statements,
             guard_statements,
         )
         if self.guard_delegate_names_conflict(body):
             return None
-        items = self.guard_items(source, guard_statements, value_names)
+        items = self.guard_items(source_segments, guard_statements, value_names)
         if len(items) < 2:
             return None
         return LocalRoleCaseGuardAuthorityExtraction(
@@ -17992,7 +18242,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def guard_items(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         statements: tuple[ast.stmt, ...],
         value_names: tuple[str, ...],
     ) -> tuple[LocalRoleCaseGuardItem, ...]:
@@ -18007,8 +18257,8 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 ast.Return,
             ):
                 return ()
-            condition_source = self.node_source(source, statement.test)
-            result_source = self.node_source(source, statement.body[0].value)
+            condition_source = self.node_source(source_segments, statement.test)
+            result_source = self.node_source(source_segments, statement.body[0].value)
             if condition_source is None or result_source is None:
                 return ()
             items.append(
@@ -18022,7 +18272,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def guard_value_names(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         node: ast.FunctionDef,
         prelude: tuple[ast.stmt, ...],
         guard_statements: tuple[ast.stmt, ...],
@@ -18035,9 +18285,9 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             for statement in guard_statements
             if isinstance(statement, ast.If)
             for segment in (
-                self.node_source(source, statement.test),
+                self.node_source(source_segments, statement.test),
                 (
-                    self.node_source(source, statement.body[0].value)
+                    self.node_source(source_segments, statement.body[0].value)
                     if statement.body and isinstance(statement.body[0], ast.Return)
                     else None
                 ),
@@ -18062,7 +18312,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def assignment_branch_chain(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         root: ast.If,
     ) -> (
         tuple[
@@ -18076,7 +18326,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         assignment_names: tuple[str, ...] | None = None
         current: ast.If | None = root
         while current is not None:
-            assignments = self.branch_assignments(source, tuple(current.body))
+            assignments = self.branch_assignments(source_segments, tuple(current.body))
             if assignments is None:
                 return None
             branch_assignment_names, value_sources = assignments
@@ -18085,7 +18335,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             elif assignment_names != branch_assignment_names:
                 return None
             condition_items = self.assignment_items_for_condition(
-                source,
+                source_segments,
                 current.test,
                 value_sources,
             )
@@ -18096,7 +18346,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 current = current.orelse[0]
                 continue
             default_assignments = self.branch_assignments(
-                source,
+                source_segments,
                 tuple(current.orelse),
             )
             if default_assignments is None:
@@ -18116,7 +18366,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def branch_assignments(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         statements: tuple[ast.stmt, ...],
     ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
         if not statements:
@@ -18131,7 +18381,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 ast.Name,
             ):
                 return None
-            value_source = self.node_source(source, statement.value)
+            value_source = self.node_source(source_segments, statement.value)
             if value_source is None:
                 return None
             assignment_names.append(statement.targets[0].id)
@@ -18140,7 +18390,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def assignment_items_for_condition(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         condition: ast.AST,
         value_sources: tuple[str, ...],
     ) -> tuple[LocalRoleCaseAssignmentItem, ...]:
@@ -18152,7 +18402,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 value_names=(),
             )
             for item in self.branch_items_for_condition(
-                source,
+                source_segments,
                 condition,
                 result_source="",
             )
@@ -18232,13 +18482,14 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def prelude_source(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         statements: tuple[ast.stmt, ...],
     ) -> str | None:
         if not statements:
             return ""
         statement_sources = tuple(
-            self.statement_source(source, statement) for statement in statements
+            self.statement_source(source_segments, statement)
+            for statement in statements
         )
         if any(statement_source is None for statement_source in statement_sources):
             return None
@@ -18286,7 +18537,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             value = statement.value
         if target_name is None or not isinstance(value, ast.Dict):
             return None, ()
-        source = self.sources_by_file_path[source_path]
+        source_segments = self.source_segments_for(source_path)
         items: list[LocalRoleCaseAuthorityItem] = []
         for key_node, value_node in zip(value.keys, value.values, strict=False):
             if not isinstance(key_node, ast.Constant) or not isinstance(
@@ -18294,7 +18545,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 str,
             ):
                 return None, ()
-            value_source = ast.get_source_segment(source, value_node)
+            value_source = self.node_source(source_segments, value_node)
             if value_source is None or "\n" in value_source:
                 return None, ()
             items.append(
@@ -18321,7 +18572,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def branch_items_for_condition(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         condition: ast.AST,
         result_source: str,
     ) -> tuple[LocalRoleCaseBranchItem, ...]:
@@ -18329,7 +18580,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             items: list[LocalRoleCaseBranchItem] = []
             for value in condition.values:
                 branch_items = self.branch_items_for_condition(
-                    source,
+                    source_segments,
                     value,
                     result_source,
                 )
@@ -18345,20 +18596,24 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         right = condition.comparators[0]
         operator = condition.ops[0]
         if isinstance(operator, ast.Eq):
-            return self.equality_branch_items(source, left, right, result_source)
+            return self.equality_branch_items(
+                source_segments, left, right, result_source
+            )
         if isinstance(operator, ast.In):
-            return self.membership_branch_item(source, left, right, result_source)
+            return self.membership_branch_item(
+                source_segments, left, right, result_source
+            )
         return ()
 
     def equality_branch_items(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         left: ast.AST,
         right: ast.AST,
         result_source: str,
     ) -> tuple[LocalRoleCaseBranchItem, ...]:
         if isinstance(left, ast.Name):
-            expected_source = self.node_source(source, right)
+            expected_source = self.node_source(source_segments, right)
             if expected_source is None:
                 return ()
             return (
@@ -18369,7 +18624,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 ),
             )
         if isinstance(right, ast.Name):
-            expected_source = self.node_source(source, left)
+            expected_source = self.node_source(source_segments, left)
             if expected_source is None:
                 return ()
             return (
@@ -18383,14 +18638,14 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def membership_branch_item(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         left: ast.AST,
         right: ast.AST,
         result_source: str,
     ) -> tuple[LocalRoleCaseBranchItem, ...]:
         if not isinstance(left, ast.Name):
             return ()
-        expected_source = self.membership_expected_source(source, right)
+        expected_source = self.membership_expected_source(source_segments, right)
         if expected_source is None:
             return ()
         return (
@@ -18403,30 +18658,40 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
 
     def membership_expected_source(
         self,
-        source: str,
+        source_segments: SourceLineSegmentAuthority,
         value: ast.AST,
     ) -> str | None:
         if isinstance(value, ast.Set | ast.List | ast.Tuple):
-            item_sources = tuple(self.node_source(source, item) for item in value.elts)
+            item_sources = tuple(
+                self.node_source(source_segments, item) for item in value.elts
+            )
             if not item_sources or any(item is None for item in item_sources):
                 return None
             if len(item_sources) == 1:
                 return f"({item_sources[0]},)"
             return f"({', '.join(item_sources)})"
-        return self.node_source(source, value)
+        return self.node_source(source_segments, value)
 
     @staticmethod
-    def node_source(source: str, node: ast.AST | None) -> str | None:
+    def node_source(
+        source_segments: SourceLineSegmentAuthority,
+        node: ast.AST | None,
+    ) -> str | None:
         if node is None:
             return None
-        node_source = ast.get_source_segment(source, node)
+        if not isinstance(node, ast.expr | ast.stmt):
+            return None
+        node_source = source_segments.segment_for_node(node)
         if node_source is None or "\n" in node_source:
             return None
         return node_source
 
     @staticmethod
-    def statement_source(source: str, node: ast.stmt) -> str | None:
-        node_source = ast.get_source_segment(source, node)
+    def statement_source(
+        source_segments: SourceLineSegmentAuthority,
+        node: ast.stmt,
+    ) -> str | None:
+        node_source = source_segments.segment_for_statement(node)
         if node_source is None:
             return None
         source_lines = textwrap.dedent(node_source).splitlines()
@@ -19126,6 +19391,32 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         )
         return context_effect.unwrap_or_none()
 
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        builder = MappingSemanticMirrorRecipeBuilder.builder_for(finding, context)
+        if builder is not None:
+            builder_recipe = builder.recipe()
+            if builder_recipe is not None:
+                return FindingRecipeEvaluation(recipe=builder_recipe)
+            return FindingRecipeEvaluation(
+                rejection_reason=self.rejection_reason_from_builder(
+                    finding,
+                    builder.rejection_reason(),
+                )
+            )
+        recipe = self.enum_subset_recipe_for_finding(finding, context)
+        if recipe is not None:
+            return FindingRecipeEvaluation(recipe=recipe)
+        return FindingRecipeEvaluation(
+            rejection_reason=self.rejection_reason_from_builder(
+                finding,
+                "no registered mapping-mirror recipe builder matched the finding",
+            )
+        )
+
     def action_keys_for_finding(
         self,
         finding: RefactorFinding,
@@ -19151,6 +19442,37 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                 context,
             )
         )
+        return (
+            "semantic mapping mirror has a stable DSL action key, but no safe "
+            f"mapping recipe exists yet to derive `{finding.metrics.plan_mapping_name}` "
+            f"from `{finding.metrics.plan_source_name}`; registered builder result: "
+            f"{builder_reason}"
+        )
+
+    def enum_subset_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        return (
+            Maybe.of(context)
+            .combine(
+                lambda selector_context: EnumSubsetSemanticMirrorRecipeBuilder(
+                    source_index=selector_context.source_index,
+                    sources_by_file_path=selector_context.sources_by_file_path,
+                    class_family_index=selector_context.class_family_index,
+                    finding=finding,
+                ).parts(),
+                lambda selector_context, parts: parts.recipe_for(finding),
+            )
+            .unwrap_or_none()
+        )
+
+    @staticmethod
+    def rejection_reason_from_builder(
+        finding: RefactorFinding,
+        builder_reason: str,
+    ) -> str:
         return (
             "semantic mapping mirror has a stable DSL action key, but no safe "
             f"mapping recipe exists yet to derive `{finding.metrics.plan_mapping_name}` "
@@ -19299,6 +19621,23 @@ class BranchSemanticMirrorRecipeStrategy(
             return "branch-chain semantic mirror extraction requires a source selector context"
         return builder.rejection_reason()
 
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        builder = self.builder_for_finding(finding, context)
+        if builder is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "branch-chain semantic mirror extraction requires a source selector context"
+                )
+            )
+        recipe = builder.recipe()
+        if recipe is not None:
+            return FindingRecipeEvaluation(recipe=recipe)
+        return FindingRecipeEvaluation(rejection_reason=builder.rejection_reason())
+
     @staticmethod
     def builder_for_finding(
         finding: RefactorFinding,
@@ -19358,6 +19697,18 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesize
         if strategy is None:
             return "semantic mirror metrics have no registered recipe strategy"
         return strategy.rejection_reason_for_finding(finding, context)
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding)
+        if strategy is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="semantic mirror metrics have no registered recipe strategy"
+            )
+        return strategy.evaluate_recipe_for_finding(finding, context)
 
 
 class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
