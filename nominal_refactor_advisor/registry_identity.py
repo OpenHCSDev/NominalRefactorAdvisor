@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
+from functools import cached_property
 
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 
@@ -28,15 +29,18 @@ class AutoRegisterClassAuthority:
 
     node: ast.ClassDef
 
+    @cached_property
+    def assignment_pairs(self) -> tuple[tuple[str, ast.AST], ...]:
+        return tuple(
+            assignment
+            for statement in self.node.body
+            for assignment in (SingleAssignmentAndValueNameProjection(statement).pair,)
+            if assignment is not None
+        )
+
     @property
     def declared_registry_shape(self) -> bool:
-        assignment_names = {
-            name
-            for statement in self.node.body
-            if (assignment := SingleAssignmentAndValueNameProjection(statement).pair)
-            is not None
-            for name, _ in (assignment,)
-        }
+        assignment_names = {name for name, _ in self.assignment_pairs}
         return {
             REGISTRY_ATTRIBUTE_NAME,
             REGISTRY_KEY_ATTRIBUTE_NAME,
@@ -57,17 +61,12 @@ class AutoRegisterClassAuthority:
     @property
     def runtime_autoregister_family(self) -> bool:
         return (
-            self.registry_key_attribute is not None
-            and self.uses_autoregister_metaclass
+            self.registry_key_attribute is not None and self.uses_autoregister_metaclass
         )
 
     @property
     def registry_key_attribute(self) -> str | None:
-        for statement in self.node.body:
-            assignment = SingleAssignmentAndValueNameProjection(statement).pair
-            if assignment is None:
-                continue
-            name, value = assignment
+        for name, value in self.assignment_pairs:
             if name != REGISTRY_KEY_ATTRIBUTE_NAME:
                 continue
             return self.registry_key_value(value)
@@ -75,12 +74,7 @@ class AutoRegisterClassAuthority:
 
     @property
     def declares_registry(self) -> bool:
-        return any(
-            (assignment := SingleAssignmentAndValueNameProjection(statement).pair)
-            is not None
-            and assignment[0] == REGISTRY_ATTRIBUTE_NAME
-            for statement in self.node.body
-        )
+        return any(name == REGISTRY_ATTRIBUTE_NAME for name, _ in self.assignment_pairs)
 
     def declares_method(self, method_name: str) -> bool:
         return any(

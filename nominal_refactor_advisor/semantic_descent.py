@@ -1841,11 +1841,7 @@ class SemanticAuthorityBuildContext:
     @staticmethod
     def _string_class_assignments(node: ast.ClassDef) -> tuple[str, ...]:
         values: list[str] = []
-        for statement in node.body:
-            assignment = SingleAssignmentAndValueNameProjection(statement).pair
-            if assignment is None:
-                continue
-            name, value = assignment
+        for name, value in AutoRegisterClassAuthority(node).assignment_pairs:
             if name.startswith("__"):
                 continue
             if (
@@ -1925,11 +1921,9 @@ class EnumSemanticAuthorityProvider(SemanticAuthorityProvider):
     @staticmethod
     def _enum_facts(indexed_class: IndexedClass) -> tuple[SemanticFact, ...]:
         facts: list[SemanticFact] = []
-        for statement in indexed_class.node.body:
-            assignment = SingleAssignmentAndValueNameProjection(statement).pair
-            if assignment is None:
-                continue
-            name, value = assignment
+        for name, value in AutoRegisterClassAuthority(
+            indexed_class.node
+        ).assignment_pairs:
             if not isinstance(value, ast.Constant):
                 continue
             aliases = (name,)
@@ -1944,7 +1938,7 @@ class EnumSemanticAuthorityProvider(SemanticAuthorityProvider):
                     aliases=sorted_tuple(aliases),
                     location=SourceLocation(
                         indexed_class.file_path,
-                        statement.lineno,
+                        value.lineno,
                         f"{indexed_class.qualname}.{name}",
                     ),
                 )
@@ -2581,11 +2575,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         indexed_class: IndexedClass,
         authority: SemanticAuthority,
     ) -> bool:
-        for statement in indexed_class.node.body:
-            assignment = SingleAssignmentAndValueNameProjection(statement).pair
-            if assignment is None:
-                continue
-            _, value = assignment
+        for _, value in AutoRegisterClassAuthority(indexed_class.node).assignment_pairs:
             if AttributeChainAuthority.terminal_name(value) == authority.name:
                 return True
         return False
