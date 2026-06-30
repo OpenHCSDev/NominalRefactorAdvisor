@@ -124,6 +124,7 @@ from nominal_refactor_advisor.codemod import (
     simulate_codemod_candidates,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors import SemanticMirrorWithoutDescentDetector
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
@@ -17529,6 +17530,7 @@ def test_json_payload_summary_skips_source_backed_sections(
     assert "observations" not in payload
     assert "fibers" not in payload
     assert "source_index" not in payload
+    assert "semantic_descent_graph" not in payload
     assert "semantic_refactor_gate" not in payload
     assert "finding_recipe_plan" not in payload
     assert "payload_timing" in payload
@@ -17574,6 +17576,7 @@ def test_json_payload_loop_uses_counts_only_finding_projection(
     assert payload["finding_count"] == 1
     assert payload["findings"] == []
     assert "source_index" not in payload
+    assert "semantic_descent_graph" not in payload
     assert "semantic_refactor_gate" not in payload
     assert "finding_recipe_plan" not in payload
     assert (
@@ -17617,6 +17620,7 @@ def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
     assert payload["finding_payload_mode"] == "counts_only"
     assert payload["findings"] == []
     assert "source_index" not in payload
+    assert "semantic_descent_graph" not in payload
     assert "semantic_refactor_gate" not in payload
     assert "finding_recipe_plan" not in payload
 
@@ -17646,9 +17650,55 @@ def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(
     assert "observations" not in payload
     assert "fibers" not in payload
     assert "source_index" not in payload
+    assert "semantic_descent_graph" not in payload
     assert "semantic_refactor_gate" in payload
     assert "finding_recipe_plan" not in payload
     assert "payload_timing" in payload
+
+
+def test_json_payload_agent_reports_semantic_descent_graph_for_mirrors(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Handler:\n"
+        "    pass\n\n"
+        "class AlphaHandler(Handler):\n"
+        "    handler_id = 'alpha'\n\n"
+        "class BetaHandler(Handler):\n"
+        "    handler_id = 'beta'\n\n"
+        "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = SemanticMirrorWithoutDescentDetector().detect(
+        modules,
+        DetectorConfig(),
+    )
+
+    payload = JsonPayloadBuilder(
+        findings=findings,
+        plans=[],
+        modules=modules,
+        payload_sections=JsonPayloadProfile.agent.sections,
+    ).to_dict()
+    graph_payload = cast(dict[str, object], payload["semantic_descent_graph"])
+    repository_graph_payload = cast(
+        dict[str, object],
+        graph_payload["repository_graph"],
+    )
+    top_certificates = cast(
+        tuple[dict[str, object], ...],
+        repository_graph_payload["top_certificates"],
+    )
+
+    assert graph_payload["active_graph_source"] == "repository"
+    assert repository_graph_payload["authority_count"] >= 1
+    assert repository_graph_payload["mirror_edge_count"] >= 1
+    assert repository_graph_payload["certificate_count"] >= 1
+    assert top_certificates[0]["authority_name"] == "Handler"
+    assert top_certificates[0]["projection_label"] == "HANDLERS"
+    assert top_certificates[0]["projection_kind"] == "mapping_literal"
 
 
 def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(

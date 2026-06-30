@@ -196,8 +196,13 @@ from .semantic_descent import (
     SemanticDescentGraphCacheMiss,
     SemanticDescentGraphCacheReadError,
     SemanticDescentGraphCacheSchema,
+    SemanticDescentGraphReport,
+    SemanticDescentGraphPayloadReport,
     SemanticDescentImplementationSignature,
     SemanticDescentModuleSignature,
+    SemanticDescentCertificateSummary,
+    SemanticDescentAuthorityKindCount,
+    SemanticDescentProjectionKindCount,
     SemanticFact,
     build_semantic_descent_graph,
 )

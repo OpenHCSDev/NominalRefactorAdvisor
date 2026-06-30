@@ -17,6 +17,7 @@ import pickle
 import re
 import sys
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -41,6 +42,7 @@ from .models import (
     FindingMetrics,
     MappingMetrics,
     RefactorFinding,
+    SemanticRecord,
     RegistrationMetrics,
     SourceLocation,
 )
@@ -971,6 +973,160 @@ class SemanticDescentGraph(SemanticDescentGraphSpace):
 
     mirror_edges: tuple[MirrorEdge, ...]
     certificates: tuple[DescentCertificate, ...]
+
+
+@dataclass(frozen=True)
+class SemanticDescentAuthorityKindCount(SemanticRecord):
+    """Count of graph authorities for one nominal authority kind."""
+
+    authority_kind: str
+    count: int
+
+
+@dataclass(frozen=True)
+class SemanticDescentProjectionKindCount(SemanticRecord):
+    """Count of graph projections for one presentation projection kind."""
+
+    projection_kind: str
+    count: int
+
+
+@dataclass(frozen=True)
+class SemanticDescentCertificateSummary(SemanticRecord):
+    """Compact report row for one missing semantic-descent certificate."""
+
+    authority_name: str
+    authority_kind: str
+    projection_label: str
+    projection_kind: str
+    projection_owner_symbol: str
+    file_path: str
+    line: int
+    matched_fact_count: int
+    coverage_ratio: float
+    matched_tokens: tuple[str, ...]
+    missing_derivation_path: str
+
+    @classmethod
+    def from_graph(
+        cls,
+        graph: SemanticDescentGraph,
+        certificate: DescentCertificate,
+    ) -> "SemanticDescentCertificateSummary":
+        edge = certificate.edge
+        authority = graph.authority_by_id[edge.authority_id]
+        projection = graph.projection_by_id[edge.projection_id]
+        return cls(
+            authority_name=authority.name,
+            authority_kind=authority.kind.value,
+            projection_label=projection.label,
+            projection_kind=projection.kind.value,
+            projection_owner_symbol=projection.owner_symbol,
+            file_path=projection.location.file_path,
+            line=projection.location.line,
+            matched_fact_count=len(edge.matched_fact_ids),
+            coverage_ratio=edge.coverage_ratio,
+            matched_tokens=edge.matched_tokens,
+            missing_derivation_path=certificate.missing_derivation_path,
+        )
+
+
+@dataclass(frozen=True)
+class SemanticDescentGraphReport(SemanticRecord):
+    """Compact acceptance report for cached semantic-descent graph objects."""
+
+    authority_count: int
+    fact_count: int
+    projection_count: int
+    mirror_edge_count: int
+    certificate_count: int
+    authorities_by_kind: tuple[SemanticDescentAuthorityKindCount, ...]
+    projections_by_kind: tuple[SemanticDescentProjectionKindCount, ...]
+    top_certificates: tuple[SemanticDescentCertificateSummary, ...]
+
+    @classmethod
+    def from_graph(
+        cls,
+        graph: SemanticDescentGraph,
+        *,
+        certificate_limit: int = 10,
+    ) -> "SemanticDescentGraphReport":
+        return cls(
+            authority_count=len(graph.authorities),
+            fact_count=len(graph.facts),
+            projection_count=len(graph.projections),
+            mirror_edge_count=len(graph.mirror_edges),
+            certificate_count=len(graph.certificates),
+            authorities_by_kind=tuple(
+                SemanticDescentAuthorityKindCount(authority_kind, count)
+                for authority_kind, count in sorted(
+                    Counter(
+                        authority.kind.value for authority in graph.authorities
+                    ).items()
+                )
+            ),
+            projections_by_kind=tuple(
+                SemanticDescentProjectionKindCount(projection_kind, count)
+                for projection_kind, count in sorted(
+                    Counter(
+                        projection.kind.value for projection in graph.projections
+                    ).items()
+                )
+            ),
+            top_certificates=tuple(
+                SemanticDescentCertificateSummary.from_graph(graph, certificate)
+                for certificate in sorted_tuple(
+                    graph.certificates,
+                    key=lambda item: (
+                        -len(item.edge.matched_fact_ids),
+                        graph.authority_by_id[item.edge.authority_id].name,
+                        graph.projection_by_id[item.edge.projection_id].label,
+                    ),
+                )[:certificate_limit]
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class SemanticDescentGraphPayloadReport(SemanticRecord):
+    """JSON-facing report that separates repository and finding-backed graphs."""
+
+    active_graph_source: str
+    repository_graph: SemanticDescentGraphReport
+    finding_backed_graph: SemanticDescentGraphReport | None = None
+
+    @classmethod
+    def from_graphs(
+        cls,
+        repository_graph: SemanticDescentGraph,
+        *,
+        finding_backed_graph: SemanticDescentGraph | None = None,
+        certificate_limit: int = 10,
+    ) -> "SemanticDescentGraphPayloadReport":
+        repository_report = SemanticDescentGraphReport.from_graph(
+            repository_graph,
+            certificate_limit=certificate_limit,
+        )
+        finding_backed_report = (
+            None
+            if finding_backed_graph is None
+            else SemanticDescentGraphReport.from_graph(
+                finding_backed_graph,
+                certificate_limit=certificate_limit,
+            )
+        )
+        active_graph_source = "repository"
+        if (
+            not repository_report.certificate_count
+            and finding_backed_report is not None
+            and finding_backed_report.certificate_count
+        ):
+            active_graph_source = "finding_backed"
+        return cls(
+            active_graph_source=active_graph_source,
+            repository_graph=repository_report,
+            finding_backed_graph=finding_backed_report,
+        )
 
 
 def semantic_descent_finding_authority_id(finding: RefactorFinding) -> str:

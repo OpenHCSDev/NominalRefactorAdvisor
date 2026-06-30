@@ -108,7 +108,7 @@ from .codemod_authoring import (
     CodemodAuthoringBundleStatusReporter,
     CodemodAuthoringWorkflowPlanner,
 )
-from .detectors import DetectorConfig
+from .detectors import DetectorConfig, IssueDetector
 from .economics import (
     EconomicsProofReport,
     LineChangeBudget,
@@ -139,6 +139,12 @@ from .semantic_refactor_gate import (
     SemanticRefactorGateMode,
     SemanticRefactorGateModeError,
     SemanticRefactorGateReport,
+    ssot_authority_findings,
+)
+from .semantic_descent import (
+    SemanticDescentGraphPayloadReport,
+    build_finding_backed_semantic_descent_graph,
+    build_semantic_descent_graph,
 )
 from .source_index import SourceIndex, build_source_index
 
@@ -875,6 +881,7 @@ class JsonPayloadSections:
     source_index: bool = True
     observation_graph: bool = True
     observation_fibers: bool = True
+    semantic_descent_graph: bool = True
     semantic_refactor_gate: bool = True
     candidate_payload: bool = True
     finding_recipe_plan: bool = True
@@ -894,6 +901,7 @@ class JsonPayloadSections:
         return (
             not self.source_index
             and not self.needs_observation_graph
+            and not self.semantic_descent_graph
             and not self.semantic_refactor_gate
             and not self.candidate_payload
             and not self.finding_recipe_plan
@@ -943,6 +951,7 @@ class JsonPayloadProfile(Enum):
         source_index=False,
         observation_graph=False,
         observation_fibers=False,
+        semantic_descent_graph=False,
         semantic_refactor_gate=False,
         candidate_payload=False,
         finding_recipe_plan=False,
@@ -954,6 +963,7 @@ class JsonPayloadProfile(Enum):
         source_index=False,
         observation_graph=False,
         observation_fibers=False,
+        semantic_descent_graph=False,
         semantic_refactor_gate=False,
         candidate_payload=False,
         finding_recipe_plan=False,
@@ -1027,6 +1037,7 @@ class JsonPayloadBuildTiming:
     """Wall-clock time spent in optional JSON payload sections."""
 
     observation_graph_seconds: float = 0.0
+    semantic_descent_graph_seconds: float = 0.0
     source_snapshot_seconds: float = 0.0
     source_index_payload_seconds: float = 0.0
     semantic_refactor_gate_seconds: float = 0.0
@@ -1036,6 +1047,7 @@ class JsonPayloadBuildTiming:
     def to_dict(self) -> JsonObject:
         return {
             "observation_graph_seconds": self.observation_graph_seconds,
+            "semantic_descent_graph_seconds": self.semantic_descent_graph_seconds,
             "source_snapshot_seconds": self.source_snapshot_seconds,
             "source_index_payload_seconds": self.source_index_payload_seconds,
             "semantic_refactor_gate_seconds": self.semantic_refactor_gate_seconds,
@@ -1129,6 +1141,24 @@ class JsonPayloadBuilder:
                 payload["observations"] = [asdict(item) for item in graph.observations]
             if sections.observation_fibers:
                 payload["fibers"] = [asdict(item) for item in graph.fibers]
+        semantic_descent_graph_seconds = 0.0
+        if sections.semantic_descent_graph and finding_tuple and self.modules:
+            started = perf_counter()
+            payload["semantic_descent_graph"] = (
+                SemanticDescentGraphPayloadReport.from_graphs(
+                    build_semantic_descent_graph(self.modules),
+                    finding_backed_graph=build_finding_backed_semantic_descent_graph(
+                        ssot_authority_findings(finding_tuple),
+                        semantic_mirror_detector_ids=(
+                            IssueDetector.semantic_mirror_detector_ids()
+                        ),
+                        authority_evidence_index_by_detector_id=(
+                            IssueDetector.semantic_mirror_authority_evidence_indices()
+                        ),
+                    ),
+                ).to_dict()
+            )
+            semantic_descent_graph_seconds = round(perf_counter() - started, 3)
         source_snapshot = self.source_snapshot
         built_source_index_seconds = 0.0
         if source_snapshot is None and snapshot_demand.needs_source_snapshot:
@@ -1219,6 +1249,7 @@ class JsonPayloadBuilder:
         if sections.payload_timing:
             payload["payload_timing"] = JsonPayloadBuildTiming(
                 observation_graph_seconds=observation_graph_seconds,
+                semantic_descent_graph_seconds=semantic_descent_graph_seconds,
                 source_snapshot_seconds=built_source_index_seconds,
                 source_index_payload_seconds=source_index_payload_seconds,
                 semantic_refactor_gate_seconds=semantic_refactor_gate_seconds,
