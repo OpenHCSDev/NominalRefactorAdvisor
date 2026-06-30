@@ -14,7 +14,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .analysis import analyze_modules
+from .analysis import analyze_detector_types, analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .codemod import (
     ArchitectureGuardSuite,
@@ -32,7 +32,7 @@ from .codemod import (
     JsonValue,
     module_name_from_source_path,
 )
-from .detectors import DetectorConfig
+from .detectors import DetectorConfig, IssueDetector
 from .models import RefactorFinding
 from .source_index import SourceIndex
 
@@ -919,6 +919,7 @@ class CodemodRefactorGoalStageAttempt(FindingRecipeSynthesisBoundary):
     stage_index: int
     target_finding_count: int
     stage: CodemodRefactorGoalStage | None = None
+    projected_scan: "CodemodFixpointScan | None" = None
 
     @property
     def has_stage(self) -> bool:
@@ -1631,7 +1632,11 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
                     False,
                     None,
                 )
-            next_scan = self.next_scan(active_scan, stage)
+            next_scan = self.next_scan(
+                active_scan,
+                stage,
+                projected_scan=stage_attempt.projected_scan,
+            )
             recorded_stage = stage if self.dry_run else replace(stage, applied=True)
             stages.append(recorded_stage)
             if stage.progress.achieved:
@@ -1686,7 +1691,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             guard_suite=self.guard_suite.merge(plan.document.guard_suite),
         )
         simulation = document.simulate_snapshot(snapshot)
-        projected_scan = self.projected_scan(scan, simulation.simulation)
+        projected_scan = self.projected_goal_scan(scan, simulation.simulation)
         progress = CodemodRefactorGoalProgress.from_findings(
             self.goal,
             scan.findings,
@@ -1696,6 +1701,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             stage_index=stage_index,
             target_finding_count=len(target_findings),
             report=plan.report,
+            projected_scan=projected_scan,
             stage=CodemodRefactorGoalStage(
                 stage_index=stage_index,
                 document=document,
@@ -1717,11 +1723,58 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
         self,
         scan: CodemodFixpointScan,
         stage: CodemodRefactorGoalStage,
+        *,
+        projected_scan: CodemodFixpointScan | None = None,
     ) -> CodemodFixpointScan:
         if self.dry_run:
+            if projected_scan is not None:
+                return projected_scan
             return self.projected_scan(scan, stage.simulation.simulation)
         stage.simulation.apply()
         return self.scan(stage.stage_index + 1)
+
+    def projected_goal_scan(
+        self,
+        scan: CodemodFixpointScan,
+        simulation: CodemodSimulationReport,
+    ) -> CodemodFixpointScan:
+        detector_types = self.goal_detector_types()
+        if not detector_types:
+            return self.projected_scan(scan, simulation)
+        modules = ProjectedScanModuleSet(
+            modules=tuple(scan.modules),
+            simulation=simulation,
+            roots=self.roots,
+        ).modules_after_projection()
+        target_findings = analyze_detector_types(
+            list(modules),
+            self.config,
+            detector_types=detector_types,
+        )
+        preserved_findings = tuple(
+            finding
+            for finding in scan.findings
+            if finding.detector_id not in self.goal.detector_ids
+        )
+        return CodemodFixpointScan(
+            modules=list(modules),
+            findings=[*preserved_findings, *target_findings],
+        )
+
+    def goal_detector_types(self) -> tuple[type[IssueDetector], ...]:
+        if not self.goal.detector_ids:
+            return ()
+        detector_types = tuple(
+            IssueDetector.registered_detector_type_for_id(detector_id)
+            for detector_id in self.goal.detector_ids
+        )
+        if any(detector_type is None for detector_type in detector_types):
+            return ()
+        return tuple(
+            detector_type
+            for detector_type in detector_types
+            if detector_type is not None
+        )
 
     def _run_report_authority(
         self,
