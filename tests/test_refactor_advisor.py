@@ -1161,6 +1161,84 @@ def test_refactor_recipe_collapses_fields_to_existing_carrier(
     build_source_index(parse_python_modules(tmp_path), ())
 
 
+def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class StaticPayloadStats:\n"
+        "    payload_line_count: int\n"
+        "    marker_kinds: tuple[str, ...]\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class EmbeddedStaticPayloadCandidate:\n"
+        "    function_name: str\n"
+        "    line_count: int\n"
+        "    static_payload_line_count: int\n"
+        "    marker_kinds: tuple[str, ...]\n"
+        "    sink_kinds: tuple[str, ...]\n\n\n"
+        "def build_candidate(stats: StaticPayloadStats):\n"
+        "    return EmbeddedStaticPayloadCandidate(\n"
+        "        function_name='emit',\n"
+        "        line_count=10,\n"
+        "        static_payload_line_count=stats.payload_line_count,\n"
+        "        marker_kinds=stats.marker_kinds,\n"
+        "        sink_kinds=('write',),\n"
+        "    )\n\n\n"
+        "def describe(payload_candidate: EmbeddedStaticPayloadCandidate, other):\n"
+        "    untouched = other.static_payload_line_count\n"
+        "    return f'{payload_candidate.static_payload_line_count}:{payload_candidate.marker_kinds}:{untouched}'\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = RefactorRecipe(
+        recipe_id="reuse-static-payload-stats",
+        reason="Collapse projected payload facts into the existing stats carrier.",
+    ).replace_fields_with_carrier(
+        module_path.as_posix(),
+        class_name="EmbeddedStaticPayloadCandidate",
+        carrier_field_declaration="static_payload_stats: StaticPayloadStats",
+        field_projection_pairs=(
+            "static_payload_line_count=payload_line_count",
+            "marker_kinds=marker_kinds",
+        ),
+        attribute_owner_expressions=("payload_candidate",),
+    )
+
+    simulation = CodemodPlanDocument(recipes=(recipe,)).simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.is_clean is True
+    assert "+    static_payload_stats: StaticPayloadStats" in diff
+    assert "-    static_payload_line_count: int" in diff
+    assert "-    marker_kinds: tuple[str, ...]" in diff
+    assert "+        static_payload_stats=stats," in diff
+    assert "-        static_payload_line_count=stats.payload_line_count," in diff
+    assert "-        marker_kinds=stats.marker_kinds," in diff
+    assert (
+        "+    return f'{payload_candidate.static_payload_stats.payload_line_count}:"
+        "{payload_candidate.static_payload_stats.marker_kinds}:{untouched}'" in diff
+    )
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "static_payload_stats: StaticPayloadStats" in rewritten
+    assert "static_payload_line_count: int" not in rewritten
+    assert "marker_kinds: tuple[str, ...]" in rewritten
+    assert rewritten.count("marker_kinds: tuple[str, ...]") == 1
+    assert "static_payload_stats=stats" in rewritten
+    assert "payload_candidate.static_payload_stats.payload_line_count" in rewritten
+    assert "payload_candidate.static_payload_stats.marker_kinds" in rewritten
+    assert "other.static_payload_line_count" in rewritten
+    build_source_index(parse_python_modules(tmp_path), ())
+
+
 def test_refactor_recipe_converts_product_records_to_dataclasses(
     tmp_path: Path,
 ) -> None:
@@ -15844,6 +15922,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import ParseCacheRequest
     from nominal_refactor_advisor import NominalBoundaryExtractionGoalTargetPolicy
     from nominal_refactor_advisor import ProjectedScanModuleSet
+    from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
     from nominal_refactor_advisor import codemod_dsl_manifest
     from nominal_refactor_advisor import codemod_workflow_plan_example_payloads
@@ -15978,6 +16057,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodWorkflowScanRequest.__name__ == "CodemodWorkflowScanRequest"
     assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
     assert ParseCacheRequest(enabled=True).enabled is True
+    assert (
+        ReplaceFieldsWithCarrierOperation.__name__
+        == "ReplaceFieldsWithCarrierOperation"
+    )
     assert SourceRewriteSimulationPayload.__name__ == "SourceRewriteSimulationPayload"
     assert delta.removed_finding_ids == ("a",)
     assert delta.added_finding_ids == ("c",)
@@ -18582,6 +18665,10 @@ def test_detects_dead_embedded_static_payload_emitter(tmp_path: Path) -> None:
             for finding in findings
             if finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
         )
+    )
+    assert (
+        runtime_detectors.DeadEmbeddedStaticPayloadDetector.cache_granularity
+        is base_detectors.DetectorCacheGranularity.CONTEXTUAL_MODULE
     )
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "Publisher._write_static_shell" in finding.summary

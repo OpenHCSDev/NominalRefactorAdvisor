@@ -62,6 +62,7 @@ from .codemod import (
     RefactorRecipeOperationKind,
     RefactorRecipeRewrite,
     RefactorRecipeSimulation,
+    ReplaceFieldsWithCarrierOperation,
     ReplaceFunctionBodyOperation,
     ResolvedSourceRewrite,
     SourceLineReplacement,

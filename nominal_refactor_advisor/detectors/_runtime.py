@@ -1855,7 +1855,8 @@ class FormalBoundaryStringRegistryAuthority:
                 constant_names,
             )
             for node in ast.walk(module.module)
-            if isinstance(node, ast.Call) and _is_formal_boundary_literal_registry_call(node)
+            if isinstance(node, ast.Call)
+            and _is_formal_boundary_literal_registry_call(node)
         )
 
     @staticmethod
@@ -5864,8 +5865,10 @@ class DynamicRuntimePayloadOwnerDetector(PerModuleIssueDetector):
                 return ".".join(parts) if parts else "<module>"
 
             def visit_Call(self, node: ast.Call) -> None:
-                method_name = DynamicRuntimePayloadOwnerDetector._dynamic_type_payload_method(
-                    node
+                method_name = (
+                    DynamicRuntimePayloadOwnerDetector._dynamic_type_payload_method(
+                        node
+                    )
                 )
                 if method_name is not None:
                     owner = self.owner_symbol()
@@ -6616,9 +6619,7 @@ class StaticPayloadStats:
 class EmbeddedStaticPayloadCandidate(QualnameLineWitnessCandidate):
     function_name: str
     line_count: int
-    static_payload_line_count: int
-    largest_literal_line_count: int
-    marker_kinds: tuple[str, ...]
+    static_payload_stats: StaticPayloadStats
     sink_kinds: tuple[str, ...]
     call_site_count: int
 
@@ -6869,9 +6870,7 @@ def _embedded_static_payload_candidates(
                 qualname=qualname,
                 function_name=function.name,
                 line_count=line_count,
-                static_payload_line_count=stats.payload_line_count,
-                largest_literal_line_count=stats.largest_literal_line_count,
-                marker_kinds=stats.marker_kinds,
+                static_payload_stats=stats,
                 sink_kinds=sink_kinds,
                 call_site_count=sum(
                     (
@@ -6884,64 +6883,6 @@ def _embedded_static_payload_candidates(
     return tuple(
         sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
     )
-
-
-class DeadEmbeddedStaticPayloadDetector(
-    ConfiguredModuleCollectorCandidateDetector[EmbeddedStaticPayloadCandidate]
-):
-    cache_granularity = DetectorCacheGranularity.GLOBAL
-    candidate_collector = _embedded_static_payload_candidates
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Unreferenced embedded static-payload emitter should collapse",
-        "A private function that is not referenced in its module but still embeds and writes a large static artifact payload is a duplicate derived-view authority. Delete it if it is genuinely dead; if it is reached dynamically, move the payload to a template/resource or generate it from an authoritative schema.",
-        "single authoritative template/resource or generated schema for static artifact views",
-        "private unreferenced emitter owns a large embedded static payload independently of call flow",
-        _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        _NORMALIZED_AST_PARTIAL_VIEW_EXPORT_OBSERVATION_TAGS,
-    )
-
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        private_reference_context = _private_reference_detector_context(tuple(modules))
-        return [
-            self._finding_for_candidate(candidate)
-            for module in modules
-            for candidate in _embedded_static_payload_candidates(
-                module,
-                config,
-                reference_index=private_reference_context.reference_index,
-            )
-        ]
-
-    def _finding_for_candidate(
-        self, payload_candidate: EmbeddedStaticPayloadCandidate
-    ) -> RefactorFinding:
-        marker_summary = ", ".join(payload_candidate.marker_kinds)
-        sink_summary = ", ".join(payload_candidate.sink_kinds)
-        return self.build_finding(
-            (
-                f"`{payload_candidate.qualname}` spans {payload_candidate.line_count} lines, embeds "
-                f"{payload_candidate.static_payload_line_count} static payload lines ({marker_summary}), "
-                f"writes through {sink_summary}, and has no in-module references."
-            ),
-            (payload_candidate.evidence,),
-            scaffold=(
-                f"# First verify whether `{payload_candidate.qualname}` is externally or dynamically invoked.\n# If not, delete the emitter and its embedded payload.\n# If it is live, move the payload into a template/resource or generate the artifact from one authoritative schema."
-            ),
-            codemod_patch=(
-                f"# Collapse `{payload_candidate.qualname}` as a dead or duplicate static-payload view.\n"
-                "# Keep at most one artifact authority: a template/resource file or a generated schema-backed writer."
-            ),
-            metrics=OrchestrationMetrics(
-                function_line_count=payload_candidate.line_count,
-                branch_site_count=0,
-                call_site_count=payload_candidate.call_site_count,
-                parameter_count=0,
-                callee_family_count=max(1, len(payload_candidate.sink_kinds)),
-            ),
-        )
 
 
 @dataclass(frozen=True)
@@ -7571,6 +7512,60 @@ class PrivateReferenceContextualDetector(
         config: DetectorConfig,
     ) -> Sequence[_PrivateReferenceCandidateT]:
         raise NotImplementedError
+
+
+class DeadEmbeddedStaticPayloadDetector(
+    PrivateReferenceContextualDetector[EmbeddedStaticPayloadCandidate]
+):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Unreferenced embedded static-payload emitter should collapse",
+        "A private function that is not referenced in its module but still embeds and writes a large static artifact payload is a duplicate derived-view authority. Delete it if it is genuinely dead; if it is reached dynamically, move the payload to a template/resource or generate it from an authoritative schema.",
+        "single authoritative template/resource or generated schema for static artifact views",
+        "private unreferenced emitter owns a large embedded static payload independently of call flow",
+        _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
+        _NORMALIZED_AST_PARTIAL_VIEW_EXPORT_OBSERVATION_TAGS,
+    )
+
+    def _candidate_items_for_private_reference_context(
+        self,
+        module: ParsedModule,
+        private_reference_context: PrivateReferenceDetectorContext,
+        config: DetectorConfig,
+    ) -> Sequence[EmbeddedStaticPayloadCandidate]:
+        return _embedded_static_payload_candidates(
+            module,
+            config,
+            reference_index=private_reference_context.reference_index,
+        )
+
+    def _finding_for_candidate(
+        self, payload_candidate: EmbeddedStaticPayloadCandidate
+    ) -> RefactorFinding:
+        marker_summary = ", ".join(payload_candidate.static_payload_stats.marker_kinds)
+        sink_summary = ", ".join(payload_candidate.sink_kinds)
+        return self.build_finding(
+            (
+                f"`{payload_candidate.qualname}` spans {payload_candidate.line_count} lines, embeds "
+                f"{payload_candidate.static_payload_stats.payload_line_count} static payload lines ({marker_summary}), "
+                f"writes through {sink_summary}, and has no in-module references."
+            ),
+            (payload_candidate.evidence,),
+            scaffold=(
+                f"# First verify whether `{payload_candidate.qualname}` is externally or dynamically invoked.\n# If not, delete the emitter and its embedded payload.\n# If it is live, move the payload into a template/resource or generate the artifact from one authoritative schema."
+            ),
+            codemod_patch=(
+                f"# Collapse `{payload_candidate.qualname}` as a dead or duplicate static-payload view.\n"
+                "# Keep at most one artifact authority: a template/resource file or a generated schema-backed writer."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=payload_candidate.line_count,
+                branch_site_count=0,
+                call_site_count=payload_candidate.call_site_count,
+                parameter_count=0,
+                callee_family_count=max(1, len(payload_candidate.sink_kinds)),
+            ),
+        )
 
 
 def _private_helper_caller_owner_names(

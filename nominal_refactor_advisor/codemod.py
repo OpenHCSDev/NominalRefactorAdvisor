@@ -257,6 +257,7 @@ class RefactorRecipeOperationKind(StrEnum):
     PROMOTE_CLASS_METHODS = "promote_class_methods"
     REMOVE_CLASS_BASE = "remove_class_base"
     REMOVE_IMPORT_NAMES = "remove_import_names"
+    REPLACE_FIELDS_WITH_CARRIER = "replace_fields_with_carrier"
     REPLACE_FUNCTION_BODY = "replace_function_body"
     REPLACE_FUNCTION_SIGNATURE = "replace_function_signature"
     REPLACE_MODULE_ASSIGNMENT = "replace_module_assignment"
@@ -281,6 +282,10 @@ FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD = "field_declaration_sources"
 CARRIER_NAME_PAYLOAD_FIELD = "carrier_name"
 CARRIER_BASE_NAMES_PAYLOAD_FIELD = "carrier_base_names"
 CARRIER_DATACLASS_ARGUMENTS_PAYLOAD_FIELD = "carrier_dataclass_arguments"
+CLASS_NAME_PAYLOAD_FIELD = "class_name"
+CONSTRUCTOR_NAMES_PAYLOAD_FIELD = "constructor_names"
+FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD = "field_projection_pairs"
+ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD = "attribute_owner_expressions"
 INHERITED_FIELD_NAMES_PAYLOAD_FIELD = "inherited_field_names"
 INSERT_CARRIER_PAYLOAD_FIELD = "insert_carrier"
 CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD = "case_key_attribute"
@@ -3654,6 +3659,20 @@ class SourceOffsetReplacement:
     end_offset: int
     replacement_source: str
 
+    @classmethod
+    def from_offsets(
+        cls,
+        *,
+        start_offset: int,
+        end_offset: int,
+        replacement_source: str,
+    ) -> "SourceOffsetReplacement":
+        return cls(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=replacement_source,
+        )
+
 
 @dataclass(frozen=True)
 class SourceNodeSpan:
@@ -5809,6 +5828,406 @@ class CollapseFieldsToCarrierOperation(
                 ),
             ),
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceFieldsWithCarrierOperation(
+    RefactorRecipeOperation,
+):
+    """Replace projected primitive fields with one existing carrier field."""
+
+    class_name: str
+    carrier_field_declaration: str
+    field_projection_pairs: tuple[str, ...]
+    constructor_names: tuple[str, ...] = ()
+    attribute_owner_expressions: tuple[str, ...] = ()
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return operation_payload_bindings(
+            (
+                (
+                    CLASS_NAME_PAYLOAD_FIELD,
+                    "class_name",
+                    ReplaceFieldsWithCarrierOperation.class_name_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    "carrier_field_declaration",
+                    "carrier_field_declaration",
+                    ReplaceFieldsWithCarrierOperation.carrier_field_declaration_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
+                    "field_projection_pairs",
+                    ReplaceFieldsWithCarrierOperation.field_projection_pairs_from_operation,
+                    OperationPayloadReader.required_string_tuple,
+                ),
+                (
+                    CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
+                    "constructor_names",
+                    ReplaceFieldsWithCarrierOperation.constructor_names_from_operation,
+                    OperationPayloadReader.string_tuple_or_empty,
+                ),
+                (
+                    ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
+                    "attribute_owner_expressions",
+                    ReplaceFieldsWithCarrierOperation.attribute_owner_expressions_from_operation,
+                    OperationPayloadReader.string_tuple_or_empty,
+                ),
+            )
+        )
+
+    @staticmethod
+    def class_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
+            raise TypeError("class_name binding requires field carrier replacement")
+        return operation.class_name
+
+    @staticmethod
+    def carrier_field_declaration_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
+            raise TypeError(
+                "carrier_field_declaration binding requires field carrier replacement"
+            )
+        return operation.carrier_field_declaration
+
+    @staticmethod
+    def field_projection_pairs_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
+            raise TypeError(
+                "field_projection_pairs binding requires field carrier replacement"
+            )
+        return operation.field_projection_pairs
+
+    @staticmethod
+    def constructor_names_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
+            raise TypeError(
+                "constructor_names binding requires field carrier replacement"
+            )
+        return operation.constructor_names
+
+    @staticmethod
+    def attribute_owner_expressions_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
+            raise TypeError(
+                "attribute_owner_expressions binding requires field carrier replacement"
+            )
+        return operation.attribute_owner_expressions
+
+    @property
+    def carrier_field(self) -> CarrierFieldDeclaration:
+        return CarrierFieldDeclaration(self.carrier_field_declaration)
+
+    @property
+    def carrier_field_name(self) -> str:
+        return self.carrier_field.field_name
+
+    @property
+    def field_projection_map(self) -> Mapping[str, str]:
+        pairs: dict[str, str] = {}
+        for pair in self.field_projection_pairs:
+            source_field, separator, carrier_attribute = pair.partition("=")
+            if separator != "=":
+                raise ValueError(
+                    "Field projection pairs must be written as "
+                    f"'source_field=carrier_attribute'; got {pair!r}"
+                )
+            source_field = source_field.strip()
+            carrier_attribute = carrier_attribute.strip()
+            if not source_field.isidentifier() or not carrier_attribute.isidentifier():
+                raise ValueError(
+                    "Field projection pairs must use simple identifiers; "
+                    f"got {pair!r}"
+                )
+            pairs[source_field] = carrier_attribute
+        if not pairs:
+            raise ValueError("Field carrier replacement requires projection pairs")
+        return pairs
+
+    @property
+    def resolved_constructor_names(self) -> tuple[str, ...]:
+        return self.constructor_names or (self.class_name,)
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        source_path = self.required_source_path(
+            source_index,
+            self.operation_kind().value,
+        )
+        source = source_by_path[source_path]
+        geometry = SourceTextGeometry(source)
+        root = ast.parse(source, filename=source_path)
+        replacements = [
+            *self.class_field_replacements(root, geometry),
+            *self.constructor_projection_replacements(root, source, geometry),
+        ]
+        covered_lines = tuple(
+            SourceLineSpan.from_offsets(geometry, item.start_offset, item.end_offset)
+            for item in replacements
+        )
+        replacements.extend(
+            self.attribute_projection_replacements(
+                root,
+                source,
+                covered_lines=covered_lines,
+            )
+        )
+        if not replacements:
+            raise ValueError(
+                f"Field carrier replacement found no edits in {source_path!r}"
+            )
+        replacement_source = geometry.source_with_replacements_in_span(
+            0,
+            geometry.end_offset,
+            self.require_non_overlapping_replacements(replacements),
+        )
+        return (
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=1,
+                end_line=len(geometry.lines),
+                replacement_lines=SourceTargetEditor.source_lines(replacement_source),
+                rationale=self.rationale
+                or f"Replace projected fields on {self.class_name!r} with carrier field {self.carrier_field_name!r}.",
+            ),
+        )
+
+    def class_field_replacements(
+        self,
+        root: ast.Module,
+        geometry: SourceTextGeometry,
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        class_node = self.required_class_node(root)
+        field_lines = tuple(
+            statement
+            for statement in class_node.body
+            if self.field_name_for_statement(statement) in self.field_projection_map
+        )
+        existing_carrier_field = any(
+            self.field_name_for_statement(statement) == self.carrier_field_name
+            for statement in class_node.body
+        )
+        if not field_lines:
+            return ()
+        first_field = field_lines[0]
+        replacements: list[SourceOffsetReplacement] = []
+        if not existing_carrier_field:
+            replacements.append(
+                self.line_span_replacement(
+                    geometry,
+                    first_field,
+                    "".join(self.carrier_field.indented_lines),
+                )
+            )
+            removed_tail = field_lines[1:]
+        else:
+            removed_tail = field_lines
+        replacements.extend(
+            self.line_span_replacement(geometry, statement, "")
+            for statement in removed_tail
+        )
+        return tuple(replacements)
+
+    def constructor_projection_replacements(
+        self,
+        root: ast.Module,
+        source: str,
+        geometry: SourceTextGeometry,
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        replacements: list[SourceOffsetReplacement] = []
+        constructor_names = frozenset(self.resolved_constructor_names)
+        for call in (node for node in ast.walk(root) if isinstance(node, ast.Call)):
+            call_name = self.call_name(call)
+            if call_name not in constructor_names:
+                continue
+            projected_keywords = tuple(
+                keyword
+                for keyword in call.keywords
+                if keyword.arg in self.field_projection_map
+            )
+            if len(projected_keywords) != len(self.field_projection_map):
+                continue
+            carrier_source = self.projected_keyword_carrier_source(
+                projected_keywords,
+                source,
+            )
+            if carrier_source is None:
+                continue
+            first_keyword = projected_keywords[0]
+            replacements.append(
+                self.line_span_replacement(
+                    geometry,
+                    first_keyword.value,
+                    (
+                        f"{geometry.line_indent(self.node_start_offset(geometry, first_keyword.value))}"
+                        f"{self.carrier_field_name}={carrier_source},\n"
+                    ),
+                )
+            )
+            replacements.extend(
+                self.line_span_replacement(geometry, keyword.value, "")
+                for keyword in projected_keywords[1:]
+            )
+        return tuple(replacements)
+
+    def projected_keyword_carrier_source(
+        self,
+        projected_keywords: tuple[ast.keyword, ...],
+        source: str,
+    ) -> str | None:
+        carrier_sources: set[str] = set()
+        projection_map = self.field_projection_map
+        for keyword in projected_keywords:
+            if keyword.arg is None:
+                return None
+            expected_attribute = projection_map[keyword.arg]
+            value = keyword.value
+            if not isinstance(value, ast.Attribute):
+                return None
+            if value.attr != expected_attribute:
+                return None
+            carrier_source = ast.get_source_segment(source, value.value)
+            if carrier_source is None:
+                return None
+            carrier_sources.add(carrier_source)
+        if len(carrier_sources) != 1:
+            return None
+        return next(iter(carrier_sources))
+
+    def attribute_projection_replacements(
+        self,
+        root: ast.Module,
+        source: str,
+        *,
+        covered_lines: tuple["SourceLineSpan", ...],
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        if not self.attribute_owner_expressions:
+            return ()
+        replacements: list[SourceOffsetReplacement] = []
+        projection_map = self.field_projection_map
+        carrier_field_name = self.carrier_field_name
+        allowed_owner_sources = frozenset(self.attribute_owner_expressions)
+        for attribute in (
+            node for node in ast.walk(root) if isinstance(node, ast.Attribute)
+        ):
+            carrier_attribute = projection_map.get(attribute.attr)
+            if carrier_attribute is None:
+                continue
+            if SourceNodeSpan(attribute).line_span.overlaps_any(covered_lines):
+                continue
+            value_source = ast.get_source_segment(source, attribute.value)
+            if value_source is None:
+                continue
+            if value_source not in allowed_owner_sources:
+                continue
+            replacements.append(
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=self.node_start_offset_for_source(source, attribute),
+                    end_offset=self.node_end_offset_for_source(source, attribute),
+                    replacement_source=(
+                        f"{value_source}.{carrier_field_name}.{carrier_attribute}"
+                    ),
+                )
+            )
+        return tuple(replacements)
+
+    def required_class_node(self, root: ast.Module) -> ast.ClassDef:
+        matches = tuple(
+            node
+            for node in ast.walk(root)
+            if isinstance(node, ast.ClassDef) and node.name == self.class_name
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"Expected exactly one class named {self.class_name!r}; found {len(matches)}"
+            )
+        return matches[0]
+
+    @staticmethod
+    def field_name_for_statement(statement: ast.stmt) -> str | None:
+        if not isinstance(statement, ast.AnnAssign):
+            return None
+        if not isinstance(statement.target, ast.Name):
+            return None
+        return statement.target.id
+
+    @staticmethod
+    def call_name(call: ast.Call) -> str | None:
+        if isinstance(call.func, ast.Name):
+            return call.func.id
+        if isinstance(call.func, ast.Attribute):
+            return call.func.attr
+        return None
+
+    @staticmethod
+    def line_span_replacement(
+        geometry: SourceTextGeometry,
+        node: ast.stmt | ast.expr,
+        replacement_source: str,
+    ) -> SourceOffsetReplacement:
+        line_span = SourceNodeSpan(node).line_span
+        start_offset, end_offset = geometry._line_span_offsets(
+            line_span.start_line,
+            line_span.end_line,
+        )
+        return SourceOffsetReplacement.from_offsets(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=replacement_source,
+        )
+
+    @staticmethod
+    def node_start_offset(
+        geometry: SourceTextGeometry,
+        node: ast.stmt | ast.expr,
+    ) -> int:
+        return geometry.line_offsets[node.lineno - 1] + node.col_offset
+
+    @staticmethod
+    def node_start_offset_for_source(source: str, node: ast.stmt | ast.expr) -> int:
+        return ReplaceFieldsWithCarrierOperation.node_start_offset(
+            SourceTextGeometry(source),
+            node,
+        )
+
+    @staticmethod
+    def node_end_offset_for_source(source: str, node: ast.stmt | ast.expr) -> int:
+        geometry = SourceTextGeometry(source)
+        end_lineno = node.end_lineno or node.lineno
+        end_col_offset = node.end_col_offset
+        if end_col_offset is None:
+            raise ValueError(f"Node has no source end column: {node!r}")
+        return geometry.line_offsets[end_lineno - 1] + end_col_offset
+
+    @staticmethod
+    def require_non_overlapping_replacements(
+        replacements: Iterable[SourceOffsetReplacement],
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        ordered = sorted_tuple(
+            replacements,
+            key=lambda item: (item.start_offset, item.end_offset),
+        )
+        previous: SourceOffsetReplacement | None = None
+        for replacement in ordered:
+            if previous is not None and replacement.start_offset < previous.end_offset:
+                raise ValueError("Field carrier replacements overlap")
+            previous = replacement
+        return ordered
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -10661,6 +11080,39 @@ class SourceLineSpan:
     start_line: int
     end_line: int
 
+    @classmethod
+    def from_offsets(
+        cls,
+        geometry: SourceTextGeometry,
+        start_offset: int,
+        end_offset: int,
+    ) -> "SourceLineSpan":
+        return cls(
+            start_line=cls.line_number_for_offset(geometry, start_offset),
+            end_line=cls.line_number_for_offset(
+                geometry,
+                max(start_offset, end_offset - 1),
+            ),
+        )
+
+    @staticmethod
+    def line_number_for_offset(
+        geometry: SourceTextGeometry,
+        offset: int,
+    ) -> int:
+        line_number = 1
+        for index, line_offset in enumerate(geometry.line_offsets):
+            if line_offset > offset:
+                break
+            line_number = index + 1
+        return line_number
+
+    def overlaps(self, other: "SourceLineSpan") -> bool:
+        return self.start_line <= other.end_line and other.start_line <= self.end_line
+
+    def overlaps_any(self, spans: Iterable["SourceLineSpan"]) -> bool:
+        return any(self.overlaps(span) for span in spans)
+
     def source_from(self, source: str) -> str:
         source_lines = source.splitlines(keepends=True)
         return "".join(source_lines[self.start_line - 1 : self.end_line])
@@ -11423,6 +11875,28 @@ class RefactorRecipe:
             carrier_dataclass_arguments=tuple(carrier_dataclass_arguments),
             inherited_field_names=tuple(inherited_field_names),
             insert_carrier=insert_carrier,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def replace_fields_with_carrier(
+        self,
+        source_path: str,
+        *,
+        class_name: str,
+        carrier_field_declaration: str,
+        field_projection_pairs: Iterable[str],
+        constructor_names: Iterable[str] = (),
+        attribute_owner_expressions: Iterable[str] = (),
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ReplaceFieldsWithCarrierOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            class_name=class_name,
+            carrier_field_declaration=carrier_field_declaration,
+            field_projection_pairs=tuple(field_projection_pairs),
+            constructor_names=tuple(constructor_names),
+            attribute_owner_expressions=tuple(attribute_owner_expressions),
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
@@ -14185,7 +14659,7 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         if argument_sources is None:
             return None
         start_offset, end_offset = self.node_offsets(source, node)
-        return SourceOffsetReplacement(
+        return SourceOffsetReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
             replacement_source=(
@@ -14272,7 +14746,7 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         start_offset, end_offset = geometry.node_span_offsets(
             SourceNodeSpan(node, SourceNodeDecoratorPolicy.INCLUDE)
         )
-        return SourceOffsetReplacement(
+        return SourceOffsetReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
             replacement_source="",
@@ -14882,7 +15356,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                 )
             )
             replacements.append(
-                SourceOffsetReplacement(
+                SourceOffsetReplacement.from_offsets(
                     start_offset=start_offset,
                     end_offset=end_offset,
                     replacement_source=cls.method_call_authority_call_source(
@@ -14960,7 +15434,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         method_source = self.method_call_authority_source(source_spec)
         replacements = (
             *call_replacements,
-            SourceOffsetReplacement(
+            SourceOffsetReplacement.from_offsets(
                 start_offset=insertion_offset,
                 end_offset=insertion_offset,
                 replacement_source=method_source,
@@ -15299,7 +15773,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
             source,
             target,
             (
-                SourceOffsetReplacement(
+                SourceOffsetReplacement.from_offsets(
                     start_offset=insertion_offset,
                     end_offset=insertion_offset,
                     replacement_source=method_source,
@@ -15442,7 +15916,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                 node,
             )
         )
-        return SourceOffsetReplacement(
+        return SourceOffsetReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
             replacement_source=(
@@ -21814,7 +22288,7 @@ def _descriptor_property_rewrites(
         if class_target.target_id not in replacements_by_class_target_id:
             replacements_by_class_target_id[class_target.target_id] = []
         replacements_by_class_target_id[class_target.target_id].append(
-            SourceOffsetReplacement(
+            SourceOffsetReplacement.from_offsets(
                 start_offset=start,
                 end_offset=end,
                 replacement_source=f"{geometry.line_indent(start)}{assignment}\n",
@@ -21871,7 +22345,7 @@ def _class_statement_deletion_rewrites(
         geometry = SourceTextGeometry(source)
         class_start, class_end = geometry.node_span_offsets(SourceNodeSpan(node))
         replacements = tuple(
-            SourceOffsetReplacement(
+            SourceOffsetReplacement.from_offsets(
                 start_offset=start,
                 end_offset=end,
                 replacement_source="",
