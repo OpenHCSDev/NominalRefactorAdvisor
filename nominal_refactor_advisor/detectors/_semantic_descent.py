@@ -154,8 +154,8 @@ class SemanticMirrorWithoutDescentDetector(SemanticMirrorIssueDetector):
         certificate: DescentCertificate,
     ) -> RefactorFinding:
         edge = certificate.edge
-        authority = graph.authority_by_id[edge.authority_id]
-        projection = graph.projection_by_id[edge.projection_id]
+        authority = graph.authority_catalog.authority_for_edge(edge)
+        projection = graph.projection_catalog.projection_for_edge(edge)
         facts_by_id = {fact.fact_id: fact for fact in graph.facts}
         matched_facts = tuple(facts_by_id[fact_id] for fact_id in edge.matched_fact_ids)
         matched_names = tuple(fact.name for fact in matched_facts)

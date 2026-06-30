@@ -546,6 +546,15 @@ class SemanticMirrorEdgeCandidate:
             PresentationProjectionKind.MATCH_LITERAL,
         )
 
+    @cached_property
+    def authority_affinity(self) -> SemanticAuthorityAffinityPolicy:
+        return SemanticAuthorityAffinityPolicy(
+            authority_name=self.authority.name,
+            projection_label=self.projection.label,
+            projection_owner_symbol=self.projection.owner_symbol,
+            projection_location_symbol=self.projection.location.symbol,
+        )
+
 
 class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
     """Authority-kind-specific mirror admissibility and descent rules."""
@@ -718,10 +727,7 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
                 candidate.projection,
                 frozenset(candidate.matched_tokens),
             )
-            and not resolver.projection_has_enum_authority_affinity(
-                candidate.projection,
-                candidate.authority,
-            )
+            and not candidate.authority_affinity.has_authority_affinity()
             and not resolver.projection_has_qualified_authority_reference(
                 candidate.projection,
                 candidate.authority,
@@ -730,10 +736,7 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
             return False
         return not (
             len(candidate.matched_fact_ids) <= 2
-            and not resolver.projection_has_enum_authority_affinity(
-                candidate.projection,
-                candidate.authority,
-            )
+            and not candidate.authority_affinity.has_authority_affinity()
             and not resolver.projection_has_qualified_authority_reference(
                 candidate.projection,
                 candidate.authority,
@@ -815,6 +818,40 @@ class SemanticAuthorityNameIndex:
 
 
 @dataclass(frozen=True)
+class SemanticAuthorityCatalog:
+    """Nominal lookup catalog for semantic authorities."""
+
+    authorities: tuple[SemanticAuthority, ...]
+
+    @cached_property
+    def by_id(self) -> dict[str, SemanticAuthority]:
+        return {authority.authority_id: authority for authority in self.authorities}
+
+    def authority(self, authority_id: str) -> SemanticAuthority:
+        return self.by_id[authority_id]
+
+    def authority_for_edge(self, edge: MirrorEdge) -> SemanticAuthority:
+        return self.authority(edge.authority_id)
+
+
+@dataclass(frozen=True)
+class PresentationProjectionCatalog:
+    """Nominal lookup catalog for presentation projections."""
+
+    projections: tuple[PresentationProjection, ...]
+
+    @cached_property
+    def by_id(self) -> dict[str, PresentationProjection]:
+        return {projection.projection_id: projection for projection in self.projections}
+
+    def projection(self, projection_id: str) -> PresentationProjection:
+        return self.by_id[projection_id]
+
+    def projection_for_edge(self, edge: MirrorEdge) -> PresentationProjection:
+        return self.projection(edge.projection_id)
+
+
+@dataclass(frozen=True)
 class SemanticFactTokenIndex:
     """Fact references grouped by normalized presentation token."""
 
@@ -892,7 +929,7 @@ class ProjectionClassSymbolFactMatcher:
 
     projection: PresentationProjection
     class_index: ClassFamilyIndex
-    authority_by_id: dict[str, SemanticAuthority]
+    authority_catalog: SemanticAuthorityCatalog
     fact_authority_index: SemanticFactAuthorityIndex
 
     def matches(self) -> tuple[SemanticFactTokenMatch, ...]:
@@ -910,8 +947,10 @@ class ProjectionClassSymbolFactMatcher:
     ) -> tuple[SemanticFactTokenMatch, ...]:
         matches: list[SemanticFactTokenMatch] = []
         for authority_id in self.class_index.ancestor_symbols(indexed_class.symbol):
-            authority = self.authority_by_id.get(authority_id)
-            if authority is None or not authority.kind.is_class_family_like:
+            if authority_id not in self.authority_catalog.by_id:
+                continue
+            authority = self.authority_catalog.authority(authority_id)
+            if not authority.kind.is_class_family_like:
                 continue
             fact_id = f"{authority_id}:{indexed_class.symbol}"
             if fact_id not in self.fact_authority_index.by_id:
@@ -951,20 +990,20 @@ class SemanticDescentGraphSpace:
         return SemanticAuthorityNameIndex(self.authorities)
 
     @cached_property
+    def authority_catalog(self) -> SemanticAuthorityCatalog:
+        return SemanticAuthorityCatalog(self.authorities)
+
+    @cached_property
+    def projection_catalog(self) -> PresentationProjectionCatalog:
+        return PresentationProjectionCatalog(self.projections)
+
+    @cached_property
     def fact_token_index(self) -> SemanticFactTokenIndex:
         return SemanticFactTokenIndex(self.facts)
 
     @cached_property
     def facts_by_authority_id(self) -> FactsByAuthorityId:
         return self.fact_authority_index.by_authority_id
-
-    @cached_property
-    def authority_by_id(self) -> dict[str, SemanticAuthority]:
-        return {authority.authority_id: authority for authority in self.authorities}
-
-    @cached_property
-    def projection_by_id(self) -> dict[str, PresentationProjection]:
-        return {projection.projection_id: projection for projection in self.projections}
 
 
 @dataclass(frozen=True)
@@ -1014,8 +1053,8 @@ class SemanticDescentCertificateSummary(SemanticRecord):
         certificate: DescentCertificate,
     ) -> "SemanticDescentCertificateSummary":
         edge = certificate.edge
-        authority = graph.authority_by_id[edge.authority_id]
-        projection = graph.projection_by_id[edge.projection_id]
+        authority = graph.authority_catalog.authority_for_edge(edge)
+        projection = graph.projection_catalog.projection_for_edge(edge)
         return cls(
             authority_name=authority.name,
             authority_kind=authority.kind.value,
@@ -1079,8 +1118,8 @@ class SemanticDescentGraphReport(SemanticRecord):
                     graph.certificates,
                     key=lambda item: (
                         -len(item.edge.matched_fact_ids),
-                        graph.authority_by_id[item.edge.authority_id].name,
-                        graph.projection_by_id[item.edge.projection_id].label,
+                        graph.authority_catalog.authority_for_edge(item.edge).name,
+                        graph.projection_catalog.projection_for_edge(item.edge).label,
                     ),
                 )[:certificate_limit]
             ),
@@ -2258,7 +2297,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             ).items():
                 edge = self._edge_for(
                     projection,
-                    self.authority_by_id[authority_id],
+                    self.authority_catalog.authority(authority_id),
                     self.fact_authority_index.facts_for_authority(authority_id),
                     matches,
                 )
@@ -2290,7 +2329,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             ProjectionClassSymbolFactMatcher(
                 projection,
                 self.class_index,
-                self.authority_by_id,
+                self.authority_catalog,
                 self.fact_authority_index,
             ).matches()
         )
@@ -2372,7 +2411,9 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         self,
         authority_id: str,
     ) -> SemanticAuthorityMirrorPolicy:
-        return self._policy_for_authority(self.authority_by_id[authority_id])
+        return self._policy_for_authority(
+            self.authority_catalog.authority(authority_id)
+        )
 
     @staticmethod
     def _policy_for_authority(
@@ -2670,18 +2711,6 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             f"{projection.label} {projection.owner_symbol} {projection.location.symbol}"
         )
         return len(authority_tokens & projection_tokens) >= 2
-
-    @staticmethod
-    def projection_has_enum_authority_affinity(
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return SemanticAuthorityAffinityPolicy(
-            authority_name=authority.name,
-            projection_label=projection.label,
-            projection_owner_symbol=projection.owner_symbol,
-            projection_location_symbol=projection.location.symbol,
-        ).has_authority_affinity()
 
     @staticmethod
     def projection_has_qualified_authority_reference(

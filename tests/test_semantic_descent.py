@@ -111,7 +111,7 @@ def test_semantic_descent_graph_flags_manual_class_family_projection(
         for item in graph.certificates
         if item.edge.authority_id == handler_authority.authority_id
     )
-    projection = graph.projection_by_id[certificate.edge.projection_id]
+    projection = graph.projection_catalog.projection_for_edge(certificate.edge)
 
     assert projection.label == "HANDLERS"
     assert set(certificate.edge.matched_tokens) >= {"alpha", "beta"}
@@ -2466,7 +2466,8 @@ def test_semantic_descent_treats_empty_enum_base_as_class_family_authority(
     authority = next(item for item in graph.authorities if item.name == "LabeledMode")
     assert authority.kind is SemanticAuthorityKind.CLASS_FAMILY
     assert any(
-        graph.projection_by_id[certificate.edge.projection_id].label == "MODE_ENUMS"
+        graph.projection_catalog.projection_for_edge(certificate.edge).label
+        == "MODE_ENUMS"
         and certificate.edge.authority_id == authority.authority_id
         for certificate in graph.certificates
     )
@@ -3173,7 +3174,7 @@ def test_semantic_descent_reports_constructor_catalog_schema_projection(
         for item in graph.certificates
         if item.edge.authority_id == registration_shape_authority.authority_id
     )
-    projection = graph.projection_by_id[certificate.edge.projection_id]
+    projection = graph.projection_catalog.projection_for_edge(certificate.edge)
 
     assert projection.label == "REGISTRATION_SHAPE_CONSTRUCTORS"
     assert set(certificate.edge.matched_tokens) >= {
@@ -3502,7 +3503,7 @@ def test_semantic_descent_graph_cache_invalidates_on_source_change(
 
     assert any(
         "`" not in certificate.missing_derivation_path
-        and second_graph.projection_by_id[certificate.edge.projection_id].label
+        and second_graph.projection_catalog.projection_for_edge(certificate.edge).label
         == "STEP_TABLE"
         for certificate in second_graph.certificates
     )

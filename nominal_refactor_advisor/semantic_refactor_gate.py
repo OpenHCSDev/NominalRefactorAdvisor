@@ -13,7 +13,7 @@ from .codemod import (
     JsonObject,
 )
 from .detectors import IssueDetector
-from .impact_ranking import RefactorImpactRankingReport
+from .impact_ranking import RefactorImpactRankingReport, RefactorImpactTrajectory
 from .models import RefactorFinding, SemanticRecord
 from .semantic_descent import (
     DescentCertificate,
@@ -118,10 +118,7 @@ class SemanticRefactorGateMode(SemanticRecord):
 class SemanticRefactorGateTrajectory(SemanticRecord):
     """First dynamic trajectory exposed by the semantic refactor gate."""
 
-    sequence: tuple[str, ...]
-    predicted_removed_finding_count: int
-    residual_finding_count: int
-    trajectory_score: int
+    impact_trajectory: RefactorImpactTrajectory
 
     @classmethod
     def from_impact_ranking(
@@ -130,23 +127,33 @@ class SemanticRefactorGateTrajectory(SemanticRecord):
     ) -> "SemanticRefactorGateTrajectory | None":
         if impact_ranking is None or not impact_ranking.trajectories:
             return None
-        trajectory = impact_ranking.trajectories[0]
-        return cls(
-            sequence=tuple(f"{key.kind}:{key.label}" for key in trajectory.keys),
-            predicted_removed_finding_count=(
-                trajectory.predicted_removed_finding_count
-            ),
-            residual_finding_count=trajectory.residual_finding_count,
-            trajectory_score=trajectory.trajectory_score,
+        return cls(impact_trajectory=impact_ranking.trajectories[0])
+
+    @property
+    def sequence(self) -> tuple[str, ...]:
+        return tuple(f"{key.kind}:{key.label}" for key in self.impact_trajectory.keys)
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "sequence": self.sequence,
+                "predicted_removed_finding_count": (
+                    self.impact_trajectory.predicted_removed_finding_count
+                ),
+                "residual_finding_count": self.impact_trajectory.residual_finding_count,
+                "trajectory_score": self.impact_trajectory.trajectory_score,
+            }
         )
 
     def markdown_lines(self) -> tuple[str, ...]:
         return (
             (
                 "   - First trajectory: "
-                f"removes {self.predicted_removed_finding_count} finding(s), "
-                f"residual {self.residual_finding_count}, "
-                f"score {self.trajectory_score}"
+                "removes "
+                f"{self.impact_trajectory.predicted_removed_finding_count} "
+                "finding(s), "
+                f"residual {self.impact_trajectory.residual_finding_count}, "
+                f"score {self.impact_trajectory.trajectory_score}"
             ),
             f"     sequence: {' -> '.join(self.sequence)}",
         )
@@ -183,7 +190,9 @@ class DescentCertificateFindingAuthority:
     def authority_candidate_for_finding(self, finding: RefactorFinding) -> str:
         certificate = self.certificate_for_finding(finding)
         if certificate is not None:
-            return self.graph.authority_by_id[certificate.edge.authority_id].name
+            return self.graph.authority_catalog.authority_for_edge(
+                certificate.edge
+            ).name
         if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
             return finding.title
         if finding.evidence:
@@ -213,7 +222,7 @@ class DescentCertificateFindingAuthority:
         certificates: tuple[DescentCertificate, ...],
     ) -> tuple[str, ...]:
         return _unique_strings(
-            self.graph.authority_by_id[certificate.edge.authority_id].kind.value
+            self.graph.authority_catalog.authority_for_edge(certificate.edge).kind.value
             for certificate in certificates
         )
 
@@ -222,8 +231,26 @@ class DescentCertificateFindingAuthority:
         certificates: tuple[DescentCertificate, ...],
     ) -> tuple[str, ...]:
         return _unique_strings(
-            self.graph.projection_by_id[certificate.edge.projection_id].kind.value
+            self.graph.projection_catalog.projection_for_edge(
+                certificate.edge
+            ).kind.value
             for certificate in certificates
+        )
+
+
+@dataclass(frozen=True)
+class FindingRemovalPrediction:
+    """Nominal carrier for gate finding-removal estimates."""
+
+    target_count: int
+    removed_count: int
+
+    def to_payload_fields(self) -> JsonObject:
+        return JsonObject(
+            {
+                "target_count": self.target_count,
+                "predicted_removed_finding_count": self.removed_count,
+            }
         )
 
 
@@ -236,8 +263,7 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
     priority_tier: str
     detector_ids: tuple[str, ...]
     actionability: str
-    target_count: int
-    predicted_removed_finding_count: int
+    removal_prediction: FindingRemovalPrediction
     strategy_id: str
     agent_action: str
 
@@ -255,10 +281,26 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
             ),
             detector_ids=candidate.opportunity.detector_ids,
             actionability=applicability.actionability.value,
-            target_count=candidate.target_count,
-            predicted_removed_finding_count=candidate.predicted_removed_finding_count,
+            removal_prediction=FindingRemovalPrediction(
+                target_count=candidate.target_count,
+                removed_count=candidate.predicted_removed_finding_count,
+            ),
             strategy_id=applicability.strategy.strategy_id,
             agent_action=applicability.agent_action,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "opportunity_kind": self.opportunity_kind,
+                "authority_candidate": self.authority_candidate,
+                "priority_tier": self.priority_tier,
+                "detector_ids": self.detector_ids,
+                "actionability": self.actionability,
+                **self.removal_prediction.to_payload_fields(),
+                "strategy_id": self.strategy_id,
+                "agent_action": self.agent_action,
+            }
         )
 
     def markdown_lines(self, index: int) -> tuple[str, ...]:
@@ -266,8 +308,8 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
             (
                 f"     {index}. {self.opportunity_kind} "
                 f"`{self.authority_candidate}` -> "
-                f"{self.predicted_removed_finding_count} finding(s), "
-                f"{self.target_count} target(s), "
+                f"{self.removal_prediction.removed_count} finding(s), "
+                f"{self.removal_prediction.target_count} target(s), "
                 f"{self.actionability}, priority {self.priority_tier}"
             ),
             f"        detectors: {', '.join(self.detector_ids)}",
@@ -288,8 +330,7 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
     detector_ids: tuple[str, ...]
     actionability: str
     finding_ids: tuple[str, ...]
-    target_count: int
-    predicted_removed_finding_count: int
+    removal_prediction: FindingRemovalPrediction
     certificate_count: int
     matched_fact_count: int
     authority_kinds: tuple[str, ...]
@@ -314,8 +355,7 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             detector_ids=target.detector_ids,
             actionability=target.actionability,
             finding_ids=(),
-            target_count=target.target_count,
-            predicted_removed_finding_count=target.predicted_removed_finding_count,
+            removal_prediction=target.removal_prediction,
             certificate_count=0,
             matched_fact_count=0,
             authority_kinds=(),
@@ -375,8 +415,10 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             detector_ids=detector_ids,
             actionability="semantic_agent_refactor",
             finding_ids=tuple(finding.stable_id for finding in findings),
-            target_count=max(1, len(evidence_symbols)),
-            predicted_removed_finding_count=len(findings),
+            removal_prediction=FindingRemovalPrediction(
+                target_count=max(1, len(evidence_symbols)),
+                removed_count=len(findings),
+            ),
             certificate_count=len(certificates),
             matched_fact_count=certificate_authority.matched_fact_count(certificates),
             authority_kinds=certificate_authority.authority_kinds(certificates),
@@ -389,6 +431,28 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             evidence_symbols=evidence_symbols,
         )
 
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "source": self.source,
+                "priority_tier": self.priority_tier,
+                "label": self.label,
+                "authority_candidate": self.authority_candidate,
+                "authority_candidates": self.authority_candidates,
+                "missing_derivation_path": self.missing_derivation_path,
+                "detector_ids": self.detector_ids,
+                "actionability": self.actionability,
+                "finding_ids": self.finding_ids,
+                **self.removal_prediction.to_payload_fields(),
+                "certificate_count": self.certificate_count,
+                "matched_fact_count": self.matched_fact_count,
+                "authority_kinds": self.authority_kinds,
+                "projection_kinds": self.projection_kinds,
+                "agent_action": self.agent_action,
+                "evidence_symbols": self.evidence_symbols,
+            }
+        )
+
     @property
     def priority_rank(self) -> tuple[int, int, int, int, int, int, str]:
         return (
@@ -396,8 +460,8 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             int(not priority_tier_has_ssot_authority_role(self.priority_tier)),
             -self.matched_fact_count,
             -self.certificate_count,
-            -self.predicted_removed_finding_count,
-            -self.target_count,
+            -self.removal_prediction.removed_count,
+            -self.removal_prediction.target_count,
             self.label,
         )
 
@@ -508,6 +572,31 @@ class SemanticRefactorGateReport(SemanticRecord):
             first_trajectory=None,
             authority_targets=(),
             work_queue=(),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "active": self.active,
+                "policy": self.policy,
+                "raw_findings_default": self.raw_findings_default,
+                "semantic_candidate_count": self.semantic_candidate_count,
+                "semantic_agent_refactor_count": self.semantic_agent_refactor_count,
+                "semantic_uncertainty_review_count": (
+                    self.semantic_uncertainty_review_count
+                ),
+                "ssot_authority_finding_count": self.ssot_authority_finding_count,
+                "cleanup_followup_finding_count": self.cleanup_followup_finding_count,
+                "first_trajectory": (
+                    self.first_trajectory.to_dict()
+                    if self.first_trajectory is not None
+                    else None
+                ),
+                "authority_targets": tuple(
+                    target.to_dict() for target in self.authority_targets
+                ),
+                "work_queue": tuple(item.to_dict() for item in self.work_queue),
+            }
         )
 
     @staticmethod
