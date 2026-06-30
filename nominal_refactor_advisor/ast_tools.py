@@ -2978,17 +2978,23 @@ def _is_class_target(node: ast.AST | None) -> bool:
     return False
 
 
+@lru_cache(maxsize=None)
+def _module_class_names(parsed_module: ParsedModule) -> frozenset[str]:
+    return frozenset(
+        node.name
+        for node in _walk_nodes(parsed_module.module)
+        if isinstance(node, ast.ClassDef)
+    )
+
+
 def _builder_call_shape(
     parsed_module: ParsedModule,
     node: ast.AST,
     class_name: str | None,
     function_name: str | None,
+    module_class_names: frozenset[str] | None = None,
 ) -> BuilderCallShape | None:
-    module_class_names = frozenset(
-        node.name
-        for node in _walk_nodes(parsed_module.module)
-        if isinstance(node, ast.ClassDef)
-    )
+    module_class_names = module_class_names or _module_class_names(parsed_module)
 
     def owned_builder_authority_call(call: ast.Call) -> bool:
         if not isinstance(call.func, ast.Attribute):

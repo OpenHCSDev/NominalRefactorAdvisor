@@ -140,6 +140,7 @@ from ..ast_tools import (
     collect_family_items,
     _walk_nodes,
     _builder_call_shape,
+    _module_class_names,
 )
 from ..class_index import (
     ClassFamilyIndex,
@@ -3022,6 +3023,7 @@ def _collect_configured_named_function_candidates(
 @lru_cache(maxsize=None)
 def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
     shapes: list[BuilderCallShape] = []
+    module_class_names = _module_class_names(module)
 
     class CallVisitor(ast.NodeVisitor):
         def __init__(self, class_name: str | None, function_name: str | None) -> None:
@@ -3036,7 +3038,11 @@ def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape,
 
         def visit_Call(self, node: ast.Call) -> None:
             shape = _builder_call_shape(
-                module, node, self.class_name, self.function_name
+                module,
+                node,
+                self.class_name,
+                self.function_name,
+                module_class_names,
             )
             if shape is not None:
                 shapes.append(shape)
