@@ -18105,6 +18105,46 @@ def test_semantic_gate_promotes_ssot_findings_over_wrapper_cleanup_without_candi
     assert "Raw finding evidence suppressed:" in markdown
 
 
+def test_semantic_gate_ranks_larger_boundary_groups_before_label_order() -> None:
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Authority boundary",
+        "source of truth drift must be collapsed",
+        "single authority boundary",
+        "same fact family has multiple writable surfaces",
+    )
+    small = spec.build(
+        "runtime_authority_branch_semantics",
+        "small authority branch",
+        (SourceLocation("module.py", 10, "SmallAuthority.guard"),),
+        title="A small authority branch",
+    )
+    large_one = spec.build(
+        "runtime_authority_branch_semantics",
+        "large boundary group one",
+        (SourceLocation("module.py", 20, "LargeBoundary.alpha"),),
+        title="Z large boundary group",
+    )
+    large_two = spec.build(
+        "runtime_authority_branch_semantics",
+        "large boundary group two",
+        (SourceLocation("module.py", 30, "LargeBoundary.beta"),),
+        title="Z large boundary group",
+    )
+
+    payload = JsonPayloadBuilder(
+        findings=[small, large_one, large_two],
+        plans=[],
+        modules=[],
+        payload_sections=JsonPayloadProfile.agent.sections,
+    ).to_dict()
+    work_queue = cast(list[dict[str, object]], payload["findings"])
+
+    assert work_queue[0]["label"] == "Z large boundary group (2 authority candidates)"
+    assert work_queue[0]["predicted_removed_finding_count"] == 2
+    assert work_queue[1]["label"] == "A small authority branch"
+
+
 def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,

@@ -300,16 +300,12 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         )
 
     @property
-    def priority_rank(self) -> tuple[int, int, str]:
-        semantic_mirror_rank = (
-            0 if detector_ids_have_semantic_mirror_role(self.detector_ids) else 1
-        )
-        ssot_rank = (
-            0 if priority_tier_has_ssot_authority_role(self.priority_tier) else 1
-        )
+    def priority_rank(self) -> tuple[int, int, int, int, str]:
         return (
-            semantic_mirror_rank,
-            ssot_rank,
+            int(not detector_ids_have_semantic_mirror_role(self.detector_ids)),
+            int(not priority_tier_has_ssot_authority_role(self.priority_tier)),
+            -self.predicted_removed_finding_count,
+            -self.target_count,
             self.label,
         )
 
