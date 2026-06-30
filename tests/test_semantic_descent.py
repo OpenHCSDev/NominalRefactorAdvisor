@@ -18,6 +18,7 @@ from nominal_refactor_advisor.detectors import (
     DerivedMetricCountBoilerplateDetector,
     DuplicateVisitorMethodBodyDetector,
     InheritedAutoRegisterConfigBoilerplateDetector,
+    IssueDetector,
     LocalRoleCaseLogicDetector,
     RepeatedFieldFamilyDetector,
     SemanticMirrorWithoutDescentDetector,
@@ -51,6 +52,19 @@ def _write_module(root: Path, source: str) -> Path:
     path.parent.mkdir(parents=True)
     path.write_text(source, encoding="utf-8")
     return path
+
+
+def _goal_policy_finding(detector_id: str) -> RefactorFinding:
+    return RefactorFinding(
+        detector_id=detector_id,
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Finding",
+        summary=f"{detector_id} summary",
+        why="semantic fact is mirrored outside its nominal authority",
+        capability_gap="derive the projection from the authority instead",
+        relation_context="projection lacks a semantic-descent certificate",
+        evidence=(SourceLocation("pkg/mod.py", 1, detector_id),),
+    )
 
 
 def test_class_name_algebra_uses_tokens_for_common_suffixes() -> None:
@@ -291,34 +305,25 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
     assert work_item.evidence_symbols == ("local_cases",)
 
 
-def test_nominal_boundary_goal_targets_semantic_mirror_role_by_default(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "class Step:\n"
-        "    pass\n"
-        "\n"
-        "class LoadStep(Step):\n"
-        "    step_id = 'load'\n"
-        "\n"
-        "class SaveStep(Step):\n"
-        "    step_id = 'save'\n"
-        "\n"
-        "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
-    )
-    findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(
-            parse_python_modules(tmp_path),
-            DetectorConfig(),
-        )
-    )
+def test_nominal_boundary_goal_targets_all_ssot_authority_findings_by_default() -> None:
+    mirror_finding = _goal_policy_finding("semantic_mirror_without_descent")
+    non_mirror_ssot_finding = _goal_policy_finding("repeated_builder_calls")
+    ordinary_finding = _goal_policy_finding("duplicate_visitor_method_body")
+    findings = (mirror_finding, non_mirror_ssot_finding, ordinary_finding)
     goal = CodemodRefactorGoal(goal_id="semantic-descent")
     target_policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
 
+    assert (
+        non_mirror_ssot_finding.detector_id
+        in IssueDetector.ssot_authority_detector_ids()
+    )
+    assert (
+        non_mirror_ssot_finding.detector_id
+        not in IssueDetector.semantic_mirror_detector_ids()
+    )
     assert tuple(
         finding.detector_id for finding in target_policy.target_findings(goal, findings)
-    ) == ("semantic_mirror_without_descent",)
+    ) == ("semantic_mirror_without_descent", "repeated_builder_calls")
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(

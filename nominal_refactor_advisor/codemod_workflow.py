@@ -404,7 +404,7 @@ class CodemodRefactorGoalTargetPolicy(ABC, metaclass=AutoRegisterMeta):
 
 
 class NominalBoundaryExtractionGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
-    """Target semantic-mirror findings for nominal-boundary extraction goals."""
+    """Target SSOT authority-boundary findings for nominal-boundary goals."""
 
     goal_kind = CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
 
@@ -412,7 +412,7 @@ class NominalBoundaryExtractionGoalTargetPolicy(CodemodRefactorGoalTargetPolicy)
     def default_detector_ids() -> frozenset[str]:
         from .detectors import IssueDetector
 
-        return IssueDetector.semantic_mirror_detector_ids()
+        return IssueDetector.ssot_authority_detector_ids()
 
     def default_target_matches_finding(self, finding: RefactorFinding) -> bool:
         return finding.detector_id in self.default_detector_ids()
