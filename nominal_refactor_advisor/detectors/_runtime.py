@@ -7362,81 +7362,6 @@ class PrivateReferenceDetectorContext:
 
 
 @dataclass(frozen=True)
-class PrivateReferenceDetectorContextSignature:
-    """Stable semantic-context identity for private-reference detector shards."""
-
-    reference_count_rows: tuple["PrivateReferenceCountSignatureRow", ...]
-    derived_candidate_collector_contract_names: tuple[str, ...]
-    private_helper_call_edges: tuple["PrivateReferenceCallEdgeSignatureRow", ...]
-    surface_function_rows: tuple["PrivateReferenceFunctionSignatureRow", ...]
-    class_family_rows: tuple["PrivateReferenceClassFamilySignatureRow", ...]
-
-    @classmethod
-    def from_context(
-        cls, context: PrivateReferenceDetectorContext
-    ) -> "PrivateReferenceDetectorContextSignature":
-        return cls(
-            reference_count_rows=tuple(
-                PrivateReferenceCountSignatureRow(
-                    symbol_digest=_stable_text_digest(symbol_name),
-                    count=count,
-                )
-                for symbol_name, count in sorted(
-                    context.reference_index.total_counts.items()
-                )
-            ),
-            derived_candidate_collector_contract_names=tuple(
-                sorted(context.derived_candidate_collector_contract_names)
-            ),
-            private_helper_call_edges=tuple(
-                PrivateReferenceCallEdgeSignatureRow(
-                    function_name=function_name,
-                    caller_symbols=caller_symbols,
-                )
-                for function_name, caller_symbols in sorted(
-                    context.private_helper_call_graph.caller_symbols_by_name.items()
-                )
-            ),
-            surface_function_rows=tuple(
-                PrivateReferenceFunctionSignatureRow(
-                    qualified_function_name=qualified_function_name,
-                    body_digest=body_digest,
-                )
-                for qualified_function_name, body_digest in sorted(
-                    (
-                        (
-                            f"{module.module_name}.{qualname}",
-                            _stable_text_digest(
-                                ast.dump(function, include_attributes=False)
-                            ),
-                        )
-                        for module in context.modules
-                        for qualname, function in SurfaceFunctionIndex.from_module(
-                            module.module
-                        ).functions
-                    )
-                )
-            ),
-            class_family_rows=tuple(
-                PrivateReferenceClassFamilySignatureRow(
-                    symbol=symbol,
-                    simple_name=indexed_class.simple_name,
-                    declared_base_names=indexed_class.declared_base_names,
-                    resolved_base_symbols=indexed_class.resolved_base_symbols,
-                    ancestor_symbols=context.class_index.ancestor_symbols(symbol),
-                )
-                for symbol, indexed_class in sorted(
-                    context.class_index.classes_by_symbol.items()
-                )
-            ),
-        )
-
-    @property
-    def token(self) -> str:
-        return _stable_text_digest(repr(self))
-
-
-@dataclass(frozen=True)
 class PrivateReferenceCountSignatureRow:
     symbol_digest: str
     count: int
@@ -7463,6 +7388,229 @@ class PrivateReferenceClassFamilySignatureRow:
     ancestor_symbols: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class PrivateReferenceContextSignatureFacetRow:
+    facet_name: str
+    value_digest: str
+
+
+PrivateReferenceContextSignatureFacetValue: TypeAlias = Hashable
+
+
+class PrivateReferenceContextSignatureFacet(ABC, metaclass=AutoRegisterMeta):
+    """Nominal semantic dependency projected into a contextual-cache key."""
+
+    __registry_key__ = "facet_name"
+    __skip_if_no_key__ = True
+
+    facet_name: ClassVar[str | None] = None
+    context_property_names: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def registered_facet_types(cls) -> "PrivateReferenceContextSignatureFacets":
+        return tuple(
+            facet_type
+            for _, facet_type in sorted(
+                cls.__registry__.items(),
+                key=lambda item: item[0],
+            )
+        )
+
+    @classmethod
+    def registered_facet_types_for_detector(
+        cls,
+        detector_type: type["PrivateReferenceContextualDetector"],
+    ) -> "PrivateReferenceContextSignatureFacets":
+        accessed_names = frozenset(
+            detector_type._candidate_items_for_private_reference_context.__code__
+            .co_names
+        )
+        return tuple(
+            facet_type
+            for facet_type in cls.registered_facet_types()
+            if accessed_names & frozenset(facet_type.context_property_names)
+        )
+
+    def row(
+        self, context: PrivateReferenceDetectorContext
+    ) -> PrivateReferenceContextSignatureFacetRow:
+        facet_name = type(self).facet_name
+        if facet_name is None:
+            raise TypeError(f"{type(self).__name__} has no facet_name")
+        return PrivateReferenceContextSignatureFacetRow(
+            facet_name=facet_name,
+            value_digest=_stable_text_digest(repr(self.value(context))),
+        )
+
+    @abstractmethod
+    def value(
+        self, context: PrivateReferenceDetectorContext
+    ) -> PrivateReferenceContextSignatureFacetValue:
+        raise NotImplementedError
+
+
+class ReferenceCountPrivateReferenceSignatureFacet(
+    PrivateReferenceContextSignatureFacet
+):
+    facet_name = "reference_counts"
+    context_property_names = ("reference_index",)
+
+    def value(
+        self, context: PrivateReferenceDetectorContext
+    ) -> tuple[PrivateReferenceCountSignatureRow, ...]:
+        return tuple(
+            PrivateReferenceCountSignatureRow(
+                symbol_digest=_stable_text_digest(symbol_name),
+                count=count,
+            )
+            for symbol_name, count in sorted(
+                context.reference_index.total_counts.items()
+            )
+        )
+
+
+class DerivedCollectorContractPrivateReferenceSignatureFacet(
+    PrivateReferenceContextSignatureFacet
+):
+    facet_name = "derived_collector_contracts"
+    context_property_names = ("derived_candidate_collector_contract_names",)
+
+    def value(self, context: PrivateReferenceDetectorContext) -> tuple[str, ...]:
+        return tuple(sorted(context.derived_candidate_collector_contract_names))
+
+
+class PrivateHelperCallEdgePrivateReferenceSignatureFacet(
+    PrivateReferenceContextSignatureFacet
+):
+    facet_name = "private_helper_call_edges"
+    context_property_names = ("private_helper_call_graph",)
+
+    def value(
+        self, context: PrivateReferenceDetectorContext
+    ) -> tuple[PrivateReferenceCallEdgeSignatureRow, ...]:
+        return tuple(
+            PrivateReferenceCallEdgeSignatureRow(
+                function_name=function_name,
+                caller_symbols=caller_symbols,
+            )
+            for function_name, caller_symbols in sorted(
+                context.private_helper_call_graph.caller_symbols_by_name.items()
+            )
+        )
+
+
+class SurfaceFunctionPrivateReferenceSignatureFacet(
+    PrivateReferenceContextSignatureFacet
+):
+    facet_name = "surface_functions"
+    context_property_names = ("private_helper_call_graph",)
+
+    def value(
+        self, context: PrivateReferenceDetectorContext
+    ) -> tuple[PrivateReferenceFunctionSignatureRow, ...]:
+        return tuple(
+            PrivateReferenceFunctionSignatureRow(
+                qualified_function_name=qualified_function_name,
+                body_digest=body_digest,
+            )
+            for qualified_function_name, body_digest in sorted(
+                (
+                    (
+                        f"{module.module_name}.{qualname}",
+                        _stable_text_digest(
+                            ast.dump(function, include_attributes=False)
+                        ),
+                    )
+                    for module in context.modules
+                    for qualname, function in SurfaceFunctionIndex.from_module(
+                        module.module
+                    ).functions
+                )
+            )
+        )
+
+
+class ClassFamilyPrivateReferenceSignatureFacet(
+    PrivateReferenceContextSignatureFacet
+):
+    facet_name = "class_family"
+    context_property_names = ("class_index",)
+
+    def value(
+        self, context: PrivateReferenceDetectorContext
+    ) -> tuple[PrivateReferenceClassFamilySignatureRow, ...]:
+        caller_owner_names = sorted_tuple(
+            {
+                owner_name
+                for caller_symbols in (
+                    context.private_helper_call_graph.caller_symbols_by_name.values()
+                )
+                for owner_name in _private_helper_caller_owner_names(caller_symbols)
+            }
+        )
+        class_symbols = frozenset(
+            class_symbol
+            for owner_name in caller_owner_names
+            if (
+                class_symbol := _private_helper_unique_class_symbol(
+                    context.class_index, owner_name
+                )
+            )
+            is not None
+        )
+        relevant_symbols = frozenset(
+            (
+                symbol
+                for class_symbol in class_symbols
+                for symbol in (
+                    class_symbol,
+                    *context.class_index.ancestor_symbols(class_symbol),
+                )
+            )
+        )
+        return tuple(
+            PrivateReferenceClassFamilySignatureRow(
+                symbol=symbol,
+                simple_name=indexed_class.simple_name,
+                declared_base_names=indexed_class.declared_base_names,
+                resolved_base_symbols=indexed_class.resolved_base_symbols,
+                ancestor_symbols=context.class_index.ancestor_symbols(symbol),
+            )
+            for symbol, indexed_class in sorted(
+                context.class_index.classes_by_symbol.items()
+            )
+            if symbol in relevant_symbols
+        )
+
+
+PrivateReferenceContextSignatureFacets: TypeAlias = tuple[
+    type[PrivateReferenceContextSignatureFacet],
+    ...,
+]
+
+
+@dataclass(frozen=True)
+class PrivateReferenceDetectorContextSignature:
+    """Stable semantic-context identity for private-reference detector shards."""
+
+    facet_rows: tuple[PrivateReferenceContextSignatureFacetRow, ...]
+
+    @classmethod
+    def from_context(
+        cls,
+        context: PrivateReferenceDetectorContext,
+        facets: PrivateReferenceContextSignatureFacets = (),
+    ) -> "PrivateReferenceDetectorContextSignature":
+        facet_types = (
+            facets or PrivateReferenceContextSignatureFacet.registered_facet_types()
+        )
+        return cls(tuple(facet_type().row(context) for facet_type in facet_types))
+
+    @property
+    def token(self) -> str:
+        return _stable_text_digest(repr(self))
+
+
 @lru_cache(maxsize=4)
 def _private_reference_detector_context(
     modules: tuple[ParsedModule, ...],
@@ -7486,7 +7634,15 @@ class PrivateReferenceContextualDetector(
         cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
     ) -> str:
         del config
-        return _private_reference_detector_context(modules).signature.token
+        facets = (
+            PrivateReferenceContextSignatureFacet.registered_facet_types_for_detector(
+                cls
+            )
+        )
+        return PrivateReferenceDetectorContextSignature.from_context(
+            _private_reference_detector_context(modules),
+            facets,
+        ).token
 
     def _findings_for_module_context(
         self,
@@ -7515,7 +7671,7 @@ class PrivateReferenceContextualDetector(
 
 
 class DeadEmbeddedStaticPayloadDetector(
-    PrivateReferenceContextualDetector[EmbeddedStaticPayloadCandidate]
+    PrivateReferenceContextualDetector[EmbeddedStaticPayloadCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -8487,7 +8643,7 @@ def _non_nominal_private_helper_candidates(
 
 
 class UnreferencedPrivateFunctionDetector(
-    PrivateReferenceContextualDetector[UnreferencedPrivateFunctionCandidate]
+    PrivateReferenceContextualDetector[UnreferencedPrivateFunctionCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -8531,7 +8687,7 @@ class UnreferencedPrivateFunctionDetector(
 
 
 class NonNominalPrivateHelperDetector(
-    PrivateReferenceContextualDetector[NonNominalPrivateHelperCandidate]
+    PrivateReferenceContextualDetector[NonNominalPrivateHelperCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -8601,7 +8757,7 @@ class NonNominalPrivateHelperDetector(
 
 
 class PrivateHelperSemanticClusterDetector(
-    PrivateReferenceContextualDetector[PrivateHelperSemanticClusterCandidate]
+    PrivateReferenceContextualDetector[PrivateHelperSemanticClusterCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -8672,7 +8828,7 @@ class PrivateHelperSemanticClusterDetector(
 
 
 class DanglingPrivateMethodDetector(
-    PrivateReferenceContextualDetector[DanglingPrivateMethodCandidate]
+    PrivateReferenceContextualDetector[DanglingPrivateMethodCandidate],
 ):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,

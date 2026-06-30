@@ -18950,6 +18950,54 @@ def test_detects_private_helper_semantic_cluster(tmp_path: Path) -> None:
     assert "Rent proof" in (finding.codemod_patch or "")
 
 
+def test_private_reference_context_signatures_ignore_unconsumed_class_declarations(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _render(rows, *, formatter, suffix):\n    return tuple(formatter(row) + suffix for row in rows)\n\n\nclass CsvEmitter:\n    def emit(self, rows):\n        return _render(rows, formatter=self.format_row, suffix=',')\n\n    def format_row(self, row):\n        return str(row)\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/unrelated.py",
+        "\nclass ExistingUnrelated:\n    pass\n",
+    )
+    baseline_modules = tuple(parse_python_modules(tmp_path))
+    baseline_signatures = {
+        detector_type.__name__: detector_type.context_signature(
+            baseline_modules, base_detectors.DetectorConfig()
+        )
+        for detector_type in (
+            runtime_detectors.DanglingPrivateMethodDetector,
+            runtime_detectors.DeadEmbeddedStaticPayloadDetector,
+            runtime_detectors.NonNominalPrivateHelperDetector,
+            runtime_detectors.PrivateHelperSemanticClusterDetector,
+            runtime_detectors.UnreferencedPrivateFunctionDetector,
+        )
+    }
+
+    _write_module(
+        tmp_path,
+        "pkg/unrelated.py",
+        "\nclass ExistingUnrelated:\n    pass\n\n\nclass NewlyDeclaredButUnconsumed:\n    pass\n",
+    )
+    updated_modules = tuple(parse_python_modules(tmp_path))
+
+    assert baseline_signatures == {
+        detector_type.__name__: detector_type.context_signature(
+            updated_modules, base_detectors.DetectorConfig()
+        )
+        for detector_type in (
+            runtime_detectors.DanglingPrivateMethodDetector,
+            runtime_detectors.DeadEmbeddedStaticPayloadDetector,
+            runtime_detectors.NonNominalPrivateHelperDetector,
+            runtime_detectors.PrivateHelperSemanticClusterDetector,
+            runtime_detectors.UnreferencedPrivateFunctionDetector,
+        )
+    }
+
+
 def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
