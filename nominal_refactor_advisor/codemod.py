@@ -17202,8 +17202,22 @@ class MappingSemanticMirrorRecipeBuilder(
         raise NotImplementedError
 
 
+class LocalRoleCaseConstructibleItem(ABC):
+    """Nominal contract for rendered role-case rows."""
+
+    @abstractmethod
+    def construction_source(self, item_class_name: str) -> str:
+        raise NotImplementedError
+
+
+LocalRoleCaseItemT = TypeVar(
+    "LocalRoleCaseItemT",
+    bound=LocalRoleCaseConstructibleItem,
+)
+
+
 @dataclass(frozen=True)
-class LocalRoleCaseAuthorityItem:
+class LocalRoleCaseAuthorityItem(LocalRoleCaseConstructibleItem):
     """One extracted concrete role-case fact from a local mapping literal."""
 
     literal_source: str
@@ -17223,8 +17237,11 @@ class LocalRoleCaseAuthoritySourceRenderer:
     behavior_method_source: str
 
     def source(self) -> str:
+        item_class_block = (
+            f"{self.item_class_source}\n\n" if self.item_class_source else ""
+        )
         return (
-            f"{self.item_class_source}\n\n"
+            f"{item_class_block}"
             f"class {self.authority_name}:\n"
             f"{self.role_cases_method_source()}\n"
             f"{self.behavior_method_source}\n\n"
@@ -17272,41 +17289,7 @@ class LocalRoleCaseAuthorityExtractionBase(ABC, metaclass=AutoRegisterMeta):
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseAuthorityExtraction(LocalRoleCaseAuthorityExtractionBase):
-    """Safe source-level extraction from local role-case logic."""
-
-    mapping_name: str
-    axis_name: str
-    items: tuple[LocalRoleCaseAuthorityItem, ...]
-    owner_function_name: str
-
-    def role_case_item_class_source(self, item_class_name: str) -> str:
-        return (
-            f"class {item_class_name}:\n"
-            f"    def __init__(self, {self.axis_name}, value):\n"
-            f"        self.{self.axis_name} = {self.axis_name}\n"
-            "        self.value = value\n"
-        )
-
-    def role_case_item_rows(self, item_class_name: str) -> tuple[str, ...]:
-        return tuple(item.construction_source(item_class_name) for item in self.items)
-
-    def role_case_behavior_method_source(self) -> str:
-        return (
-            "    @classmethod\n"
-            f"    def {self.owner_function_name}(cls, {self.axis_name}):\n"
-            "        for role_case in cls.role_cases():\n"
-            f"            if role_case.{self.axis_name} == {self.axis_name}:\n"
-            "                return role_case.value\n"
-            "        return None\n"
-        )
-
-    def delegating_body_source(self, authority_name: str) -> str:
-        return f"return {authority_name}.{self.owner_function_name}({self.axis_name})"
-
-
-@dataclass(frozen=True)
-class LocalRoleCaseItemBase:
+class LocalRoleCaseItemBase(LocalRoleCaseConstructibleItem):
     axis_name: str
     expected_source: str
 
@@ -17377,6 +17360,26 @@ class LocalRoleCaseAssignmentDefault:
 
 
 @dataclass(frozen=True)
+class LocalRoleCaseGuardItem(LocalRoleCaseConstructibleItem):
+    """One guard-return case extracted from runtime authority logic."""
+
+    condition_source: str
+    result_source: str
+    value_names: tuple[str, ...]
+
+    def construction_source(self, item_class_name: str) -> str:
+        del item_class_name
+        expression_source = AxisValueExpressionSource(self.value_names)
+        condition_source = expression_source.source(self.condition_source)
+        result_source = expression_source.source(self.result_source)
+        return (
+            "("
+            f"lambda axis_values: {condition_source}, "
+            f"lambda axis_values: {result_source})"
+        )
+
+
+@dataclass(frozen=True)
 class AxisValueExpressionSource:
     """Render an expression with selected loads routed through axis_values."""
 
@@ -17411,10 +17414,57 @@ class AxisValueExpressionTransformer(ast.NodeTransformer):
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseBranchAuthorityExtraction(LocalRoleCaseAuthorityExtractionBase):
+class LocalRoleCaseItemsAuthorityExtraction(
+    LocalRoleCaseAuthorityExtractionBase,
+    Generic[LocalRoleCaseItemT],
+    ABC,
+):
+    """Shared extraction base for authorities rendered from role-case rows."""
+
+    items: tuple[LocalRoleCaseItemT, ...]
+
+    def role_case_item_rows(self, item_class_name: str) -> tuple[str, ...]:
+        return tuple(item.construction_source(item_class_name) for item in self.items)
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseAuthorityExtraction(
+    LocalRoleCaseItemsAuthorityExtraction[LocalRoleCaseAuthorityItem]
+):
+    """Safe source-level extraction from local role-case logic."""
+
+    mapping_name: str
+    axis_name: str
+    owner_function_name: str
+
+    def role_case_item_class_source(self, item_class_name: str) -> str:
+        return (
+            f"class {item_class_name}:\n"
+            f"    def __init__(self, {self.axis_name}, value):\n"
+            f"        self.{self.axis_name} = {self.axis_name}\n"
+            "        self.value = value\n"
+        )
+
+    def role_case_behavior_method_source(self) -> str:
+        return (
+            "    @classmethod\n"
+            f"    def {self.owner_function_name}(cls, {self.axis_name}):\n"
+            "        for role_case in cls.role_cases():\n"
+            f"            if role_case.{self.axis_name} == {self.axis_name}:\n"
+            "                return role_case.value\n"
+            "        return None\n"
+        )
+
+    def delegating_body_source(self, authority_name: str) -> str:
+        return f"return {authority_name}.{self.owner_function_name}({self.axis_name})"
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseBranchAuthorityExtraction(
+    LocalRoleCaseItemsAuthorityExtraction[LocalRoleCaseBranchItem]
+):
     """Safe extraction from ordered literal guard branches to case objects."""
 
-    items: tuple[LocalRoleCaseBranchItem, ...]
     default_source: str
     owner_function_name: str
     parameter_names: tuple[str, ...]
@@ -17434,9 +17484,6 @@ class LocalRoleCaseBranchAuthorityExtraction(LocalRoleCaseAuthorityExtractionBas
             "            return axis_value in self.expected_value\n"
             "        return axis_value == self.expected_value\n"
         )
-
-    def role_case_item_rows(self, item_class_name: str) -> tuple[str, ...]:
-        return tuple(item.construction_source(item_class_name) for item in self.items)
 
     def role_case_behavior_method_source(self) -> str:
         return (
@@ -17459,10 +17506,11 @@ class LocalRoleCaseBranchAuthorityExtraction(LocalRoleCaseAuthorityExtractionBas
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseAssignmentAuthorityExtraction(LocalRoleCaseAuthorityExtractionBase):
+class LocalRoleCaseAssignmentAuthorityExtraction(
+    LocalRoleCaseItemsAuthorityExtraction[LocalRoleCaseAssignmentItem]
+):
     """Safe extraction from branch-local assignments to case objects."""
 
-    items: tuple[LocalRoleCaseAssignmentItem, ...]
     default_item: LocalRoleCaseAssignmentDefault
     owner_function_name: str
     assignment_names: tuple[str, ...]
@@ -17488,9 +17536,6 @@ class LocalRoleCaseAssignmentAuthorityExtraction(LocalRoleCaseAuthorityExtractio
             "        return tuple(factory(axis_values) for factory in self.value_factories)\n"
         )
 
-    def role_case_item_rows(self, item_class_name: str) -> tuple[str, ...]:
-        return tuple(item.construction_source(item_class_name) for item in self.items)
-
     def role_case_behavior_method_source(self) -> str:
         return (
             "    @classmethod\n"
@@ -17512,6 +17557,93 @@ class LocalRoleCaseAssignmentAuthorityExtraction(LocalRoleCaseAuthorityExtractio
         if self.prelude_source:
             body_source = f"{self.prelude_source.rstrip()}\n{delegate_source}"
         return f"{body_source}\n{self.return_source}"
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseGuardAuthorityExtraction(
+    LocalRoleCaseItemsAuthorityExtraction[LocalRoleCaseGuardItem]
+):
+    """Safe extraction from guard-return chains to case objects."""
+
+    owner_function_name: str
+    value_names: tuple[str, ...]
+    tail_source: str
+    prelude_source: str = ""
+
+    def role_case_item_class_source(self, item_class_name: str) -> str:
+        del item_class_name
+        return ""
+
+    def role_case_behavior_method_source(self) -> str:
+        return (
+            "    @classmethod\n"
+            f"    def {self.owner_function_name}(cls, **axis_values):\n"
+            "        for condition_factory, result_factory in cls.role_cases():\n"
+            "            if condition_factory(axis_values):\n"
+            "                return True, result_factory(axis_values)\n"
+            "        return False, None\n"
+        )
+
+    def delegating_body_source(self, authority_name: str) -> str:
+        arguments = ", ".join(f"{name}={name}" for name in self.value_names)
+        delegation = (
+            f"role_case_matched, role_case_value = "
+            f"{authority_name}.{self.owner_function_name}({arguments})\n"
+            "if role_case_matched:\n"
+            "    return role_case_value"
+        )
+        body_parts = tuple(
+            part
+            for part in (self.prelude_source.rstrip(), delegation, self.tail_source)
+            if part
+        )
+        return "\n".join(body_parts)
+
+
+@dataclass(frozen=True)
+class LocalRoleGuardReturnWindow:
+    """Contiguous guard-return statements with a normal return tail."""
+
+    start: int
+    stop: int
+
+    @classmethod
+    def from_body(
+        cls, body: tuple[ast.stmt, ...]
+    ) -> "LocalRoleGuardReturnWindow | None":
+        index = 0
+        while index < len(body):
+            if not cls.is_guard_return_if(body[index]):
+                index += 1
+                continue
+            start = index
+            while index < len(body) and cls.is_guard_return_if(body[index]):
+                index += 1
+            if index - start >= 2 and cls.has_return_tail(body[index:]):
+                return cls(start=start, stop=index)
+        return None
+
+    @staticmethod
+    def is_guard_return_if(statement: ast.stmt) -> bool:
+        return (
+            isinstance(statement, ast.If)
+            and not statement.orelse
+            and len(statement.body) == 1
+            and isinstance(statement.body[0], ast.Return)
+        )
+
+    @staticmethod
+    def has_return_tail(tail: tuple[ast.stmt, ...]) -> bool:
+        return bool(tail) and isinstance(tail[-1], ast.Return)
+
+    def prelude_statements(self, body: tuple[ast.stmt, ...]) -> tuple[ast.stmt, ...]:
+        return body[: self.start]
+
+    def guard_statements(self, body: tuple[ast.stmt, ...]) -> tuple[ast.stmt, ...]:
+        return body[self.start : self.stop]
+
+    def tail_statements(self, body: tuple[ast.stmt, ...]) -> tuple[ast.stmt, ...]:
+        return body[self.stop :]
 
 
 @dataclass(frozen=True)
@@ -17681,6 +17813,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         node: ast.FunctionDef,
     ) -> (
         LocalRoleCaseAssignmentAuthorityExtraction
+        | LocalRoleCaseGuardAuthorityExtraction
         | LocalRoleCaseAuthorityExtraction
         | LocalRoleCaseBranchAuthorityExtraction
         | None
@@ -17689,6 +17822,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             self.mapping_extraction_for(source_path, node)
             or self.branch_extraction_for(source_path, node)
             or self.assignment_branch_extraction_for(source_path, node)
+            or self.guard_return_extraction_for(source_path, node)
         )
 
     def mapping_extraction_for(
@@ -17819,6 +17953,112 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             return_source=return_source,
             prelude_source=prelude_source,
         )
+
+    def guard_return_extraction_for(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+    ) -> LocalRoleCaseGuardAuthorityExtraction | None:
+        body = self.semantic_body(node)
+        window = LocalRoleGuardReturnWindow.from_body(body)
+        if window is None:
+            return None
+        source = self.sources_by_file_path[source_path]
+        prelude_statements = window.prelude_statements(body)
+        guard_statements = window.guard_statements(body)
+        tail_statements = window.tail_statements(body)
+        prelude_source = self.prelude_source(source, prelude_statements)
+        tail_source = self.prelude_source(source, tail_statements)
+        if prelude_source is None or tail_source is None:
+            return None
+        value_names = self.guard_value_names(
+            source,
+            node,
+            prelude_statements,
+            guard_statements,
+        )
+        if self.guard_delegate_names_conflict(body):
+            return None
+        items = self.guard_items(source, guard_statements, value_names)
+        if len(items) < 2:
+            return None
+        return LocalRoleCaseGuardAuthorityExtraction(
+            items=items,
+            owner_function_name=node.name,
+            value_names=value_names,
+            tail_source=tail_source,
+            prelude_source=prelude_source,
+        )
+
+    def guard_items(
+        self,
+        source: str,
+        statements: tuple[ast.stmt, ...],
+        value_names: tuple[str, ...],
+    ) -> tuple[LocalRoleCaseGuardItem, ...]:
+        items: list[LocalRoleCaseGuardItem] = []
+        for statement in statements:
+            if not isinstance(statement, ast.If):
+                return ()
+            if statement.orelse:
+                return ()
+            if len(statement.body) != 1 or not isinstance(
+                statement.body[0],
+                ast.Return,
+            ):
+                return ()
+            condition_source = self.node_source(source, statement.test)
+            result_source = self.node_source(source, statement.body[0].value)
+            if condition_source is None or result_source is None:
+                return ()
+            items.append(
+                LocalRoleCaseGuardItem(
+                    condition_source=condition_source,
+                    result_source=result_source,
+                    value_names=value_names,
+                )
+            )
+        return tuple(items)
+
+    def guard_value_names(
+        self,
+        source: str,
+        node: ast.FunctionDef,
+        prelude: tuple[ast.stmt, ...],
+        guard_statements: tuple[ast.stmt, ...],
+    ) -> tuple[str, ...]:
+        ordered_candidate_names = FunctionParameterProjection.ordered_names(
+            node
+        ) + self.assigned_names(prelude)
+        guard_source_segments = tuple(
+            segment
+            for statement in guard_statements
+            if isinstance(statement, ast.If)
+            for segment in (
+                self.node_source(source, statement.test),
+                (
+                    self.node_source(source, statement.body[0].value)
+                    if statement.body and isinstance(statement.body[0], ast.Return)
+                    else None
+                ),
+            )
+            if segment is not None
+        )
+        used_names = self.expression_load_names(guard_source_segments)
+        return tuple(name for name in ordered_candidate_names if name in used_names)
+
+    @staticmethod
+    def expression_load_names(source_segments: tuple[str, ...]) -> frozenset[str]:
+        return frozenset(
+            child.id
+            for source_segment in source_segments
+            for child in ast.walk(ast.parse(source_segment, mode="eval"))
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+        )
+
+    def guard_delegate_names_conflict(self, body: tuple[ast.stmt, ...]) -> bool:
+        assigned_names = frozenset(self.assigned_names(body))
+        return bool(assigned_names & {"role_case_matched", "role_case_value"})
 
     def assignment_branch_chain(
         self,
