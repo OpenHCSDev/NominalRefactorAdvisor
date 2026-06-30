@@ -20020,6 +20020,63 @@ def test_detects_two_case_runtime_semantic_branch_chain_at_builder_threshold(
     assert "formal policy/profile authority" in (finding.codemod_patch or "")
 
 
+def test_runtime_semantic_branch_chain_synthesizes_dispatch_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/runtime_policy.py"
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        '\ndef materialize(materialization_request, runtime_policy_action):\n    if materialization_request == "local_cover":\n        return runtime_policy_action.local_cover()\n    if materialization_request == "frontier":\n        return runtime_policy_action.frontier()\n    return runtime_policy_action.default_result()\n',
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules, DetectorConfig(min_builder_keywords=3))
+        if finding.detector_id == "runtime_semantic_branch_chain"
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path=source_by_path,
+    )
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("runtime_semantic_branch_chain",),
+        selector_context=context,
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    operation = plan.document.recipes[0].operations[0].to_dict()
+
+    assert plan.expected_removed_finding_count == 1
+    assert operation["operation"] == "dispatch_to_polymorphism"
+    assert operation["base_name"] == "MaterializeDispatchCase"
+    assert operation["case_key_attribute"] == "runtime_case"
+    assert operation["dispatch_axis_expression"] == "materialization_request"
+    assert operation["literal_cases"] == ("'local_cover'", "'frontier'")
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.document_simulation.apply()
+    rewritten = module_path.read_text()
+    remaining = tuple(
+        finding
+        for finding in analyze_modules(
+            parse_python_modules(tmp_path),
+            DetectorConfig(min_builder_keywords=3),
+        )
+        if finding.detector_id == "runtime_semantic_branch_chain"
+    )
+    assert "except KeyError:" in rewritten
+    assert "runtime_policy_action.default_result()" in rewritten
+    assert remaining == ()
+
+
 def test_runtime_semantic_branch_chain_ignores_validation_guards(
     tmp_path: Path,
 ) -> None:

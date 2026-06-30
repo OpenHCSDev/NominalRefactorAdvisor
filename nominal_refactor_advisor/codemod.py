@@ -9568,6 +9568,7 @@ class DispatchPolymorphismExtraction:
 
     cases: DispatchPolymorphismCases
     apply_argument_names: tuple[str, ...]
+    fallback_statements: tuple[ast.stmt, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -9605,6 +9606,11 @@ class DispatchPolymorphismFunction(
         cases = self.branch_cases()
         if cases is None:
             cases = self.match_cases()
+        fallback_statements: tuple[ast.stmt, ...] = ()
+        if cases is None:
+            sequential_cases = self.sequential_guard_cases()
+            if sequential_cases is not None:
+                cases, fallback_statements = sequential_cases
         if cases is None:
             return None
         if frozenset(case.literal_source for case in cases) != frozenset(
@@ -9614,6 +9620,7 @@ class DispatchPolymorphismFunction(
         return DispatchPolymorphismExtraction(
             cases=cases,
             apply_argument_names=self.apply_argument_names,
+            fallback_statements=fallback_statements,
         )
 
     @property
@@ -9688,6 +9695,29 @@ class DispatchPolymorphismFunction(
             return None
         return tuple(cases)
 
+    def sequential_guard_cases(
+        self,
+    ) -> tuple[DispatchPolymorphismCases, tuple[ast.stmt, ...]] | None:
+        cases: list[DispatchPolymorphismCase] = []
+        index = 0
+        while index < len(self.node.body):
+            statement = self.node.body[index]
+            if not isinstance(statement, ast.If) or statement.orelse:
+                break
+            literals = self.test_literals(statement.test)
+            return_statement = self.single_return(statement.body)
+            if not literals or return_statement is None:
+                return None
+            cases.extend(
+                DispatchPolymorphismCase(literal, return_statement)
+                for literal in literals
+            )
+            index += 1
+        fallback = tuple(self.node.body[index:])
+        if not cases or not self.is_preservable_fallback(fallback):
+            return None
+        return tuple(cases), fallback
+
     def test_literals(self, test: ast.expr) -> tuple[str, ...]:
         if not isinstance(test, ast.Compare) or len(test.ops) != 1:
             return ()
@@ -9756,6 +9786,13 @@ class DispatchPolymorphismFunction(
         return len(statements) == 1 and isinstance(statements[0], ast.Raise)
 
     @staticmethod
+    def is_preservable_fallback(statements: tuple[ast.stmt, ...]) -> bool:
+        return len(statements) == 1 and isinstance(
+            statements[0],
+            (ast.Return, ast.Raise),
+        )
+
+    @staticmethod
     def is_default_match_pattern(pattern: ast.pattern) -> bool:
         return isinstance(pattern, ast.MatchAs) and pattern.name is None
 
@@ -9807,6 +9844,26 @@ class DispatchPolymorphismSource(DispatchPolymorphismFamilySpec):
         return (
             f"return {self.base_name}.{self.for_method_name}"
             f"({self.dispatch_axis_expression}).{self.method_name}({apply_arguments})"
+        )
+
+    def dispatch_call_lines(self) -> tuple[str, ...]:
+        if not self.extraction.fallback_statements:
+            return (self.dispatch_call_source,)
+        fallback_lines = tuple(
+            line
+            for statement in self.extraction.fallback_statements
+            for line in ast.unparse(statement).splitlines()
+        )
+        return (
+            "try:",
+            (
+                f"    _dispatch_case = {self.base_name}.__registry__"
+                f"[{self.dispatch_axis_expression}]()"
+            ),
+            "except KeyError:",
+            *(f"    {line}" for line in fallback_lines),
+            "else:",
+            f"    return _dispatch_case.{self.method_name}({self.apply_call_arguments})",
         )
 
     def family_source(self) -> str:
@@ -10040,7 +10097,9 @@ class DispatchToPolymorphismOperation(
             file_path=target_digest.file_path,
             start_line=body_start,
             end_line=body_end,
-            replacement_lines=(f"{body_indent}{source.dispatch_call_source}\n",),
+            replacement_lines=tuple(
+                f"{body_indent}{line}\n" for line in source.dispatch_call_lines()
+            ),
             rationale=self.rationale_text(
                 f"Replace literal dispatch in {target_digest.qualname!r}."
             ),
@@ -22589,6 +22648,15 @@ class InlineLiteralDispatchFindingRecipeSynthesizer(
     """Build recipes for inline literal dispatch functions."""
 
     detector_id = INLINE_LITERAL_DISPATCH_FINDING_ID
+
+
+class RuntimeSemanticBranchChainFindingRecipeSynthesizer(
+    LiteralDispatchFindingRecipeSynthesizer
+):
+    """Build recipes for unambiguous runtime semantic branch chains."""
+
+    detector_id = "runtime_semantic_branch_chain"
+    case_key_attribute: ClassVar[str] = "runtime_case"
 
 
 def autoregister_base_name(
