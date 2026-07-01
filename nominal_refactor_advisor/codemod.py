@@ -23602,6 +23602,55 @@ class FindingPrimaryEvidence:
 
 
 @dataclass(frozen=True)
+class ProjectedBatchRewriteSet:
+    """Merged planned rewrites for an overlapping finding-backed batch."""
+
+    rewrites: tuple[PlannedSourceRewrite, ...]
+
+    def recipe(self) -> RefactorRecipe:
+        return RefactorRecipe(
+            recipe_id="finding-backed-merged-codemod-plan",
+            rewrites=tuple(
+                RefactorRecipeRewrite(
+                    target=SourceRewriteTarget(target_identifier=rewrite.target_id),
+                    replacement_source=rewrite.replacement_source,
+                    rationale=rewrite.rationale,
+                )
+                for rewrite in self.rewrites
+            ),
+            reason=(
+                "Batch overlapping executable advisor findings into one "
+                "source-merge pass."
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PlannedRewriteTargetGroups:
+    """Planned rewrites grouped by their source-index target."""
+
+    rewrites_by_target_id: Mapping[str, tuple[PlannedSourceRewrite, ...]]
+
+    @classmethod
+    def from_rewrites(
+        cls,
+        rewrites: Iterable[PlannedSourceRewrite],
+    ) -> "PlannedRewriteTargetGroups":
+        grouped = defaultdict(list)
+        for rewrite in rewrites:
+            grouped[rewrite.target_id].append(rewrite)
+        return cls(
+            {
+                target_id: tuple(target_rewrites)
+                for target_id, target_rewrites in grouped.items()
+            }
+        )
+
+    def items(self) -> tuple[tuple[str, tuple[PlannedSourceRewrite, ...]], ...]:
+        return tuple(self.rewrites_by_target_id.items())
+
+
+@dataclass(frozen=True)
 class FindingRecipePlanBuilder:
     """Build a deduplicated codemod plan from advisor findings."""
 
@@ -23633,6 +23682,7 @@ class FindingRecipePlanBuilder:
                 raise RuntimeError("planned synthesis result must include a recipe")
             overlap_reason = self.overlap_rejection_reason(
                 result.recipe,
+                recipes,
                 claimed_rewrites,
                 selector_context,
             )
@@ -23658,7 +23708,9 @@ class FindingRecipePlanBuilder:
                 self.planned_rewrites_for_recipe(result.recipe, selector_context)
             )
         return FindingRecipePlan(
-            document=CodemodPlanDocument(recipes=self.merged_recipes(recipes)),
+            document=CodemodPlanDocument(
+                recipes=self.merged_recipes(recipes, selector_context)
+            ),
             expected_removed_finding_ids=tuple(expected_removed_finding_ids),
             report=FindingRecipeSynthesisReport(tuple(synthesis_records)),
         )
@@ -23666,6 +23718,7 @@ class FindingRecipePlanBuilder:
     def overlap_rejection_reason(
         self,
         recipe: RefactorRecipe,
+        accepted_recipes: Iterable[RefactorRecipe],
         claimed_rewrites: Iterable[PlannedSourceRewrite],
         selector_context: CodemodSelectorContext | None,
     ) -> str:
@@ -23683,6 +23736,14 @@ class FindingRecipePlanBuilder:
                     continue
                 if not self.targets_overlap(planned_target, claimed_target):
                     continue
+                if (
+                    self.projected_batch_recipe(
+                        (*tuple(accepted_recipes), recipe),
+                        selector_context,
+                    )
+                    is not None
+                ):
+                    return ""
                 return (
                     "planned source rewrite overlaps an earlier synthesized recipe: "
                     f"{planned_target.qualname!r} overlaps {claimed_target.qualname!r} "
@@ -23697,14 +23758,23 @@ class FindingRecipePlanBuilder:
     ) -> tuple[PlannedSourceRewrite, ...]:
         if selector_context is None:
             return ()
-        try:
-            return recipe.source_rewrite_batch(
-                selector_context.source_index,
-                selector_context.sources_by_file_path,
-                selector_context=selector_context,
-            )
-        except (KeyError, ValueError):
-            return ()
+        return recipe.source_rewrite_batch(
+            selector_context.source_index,
+            selector_context.sources_by_file_path,
+            selector_context=selector_context,
+        )
+
+    @classmethod
+    def planned_rewrites_for_recipes(
+        cls,
+        recipes: Iterable[RefactorRecipe],
+        selector_context: CodemodSelectorContext | None,
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        return tuple(
+            rewrite
+            for recipe in recipes
+            for rewrite in cls.planned_rewrites_for_recipe(recipe, selector_context)
+        )
 
     @staticmethod
     def rewrite_target(
@@ -23726,9 +23796,13 @@ class FindingRecipePlanBuilder:
     def merged_recipes(
         self,
         recipes: list[RefactorRecipe],
+        selector_context: CodemodSelectorContext | None,
     ) -> tuple[RefactorRecipe, ...]:
         if not recipes:
             return ()
+        projected_recipe = self.projected_batch_recipe(recipes, selector_context)
+        if projected_recipe is not None:
+            return (projected_recipe,)
         return (
             RefactorRecipe(
                 recipe_id="finding-backed-codemod-plan",
@@ -23741,6 +23815,173 @@ class FindingRecipePlanBuilder:
                 reason="Batch executable advisor findings into one source-merge pass.",
             ),
         )
+
+    def projected_batch_recipe(
+        self,
+        recipes: Iterable[RefactorRecipe],
+        selector_context: CodemodSelectorContext | None,
+    ) -> RefactorRecipe | None:
+        return (
+            Maybe.of(self.projected_batch_rewrite_set(recipes, selector_context))
+            .project(ProjectedBatchRewriteSet.recipe)
+            .unwrap_or_none()
+        )
+
+    def projected_batch_rewrite_set(
+        self,
+        recipes: Iterable[RefactorRecipe],
+        selector_context: CodemodSelectorContext | None,
+    ) -> ProjectedBatchRewriteSet | None:
+        return (
+            Maybe.of(selector_context)
+            .combine(
+                lambda context: self.planned_rewrites_for_recipes(recipes, context),
+                lambda context, rewrites: (context, rewrites),
+            )
+            .filter(lambda row: bool(row[1]))
+            .filter(lambda row: self.rewrite_targets_overlap(row[1], row[0]))
+            .combine(
+                lambda row: self.projected_batch_rewrites(row[1], row[0]),
+                lambda _row, rewrites: ProjectedBatchRewriteSet(rewrites),
+            )
+            .unwrap_or_none()
+        )
+
+    def projected_batch_rewrites(
+        self,
+        rewrites: tuple[PlannedSourceRewrite, ...],
+        selector_context: CodemodSelectorContext,
+    ) -> tuple[PlannedSourceRewrite, ...] | None:
+        merged_rewrites: list[PlannedSourceRewrite] = []
+        target_groups = PlannedRewriteTargetGroups.from_rewrites(rewrites)
+        for target_id, target_rewrites in target_groups.items():
+            if len(target_rewrites) == 1:
+                merged_rewrites.append(target_rewrites[0])
+                continue
+            merged_rewrite = self.merged_same_target_rewrite(
+                target_id,
+                tuple(target_rewrites),
+                selector_context,
+            )
+            if merged_rewrite is None:
+                return None
+            merged_rewrites.append(merged_rewrite)
+        if self.rewrite_targets_overlap(tuple(merged_rewrites), selector_context):
+            return None
+        return tuple(merged_rewrites)
+
+    def merged_same_target_rewrite(
+        self,
+        target_id: str,
+        rewrites: tuple[PlannedSourceRewrite, ...],
+        selector_context: CodemodSelectorContext,
+    ) -> PlannedSourceRewrite | None:
+        target = selector_context.source_index.target_by_id.get(target_id)
+        if target is None:
+            return None
+        target_editor = SourceTargetEditor(
+            selector_context.sources_by_file_path,
+            target,
+        )
+        original_source = "".join(target_editor.target_lines)
+        replacements = tuple(
+            replacement
+            for rewrite in rewrites
+            for replacement in self.line_replacements_from_rewrite(
+                target,
+                original_source,
+                rewrite,
+            )
+        )
+        if not self.line_replacements_fit_target(target, replacements):
+            return None
+        replacement_source = target_editor.replacement_source(replacements)
+        return PlannedSourceRewrite(
+            target_id=target_id,
+            replacement_source=replacement_source,
+            rationale=_joined_rationales(rewrite.rationale for rewrite in rewrites),
+        )
+
+    @staticmethod
+    def line_replacements_from_rewrite(
+        target: AstTargetDigest,
+        original_source: str,
+        rewrite: PlannedSourceRewrite,
+    ) -> tuple[SourceLineReplacement, ...]:
+        original_lines = SourceTargetEditor.source_lines(original_source)
+        replacement_lines = SourceTargetEditor.source_lines(rewrite.replacement_source)
+        matcher = difflib.SequenceMatcher(
+            None,
+            original_lines,
+            replacement_lines,
+            autojunk=False,
+        )
+        replacements = []
+        for (
+            tag,
+            original_start,
+            original_end,
+            new_start,
+            new_end,
+        ) in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            replacements.append(
+                SourceLineReplacement(
+                    file_path=target.file_path,
+                    start_line=target.line + original_start,
+                    end_line=target.line + original_end - 1,
+                    replacement_lines=replacement_lines[new_start:new_end],
+                    rationale=rewrite.rationale,
+                )
+            )
+        return tuple(replacements)
+
+    @classmethod
+    def line_replacements_fit_target(
+        cls,
+        target: AstTargetDigest,
+        replacements: tuple[SourceLineReplacement, ...],
+    ) -> bool:
+        previous_end = target.line - 1
+        for replacement in sorted(
+            replacements,
+            key=lambda item: (item.start_line, item.end_line),
+        ):
+            if not cls.line_replacement_fits_target(target, replacement):
+                return False
+            if replacement.start_line <= previous_end:
+                return False
+            previous_end = replacement.end_line
+        return True
+
+    @staticmethod
+    def line_replacement_fits_target(
+        target: AstTargetDigest,
+        replacement: SourceLineReplacement,
+    ) -> bool:
+        return (
+            replacement.file_path == target.file_path
+            and replacement.start_line >= target.line
+            and replacement.end_line <= target.end_line
+        )
+
+    @classmethod
+    def rewrite_targets_overlap(
+        cls,
+        rewrites: tuple[PlannedSourceRewrite, ...],
+        selector_context: CodemodSelectorContext,
+    ) -> bool:
+        targets = tuple(
+            target
+            for rewrite in rewrites
+            if (target := cls.rewrite_target(rewrite, selector_context)) is not None
+        )
+        for index, first in enumerate(targets):
+            for second in targets[index + 1 :]:
+                if cls.targets_overlap(first, second):
+                    return True
+        return False
 
     def scoped_findings(self) -> tuple[RefactorFinding, ...]:
         return tuple(

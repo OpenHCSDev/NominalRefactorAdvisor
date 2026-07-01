@@ -16554,6 +16554,99 @@ def test_generic_role_case_table_synthesis_derives_authority_constants(
     assert "-    role_cases = {'applied': 3, 'diff': 4}" in diff
 
 
+def test_finding_recipe_plan_merges_overlapping_role_case_module_rewrites(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "class FirstAxisConsumer:\n"
+            "    role_cases = {'applied': 1, 'diff': 2}\n\n\n"
+            "class SecondAxisConsumer:\n"
+            "    role_cases = {'applied': 3, 'diff': 4}\n\n\n"
+            "class ThirdAxisConsumer:\n"
+            "    role_cases = {'raw': 5, 'clean': 6}\n\n\n"
+            "class FourthAxisConsumer:\n"
+            "    role_cases = {'raw': 7, 'clean': 8}\n"
+        ),
+    )
+    first = RefactorFinding(
+        detector_id="generic_role_case_table",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Concrete role-case tables should move behind one generic axis authority",
+        summary="first pair mirrors role-case literals",
+        why="case literals repeat a semantic fact family",
+        capability_gap="one generic case-table authority owned by the semantic axis",
+        relation_context="case-table literals are confusable under one axis owner",
+        evidence=(
+            SourceLocation(
+                module_path.as_posix(),
+                1,
+                "FirstAxisConsumer:role_cases:applied,diff",
+            ),
+            SourceLocation(
+                module_path.as_posix(),
+                5,
+                "SecondAxisConsumer:role_cases:applied,diff",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="generic_role_case_table",
+            source_name="AxisRoleCase",
+            field_names=("applied", "diff"),
+        ),
+    )
+    second = RefactorFinding(
+        detector_id=first.detector_id,
+        pattern_id=first.pattern_id,
+        title=first.title,
+        summary="second pair mirrors role-case literals",
+        why=first.why,
+        capability_gap=first.capability_gap,
+        relation_context=first.relation_context,
+        evidence=(
+            SourceLocation(
+                module_path.as_posix(),
+                9,
+                "ThirdAxisConsumer:role_cases:raw,clean",
+            ),
+            SourceLocation(
+                module_path.as_posix(),
+                13,
+                "FourthAxisConsumer:role_cases:raw,clean",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="generic_role_case_table",
+            source_name="ImageRoleCase",
+            field_names=("raw", "clean"),
+        ),
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (first, second))
+
+    plan = snapshot.plan_from_findings(
+        (first, second),
+        detector_ids=("generic_role_case_table",),
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    diff = snapshot.unified_diff(simulation.simulation)
+
+    assert plan.expected_removed_finding_count == 2
+    assert plan.report.to_dict()["status_counts"] == {"planned": 2}
+    assert plan.document.recipes[0].recipe_id == "finding-backed-merged-codemod-plan"
+    assert len(plan.document.recipes[0].rewrites) == 1
+    assert simulation.is_clean is True
+    assert "+class AxisRoleCaseAuthority:" in diff
+    assert "+class ImageRoleCaseAuthority:" in diff
+    assert "AxisRoleCaseAuthority.APPLIED" in diff
+    assert "ImageRoleCaseAuthority.CLEAN" in diff
+
+
 def test_module_cli_synthesizes_class_plan_with_scaffolds(
     tmp_path: Path,
 ) -> None:
