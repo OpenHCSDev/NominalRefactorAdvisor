@@ -121,6 +121,29 @@ class RefactorExecutionPlanReport(SemanticRecord):
     parallel_group_count: int
 
 
+@dataclass(frozen=True)
+class RefactorExecutionPlanLoopProjection(RefactorExecutionPlanReport):
+    """Compact execution-plan projection for tight-loop JSON payloads."""
+
+    edge_payload_mode: str
+    edge_count: int
+
+    @classmethod
+    def from_report(
+        cls,
+        report: RefactorExecutionPlanReport,
+    ) -> "RefactorExecutionPlanLoopProjection":
+        return cls(
+            classes=report.classes,
+            edges=(),
+            total_finding_count=report.total_finding_count,
+            connected_component_count=report.connected_component_count,
+            parallel_group_count=report.parallel_group_count,
+            edge_payload_mode="count_only",
+            edge_count=len(report.edges),
+        )
+
+
 _PATTERN_TRAJECTORY_POLICY_ROWS = (
     _PatternTrajectoryPolicy(PatternId.NOMINAL_BOUNDARY, RefactorPhase.NORMALIZE),
     _PatternTrajectoryPolicy(PatternId.DISCRIMINATED_UNION, RefactorPhase.NORMALIZE),
@@ -959,10 +982,14 @@ def build_refactor_execution_plan_from_groups(
     clusters = tuple(
         _FindingCluster.from_findings(finding_tuple, root)
         for group in finding_groups
-        for finding_tuple in (sorted_tuple(group, key=lambda finding: finding.stable_id),)
+        for finding_tuple in (
+            sorted_tuple(group, key=lambda finding: finding.stable_id),
+        )
         if finding_tuple
     )
-    finding_tuple = tuple(finding for cluster in clusters for finding in cluster.findings)
+    finding_tuple = tuple(
+        finding for cluster in clusters for finding in cluster.findings
+    )
     if not finding_tuple:
         return RefactorExecutionPlanReport(
             classes=(),
@@ -1044,9 +1071,7 @@ def _cluster_findings(
                 finding.title,
             ),
         )
-        clusters.append(
-            _FindingCluster.from_findings(ordered_findings, root)
-        )
+        clusters.append(_FindingCluster.from_findings(ordered_findings, root))
     return sorted(
         clusters, key=lambda cluster: (cluster.subsystem, len(cluster.findings))
     )
@@ -1100,8 +1125,7 @@ class _FindingRelationFacts:
         if shared_capabilities:
             score += 1
             reasons.append(
-                "shared capabilities: "
-                + ", ".join(sorted(shared_capabilities))
+                "shared capabilities: " + ", ".join(sorted(shared_capabilities))
             )
         left_pattern = self.finding.pattern_id
         right_pattern = right.finding.pattern_id

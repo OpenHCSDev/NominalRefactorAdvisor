@@ -8,6 +8,7 @@ import pytest
 
 from nominal_refactor_advisor.analysis import (
     ChangedPathRootAssignment,
+    SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     analyze_modules,
     analyze_modules_with_cache,
@@ -398,12 +399,121 @@ def test_graph_detector_uses_cached_repo_graph_for_changed_module_analysis(
         [changed_module],
         DetectorConfig(),
         semantic_descent_source=SemanticDescentGraphAnalysisSource(
-            cache_dir=graph_cache_dir,
-            cache_roots=(package_root,),
+            cache_context=SemanticDescentGraphCacheContext(
+                storage_root=graph_cache_dir,
+                roots=(package_root,),
+            ),
         ),
     )
 
     assert result == []
+    assert observed_authority_names == [("RepoAuthority",)]
+
+
+def test_uncached_analysis_preserves_cached_repo_graph_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    graph_cache_dir = tmp_path / ".nra-cache" / "semantic_descent"
+    cached_graph = SemanticDescentGraph(
+        authorities=(
+            SemanticAuthority(
+                authority_id="repo-authority",
+                kind=SemanticAuthorityKind.CLASS_FAMILY,
+                name="RepoAuthority",
+                location=SourceLocation(str(package_root / "a.py"), 1, "RepoAuthority"),
+                fact_ids=(),
+            ),
+        ),
+        facts=(),
+        projections=(),
+        mirror_edges=(),
+        certificates=(),
+    )
+    SemanticDescentGraphCache(graph_cache_dir).store(
+        SemanticDescentGraphCacheIdentity.from_roots((package_root,)),
+        cached_graph,
+    )
+    observed_authority_names: list[tuple[str, ...]] = []
+    graph_cache_finding_spec = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Uncached graph source",
+        why="uncached graph source",
+        capability_gap="uncached graph source",
+        relation_context="uncached graph source",
+    )
+
+    class UncachedRepoGraphDetector(SemanticDescentGraphIssueDetector, IssueDetector):
+        detector_id = "uncached_repo_graph_detector"
+        finding_spec = graph_cache_finding_spec
+
+        @classmethod
+        def context_signature(
+            cls,
+            modules: tuple,
+            config: DetectorConfig,
+        ) -> str:
+            del cls, modules, config
+            return "uncached-repo-graph"
+
+        def _collect_findings(
+            self, modules: list, config: DetectorConfig
+        ) -> list[RefactorFinding]:
+            del modules, config
+            raise AssertionError("graph-backed detector should receive cached graph")
+
+        def _collect_findings_from_graph(
+            self,
+            graph: SemanticDescentGraph,
+            modules: list,
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del modules, config
+            observed_authority_names.append(
+                tuple(authority.name for authority in graph.authorities)
+            )
+            return []
+
+    for registry_key, detector_type in tuple(IssueDetector.__registry__.items()):
+        if detector_type is UncachedRepoGraphDetector:
+            del IssueDetector.__registry__[registry_key]
+
+    def fail_narrow_graph_build(
+        modules: list,
+        *,
+        cache_dir: Path | None = None,
+        use_cache: bool = True,
+    ) -> SemanticDescentGraph:
+        del modules, cache_dir, use_cache
+        raise AssertionError("uncached analysis rebuilt a narrow graph")
+
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (UncachedRepoGraphDetector,),
+    )
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.build_semantic_descent_graph",
+        fail_narrow_graph_build,
+    )
+
+    result = analyze_modules_with_cache(
+        (package_root,),
+        parse_python_module_roots((package_root,)),
+        DetectorConfig(),
+        analysis_cache_dir=None,
+        semantic_descent_source=SemanticDescentGraphAnalysisSource(
+            cache_context=SemanticDescentGraphCacheContext(
+                storage_root=graph_cache_dir,
+                roots=(package_root,),
+            ),
+        ),
+    )
+
+    assert result.cache_status is AnalysisCacheStatus.DISABLED
+    assert result.findings == []
     assert observed_authority_names == [("RepoAuthority",)]
 
 

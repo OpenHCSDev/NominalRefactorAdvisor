@@ -23,6 +23,7 @@ from .ast_tools import (
 )
 from .detectors import DetectorConfig, IssueDetector
 from .models import RefactorFinding
+from .planner import RefactorExecutionPlanLoopProjection, RefactorExecutionPlanReport
 
 DetectorConfigSignatureValue: TypeAlias = int | tuple[int, ...]
 DetectorConfigSignature: TypeAlias = tuple[
@@ -135,6 +136,51 @@ class AnalysisFindingSummaryLookup:
 
     status: AnalysisCacheStatus
     summary: AnalysisFindingSummary | None = None
+
+
+@dataclass(frozen=True)
+class AnalysisExecutionPlanCacheIdentity:
+    """Invalidation identity for an execution-plan projection."""
+
+    analysis_cache_token: str
+    root: str
+    report_filter_roots: tuple[str, ...]
+    projection_kind: str
+    projection_schema_version: int = 3
+    schema: AnalysisCacheSchema = analysis_cache_schema
+
+    @classmethod
+    def from_analysis_identity(
+        cls,
+        identity: "AnalysisCacheIdentity",
+        root: Path,
+        report_roots: tuple[Path, ...] = (),
+        *,
+        projection_kind: str = "full",
+    ) -> "AnalysisExecutionPlanCacheIdentity":
+        return cls(
+            analysis_cache_token=identity.cache_token,
+            root=str(root.resolve()),
+            report_filter_roots=tuple(
+                str(report_root.resolve()) for report_root in report_roots
+            ),
+            projection_kind=projection_kind,
+        )
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+@dataclass(frozen=True)
+class AnalysisExecutionPlanLookup:
+    """Result of consulting the execution-plan projection cache."""
+
+    status: AnalysisCacheStatus
+    plan: RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection | None = (
+        None
+    )
 
 
 @dataclass(frozen=True)
@@ -259,7 +305,9 @@ class GlobalModuleContextSignature:
         cls,
         modules: tuple[ParsedModule, ...],
     ) -> "GlobalModuleContextSignature":
-        return cls(tuple(ModuleSourceSignature.from_module(module) for module in modules))
+        return cls(
+            tuple(ModuleSourceSignature.from_module(module) for module in modules)
+        )
 
     @property
     def cache_token(self) -> str:
@@ -554,13 +602,18 @@ AnalysisCacheEntryIdentity: TypeAlias = (
 )
 AnalysisCachePayloadValue: TypeAlias = (
     AnalysisCacheEntryIdentity
+    | AnalysisExecutionPlanCacheIdentity
     | AnalysisCacheFamilyIdentity
     | AnalysisFindingSummary
+    | RefactorExecutionPlanLoopProjection
+    | RefactorExecutionPlanReport
     | SourceFileSignatureCachePayload
     | list[RefactorFinding]
 )
 AnalysisCachePayload: TypeAlias = dict[str, AnalysisCachePayloadValue]
-AnalysisCacheLookupLoader: TypeAlias = Callable[[AnalysisCacheIdentity], AnalysisCacheLookup]
+AnalysisCacheLookupLoader: TypeAlias = Callable[
+    [AnalysisCacheIdentity], AnalysisCacheLookup
+]
 
 
 @dataclass(frozen=True)
@@ -580,6 +633,9 @@ class AnalysisCacheStorage:
 
     def summary_path(self, identity: AnalysisCacheIdentity) -> Path:
         return self.cache_file_path(f"{identity.cache_token}.summary.pickle")
+
+    def execution_plan_path(self, identity: AnalysisExecutionPlanCacheIdentity) -> Path:
+        return self.cache_file_path(f"{identity.cache_token}.execution-plan.pickle")
 
     def partial_path(self, identity: AnalysisCacheIdentity) -> Path:
         return self.cache_file_path(f"{identity.cache_token}.partial.pickle")
@@ -832,6 +888,48 @@ class AnalysisFindingCache:
         if not isinstance(summary, AnalysisFindingSummary):
             return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
         return AnalysisFindingSummaryLookup(AnalysisCacheStatus.HIT, summary)
+
+    def load_execution_plan(
+        self,
+        identity: AnalysisExecutionPlanCacheIdentity,
+    ) -> AnalysisExecutionPlanLookup:
+        storage = self.storage()
+        if storage is None:
+            return AnalysisExecutionPlanLookup(AnalysisCacheStatus.DISABLED)
+        payload = storage.load_payload(storage.execution_plan_path(identity))
+        if payload is None:
+            return AnalysisExecutionPlanLookup(AnalysisCacheStatus.MISS)
+        if payload.get("identity") != identity:
+            return AnalysisExecutionPlanLookup(AnalysisCacheStatus.MISS)
+        execution_plan = payload.get("execution_plan")
+        if not isinstance(
+            execution_plan,
+            (RefactorExecutionPlanReport, RefactorExecutionPlanLoopProjection),
+        ):
+            return AnalysisExecutionPlanLookup(AnalysisCacheStatus.MISS)
+        return AnalysisExecutionPlanLookup(
+            AnalysisCacheStatus.HIT,
+            execution_plan,
+        )
+
+    def store_execution_plan(
+        self,
+        identity: AnalysisExecutionPlanCacheIdentity,
+        execution_plan: (
+            RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection
+        ),
+    ) -> None:
+        storage = self.storage()
+        if storage is None:
+            return
+        payload: AnalysisCachePayload = {
+            "identity": identity,
+            "execution_plan": execution_plan,
+        }
+        try:
+            storage.store_payload_atomic(storage.execution_plan_path(identity), payload)
+        except OSError:
+            return
 
     def load_partial(
         self,

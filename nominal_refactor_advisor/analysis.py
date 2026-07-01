@@ -53,8 +53,10 @@ from .models import RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
 from .semantic_descent import (
     SemanticDescentGraph,
+    SemanticDescentGraphCache,
+    SemanticDescentGraphCacheFamilyIdentity,
+    SemanticDescentGraphCacheIdentity,
     build_semantic_descent_graph,
-    load_cached_semantic_descent_graph_for_roots,
 )
 
 
@@ -660,31 +662,90 @@ def analyze_detector_types(
 
 
 @dataclass(frozen=True)
+class SemanticDescentGraphCacheContext:
+    """Nominal cache context for repository semantic-descent graphs."""
+
+    storage_root: Path | None = None
+    roots: tuple[Path, ...] = ()
+    source_policy: PythonSourcePathPolicy | None = None
+    use_cache: bool = True
+
+    @classmethod
+    def from_parse_cache(
+        cls,
+        roots: tuple[Path, ...],
+        parse_cache_dir: Path | None,
+        use_cache: bool,
+        source_policy: PythonSourcePathPolicy | None,
+    ) -> "SemanticDescentGraphCacheContext":
+        return cls(
+            storage_root=(
+                semantic_descent_cache_sibling(parse_cache_dir)
+                if use_cache and parse_cache_dir is not None
+                else None
+            ),
+            roots=roots,
+            source_policy=source_policy,
+            use_cache=use_cache,
+        )
+
+    def cached_graph(self) -> SemanticDescentGraph | None:
+        cache = self.graph_cache()
+        if cache is None or not self.roots:
+            return None
+        cached_graph = cache.load(self.root_identity()).graph
+        if cached_graph is not None:
+            return cached_graph
+        return None
+
+    def latest_graph(self) -> SemanticDescentGraph | None:
+        cache = self.graph_cache()
+        if cache is None or not self.roots:
+            return None
+        return cache.load_latest(
+            SemanticDescentGraphCacheFamilyIdentity.from_identity(self.root_identity())
+        ).graph
+
+    def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
+        cached_graph = self.cached_graph()
+        if cached_graph is not None:
+            return cached_graph
+        cache = self.graph_cache()
+        if cache is None:
+            return build_semantic_descent_graph(modules, use_cache=False)
+        identity = SemanticDescentGraphCacheIdentity.from_modules(tuple(modules))
+        module_cache_graph = cache.load(identity).graph
+        if module_cache_graph is not None:
+            return module_cache_graph
+        graph = build_semantic_descent_graph(modules, use_cache=False)
+        cache.store(identity, graph)
+        return graph
+
+    def graph_cache(self) -> SemanticDescentGraphCache | None:
+        if not self.use_cache or self.storage_root is None:
+            return None
+        return SemanticDescentGraphCache(self.storage_root)
+
+    def root_identity(self) -> SemanticDescentGraphCacheIdentity:
+        return SemanticDescentGraphCacheIdentity.from_roots(
+            self.roots,
+            source_policy=self.source_policy,
+        )
+
+
+@dataclass(frozen=True)
 class SemanticDescentGraphAnalysisSource:
     """Authority for semantic-descent graph context during detector execution."""
 
     cached_graph: SemanticDescentGraph | None = None
-    cache_dir: Path | None = None
-    cache_roots: tuple[Path, ...] = ()
-    source_policy: PythonSourcePathPolicy | None = None
-    use_cache: bool = True
+    cache_context: SemanticDescentGraphCacheContext = field(
+        default_factory=SemanticDescentGraphCacheContext
+    )
 
     def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
         if self.cached_graph is not None:
             return self.cached_graph
-        if self.use_cache and self.cache_dir is not None and self.cache_roots:
-            cached_graph = load_cached_semantic_descent_graph_for_roots(
-                self.cache_roots,
-                cache_dir=self.cache_dir,
-                source_policy=self.source_policy,
-            )
-            if cached_graph is not None:
-                return cached_graph
-        return build_semantic_descent_graph(
-            modules,
-            cache_dir=self.cache_dir,
-            use_cache=self.use_cache,
-        )
+        return self.cache_context.graph_for_modules(modules)
 
 
 @dataclass(frozen=True)
@@ -758,6 +819,7 @@ class AnalysisCacheResolutionAuthority:
                 self._modules,
                 self._config,
                 analysis_workers=self._analysis_workers,
+                semantic_descent_source=self._semantic_descent_source,
             ),
             cache_status,
         )
@@ -1097,7 +1159,9 @@ class IncrementalAnalysisCacheResolver:
     def _global_detector_context_signature(self) -> str:
         if self._global_module_context_signature is None:
             self._global_module_context_signature = (
-                GlobalModuleContextSignature.from_modules(tuple(self._modules)).cache_token
+                GlobalModuleContextSignature.from_modules(
+                    tuple(self._modules)
+                ).cache_token
             )
         return self._global_module_context_signature
 
@@ -1294,14 +1358,12 @@ def semantic_descent_source_for_parse_cache(
     """Build the default graph source aligned with the parse-cache authority."""
 
     return SemanticDescentGraphAnalysisSource(
-        cache_dir=(
-            semantic_descent_cache_sibling(parse_cache_dir)
-            if use_cache and parse_cache_dir is not None
-            else None
-        ),
-        cache_roots=roots,
-        source_policy=source_policy,
-        use_cache=use_cache,
+        cache_context=SemanticDescentGraphCacheContext.from_parse_cache(
+            roots,
+            parse_cache_dir,
+            use_cache,
+            source_policy,
+        )
     )
 
 

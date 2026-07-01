@@ -18,6 +18,7 @@ from nominal_refactor_advisor.analysis import (
     DetectorAnalysisWorkerPlan,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
+    SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     SortedFindingsAuthority,
     analyze_modules,
@@ -60,6 +61,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
+    AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
 )
 from nominal_refactor_advisor.calibration import (
@@ -3261,9 +3263,7 @@ def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
         item.target_context.qualname == "Generator.generate"
         for item in report.violations
     )
-    assert all(
-        item.target_context.target_id is not None for item in report.violations
-    )
+    assert all(item.target_context.target_id is not None for item in report.violations)
     assert report.to_dict()["violation_count"] == 4
 
 
@@ -6453,6 +6453,36 @@ def test_analysis_cache_stores_count_summary_sidecar(tmp_path: Path) -> None:
         PatternId.NOMINAL_BOUNDARY.value
     )
     assert summary_lookup.summary.detector_counts[0].detector_id == ("summary_detector")
+
+
+def test_analysis_cache_stores_execution_plan_sidecar(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    module_path = tmp_path / "pkg" / "mod.py"
+    config = DetectorConfig()
+    identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Cached execution plan",
+        "cached execution plan",
+        "cached execution plan",
+        "cached execution plan",
+    ).build(
+        "execution_plan_detector",
+        "cached execution plan finding",
+        (SourceLocation(str(module_path), 2, "Cached"),),
+    )
+    execution_plan = build_refactor_execution_plan([finding], tmp_path / "pkg")
+    plan_identity = AnalysisExecutionPlanCacheIdentity.from_analysis_identity(
+        identity,
+        tmp_path / "pkg",
+    )
+    cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
+
+    cache.store_execution_plan(plan_identity, execution_plan)
+    lookup = cache.load_execution_plan(plan_identity)
+
+    assert lookup.status is AnalysisCacheStatus.HIT
+    assert lookup.plan == execution_plan
 
 
 def test_analyze_paths_reuses_detector_findings(
@@ -15707,9 +15737,14 @@ def test_loop_preparse_partial_uses_latest_repo_semantic_graph(
         "class Alpha:\n    pass\n\nclass Changed:\n    pass\n",
         encoding="utf-8",
     )
+    cache_context = SemanticDescentGraphCacheContext(
+        storage_root=semantic_cache_dir,
+        roots=(package_root,),
+        source_policy=PythonSourcePathPolicy(include_tests=False),
+        use_cache=True,
+    )
     base_source = SemanticDescentGraphAnalysisSource(
-        cache_dir=semantic_cache_dir,
-        cache_roots=(package_root,),
+        cache_context=cache_context,
     )
 
     context = FastPreparseSemanticDescentSourceAuthority(
@@ -15722,10 +15757,7 @@ def test_loop_preparse_partial_uses_latest_repo_semantic_graph(
             focused_report_filter=True,
         ),
         base_source=base_source,
-        roots=(package_root,),
-        semantic_descent_cache_dir=semantic_cache_dir,
-        source_policy=PythonSourcePathPolicy(include_tests=False),
-        use_cache=True,
+        cache_context=cache_context,
     ).context()
 
     assert context.latest_graph == cached_graph
@@ -19094,6 +19126,46 @@ def test_json_payload_loop_uses_counts_only_finding_projection(
     )
 
 
+def test_json_payload_loop_compacts_execution_plan_edges(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Compact execution plan",
+        "compact execution plan",
+        "compact execution plan",
+        "compact execution plan",
+    )
+    findings = [
+        spec.build(
+            "compact_execution_plan_detector",
+            "left execution plan finding",
+            (SourceLocation(str(module_path), 2, "Alpha.left"),),
+        ),
+        spec.build(
+            "compact_execution_plan_detector",
+            "right execution plan finding",
+            (SourceLocation(str(module_path), 2, "Alpha.right"),),
+        ),
+    ]
+    execution_plan = build_refactor_execution_plan(findings, tmp_path)
+
+    payload = JsonPayloadBuilder(
+        findings=findings,
+        plans=[],
+        modules=modules,
+        execution_plan=execution_plan,
+        payload_sections=JsonPayloadProfile.loop.sections,
+    ).to_dict()
+    execution_plan_payload = cast(dict[str, object], payload["execution_plan"])
+
+    assert execution_plan.edges
+    assert execution_plan_payload["edge_payload_mode"] == "count_only"
+    assert execution_plan_payload["edge_count"] == len(execution_plan.edges)
+    assert execution_plan_payload["edges"] == ()
+
+
 def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
     tmp_path: Path,
 ) -> None:
@@ -19132,6 +19204,57 @@ def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
     assert "semantic_descent_graph" not in payload
     assert "semantic_refactor_gate" not in payload
     assert "finding_recipe_plan" not in payload
+
+
+def test_module_cli_loop_execution_plan_survives_summary_cache_hit(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n"
+        "    KIND = 'shared'\n\n"
+        "class Beta:\n"
+        "    KIND = 'shared'\n",
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "nominal_refactor_advisor",
+        "--json",
+        "--json-payload",
+        "loop",
+        "--include-execution-plan",
+        "--no-impact-ranking",
+        "--cache-dir",
+        cache_dir.as_posix(),
+        (tmp_path / "pkg").as_posix(),
+    ]
+
+    first_result = subprocess.run(
+        command,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    second_result = subprocess.run(
+        command,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(second_result.stdout)
+
+    assert first_result.returncode == 0, first_result.stderr
+    assert second_result.returncode == 0, second_result.stderr
+    assert payload["timing"]["analysis_cache_status"] == "hit"
+    assert payload["finding_payload_mode"] == "counts_only"
+    assert "execution_plan" in payload
+    assert payload["execution_plan"]["edge_payload_mode"] == "count_only"
 
 
 def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(

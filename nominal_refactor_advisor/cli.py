@@ -13,7 +13,7 @@ import json
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
@@ -26,6 +26,7 @@ from .analysis import (
     CachedPathAnalysisRequest,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
+    SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     analysis_cache_dir_for_root,
     analyze_lean_export,
@@ -35,13 +36,17 @@ from .analysis import (
     plan_path,
     plan_paths,
 )
-from .analysis_cache import AnalysisCacheStatus, AnalysisFindingSummary
+from .analysis_cache import (
+    AnalysisCacheStatus,
+    AnalysisExecutionPlanCacheIdentity,
+    AnalysisFindingCache,
+    AnalysisFindingSummary,
+)
 from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
 from .cache_paths import (
     ParseCacheDirectory,
     ParseCachePolicy,
     default_parse_cache_dir,
-    semantic_descent_cache_sibling,
 )
 from .calibration import (
     CalibrationReport,
@@ -135,6 +140,7 @@ from .models import RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS, PatternId
 from .planner import (
+    RefactorExecutionPlanLoopProjection,
     RefactorExecutionPlanReport,
     build_refactor_execution_plan,
     build_refactor_plans,
@@ -154,9 +160,6 @@ from .semantic_descent import (
     SemanticDescentGraph,
     SemanticDescentGraphPayloadReport,
     build_finding_backed_semantic_descent_graph,
-    build_semantic_descent_graph,
-    load_cached_semantic_descent_graph_for_roots,
-    load_latest_semantic_descent_graph_for_roots,
 )
 from .source_index import SourceIndex, build_source_index
 
@@ -895,6 +898,26 @@ class JsonFindingPayloadProjection:
         return []
 
 
+class JsonExecutionPlanPayloadProjection:
+    """Project execution plans at the detail level promised by the JSON profile."""
+
+    @classmethod
+    def payload(
+        cls,
+        execution_plan: (
+            RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection
+        ),
+        sections: "JsonPayloadSections",
+    ) -> JsonObject:
+        if isinstance(execution_plan, RefactorExecutionPlanLoopProjection):
+            return execution_plan.to_dict()
+        if sections.lightweight_status_payload:
+            return RefactorExecutionPlanLoopProjection.from_report(
+                execution_plan
+            ).to_dict()
+        return execution_plan.to_dict()
+
+
 @dataclass(frozen=True)
 class JsonPayloadSections:
     """Declared section policy for one JSON payload profile."""
@@ -1139,10 +1162,7 @@ class FastPreparseSemanticDescentSourceAuthority:
 
     preparse_cache_policy: JsonSummaryPreparseCachePolicy
     base_source: SemanticDescentGraphAnalysisSource
-    roots: tuple[Path, ...]
-    semantic_descent_cache_dir: Path | None
-    source_policy: PythonSourcePathPolicy
-    use_cache: bool
+    cache_context: SemanticDescentGraphCacheContext
 
     def context(self) -> FastPreparseSemanticDescentContext:
         latest_graph = self.latest_graph()
@@ -1151,10 +1171,7 @@ class FastPreparseSemanticDescentSourceAuthority:
         return FastPreparseSemanticDescentContext(
             SemanticDescentGraphAnalysisSource(
                 cached_graph=latest_graph,
-                cache_dir=self.semantic_descent_cache_dir,
-                cache_roots=self.roots,
-                source_policy=self.source_policy,
-                use_cache=self.use_cache,
+                cache_context=self.cache_context,
             ),
             latest_graph=latest_graph,
         )
@@ -1162,11 +1179,7 @@ class FastPreparseSemanticDescentSourceAuthority:
     def latest_graph(self) -> SemanticDescentGraph | None:
         if not self.preparse_cache_policy.uses_evidence_local_partial_reuse:
             return None
-        return load_latest_semantic_descent_graph_for_roots(
-            self.roots,
-            cache_dir=self.semantic_descent_cache_dir,
-            source_policy=self.source_policy,
-        )
+        return self.cache_context.latest_graph()
 
 
 @dataclass(frozen=True)
@@ -1234,27 +1247,13 @@ class JsonLoopCachePayloadBuilder:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SemanticDescentCacheDirAuthority(ParseCacheDirectory):
-    """Resolve the semantic-descent graph cache from the parse-cache authority."""
-
-    def cache_dir(self) -> Path | None:
-        if not self.use_parse_cache or self.parse_cache_dir is None:
-            return None
-        return semantic_descent_cache_sibling(self.parse_cache_dir)
-
-    def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
-        return build_semantic_descent_graph(
-            modules,
-            cache_dir=self.cache_dir(),
-            use_cache=self.use_parse_cache,
-        )
-
-
-@dataclass(frozen=True, kw_only=True)
-class JsonSemanticDescentPayloadSource(SemanticDescentCacheDirAuthority):
+class JsonSemanticDescentPayloadSource:
     """Repository graph source for the semantic-descent JSON section."""
 
     modules: list[ParsedModule]
+    graph_source: SemanticDescentGraphAnalysisSource = field(
+        default_factory=SemanticDescentGraphAnalysisSource
+    )
     cached_repository_graph: SemanticDescentGraph | None = None
 
     @property
@@ -1264,7 +1263,7 @@ class JsonSemanticDescentPayloadSource(SemanticDescentCacheDirAuthority):
     def repository_graph(self) -> SemanticDescentGraph:
         if self.cached_repository_graph is not None:
             return self.cached_repository_graph
-        return self.graph_for_modules(self.modules)
+        return self.graph_source.graph_for_modules(self.modules)
 
 
 @dataclass(frozen=True)
@@ -1279,7 +1278,9 @@ class JsonPayloadBuilder:
     timing: ScanTiming | None = None
     impact_ranking: RefactorImpactRankingReport | None = None
     codemod_candidates: CodemodCandidateSelection = None
-    execution_plan: RefactorExecutionPlanReport | None = None
+    execution_plan: (
+        RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection | None
+    ) = None
     scan_guard_report: ArchitectureGuardReport | None = None
     source_snapshot: CodemodSourceSnapshot | None = None
     semantic_descent_source: JsonSemanticDescentPayloadSource | None = None
@@ -1370,7 +1371,10 @@ class JsonPayloadBuilder:
         if self.change_budget is not None:
             payload["change_budget"] = self.change_budget.to_dict()
         if self.execution_plan is not None:
-            payload["execution_plan"] = self.execution_plan.to_dict()
+            payload["execution_plan"] = JsonExecutionPlanPayloadProjection.payload(
+                self.execution_plan,
+                sections,
+            )
         codemod_candidates = self.codemod_candidates
         if self.impact_ranking is not None:
             payload["impact_ranking"] = self.impact_ranking.to_dict()
@@ -4080,8 +4084,8 @@ class CodemodCliExecution(
         CodemodPlanSequenceSimulation | None,
     ]:
         if not self.impact_candidates and self.execution_request.sequence.has_recipes:
-            plan_sequence_simulation = self.execution_request.sequence.simulate_snapshot(
-                snapshot
+            plan_sequence_simulation = (
+                self.execution_request.sequence.simulate_snapshot(snapshot)
             )
             return (
                 plan_sequence_simulation.simulation,
@@ -4093,8 +4097,8 @@ class CodemodCliExecution(
         )
         active_snapshot = snapshot.with_simulation(candidate_simulation)
         if self.execution_request.sequence.has_recipes:
-            plan_sequence_simulation = self.execution_request.sequence.simulate_snapshot(
-                active_snapshot
+            plan_sequence_simulation = (
+                self.execution_request.sequence.simulate_snapshot(active_snapshot)
             )
             simulation = CodemodSimulationReport.combine(
                 (candidate_simulation, plan_sequence_simulation.simulation)
@@ -5430,15 +5434,14 @@ def main() -> int:
         args.use_parse_cache,
     )
     source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
-    semantic_descent_cache_dir = SemanticDescentCacheDirAuthority(
-        parse_cache_dir=parse_cache_dir,
-        use_parse_cache=args.use_parse_cache,
-    ).cache_dir()
+    semantic_descent_cache_context = SemanticDescentGraphCacheContext.from_parse_cache(
+        roots,
+        parse_cache_dir,
+        args.use_parse_cache,
+        source_policy,
+    )
     semantic_descent_analysis_source = SemanticDescentGraphAnalysisSource(
-        cache_dir=semantic_descent_cache_dir,
-        cache_roots=roots,
-        source_policy=source_policy,
-        use_cache=args.use_parse_cache,
+        cache_context=semantic_descent_cache_context,
     )
     if args.predict_scan:
         SingleRootModeAuthority(
@@ -5549,6 +5552,7 @@ def main() -> int:
         )
         fast_cache_result = None
         cached_semantic_descent_graph = None
+        analysis_cache_identity = None
         preparse_cache_mode = preparse_cache_policy.mode
         if (
             codemod_scan_query_mode.needs_analysis
@@ -5556,16 +5560,11 @@ def main() -> int:
             and preparse_cache_mode.enabled
         ):
             started = perf_counter()
-            fast_semantic_descent_context = (
-                FastPreparseSemanticDescentSourceAuthority(
-                    preparse_cache_policy=preparse_cache_policy,
-                    base_source=semantic_descent_analysis_source,
-                    roots=roots,
-                    semantic_descent_cache_dir=semantic_descent_cache_dir,
-                    source_policy=source_policy,
-                    use_cache=args.use_parse_cache,
-                ).context()
-            )
+            fast_semantic_descent_context = FastPreparseSemanticDescentSourceAuthority(
+                preparse_cache_policy=preparse_cache_policy,
+                base_source=semantic_descent_analysis_source,
+                cache_context=semantic_descent_cache_context,
+            ).context()
             latest_semantic_descent_graph = fast_semantic_descent_context.latest_graph
             fast_semantic_descent_analysis_source = (
                 fast_semantic_descent_context.analysis_source
@@ -5587,6 +5586,9 @@ def main() -> int:
             if (
                 json_payload_profile is JsonPayloadProfile.loop
                 and not path_scope.has_report_filter
+                and not args.include_execution_plan
+                and not args.include_plans
+                and not args.plans_only
             ):
                 summary_cache_result = fast_cache_authority.summary_result()
                 if summary_cache_result is not None:
@@ -5612,11 +5614,7 @@ def main() -> int:
                 and preparse_cache_mode.requires_semantic_descent_cache
             ):
                 cached_semantic_descent_graph = (
-                    load_cached_semantic_descent_graph_for_roots(
-                        roots,
-                        cache_dir=semantic_descent_cache_dir,
-                        source_policy=source_policy,
-                    )
+                    semantic_descent_cache_context.cached_graph()
                 )
                 if (
                     cached_semantic_descent_graph is None
@@ -5630,6 +5628,7 @@ def main() -> int:
             modules = []
             parse_seconds = 0.0
             analysis_cache_status = fast_cache_result.cache_status
+            analysis_cache_identity = fast_cache_result.cache_identity
             findings = path_scope.filter_findings(fast_cache_result.findings)
             analysis_seconds = fast_cache_seconds
         else:
@@ -5659,6 +5658,7 @@ def main() -> int:
                 )
                 unfiltered_findings = analysis_result.findings
                 analysis_cache_status = analysis_result.cache_status
+                analysis_cache_identity = analysis_result.cache_identity
                 findings = path_scope.filter_findings(unfiltered_findings)
                 analysis_seconds = round(perf_counter() - started, 3)
     else:
@@ -5668,6 +5668,7 @@ def main() -> int:
         analysis_seconds = 0.0
         analysis_cache_status = None
         cached_semantic_descent_graph = None
+        analysis_cache_identity = None
     plans = None
     execution_plan = None
     planning_seconds = 0.0
@@ -5677,7 +5678,44 @@ def main() -> int:
         if args.include_plans or args.plans_only:
             plans = build_refactor_plans(findings, root)
         if args.include_execution_plan or args.plans_only:
-            execution_plan = build_refactor_execution_plan(findings, root)
+            execution_plan_cache = AnalysisFindingCache(analysis_cache_dir)
+            cache_loop_projection = (
+                args.json and json_payload_profile.sections.lightweight_status_payload
+            )
+            execution_plan_cache_identity = (
+                AnalysisExecutionPlanCacheIdentity.from_analysis_identity(
+                    analysis_cache_identity,
+                    root,
+                    path_scope.report_roots,
+                    projection_kind=("loop" if cache_loop_projection else "full"),
+                )
+                if analysis_cache_identity is not None
+                else None
+            )
+            execution_plan_lookup = (
+                execution_plan_cache.load_execution_plan(execution_plan_cache_identity)
+                if execution_plan_cache_identity is not None
+                else None
+            )
+            if (
+                execution_plan_lookup is not None
+                and execution_plan_lookup.status is AnalysisCacheStatus.HIT
+            ):
+                execution_plan = execution_plan_lookup.plan
+            else:
+                execution_plan_report = build_refactor_execution_plan(findings, root)
+                execution_plan = (
+                    RefactorExecutionPlanLoopProjection.from_report(
+                        execution_plan_report
+                    )
+                    if cache_loop_projection
+                    else execution_plan_report
+                )
+                if execution_plan_cache_identity is not None:
+                    execution_plan_cache.store_execution_plan(
+                        execution_plan_cache_identity,
+                        execution_plan,
+                    )
         planning_seconds = round(perf_counter() - started, 3)
     include_economics = args.include_economics or args.include_change_budget
     economics = (
@@ -5864,9 +5902,8 @@ def main() -> int:
                     source_snapshot=source_snapshot,
                     semantic_descent_source=JsonSemanticDescentPayloadSource(
                         modules=modules,
-                        parse_cache_dir=parse_cache_dir,
+                        graph_source=semantic_descent_analysis_source,
                         cached_repository_graph=cached_semantic_descent_graph,
-                        use_parse_cache=args.use_parse_cache,
                     ),
                     payload_sections=json_payload_profile.sections,
                     raw_findings=args.raw_findings,
