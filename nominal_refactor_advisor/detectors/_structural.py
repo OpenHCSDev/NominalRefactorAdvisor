@@ -836,13 +836,16 @@ class PrefixedRoleFieldBundleDetector(
                 f"# Extract role records for {bundle_candidate.role_names} from `{bundle_candidate.class_name}`.\n"
                 f"# Replace prefixed fields {bundle_candidate.field_names} with typed role subrecords and derive PyTree children from those records."
             ),
-            metrics=FieldFamilyMetrics(
+            metrics=PrefixedRoleBundleMetrics(
                 class_count=1,
                 field_count=len(bundle_candidate.field_names),
                 class_names=(bundle_candidate.class_name,),
                 field_names=bundle_candidate.field_names,
                 execution_level=StructuralExecutionLevel.CLASS_BODY,
                 dataclass_count=1 if bundle_candidate.is_dataclass_family else 0,
+                role_names=bundle_candidate.role_names,
+                shared_member_names=bundle_candidate.shared_member_names,
+                role_field_map=bundle_candidate.role_field_map,
             ),
         )
 

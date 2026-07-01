@@ -9008,6 +9008,72 @@ def test_detects_prefixed_role_field_bundle(tmp_path: Path) -> None:
     assert "Protocol" not in (finding.scaffold or "")
 
 
+def test_prefixed_role_field_bundle_synthesizes_role_carriers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class DirectionalBatchInputs:\n"
+        "    receptor_coords: object\n"
+        "    receptor_anchor_indices: object\n"
+        "    receptor_strengths: object\n"
+        "    ligand_coords: object\n"
+        "    ligand_anchor_indices: object\n"
+        "    ligand_strengths: object\n"
+        "    ideal_distance: float\n\n"
+        "    def pair(self):\n"
+        "        return self.receptor_coords, self.ligand_anchor_indices, self.receptor_strengths\n",
+    )
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "prefixed_role_field_bundle"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("prefixed_role_field_bundle",),
+    )
+    simulation = plan.simulate_snapshot(
+        snapshot,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = snapshot.unified_diff(simulation.simulation)
+
+    assert plan.expected_removed_finding_count == 1
+    assert len(plan.document.recipes) == 1
+    assert plan.document.recipes[0].target_shape is (
+        RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER
+    )
+    assert plan.document.recipes[0].operations[0].to_dict()["operation"] == (
+        "replace_role_prefixed_fields_with_carriers"
+    )
+    assert simulation.is_clean is True
+    assert "+class DirectionalBatchInputsRole:" in diff
+    assert "+class ReceptorDirectionalBatchInputsRole" in diff
+    assert "+class LigandDirectionalBatchInputsRole" in diff
+    assert "+    receptor: ReceptorDirectionalBatchInputsRole" in diff
+    assert "+    ligand: LigandDirectionalBatchInputsRole" in diff
+    assert "self.receptor.coords" in diff
+    assert "self.ligand.anchor_indices" in diff
+    assert "self.receptor.strengths" in diff
+    simulation.document_simulation.apply()
+    rewritten = module_path.read_text()
+    assert "receptor_coords: object" not in rewritten
+    assert "ligand_anchor_indices: object" not in rewritten
+    assert "receptor: ReceptorDirectionalBatchInputsRole" in rewritten
+    assert "ligand: LigandDirectionalBatchInputsRole" in rewritten
+    assert not any(
+        finding.detector_id == "prefixed_role_field_bundle"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_role_surface_drift_from_plane_indexed_channel_surface(
     tmp_path: Path,
 ) -> None:

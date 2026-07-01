@@ -174,6 +174,7 @@ from ..models import (
     MappingMetrics,
     OrchestrationMetrics,
     ParameterThreadMetrics,
+    PrefixedRoleBundleMetrics,
     ProbeCountMetrics,
     RefactorFinding,
     RegistrationMetrics,

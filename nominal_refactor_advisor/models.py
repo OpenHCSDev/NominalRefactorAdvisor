@@ -295,8 +295,20 @@ BehaviorFindingMetrics = CompositeClassSpec(
 
 
 class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
+    __registry__: ClassVar[dict["ClassNamesMetricKind", type["ClassNamesPlanMetrics"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+
     class_names: tuple[str, ...]
     plan_class_names = AliasProperty[tuple[str, ...]]("class_names")
+
+
+class ClassNamesMetricKind(StrEnum):
+    """Registered class-name metric variants."""
+
+    FIELD_FAMILY = "field_family"
+    PREFIXED_ROLE_BUNDLE = "prefixed_role_bundle"
+    WITNESS_CARRIER = "witness_carrier"
 
 
 MappingFindingMetrics = CompositeClassSpec(
@@ -396,6 +408,7 @@ class HierarchyCandidateMetrics(BehaviorFindingMetrics):
 class FieldFamilyMetrics(ClassNamesPlanMetrics):
     """Metrics for repeated field families across classes."""
 
+    registry_key: ClassVar[ClassNamesMetricKind] = ClassNamesMetricKind.FIELD_FAMILY
     class_count: int
     field_count: int
     class_names: tuple[str, ...]
@@ -419,9 +432,22 @@ class FieldFamilyMetrics(ClassNamesPlanMetrics):
 
 
 @dataclass(frozen=True)
+class PrefixedRoleBundleMetrics(FieldFamilyMetrics):
+    """Metrics for role-prefixed fields inside one record surface."""
+
+    registry_key: ClassVar[ClassNamesMetricKind] = (
+        ClassNamesMetricKind.PREFIXED_ROLE_BUNDLE
+    )
+    role_names: tuple[str, ...] = ()
+    shared_member_names: tuple[str, ...] = ()
+    role_field_map: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+
+@dataclass(frozen=True)
 class WitnessCarrierMetrics(ClassNamesPlanMetrics):
     """Metrics for repeated witness-carrier families."""
 
+    registry_key: ClassVar[ClassNamesMetricKind] = ClassNamesMetricKind.WITNESS_CARRIER
     class_count: int
     shared_role_count: int
     class_names: tuple[str, ...]

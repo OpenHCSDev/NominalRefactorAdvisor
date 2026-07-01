@@ -68,6 +68,7 @@ from .models import (
     FindingMetrics,
     ImpactDelta,
     MappingMetrics,
+    PrefixedRoleBundleMetrics,
     RefactorFinding,
     RegistrationMetrics,
     RepeatedMethodMetrics,
@@ -314,6 +315,9 @@ class RefactorRecipeOperationKind(StrEnum):
     REMOVE_CLASS_BASE = "remove_class_base"
     REMOVE_IMPORT_NAMES = "remove_import_names"
     REPLACE_FIELDS_WITH_CARRIER = "replace_fields_with_carrier"
+    REPLACE_ROLE_PREFIXED_FIELDS_WITH_CARRIERS = (
+        "replace_role_prefixed_fields_with_carriers"
+    )
     REPLACE_FUNCTION_BODY = "replace_function_body"
     REPLACE_FUNCTION_SIGNATURE = "replace_function_signature"
     REPLACE_MODULE_ASSIGNMENT = "replace_module_assignment"
@@ -353,11 +357,13 @@ BASE_NAME_PAYLOAD_FIELD = "base_name"
 CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
 FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD = "field_declaration_sources"
 CARRIER_NAME_PAYLOAD_FIELD = "carrier_name"
+CARRIER_SOURCE_PAYLOAD_FIELD = "carrier_source"
 CARRIER_BASE_NAMES_PAYLOAD_FIELD = "carrier_base_names"
 CARRIER_DATACLASS_ARGUMENTS_PAYLOAD_FIELD = "carrier_dataclass_arguments"
 CLASS_NAME_PAYLOAD_FIELD = "class_name"
 CONSTRUCTOR_NAMES_PAYLOAD_FIELD = "constructor_names"
 FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD = "field_projection_pairs"
+CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD = "carrier_field_declarations"
 ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD = "attribute_owner_expressions"
 INHERITED_FIELD_NAMES_PAYLOAD_FIELD = "inherited_field_names"
 INSERT_CARRIER_PAYLOAD_FIELD = "insert_carrier"
@@ -6766,50 +6772,40 @@ class CollapseFieldsToCarrierOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFieldsWithCarrierOperation(
-    RefactorRecipeOperation,
-):
-    """Replace projected primitive fields with one existing carrier field."""
+class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
+    """Shared payload surface for field-to-carrier projection operations."""
 
     class_name: str
-    carrier_field_declaration: str
     field_projection_pairs: tuple[str, ...]
     constructor_names: tuple[str, ...] = ()
     attribute_owner_expressions: tuple[str, ...] = ()
 
     @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
+    def carrier_projection_payload_bindings(cls) -> OperationPayloadBindings:
         return operation_payload_bindings(
             (
                 (
                     CLASS_NAME_PAYLOAD_FIELD,
                     "class_name",
-                    ReplaceFieldsWithCarrierOperation.class_name_from_operation,
-                    OperationPayloadReader.required_string,
-                ),
-                (
-                    "carrier_field_declaration",
-                    "carrier_field_declaration",
-                    ReplaceFieldsWithCarrierOperation.carrier_field_declaration_from_operation,
+                    CarrierProjectionOperationBase.class_name_from_operation,
                     OperationPayloadReader.required_string,
                 ),
                 (
                     FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
                     "field_projection_pairs",
-                    ReplaceFieldsWithCarrierOperation.field_projection_pairs_from_operation,
+                    CarrierProjectionOperationBase.field_projection_pairs_from_operation,
                     OperationPayloadReader.required_string_tuple,
                 ),
                 (
                     CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
                     "constructor_names",
-                    ReplaceFieldsWithCarrierOperation.constructor_names_from_operation,
+                    CarrierProjectionOperationBase.constructor_names_from_operation,
                     OperationPayloadReader.string_tuple_or_empty,
                 ),
                 (
                     ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
                     "attribute_owner_expressions",
-                    ReplaceFieldsWithCarrierOperation.attribute_owner_expressions_from_operation,
+                    CarrierProjectionOperationBase.attribute_owner_expressions_from_operation,
                     OperationPayloadReader.string_tuple_or_empty,
                 ),
             )
@@ -6817,9 +6813,67 @@ class ReplaceFieldsWithCarrierOperation(
 
     @staticmethod
     def class_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
-            raise TypeError("class_name binding requires field carrier replacement")
+        if not isinstance(operation, CarrierProjectionOperationBase):
+            raise TypeError("class_name binding requires carrier projection operation")
         return operation.class_name
+
+    @staticmethod
+    def field_projection_pairs_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, CarrierProjectionOperationBase):
+            raise TypeError(
+                "field_projection_pairs binding requires carrier projection operation"
+            )
+        return operation.field_projection_pairs
+
+    @staticmethod
+    def constructor_names_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, CarrierProjectionOperationBase):
+            raise TypeError(
+                "constructor_names binding requires carrier projection operation"
+            )
+        return operation.constructor_names
+
+    @staticmethod
+    def attribute_owner_expressions_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, CarrierProjectionOperationBase):
+            raise TypeError(
+                "attribute_owner_expressions binding requires carrier projection operation"
+            )
+        return operation.attribute_owner_expressions
+
+    @property
+    def resolved_constructor_names(self) -> tuple[str, ...]:
+        return self.constructor_names or (self.class_name,)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
+    """Replace projected primitive fields with one existing carrier field."""
+
+    carrier_field_declaration: str
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return (
+            *CarrierProjectionOperationBase.carrier_projection_payload_bindings(),
+            *operation_payload_bindings(
+            (
+                (
+                    "carrier_field_declaration",
+                    "carrier_field_declaration",
+                    ReplaceFieldsWithCarrierOperation.carrier_field_declaration_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+            )
+            ),
+        )
 
     @staticmethod
     def carrier_field_declaration_from_operation(
@@ -6830,36 +6884,6 @@ class ReplaceFieldsWithCarrierOperation(
                 "carrier_field_declaration binding requires field carrier replacement"
             )
         return operation.carrier_field_declaration
-
-    @staticmethod
-    def field_projection_pairs_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
-            raise TypeError(
-                "field_projection_pairs binding requires field carrier replacement"
-            )
-        return operation.field_projection_pairs
-
-    @staticmethod
-    def constructor_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
-            raise TypeError(
-                "constructor_names binding requires field carrier replacement"
-            )
-        return operation.constructor_names
-
-    @staticmethod
-    def attribute_owner_expressions_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
-            raise TypeError(
-                "attribute_owner_expressions binding requires field carrier replacement"
-            )
-        return operation.attribute_owner_expressions
 
     @property
     def carrier_field(self) -> CarrierFieldDeclaration:
@@ -6890,10 +6914,6 @@ class ReplaceFieldsWithCarrierOperation(
         if not pairs:
             raise ValueError("Field carrier replacement requires projection pairs")
         return pairs
-
-    @property
-    def resolved_constructor_names(self) -> tuple[str, ...]:
-        return self.constructor_names or (self.class_name,)
 
     def line_replacements(
         self,
@@ -7163,6 +7183,429 @@ class ReplaceFieldsWithCarrierOperation(
                 raise ValueError("Field carrier replacements overlap")
             previous = replacement
         return ordered
+
+
+@dataclass(frozen=True)
+class RoleCarrierFieldProjection:
+    """Projection from one flattened field to one field on a role carrier."""
+
+    source_field_name: str
+    carrier_field_name: str
+    carrier_attribute_name: str
+
+    @classmethod
+    def from_pair(cls, pair: str) -> "RoleCarrierFieldProjection":
+        source_field, separator, carrier_path = pair.partition("=")
+        if separator != "=":
+            raise ValueError(
+                "Role field projection pairs must be written as "
+                f"'source_field=carrier_field.carrier_attribute'; got {pair!r}"
+            )
+        carrier_field, path_separator, carrier_attribute = carrier_path.partition(".")
+        projection = cls(
+            source_field_name=source_field.strip(),
+            carrier_field_name=carrier_field.strip(),
+            carrier_attribute_name=carrier_attribute.strip(),
+        )
+        projection.validate(pair)
+        if path_separator != ".":
+            raise ValueError(
+                "Role field projection pairs must target carrier attributes; "
+                f"got {pair!r}"
+            )
+        return projection
+
+    def validate(self, source_pair: str) -> None:
+        for name in (
+            self.source_field_name,
+            self.carrier_field_name,
+            self.carrier_attribute_name,
+        ):
+            if not name.isidentifier():
+                raise ValueError(
+                    "Role field projection pairs must use simple identifiers; "
+                    f"got {source_pair!r}"
+                )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceRolePrefixedFieldsWithCarriersOperation(
+    CarrierProjectionOperationBase,
+):
+    """Replace multiple role-prefixed field groups with nominal role carriers."""
+
+    carrier_source: str
+    carrier_field_declarations: tuple[str, ...]
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return (
+            *CarrierProjectionOperationBase.carrier_projection_payload_bindings(),
+            *operation_payload_bindings(
+            (
+                (
+                    CARRIER_SOURCE_PAYLOAD_FIELD,
+                    CARRIER_SOURCE_PAYLOAD_FIELD,
+                    ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_source_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
+                    CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
+                    ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_field_declarations_from_operation,
+                    OperationPayloadReader.required_string_tuple,
+                ),
+                (
+                    FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
+                    FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
+                    ReplaceRolePrefixedFieldsWithCarriersOperation.field_projection_pairs_from_operation,
+                    OperationPayloadReader.required_string_tuple,
+                ),
+                (
+                    CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
+                    CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
+                    ReplaceRolePrefixedFieldsWithCarriersOperation.constructor_names_from_operation,
+                    OperationPayloadReader.string_tuple_or_empty,
+                ),
+                (
+                    ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
+                    ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
+                    ReplaceRolePrefixedFieldsWithCarriersOperation.attribute_owner_expressions_from_operation,
+                    OperationPayloadReader.string_tuple_or_empty,
+                ),
+            )
+            ),
+        )
+
+    @staticmethod
+    def carrier_source_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, ReplaceRolePrefixedFieldsWithCarriersOperation):
+            raise TypeError(
+                "carrier_source binding requires role field carrier replacement"
+            )
+        return operation.carrier_source
+
+    @staticmethod
+    def carrier_field_declarations_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ReplaceRolePrefixedFieldsWithCarriersOperation):
+            raise TypeError(
+                "carrier_field_declarations binding requires role field carrier replacement"
+        )
+        return operation.carrier_field_declarations
+
+    @property
+    def carrier_fields(self) -> tuple[CarrierFieldDeclaration, ...]:
+        return tuple(
+            CarrierFieldDeclaration(source)
+            for source in self.carrier_field_declarations
+        )
+
+    @property
+    def projection_map(self) -> Mapping[str, RoleCarrierFieldProjection]:
+        projections = tuple(
+            RoleCarrierFieldProjection.from_pair(pair)
+            for pair in self.field_projection_pairs
+        )
+        projection_by_field = {
+            projection.source_field_name: projection for projection in projections
+        }
+        if len(projection_by_field) != len(projections):
+            raise ValueError("Role field projection pairs contain duplicate source fields")
+        carrier_field_names = frozenset(field.field_name for field in self.carrier_fields)
+        unknown_carriers = tuple(
+            projection.carrier_field_name
+            for projection in projections
+            if projection.carrier_field_name not in carrier_field_names
+        )
+        if unknown_carriers:
+            raise ValueError(
+                "Role field projection pairs reference unknown carrier fields: "
+                f"{unknown_carriers!r}"
+            )
+        return projection_by_field
+
+    def projections_for_carrier(
+        self,
+        carrier_field_name: str,
+    ) -> tuple[RoleCarrierFieldProjection, ...]:
+        return tuple(
+            projection
+            for projection in self.projection_map.values()
+            if projection.carrier_field_name == carrier_field_name
+        )
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        source_path = self.required_source_path(
+            source_index,
+            self.operation_kind().value,
+        )
+        source = source_by_path[source_path]
+        geometry = SourceTextGeometry(source)
+        root = ast.parse(source, filename=source_path)
+        replacements = [
+            *self.carrier_insertion_replacements(root, geometry),
+            *self.class_field_replacements(root, geometry),
+            *self.constructor_projection_replacements(root, source, geometry),
+        ]
+        covered_lines = tuple(
+            SourceLineSpan.from_offsets(geometry, item.start_offset, item.end_offset)
+            for item in replacements
+        )
+        replacements.extend(
+            self.attribute_projection_replacements(
+                root,
+                source,
+                covered_lines=covered_lines,
+            )
+        )
+        if not replacements:
+            raise ValueError(
+                f"Role field carrier replacement found no edits in {source_path!r}"
+            )
+        replacement_source = geometry.source_with_replacements_in_span(
+            0,
+            geometry.end_offset,
+            ReplaceFieldsWithCarrierOperation.require_non_overlapping_replacements(
+                replacements
+            ),
+        )
+        return (
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=1,
+                end_line=len(geometry.lines),
+                replacement_lines=SourceTargetEditor.source_lines(replacement_source),
+                rationale=self.rationale
+                or f"Replace role-prefixed fields on {self.class_name!r} with role carriers.",
+            ),
+        )
+
+    def carrier_insertion_replacements(
+        self,
+        root: ast.Module,
+        geometry: SourceTextGeometry,
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        class_node = self.required_class_node(root)
+        insertion_offset = geometry.line_offsets[class_node.lineno - 1]
+        return (
+            SourceOffsetReplacement.from_offsets(
+                start_offset=insertion_offset,
+                end_offset=insertion_offset,
+                replacement_source=f"{self.carrier_source.rstrip()}\n\n",
+            ),
+        )
+
+    def class_field_replacements(
+        self,
+        root: ast.Module,
+        geometry: SourceTextGeometry,
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        class_node = self.required_class_node(root)
+        statements_by_field = {
+            field_name: statement
+            for statement in class_node.body
+            if (field_name := self.field_name_for_statement(statement)) is not None
+        }
+        replacements: list[SourceOffsetReplacement] = []
+        for carrier_field in self.carrier_fields:
+            carrier_field_name = carrier_field.field_name
+            projections = self.projections_for_carrier(carrier_field_name)
+            field_lines = tuple(
+                statements_by_field[projection.source_field_name]
+                for projection in projections
+                if projection.source_field_name in statements_by_field
+            )
+            if not field_lines:
+                continue
+            existing_carrier_field = carrier_field_name in statements_by_field
+            if existing_carrier_field:
+                removed_lines = field_lines
+            else:
+                replacements.append(
+                    self.line_span_replacement(
+                        geometry,
+                        field_lines[0],
+                        "".join(carrier_field.indented_lines),
+                    )
+                )
+                removed_lines = field_lines[1:]
+            replacements.extend(
+                self.line_span_replacement(geometry, statement, "")
+                for statement in removed_lines
+            )
+        return tuple(replacements)
+
+    def constructor_projection_replacements(
+        self,
+        root: ast.Module,
+        source: str,
+        geometry: SourceTextGeometry,
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        replacements: list[SourceOffsetReplacement] = []
+        constructor_names = frozenset(self.resolved_constructor_names)
+        for call in (node for node in ast.walk(root) if isinstance(node, ast.Call)):
+            call_name = self.call_name(call)
+            if call_name not in constructor_names:
+                continue
+            for carrier_field in self.carrier_fields:
+                projected_keywords = self.projected_keywords_for_carrier(
+                    call,
+                    carrier_field.field_name,
+                )
+                if projected_keywords is None:
+                    continue
+                carrier_source = self.projected_keyword_carrier_source(
+                    projected_keywords,
+                    source,
+                )
+                if carrier_source is None:
+                    continue
+                first_keyword = projected_keywords[0]
+                replacements.append(
+                    self.line_span_replacement(
+                        geometry,
+                        first_keyword.value,
+                        (
+                            f"{geometry.line_indent(self.node_start_offset(geometry, first_keyword.value))}"
+                            f"{carrier_field.field_name}={carrier_source},\n"
+                        ),
+                    )
+                )
+                replacements.extend(
+                    self.line_span_replacement(geometry, keyword.value, "")
+                    for keyword in projected_keywords[1:]
+                )
+        return tuple(replacements)
+
+    def projected_keywords_for_carrier(
+        self,
+        call: ast.Call,
+        carrier_field_name: str,
+    ) -> tuple[ast.keyword, ...] | None:
+        projection_source_fields = frozenset(
+            projection.source_field_name
+            for projection in self.projections_for_carrier(carrier_field_name)
+        )
+        projected_keywords = tuple(
+            keyword
+            for keyword in call.keywords
+            if keyword.arg in projection_source_fields
+        )
+        if len(projected_keywords) != len(projection_source_fields):
+            return None
+        return projected_keywords
+
+    def projected_keyword_carrier_source(
+        self,
+        projected_keywords: tuple[ast.keyword, ...],
+        source: str,
+    ) -> str | None:
+        carrier_sources: set[str] = set()
+        projection_map = self.projection_map
+        for keyword in projected_keywords:
+            if keyword.arg is None:
+                return None
+            projection = projection_map[keyword.arg]
+            value = keyword.value
+            if not isinstance(value, ast.Attribute):
+                return None
+            if value.attr != projection.carrier_attribute_name:
+                return None
+            carrier_source = ast.get_source_segment(source, value.value)
+            if carrier_source is None:
+                return None
+            carrier_sources.add(carrier_source)
+        if len(carrier_sources) != 1:
+            return None
+        return next(iter(carrier_sources))
+
+    def attribute_projection_replacements(
+        self,
+        root: ast.Module,
+        source: str,
+        *,
+        covered_lines: tuple["SourceLineSpan", ...],
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        if not self.attribute_owner_expressions:
+            return ()
+        replacements: list[SourceOffsetReplacement] = []
+        projection_map = self.projection_map
+        allowed_owner_sources = frozenset(self.attribute_owner_expressions)
+        for attribute in (
+            node for node in ast.walk(root) if isinstance(node, ast.Attribute)
+        ):
+            projection = projection_map.get(attribute.attr)
+            if projection is None:
+                continue
+            if SourceNodeSpan(attribute).line_span.overlaps_any(covered_lines):
+                continue
+            value_source = ast.get_source_segment(source, attribute.value)
+            if value_source is None:
+                continue
+            if value_source not in allowed_owner_sources:
+                continue
+            replacements.append(
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=self.node_start_offset_for_source(source, attribute),
+                    end_offset=self.node_end_offset_for_source(source, attribute),
+                    replacement_source=(
+                        f"{value_source}.{projection.carrier_field_name}."
+                        f"{projection.carrier_attribute_name}"
+                    ),
+                )
+            )
+        return tuple(replacements)
+
+    def required_class_node(self, root: ast.Module) -> ast.ClassDef:
+        return ReplaceFieldsWithCarrierOperation.required_class_node(self, root)
+
+    @staticmethod
+    def field_name_for_statement(statement: ast.stmt) -> str | None:
+        return ReplaceFieldsWithCarrierOperation.field_name_for_statement(statement)
+
+    @staticmethod
+    def call_name(call: ast.Call) -> str | None:
+        return ReplaceFieldsWithCarrierOperation.call_name(call)
+
+    @staticmethod
+    def line_span_replacement(
+        geometry: SourceTextGeometry,
+        node: ast.stmt | ast.expr,
+        replacement_source: str,
+    ) -> SourceOffsetReplacement:
+        return ReplaceFieldsWithCarrierOperation.line_span_replacement(
+            geometry,
+            node,
+            replacement_source,
+        )
+
+    @staticmethod
+    def node_start_offset(
+        geometry: SourceTextGeometry,
+        node: ast.stmt | ast.expr,
+    ) -> int:
+        return ReplaceFieldsWithCarrierOperation.node_start_offset(geometry, node)
+
+    @staticmethod
+    def node_start_offset_for_source(source: str, node: ast.stmt | ast.expr) -> int:
+        return ReplaceFieldsWithCarrierOperation.node_start_offset_for_source(
+            source,
+            node,
+        )
+
+    @staticmethod
+    def node_end_offset_for_source(source: str, node: ast.stmt | ast.expr) -> int:
+        return ReplaceFieldsWithCarrierOperation.node_end_offset_for_source(
+            source,
+            node,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -13828,6 +14271,30 @@ class RefactorRecipe:
         )
         return replace(self, operations=(*self.operations, operation))
 
+    def replace_role_prefixed_fields_with_carriers(
+        self,
+        source_path: str,
+        *,
+        class_name: str,
+        carrier_source: str,
+        carrier_field_declarations: Iterable[str],
+        field_projection_pairs: Iterable[str],
+        constructor_names: Iterable[str] = (),
+        attribute_owner_expressions: Iterable[str] = (),
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ReplaceRolePrefixedFieldsWithCarriersOperation(
+            target=SourceRewriteTarget(file_path=source_path),
+            class_name=class_name,
+            carrier_source=carrier_source,
+            carrier_field_declarations=tuple(carrier_field_declarations),
+            field_projection_pairs=tuple(field_projection_pairs),
+            constructor_names=tuple(constructor_names),
+            attribute_owner_expressions=tuple(attribute_owner_expressions),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def convert_manual_registry_to_autoregister(
         self,
         source_path: str,
@@ -16227,6 +16694,57 @@ class SingleSourcePathFindingMixin:
         return next(iter(file_paths))
 
 
+class FindingRecipeRequirementRejection(Exception):
+    """Typed rejection shared by finding-backed recipe requirement checks."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class SourcePathMetricsRecipeRequirementMixin(SingleSourcePathFindingMixin):
+    """Shared context, source-path, and metrics checks for finding recipes."""
+
+    rejection_type: ClassVar[type[FindingRecipeRequirementRejection]]
+    metric_type: ClassVar[type[FindingMetrics]]
+    missing_context_reason: ClassVar[str]
+    missing_metric_reason: ClassVar[str]
+    missing_source_path_reason: ClassVar[str]
+
+    def required_context(
+        self,
+        context: CodemodSelectorContext | None,
+    ) -> CodemodSelectorContext:
+        if context is None:
+            raise self.rejection_type(self.missing_context_reason)
+        return context
+
+    def required_metrics(self, finding: RefactorFinding) -> FindingMetrics:
+        if not isinstance(finding.metrics, self.metric_type):
+            raise self.rejection_type(self.missing_metric_reason)
+        return finding.metrics
+
+    def required_source_path(self, finding: RefactorFinding) -> str:
+        source_path = self.source_path(finding)
+        if source_path is None:
+            raise self.rejection_type(self.missing_source_path_reason)
+        return source_path
+
+
+class SharedActionKeysForFindingMixin:
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, EvidenceSymbol(evidence.symbol).subject),),
+        )
+
+
 class FlattenedProjectionPropertyFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
     FindingRecipeSynthesizer,
@@ -16807,6 +17325,289 @@ class ExistingNominalAuthorityReuseFindingRecipeSynthesizer(
         )
 
 
+class PrefixedRoleBundleRecipeRejection(FindingRecipeRequirementRejection):
+    """Typed rejection while resolving a prefixed-role bundle recipe."""
+
+
+@dataclass(frozen=True)
+class PrefixedRoleCarrierSpec:
+    role_name: str
+    carrier_class_name: str
+
+    @property
+    def host_field_declaration(self) -> str:
+        return f"{self.role_name}: {self.carrier_class_name}"
+
+
+@dataclass(frozen=True)
+class PrefixedRoleBundleRecipeParts:
+    operation: ReplaceRolePrefixedFieldsWithCarriersOperation
+
+    def recipe_for_finding(self, finding: RefactorFinding) -> RefactorRecipe:
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-extract-prefix-bundle",
+            operations=(self.operation,),
+            reason=(
+                "Extract role-prefixed primitive fields into nominal role carrier "
+                "records."
+            ),
+            target_shape=RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER,
+        )
+
+
+class PrefixedRoleBundleFindingRecipeSynthesizer(
+    SharedActionKeysForFindingMixin,
+    SourcePathMetricsRecipeRequirementMixin,
+    EvaluatedFindingRecipeSynthesizer,
+):
+    """Synthesize nominal carrier extraction for role-prefixed fields."""
+
+    detector_id = "prefixed_role_field_bundle"
+    rejection_type = PrefixedRoleBundleRecipeRejection
+    metric_type = PrefixedRoleBundleMetrics
+    missing_context_reason = (
+        "prefixed role bundle extraction requires a source selector context"
+    )
+    missing_metric_reason = (
+        "prefixed role bundle extraction requires prefixed-role metrics"
+    )
+    missing_source_path_reason = (
+        "prefixed role bundle extraction requires one source file"
+    )
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        try:
+            parts = self.required_recipe_parts(finding, context)
+        except PrefixedRoleBundleRecipeRejection as rejection:
+            return FindingRecipeEvaluation(rejection_reason=rejection.reason)
+        return FindingRecipeEvaluation(recipe=parts.recipe_for_finding(finding))
+
+    def required_recipe_parts(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> PrefixedRoleBundleRecipeParts:
+        resolved_context = self.required_context(context)
+        metrics = self.required_metrics(finding)
+        source_path = self.required_source_path(finding)
+        class_name = self.required_class_name(metrics)
+        target = self.required_target(
+            resolved_context,
+            source_path=source_path,
+            class_name=class_name,
+        )
+        dataclass_arguments = self.required_dataclass_arguments(target)
+        declaration_map = resolved_context.direct_class_declaration_index_for_file(
+            source_path
+        ).declarations_by_target_id.get(target.target.target_id, {})
+        role_specs = self.role_carrier_specs(metrics)
+        member_declarations = self.member_declarations(
+            metrics,
+            declaration_map,
+        )
+        return PrefixedRoleBundleRecipeParts(
+            operation=ReplaceRolePrefixedFieldsWithCarriersOperation(
+                target=SourceRewriteTarget(file_path=source_path),
+                class_name=class_name,
+                carrier_source=self.carrier_source(
+                    base_name=self.base_carrier_name(class_name),
+                    role_specs=role_specs,
+                    member_declarations=member_declarations,
+                    dataclass_arguments=dataclass_arguments,
+                ),
+                carrier_field_declarations=tuple(
+                    role_spec.host_field_declaration for role_spec in role_specs
+                ),
+                field_projection_pairs=self.field_projection_pairs(metrics),
+                constructor_names=(class_name,),
+                attribute_owner_expressions=("self",),
+                rationale=(
+                    "Extract role-prefixed primitive fields into nominal role carrier "
+                    "records."
+                ),
+            ),
+        )
+
+    @staticmethod
+    def required_class_name(metrics: PrefixedRoleBundleMetrics) -> str:
+        if len(metrics.class_names) != 1:
+            raise PrefixedRoleBundleRecipeRejection(
+                "prefixed role bundle extraction requires exactly one class"
+            )
+        return metrics.class_names[0]
+
+    @staticmethod
+    def required_target(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        class_name: str,
+    ) -> ResolvedClassTarget:
+        target = ClassMemberPromotionTargets.optional_class_target(
+            context.source_index,
+            context.ast_target_nodes_by_id,
+            source_path=source_path,
+            class_name=class_name,
+        )
+        if target is None:
+            raise PrefixedRoleBundleRecipeRejection(
+                ClassMemberPromotionTargets.optional_class_target_rejection_reason(
+                    context.source_index,
+                    context.ast_target_nodes_by_id,
+                    source_path=source_path,
+                    class_name=class_name,
+                )
+                or "prefixed role bundle extraction could not resolve target class"
+            )
+        return target
+
+    @staticmethod
+    def required_dataclass_arguments(target: ResolvedClassTarget) -> tuple[str, ...]:
+        dataclass_arguments = (
+            RepeatedFieldFamilyFindingRecipeSynthesizer.dataclass_arguments_for_node(
+                target.node
+            )
+        )
+        if dataclass_arguments is None:
+            raise PrefixedRoleBundleRecipeRejection(
+                "prefixed role bundle extraction currently requires dataclass targets"
+            )
+        return dataclass_arguments
+
+    @classmethod
+    def role_carrier_specs(
+        cls,
+        metrics: PrefixedRoleBundleMetrics,
+    ) -> tuple[PrefixedRoleCarrierSpec, ...]:
+        base_name = cls.base_carrier_name(metrics.class_names[0])
+        return tuple(
+            PrefixedRoleCarrierSpec(
+                role_name=role_name,
+                carrier_class_name=f"{cls.public_role_name(role_name)}{base_name}",
+            )
+            for role_name in metrics.role_names
+        )
+
+    @staticmethod
+    def base_carrier_name(class_name: str) -> str:
+        return f"{class_name}Role"
+
+    @staticmethod
+    def public_role_name(role_name: str) -> str:
+        return CLASS_NAME_ALGEBRA.public_name_from_tokens(
+            CLASS_NAME_ALGEBRA.ordered_tokens(role_name)
+        )
+
+    @classmethod
+    def member_declarations(
+        cls,
+        metrics: PrefixedRoleBundleMetrics,
+        declaration_map: Mapping[str, str],
+    ) -> tuple[str, ...]:
+        declarations_by_member: dict[str, str] = {}
+        for role_name, field_names in metrics.role_field_map:
+            for field_name in field_names:
+                member_name = cls.member_name_for_field(role_name, field_name)
+                declaration_source = declaration_map.get(field_name)
+                if member_name is None or declaration_source is None:
+                    continue
+                declarations_by_member.setdefault(
+                    member_name,
+                    cls.renamed_field_declaration(
+                        declaration_source,
+                        member_name,
+                    ),
+                )
+        missing_members = tuple(
+            member_name
+            for member_name in metrics.shared_member_names
+            if member_name not in declarations_by_member
+        )
+        if missing_members:
+            raise PrefixedRoleBundleRecipeRejection(
+                "prefixed role bundle extraction is missing declarations for "
+                f"{missing_members!r}"
+            )
+        return tuple(
+            declarations_by_member[member_name]
+            for member_name in metrics.shared_member_names
+        )
+
+    @staticmethod
+    def renamed_field_declaration(source: str, field_name: str) -> str:
+        if not field_name.isidentifier():
+            raise PrefixedRoleBundleRecipeRejection(
+                f"prefixed role member is not a valid field name: {field_name!r}"
+            )
+        declaration = CarrierFieldDeclaration(source)
+        old_name = declaration.field_name
+        return re.sub(
+            rf"^(\s*){re.escape(old_name)}\b",
+            rf"\1{field_name}",
+            source.strip(),
+            count=1,
+        )
+
+    @classmethod
+    def field_projection_pairs(
+        cls,
+        metrics: PrefixedRoleBundleMetrics,
+    ) -> tuple[str, ...]:
+        pairs: list[str] = []
+        for role_name, field_names in metrics.role_field_map:
+            for field_name in field_names:
+                member_name = cls.member_name_for_field(role_name, field_name)
+                if member_name is None:
+                    raise PrefixedRoleBundleRecipeRejection(
+                        f"field {field_name!r} is not prefixed by role {role_name!r}"
+                    )
+                pairs.append(f"{field_name}={role_name}.{member_name}")
+        return tuple(pairs)
+
+    @staticmethod
+    def member_name_for_field(role_name: str, field_name: str) -> str | None:
+        role_tokens = CLASS_NAME_ALGEBRA.ordered_tokens(role_name)
+        field_tokens = CLASS_NAME_ALGEBRA.ordered_tokens(field_name)
+        if len(field_tokens) <= len(role_tokens):
+            return None
+        if field_tokens[: len(role_tokens)] != role_tokens:
+            return None
+        return "_".join(field_tokens[len(role_tokens) :])
+
+    @staticmethod
+    def carrier_source(
+        *,
+        base_name: str,
+        role_specs: tuple[PrefixedRoleCarrierSpec, ...],
+        member_declarations: tuple[str, ...],
+        dataclass_arguments: tuple[str, ...],
+    ) -> str:
+        base_source = SemanticCarrierSourceAuthority(
+            carrier_name=base_name,
+            field_declarations=tuple(
+                CarrierFieldDeclaration(source) for source in member_declarations
+            ),
+            dataclass_arguments=dataclass_arguments,
+        ).source
+        dataclass_decorator_source = (
+            "@dataclass"
+            if not dataclass_arguments
+            else f"@dataclass({', '.join(dataclass_arguments)})"
+        )
+        role_sources = tuple(
+            (
+                f"{dataclass_decorator_source}\n"
+                f"class {role_spec.carrier_class_name}({base_name}):\n"
+                "    pass"
+            )
+            for role_spec in role_specs
+        )
+        return "\n\n".join((base_source, *role_sources))
+
 @dataclass(frozen=True)
 class ParallelPrimitiveCarrierRecipeParts:
     """Executable carrier-collapse facts for one exact primitive bundle."""
@@ -16818,20 +17619,26 @@ class ParallelPrimitiveCarrierRecipeParts:
     carrier_dataclass_arguments: tuple[str, ...]
 
 
-class ParallelPrimitiveCarrierRejection(Exception):
+class ParallelPrimitiveCarrierRejection(FindingRecipeRequirementRejection):
     """Typed safety rejection for exact primitive-carrier extraction."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
 
 
 class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
-    SingleSourcePathFindingMixin, EvaluatedFindingRecipeSynthesizer
+    SourcePathMetricsRecipeRequirementMixin,
+    EvaluatedFindingRecipeSynthesizer,
 ):
     """Collapse exact primitive role bundles into a nominal carrier."""
 
     detector_id = "parallel_primitive_carrier"
+    rejection_type = ParallelPrimitiveCarrierRejection
+    metric_type = MappingMetrics
+    missing_context_reason = (
+        "parallel primitive carrier collapse requires a source selector context"
+    )
+    missing_metric_reason = "parallel primitive carrier collapse requires mapping metrics"
+    missing_source_path_reason = (
+        "parallel primitive carrier collapse requires one source file"
+    )
 
     def evaluate_recipe_for_finding(
         self,
@@ -16921,32 +17728,6 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
             field_declarations=field_declarations,
             carrier_dataclass_arguments=carrier_dataclass_arguments,
         )
-
-    @staticmethod
-    def required_context(
-        context: CodemodSelectorContext | None,
-    ) -> CodemodSelectorContext:
-        if context is None:
-            raise ParallelPrimitiveCarrierRejection(
-                "parallel primitive carrier collapse requires a source selector context"
-            )
-        return context
-
-    @staticmethod
-    def required_metrics(finding: RefactorFinding) -> MappingMetrics:
-        if not isinstance(finding.metrics, MappingMetrics):
-            raise ParallelPrimitiveCarrierRejection(
-                "parallel primitive carrier collapse requires mapping metrics"
-            )
-        return finding.metrics
-
-    def required_source_path(self, finding: RefactorFinding) -> str:
-        source_path = self.source_path(finding)
-        if source_path is None:
-            raise ParallelPrimitiveCarrierRejection(
-                "parallel primitive carrier collapse requires one source file"
-            )
-        return source_path
 
     def required_class_names(self, finding: RefactorFinding) -> tuple[str, ...]:
         class_names = self.class_names(finding)
@@ -17296,20 +18077,6 @@ class IdentityKeywordForwardingShellRecipeParts:
                 rationale="Inline identity keyword forwarding shell call.",
             )
         return recipe
-
-
-class SharedActionKeysForFindingMixin:
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            ((evidence.file_path, EvidenceSymbol(evidence.symbol).subject),),
-        )
 
 
 def _statement_is_empty_list_assignment(
