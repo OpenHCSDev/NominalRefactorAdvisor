@@ -575,19 +575,21 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
                     f"Detectors {', '.join(candidate.class_name for candidate in candidates[:5])} repeat the same candidate-to-finding pipeline over collectors {', '.join(collector_names[:4])}."
                 ),
                 evidence,
-                scaffold=(
-                    "class CandidateFindingDetector(PerModuleIssueDetector, ABC):\n    @abstractmethod\n    def iter_candidates(self, module, config): ...\n\n    @abstractmethod\n    def build_finding(self, candidate): ...\n\n    def _findings_for_module(self, module, config):\n        return [self.build_finding(candidate) for candidate in self.iter_candidates(module, config)]"
-                ),
-                codemod_patch=(
-                    "# Extract one candidate-driven detector base for `_findings_for_module`.\n# Leave only candidate collection, evidence shaping, metrics, and scaffold/patch helpers on the leaves."
-                ),
-                metrics=RepeatedMethodMetrics.from_duplicate_family(
-                    duplicate_site_count=len(candidates),
-                    statement_count=3,
-                    class_count=len(candidates),
-                    method_symbols=tuple(
-                        f"{candidate.class_name}.{candidate.method_name}"
-                        for candidate in candidates
+                FindingBuildContext(
+                    scaffold=(
+                        "class CandidateFindingDetector(PerModuleIssueDetector, ABC):\n    @abstractmethod\n    def iter_candidates(self, module, config): ...\n\n    @abstractmethod\n    def build_finding(self, candidate): ...\n\n    def _findings_for_module(self, module, config):\n        return [self.build_finding(candidate) for candidate in self.iter_candidates(module, config)]"
+                    ),
+                    codemod_patch=(
+                        "# Extract one candidate-driven detector base for `_findings_for_module`.\n# Leave only candidate collection, evidence shaping, metrics, and scaffold/patch helpers on the leaves."
+                    ),
+                    metrics=RepeatedMethodMetrics.from_duplicate_family(
+                        duplicate_site_count=len(candidates),
+                        statement_count=3,
+                        class_count=len(candidates),
+                        method_symbols=tuple(
+                            f"{candidate.class_name}.{candidate.method_name}"
+                            for candidate in candidates
+                        ),
                     ),
                 ),
             )
@@ -676,19 +678,23 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
                     f"Observation specs {', '.join(candidate.class_name for candidate in candidates[:5])} repeat guarded delegation over scope roles {', '.join(scope_roles)}."
                 ),
                 evidence,
-                scaffold=(
-                    "class ScopeFilteredSpec(ObservationShapeSpec, ABC):\n    @abstractmethod\n    def accepts_scope(self, observation): ...\n\n    @abstractmethod\n    def delegate(self, parsed_module, node, observation): ...\n\n    def build_shape(self, parsed_module, observation):\n        if not self.accepts_scope(observation):\n            return None\n        return self.delegate(parsed_module, observation.node, observation)"
-                ),
-                codemod_patch=(
-                    "# Collapse repeated guard-and-delegate wrappers into one shared spec base.\n# Encode module-only, class-only, function-only, or node-type residue as mixins or tiny hooks."
-                ),
-                metrics=RepeatedMethodMetrics.from_duplicate_family(
-                    duplicate_site_count=len(candidates),
-                    statement_count=2,
-                    class_count=len({candidate.class_name for candidate in candidates}),
-                    method_symbols=tuple(
-                        f"{candidate.class_name}.{candidate.method_name}"
-                        for candidate in candidates
+                FindingBuildContext(
+                    scaffold=(
+                        "class ScopeFilteredSpec(ObservationShapeSpec, ABC):\n    @abstractmethod\n    def accepts_scope(self, observation): ...\n\n    @abstractmethod\n    def delegate(self, parsed_module, node, observation): ...\n\n    def build_shape(self, parsed_module, observation):\n        if not self.accepts_scope(observation):\n            return None\n        return self.delegate(parsed_module, observation.node, observation)"
+                    ),
+                    codemod_patch=(
+                        "# Collapse repeated guard-and-delegate wrappers into one shared spec base.\n# Encode module-only, class-only, function-only, or node-type residue as mixins or tiny hooks."
+                    ),
+                    metrics=RepeatedMethodMetrics.from_duplicate_family(
+                        duplicate_site_count=len(candidates),
+                        statement_count=2,
+                        class_count=len(
+                            {candidate.class_name for candidate in candidates}
+                        ),
+                        method_symbols=tuple(
+                            f"{candidate.class_name}.{candidate.method_name}"
+                            for candidate in candidates
+                        ),
                     ),
                 ),
             )

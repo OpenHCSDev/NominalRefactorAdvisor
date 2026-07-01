@@ -329,14 +329,16 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
             self.build_finding(
                 f"Carrier classes {', '.join(candidate.class_names)} repeat renamed semantic slices {role_summary}; enforce reusable mixins and compose them through multiple inheritance.",
                 evidence,
-                scaffold=_witness_mixin_enforcement_scaffold(candidate),
-                codemod_patch=_witness_mixin_enforcement_patch(candidate),
-                metrics=WitnessCarrierMetrics(
-                    class_count=len(candidate.class_names),
-                    shared_role_count=len(candidate.role_field_names),
-                    class_names=candidate.class_names,
-                    shared_role_names=tuple(
-                        (role_name for role_name, _ in candidate.role_field_names)
+                FindingBuildContext(
+                    scaffold=_witness_mixin_enforcement_scaffold(candidate),
+                    codemod_patch=_witness_mixin_enforcement_patch(candidate),
+                    metrics=WitnessCarrierMetrics(
+                        class_count=len(candidate.class_names),
+                        shared_role_count=len(candidate.role_field_names),
+                        class_names=candidate.class_names,
+                        shared_role_names=tuple(
+                            (role_name for role_name, _ in candidate.role_field_names)
+                        ),
                     ),
                 ),
             )
@@ -1868,18 +1870,20 @@ class ExportPolicyPredicateDetector(IssueDetector):
                     f"Derived-surface predicates {', '.join(candidate.function_name for candidate in candidates[:6])} repeat policy roles {all_roles} over root types {root_type_names or ('<unconstrained>',)}."
                 ),
                 evidence,
-                scaffold=(
-                    "@dataclass(frozen=True)\nclass DerivedSurfacePolicy:\n    include_callables: bool = False\n    include_types: bool = True\n    exclude_abstract: bool = False\n    include_enums: bool = False\n    root_types: tuple[type[object], ...] = ()\n\ndef derive_surface_names(namespace: dict[str, object], policy: DerivedSurfacePolicy) -> tuple[str, ...]:\n    return tuple(sorted(name for name, value in namespace.items() if matches_surface_policy(name, value, policy)))"
-                ),
-                codemod_patch=(
-                    "# Replace repeated `_is_public_*_export` helpers with one declarative `DerivedSurfacePolicy`.\n# Derive the exported name surface from the policy instead of open-coding the predicate in each module."
-                ),
-                metrics=RepeatedMethodMetrics.from_duplicate_family(
-                    duplicate_site_count=len(candidates),
-                    statement_count=1,
-                    class_count=len(candidates),
-                    method_symbols=tuple(
-                        candidate.function_name for candidate in candidates
+                FindingBuildContext(
+                    scaffold=(
+                        "@dataclass(frozen=True)\nclass DerivedSurfacePolicy:\n    include_callables: bool = False\n    include_types: bool = True\n    exclude_abstract: bool = False\n    include_enums: bool = False\n    root_types: tuple[type[object], ...] = ()\n\ndef derive_surface_names(namespace: dict[str, object], policy: DerivedSurfacePolicy) -> tuple[str, ...]:\n    return tuple(sorted(name for name, value in namespace.items() if matches_surface_policy(name, value, policy)))"
+                    ),
+                    codemod_patch=(
+                        "# Replace repeated `_is_public_*_export` helpers with one declarative `DerivedSurfacePolicy`.\n# Derive the exported name surface from the policy instead of open-coding the predicate in each module."
+                    ),
+                    metrics=RepeatedMethodMetrics.from_duplicate_family(
+                        duplicate_site_count=len(candidates),
+                        statement_count=1,
+                        class_count=len(candidates),
+                        method_symbols=tuple(
+                            candidate.function_name for candidate in candidates
+                        ),
                     ),
                 ),
             )
