@@ -130,6 +130,47 @@ def test_semantic_descent_graph_flags_manual_class_family_projection(
         and token.role is PresentationTokenRole.DICT_VALUE
         for token in projection.tokens
     )
+    assert (
+        "authority registry or subclass family" in certificate.missing_derivation_path
+    )
+
+
+def test_semantic_descent_graph_flags_returned_declaration_table(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from enum import StrEnum\n"
+        "\n"
+        "class FieldName(StrEnum):\n"
+        "    TITLE = 'title'\n"
+        "    SUMMARY = 'summary'\n"
+        "    STATUS = 'status'\n"
+        "\n"
+        "class Manifest:\n"
+        "    def to_dict(self):\n"
+        "        return {'fields': ('title', 'summary', 'status')}\n",
+    )
+
+    graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+
+    field_authority = next(
+        authority for authority in graph.authorities if authority.name == "FieldName"
+    )
+    certificate = next(
+        item
+        for item in graph.certificates
+        if item.edge.authority_id == field_authority.authority_id
+    )
+    projection = graph.projection_catalog.projection_for_edge(certificate.edge)
+
+    assert projection.kind is PresentationProjectionKind.MAPPING_LITERAL
+    assert projection.label.startswith("Manifest.to_dict:return@")
+    assert set(certificate.edge.match.tokens) >= {"title", "summary", "status"}
+    assert (
+        "repeats members from enum `FieldName`" in certificate.missing_derivation_path
+    )
+    assert "derive it by iterating enum members" in certificate.missing_derivation_path
 
 
 def test_semantic_mirror_detector_reports_authority_and_projection(
@@ -277,7 +318,9 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
     assert certificate.missing_derivation_path == finding.relation_context
 
 
-def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_authority() -> None:
+def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_authority() -> (
+    None
+):
     finding = RefactorFinding(
         detector_id="local_role_case_logic",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -305,7 +348,9 @@ def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_au
     assert graph.authorities[0].name == "local_cases"
 
 
-def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping_name() -> None:
+def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping_name() -> (
+    None
+):
     first = RefactorFinding(
         detector_id="generic_role_case_table",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -3670,8 +3715,9 @@ def test_semantic_descent_graph_cache_invalidates_on_source_change(
     )
 
     assert any(
-        "`" not in certificate.missing_derivation_path
-        and second_graph.projection_catalog.projection_for_edge(certificate.edge).label
+        second_graph.projection_catalog.projection_for_edge(certificate.edge).label
         == "STEP_TABLE"
+        and "authority registry or subclass family"
+        in certificate.missing_derivation_path
         for certificate in second_graph.certificates
     )

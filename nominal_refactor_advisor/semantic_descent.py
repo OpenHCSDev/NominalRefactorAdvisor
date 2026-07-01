@@ -91,6 +91,9 @@ class SemanticAuthorityKind(StrEnum):
         "Replace the mirrored projection with a registry-derived view or "
         "polymorphic method on `{authority_name}`. Matched members: "
         "{matched_names}.",
+        "members",
+        "derive it by iterating the authority registry or subclass family instead "
+        "of maintaining a parallel presentation surface",
     )
     AUTOREGISTER_FAMILY = (
         "autoregister_family",
@@ -104,6 +107,9 @@ class SemanticAuthorityKind(StrEnum):
         "Replace the mirrored projection with a registry-derived view or "
         "polymorphic method on `{authority_name}`. Matched members: "
         "{matched_names}.",
+        "members",
+        "derive it by iterating the AutoRegisterMeta registry instead of "
+        "maintaining a parallel presentation surface",
     )
     DATACLASS_SCHEMA = (
         "dataclass_schema",
@@ -114,6 +120,8 @@ class SemanticAuthorityKind(StrEnum):
         "move the schema-owned behavior onto the record.",
         "Move the repeated field projection behind `{authority_name}` or derive "
         "it from dataclass fields. Matched fields: {matched_names}.",
+        "fields",
+        "derive it from dataclass fields or move the projection onto the record",
     )
     ENUM = (
         "enum",
@@ -124,6 +132,8 @@ class SemanticAuthorityKind(StrEnum):
         "views from the enum.",
         "Move the case table behind `{authority_name}` or derive it by iterating "
         "enum members. Matched members: {matched_names}.",
+        "members",
+        "derive it by iterating enum members or move behavior onto the enum cases",
     )
     FINDING_DECLARED_AUTHORITY = (
         "finding_declared_authority",
@@ -134,6 +144,8 @@ class SemanticAuthorityKind(StrEnum):
         "projection derived from its nominal authority.",
         "Derive `{authority_name}` from the nominal authority instead of "
         "maintaining the detector-observed mirror. Matched facts: {matched_names}.",
+        "facts",
+        "replace the detector-observed mirror with a graph-certified derivation path",
     )
 
     def __new__(
@@ -144,6 +156,8 @@ class SemanticAuthorityKind(StrEnum):
         uses_registration_metrics: bool,
         reporting_scaffold_template: str,
         reporting_codemod_patch_template: str,
+        mirrored_fact_label: str,
+        missing_derivation_instruction: str,
     ) -> "SemanticAuthorityKind":
         member = str.__new__(cls, value)
         member._value_ = value
@@ -152,6 +166,8 @@ class SemanticAuthorityKind(StrEnum):
         member._uses_registration_metrics = uses_registration_metrics
         member._reporting_scaffold_template = reporting_scaffold_template
         member._reporting_codemod_patch_template = reporting_codemod_patch_template
+        member._mirrored_fact_label = mirrored_fact_label
+        member._missing_derivation_instruction = missing_derivation_instruction
         return member
 
     @property
@@ -174,6 +190,14 @@ class SemanticAuthorityKind(StrEnum):
     def reporting_codemod_patch_template(self) -> str:
         return self._reporting_codemod_patch_template
 
+    @property
+    def mirrored_fact_label(self) -> str:
+        return self._mirrored_fact_label
+
+    @property
+    def missing_derivation_instruction(self) -> str:
+        return self._missing_derivation_instruction
+
 
 class SemanticFactKind(StrEnum):
     """Facts owned by a semantic authority."""
@@ -187,12 +211,18 @@ class SemanticFactKind(StrEnum):
 class PresentationProjectionKind(StrEnum):
     """Raw presentation shapes that may mirror a semantic authority."""
 
-    CALL_LITERAL = "call_literal"
-    COLLECTION_LITERAL = "collection_literal"
-    DETECTOR_FINDING = "detector_finding"
-    MAPPING_LITERAL = "mapping_literal"
-    BRANCH_LITERAL = "branch_literal"
-    MATCH_LITERAL = "match_literal"
+    CALL_LITERAL = ("call_literal", "call projection")
+    COLLECTION_LITERAL = ("collection_literal", "collection literal")
+    DETECTOR_FINDING = ("detector_finding", "detector finding")
+    MAPPING_LITERAL = ("mapping_literal", "mapping literal")
+    BRANCH_LITERAL = ("branch_literal", "branch literal")
+    MATCH_LITERAL = ("match_literal", "match literal")
+
+    def __new__(cls, value: str, surface_label: str) -> "PresentationProjectionKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._surface_label = surface_label
+        return member
 
     @property
     def is_branch_like(self) -> bool:
@@ -200,6 +230,10 @@ class PresentationProjectionKind(StrEnum):
             type(self).BRANCH_LITERAL,
             type(self).MATCH_LITERAL,
         )
+
+    @property
+    def surface_label(self) -> str:
+        return self._surface_label
 
 
 class PresentationTokenKind(StrEnum):
@@ -237,7 +271,7 @@ class SemanticDescentGraphCacheReadError(RuntimeError):
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 5
+    version: int = 6
     digest_size: int = 16
 
 
@@ -747,6 +781,15 @@ class SemanticMirrorEdgeCandidate:
             projection_location_symbol=self.projection.location.symbol,
         )
 
+    @cached_property
+    def missing_derivation_path(self) -> str:
+        return (
+            f"{self.projection.kind.surface_label} `{self.projection.label}` "
+            f"repeats {self.authority.kind.mirrored_fact_label} from "
+            f"{self.authority.kind.value} `{self.authority.name}`; "
+            f"{self.authority.kind.missing_derivation_instruction}"
+        )
+
 
 class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
     """Authority-kind-specific mirror admissibility and descent rules."""
@@ -1221,6 +1264,50 @@ class DescentCertificate:
     edge: MirrorEdge
     missing_derivation_path: str
 
+    @classmethod
+    def mirrored_without_descent(
+        cls,
+        edge: MirrorEdge,
+        path_description: str,
+    ) -> "DescentCertificate":
+        return cls(
+            DescentStatus.MIRRORED_WITHOUT_DESCENT,
+            edge,
+            path_description,
+        )
+
+    @classmethod
+    def from_mirror_candidate(
+        cls,
+        edge: MirrorEdge,
+        candidate: SemanticMirrorEdgeCandidate,
+    ) -> "DescentCertificate":
+        return cls.mirrored_without_descent(edge, candidate.missing_derivation_path)
+
+
+@dataclass(frozen=True)
+class SemanticDescentCertificateBuilder:
+    """Build cached descent certificates from resolved mirror edges."""
+
+    graph_space: "SemanticDescentGraphSpace"
+
+    def certificates_for_edges(
+        self,
+        edges: tuple[MirrorEdge, ...],
+    ) -> tuple[DescentCertificate, ...]:
+        return tuple(self.certificate_for_edge(edge) for edge in edges)
+
+    def certificate_for_edge(self, edge: MirrorEdge) -> DescentCertificate:
+        authority = self.graph_space.authority_catalog.authority_for_edge(edge)
+        projection = self.graph_space.projection_catalog.projection_for_edge(edge)
+        candidate = SemanticMirrorEdgeCandidate(
+            projection=projection,
+            authority=authority,
+            facts=self.graph_space.fact_authority_index.facts_for_edge(edge),
+            match=edge.match,
+        )
+        return DescentCertificate.from_mirror_candidate(edge, candidate)
+
 
 @dataclass(frozen=True)
 class SemanticDescentGraphSpace:
@@ -1510,8 +1597,7 @@ class FindingBackedAuthorityProjection:
             finding,
             authority_location,
             prefer_metric_authority=(
-                authority_evidence_index_by_detector_id.get(finding.detector_id)
-                is None
+                authority_evidence_index_by_detector_id.get(finding.detector_id) is None
             ),
         )
         return SemanticAuthority(
@@ -1717,10 +1803,9 @@ class FindingBackedCertificateProjection:
         finding: RefactorFinding,
         edge: MirrorEdge,
     ) -> DescentCertificate:
-        return DescentCertificate(
-            status=DescentStatus.MIRRORED_WITHOUT_DESCENT,
-            edge=edge,
-            missing_derivation_path=(
+        return DescentCertificate.mirrored_without_descent(
+            edge,
+            (
                 finding.relation_context
                 or "detector finding reports a mirror without a derivation path"
             ),
@@ -2133,17 +2218,13 @@ def _build_semantic_descent_graph_cached(
         projections,
         class_index,
     ).edges()
-    certificates = tuple(
-        DescentCertificate(
-            status=DescentStatus.MIRRORED_WITHOUT_DESCENT,
-            edge=edge,
-            missing_derivation_path=(
-                "projection enumerates nominal facts directly instead of deriving "
-                "from the authority registry, class family, enum, or schema owner"
-            ),
-        )
-        for edge in mirror_edges
+    graph_space = SemanticDescentGraphSpace(
+        authorities,
+        facts,
+        projections,
     )
+    certificate_builder = SemanticDescentCertificateBuilder(graph_space)
+    certificates = certificate_builder.certificates_for_edges(mirror_edges)
     return SemanticDescentGraph(
         authorities=authorities,
         facts=facts,
@@ -2491,6 +2572,11 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             return
         self.generic_visit(node)
 
+    def visit_Return(self, node: ast.Return) -> None:
+        if node.value is not None and self._collect_return_projection(node, node.value):
+            return
+        self.generic_visit(node)
+
     def visit_If(self, node: ast.If) -> None:
         tokens = tuple(
             PresentationTokenProjection.tokens_for_node(
@@ -2531,19 +2617,37 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             return False
         if SingleAssignmentAndValueNameProjection(node).pair is None:
             return False
-        if isinstance(value, ast.Dict):
-            projection_kind = PresentationProjectionKind.MAPPING_LITERAL
-            key_value_pairs = self._projection_key_value_pairs(value)
-        elif isinstance(value, ast.List | ast.Tuple | ast.Set):
-            projection_kind = PresentationProjectionKind.COLLECTION_LITERAL
-            key_value_pairs = ()
-        elif isinstance(value, ast.Call):
-            if self.current_function_name is not None:
-                return False
-            projection_kind = PresentationProjectionKind.CALL_LITERAL
-            key_value_pairs = ()
-        else:
+        return self._collect_value_projection(
+            node,
+            value,
+            label=label,
+            allow_call_projection=self.current_function_name is None,
+        )
+
+    def _collect_return_projection(self, node: ast.Return, value: ast.AST) -> bool:
+        return self._collect_value_projection(
+            node,
+            value,
+            label=f"{self.qualname}:return@{node.lineno}",
+            allow_call_projection=False,
+        )
+
+    def _collect_value_projection(
+        self,
+        node: ast.stmt,
+        value: ast.AST,
+        *,
+        label: str,
+        allow_call_projection: bool,
+    ) -> bool:
+        projection_kind = self._projection_kind(value, allow_call_projection)
+        if projection_kind is None:
             return False
+        key_value_pairs = (
+            self._projection_key_value_pairs(value)
+            if isinstance(value, ast.Dict)
+            else ()
+        )
         projection_constructions = self._projection_constructions(value)
         class_symbols = self.class_reference_resolver.symbols_for_node(value)
         tokens = tuple(
@@ -2572,6 +2676,19 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             class_symbols,
         )
         return True
+
+    @staticmethod
+    def _projection_kind(
+        value: ast.AST,
+        allow_call_projection: bool,
+    ) -> PresentationProjectionKind | None:
+        if isinstance(value, ast.Dict):
+            return PresentationProjectionKind.MAPPING_LITERAL
+        if isinstance(value, ast.List | ast.Tuple | ast.Set):
+            return PresentationProjectionKind.COLLECTION_LITERAL
+        if isinstance(value, ast.Call) and allow_call_projection:
+            return PresentationProjectionKind.CALL_LITERAL
+        return None
 
     @staticmethod
     def _projection_constructions(
