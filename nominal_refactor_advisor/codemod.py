@@ -19,6 +19,7 @@ import builtins
 import copy
 import difflib
 import hashlib
+import importlib
 import importlib.util
 import inspect
 import re
@@ -4292,6 +4293,10 @@ class SourceTextGeometry:
         line = self.source[line_start:line_end]
         return line[: len(line) - len(line.lstrip())]
 
+    def line_prefix(self, offset: int) -> str:
+        line_start = self.source.rfind("\n", 0, offset) + 1
+        return self.source[line_start:offset]
+
     def source_with_replacements_in_span(
         self,
         span_start: int,
@@ -4319,6 +4324,82 @@ class SourceTextGeometry:
             line_offsets[end_line] if end_line < len(line_offsets) else self.end_offset
         )
         return line_offsets[start_line - 1], end_offset
+
+
+@dataclass(frozen=True)
+class PythonExpressionSourceFormatter:
+    """Format expression replacements relative to their source insertion column."""
+
+    line_length: int = 88
+
+    def replacement_source(
+        self,
+        node: ast.expr,
+        *,
+        line_prefix: str = "",
+    ) -> str:
+        expression_source = ast.unparse(node)
+        formatted_source = self.black_expression_source(
+            expression_source,
+            line_prefix=line_prefix,
+        )
+        return self.prefixed_continuation_source(
+            formatted_source or expression_source,
+            line_prefix=line_prefix,
+        )
+
+    def black_expression_source(
+        self,
+        expression_source: str,
+        *,
+        line_prefix: str = "",
+    ) -> str | None:
+        if importlib.util.find_spec("black") is None:
+            return None
+        black = importlib.import_module("black")
+        mode = black.Mode(
+            line_length=max(40, self.line_length - len(line_prefix)),
+            target_versions={black.TargetVersion.PY311},
+        )
+        try:
+            formatted = black.format_str(
+                f"def _nra_expression():\n    return {expression_source}\n",
+                mode=mode,
+            )
+        except Exception:
+            return None
+        return self.return_expression_source(formatted)
+
+    @staticmethod
+    def return_expression_source(formatted_wrapper_source: str) -> str | None:
+        return_prefix = "    return "
+        body_prefix = "    "
+        lines = formatted_wrapper_source.splitlines()
+        for index, line in enumerate(lines):
+            if not line.startswith(return_prefix):
+                continue
+            expression_lines = [line.removeprefix(return_prefix)]
+            expression_lines.extend(
+                continuation_line.removeprefix(body_prefix)
+                for continuation_line in lines[index + 1 :]
+                if continuation_line.startswith(body_prefix)
+            )
+            return "\n".join(expression_lines)
+        return None
+
+    @staticmethod
+    def prefixed_continuation_source(
+        source: str,
+        *,
+        line_prefix: str,
+    ) -> str:
+        lines = source.splitlines()
+        if len(lines) <= 1 or not line_prefix:
+            return source
+        return "\n".join(
+            line if index == 0 else f"{line_prefix}{line}"
+            for index, line in enumerate(lines)
+        )
 
 
 @dataclass(frozen=True)
@@ -7277,10 +7358,10 @@ class EnsureImportOperation(StringPayloadOperation):
             return merge_replacements
         insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
         return (
-            SourceLineReplacement(
+            SourceLineSpan(
+                end_line=insertion_line - 1, start_line=insertion_line
+            ).line_replacement(
                 file_path=source_path,
-                start_line=insertion_line,
-                end_line=insertion_line - 1,
                 replacement_lines=import_lines,
                 rationale=self.rationale
                 or f"Ensure import source exists in {source_path!r}.",
@@ -21891,7 +21972,13 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
             return None
         replacement_call = self.replacement_call(authority, authority_method, projection)
         start_offset, end_offset = call_offsets
-        return source[start_offset:end_offset], ast.unparse(replacement_call)
+        return (
+            source[start_offset:end_offset],
+            PythonExpressionSourceFormatter().replacement_source(
+                replacement_call,
+                line_prefix=geometry.line_prefix(start_offset),
+            ),
+        )
 
     def replacement_call(
         self,
