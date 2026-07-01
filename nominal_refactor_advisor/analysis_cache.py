@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
-from collections import Counter
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -23,6 +22,7 @@ from .ast_tools import (
     python_source_paths_for_roots,
 )
 from .detectors import DetectorConfig, IssueDetector
+from .finding_counts import FindingSummary
 from .models import RefactorFinding
 from .planner import RefactorExecutionPlanLoopProjection, RefactorExecutionPlanReport
 
@@ -86,57 +86,11 @@ def analysis_cache_lookup(
 
 
 @dataclass(frozen=True)
-class AnalysisFindingPatternCount:
-    """Cached finding count for one canonical pattern id."""
-
-    pattern_id: int
-    count: int
-
-
-@dataclass(frozen=True)
-class AnalysisFindingDetectorCount:
-    """Cached finding count for one detector id."""
-
-    detector_id: str
-    count: int
-
-
-@dataclass(frozen=True)
-class AnalysisFindingSummary:
-    """Small cache payload for count-only advisor loops."""
-
-    finding_count: int
-    pattern_counts: tuple[AnalysisFindingPatternCount, ...]
-    detector_counts: tuple[AnalysisFindingDetectorCount, ...]
-
-    @classmethod
-    def from_findings(
-        cls,
-        findings: list[RefactorFinding] | tuple[RefactorFinding, ...],
-    ) -> "AnalysisFindingSummary":
-        return cls(
-            finding_count=len(findings),
-            pattern_counts=tuple(
-                AnalysisFindingPatternCount(pattern_id, count)
-                for pattern_id, count in sorted(
-                    Counter(int(finding.pattern_id) for finding in findings).items()
-                )
-            ),
-            detector_counts=tuple(
-                AnalysisFindingDetectorCount(detector_id, count)
-                for detector_id, count in sorted(
-                    Counter(finding.detector_id for finding in findings).items()
-                )
-            ),
-        )
-
-
-@dataclass(frozen=True)
 class AnalysisFindingSummaryLookup:
     """Result of consulting the count-only analysis summary cache."""
 
     status: AnalysisCacheStatus
-    summary: AnalysisFindingSummary | None = None
+    summary: FindingSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -676,7 +630,7 @@ AnalysisCachePayloadValue: TypeAlias = (
     AnalysisCacheEntryIdentity
     | AnalysisExecutionPlanCacheIdentity
     | AnalysisCacheFamilyIdentity
-    | AnalysisFindingSummary
+    | FindingSummary
     | RefactorExecutionPlanLoopProjection
     | RefactorExecutionPlanReport
     | SourceFileSignatureCachePayload
@@ -936,7 +890,7 @@ class AnalysisFindingCache:
             if isinstance(identity, AnalysisCacheIdentity):
                 self._store_summary(
                     identity,
-                    AnalysisFindingSummary.from_findings(findings),
+                    FindingSummary.from_findings(findings),
                     storage,
                 )
                 if latest_pointer_policy is AnalysisLatestPointerPolicy.UPDATE:
@@ -957,7 +911,7 @@ class AnalysisFindingCache:
         if payload.get("identity") != identity:
             return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
         summary = payload.get("summary")
-        if not isinstance(summary, AnalysisFindingSummary):
+        if not isinstance(summary, FindingSummary):
             return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
         return AnalysisFindingSummaryLookup(AnalysisCacheStatus.HIT, summary)
 
@@ -1083,7 +1037,7 @@ class AnalysisFindingCache:
     def _store_summary(
         self,
         identity: AnalysisCacheIdentity,
-        summary: AnalysisFindingSummary,
+        summary: FindingSummary,
         storage: AnalysisCacheStorage,
     ) -> None:
         payload: AnalysisCachePayload = {"identity": identity, "summary": summary}

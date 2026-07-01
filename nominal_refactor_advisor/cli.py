@@ -40,7 +40,6 @@ from .analysis_cache import (
     AnalysisCacheStatus,
     AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
-    AnalysisFindingSummary,
 )
 from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
 from .cache_paths import (
@@ -127,6 +126,7 @@ from .economics import (
     ScanEconomicsProof,
     build_economics_proof_report,
 )
+from .finding_counts import FindingSummary
 from .impact_ranking import (
     RefactorImpactRankingReport,
     RefactorImpactSearchBudget,
@@ -855,7 +855,7 @@ _CLI_ARGUMENT_SPECS = (
 class JsonFindingCounts:
     """Compact finding-count projection for tight-loop JSON payloads."""
 
-    summary: AnalysisFindingSummary
+    summary: FindingSummary
 
     def to_dict(self) -> JsonObject:
         return {
@@ -1277,7 +1277,7 @@ class JsonPayloadBuildTiming:
 class JsonFindingPayloadEnvelope:
     """Shared finding/planning envelope for JSON scan payloads."""
 
-    summary: AnalysisFindingSummary
+    summary: FindingSummary
     section_policy: JsonPayloadSections
     finding_payload: list[JsonObject]
     plan_payload: tuple[JsonObject, ...] = ()
@@ -1296,7 +1296,7 @@ class JsonFindingPayloadEnvelope:
 class JsonLoopCachePayloadBuilder:
     """Build loop JSON directly from an exact cache-summary hit."""
 
-    summary: AnalysisFindingSummary
+    summary: FindingSummary
     timing: ScanTiming
 
     def to_dict(self) -> JsonObject:
@@ -1359,7 +1359,7 @@ class JsonPayloadBuilder:
         sections = self.payload_sections
         finding_tuple = tuple(self.findings)
         payload = JsonFindingPayloadEnvelope(
-            summary=AnalysisFindingSummary.from_findings(finding_tuple),
+            summary=FindingSummary.from_findings(finding_tuple),
             section_policy=sections,
             finding_payload=JsonFindingPayloadProjection.payload(
                 self.findings,

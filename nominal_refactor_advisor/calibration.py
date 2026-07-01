@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +21,8 @@ from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
 from .detectors import DetectorConfig
 from .economics import ScanEconomicsProof
-from .models import RefactorFinding, SemanticRecord
+from .finding_counts import FindingSummary
+from .models import SemanticRecord
 from .planner import build_refactor_plans
 
 _DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS = 20.0
@@ -153,14 +153,6 @@ class DetectorExpectation(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class DetectorCount(SemanticRecord):
-    """Observed multiplicity for one emitted detector family."""
-
-    detector_id: str
-    count: int
-
-
-@dataclass(frozen=True)
 class CalibrationTarget(SemanticRecord):
     """One corpus target with detector and payoff contracts."""
 
@@ -261,18 +253,11 @@ class CalibrationTargetResult(SemanticRecord):
 
     target: CalibrationTarget
     scan: ScanEconomicsProof
-    detector_counts: tuple[DetectorCount, ...] = field(default_factory=tuple)
+    finding_summary: FindingSummary = field(default_factory=FindingSummary.empty)
     unavailable_reason: str | None = None
 
     def detector_count(self, detector_id: str) -> int:
-        return next(
-            (
-                detector_count.count
-                for detector_count in self.detector_counts
-                if detector_count.detector_id == detector_id
-            ),
-            0,
-        )
+        return self.finding_summary.detector_count(detector_id)
 
     @property
     def regression_reasons(self) -> tuple[str, ...]:
@@ -355,7 +340,7 @@ class CalibrationTargetResult(SemanticRecord):
         return {
             "target": self.target.to_dict(),
             "scan": self.scan.to_dict(),
-            "detector_counts": [item.to_dict() for item in self.detector_counts],
+            "detector_counts": self.finding_summary.detector_counts_payload(),
             "unavailable_reason": self.unavailable_reason,
             "passes": self.passes,
             "regression_reasons": self.regression_reasons,
@@ -392,22 +377,6 @@ class CalibrationReport(SemanticRecord):
                 target_result.to_dict() for target_result in self.target_results
             ],
         }
-
-
-@dataclass(frozen=True)
-class DetectorCountsAuthority:
-    """Project emitted findings into detector multiplicity records."""
-
-    findings: Iterable[RefactorFinding]
-
-    def detector_counts(self) -> tuple[DetectorCount, ...]:
-        counts = Counter((finding.detector_id for finding in self.findings))
-        return tuple(
-            (
-                DetectorCount(detector_id=detector_id, count=count)
-                for detector_id, count in sorted(counts.items())
-            )
-        )
 
 
 @dataclass(frozen=True)
@@ -471,7 +440,7 @@ def run_calibration_target(
     return CalibrationTargetResult(
         target=target,
         scan=scan,
-        detector_counts=DetectorCountsAuthority(findings).detector_counts(),
+        finding_summary=FindingSummary.from_findings(findings),
     )
 
 
@@ -516,12 +485,7 @@ def format_calibration_markdown(report: CalibrationReport) -> str:
     for target_result in report.target_results:
         scan = target_result.scan
         economics = scan.economics
-        counts = ", ".join(
-            (
-                f"{detector_count.detector_id}={detector_count.count}"
-                for detector_count in target_result.detector_counts
-            )
-        )
+        counts = target_result.finding_summary.detector_counts_text()
         lines.append(
             f"   - {target_result.target.name}: "
             f"{'pass' if target_result.passes else 'fail'}; "

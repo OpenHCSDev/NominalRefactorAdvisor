@@ -17,7 +17,6 @@ from metaclass_registry import AutoRegisterMeta
 from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheFamilyIdentity,
-    AnalysisFindingSummary,
     AnalysisCacheStatus,
     AnalysisFindingCache,
     AnalysisLatestPointerPolicy,
@@ -49,6 +48,7 @@ from .detectors import (
     SemanticDescentGraphIssueDetector,
     default_detectors,
 )
+from .finding_counts import FindingSummary
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
@@ -1349,7 +1349,7 @@ def load_analysis_summary_for_roots(
     *,
     analysis_cache_dir: Path | None = None,
     source_policy: PythonSourcePathPolicy | None = None,
-) -> AnalysisFindingSummary | None:
+) -> FindingSummary | None:
     """Load count-only detector findings from persistent cache."""
 
     config = config or DetectorConfig()
@@ -1447,7 +1447,7 @@ class FastCachedPathAnalysisAuthority:
             return None
         return self._partial_result(cache_result)
 
-    def summary_result(self) -> AnalysisFindingSummary | None:
+    def summary_result(self) -> FindingSummary | None:
         if not self._request.use_parse_cache:
             return None
         return load_analysis_summary_for_roots(
