@@ -186,7 +186,11 @@ class SemanticMirrorWithoutDescentDetector(
         )
         return self.build_finding(
             summary,
-            self._evidence(authority, projection_location=projection.location),
+            self._evidence(
+                authority,
+                projection_location=projection.location,
+                matched_facts=matched_facts,
+            ),
             title=f"`{projection.label}` mirrors `{authority.name}`",
             why=(
                 f"The {projection.kind.value.replace('_', ' ')} at "
@@ -213,8 +217,13 @@ class SemanticMirrorWithoutDescentDetector(
         authority: SemanticAuthority,
         *,
         projection_location: SourceLocation,
+        matched_facts: tuple[SemanticFact, ...],
     ) -> tuple[SourceLocation, ...]:
-        return (projection_location, authority.location)
+        return (
+            projection_location,
+            authority.location,
+            *(fact.location for fact in matched_facts),
+        )
 
     @staticmethod
     def _capability_gap(authority: SemanticAuthority) -> str:

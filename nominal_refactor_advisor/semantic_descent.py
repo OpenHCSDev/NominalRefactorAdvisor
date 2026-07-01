@@ -42,6 +42,7 @@ from .class_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
+    overlay_class_family_index,
 )
 from .collection_algebra import sorted_tuple
 from .models import (
@@ -271,7 +272,7 @@ class SemanticDescentGraphCacheReadError(RuntimeError):
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 6
+    version: int = 7
     digest_size: int = 16
 
 
@@ -1360,6 +1361,94 @@ class SemanticDescentGraph(SemanticDescentGraphSpace):
 
     mirror_edges: tuple[MirrorEdge, ...]
     certificates: tuple[DescentCertificate, ...]
+    class_index: ClassFamilyIndex | None = None
+
+    def overlay_modules(
+        self,
+        changed_modules: tuple[ParsedModule, ...],
+    ) -> "SemanticDescentGraph":
+        if not changed_modules or self.class_index is None:
+            return self
+        return SemanticDescentGraphModuleOverlay(
+            base_graph=self,
+            changed_modules=changed_modules,
+        ).graph()
+
+
+@dataclass(frozen=True)
+class SemanticDescentGraphModuleOverlay:
+    """Refresh changed modules inside a cached repository semantic graph."""
+
+    base_graph: SemanticDescentGraph
+    changed_modules: tuple[ParsedModule, ...]
+
+    def graph(self) -> SemanticDescentGraph:
+        class_index = self.merged_class_index()
+        authorities, facts = SemanticAuthorityBuilder(
+            self.changed_modules,
+            class_index,
+        ).build()
+        projections = self.merged_projections(class_index)
+        mirror_edges = SemanticMirrorResolver(
+            authorities,
+            facts,
+            projections,
+            class_index,
+        ).edges()
+        graph_space = SemanticDescentGraphSpace(
+            authorities,
+            facts,
+            projections,
+        )
+        certificates = SemanticDescentCertificateBuilder(
+            graph_space
+        ).certificates_for_edges(mirror_edges)
+        return SemanticDescentGraph(
+            authorities=authorities,
+            facts=facts,
+            projections=projections,
+            mirror_edges=mirror_edges,
+            certificates=certificates,
+            class_index=class_index,
+        )
+
+    def merged_class_index(self) -> ClassFamilyIndex:
+        if self.base_graph.class_index is None:
+            raise ValueError("semantic graph overlay requires a cached class index")
+        return overlay_class_family_index(
+            self.base_graph.class_index,
+            self.changed_modules,
+        )
+
+    def merged_projections(
+        self,
+        class_index: ClassFamilyIndex,
+    ) -> tuple[PresentationProjection, ...]:
+        changed_path_texts = self.changed_path_texts
+        unchanged_projections = tuple(
+            projection
+            for projection in self.base_graph.projections
+            if self.resolved_path_text(projection.location.file_path)
+            not in changed_path_texts
+        )
+        changed_projections = SemanticProjectionCollector(
+            self.changed_modules,
+            class_index,
+        ).collect()
+        return sorted_tuple(
+            (*unchanged_projections, *changed_projections),
+            key=lambda item: (item.location.file_path, item.location.line, item.label),
+        )
+
+    @cached_property
+    def changed_path_texts(self) -> frozenset[str]:
+        return frozenset(
+            self.resolved_path_text(str(module.path)) for module in self.changed_modules
+        )
+
+    @staticmethod
+    def resolved_path_text(file_path: str) -> str:
+        return str(Path(file_path).resolve())
 
 
 @dataclass(frozen=True)
@@ -2241,6 +2330,7 @@ def _build_semantic_descent_graph_cached(
         projections=projections,
         mirror_edges=mirror_edges,
         certificates=certificates,
+        class_index=class_index,
     )
 
 

@@ -7,7 +7,10 @@ from time import sleep
 import pytest
 
 from nominal_refactor_advisor.analysis import (
+    CachedPathAnalysisRequest,
     ChangedPathRootAssignment,
+    FastCacheReusePolicy,
+    FastCachedPathAnalysisAuthority,
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     analyze_modules,
@@ -761,6 +764,89 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
         finding.detector_id == "semantic_mirror_without_descent"
         and "`STEP_TABLE` mirrors `Step`" in finding.title
         for finding in updated_findings
+    )
+
+
+def test_partial_cache_overlays_changed_modules_for_semantic_graph_findings(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    authority_path = package_root / "authority.py"
+    members_path = package_root / "members.py"
+    registry_path = package_root / "registry.py"
+    authority_path.write_text("class Step:\n    pass\n", encoding="utf-8")
+    members_path.write_text(
+        "class LoadStep(Step):\n" "    step_id = 'load'\n",
+        encoding="utf-8",
+    )
+    registry_path.write_text(
+        "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+
+    initial_findings = analyze_path(
+        package_root,
+        cache_dir=cache_dir,
+        parse_workers=0,
+        analysis_workers=0,
+    )
+    assert not any(
+        finding.detector_id == "semantic_mirror_without_descent"
+        and "`STEP_TABLE` mirrors `Step`" in finding.title
+        for finding in initial_findings
+    )
+
+    graph_cache_context = SemanticDescentGraphCacheContext.from_parse_cache(
+        (package_root,),
+        cache_dir,
+        True,
+        None,
+    )
+    cached_graph = graph_cache_context.latest_graph()
+    assert cached_graph is not None
+    assert cached_graph.class_index is not None
+
+    members_path.write_text(
+        "class LoadStep(Step):\n"
+        "    step_id = 'load'\n"
+        "\n"
+        "class SaveStep(Step):\n"
+        "    step_id = 'save'\n",
+        encoding="utf-8",
+    )
+
+    partial_result = FastCachedPathAnalysisAuthority(
+        CachedPathAnalysisRequest(
+            roots=(package_root,),
+            config=DetectorConfig(),
+            parse_cache_dir=cache_dir,
+            use_parse_cache=True,
+            parse_workers=0,
+            analysis_workers=0,
+            source_policy=None,
+            reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
+            semantic_descent_source=SemanticDescentGraphAnalysisSource(
+                cached_graph=cached_graph,
+                cache_context=graph_cache_context,
+            ),
+        )
+    ).result()
+
+    assert partial_result is not None
+    assert partial_result.cache_status is AnalysisCacheStatus.PARTIAL
+    mirror_findings = tuple(
+        finding
+        for finding in partial_result.findings
+        if finding.detector_id == "semantic_mirror_without_descent"
+        and "`STEP_TABLE` mirrors `Step`" in finding.title
+    )
+    assert mirror_findings
+    assert any(
+        evidence.file_path == str(members_path)
+        for finding in mirror_findings
+        for evidence in finding.evidence
     )
 
 

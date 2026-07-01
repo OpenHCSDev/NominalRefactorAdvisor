@@ -461,7 +461,8 @@ class EvidenceLocalPartialDetectorSelection:
             tuple(
                 detector_type
                 for detector_type in self.rerun_detector_family
-                if detector_type.effective_detector_id() in touching_detector_ids
+                if issubclass(detector_type, SemanticDescentGraphIssueDetector)
+                or detector_type.effective_detector_id() in touching_detector_ids
             )
         )
 
@@ -761,7 +762,7 @@ class SemanticDescentGraphAnalysisSource:
 
     def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
         if self.cached_graph is not None:
-            return self.cached_graph
+            return self.cached_graph.overlay_modules(tuple(modules))
         return self.cache_context.graph_for_modules(modules)
 
 
@@ -1469,7 +1470,6 @@ class FastCachedPathAnalysisAuthority:
             self._request.reuse_policy is FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL
             and cache_result.cache_identity is not None
             and cache_result.previous_cache_identity is not None
-            and cache_result.previous_findings
         )
 
     def _partial_result(

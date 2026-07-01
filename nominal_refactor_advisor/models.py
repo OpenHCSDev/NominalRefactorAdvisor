@@ -11,6 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from enum import StrEnum
+from functools import cache, cached_property
 import hashlib
 from typing import Any, ClassVar, cast
 
@@ -119,6 +120,7 @@ class SourceLocationZipDescriptorShape(SemanticRecord):
     symbol_names_attribute_name: str
 
 
+@cache
 def stable_source_location_id(source_location: SourceLocation) -> str:
     """Return a compact, repeatable id for one source evidence coordinate."""
 
@@ -742,7 +744,7 @@ class RefactorFinding(FindingSemantics):
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
 
-    @property
+    @cached_property
     def stable_id(self) -> str:
         """Source-derived finding id for compact, repeatable agent targeting."""
 

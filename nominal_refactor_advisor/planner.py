@@ -1086,8 +1086,10 @@ class _FindingRelation:
 @dataclass(frozen=True)
 class _FindingRelationFacts:
     finding: RefactorFinding
+    stable_id: str
     paths: frozenset[Path]
     relative_parent_parts: tuple[tuple[str, ...], ...]
+    relative_parent_prefixes: frozenset[tuple[str, ...]]
     capability_labels: frozenset[str]
     symbol_roots: frozenset[str]
 
@@ -1096,12 +1098,15 @@ class _FindingRelationFacts:
         cls, finding: RefactorFinding, root: Path
     ) -> "_FindingRelationFacts":
         paths = frozenset(_evidence_paths(finding))
+        relative_parent_parts = tuple(
+            _safe_relative(path, root).parent.parts for path in sorted(paths)
+        )
         return cls(
             finding=finding,
+            stable_id=finding.stable_id,
             paths=paths,
-            relative_parent_parts=tuple(
-                _safe_relative(path, root).parent.parts for path in sorted(paths)
-            ),
+            relative_parent_parts=relative_parent_parts,
+            relative_parent_prefixes=_parent_prefixes(relative_parent_parts),
             capability_labels=frozenset(tag.label for tag in finding.capability_tags),
             symbol_roots=frozenset(_symbol_roots(finding)),
         )
@@ -1141,11 +1146,10 @@ class _FindingRelationFacts:
         return _FindingRelation(weight=score, reasons=tuple(reasons))
 
     def common_dir_depth(self, right: "_FindingRelationFacts") -> int:
-        depth = 0
-        for left_parts in self.relative_parent_parts:
-            for right_parts in right.relative_parent_parts:
-                depth = max(depth, _common_prefix_length(left_parts, right_parts))
-        return depth
+        shared_prefixes = self.relative_parent_prefixes & right.relative_parent_prefixes
+        if not shared_prefixes:
+            return 0
+        return max(len(prefix) for prefix in shared_prefixes)
 
 
 @dataclass(frozen=True)
@@ -1166,9 +1170,7 @@ class _FindingRelationGraph:
             relation = left.relation_to(right)
             if relation.weight < 3:
                 continue
-            left_id, right_id = sorted(
-                (left.finding.stable_id, right.finding.stable_id)
-            )
+            left_id, right_id = sorted((left.stable_id, right.stable_id))
             edges.append(
                 RefactorExecutionEdge(
                     left_finding_id=left_id,
@@ -1187,7 +1189,7 @@ class _FindingRelationGraph:
                 (edge.left_finding_id, edge.right_finding_id): edge
                 for edge in ordered_edges
             },
-            facts_by_finding_id={fact.finding.stable_id: fact for fact in facts},
+            facts_by_finding_id={fact.stable_id: fact for fact in facts},
         )
 
     def internal_edges_for(
@@ -1240,7 +1242,7 @@ class ExecutionClassInputAuthority:
     relation_graph: _FindingRelationGraph
 
     def input(self) -> _ExecutionClassInput:
-        plan = _plan_for_cluster(self.cluster)
+        plan = _plan_for_cluster(self.cluster, include_trajectories=False)
         finding_ids = sorted_tuple(
             finding.stable_id for finding in self.cluster.findings
         )
@@ -1483,7 +1485,11 @@ def _execution_class_from_input(
     )
 
 
-def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
+def _plan_for_cluster(
+    cluster: _FindingCluster,
+    *,
+    include_trajectories: bool = True,
+) -> RefactorPlan:
     selected_patterns = _select_pattern_cover(cluster.findings)
     ordered_patterns = _order_patterns(selected_patterns, cluster.findings)
     pattern_sequence = RefactorPatternSequence(tuple(ordered_patterns))
@@ -1505,7 +1511,9 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     actions = PATTERN_CATALOG.plan_actions(
         cluster.subsystem, ordered_patterns, cluster.findings
     )
-    trajectories = _build_escape_trajectories(cluster.findings)
+    trajectories = (
+        _build_escape_trajectories(cluster.findings) if include_trajectories else ()
+    )
     return RefactorPlan(
         subsystem=cluster.subsystem,
         summary=summary,
@@ -2096,17 +2104,18 @@ def _safe_relative(path: Path, root: Path) -> Path:
         return path
 
 
+def _parent_prefixes(
+    parent_parts: tuple[tuple[str, ...], ...],
+) -> frozenset[tuple[str, ...]]:
+    return frozenset(
+        parts[:prefix_length]
+        for parts in parent_parts
+        for prefix_length in range(1, len(parts) + 1)
+    )
+
+
 @cache
 def _relative_root(root: Path) -> Path:
     if root.is_file():
         return root.parent
     return root
-
-
-def _common_prefix_length(left: tuple[str, ...], right: tuple[str, ...]) -> int:
-    depth = 0
-    for left_part, right_part in zip(left, right):
-        if left_part != right_part:
-            break
-        depth += 1
-    return depth
