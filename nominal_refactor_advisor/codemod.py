@@ -379,9 +379,6 @@ INLINE_LITERAL_DISPATCH_FINDING_ID = "inline_literal_dispatch"
 DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
     ("capability_tag_constants", "observation_tag_constants")
 )
-SOURCE_REWRITE_TARGET_PAYLOAD_FIELDS = frozenset(
-    ("target_id", "target_qualname", "file_path")
-)
 SELECTED_TARGET_OPERATION_KIND_VALUES = frozenset(
     (
         RefactorRecipeOperationKind.APPLY_SELECTED_TARGETS.value,
@@ -1304,6 +1301,39 @@ class SourceRewriteTarget:
     source_path: str | None = None
 
     @classmethod
+    def payload_bindings(
+        cls,
+    ) -> tuple[
+        PayloadBinding[
+            "SourceRewriteTarget",
+            "SourceRewritePlanPayload",
+            str | None,
+        ],
+        ...,
+    ]:
+        del cls
+        return (
+            PayloadBinding(
+                "target_id",
+                "target_identifier",
+                lambda target: target.target_identifier,
+                optional_source_plan_payload_string,
+            ),
+            PayloadBinding(
+                "target_qualname",
+                "qualname",
+                lambda target: target.qualname,
+                optional_source_plan_payload_string,
+            ),
+            PayloadBinding(
+                "file_path",
+                "source_path",
+                lambda target: target.source_path,
+                optional_source_plan_payload_string,
+            ),
+        )
+
+    @classmethod
     def from_mapping(cls, fields: Mapping[str, JsonValue]) -> "SourceRewriteTarget":
         payload = SourceRewritePlanPayload(fields)
         return payload.source_target()
@@ -1396,11 +1426,13 @@ class SourceRewriteTarget:
         )
 
     def to_dict(self) -> JsonObject:
-        return {
-            "target_id": self.target_identifier,
-            "target_qualname": self.qualname,
-            "file_path": self.source_path,
-        }
+        return JsonObject(
+            dict(
+                item
+                for binding in self.payload_bindings()
+                for item in binding.payload_items(self)
+            )
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2050,21 +2082,58 @@ class SelectionCountExpectation:
     exact: int | None = None
 
     @classmethod
+    def payload_bindings(
+        cls,
+    ) -> tuple[
+        PayloadBinding[
+            "SelectionCountExpectation",
+            Mapping[str, JsonValue],
+            int | None,
+        ],
+        ...,
+    ]:
+        return (
+            PayloadBinding(
+                "min",
+                "minimum",
+                lambda expectation: expectation.minimum,
+                cls.optional_non_negative_int,
+            ),
+            PayloadBinding(
+                "max",
+                "maximum",
+                lambda expectation: expectation.maximum,
+                cls.optional_non_negative_int,
+            ),
+            PayloadBinding(
+                "exact",
+                "exact",
+                lambda expectation: expectation.exact,
+                cls.optional_non_negative_int,
+            ),
+        )
+
+    @classmethod
     def from_mapping(
         cls,
         payload: Mapping[str, JsonValue] | None,
     ) -> "SelectionCountExpectation":
         if payload is None:
             return cls()
-        unknown_fields = tuple(sorted(set(payload) - {"min", "max", "exact"}))
+        expected_fields = frozenset(
+            binding.field_name for binding in cls.payload_bindings()
+        )
+        unknown_fields = tuple(sorted(set(payload) - expected_fields))
         if unknown_fields:
             raise ValueError(
                 "Unsupported selection_count field(s): " f"{', '.join(unknown_fields)}"
             )
         expectation = cls(
-            minimum=cls.optional_non_negative_int(payload, "min"),
-            maximum=cls.optional_non_negative_int(payload, "max"),
-            exact=cls.optional_non_negative_int(payload, "exact"),
+            **{
+                key: value
+                for binding in cls.payload_bindings()
+                for key, value in binding.constructor_kwargs(payload).items()
+            }
         )
         expectation.validate_definition()
         return expectation
@@ -2121,14 +2190,14 @@ class SelectionCountExpectation:
             )
 
     def to_dict(self) -> JsonObject:
-        payload: JsonObject = {}
-        if self.minimum is not None:
-            payload["min"] = self.minimum
-        if self.maximum is not None:
-            payload["max"] = self.maximum
-        if self.exact is not None:
-            payload["exact"] = self.exact
-        return payload
+        return JsonObject(
+            {
+                key: value
+                for binding in self.payload_bindings()
+                for key, value in binding.payload_items(self)
+                if value is not None
+            }
+        )
 
 
 def required_source_plan_payload_string(
@@ -2138,6 +2207,15 @@ def required_source_plan_payload_string(
     if not isinstance(payload, SourceRewritePlanPayload):
         raise TypeError("string payload binding requires source rewrite plan payload")
     return payload.required_string(field_name)
+
+
+def optional_source_plan_payload_string(
+    payload: "SourceRewritePlanPayload",
+    field_name: str,
+) -> str | None:
+    if not isinstance(payload, SourceRewritePlanPayload):
+        raise TypeError("string payload binding requires source rewrite plan payload")
+    return payload.optional_string(field_name)
 
 
 @dataclass(frozen=True)
@@ -3154,9 +3232,11 @@ class SourceRewritePlanPayload:
 
     def source_target(self) -> SourceRewriteTarget:
         return SourceRewriteTarget(
-            target_identifier=self.optional_string("target_id"),
-            qualname=self.optional_string("target_qualname"),
-            source_path=self.optional_string("file_path"),
+            **{
+                key: value
+                for binding in SourceRewriteTarget.payload_bindings()
+                for key, value in binding.constructor_kwargs(self).items()
+            }
         )
 
 
@@ -3308,7 +3388,8 @@ class RefactorRecipeOperationTemplate:
             raise ValueError(f"Unsupported recipe operation: {operation_key}")
         target_fields = tuple(
             field_name
-            for field_name in sorted(SOURCE_REWRITE_TARGET_PAYLOAD_FIELDS)
+            for binding in SourceRewriteTarget.payload_bindings()
+            for field_name in (binding.field_name,)
             if field_name in self.fields
         )
         if target_fields:
@@ -10409,6 +10490,14 @@ class CodemodDslPayloadReaderProfile:
                 return rule.profile
         return cls(CodemodDslFieldKind.UNKNOWN)
 
+    def to_dict(self) -> JsonObject:
+        return {
+            "value_kind": self.value_kind.value,
+            "required": self.required,
+            "empty_string_allowed": self.empty_string_allowed,
+            "default_value": self.default_value,
+        }
+
 
 @dataclass(frozen=True)
 class CodemodDslPayloadReaderProfileRule:
@@ -10433,6 +10522,13 @@ def codemod_dsl_payload_reader_profile_rules() -> tuple[
             CodemodDslPayloadReaderProfile.string(),
         ),
         CodemodDslPayloadReaderProfileRule(
+            optional_source_plan_payload_string,
+            CodemodDslPayloadReaderProfile(
+                CodemodDslFieldKind.STRING,
+                required=False,
+            ),
+        ),
+        CodemodDslPayloadReaderProfileRule(
             SourceRewritePlanPayload.string_or_empty,
             CodemodDslPayloadReaderProfile.optional_string(),
         ),
@@ -10455,6 +10551,13 @@ def codemod_dsl_payload_reader_profile_rules() -> tuple[
         CodemodDslPayloadReaderProfileRule(
             OperationPayloadReader.false_bool,
             CodemodDslPayloadReaderProfile.optional_boolean(False),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            SelectionCountExpectation.optional_non_negative_int,
+            CodemodDslPayloadReaderProfile(
+                CodemodDslFieldKind.INTEGER,
+                required=False,
+            ),
         ),
         CodemodDslPayloadReaderProfileRule(
             OperationPayloadReader.required_selector,
@@ -10509,10 +10612,7 @@ class CodemodDslFieldManifest:
 
     field_name: str
     constructor_argument_name: str
-    value_kind: CodemodDslFieldKind
-    required: bool = True
-    empty_string_allowed: bool = False
-    default_value: JsonScalar = None
+    reader_profile: CodemodDslPayloadReaderProfile
 
     @classmethod
     def from_binding(
@@ -10528,20 +10628,14 @@ class CodemodDslFieldManifest:
         return cls(
             field_name=binding.field_name,
             constructor_argument_name=binding.constructor_argument_name,
-            value_kind=reader_profile.value_kind,
-            required=reader_profile.required,
-            empty_string_allowed=reader_profile.empty_string_allowed,
-            default_value=reader_profile.default_value,
+            reader_profile=reader_profile,
         )
 
     def to_dict(self) -> JsonObject:
         return {
             "field_name": self.field_name,
             "constructor_argument_name": self.constructor_argument_name,
-            "value_kind": self.value_kind.value,
-            "required": self.required,
-            "empty_string_allowed": self.empty_string_allowed,
-            "default_value": self.default_value,
+            **self.reader_profile.to_dict(),
             "example_value": self.example_value(),
         }
 
@@ -10637,7 +10731,7 @@ class CodemodDslExampleValueProvider(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def example_for(cls, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        provider_type = cls.__registry__.get(field_manifest.value_kind)
+        provider_type = cls.__registry__.get(field_manifest.reader_profile.value_kind)
         if provider_type is None:
             provider_type = cls.__registry__[CodemodDslFieldKind.UNKNOWN]
         return provider_type().example_value(field_manifest)
@@ -10657,8 +10751,8 @@ class StringCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
     value_kind = CodemodDslFieldKind.STRING
 
     def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        if field_manifest.default_value not in (None, ""):
-            return field_manifest.default_value
+        if field_manifest.reader_profile.default_value not in (None, ""):
+            return field_manifest.reader_profile.default_value
         return self.placeholder(field_manifest)
 
 
@@ -10771,8 +10865,8 @@ class BooleanCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
     value_kind = CodemodDslFieldKind.BOOLEAN
 
     def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        if field_manifest.default_value is not None:
-            return field_manifest.default_value
+        if field_manifest.reader_profile.default_value is not None:
+            return field_manifest.reader_profile.default_value
         return True
 
 
@@ -11006,15 +11100,12 @@ def codemod_common_fields() -> tuple[CodemodDslFieldManifest, ...]:
         CodemodDslFieldManifest(
             field_name="operation",
             constructor_argument_name="operation",
-            value_kind=CodemodDslFieldKind.STRING,
+            reader_profile=CodemodDslPayloadReaderProfile.string(),
         ),
         CodemodDslFieldManifest(
             field_name="rationale",
             constructor_argument_name="rationale",
-            value_kind=CodemodDslFieldKind.STRING,
-            required=False,
-            empty_string_allowed=True,
-            default_value="",
+            reader_profile=CodemodDslPayloadReaderProfile.optional_string(),
         ),
     )
 
@@ -11022,50 +11113,18 @@ def codemod_common_fields() -> tuple[CodemodDslFieldManifest, ...]:
 def codemod_target_fields() -> tuple[CodemodDslFieldManifest, ...]:
     """Source-target JSON fields accepted by operation and rewrite objects."""
 
-    return (
-        CodemodDslFieldManifest(
-            field_name="target_id",
-            constructor_argument_name="target_identifier",
-            value_kind=CodemodDslFieldKind.STRING,
-            required=False,
-        ),
-        CodemodDslFieldManifest(
-            field_name="target_qualname",
-            constructor_argument_name="qualname",
-            value_kind=CodemodDslFieldKind.STRING,
-            required=False,
-        ),
-        CodemodDslFieldManifest(
-            field_name="file_path",
-            constructor_argument_name="source_path",
-            value_kind=CodemodDslFieldKind.STRING,
-            required=False,
-        ),
+    return tuple(
+        CodemodDslFieldManifest.from_binding(binding)
+        for binding in SourceRewriteTarget.payload_bindings()
     )
 
 
 def codemod_selection_count_fields() -> tuple[CodemodDslFieldManifest, ...]:
     """Optional cardinality contract fields for selected-target operations."""
 
-    return (
-        CodemodDslFieldManifest(
-            "min",
-            "minimum",
-            CodemodDslFieldKind.INTEGER,
-            required=False,
-        ),
-        CodemodDslFieldManifest(
-            "max",
-            "maximum",
-            CodemodDslFieldKind.INTEGER,
-            required=False,
-        ),
-        CodemodDslFieldManifest(
-            "exact",
-            "exact",
-            CodemodDslFieldKind.INTEGER,
-            required=False,
-        ),
+    return tuple(
+        CodemodDslFieldManifest.from_binding(binding)
+        for binding in SelectionCountExpectation.payload_bindings()
     )
 
 
@@ -13662,17 +13721,7 @@ class CodemodPlanJsonParser:
         )
 
     def source_rewrite_target(self, payload: JsonObject) -> SourceRewriteTarget:
-        return SourceRewriteTarget(
-            target_identifier=self.optional_string_or_none_field(
-                payload,
-                "target_id",
-            ),
-            qualname=self.optional_string_or_none_field(
-                payload,
-                "target_qualname",
-            ),
-            source_path=self.optional_string_or_none_field(payload, "file_path"),
-        )
+        return SourceRewritePlanPayload(payload).source_target()
 
     def architecture_guard_rule(self, row: JsonValue) -> ArchitectureGuardRule:
         payload = self.object_row(row, "architecture guard rules")
