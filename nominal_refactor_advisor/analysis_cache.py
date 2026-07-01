@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from functools import lru_cache
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import pickle
@@ -236,6 +237,37 @@ class SourceFileSignature:
 
 
 @dataclass(frozen=True)
+class AnalysisEngineSignature:
+    """Implementation identity for finding-cache semantics."""
+
+    source_files: tuple[SourceFileSignature, ...]
+
+    @classmethod
+    def current(cls) -> "AnalysisEngineSignature":
+        return cls(
+            tuple(
+                sorted(
+                    (
+                        _module_source_signature(module_name)
+                        for module_name in cls.module_names()
+                    ),
+                    key=lambda item: item.path,
+                )
+            )
+        )
+
+    @staticmethod
+    def module_names() -> tuple[str, ...]:
+        return (
+            "nominal_refactor_advisor.analysis",
+            "nominal_refactor_advisor.analysis_cache",
+            "nominal_refactor_advisor.class_index",
+            "nominal_refactor_advisor.models",
+            "nominal_refactor_advisor.semantic_descent",
+        )
+
+
+@dataclass(frozen=True)
 class CachedSourceFileSignature:
     """Content hash cached under a stable filesystem stat identity."""
 
@@ -314,6 +346,38 @@ def _detector_module_file_hash(
 
 def _text_hash(text: str) -> str:
     return hashlib.blake2s(text.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _module_source_signature(module_name: str) -> SourceFileSignature:
+    spec = importlib.util.find_spec(module_name)
+    origin = None if spec is None else spec.origin
+    if origin is None or origin in {"built-in", "frozen"}:
+        return SourceFileSignature(module_name, _text_hash(module_name))
+    path = Path(origin)
+    try:
+        path_stat = path.stat()
+    except OSError:
+        return SourceFileSignature(str(path), _text_hash(str(path)))
+    return _module_source_signature_from_path(
+        module_name,
+        str(path.resolve()),
+        path_stat.st_mtime_ns,
+        path_stat.st_size,
+    )
+
+
+@lru_cache(maxsize=None)
+def _module_source_signature_from_path(
+    module_name: str,
+    path_text: str,
+    mtime_ns: int,
+    size: int,
+) -> SourceFileSignature:
+    del module_name, mtime_ns, size
+    try:
+        return SourceFileSignature.from_path(Path(path_text))
+    except OSError:
+        return SourceFileSignature(path_text, _text_hash(path_text))
 
 
 def semantic_module_hash(module: ParsedModule) -> str:
@@ -442,6 +506,9 @@ class AnalysisCacheEntryContext:
     config: DetectorConfigSignature
     detector_registry: DetectorRegistrySignature
     python_version: tuple[int, int]
+    engine: AnalysisEngineSignature = field(
+        default_factory=AnalysisEngineSignature.current
+    )
     schema: AnalysisCacheSchema = analysis_cache_schema
 
 

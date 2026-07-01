@@ -1723,7 +1723,7 @@ class CodemodSelectorContext:
         str, "ClassDirectDeclarationIndex"
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
-    @property
+    @cached_property
     def source_file_paths(self) -> tuple[str, ...]:
         return tuple(
             sorted({target.file_path for target in self.source_index.ast_targets})
@@ -2961,15 +2961,31 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
         file_path_patterns = RegexPatternSet.from_patterns(self.file_path_patterns)
         name_patterns = RegexPatternSet.from_patterns(self.name_patterns)
         qualname_patterns = RegexPatternSet.from_patterns(self.qualname_patterns)
+        candidate_targets = self.candidate_targets(context, file_paths)
         return sorted_tuple(
             target.target_id
-            for target in context.source_index.ast_targets
+            for target in candidate_targets
             if (not node_kinds or target.node_kind in node_kinds)
             and (not file_paths or target.file_path in file_paths)
             and (not qualnames or target.qualname in qualnames)
             and file_path_patterns.matches(target.file_path)
             and name_patterns.matches(target.name)
             and qualname_patterns.matches(target.qualname)
+        )
+
+    @staticmethod
+    def candidate_targets(
+        context: CodemodSelectorContext,
+        file_paths: frozenset[str],
+    ) -> tuple[AstTargetDigest, ...]:
+        if not file_paths:
+            return context.source_index.ast_targets
+        targets_by_file = context.source_index.targets_by_file
+        return tuple(
+            target
+            for file_path in sorted(file_paths)
+            if targets_by_file.contains_file(file_path)
+            for target in targets_by_file[file_path]
         )
 
 
@@ -4201,6 +4217,111 @@ class SourceLineReplacement:
         )
 
 
+class SourceLineDiffAuthority:
+    """Compute line replacements without diffing unchanged target boundaries."""
+
+    large_window_line_threshold: ClassVar[int] = 400
+
+    @classmethod
+    def replacements(
+        cls,
+        *,
+        target: AstTargetDigest,
+        original_lines: tuple[str, ...],
+        candidate_lines: tuple[str, ...],
+        rationale: str,
+    ) -> tuple[SourceLineReplacement, ...]:
+        prefix_count = cls.common_prefix_count(original_lines, candidate_lines)
+        suffix_count = cls.common_suffix_count(
+            original_lines,
+            candidate_lines,
+            prefix_count,
+        )
+        if prefix_count == len(original_lines) and prefix_count == len(candidate_lines):
+            return ()
+
+        original_limit = len(original_lines) - suffix_count
+        candidate_limit = len(candidate_lines) - suffix_count
+        matcher = difflib.SequenceMatcher(
+            None,
+            original_lines[prefix_count:original_limit],
+            candidate_lines[prefix_count:candidate_limit],
+            autojunk=cls.use_popular_line_heuristic(
+                original_limit - prefix_count,
+                candidate_limit - prefix_count,
+            ),
+        )
+        replacements = []
+        for (
+            tag,
+            original_start,
+            original_end,
+            replacement_start,
+            replacement_end,
+        ) in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            source_start = prefix_count + original_start
+            source_end = prefix_count + original_end
+            replacements.append(
+                SourceLineReplacement(
+                    file_path=target.file_path,
+                    start_line=target.line + source_start,
+                    end_line=target.line + source_end - 1,
+                    replacement_lines=candidate_lines[
+                        prefix_count + replacement_start : prefix_count + replacement_end
+                    ],
+                    rationale=rationale,
+                )
+            )
+        return tuple(replacements)
+
+    @staticmethod
+    def common_prefix_count(
+        original_lines: tuple[str, ...],
+        candidate_lines: tuple[str, ...],
+    ) -> int:
+        count = 0
+        for original_line, candidate_line in zip(
+            original_lines,
+            candidate_lines,
+            strict=False,
+        ):
+            if original_line != candidate_line:
+                break
+            count += 1
+        return count
+
+    @staticmethod
+    def common_suffix_count(
+        original_lines: tuple[str, ...],
+        candidate_lines: tuple[str, ...],
+        prefix_count: int,
+    ) -> int:
+        count = 0
+        max_count = min(
+            len(original_lines) - prefix_count,
+            len(candidate_lines) - prefix_count,
+        )
+        while (
+            count < max_count
+            and original_lines[-count - 1] == candidate_lines[-count - 1]
+        ):
+            count += 1
+        return count
+
+    @classmethod
+    def use_popular_line_heuristic(
+        cls,
+        original_window_line_count: int,
+        candidate_window_line_count: int,
+    ) -> bool:
+        return (
+            max(original_window_line_count, candidate_window_line_count)
+            >= cls.large_window_line_threshold
+        )
+
+
 @dataclass(frozen=True)
 class SourceOffsetReplacement(ReplacementSource):
     """Replacement of one character-offset span inside a source string."""
@@ -4410,10 +4531,13 @@ class ModuleImportInsertionPoint:
 
     source: str
     file_path: str
+    module_node: ast.Module | None = None
 
     @property
     def line_number(self) -> int:
-        module = ast.parse(self.source, filename=self.file_path)
+        module = self.module_node
+        if module is None:
+            module = ast.parse(self.source, filename=self.file_path)
         body = module.body
         if not body:
             return 1
@@ -7358,7 +7482,11 @@ class EnsureImportOperation(StringPayloadOperation):
         )
         if merge_replacements:
             return merge_replacements
-        insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
+        insertion_line = ModuleImportInsertionPoint(
+            source,
+            source_path,
+            module_node=module_node,
+        ).line_number
         return (
             SourceLineSpan(
                 end_line=insertion_line - 1, start_line=insertion_line
@@ -21237,8 +21365,8 @@ class MappingSemanticMirrorRecipeBuilder(
                 source_index=context.source_index,
                 sources_by_file_path=context.sources_by_file_path,
                 class_family_index=context.class_family_index,
-                module_node_cache=context.module_node_cache,
-                ast_target_node_cache=context.ast_target_node_cache,
+                module_node_cache=context.module_nodes_by_file_path,
+                ast_target_node_cache=context.ast_target_nodes_by_id,
                 module_import_graph_cache=context.module_import_graph,
                 finding=finding,
             )
@@ -21306,8 +21434,8 @@ class MappingSemanticMirrorRecipeBuilder(
                     source_index=context.source_index,
                     sources_by_file_path=context.sources_by_file_path,
                     class_family_index=context.class_family_index,
-                    module_node_cache=context.module_node_cache,
-                    ast_target_node_cache=context.ast_target_node_cache,
+                    module_node_cache=context.module_nodes_by_file_path,
+                    ast_target_node_cache=context.ast_target_nodes_by_id,
                     module_import_graph_cache=context.module_import_graph,
                     finding=finding,
                 ),
@@ -22817,7 +22945,11 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
         authority_source: GenericRoleCaseAuthoritySource,
     ) -> SourceLineReplacement:
         source = self.sources_by_file_path[file_path]
-        insertion_line = ModuleImportInsertionPoint(source, file_path).line_number
+        insertion_line = ModuleImportInsertionPoint(
+            source,
+            file_path,
+            module_node=self.module_nodes_by_file_path.get(file_path),
+        ).line_number
         return SourceLineReplacement(
             file_path=file_path,
             start_line=insertion_line,
@@ -22836,7 +22968,11 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
             target=SourceRewriteTarget(file_path=location.projection_path),
             payload_value=location.import_source(),
             rationale="Import nominal role-case authority.",
-        ).line_replacements(self.source_index, self.sources_by_file_path)
+        ).line_replacements_with_context(
+            self.source_index,
+            self.sources_by_file_path,
+            selector_context=self,
+        )
 
     def module_target(self, file_path: str) -> AstTargetDigest | None:
         module_targets = tuple(
@@ -24766,8 +24902,8 @@ class ContextualSemanticMirrorRecipeBuilder(
             source_index=context.source_index,
             sources_by_file_path=context.sources_by_file_path,
             class_family_index=context.class_family_index,
-            module_node_cache=context.module_node_cache,
-            ast_target_node_cache=context.ast_target_node_cache,
+            module_node_cache=context.module_nodes_by_file_path,
+            ast_target_node_cache=context.ast_target_nodes_by_id,
             module_import_graph_cache=context.module_import_graph,
             finding=finding,
         )
@@ -25441,8 +25577,8 @@ class BranchSemanticMirrorRecipeStrategy(
             source_index=context.source_index,
             sources_by_file_path=context.sources_by_file_path,
             class_family_index=context.class_family_index,
-            module_node_cache=context.module_node_cache,
-            ast_target_node_cache=context.ast_target_node_cache,
+            module_node_cache=context.module_nodes_by_file_path,
+            ast_target_node_cache=context.ast_target_nodes_by_id,
             module_import_graph_cache=context.module_import_graph,
             finding=finding,
         )
@@ -26103,32 +26239,12 @@ class FindingRecipePlanBuilder:
     ) -> tuple[SourceLineReplacement, ...]:
         original_lines = SourceTargetEditor.source_lines(original_source)
         replacement_lines = SourceTargetEditor.source_lines(rewrite.replacement_source)
-        matcher = difflib.SequenceMatcher(
-            None,
-            original_lines,
-            replacement_lines,
-            autojunk=False,
+        return SourceLineDiffAuthority.replacements(
+            target=target,
+            original_lines=original_lines,
+            candidate_lines=replacement_lines,
+            rationale=rewrite.rationale,
         )
-        replacements = []
-        for (
-            tag,
-            original_start,
-            original_end,
-            new_start,
-            new_end,
-        ) in matcher.get_opcodes():
-            if tag == "equal":
-                continue
-            replacements.append(
-                SourceLineReplacement(
-                    file_path=target.file_path,
-                    start_line=target.line + original_start,
-                    end_line=target.line + original_end - 1,
-                    replacement_lines=replacement_lines[new_start:new_end],
-                    rationale=rewrite.rationale,
-                )
-            )
-        return tuple(replacements)
 
     @classmethod
     def uncached_rewrite_line_replacements(
