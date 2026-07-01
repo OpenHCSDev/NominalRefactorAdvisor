@@ -1376,6 +1376,191 @@ class SemanticDescentGraph(SemanticDescentGraphSpace):
 
 
 @dataclass(frozen=True)
+class SemanticFactMirrorSignature:
+    """Mirror-relevant fact state, independent of presentation locations."""
+
+    kind: SemanticFactKind
+    name: str
+    aliases: tuple[str, ...]
+
+    @classmethod
+    def from_fact(cls, fact: SemanticFact) -> "SemanticFactMirrorSignature":
+        return cls(fact.kind, fact.name, fact.aliases)
+
+
+@dataclass(frozen=True)
+class SemanticAuthorityMirrorSignature:
+    """Mirror-relevant authority state, independent of presentation locations."""
+
+    kind: SemanticAuthorityKind
+    name: str
+    fact_ids: tuple[str, ...]
+
+    @classmethod
+    def from_authority(
+        cls,
+        authority: SemanticAuthority,
+    ) -> "SemanticAuthorityMirrorSignature":
+        return cls(authority.kind, authority.name, authority.fact_ids)
+
+
+@dataclass(frozen=True)
+class SemanticAuthorityMirrorState:
+    """Authority plus owned facts as seen by mirror resolution."""
+
+    authority: SemanticAuthorityMirrorSignature
+    facts: tuple[tuple[str, SemanticFactMirrorSignature], ...]
+
+    @classmethod
+    def from_authority(
+        cls,
+        authority: SemanticAuthority,
+        facts: tuple[SemanticFact, ...],
+    ) -> "SemanticAuthorityMirrorState":
+        return cls(
+            SemanticAuthorityMirrorSignature.from_authority(authority),
+            sorted_tuple(
+                (
+                    fact.fact_id,
+                    SemanticFactMirrorSignature.from_fact(fact),
+                )
+                for fact in facts
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PresentationProjectionMirrorSignature:
+    """Mirror-relevant projection state, independent of line-number identity."""
+
+    kind: PresentationProjectionKind
+    label: str
+    owner_symbol: str
+    tokens: tuple[PresentationToken, ...]
+    owner_constructions: tuple[PresentationAuthorityConstruction, ...]
+    key_value_pairs: tuple[PresentationKeyValuePair, ...]
+    class_symbols: tuple[str, ...]
+
+    @classmethod
+    def from_projection(
+        cls,
+        projection: PresentationProjection,
+    ) -> "PresentationProjectionMirrorSignature":
+        return cls(
+            projection.kind,
+            projection.label,
+            projection.owner_symbol,
+            projection.tokens,
+            projection.owner_constructions,
+            projection.key_value_pairs,
+            projection.class_symbols,
+        )
+
+
+@dataclass(frozen=True)
+class PresentationProjectionIdOverlay:
+    """Map cached projection ids onto current ids when mirror semantics match."""
+
+    base_projections: tuple[PresentationProjection, ...]
+    current_projections: tuple[PresentationProjection, ...]
+
+    @cached_property
+    def base_by_id(self) -> dict[str, PresentationProjection]:
+        return {
+            projection.projection_id: projection
+            for projection in self.base_projections
+        }
+
+    @cached_property
+    def current_by_id(self) -> dict[str, PresentationProjection]:
+        return {
+            projection.projection_id: projection
+            for projection in self.current_projections
+        }
+
+    @cached_property
+    def unique_base_ids_by_signature(
+        self,
+    ) -> dict[PresentationProjectionMirrorSignature, str]:
+        return self.unique_ids_by_signature(self.base_projections)
+
+    @cached_property
+    def unique_current_ids_by_signature(
+        self,
+    ) -> dict[PresentationProjectionMirrorSignature, str]:
+        return self.unique_ids_by_signature(self.current_projections)
+
+    def current_projection_id_for_base_id(
+        self,
+        projection_id: str,
+    ) -> str | None:
+        base_projection = self.base_by_id.get(projection_id)
+        if base_projection is None:
+            return None
+        return self.current_projection_id_for_base_projection(base_projection)
+
+    def current_projection_id_for_base_projection(
+        self,
+        projection: PresentationProjection,
+    ) -> str | None:
+        signature = PresentationProjectionMirrorSignature.from_projection(projection)
+        current_projection = self.current_by_id.get(projection.projection_id)
+        if (
+            current_projection is not None
+            and PresentationProjectionMirrorSignature.from_projection(
+                current_projection
+            )
+            == signature
+        ):
+            return current_projection.projection_id
+        if self.unique_base_ids_by_signature.get(signature) != projection.projection_id:
+            return None
+        return self.unique_current_ids_by_signature.get(signature)
+
+    def base_projection_id_for_current_projection(
+        self,
+        projection: PresentationProjection,
+    ) -> str | None:
+        signature = PresentationProjectionMirrorSignature.from_projection(projection)
+        base_projection = self.base_by_id.get(projection.projection_id)
+        if (
+            base_projection is not None
+            and PresentationProjectionMirrorSignature.from_projection(base_projection)
+            == signature
+        ):
+            return base_projection.projection_id
+        if (
+            self.unique_current_ids_by_signature.get(signature)
+            != projection.projection_id
+        ):
+            return None
+        return self.unique_base_ids_by_signature.get(signature)
+
+    def changed_projection_ids(self) -> frozenset[str]:
+        return frozenset(
+            projection.projection_id
+            for projection in self.current_projections
+            if self.base_projection_id_for_current_projection(projection) is None
+        )
+
+    @staticmethod
+    def unique_ids_by_signature(
+        projections: tuple[PresentationProjection, ...],
+    ) -> dict[PresentationProjectionMirrorSignature, str]:
+        ids_by_signature: dict[PresentationProjectionMirrorSignature, list[str]] = {}
+        for projection in projections:
+            ids_by_signature.setdefault(
+                PresentationProjectionMirrorSignature.from_projection(projection),
+                [],
+            ).append(projection.projection_id)
+        return {
+            signature: projection_ids[0]
+            for signature, projection_ids in ids_by_signature.items()
+            if len(projection_ids) == 1
+        }
+
+
+@dataclass(frozen=True)
 class SemanticDescentGraphModuleOverlay:
     """Refresh changed modules inside a cached repository semantic graph."""
 
@@ -1418,24 +1603,22 @@ class SemanticDescentGraphModuleOverlay:
         graph_space: SemanticDescentGraphSpace,
         class_index: ClassFamilyIndex,
     ) -> tuple[MirrorEdge, ...]:
-        changed_projection_ids = self.changed_projection_ids(graph_space.projections)
+        projection_overlay = PresentationProjectionIdOverlay(
+            self.base_graph.projections,
+            graph_space.projections,
+        )
+        changed_projection_ids = projection_overlay.changed_projection_ids()
         changed_authority_ids = self.changed_authority_ids(
             graph_space.authorities,
             graph_space.facts,
         )
-        current_projection_ids = frozenset(
-            projection.projection_id for projection in graph_space.projections
-        )
         current_authority_ids = frozenset(
             authority.authority_id for authority in graph_space.authorities
         )
-        retained_edges = tuple(
-            edge
-            for edge in self.base_graph.mirror_edges
-            if edge.projection_id in current_projection_ids
-            and edge.authority_id in current_authority_ids
-            and edge.projection_id not in changed_projection_ids
-            and edge.authority_id not in changed_authority_ids
+        retained_edges = self.retained_mirror_edges(
+            projection_overlay,
+            current_authority_ids,
+            changed_authority_ids,
         )
         resolver = SemanticMirrorResolver(
             graph_space.authorities,
@@ -1449,17 +1632,50 @@ class SemanticDescentGraphModuleOverlay:
         )
         return self._deduplicate_edges((*retained_edges, *recomputed_edges))
 
+    def retained_mirror_edges(
+        self,
+        projection_overlay: PresentationProjectionIdOverlay,
+        current_authority_ids: frozenset[str],
+        changed_authority_ids: frozenset[str],
+    ) -> tuple[MirrorEdge, ...]:
+        retained_edges: list[MirrorEdge] = []
+        for edge in self.base_graph.mirror_edges:
+            if (
+                edge.authority_id not in current_authority_ids
+                or edge.authority_id in changed_authority_ids
+            ):
+                continue
+            current_projection_id = projection_overlay.current_projection_id_for_base_id(
+                edge.projection_id
+            )
+            if current_projection_id is None:
+                continue
+            retained_edges.append(
+                MirrorEdge(
+                    authority_id=edge.authority_id,
+                    projection_id=current_projection_id,
+                    match=edge.match,
+                )
+            )
+        return tuple(retained_edges)
+
     def changed_projection_ids(
         self,
         projections: tuple[PresentationProjection, ...],
     ) -> frozenset[str]:
-        base_projections = self.base_graph.projection_catalog.by_id
-        return frozenset(
-            projection.projection_id
-            for projection in projections
-            if self.resolved_path_text(projection.location.file_path)
-            in self.changed_path_texts
-            or base_projections.get(projection.projection_id) != projection
+        return PresentationProjectionIdOverlay(
+            self.base_graph.projections,
+            projections,
+        ).changed_projection_ids()
+
+    def authority_mirror_state(
+        self,
+        authority: SemanticAuthority,
+        facts_by_authority_id: FactsByAuthorityId,
+    ) -> SemanticAuthorityMirrorState:
+        return SemanticAuthorityMirrorState.from_authority(
+            authority,
+            facts_by_authority_id.get(authority.authority_id, ()),
         )
 
     def changed_authority_ids(
@@ -1476,9 +1692,12 @@ class SemanticDescentGraphModuleOverlay:
         changed_ids = {
             authority.authority_id
             for authority in authorities
-            if base_authorities.get(authority.authority_id) != authority
-            or base_facts.get(authority.authority_id, ())
-            != current_facts.get(authority.authority_id, ())
+            if authority.authority_id not in base_authorities
+            or self.authority_mirror_state(authority, current_facts)
+            != self.authority_mirror_state(
+                base_authorities[authority.authority_id],
+                base_facts,
+            )
         }
         changed_ids.update(
             authority_id

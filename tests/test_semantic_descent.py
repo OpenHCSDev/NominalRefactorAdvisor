@@ -38,10 +38,12 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
+    PresentationProjectionIdOverlay,
     PresentationTokenRole,
     SemanticAuthorityKind,
     PresentationProjectionKind,
     SemanticAuthorityMirrorPolicy,
+    SemanticDescentGraphModuleOverlay,
     SemanticDescentGraphCacheIdentity,
     build_finding_backed_semantic_descent_graph,
     build_semantic_descent_graph,
@@ -134,6 +136,62 @@ def test_semantic_descent_graph_flags_manual_class_family_projection(
     assert (
         "authority registry or subclass family" in certificate.missing_derivation_path
     )
+
+
+def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "class Step:\n"
+        "    pass\n"
+        "\n"
+        "class LoadStep(Step):\n"
+        "    step_id = 'load'\n"
+        "\n"
+        "class SaveStep(Step):\n"
+        "    step_id = 'save'\n"
+        "\n"
+        "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n"
+    )
+    module_path = _write_module(tmp_path, source)
+    base_graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+    base_projection = next(
+        projection
+        for projection in base_graph.projections
+        if projection.label == "STEP_TABLE"
+    )
+
+    module_path.write_text(f"\n{source}", encoding="utf-8")
+    overlay = SemanticDescentGraphModuleOverlay(
+        base_graph,
+        tuple(parse_python_modules(tmp_path)),
+    )
+    class_index = overlay.merged_class_index()
+    authorities, facts = overlay.merged_authorities_and_facts(class_index)
+    projections = overlay.merged_projections(class_index)
+    projection_overlay = PresentationProjectionIdOverlay(
+        base_graph.projections,
+        projections,
+    )
+
+    assert projection_overlay.changed_projection_ids() == frozenset()
+    assert overlay.changed_authority_ids(authorities, facts) == frozenset()
+
+    updated_graph = overlay.graph()
+    updated_projection = next(
+        projection
+        for projection in updated_graph.projections
+        if projection.label == "STEP_TABLE"
+    )
+    certificate = next(
+        item
+        for item in updated_graph.certificates
+        if item.edge.projection_id == updated_projection.projection_id
+    )
+
+    assert updated_projection.projection_id != base_projection.projection_id
+    assert updated_projection.location.line == base_projection.location.line + 1
+    assert certificate.edge.projection_id == updated_projection.projection_id
 
 
 def test_semantic_descent_graph_flags_returned_declaration_table(
