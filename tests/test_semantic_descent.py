@@ -2298,6 +2298,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+    recipe = plan.document.recipes[0]
 
     assert record.status.value == "planned"
     assert plan.expected_removed_finding_count == 1
@@ -2305,6 +2306,9 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert record.recipe_target_shape == "dataclass_payload_projection"
     assert record.semantic_repair_plan is not None
     assert record.semantic_repair_plan.repair_kind == "mapping"
+    assert tuple(operation.operation_kind().value for operation in recipe.operations) == (
+        "replace_text",
+    )
     assert "def payload_from_field_values(cls, **values)" in rewritten_source
     assert "**RefactorAction.payload_from_field_values(" in rewritten_source
     assert "kind=self.action.kind" in rewritten_source
@@ -2361,6 +2365,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
+    recipe = plan.document.recipes[0]
     rewritten_model = simulation.simulation.rewritten_sources[
         (package_dir / "model.py").as_posix()
     ]
@@ -2371,6 +2376,10 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert record.status.value == "planned"
     assert record.recipe_target_shape == "dataclass_payload_projection"
     assert simulation.is_clean is True
+    assert tuple(operation.operation_kind().value for operation in recipe.operations) == (
+        "ensure_import",
+        "replace_text",
+    )
     assert "def payload_from_field_values(cls, **values)" in rewritten_model
     assert "from .model import RefactorAction" in rewritten_report
     assert "**RefactorAction.payload_from_field_values(" in rewritten_report

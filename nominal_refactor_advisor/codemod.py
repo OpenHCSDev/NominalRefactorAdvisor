@@ -7108,21 +7108,55 @@ class EnsureImportOperation(StringPayloadOperation):
 
     payload_field_name = IMPORT_SOURCE_PAYLOAD_FIELD
 
+    def line_replacements_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[SourceLineReplacement, ...]:
+        source_path = self.required_source_path(source_index, "ensure_import")
+        module_node = None
+        if selector_context is not None:
+            module_node = selector_context.module_nodes_by_file_path.get(source_path)
+        return self.line_replacements_for_source(
+            source_path,
+            source_by_path[source_path],
+            module_node=module_node,
+        )
+
     def line_replacements(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
         source_path = self.required_source_path(source_index, "ensure_import")
-        source = source_by_path[source_path]
+        return self.line_replacements_for_source(
+            source_path,
+            source_by_path[source_path],
+            module_node=None,
+        )
+
+    def line_replacements_for_source(
+        self,
+        source_path: str,
+        source: str,
+        *,
+        module_node: ast.Module | None,
+    ) -> tuple[SourceLineReplacement, ...]:
         import_lines = SourceTargetEditor.source_lines(self.payload_value)
-        if self._source_already_contains_import(source, import_lines):
+        if self._source_already_contains_import(
+            source,
+            import_lines,
+            module_node=module_node,
+        ):
             return ()
         requested_imports = RequestedImportSet.from_source_lines(import_lines)
         merge_replacements = requested_imports.merge_replacements_for(
             source_path=source_path,
             source=source,
             rationale=self.rationale,
+            module_node=module_node,
         )
         if merge_replacements:
             return merge_replacements
@@ -7142,12 +7176,15 @@ class EnsureImportOperation(StringPayloadOperation):
     def _source_already_contains_import(
         source: str,
         import_lines: tuple[str, ...],
+        *,
+        module_node: ast.Module | None = None,
     ) -> bool:
         existing_lines = frozenset(source.splitlines(keepends=True))
         if all(line in existing_lines for line in import_lines if line.strip()):
             return True
         return RequestedImportSet.from_source_lines(import_lines).is_satisfied_by(
-            source
+            source,
+            module_node=module_node,
         )
 
 
@@ -7220,10 +7257,15 @@ class RequestedImportSet:
             return cls(())
         return cls(statements)
 
-    def is_satisfied_by(self, source: str) -> bool:
+    def is_satisfied_by(
+        self,
+        source: str,
+        *,
+        module_node: ast.Module | None = None,
+    ) -> bool:
         if not self.statements:
             return False
-        module = ast.parse(source)
+        module = module_node if module_node is not None else ast.parse(source)
         return all(
             any(requested.is_satisfied_by(existing) for existing in module.body)
             for requested in self.statements
@@ -7235,13 +7277,17 @@ class RequestedImportSet:
         source_path: str,
         source: str,
         rationale: str | None,
+        module_node: ast.Module | None = None,
     ) -> tuple[SourceLineReplacement, ...]:
         if len(self.statements) != 1:
             return ()
         requested = self.statements[0].statement
         if not isinstance(requested, ast.ImportFrom):
             return ()
-        module = ast.parse(source, filename=source_path)
+        module = module_node if module_node is not None else ast.parse(
+            source,
+            filename=source_path,
+        )
         for statement in module.body:
             if not isinstance(statement, ast.ImportFrom):
                 continue
@@ -20903,6 +20949,7 @@ class MappingSemanticMirrorRecipeBuilder(
                 source_index=context.source_index,
                 sources_by_file_path=context.sources_by_file_path,
                 class_family_index=context.class_family_index,
+                module_node_cache=context.module_node_cache,
                 ast_target_node_cache=context.ast_target_node_cache,
                 finding=finding,
             )
@@ -20970,6 +21017,7 @@ class MappingSemanticMirrorRecipeBuilder(
                     source_index=context.source_index,
                     sources_by_file_path=context.sources_by_file_path,
                     class_family_index=context.class_family_index,
+                    module_node_cache=context.module_node_cache,
                     ast_target_node_cache=context.ast_target_node_cache,
                     finding=finding,
                 ),
@@ -21022,9 +21070,10 @@ class DataclassPayloadProjectionRecipeParts:
 
     projection: DataclassPayloadProjectionTarget
     authority: DataclassPayloadAuthorityTarget
-    projection_rewrite_target: AstTargetDigest
     method_name: str
-    projection_replacement_source: str
+    projection_old_source: str
+    projection_new_source: str
+    import_source: str | None
     authority_replacement_source: str | None
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
@@ -21032,9 +21081,18 @@ class DataclassPayloadProjectionRecipeParts:
             recipe_id=f"{finding.stable_id}-derive-dataclass-payload-projection",
             reason="Derive mirrored payload keys from the dataclass authority.",
             target_shape=RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
-        ).replace_target(
-            self.projection_replacement_source,
-            target_identifier=self.projection_rewrite_target.target_id,
+        )
+        if self.import_source is not None:
+            recipe = recipe.ensure_import(
+                self.projection.source_path,
+                self.import_source,
+                rationale="Import the dataclass authority used by the projection.",
+            )
+        recipe = recipe.replace_text(
+            self.projection.function_qualname,
+            self.projection_old_source,
+            self.projection_new_source,
+            source_path=self.projection.source_path,
             rationale="Replace mirrored return-dict keys with an authority-owned projection.",
         )
         if self.authority_replacement_source is not None:
@@ -21194,7 +21252,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         authority: DataclassPayloadAuthorityTarget,
         projection: DataclassPayloadProjectionTarget,
     ) -> DataclassPayloadProjectionRecipeParts | None:
-        projection_rewrite = self.projection_rewrite(
+        projection_rewrite = self.projection_rewrite_parts(
             authority,
             projection,
         )
@@ -21211,83 +21269,39 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         return DataclassPayloadProjectionRecipeParts(
             projection=projection,
             authority=authority,
-            projection_rewrite_target=projection_rewrite.target,
             method_name=self.payload_method_name,
-            projection_replacement_source=projection_rewrite.replacement_source,
+            projection_old_source=projection_rewrite[0],
+            projection_new_source=projection_rewrite[1],
+            import_source=self.import_source(authority, projection),
             authority_replacement_source=authority_replacement_source,
         )
 
-    def projection_rewrite(
+    def projection_rewrite_parts(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: DataclassPayloadProjectionTarget,
-    ) -> RefactorRecipeRewrite | None:
-        function_source = self.projection_replacement_source(authority, projection)
-        if function_source is None:
-            return None
-        if projection.source_path == authority.source_path:
-            return RefactorRecipeRewrite(
-                target=SourceRewriteTarget(target_id=projection.target.target_id),
-                replacement_source=function_source,
-            )
-        module_target = self.module_target(projection.source_path)
-        if module_target is None:
-            return None
-        import_source = MappingSemanticMirrorRecipeStrategy.import_source_for_path(
-            self,
-            projection_path=projection.source_path,
-            authority_path=authority.source_path,
-            authority_name=authority.class_name,
-        )
-        import_replacements = EnsureImportOperation(
-            target=SourceRewriteTarget(file_path=projection.source_path),
-            payload_value=import_source,
-        ).line_replacements(self.source_index, self.sources_by_file_path)
-        function_replacement = SourceLineReplacement(
-            file_path=projection.source_path,
-            start_line=projection.target.line,
-            end_line=projection.target.end_line,
-            replacement_lines=SourceTargetEditor.source_lines(function_source),
-            rationale="Replace mirrored return-dict keys with an authority-owned projection.",
-        )
-        module_source = SourceTargetEditor(
-            self.sources_by_file_path,
-            module_target,
-        ).replacement_source((*import_replacements, function_replacement))
-        return RefactorRecipeRewrite(
-            target=SourceRewriteTarget(target_id=module_target.target_id),
-            replacement_source=module_source,
-        )
-
-    def projection_replacement_source(
-        self,
-        authority: DataclassPayloadAuthorityTarget,
-        projection: DataclassPayloadProjectionTarget,
-    ) -> str | None:
+    ) -> tuple[str, str] | None:
         source = self.sources_by_file_path[projection.source_path]
         geometry = SourceTextGeometry(source)
         dict_offsets = geometry.node_offsets(projection.dict_node)
         if dict_offsets is None:
             return None
         replacement_dict = self.replacement_dict(authority, projection)
-        replacement_source = ast.unparse(replacement_dict)
         start_offset, end_offset = dict_offsets
-        target_start = geometry.line_offsets[projection.target.line - 1]
-        target_end = (
-            geometry.line_offsets[projection.target.end_line]
-            if projection.target.end_line < len(geometry.line_offsets)
-            else geometry.end_offset
-        )
-        return geometry.source_with_replacements_in_span(
-            target_start,
-            target_end,
-            (
-                SourceOffsetReplacement.from_offsets(
-                    start_offset=start_offset,
-                    end_offset=end_offset,
-                    replacement_source=replacement_source,
-                ),
-            ),
+        return source[start_offset:end_offset], ast.unparse(replacement_dict)
+
+    def import_source(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassPayloadProjectionTarget,
+    ) -> str | None:
+        if projection.source_path == authority.source_path:
+            return None
+        return MappingSemanticMirrorRecipeStrategy.import_source_for_path(
+            self,
+            projection_path=projection.source_path,
+            authority_path=authority.source_path,
+            authority_name=authority.class_name,
         )
 
     def authority_replacement_source(
@@ -24764,36 +24778,21 @@ class ProjectedBatchRewriteSet:
 
 
 @dataclass(frozen=True)
-class PlannedRewriteTargetGroups:
-    """Planned rewrites grouped by their source-index target."""
-
-    rewrites_by_target_id: Mapping[str, tuple[PlannedSourceRewrite, ...]]
-
-    @classmethod
-    def from_rewrites(
-        cls,
-        rewrites: Iterable[PlannedSourceRewrite],
-    ) -> "PlannedRewriteTargetGroups":
-        grouped = defaultdict(list)
-        for rewrite in rewrites:
-            grouped[rewrite.target_id].append(rewrite)
-        return cls(
-            {
-                target_id: tuple(target_rewrites)
-                for target_id, target_rewrites in grouped.items()
-            }
-        )
-
-    def items(self) -> tuple[tuple[str, tuple[PlannedSourceRewrite, ...]], ...]:
-        return tuple(self.rewrites_by_target_id.items())
-
-
-@dataclass(frozen=True)
 class FindingRecipePlanBuilder:
     """Build a deduplicated codemod plan from advisor findings."""
 
     findings: tuple[RefactorFinding, ...]
     detector_ids: frozenset[str] = frozenset()
+    rewrite_line_replacement_cache: dict[
+        PlannedSourceRewrite,
+        tuple[SourceLineReplacement, ...],
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
+    planned_rewrite_cache: dict[int, tuple[PlannedSourceRewrite, ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def plan(
         self,
@@ -24874,6 +24873,12 @@ class FindingRecipePlanBuilder:
                     continue
                 if not self.targets_overlap(planned_target, claimed_target):
                     continue
+                if not self.rewrites_have_line_conflict(
+                    planned_rewrite,
+                    claimed_rewrite,
+                    selector_context,
+                ):
+                    continue
                 if (
                     self.projected_batch_recipe(
                         (*tuple(accepted_recipes), recipe),
@@ -24889,29 +24894,34 @@ class FindingRecipePlanBuilder:
                 )
         return ""
 
-    @staticmethod
     def planned_rewrites_for_recipe(
+        self,
         recipe: RefactorRecipe,
         selector_context: CodemodSelectorContext | None,
     ) -> tuple[PlannedSourceRewrite, ...]:
         if selector_context is None:
             return ()
-        return recipe.source_rewrite_batch(
+        cache_key = id(recipe)
+        cached_rewrites = self.planned_rewrite_cache.get(cache_key)
+        if cached_rewrites is not None:
+            return cached_rewrites
+        planned_rewrites = recipe.source_rewrite_batch(
             selector_context.source_index,
             selector_context.sources_by_file_path,
             selector_context=selector_context,
         )
+        self.planned_rewrite_cache[cache_key] = planned_rewrites
+        return planned_rewrites
 
-    @classmethod
     def planned_rewrites_for_recipes(
-        cls,
+        self,
         recipes: Iterable[RefactorRecipe],
         selector_context: CodemodSelectorContext | None,
     ) -> tuple[PlannedSourceRewrite, ...]:
         return tuple(
             rewrite
             for recipe in recipes
-            for rewrite in cls.planned_rewrites_for_recipe(recipe, selector_context)
+            for rewrite in self.planned_rewrites_for_recipe(recipe, selector_context)
         )
 
     @staticmethod
@@ -24996,52 +25006,55 @@ class FindingRecipePlanBuilder:
         rewrites: tuple[PlannedSourceRewrite, ...],
         selector_context: CodemodSelectorContext,
     ) -> tuple[PlannedSourceRewrite, ...] | None:
+        rewrites_by_file: dict[str, list[PlannedSourceRewrite]] = defaultdict(list)
+        for rewrite in rewrites:
+            target = self.rewrite_target(rewrite, selector_context)
+            if target is None:
+                return None
+            rewrites_by_file[target.file_path].append(rewrite)
+
         merged_rewrites: list[PlannedSourceRewrite] = []
-        target_groups = PlannedRewriteTargetGroups.from_rewrites(rewrites)
-        for target_id, target_rewrites in target_groups.items():
-            if len(target_rewrites) == 1:
-                merged_rewrites.append(target_rewrites[0])
-                continue
-            merged_rewrite = self.merged_same_target_rewrite(
-                target_id,
-                tuple(target_rewrites),
+        for file_rewrites in rewrites_by_file.values():
+            merged_rewrite = self.merged_file_rewrite(
+                tuple(file_rewrites),
                 selector_context,
             )
             if merged_rewrite is None:
                 return None
             merged_rewrites.append(merged_rewrite)
-        if self.rewrite_targets_overlap(tuple(merged_rewrites), selector_context):
-            return None
         return tuple(merged_rewrites)
 
-    def merged_same_target_rewrite(
+    def merged_file_rewrite(
         self,
-        target_id: str,
         rewrites: tuple[PlannedSourceRewrite, ...],
         selector_context: CodemodSelectorContext,
     ) -> PlannedSourceRewrite | None:
-        target = selector_context.source_index.target_by_id.get(target_id)
-        if target is None:
-            return None
-        target_editor = SourceTargetEditor(
-            selector_context.sources_by_file_path,
-            target,
-        )
-        original_source = "".join(target_editor.target_lines)
         replacements = tuple(
             replacement
             for rewrite in rewrites
-            for replacement in self.line_replacements_from_rewrite(
-                target,
-                original_source,
+            for replacement in self.rewrite_line_replacements(
                 rewrite,
+                selector_context,
             )
         )
+        if self.line_replacements_conflict(replacements):
+            return None
+        if not replacements:
+            return None
+        target = self.smallest_enclosing_target_for_replacements(
+            replacements,
+            selector_context,
+        )
+        if target is None:
+            return None
         if not self.line_replacements_fit_target(target, replacements):
             return None
-        replacement_source = target_editor.replacement_source(replacements)
+        replacement_source = SourceTargetEditor(
+            selector_context.sources_by_file_path,
+            target,
+        ).replacement_source(replacements)
         return PlannedSourceRewrite(
-            target_id=target_id,
+            target_id=target.target_id,
             replacement_source=replacement_source,
             rationale=_joined_rationales(rewrite.rationale for rewrite in rewrites),
         )
@@ -25080,6 +25093,108 @@ class FindingRecipePlanBuilder:
                 )
             )
         return tuple(replacements)
+
+    @classmethod
+    def uncached_rewrite_line_replacements(
+        cls,
+        rewrite: PlannedSourceRewrite,
+        selector_context: CodemodSelectorContext,
+    ) -> tuple[SourceLineReplacement, ...]:
+        target = cls.rewrite_target(rewrite, selector_context)
+        if target is None:
+            return ()
+        target_editor = SourceTargetEditor(
+            selector_context.sources_by_file_path,
+            target,
+        )
+        return cls.line_replacements_from_rewrite(
+            target,
+            "".join(target_editor.target_lines),
+            rewrite,
+        )
+
+    def rewrite_line_replacements(
+        self,
+        rewrite: PlannedSourceRewrite,
+        selector_context: CodemodSelectorContext,
+    ) -> tuple[SourceLineReplacement, ...]:
+        cached_replacements = self.rewrite_line_replacement_cache.get(rewrite)
+        if cached_replacements is not None:
+            return cached_replacements
+        replacements = self.uncached_rewrite_line_replacements(
+            rewrite,
+            selector_context,
+        )
+        self.rewrite_line_replacement_cache[rewrite] = replacements
+        return replacements
+
+    def rewrites_have_line_conflict(
+        self,
+        first: PlannedSourceRewrite,
+        second: PlannedSourceRewrite,
+        selector_context: CodemodSelectorContext | None,
+    ) -> bool:
+        if selector_context is None:
+            return True
+        return self.line_replacements_conflict(
+            (
+                *self.rewrite_line_replacements(first, selector_context),
+                *self.rewrite_line_replacements(second, selector_context),
+            )
+        )
+
+    @staticmethod
+    def line_replacements_conflict(
+        replacements: tuple[SourceLineReplacement, ...],
+    ) -> bool:
+        previous_by_file: dict[str, tuple[int, int] | None] = {}
+        for replacement in sorted(
+            replacements,
+            key=lambda item: (
+                item.file_path,
+                item.start_line,
+                item.end_line,
+            ),
+        ):
+            previous = previous_by_file.get(replacement.file_path)
+            if previous is not None:
+                _previous_start, previous_end = previous
+                if replacement.start_line <= previous_end:
+                    return True
+            previous_by_file[replacement.file_path] = (
+                replacement.start_line,
+                replacement.end_line,
+            )
+        return False
+
+    @staticmethod
+    def smallest_enclosing_target_for_replacements(
+        replacements: tuple[SourceLineReplacement, ...],
+        selector_context: CodemodSelectorContext,
+    ) -> AstTargetDigest | None:
+        file_paths = frozenset(replacement.file_path for replacement in replacements)
+        if len(file_paths) != 1:
+            return None
+        source_path = next(iter(file_paths))
+        start_line = min(replacement.start_line for replacement in replacements)
+        end_line = max(replacement.end_line for replacement in replacements)
+        enclosing_targets = tuple(
+            target
+            for target in selector_context.source_index.ast_targets
+            if target.file_path == source_path
+            and target.line <= start_line
+            and target.end_line >= end_line
+        )
+        if not enclosing_targets:
+            return None
+        return min(
+            enclosing_targets,
+            key=lambda target: (
+                target.end_line - target.line,
+                target.line,
+                target.qualname,
+            ),
+        )
 
     @classmethod
     def line_replacements_fit_target(
