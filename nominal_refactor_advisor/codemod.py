@@ -322,6 +322,7 @@ class RefactorRecipeTargetShape(StrEnum):
     AUTOREGISTER_CLASS_REGISTRY = "autoregister_class_registry"
     AUTOREGISTER_STRATEGY_FAMILY = "autoregister_strategy_family"
     DATACLASS_PAYLOAD_PROJECTION = "dataclass_payload_projection"
+    DATACLASS_CONSTRUCTOR_PROJECTION = "dataclass_constructor_projection"
     ROLE_CASE_AUTHORITY = "role_case_authority"
 
 
@@ -21065,6 +21066,7 @@ class MappingSemanticMirrorRecipeBuilder(
                 class_family_index=context.class_family_index,
                 module_node_cache=context.module_node_cache,
                 ast_target_node_cache=context.ast_target_node_cache,
+                module_import_graph_cache=context.module_import_graph,
                 finding=finding,
             )
             if builder.supports_finding():
@@ -21133,6 +21135,7 @@ class MappingSemanticMirrorRecipeBuilder(
                     class_family_index=context.class_family_index,
                     module_node_cache=context.module_node_cache,
                     ast_target_node_cache=context.ast_target_node_cache,
+                    module_import_graph_cache=context.module_import_graph,
                     finding=finding,
                 ),
             )
@@ -21340,7 +21343,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         if len(target_ids) != 1:
             return None
         target = self.source_index.target_by_id[target_ids[0]]
-        node = self.ast_target_nodes_by_id[target.target_id]
+        node = self.ast_target_nodes_by_id.get(target.target_id)
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             return None
         return_node = self.return_node_at_line(node, seed.projection_location.line)
@@ -21602,6 +21605,380 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             "            if field_name in values\n"
             "        }\n"
         )
+
+
+@dataclass(frozen=True)
+class DataclassConstructorProjectionMethod:
+    """Authority-owned method that projects dataclass fields into a constructor."""
+
+    method_name: str
+    constructor_name: str
+
+
+@dataclass(frozen=True)
+class DataclassConstructorProjectionCallTarget:
+    """External constructor call that forwards dataclass-owned field values."""
+
+    source_path: str
+    function_qualname: str
+    call_node: ast.Call
+    field_values_by_name: Mapping[str, ast.expr]
+    remaining_keywords: tuple[ast.keyword, ...]
+
+
+@dataclass(frozen=True)
+class DataclassConstructorProjectionRecipeParts:
+    """Executable facts for routing a constructor projection through a dataclass."""
+
+    projection: DataclassConstructorProjectionCallTarget
+    authority: DataclassPayloadAuthorityTarget
+    authority_method: DataclassConstructorProjectionMethod
+    projection_old_source: str
+    projection_new_source: str
+    import_source: str | None
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-derive-dataclass-constructor-projection",
+            reason=(
+                "Derive mirrored constructor fields from the dataclass authority method."
+            ),
+            target_shape=RefactorRecipeTargetShape.DATACLASS_CONSTRUCTOR_PROJECTION,
+        )
+        if self.import_source is not None:
+            recipe = recipe.ensure_import(
+                self.projection.source_path,
+                self.import_source,
+                rationale="Import the dataclass authority used by the projection.",
+            )
+        return recipe.replace_text(
+            self.projection.function_qualname,
+            self.projection_old_source,
+            self.projection_new_source,
+            source_path=self.projection.source_path,
+            rationale=(
+                "Replace mirrored constructor fields with an authority-owned method."
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DataclassConstructorProjectionMappingRecipeBuilder(
+    MappingSemanticMirrorRecipeBuilder
+):
+    """Derive constructor keyword mirrors through an existing dataclass method."""
+
+    mapping_name: ClassVar[str] = "dataclass_constructor_projection"
+    registration_order: ClassVar[int] = 1010
+
+    finding: RefactorFinding
+
+    def supports_finding(self) -> bool:
+        return self.parts is not None
+
+    def explains_rejection(self) -> bool:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return False
+        mapping_name = self.finding.metrics.plan_mapping_name
+        return mapping_name is not None and ":return@" in mapping_name
+
+    def recipe(self) -> RefactorRecipe | None:
+        if self.parts is None:
+            return None
+        return self.parts.recipe_for(self.finding)
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return "dataclass constructor projection requires mapping metrics"
+        if self.parts is not None:
+            return "dataclass constructor projection has an executable authority recipe"
+        return (
+            "dataclass constructor projection requires a return constructor call whose "
+            "keyword fields match a dataclass authority and an existing authority method "
+            "that forwards those fields"
+        )
+
+    @cached_property
+    def parts(self) -> DataclassConstructorProjectionRecipeParts | None:
+        return (
+            Maybe.of(FindingSemanticMirrorLocations(self.finding).optional_seed_locations())
+            .project(self.parts_from_seed)
+            .unwrap_or_none()
+        )
+
+    def parts_from_seed(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+    ) -> DataclassConstructorProjectionRecipeParts | None:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return None
+        projection_source_path = self.resolved_source_path(
+            seed.projection_location.file_path
+        )
+        authority_source_path = self.resolved_source_path(seed.authority_location.file_path)
+        if projection_source_path is None or authority_source_path is None:
+            return None
+        if self.import_would_create_cycle(projection_source_path, authority_source_path):
+            return None
+        authority = self.authority_target(seed, authority_source_path)
+        projection = self.projection_target(seed, projection_source_path)
+        return (
+            Maybe.of((authority, projection))
+            .filter(lambda row: row[0] is not None and row[1] is not None)
+            .project(lambda row: self.recipe_parts(row[0], row[1]))
+            .unwrap_or_none()
+        )
+
+    def authority_target(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> DataclassPayloadAuthorityTarget | None:
+        authority_name = self.finding.metrics.plan_source_name
+        if authority_name is None:
+            return None
+        resolved_target = MappingSemanticMirrorRecipeStrategy.authority_class_target(
+            self,
+            seed.authority_location,
+            authority_name,
+        )
+        if resolved_target is None:
+            return None
+        if not DataclassPayloadProjectionMappingRecipeBuilder.is_dataclass_authority(
+            resolved_target.node
+        ):
+            return None
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        if not field_names <= frozenset(
+            DataclassPayloadProjectionMappingRecipeBuilder.annotated_field_names(
+                resolved_target.node
+            )
+        ):
+            return None
+        return DataclassPayloadAuthorityTarget(
+            source_path=source_path,
+            class_name=authority_name,
+            target=resolved_target.target,
+            node=resolved_target.node,
+        )
+
+    def projection_target(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> DataclassConstructorProjectionCallTarget | None:
+        function_qualname = EvidenceSymbol(seed.projection_location.symbol).subject
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path,
+            qualname=function_qualname,
+        ).target_ids(self)
+        if len(target_ids) != 1:
+            return None
+        target = self.source_index.target_by_id[target_ids[0]]
+        node = self.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return_node = DataclassPayloadProjectionMappingRecipeBuilder.return_node_at_line(
+            node,
+            seed.projection_location.line,
+        )
+        if return_node is None:
+            return None
+        matching_calls = tuple(
+            call
+            for call in ast.walk(return_node.value)
+            if isinstance(call, ast.Call)
+            and self.call_projects_dataclass_fields(call)
+        )
+        if len(matching_calls) != 1:
+            return None
+        call_node = matching_calls[0]
+        return DataclassConstructorProjectionCallTarget(
+            source_path=source_path,
+            function_qualname=function_qualname,
+            call_node=call_node,
+            field_values_by_name=self.field_values_by_name(call_node),
+            remaining_keywords=self.remaining_keywords(call_node),
+        )
+
+    def call_projects_dataclass_fields(self, call_node: ast.Call) -> bool:
+        if call_node.args:
+            return False
+        return frozenset(self.field_values_by_name(call_node)) == frozenset(
+            self.finding.metrics.plan_field_names
+        )
+
+    def recipe_parts(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassConstructorProjectionCallTarget,
+    ) -> DataclassConstructorProjectionRecipeParts | None:
+        constructor_name = _call_name(projection.call_node.func)
+        if constructor_name is None:
+            return None
+        authority_method = self.authority_method(authority.node, constructor_name)
+        if authority_method is None:
+            return None
+        projection_rewrite = self.projection_rewrite_parts(
+            authority,
+            authority_method,
+            projection,
+        )
+        if projection_rewrite is None:
+            return None
+        return DataclassConstructorProjectionRecipeParts(
+            projection=projection,
+            authority=authority,
+            authority_method=authority_method,
+            projection_old_source=projection_rewrite[0],
+            projection_new_source=projection_rewrite[1],
+            import_source=self.import_source(authority, projection),
+        )
+
+    def authority_method(
+        self,
+        authority_node: ast.ClassDef,
+        constructor_name: str,
+    ) -> DataclassConstructorProjectionMethod | None:
+        matches = tuple(
+            statement
+            for statement in authority_node.body
+            if isinstance(statement, ast.FunctionDef)
+            and self.method_projects_fields(statement, constructor_name)
+        )
+        if len(matches) != 1:
+            return None
+        return DataclassConstructorProjectionMethod(
+            method_name=matches[0].name,
+            constructor_name=constructor_name,
+        )
+
+    def method_projects_fields(
+        self,
+        method_node: ast.FunctionDef,
+        constructor_name: str,
+    ) -> bool:
+        return_nodes = tuple(
+            node
+            for node in ast.walk(method_node)
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Call)
+        )
+        return any(
+            _call_name(return_node.value.func) == constructor_name
+            and self.return_call_forwards_fields(return_node.value)
+            for return_node in return_nodes
+        )
+
+    def return_call_forwards_fields(self, call_node: ast.Call) -> bool:
+        forwarded_fields = {
+            keyword.arg
+            for keyword in call_node.keywords
+            if keyword.arg is not None
+            and self.self_field_name(keyword.value) == keyword.arg
+        }
+        return frozenset(self.finding.metrics.plan_field_names) <= forwarded_fields
+
+    def projection_rewrite_parts(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        authority_method: DataclassConstructorProjectionMethod,
+        projection: DataclassConstructorProjectionCallTarget,
+    ) -> tuple[str, str] | None:
+        source = self.sources_by_file_path[projection.source_path]
+        geometry = SourceTextGeometry(source)
+        call_offsets = geometry.node_offsets(projection.call_node)
+        if call_offsets is None:
+            return None
+        replacement_call = self.replacement_call(authority, authority_method, projection)
+        start_offset, end_offset = call_offsets
+        return source[start_offset:end_offset], ast.unparse(replacement_call)
+
+    def replacement_call(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        authority_method: DataclassConstructorProjectionMethod,
+        projection: DataclassConstructorProjectionCallTarget,
+    ) -> ast.Call:
+        field_values_by_name = projection.field_values_by_name
+        authority_instance = ast.Call(
+            func=ast.Name(id=authority.class_name, ctx=ast.Load()),
+            args=[],
+            keywords=[
+                ast.keyword(
+                    arg=field_name,
+                    value=copy.deepcopy(field_values_by_name[field_name]),
+                )
+                for field_name in self.finding.metrics.plan_field_names
+            ],
+        )
+        replacement_call = ast.Call(
+            func=ast.Attribute(
+                value=authority_instance,
+                attr=authority_method.method_name,
+                ctx=ast.Load(),
+            ),
+            args=[],
+            keywords=[
+                copy.deepcopy(keyword) for keyword in projection.remaining_keywords
+            ],
+        )
+        return ast.fix_missing_locations(replacement_call)
+
+    def field_values_by_name(self, call_node: ast.Call) -> dict[str, ast.expr]:
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        return {
+            keyword.arg: keyword.value
+            for keyword in call_node.keywords
+            if keyword.arg in field_names
+        }
+
+    def remaining_keywords(self, call_node: ast.Call) -> tuple[ast.keyword, ...]:
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        return tuple(
+            keyword
+            for keyword in call_node.keywords
+            if keyword.arg is not None and keyword.arg not in field_names
+        )
+
+    def import_source(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassConstructorProjectionCallTarget,
+    ) -> str | None:
+        if projection.source_path == authority.source_path:
+            return None
+        return MappingSemanticMirrorRecipeStrategy.import_source_for_path(
+            self,
+            projection_path=projection.source_path,
+            authority_path=authority.source_path,
+            authority_name=authority.class_name,
+        )
+
+    def import_would_create_cycle(
+        self,
+        projection_source_path: str,
+        authority_source_path: str,
+    ) -> bool:
+        return self.module_import_graph.import_would_create_cycle(
+            importing_file_path=projection_source_path,
+            imported_file_path=authority_source_path,
+        )
+
+    def resolved_source_path(self, file_path: str) -> str | None:
+        return SourcePathResolutionAuthority.from_source_index(
+            file_path,
+            self.source_index,
+        ).optional_path()
+
+    @staticmethod
+    def self_field_name(node: ast.expr) -> str | None:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            return node.attr
+        return None
 
 
 @dataclass(frozen=True)
@@ -23913,6 +24290,7 @@ class ContextualSemanticMirrorRecipeBuilder(
             class_family_index=context.class_family_index,
             module_node_cache=context.module_node_cache,
             ast_target_node_cache=context.ast_target_node_cache,
+            module_import_graph_cache=context.module_import_graph,
             finding=finding,
         )
 
@@ -24345,6 +24723,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                 class_family_index=selector_context.class_family_index,
                 module_node_cache=selector_context.module_nodes_by_file_path,
                 ast_target_node_cache=selector_context.ast_target_nodes_by_id,
+                module_import_graph_cache=selector_context.module_import_graph,
                 finding=finding,
             ).parts(),
             lambda selector_context, parts: parts.recipe_for(finding),
@@ -24498,7 +24877,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         if len(target_ids) != 1:
             return None
         target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id[target.target_id]
+        node = context.ast_target_nodes_by_id.get(target.target_id)
         if not isinstance(node, ast.ClassDef):
             return None
         return ResolvedClassTarget(target=target, node=node)
@@ -24586,7 +24965,9 @@ class BranchSemanticMirrorRecipeStrategy(
             source_index=context.source_index,
             sources_by_file_path=context.sources_by_file_path,
             class_family_index=context.class_family_index,
+            module_node_cache=context.module_node_cache,
             ast_target_node_cache=context.ast_target_node_cache,
+            module_import_graph_cache=context.module_import_graph,
             finding=finding,
         )
 

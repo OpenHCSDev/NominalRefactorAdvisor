@@ -2481,6 +2481,91 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
     assert "module cycle" in record.reason
 
 
+def test_semantic_mirror_constructor_projection_uses_dataclass_method(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLineReplacement:\n"
+        "    file_path: str\n"
+        "    start_line: int\n"
+        "    end_line: int\n"
+        "    replacement_lines: tuple[str, ...]\n"
+        "    rationale: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLineSpan:\n"
+        "    start_line: int\n"
+        "    end_line: int\n"
+        "\n"
+        "    def line_replacement(self, *, file_path, replacement_lines, rationale):\n"
+        "        return SourceLineReplacement(\n"
+        "            file_path=file_path,\n"
+        "            start_line=self.start_line,\n"
+        "            end_line=self.end_line,\n"
+        "            replacement_lines=replacement_lines,\n"
+        "            rationale=rationale,\n"
+        "        )\n"
+        "\n"
+        "def build_replacement(source_path, insertion_line, import_lines, reason):\n"
+        "    return (\n"
+        "        SourceLineReplacement(\n"
+        "            file_path=source_path,\n"
+        "            start_line=insertion_line,\n"
+        "            end_line=insertion_line - 1,\n"
+        "            replacement_lines=import_lines,\n"
+        "            rationale=reason,\n"
+        "        ),\n"
+        "    )\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        detector_id="semantic_mirror_without_descent",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Semantic mirror without descent",
+        summary=(
+            "Constructor projection repeats SourceLineSpan fields without "
+            "using the authority method."
+        ),
+        why="semantic fact is mirrored outside its nominal authority",
+        capability_gap="derive the projection from the authority instead",
+        relation_context="projection lacks a semantic-descent certificate",
+        evidence=(
+            SourceLocation(str(module_path), 26, "build_replacement:return@26"),
+            SourceLocation(str(module_path), 12, "SourceLineSpan"),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            field_names=("end_line", "start_line"),
+            mapping_name="build_replacement:return@26",
+            source_name="SourceLineSpan",
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+    recipe = plan.document.recipes[0]
+
+    assert record.status.value == "planned"
+    assert record.recipe_target_shape == "dataclass_constructor_projection"
+    assert plan.expected_removed_finding_count == 1
+    assert simulation.is_clean is True
+    assert tuple(operation.operation_kind().value for operation in recipe.operations) == (
+        "replace_text",
+    )
+    assert "SourceLineSpan(" in rewritten_source
+    assert ".line_replacement(" in rewritten_source
+    assert "start_line=insertion_line" in rewritten_source
+    assert "end_line=insertion_line - 1" in rewritten_source
+    assert "replacement_lines=import_lines" in rewritten_source
+
+
 def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     tmp_path: Path,
 ) -> None:
