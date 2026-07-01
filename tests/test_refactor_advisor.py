@@ -618,7 +618,7 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
                             "        return AlphaRunAuthority.run(value)\n"
                         ),
                         target=SourceRewriteTarget(
-                            source_path=module_path.as_posix(),
+                            file_path=module_path.as_posix(),
                             qualname="Alpha.run",
                         ),
                     ),
@@ -1620,6 +1620,27 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
         source_index.target_by_id[target_id].qualname
         for target_id in call_site_targets.target_ids
     ) == ("Alpha.run",)
+
+
+def test_class_family_index_resolves_subscripted_generic_base(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from typing import Generic, TypeVar\n\n\n"
+        "T = TypeVar('T')\n\n\n"
+        "class Base(Generic[T]):\n"
+        "    pass\n\n\n"
+        "class Child(Base[str]):\n"
+        "    pass\n",
+    )
+
+    class_index = build_class_family_index(parse_python_modules(tmp_path))
+    child_symbol = "pkg.mod.Child"
+
+    assert class_index.classes_by_symbol[child_symbol].declared_base_names == ("Base",)
+    assert class_index.ancestor_symbols(child_symbol) == ("pkg.mod.Base",)
 
 
 def test_finding_evidence_selector_resolves_role_case_owner_subject(
@@ -3014,7 +3035,7 @@ def test_refactor_recipe_extracts_authority(
             RecipeCallReplacement(
                 target=SourceRewriteTarget(
                     qualname="Parser.parse",
-                    source_path=module_path.as_posix(),
+                    file_path=module_path.as_posix(),
                 ),
                 old_source="old_helper(value)",
                 new_source="HelperAuthority.normalize(value)",
@@ -3074,7 +3095,7 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
                         RecipeCallReplacement(
                             target=SourceRewriteTarget(
                                 qualname="Parser.parse",
-                                source_path=parser_path.as_posix(),
+                                file_path=parser_path.as_posix(),
                             ),
                             old_source="old_helper(value)",
                             new_source="HelperAuthority.normalize(value)",
@@ -3137,7 +3158,7 @@ def test_codemod_plan_document_simulates_and_applies_recipes(
                     RecipeCallReplacement(
                         target=SourceRewriteTarget(
                             qualname="Parser.parse",
-                            source_path=module_path.as_posix(),
+                            file_path=module_path.as_posix(),
                         ),
                         old_source="old_helper(value)",
                         new_source="HelperAuthority.normalize(value)",
@@ -3231,7 +3252,7 @@ def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
         for item in report.violations
     )
     assert all(
-        item.target_context.target_identifier is not None for item in report.violations
+        item.target_context.target_id is not None for item in report.violations
     )
     assert report.to_dict()["violation_count"] == 4
 
@@ -11411,7 +11432,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
         document.recipes[0].target_shape
         is RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY
     )
-    assert document.recipes[0].rewrites[0].target.source_path == "pkg/mod.py"
+    assert document.recipes[0].rewrites[0].target.file_path == "pkg/mod.py"
 
 
 def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:

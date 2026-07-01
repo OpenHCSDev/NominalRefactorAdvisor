@@ -142,7 +142,7 @@ class ClassSymbolResolutionAuthority:
     allow_unique_unqualified: bool
 
     def symbol_for_node(self, node: ast.AST) -> str | None:
-        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(node)
+        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(self.reference_node(node))
         if parts is None:
             return None
         alias_symbol = self._import_alias_symbol(parts)
@@ -154,6 +154,12 @@ class ClassSymbolResolutionAuthority:
         if self.allow_unique_unqualified:
             return self._unique_unqualified_symbol(parts)
         return None
+
+    @staticmethod
+    def reference_node(node: ast.AST) -> ast.AST:
+        if isinstance(node, ast.Subscript):
+            return node.value
+        return node
 
     def _import_alias_symbol(self, parts: tuple[str, ...]) -> str | None:
         first, *rest = parts
@@ -175,6 +181,13 @@ class ClassSymbolResolutionAuthority:
         if len(parts) != 1:
             return None
         return self.unique_symbols_by_name.get(parts[0])
+
+    @classmethod
+    def declared_base_name(cls, node: ast.AST) -> str | None:
+        reference_node = cls.reference_node(node)
+        if ATTRIBUTE_CHAIN_AUTHORITY.project(reference_node) is None:
+            return None
+        return ast.unparse(reference_node)
 
 
 @dataclass(frozen=True)
@@ -341,9 +354,13 @@ def _build_class_family_index_cached(
             node=node,
             declared_base_names=tuple(
                 (
-                    ast.unparse(base)
+                    declared_base_name
                     for base in node.bases
-                    if ATTRIBUTE_CHAIN_AUTHORITY.project(base) is not None
+                    if (
+                        declared_base_name
+                        := ClassSymbolResolutionAuthority.declared_base_name(base)
+                    )
+                    is not None
                 )
             ),
             resolved_base_symbols=resolved_base_symbols,

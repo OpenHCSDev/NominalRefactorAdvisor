@@ -123,6 +123,11 @@ PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadSourceT = TypeVar("PayloadSourceT")
 PayloadValueT = TypeVar("PayloadValueT")
 DataclassRecordT = TypeVar("DataclassRecordT")
+SourceTargetIdentityValueT = TypeVar(
+    "SourceTargetIdentityValueT",
+    str,
+    str | None,
+)
 
 
 def dataclass_payload_field_names(
@@ -481,33 +486,11 @@ class ArchitectureGuardViolation:
         return {
             "rule_id": self.rule_id,
             "violation_kind": self.violation_kind.value,
-            "file_path": self.location.file_path,
             "line": self.location.line,
             "symbol": self.location.symbol,
-            "target_id": self.target_context.target_identifier,
-            "qualname": self.target_context.qualname,
+            **self.target_context.violation_payload(),
             "detail": self.detail,
         }
-
-
-@dataclass(frozen=True)
-class ArchitectureGuardViolationTarget:
-    """Source-index target context for one architecture guard violation."""
-
-    target_identifier: str | None = None
-    qualname: str = "<module>"
-
-    @classmethod
-    def from_target(
-        cls,
-        target: AstTargetDigest | None,
-    ) -> "ArchitectureGuardViolationTarget":
-        if target is None:
-            return cls()
-        return cls(
-            target_identifier=target.target_id,
-            qualname=target.qualname,
-        )
 
 
 @dataclass(frozen=True)
@@ -989,6 +972,14 @@ SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY = (
 
 
 @dataclass(frozen=True, kw_only=True)
+class SourceTargetIdentity(Generic[SourceTargetIdentityValueT]):
+    """Source-index target identity fields shared by selectors and resolved spans."""
+
+    target_id: SourceTargetIdentityValueT
+    file_path: SourceTargetIdentityValueT
+
+
+@dataclass(frozen=True, kw_only=True)
 class AstTargetGeometryKey:
     """Stable key joining source-index target geometry to parsed AST nodes."""
 
@@ -998,7 +989,7 @@ class AstTargetGeometryKey:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceTargetSpan(AstTargetGeometryKey):
+class SourceTargetSpan(SourceTargetIdentity[str], AstTargetGeometryKey):
     """Resolved source-index target span shared by codemod analyses."""
 
     target_id: str
@@ -1299,12 +1290,12 @@ def _parsed_modules_from_source_mapping(
 
 
 @dataclass(frozen=True)
-class SourceRewriteTarget:
+class SourceRewriteTarget(SourceTargetIdentity[str | None]):
     """Source-index target selector for a planned rewrite."""
 
-    target_identifier: str | None = None
+    target_id: str | None = None
     qualname: str | None = None
-    source_path: str | None = None
+    file_path: str | None = None
 
     @classmethod
     def payload_bindings(
@@ -1321,8 +1312,8 @@ class SourceRewriteTarget:
         return (
             PayloadBinding(
                 "target_id",
-                "target_identifier",
-                lambda target: target.target_identifier,
+                "target_id",
+                lambda target: target.target_id,
                 optional_source_plan_payload_string,
             ),
             PayloadBinding(
@@ -1333,8 +1324,8 @@ class SourceRewriteTarget:
             ),
             PayloadBinding(
                 "file_path",
-                "source_path",
-                lambda target: target.source_path,
+                "file_path",
+                lambda target: target.file_path,
                 optional_source_plan_payload_string,
             ),
         )
@@ -1344,78 +1335,78 @@ class SourceRewriteTarget:
         payload = SourceRewritePlanPayload(fields)
         return payload.source_target()
 
-    def optional_source_path(self, source_index: SourceIndex) -> str | None:
-        if self.source_path is None:
+    def optional_file_path(self, source_index: SourceIndex) -> str | None:
+        if self.file_path is None:
             return None
         return SourcePathResolutionAuthority.from_source_index(
-            self.source_path,
+            self.file_path,
             source_index,
         ).required_path()
 
-    def required_source_path(self, source_index: SourceIndex) -> str:
-        source_path = self.optional_source_path(source_index)
-        if source_path is None:
+    def required_file_path(self, source_index: SourceIndex) -> str:
+        file_path = self.optional_file_path(source_index)
+        if file_path is None:
             raise ValueError("Source rewrite target requires file_path")
-        return source_path
+        return file_path
 
-    def optional_identifier(
+    def optional_target_id(
         self,
         source_index: SourceIndex,
         *,
-        eligible_target_identifiers: Iterable[str] | None = None,
+        eligible_target_ids: Iterable[str] | None = None,
     ) -> str | None:
-        eligible_identifiers = (
-            set(eligible_target_identifiers)
-            if eligible_target_identifiers is not None
+        eligible_ids = (
+            set(eligible_target_ids)
+            if eligible_target_ids is not None
             else set(source_index.target_by_id)
         )
-        if self.target_identifier is not None:
-            if self.target_identifier in eligible_identifiers:
-                return self.target_identifier
+        if self.target_id is not None:
+            if self.target_id in eligible_ids:
+                return self.target_id
             return None
-        source_path = self.optional_source_path(source_index)
+        file_path = self.optional_file_path(source_index)
         if self.qualname is None:
-            return self._optional_module_identifier(
+            return self._optional_module_target_id(
                 source_index,
-                eligible_identifiers,
-                source_path,
+                eligible_ids,
+                file_path,
             )
-        matching_identifiers = [
-            target_identifier
-            for target_identifier in sorted(eligible_identifiers)
+        matching_target_ids = [
+            target_id
+            for target_id in sorted(eligible_ids)
             if self.matches_target(
-                source_index.target_by_id.get(target_identifier),
-                source_path,
+                source_index.target_by_id.get(target_id),
+                file_path,
             )
         ]
-        if len(matching_identifiers) != 1:
+        if len(matching_target_ids) != 1:
             return None
-        return matching_identifiers[0]
+        return matching_target_ids[0]
 
-    def _optional_module_identifier(
+    def _optional_module_target_id(
         self,
         source_index: SourceIndex,
-        eligible_identifiers: set[str],
-        source_path: str | None,
+        eligible_target_ids: set[str],
+        file_path: str | None,
     ) -> str | None:
-        if source_path is None:
+        if file_path is None:
             return None
-        matching_identifiers = [
-            target_identifier
-            for target_identifier in sorted(eligible_identifiers)
-            for target in (source_index.target_by_id.get(target_identifier),)
+        matching_target_ids = [
+            target_id
+            for target_id in sorted(eligible_target_ids)
+            for target in (source_index.target_by_id.get(target_id),)
             if target is not None
             and target.is_module
-            and target.file_path == source_path
+            and target.file_path == file_path
         ]
-        if len(matching_identifiers) != 1:
+        if len(matching_target_ids) != 1:
             return None
-        return matching_identifiers[0]
+        return matching_target_ids[0]
 
-    def required_identifier(self, source_index: SourceIndex) -> str:
-        target_identifier = self.optional_identifier(source_index)
-        if target_identifier is not None:
-            return target_identifier
+    def required_target_id(self, source_index: SourceIndex) -> str:
+        target_id = self.optional_target_id(source_index)
+        if target_id is not None:
+            return target_id
         raise ValueError(
             "Source rewrite target did not resolve to exactly one source-index target"
         )
@@ -1423,12 +1414,12 @@ class SourceRewriteTarget:
     def matches_target(
         self,
         target: AstTargetDigest | None,
-        source_path: str | None,
+        file_path: str | None,
     ) -> bool:
         return (
             target is not None
             and target.qualname == self.qualname
-            and (source_path is None or target.file_path == source_path)
+            and (file_path is None or target.file_path == file_path)
         )
 
     def to_dict(self) -> JsonObject:
@@ -1439,6 +1430,32 @@ class SourceRewriteTarget:
                 for item in binding.payload_items(self)
             )
         )
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardViolationTarget(SourceRewriteTarget):
+    """Source-index target context for one architecture guard violation."""
+
+    target_id: str | None = None
+    qualname: str | None = "<module>"
+    file_path: str | None = None
+
+    @classmethod
+    def from_location_target(
+        cls,
+        location: SourceLocation,
+        target: AstTargetDigest | None,
+    ) -> "ArchitectureGuardViolationTarget":
+        if target is None:
+            return cls(file_path=location.file_path)
+        return cls(
+            target_id=target.target_id,
+            qualname=target.qualname,
+            file_path=target.file_path,
+        )
+
+    def violation_payload(self) -> JsonObject:
+        return JsonObject(asdict(self))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2697,9 +2714,9 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
                 continue
             target = SourceRewriteTarget(
                 qualname=indexed_class.qualname,
-                source_path=indexed_class.file_path,
+                file_path=indexed_class.file_path,
             )
-            target_id = target.optional_identifier(source_index)
+            target_id = target.optional_target_id(source_index)
             if target_id is not None:
                 target_ids.append(target_id)
         return sorted_tuple(target_ids)
@@ -3027,7 +3044,7 @@ class CodemodReplacementPlanScaffoldReport(CodemodPlanScaffoldReport):
         return RefactorRecipeRewrite(
             target=SourceRewriteTarget(
                 qualname=target.qualname,
-                source_path=target.file_path,
+                file_path=target.file_path,
             ),
             replacement_source=record.source,
             rationale=f"Exact current source scaffold for {target.qualname}.",
@@ -3288,7 +3305,7 @@ class RecipeCallReplacement(SourceRewriteTargetReference):
         *,
         rationale: str,
     ) -> SourceLineReplacement:
-        target_identifier = self.target.required_identifier(source_index)
+        target_identifier = self.target.required_target_id(source_index)
         target_digest = source_index.target_by_id[target_identifier]
         return SourceTargetEditor(source_by_path, target_digest).exact_text_replacement(
             self.old_source,
@@ -3421,9 +3438,9 @@ class RefactorRecipeOperationTemplate:
         }
         payload.update(
             SourceRewriteTarget(
-                target_identifier=target.target_id,
+                target_id=target.target_id,
                 qualname=target.qualname,
-                source_path=target.file_path,
+                file_path=target.file_path,
             ).to_dict()
         )
         if default_rationale and "rationale" not in payload:
@@ -3814,7 +3831,7 @@ class RefactorRecipeRewrite(ReplacementSource, SourceRewritePlanItem):
     """One recipe step that replaces a source-index target."""
 
     def planned_rewrite(self, source_index: SourceIndex) -> PlannedSourceRewrite:
-        target_identifier = self.target.required_identifier(source_index)
+        target_identifier = self.target.required_target_id(source_index)
         return PlannedSourceRewrite(
             target_id=target_identifier,
             replacement_source=self.replacement_source,
@@ -4238,9 +4255,9 @@ class RefactorRecipeOperation(
         source_index: SourceIndex,
         operation_name: str,
     ) -> str:
-        if self.target.source_path is None:
+        if self.target.file_path is None:
             raise ValueError(f"{operation_name} requires file_path")
-        return self.target.required_source_path(source_index)
+        return self.target.required_file_path(source_index)
 
     def required_import_replacements(
         self,
@@ -4252,7 +4269,7 @@ class RefactorRecipeOperation(
         default_rationale: str,
     ) -> tuple[SourceLineReplacement, ...]:
         return EnsureImportOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             payload_value=import_source,
             rationale=self.rationale_text(default_rationale),
         ).line_replacements(source_index, source_by_path)
@@ -4261,7 +4278,7 @@ class RefactorRecipeOperation(
         self,
         source_index: SourceIndex,
     ) -> tuple[str, AstTargetDigest]:
-        target_identifier = self.target.required_identifier(source_index)
+        target_identifier = self.target.required_target_id(source_index)
         return target_identifier, source_index.target_by_id[target_identifier]
 
     def target_node(
@@ -4486,10 +4503,10 @@ class CreateFileOperation(StringPayloadOperation):
         )
 
     def created_source_path(self, source_index: SourceIndex) -> str:
-        if self.target.source_path is None:
+        if self.target.file_path is None:
             raise ValueError("create_file requires file_path")
         return SourceCreationPathAuthority.from_source_index(
-            self.target.source_path,
+            self.target.file_path,
             source_index,
         ).required_path()
 
@@ -4749,7 +4766,7 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
                 source_index=source_index,
                 sources_by_file_path=source_by_path,
             ),
-            source_path=self.target.optional_source_path(source_index),
+            source_path=self.target.optional_file_path(source_index),
             class_names=self.class_names,
         )
         self.validate_targets(targets)
@@ -6442,7 +6459,7 @@ class DeleteTargetOperation(RefactorRecipeOperation):
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
         del source_by_path
-        target_identifier = self.target.required_identifier(source_index)
+        target_identifier = self.target.required_target_id(source_index)
         target_digest = source_index.target_by_id[target_identifier]
         return (
             SourceLineReplacement.delete_target(
@@ -6695,7 +6712,7 @@ class ExtractAuthorityOperation(RefactorRecipeOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        target_identifier = self.target.required_identifier(source_index)
+        target_identifier = self.target.required_target_id(source_index)
         target_digest = source_index.target_by_id[target_identifier]
         return (
             SourceLineReplacement(
@@ -7741,8 +7758,8 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     ) -> AstTargetDigest:
         target_identifier = SourceRewriteTarget(
             qualname=symbol_qualname,
-            source_path=source_path,
-        ).required_identifier(source_index)
+            file_path=source_path,
+        ).required_target_id(source_index)
         target = source_index.target_by_id[target_identifier]
         if (
             target.file_path != source_path
@@ -10202,7 +10219,7 @@ class DispatchToPolymorphismOperation(
                 "from metaclass_registry import AutoRegisterMeta\n",
             )
             for replacement in EnsureImportOperation(
-                target=SourceRewriteTarget(source_path=source_path),
+                target=SourceRewriteTarget(file_path=source_path),
                 payload_value=import_source,
                 rationale=self.rationale_text("Import dispatch strategy support."),
             ).line_replacements(source_index, source_by_path)
@@ -10663,7 +10680,7 @@ def codemod_dsl_target_example_payload() -> JsonObject:
 
     return SourceRewriteTarget(
         qualname=CodemodDslPlaceholder("target_qualname").value,
-        source_path=CodemodDslPlaceholder("file_path").value,
+        file_path=CodemodDslPlaceholder("file_path").value,
     ).to_dict()
 
 
@@ -10693,7 +10710,7 @@ def codemod_dsl_operation_plan_template_example_payload() -> JsonObject:
             operations=(
                 CreateFileOperation(
                     target=SourceRewriteTarget(
-                        source_path=CodemodDslPlaceholder("new_file_path").value,
+                        file_path=CodemodDslPlaceholder("new_file_path").value,
                     ),
                     payload_value="",
                     rationale=CodemodDslPlaceholder("rationale").value,
@@ -12583,9 +12600,9 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         target = SourceRewriteTarget(
-            target_identifier=target_identifier,
+            target_id=target_identifier,
             qualname=qualname,
-            source_path=source_path,
+            file_path=source_path,
         )
         rewrite = RefactorRecipeRewrite(
             target=target,
@@ -12602,7 +12619,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = CreateFileOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             payload_value=source,
             rationale=rationale or self.reason,
         )
@@ -12619,7 +12636,7 @@ class RefactorRecipe:
         operation = InsertBeforeTargetOperation(
             target=SourceRewriteTarget(
                 qualname=target_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             payload_value=source,
             rationale=rationale or self.reason,
@@ -12637,7 +12654,7 @@ class RefactorRecipe:
         operation = InsertAfterTargetOperation(
             target=SourceRewriteTarget(
                 qualname=target_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             payload_value=source,
             rationale=rationale or self.reason,
@@ -12652,7 +12669,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = InsertAfterImportsOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             payload_value=source,
             rationale=rationale or self.reason,
         )
@@ -12666,7 +12683,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = EnsureImportOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             payload_value=import_source,
             rationale=rationale or self.reason,
         )
@@ -12681,7 +12698,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = RemoveImportNamesOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             module_name=module_name,
             import_names=tuple(import_names),
             rationale=rationale or self.reason,
@@ -12700,7 +12717,7 @@ class RefactorRecipe:
         operation = MoveSymbolToModuleOperation(
             target=SourceRewriteTarget(
                 qualname=symbol_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             destination_path=destination_path,
             replacement_import=MovedSymbolImportPolicy.from_source(replacement_import),
@@ -12718,7 +12735,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = MoveSymbolsToModuleOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             symbol_qualnames=tuple(symbol_qualnames),
             destination_path=destination_path,
             replacement_import=MovedSymbolImportPolicy.from_source(replacement_import),
@@ -12736,7 +12753,7 @@ class RefactorRecipe:
         operation = DeleteTargetOperation(
             target=SourceRewriteTarget(
                 qualname=target_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             rationale=rationale or self.reason,
         )
@@ -12786,7 +12803,7 @@ class RefactorRecipe:
         operation = ExtractAuthorityOperation(
             target=SourceRewriteTarget(
                 qualname=helper_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             authority_source=authority_source,
             call_replacements=tuple(call_replacements),
@@ -12809,7 +12826,7 @@ class RefactorRecipe:
         operation = ExtractMethodsToClassOperation(
             target=SourceRewriteTarget(
                 qualname=source_class_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             destination_class_name=destination_class_name,
             extracted_method_names=tuple(method_names),
@@ -12831,7 +12848,7 @@ class RefactorRecipe:
         operation = AddClassBaseOperation(
             target=SourceRewriteTarget(
                 qualname=class_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             payload_value=base_name,
             rationale=rationale or self.reason,
@@ -12849,7 +12866,7 @@ class RefactorRecipe:
         operation = RemoveClassBaseOperation(
             target=SourceRewriteTarget(
                 qualname=class_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             payload_value=base_name,
             rationale=rationale or self.reason,
@@ -12873,7 +12890,7 @@ class RefactorRecipe:
         operation = ExposeGlobalCandidateCacheContextOperation(
             target=SourceRewriteTarget(
                 qualname=class_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             candidate_type_name=candidate_type_name,
             candidate_collector_name=candidate_collector_name,
@@ -12900,7 +12917,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = CollapseFieldsToCarrierOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             carrier_name=carrier_name,
             class_names=tuple(class_names),
             field_declaration_sources=tuple(field_declaration_sources),
@@ -12924,7 +12941,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = ReplaceFieldsWithCarrierOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             class_name=class_name,
             carrier_field_declaration=carrier_field_declaration,
             field_projection_pairs=tuple(field_projection_pairs),
@@ -12945,7 +12962,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = ConvertManualRegistryToAutoregisterOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             base_name=base_name,
             registry_name=registry_name,
             registry_key_attribute=registry_key_attribute,
@@ -12969,7 +12986,7 @@ class RefactorRecipe:
         operation = DispatchToPolymorphismOperation(
             target=SourceRewriteTarget(
                 qualname=function_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             dispatch_axis_expression=dispatch_axis_expression,
             literal_cases=tuple(literal_cases),
@@ -12990,7 +13007,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = PromoteClassDeclarationsOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             base_name=base_name,
             class_names=tuple(class_names),
             declaration_names=tuple(declaration_names),
@@ -13008,7 +13025,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = PromoteClassMethodsOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             base_name=base_name,
             class_names=tuple(class_names),
             method_names=tuple(method_names),
@@ -13028,7 +13045,7 @@ class RefactorRecipe:
         operation = ReplaceTextOperation(
             target=SourceRewriteTarget(
                 qualname=target_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             old_source=old_source,
             new_source=new_source,
@@ -13047,7 +13064,7 @@ class RefactorRecipe:
         operation = DeleteClassAssignmentOperation(
             target=SourceRewriteTarget(
                 qualname=class_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             payload_value=attribute_name,
             rationale=rationale or self.reason,
@@ -13062,7 +13079,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = DeleteModuleAssignmentsOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             assignment_names=tuple(assignment_names),
             rationale=rationale or self.reason,
         )
@@ -13077,7 +13094,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = ReplaceModuleAssignmentOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             assignment_name=assignment_name,
             payload_value=source,
             rationale=rationale or self.reason,
@@ -13095,7 +13112,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = DeriveAutoregisterInstanceViewOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             base_name=base_name,
             assignment_name=assignment_name,
             class_key_pairs=tuple(class_key_pairs),
@@ -13115,7 +13132,7 @@ class RefactorRecipe:
         operation = ReplaceFunctionSignatureOperation(
             target=SourceRewriteTarget(
                 qualname=function_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             payload_value=signature_source,
             rationale=rationale or self.reason,
@@ -13133,7 +13150,7 @@ class RefactorRecipe:
         operation = ReplaceFunctionBodyOperation(
             target=SourceRewriteTarget(
                 qualname=function_qualname,
-                source_path=source_path,
+                file_path=source_path,
             ),
             payload_value=body_source,
             rationale=rationale or self.reason,
@@ -13148,7 +13165,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = ProductRecordToDataclassOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             payload_value=record_name,
             rationale=rationale or self.reason,
         )
@@ -13162,7 +13179,7 @@ class RefactorRecipe:
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = ProductRecordsToDataclassesOperation(
-            target=SourceRewriteTarget(source_path=source_path),
+            target=SourceRewriteTarget(file_path=source_path),
             record_names=tuple(record_names),
             rationale=rationale or self.reason,
         )
@@ -13512,16 +13529,16 @@ class CodemodPlanSequence:
     def explicit_source_paths(self) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
-                target.source_path
+                target.file_path
                 for target in self.referenced_source_targets()
-                if target.source_path is not None
+                if target.file_path is not None
             )
         )
 
     @property
     def has_unresolved_source_targets(self) -> bool:
         return any(
-            target.source_path is None for target in self.referenced_source_targets()
+            target.file_path is None for target in self.referenced_source_targets()
         )
 
     def source_rewrite_batch_from_snapshot(
@@ -18835,8 +18852,8 @@ class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
             )
         target_id = SourceRewriteTarget(
             qualname=family_name,
-            source_path=source_path,
-        ).optional_identifier(context.source_index)
+            file_path=source_path,
+        ).optional_target_id(context.source_index)
         if target_id is None:
             return FindingRecipeEvaluation(
                 rejection_reason="semantic inheritance family root did not resolve"
@@ -19020,7 +19037,7 @@ class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
                 continue
             target_id = SourceRewriteTarget(
                 qualname=class_name,
-            ).optional_identifier(context.source_index)
+            ).optional_target_id(context.source_index)
             if target_id is None:
                 continue
             target = context.source_index.target_by_id[target_id]
@@ -20041,7 +20058,7 @@ class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             filename=resolved_source_path,
         )
         operation = ConvertManualRegistryToAutoregisterOperation(
-            target=SourceRewriteTarget(source_path=resolved_source_path),
+            target=SourceRewriteTarget(file_path=resolved_source_path),
             base_name="RegisteredClass",
             registry_name=registry_name,
             registry_key_attribute=DEFAULT_REGISTRY_KEY_ATTRIBUTE,
@@ -20934,7 +20951,7 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
         location: "SemanticMirrorAuthorityLocation",
     ) -> tuple[SourceLineReplacement, ...]:
         return EnsureImportOperation(
-            target=SourceRewriteTarget(source_path=location.projection_path),
+            target=SourceRewriteTarget(file_path=location.projection_path),
             payload_value=location.import_source(),
             rationale="Import nominal role-case authority.",
         ).line_replacements(self.source_index, self.sources_by_file_path)
@@ -23308,7 +23325,7 @@ class AutoregisterInstanceViewRecipeBuilder(ContextualSemanticMirrorRecipeBuilde
         if not isinstance(value, ast.Dict):
             return False
         operation = DeriveAutoregisterInstanceViewOperation(
-            target=SourceRewriteTarget(source_path=resolved_source_path),
+            target=SourceRewriteTarget(file_path=resolved_source_path),
             base_name=parts.base_name,
             assignment_name=parts.assignment_name,
             class_key_pairs=parts.class_key_pairs,
@@ -23897,7 +23914,7 @@ class ProjectedBatchRewriteSet:
             recipe_id="finding-backed-merged-codemod-plan",
             rewrites=tuple(
                 RefactorRecipeRewrite(
-                    target=SourceRewriteTarget(target_identifier=rewrite.target_id),
+                    target=SourceRewriteTarget(target_id=rewrite.target_id),
                     replacement_source=rewrite.replacement_source,
                     rationale=rewrite.rationale,
                 )
@@ -24707,8 +24724,8 @@ class DescriptorPropertyFindingRecipeSynthesizer(
             )
         target_id = SourceRewriteTarget(
             qualname=evidence.symbol,
-            source_path=evidence.file_path,
-        ).optional_identifier(context.source_index)
+            file_path=evidence.file_path,
+        ).optional_target_id(context.source_index)
         if target_id is None:
             return FindingRecipeEvaluation(
                 rejection_reason="descriptor property evidence did not resolve to one target"
@@ -25639,9 +25656,9 @@ def _authority_boundary_target_id(
     candidate: CodemodCandidate,
     source_index: SourceIndex,
 ) -> str | None:
-    return rewrite.target.optional_identifier(
+    return rewrite.target.optional_target_id(
         source_index,
-        eligible_target_identifiers=candidate.target_ids,
+        eligible_target_ids=candidate.target_ids,
     )
 
 
@@ -26451,12 +26468,16 @@ class _ArchitectureGuardVisitor(ast.NodeVisitor):
         target = _source_index_target_for_line(
             self.source_index, self.source_path, line
         )
-        target_context = ArchitectureGuardViolationTarget.from_target(target)
+        location = SourceLocation(self.source_path, line, symbol)
+        target_context = ArchitectureGuardViolationTarget.from_location_target(
+            location,
+            target,
+        )
         self.violations.append(
             ArchitectureGuardViolation(
                 rule_id=rule.rule_id,
                 violation_kind=violation_kind,
-                location=SourceLocation(self.source_path, line, symbol),
+                location=location,
                 target_context=target_context,
                 detail=detail,
             )
