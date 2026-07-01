@@ -16465,6 +16465,8 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert payload["class_count"] == 1
     assert payload["executable_class_count"] == 1
     assert payload["expected_removed_finding_count"] == 1
+    assert class_payload["execution_class"]["evidence_site_count"] >= 1
+    assert class_payload["execution_class"]["evidence"]
     assert class_payload["selector"]["selector"] == "finding_evidence_target"
     assert class_payload["replacement_scaffold"]["selected_count"] >= 1
     assert class_payload["synthesis_status_counts"]["planned"] == 1
@@ -16833,6 +16835,7 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     projected = payload["projected_findings"]
     class_projection = payload["class_plan_projected_deltas"]
     class_delta = class_projection["classes"][0]
+    site_delta = class_delta["site_deltas"][0]
 
     assert result.returncode == 0, result.stderr
     assert payload["class_count"] == 1
@@ -16844,6 +16847,9 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert class_delta["fulfilled_expected_removals"] is True
     assert class_delta["status_counts"]["eliminated"] >= 1
     assert class_delta["changes"][0]["status"] == "eliminated"
+    assert site_delta["finding_id"] == payload["classes"][0]["finding_ids"][0]
+    assert site_delta["status_counts"]["eliminated"] >= 1
+    assert site_delta["fulfilled_expected_removal"] is True
 
 
 def test_module_cli_simulates_projected_findings_with_executable_continuation(
@@ -16966,6 +16972,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodAuthoringWorkflowReadiness
     from nominal_refactor_advisor import CodemodClassPlanProjectedDelta
     from nominal_refactor_advisor import CodemodClassPlanProjectedDeltaReport
+    from nominal_refactor_advisor import CodemodClassPlanSiteProjectedDelta
     from nominal_refactor_advisor import CodemodFindingChangeCarrier
     from nominal_refactor_advisor import CodemodFindingChangeProjection
     from nominal_refactor_advisor import CodemodFindingClassChange
@@ -17079,6 +17086,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert (
         CodemodClassPlanProjectedDeltaReport.__name__
         == "CodemodClassPlanProjectedDeltaReport"
+    )
+    assert (
+        CodemodClassPlanSiteProjectedDelta.__name__
+        == "CodemodClassPlanSiteProjectedDelta"
     )
     assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
     assert FindingRecipeClassPlan.__name__ == "FindingRecipeClassPlan"

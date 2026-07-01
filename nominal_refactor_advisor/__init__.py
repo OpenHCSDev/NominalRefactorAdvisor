@@ -111,6 +111,7 @@ from .codemod_authoring import (
 from .codemod_workflow import (
     CodemodClassPlanProjectedDelta,
     CodemodClassPlanProjectedDeltaReport,
+    CodemodClassPlanSiteProjectedDelta,
     CodemodFindingChangeCarrier,
     CodemodFindingChangeProjection,
     CodemodFindingClassChange,

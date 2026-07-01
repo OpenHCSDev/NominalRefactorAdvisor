@@ -14709,6 +14709,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     def to_dict(self) -> JsonObject:
         return {
             "class_id": self.execution_class.class_id,
+            "execution_class": self.execution_class.to_dict(),
             "subsystem": self.execution_class.subsystem,
             "finding_ids": self.finding_ids,
             "finding_count": self.finding_count,

@@ -27,6 +27,7 @@ from .codemod import (
     CodemodSourceSnapshot,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
+    FindingRecipeClassSitePlan,
     FindingRecipePlan,
     FindingRecipeSynthesisBoundary,
     FindingRecipeSynthesisReport,
@@ -515,11 +516,7 @@ class CodemodFindingClassDelta:
         return sum(1 for change in self.changes if change.status is status)
 
     def status_counts(self) -> JsonObject:
-        return {
-            status.value: self.count_status(status)
-            for status in CodemodFindingClassStatus
-            if self.count_status(status)
-        }
+        return _finding_class_change_status_counts(self.changes)
 
     def changes_for_before_ids(
         self,
@@ -540,6 +537,16 @@ class CodemodFindingClassDelta:
             "status_counts": self.status_counts(),
             "changes": tuple(change.to_dict() for change in self.changes),
         }
+
+
+def _finding_class_change_status_counts(
+    changes: tuple[CodemodFindingClassChange, ...],
+) -> JsonObject:
+    return {
+        status.value: sum(1 for change in changes if change.status is status)
+        for status in CodemodFindingClassStatus
+        if any(change.status is status for change in changes)
+    }
 
 
 @dataclass(frozen=True)
@@ -1442,11 +1449,20 @@ class CodemodClassPlanProjectedDelta:
 
     @property
     def status_counts(self) -> JsonObject:
-        return {
-            status.value: sum(1 for change in self.changes if change.status is status)
-            for status in CodemodFindingClassStatus
-            if any(change.status is status for change in self.changes)
-        }
+        return _finding_class_change_status_counts(self.changes)
+
+    @property
+    def site_deltas(self) -> tuple["CodemodClassPlanSiteProjectedDelta", ...]:
+        return tuple(
+            CodemodClassPlanSiteProjectedDelta.from_site_plan(
+                site_plan,
+                self.changes,
+                expected_removed_finding_ids=(
+                    self.class_plan.expected_removed_finding_ids
+                ),
+            )
+            for site_plan in self.class_plan.site_plans
+        )
 
     @property
     def fulfilled_expected_removals(self) -> bool:
@@ -1471,6 +1487,65 @@ class CodemodClassPlanProjectedDelta:
                 self.class_plan.expected_removed_finding_count
             ),
             "fulfilled_expected_removals": self.fulfilled_expected_removals,
+            "status_counts": self.status_counts,
+            "changes": tuple(change.to_dict() for change in self.changes),
+            "site_deltas": tuple(site_delta.to_dict() for site_delta in self.site_deltas),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodClassPlanSiteProjectedDelta:
+    """Projected finding-class status for one planned site inside a class plan."""
+
+    site_plan: FindingRecipeClassSitePlan
+    changes: tuple[CodemodFindingClassChange, ...]
+    expected_removed_finding_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def from_site_plan(
+        cls,
+        site_plan: FindingRecipeClassSitePlan,
+        changes: tuple[CodemodFindingClassChange, ...],
+        *,
+        expected_removed_finding_ids: tuple[str, ...],
+    ) -> "CodemodClassPlanSiteProjectedDelta":
+        return cls(
+            site_plan=site_plan,
+            changes=tuple(
+                change
+                for change in changes
+                if site_plan.finding_id in change.before_finding_ids
+            ),
+            expected_removed_finding_ids=tuple(
+                finding_id
+                for finding_id in expected_removed_finding_ids
+                if finding_id == site_plan.finding_id
+            ),
+        )
+
+    @property
+    def status_counts(self) -> JsonObject:
+        return _finding_class_change_status_counts(self.changes)
+
+    @property
+    def fulfilled_expected_removal(self) -> bool:
+        surviving_ids = {
+            finding_id
+            for change in self.changes
+            for finding_id in change.after_finding_ids
+        }
+        return not (
+            frozenset(self.expected_removed_finding_ids) & frozenset(surviving_ids)
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "finding_id": self.site_plan.finding_id,
+            "detector_id": self.site_plan.detector_id,
+            "title": self.site_plan.title,
+            "synthesis_status": self.site_plan.status.value,
+            "expected_removed_finding_ids": self.expected_removed_finding_ids,
+            "fulfilled_expected_removal": self.fulfilled_expected_removal,
             "status_counts": self.status_counts,
             "changes": tuple(change.to_dict() for change in self.changes),
         }
