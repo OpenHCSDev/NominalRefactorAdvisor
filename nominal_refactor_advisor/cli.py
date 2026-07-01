@@ -1126,6 +1126,50 @@ class JsonSummaryPreparseCachePolicy:
 
 
 @dataclass(frozen=True)
+class FastPreparseSemanticDescentContext:
+    """Semantic-descent graph context available to a pre-parse cache lookup."""
+
+    analysis_source: SemanticDescentGraphAnalysisSource
+    latest_graph: SemanticDescentGraph | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class FastPreparseSemanticDescentSourceAuthority:
+    """Load cached repo graph context for evidence-local partial scans."""
+
+    preparse_cache_policy: JsonSummaryPreparseCachePolicy
+    base_source: SemanticDescentGraphAnalysisSource
+    roots: tuple[Path, ...]
+    semantic_descent_cache_dir: Path | None
+    source_policy: PythonSourcePathPolicy
+    use_cache: bool
+
+    def context(self) -> FastPreparseSemanticDescentContext:
+        latest_graph = self.latest_graph()
+        if latest_graph is None:
+            return FastPreparseSemanticDescentContext(self.base_source)
+        return FastPreparseSemanticDescentContext(
+            SemanticDescentGraphAnalysisSource(
+                cached_graph=latest_graph,
+                cache_dir=self.semantic_descent_cache_dir,
+                cache_roots=self.roots,
+                source_policy=self.source_policy,
+                use_cache=self.use_cache,
+            ),
+            latest_graph=latest_graph,
+        )
+
+    def latest_graph(self) -> SemanticDescentGraph | None:
+        if not self.preparse_cache_policy.uses_evidence_local_partial_reuse:
+            return None
+        return load_latest_semantic_descent_graph_for_roots(
+            self.roots,
+            cache_dir=self.semantic_descent_cache_dir,
+            source_policy=self.source_policy,
+        )
+
+
+@dataclass(frozen=True)
 class JsonPayloadBuildTiming:
     """Wall-clock time spent in optional JSON payload sections."""
 
@@ -5512,27 +5556,20 @@ def main() -> int:
             and preparse_cache_mode.enabled
         ):
             started = perf_counter()
-            latest_semantic_descent_graph = None
-            if (
-                preparse_cache_policy.uses_evidence_local_partial_reuse
-                and preparse_cache_mode.requires_semantic_descent_cache
-            ):
-                latest_semantic_descent_graph = (
-                    load_latest_semantic_descent_graph_for_roots(
-                        roots,
-                        cache_dir=semantic_descent_cache_dir,
-                        source_policy=source_policy,
-                    )
-                )
-            fast_semantic_descent_analysis_source = semantic_descent_analysis_source
-            if latest_semantic_descent_graph is not None:
-                fast_semantic_descent_analysis_source = SemanticDescentGraphAnalysisSource(
-                    cached_graph=latest_semantic_descent_graph,
-                    cache_dir=semantic_descent_cache_dir,
-                    cache_roots=roots,
+            fast_semantic_descent_context = (
+                FastPreparseSemanticDescentSourceAuthority(
+                    preparse_cache_policy=preparse_cache_policy,
+                    base_source=semantic_descent_analysis_source,
+                    roots=roots,
+                    semantic_descent_cache_dir=semantic_descent_cache_dir,
                     source_policy=source_policy,
                     use_cache=args.use_parse_cache,
-                )
+                ).context()
+            )
+            latest_semantic_descent_graph = fast_semantic_descent_context.latest_graph
+            fast_semantic_descent_analysis_source = (
+                fast_semantic_descent_context.analysis_source
+            )
             fast_cache_request = CachedPathAnalysisRequest(
                 roots=roots,
                 config=config,

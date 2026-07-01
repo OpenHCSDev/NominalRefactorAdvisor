@@ -18,6 +18,7 @@ from nominal_refactor_advisor.analysis import (
     DetectorAnalysisWorkerPlan,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
+    SemanticDescentGraphAnalysisSource,
     SortedFindingsAuthority,
     analyze_modules,
     analyze_modules_with_cache,
@@ -68,9 +69,11 @@ from nominal_refactor_advisor.calibration import (
 from nominal_refactor_advisor.class_index import build_class_family_index
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
+from nominal_refactor_advisor.cli import FastPreparseSemanticDescentSourceAuthority
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import JsonPayloadBuilder
 from nominal_refactor_advisor.cli import JsonPayloadProfile
+from nominal_refactor_advisor.cli import JsonSummaryPreparseCachePolicy
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
 from nominal_refactor_advisor.cli import ProofExitCodeAuthority
 from nominal_refactor_advisor.cli import SingleRootModeAuthority
@@ -205,6 +208,13 @@ from nominal_refactor_advisor.scan_prediction import (
     build_scan_prediction_report,
 )
 from nominal_refactor_advisor.semantic_match import EffectStep, Maybe
+from nominal_refactor_advisor.semantic_descent import (
+    SemanticAuthority,
+    SemanticAuthorityKind,
+    SemanticDescentGraph,
+    SemanticDescentGraphCache,
+    SemanticDescentGraphCacheIdentity,
+)
 from nominal_refactor_advisor.semantic_shape_algebra import (
     ExhaustivePolicyCatalog,
     InjectiveTypeRegistryProof,
@@ -15664,6 +15674,62 @@ def test_module_cli_json_summary_uses_analysis_cache_before_parse(
     timing = cast(dict[str, object], payload["timing"])
     assert timing["analysis_cache_status"] == "hit"
     assert timing["parse_seconds"] == 0.0
+
+
+def test_loop_preparse_partial_uses_latest_repo_semantic_graph(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "mod.py"
+    module_path.write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    semantic_cache_dir = tmp_path / ".nra-cache" / "semantic_descent"
+    cached_graph = SemanticDescentGraph(
+        authorities=(
+            SemanticAuthority(
+                authority_id="repo-authority",
+                kind=SemanticAuthorityKind.CLASS_FAMILY,
+                name="RepoAuthority",
+                location=SourceLocation(str(module_path), 1, "RepoAuthority"),
+                fact_ids=(),
+            ),
+        ),
+        facts=(),
+        projections=(),
+        mirror_edges=(),
+        certificates=(),
+    )
+    SemanticDescentGraphCache(semantic_cache_dir).store(
+        SemanticDescentGraphCacheIdentity.from_roots((package_root,)),
+        cached_graph,
+    )
+    module_path.write_text(
+        "class Alpha:\n    pass\n\nclass Changed:\n    pass\n",
+        encoding="utf-8",
+    )
+    base_source = SemanticDescentGraphAnalysisSource(
+        cache_dir=semantic_cache_dir,
+        cache_roots=(package_root,),
+    )
+
+    context = FastPreparseSemanticDescentSourceAuthority(
+        preparse_cache_policy=JsonSummaryPreparseCachePolicy(
+            json_enabled=True,
+            payload_profile=JsonPayloadProfile.loop,
+            load_bearing_ranking_enabled=False,
+            parsed_modules_required=False,
+            analysis_cache_dir=tmp_path / ".nra-cache" / "analysis",
+            focused_report_filter=True,
+        ),
+        base_source=base_source,
+        roots=(package_root,),
+        semantic_descent_cache_dir=semantic_cache_dir,
+        source_policy=PythonSourcePathPolicy(include_tests=False),
+        use_cache=True,
+    ).context()
+
+    assert context.latest_graph == cached_graph
+    assert context.analysis_source.graph_for_modules([]) is context.latest_graph
 
 
 def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
