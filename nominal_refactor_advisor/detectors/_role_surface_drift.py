@@ -1344,7 +1344,7 @@ class RoleSurfaceDriftDetector(
                 field_count=1,
                 class_names=candidate.class_names,
                 field_names=(candidate.field_name,),
-                execution_level="role_surface_use_graph",
+                execution_level=FieldFamilyRelationLevel.ROLE_SURFACE_USE_GRAPH.value,
                 dataclass_count=0,
             ),
         )

@@ -22638,6 +22638,62 @@ def test_detects_existing_nominal_authority_reuse(tmp_path: Path) -> None:
     assert "EventCarrierBase" in (finding.scaffold or "")
 
 
+def test_existing_nominal_authority_reuse_synthesizes_inheritance_lift(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\nclass EventCarrierBase(ABC):\n"
+        "    file_path: str\n"
+        "    line: int\n"
+        "    subject_name: str\n"
+        "    payload: tuple[str, ...]\n\n\n"
+        "@dataclass(frozen=True)\nclass DetachedEventCarrier:\n"
+        "    file_path: str\n"
+        "    line: int\n"
+        "    subject_name: str\n"
+        "    payload: tuple[str, ...]\n"
+        "    status: str\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "existing_nominal_authority_reuse"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("existing_nominal_authority_reuse",),
+        selector_context=snapshot,
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "ExistingNominalAuthorityReuseFindingRecipeSynthesizer"
+    )
+    assert (
+        plan.document.recipes[0].target_shape
+        == RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT
+    )
+    assert "class DetachedEventCarrier(EventCarrierBase):" in rewritten
+    assert rewritten.count("file_path: str") == 1
+    assert rewritten.count("payload: tuple[str, ...]") == 1
+    assert "    status: str" in rewritten
+    module_path.write_text(rewritten, encoding="utf-8")
+    assert not any(
+        finding.detector_id == "existing_nominal_authority_reuse"
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
 def test_detects_duplicate_nominal_authority_delegate_surface(
     tmp_path: Path,
 ) -> None:
@@ -23958,6 +24014,82 @@ def test_detects_formal_boundary_stringly_source_scope_return_dict(
     )
     assert "string-key mapping" in finding.summary
     assert "FormalBoundarySourcePayload" in (finding.scaffold or "")
+
+
+def test_allows_non_scope_source_helper_kwargs(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef import_source_for_path(projection_path, authority_path, authority_name):\n"
+        "    return authority_name\n\n\n"
+        "def build_import(seed):\n"
+        "    return import_source_for_path(\n"
+        "        projection_path=seed.projection_path,\n"
+        "        authority_path=seed.authority_path,\n"
+        "        authority_name=seed.authority_name,\n"
+        "    )\n",
+    )
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "formal_boundary_stringly_source_scope"
+        for finding in findings
+    )
+
+
+def test_formal_boundary_source_scope_return_dict_synthesizes_carrier(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef policy_source_scope(state, debug, scores):\n"
+        "    return {\n"
+        "        'local_state': state,\n"
+        "        'repair_seed_debug': debug,\n"
+        "        'exact_score_values': scores,\n"
+        "    }\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "formal_boundary_stringly_source_scope"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("formal_boundary_stringly_source_scope",),
+        selector_context=snapshot,
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "FormalBoundarySourceScopeFindingRecipeSynthesizer"
+    )
+    assert (
+        plan.document.recipes[0].target_shape
+        == RefactorRecipeTargetShape.BOUNDARY_SOURCE_CONTEXT_AUTHORITY
+    )
+    assert "@dataclass(frozen=True)\nclass PolicySourceScopeContext:" in rewritten
+    assert "local_state: object" in rewritten
+    assert (
+        "return PolicySourceScopeContext(local_state=state, "
+        "repair_seed_debug=debug, exact_score_values=scores)"
+    ) in rewritten
+    assert simulation.is_clean is True
+    module_path.write_text(rewritten, encoding="utf-8")
+    assert not any(
+        finding.detector_id == "formal_boundary_stringly_source_scope"
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
 
 
 def test_allows_formal_boundary_source_scope_nominal_request_constructor(

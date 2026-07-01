@@ -1721,6 +1721,7 @@ _FORMAL_BOUNDARY_SOURCE_SCOPE_FUNCTION_TOKENS = frozenset(
         "source",
     }
 )
+_FORMAL_BOUNDARY_SOURCE_SCOPE_REQUIRED_TOKENS = frozenset({"source", "scope"})
 _FORMAL_BOUNDARY_SOURCE_SCOPE_MIN_FIELDS = 2
 
 
@@ -1736,8 +1737,8 @@ def _is_formal_boundary_source_scope_call(node: ast.Call) -> bool:
     if _is_nominal_source_scope_carrier_constructor_call(node):
         return False
     call_tokens = frozenset(_runtime_semantic_identifier_tokens(_call_leaf_name(node)))
-    return bool(call_tokens & _FORMAL_BOUNDARY_SOURCE_SCOPE_CALL_TOKENS) and bool(
-        {"scope", "source", "payload"} & call_tokens
+    return _FORMAL_BOUNDARY_SOURCE_SCOPE_REQUIRED_TOKENS <= call_tokens and bool(
+        call_tokens & _FORMAL_BOUNDARY_SOURCE_SCOPE_CALL_TOKENS
     )
 
 
@@ -1751,8 +1752,8 @@ def _function_is_formal_boundary_source_scope(
     function_stack: Sequence[str],
 ) -> bool:
     tokens = _function_name_tokens(function_stack)
-    return bool(tokens & _FORMAL_BOUNDARY_SOURCE_SCOPE_FUNCTION_TOKENS) and bool(
-        {"scope", "source", "payload"} & tokens
+    return _FORMAL_BOUNDARY_SOURCE_SCOPE_REQUIRED_TOKENS <= tokens and bool(
+        tokens & _FORMAL_BOUNDARY_SOURCE_SCOPE_FUNCTION_TOKENS
     )
 
 

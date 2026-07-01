@@ -2961,7 +2961,7 @@ declare_candidate_rule_detector(
         f"duplicate keys {candidate.injectivity_proof.duplicate_key_names}, duplicate types "
         f"{candidate.injectivity_proof.duplicate_type_names}, missing keyed types {candidate.injectivity_proof.missing_type_names}."
     ),
-    evidence=lambda candidate: candidate.evidence,
+    evidence=lambda candidate: (candidate.evidence,),
     scaffold=lambda candidate: (
         "@dataclass(frozen=True)\nclass InjectiveRegistryRow:\n    key: object\n    implementation_type: type[object]\n\n"
         "# Build the registry from rows only after proving keys and implementation types are one-to-one."
@@ -3007,7 +3007,7 @@ declare_candidate_rule_detector(
         f"keys {candidate.registered_case_names}, lookup {candidate.lookup_method_names}, "
         f"consumers {candidate.consumer_symbols}; replace handwritten registry mechanics with AutoRegisterMeta."
     ),
-    evidence=lambda candidate: candidate.evidence,
+    evidence=lambda candidate: (candidate.evidence,),
     scaffold=lambda candidate: _metaclass_registry_keyed_family_scaffold(
         root_name="InjectiveRegistryFamily",
         key_attr_name=candidate.registry_key_attr_name,
@@ -3132,7 +3132,7 @@ declare_candidate_rule_detector(
         f"{candidate.surface_names} across roles {candidate.surface_roles}; move the quotient into one policy authority "
         f"and materialize targets {candidate.projection_target_names} from specs."
     ),
-    evidence=lambda candidate: candidate.evidence,
+    evidence=lambda candidate: (candidate.evidence,),
     scaffold=lambda candidate: (
         "class RegistryProjectionPolicy(ABC):\n"
         "    @abstractmethod\n"
@@ -3179,7 +3179,7 @@ declare_candidate_rule_detector(
         f"{candidate.missing_maturity_signals}: cases {candidate.registered_case_names}, "
         f"lookup methods {candidate.lookup_method_names}, consumers {candidate.consumer_symbols}."
     ),
-    evidence=lambda candidate: candidate.evidence,
+    evidence=lambda candidate: (candidate.evidence,),
     scaffold=lambda candidate: (
         "@dataclass(frozen=True)\nclass AxisRow:\n    key: object\n    value: object\n\n"
         "# Keep rows in a small typed table until key cases, lifecycle, and consumer fanout are stable enough for a registry."

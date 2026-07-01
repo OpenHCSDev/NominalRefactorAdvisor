@@ -86,6 +86,7 @@ from .codemod import (
     RefactorRecipeOperationPlanTemplate,
     RefactorRecipeOperationTemplate,
     SourcePathCandidateAuthority,
+    SourcePathCandidateSet,
     SourceIndexTargetSelector,
     apply_codemod_simulation,
     codemod_class_plan_from_findings,
@@ -2838,7 +2839,9 @@ class CodemodAuthoringBundleWriter:
             "replacement_scaffold_path": scaffold_path.relative_to(
                 self.output_dir
             ).as_posix(),
-            "replacement_plan_path": plan_path.relative_to(self.output_dir).as_posix(),
+            "replacement_plan_path": replacement_plan_path.relative_to(
+                self.output_dir
+            ).as_posix(),
             "selected_operation_template_path": operation_template_path.relative_to(
                 self.output_dir
             ).as_posix(),
@@ -4597,7 +4600,9 @@ class CodemodRecipePlanSourceFile(SourcePathCandidateAuthority):
     ) -> "CodemodRecipePlanSourceFile":
         return cls(
             requested_path=requested_path,
-            candidate_paths=cls.candidate_paths_for(requested_path, roots, cwd),
+            candidate_set=SourcePathCandidateSet.from_paths(
+                cls.candidate_paths_for(requested_path, roots, cwd)
+            ),
         )
 
     def source_mapping_entry(self) -> tuple[str, str] | None:
@@ -4608,7 +4613,7 @@ class CodemodRecipePlanSourceFile(SourcePathCandidateAuthority):
 
     def unique_existing_file_path(self) -> str | None:
         paths_by_resolved_path: dict[Path, str] = {}
-        for file_path in self.candidate_paths:
+        for file_path in self.candidate_set.paths:
             path = Path(file_path)
             expanded_path = path.expanduser()
             if expanded_path.is_file():

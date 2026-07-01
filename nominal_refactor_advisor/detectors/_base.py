@@ -10719,6 +10719,14 @@ class SemanticDictBagCandidate:
     recommendation: SemanticDataclassRecommendation
 
 
+class FieldFamilyRelationLevel(StrEnum):
+    """Non-structural field-family relation levels reported in metrics."""
+
+    EXISTING_NOMINAL_AUTHORITY = "existing_nominal_authority"
+    IMPLEMENTATION_NEUTRAL_NOMINAL_ROOT = "implementation_neutral_nominal_root"
+    ROLE_SURFACE_USE_GRAPH = "role_surface_use_graph"
+
+
 @dataclass(frozen=True)
 class FieldFamilyCandidate:
     class_names: tuple[str, ...]

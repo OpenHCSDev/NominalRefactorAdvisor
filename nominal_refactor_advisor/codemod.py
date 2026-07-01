@@ -53,6 +53,7 @@ from .detectors._base import (
     CandidateCollectorBaseShape,
     CandidateCollectorScope,
     DerivedCandidateCollectorMixin,
+    FieldFamilyRelationLevel,
 )
 from .impact_ranking import (
     RefactorImpactKey,
@@ -4397,6 +4398,36 @@ class SourceOffsetReplacement(ReplacementSource):
 
 
 @dataclass(frozen=True)
+class SourceTextSpan:
+    """Character-offset span over one source string."""
+
+    start_offset: int
+    end_offset: int
+
+    @classmethod
+    def from_offsets(cls, offsets: tuple[int, int]) -> "SourceTextSpan":
+        start_offset, end_offset = offsets
+        return cls(start_offset=start_offset, end_offset=end_offset)
+
+    def source_text(self, source: str) -> str:
+        return source[self.start_offset : self.end_offset]
+
+    def replacement(self, source: str, new_source: str) -> "SourceTextReplacement":
+        return SourceTextReplacement(
+            old_source=self.source_text(source),
+            new_source=new_source,
+        )
+
+
+@dataclass(frozen=True)
+class SourceTextReplacement:
+    """Old/new source text pair for exact expression replacements."""
+
+    old_source: str
+    new_source: str
+
+
+@dataclass(frozen=True)
 class SourceNodeSpan:
     """AST statement span projected into source line coordinates."""
 
@@ -6670,16 +6701,30 @@ class CollapseFieldsToCarrierOperation(
             deleted_member_role="carrier field",
         )
         return (
-            *self.required_import_replacements(
+            *self.dataclass_import_replacements(
                 source_index,
                 source_by_path,
                 source_path,
-                import_source="from dataclasses import dataclass\n",
-                default_rationale="Import dataclass for generated carrier.",
             ),
             *carrier_replacements,
             *member_plan.base_addition_replacements(targets),
             *member_plan.member_deletion_replacements(targets),
+        )
+
+    def dataclass_import_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        source_path: str,
+    ) -> tuple[SourceLineReplacement, ...]:
+        if not self.insert_carrier:
+            return ()
+        return self.required_import_replacements(
+            source_index,
+            source_by_path,
+            source_path,
+            import_source="from dataclasses import dataclass\n",
+            default_rationale="Import dataclass for generated carrier.",
         )
 
     def validate_targets(self, targets: ClassMemberPromotionTargets) -> None:
@@ -16282,6 +16327,63 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
         )
 
 
+class FormalBoundarySourceScopeFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+    """Build source-context carrier recipes for formal source-scope findings."""
+
+    detector_id = "formal_boundary_stringly_source_scope"
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        builder = MappingSemanticMirrorRecipeBuilder.builder_for(finding, context)
+        if builder is None:
+            return None
+        return builder.recipe()
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        recipe = self.recipe_for_finding(finding, context)
+        if recipe is not None:
+            return FindingRecipeEvaluation(recipe=recipe)
+        return FindingRecipeEvaluation(
+            rejection_reason=MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
+                finding,
+                context,
+            )
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None or not isinstance(finding.metrics, MappingMetrics):
+            return ()
+        mapping_name = finding.metrics.plan_mapping_name
+        source_name = finding.metrics.plan_source_name
+        if mapping_name is None or source_name is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, f"{mapping_name}->{source_name}"),),
+        )
+
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        return MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
+            finding,
+            context,
+        )
+
+
 class RepeatedFieldFamilyFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
     EvaluatedFindingRecipeSynthesizer,
@@ -16480,6 +16582,227 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(
                     else f"**{ast.unparse(keyword.value)}"
                 )
                 for keyword in call.keywords
+            ),
+        )
+
+
+class ExistingNominalAuthorityReuseRejection(Exception):
+    """Typed rejection while resolving an existing nominal authority recipe."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class ExistingNominalAuthorityReuseInputs:
+    context: CodemodSelectorContext
+    metrics: FieldFamilyMetrics
+    local_evidence: SourceLocation
+    authority_evidence: SourceLocation
+
+    @classmethod
+    def from_finding(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> "ExistingNominalAuthorityReuseInputs":
+        if context is None:
+            raise ExistingNominalAuthorityReuseRejection(
+                "existing-authority reuse requires a source selector context"
+            )
+        if not isinstance(finding.metrics, FieldFamilyMetrics):
+            raise ExistingNominalAuthorityReuseRejection(
+                "existing-authority reuse requires field-family metrics"
+            )
+        if (
+            finding.metrics.execution_level
+            != FieldFamilyRelationLevel.EXISTING_NOMINAL_AUTHORITY.value
+        ):
+            raise ExistingNominalAuthorityReuseRejection(
+                "existing-authority reuse requires existing-authority metrics"
+            )
+        if len(finding.evidence) < 2:
+            raise ExistingNominalAuthorityReuseRejection(
+                "existing-authority reuse requires local and authority evidence"
+            )
+        local_evidence, authority_evidence = finding.evidence[:2]
+        return cls(
+            context=context,
+            metrics=finding.metrics,
+            local_evidence=local_evidence,
+            authority_evidence=authority_evidence,
+        )
+
+
+@dataclass(frozen=True)
+class ExistingNominalAuthorityReuseTargets:
+    local_targets: ClassMemberPromotionTargets
+    local_target: ResolvedClassTarget
+    authority_target: ResolvedClassTarget
+
+    @classmethod
+    def from_inputs(
+        cls,
+        inputs: ExistingNominalAuthorityReuseInputs,
+    ) -> "ExistingNominalAuthorityReuseTargets":
+        local_targets = ClassMemberPromotionTargets.resolve_or_none(
+            inputs.context,
+            source_path=inputs.local_evidence.file_path,
+            class_names=(inputs.local_evidence.symbol,),
+        )
+        if local_targets is None:
+            raise ExistingNominalAuthorityReuseRejection(
+                ClassMemberPromotionTargets.unresolved_class_target_reason(
+                    inputs.context,
+                    source_path=inputs.local_evidence.file_path,
+                    class_names=(inputs.local_evidence.symbol,),
+                )
+            )
+        if not local_targets.supports_base_rewrites():
+            raise ExistingNominalAuthorityReuseRejection(
+                "existing-authority reuse target has unsupported class header"
+            )
+        authority_target = ClassMemberPromotionTargets.optional_class_target(
+            inputs.context.source_index,
+            inputs.context.ast_target_nodes_by_id,
+            source_path=inputs.authority_evidence.file_path,
+            class_name=inputs.authority_evidence.symbol,
+        )
+        if authority_target is None:
+            raise ExistingNominalAuthorityReuseRejection(
+                "existing-authority reuse requires one same-file authority class"
+            )
+        local_target = local_targets.insertion_target
+        if local_target.file_path != authority_target.file_path:
+            raise ExistingNominalAuthorityReuseRejection(
+                "existing-authority reuse currently supports same-file authorities"
+            )
+        return cls(
+            local_targets=local_targets,
+            local_target=local_target,
+            authority_target=authority_target,
+        )
+
+    @property
+    def source_path(self) -> str:
+        return self.local_target.file_path
+
+
+@dataclass(frozen=True)
+class ExistingNominalAuthorityFieldDeclarations:
+    declarations: tuple[str, ...]
+
+    @classmethod
+    def from_target(
+        cls,
+        context: CodemodSelectorContext,
+        target: ResolvedClassTarget,
+        field_names: tuple[str, ...],
+    ) -> "ExistingNominalAuthorityFieldDeclarations":
+        source = context.sources_by_file_path.get(target.file_path)
+        if source is None:
+            raise ExistingNominalAuthorityReuseRejection(
+                "existing-authority reuse requires indexed source files"
+            )
+        declarations_by_name = {
+            ClassDeclarationPromotionStatement(statement).name: statement
+            for statement in target.node.body
+            if isinstance(statement, ast.AnnAssign)
+        }
+        declarations: list[str] = []
+        for field_name in field_names:
+            statement = declarations_by_name.get(field_name)
+            if statement is None:
+                raise ExistingNominalAuthorityReuseRejection(
+                    "existing-authority reuse requires source-backed local field declarations"
+                )
+            declaration_source = ast.get_source_segment(source, statement)
+            if declaration_source is None:
+                raise ExistingNominalAuthorityReuseRejection(
+                    "existing-authority reuse requires source-backed local field declarations"
+                )
+            declarations.append(declaration_source)
+        return cls(declarations=tuple(declarations))
+
+
+@dataclass(frozen=True)
+class ExistingNominalAuthorityReuseRecipeParts:
+    source_path: str
+    local_class_name: str
+    authority_class_name: str
+    field_declarations: tuple[str, ...]
+
+    @classmethod
+    def from_finding(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> "ExistingNominalAuthorityReuseRecipeParts":
+        inputs = ExistingNominalAuthorityReuseInputs.from_finding(finding, context)
+        targets = ExistingNominalAuthorityReuseTargets.from_inputs(inputs)
+        field_declarations = ExistingNominalAuthorityFieldDeclarations.from_target(
+            inputs.context,
+            targets.local_target,
+            inputs.metrics.field_names,
+        )
+        return cls(
+            source_path=targets.source_path,
+            local_class_name=inputs.local_evidence.symbol,
+            authority_class_name=inputs.authority_evidence.symbol,
+            field_declarations=field_declarations.declarations,
+        )
+
+    def recipe_for_finding(self, finding: RefactorFinding) -> RefactorRecipe:
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-reuse-existing-authority",
+            reason=(
+                "Reuse the existing nominal authority instead of duplicating "
+                "its field family."
+            ),
+            target_shape=RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT,
+        ).collapse_fields_to_carrier(
+            self.source_path,
+            carrier_name=self.authority_class_name,
+            class_names=(self.local_class_name,),
+            field_declaration_sources=self.field_declarations,
+            insert_carrier=False,
+        )
+
+
+class ExistingNominalAuthorityReuseFindingRecipeSynthesizer(
+    EvaluatedFindingRecipeSynthesizer
+):
+    """Reuse an existing same-file nominal carrier instead of generating another."""
+
+    detector_id = "existing_nominal_authority_reuse"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        try:
+            parts = ExistingNominalAuthorityReuseRecipeParts.from_finding(
+                finding,
+                context,
+            )
+        except ExistingNominalAuthorityReuseRejection as rejection:
+            return FindingRecipeEvaluation(rejection_reason=rejection.reason)
+        return FindingRecipeEvaluation(recipe=parts.recipe_for_finding(finding))
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        if len(finding.evidence) < 2:
+            return ()
+        local_evidence, authority_evidence = finding.evidence[:2]
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (local_evidence.file_path, local_evidence.symbol),
+                (authority_evidence.file_path, authority_evidence.symbol),
             ),
         )
 
@@ -21741,25 +22064,91 @@ class MappingSemanticMirrorRecipeBuilder(
         raise NotImplementedError
 
 
+class FindingRecipeParts(ABC):
+    """Executable recipe facts owned by a recipe builder."""
+
+    @abstractmethod
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        raise NotImplementedError
+
+
+RecipePartsT = TypeVar("RecipePartsT", bound=FindingRecipeParts)
+
+
+class PartsBackedMappingRecipeBuilder(
+    MappingSemanticMirrorRecipeBuilder,
+    Generic[RecipePartsT],
+    ABC,
+):
+    """Mapping recipe builder whose actionability is owned by a parts record."""
+
+    @property
+    @abstractmethod
+    def parts(self) -> RecipePartsT | None:
+        raise NotImplementedError
+
+    def supports_finding(self) -> bool:
+        return self.parts is not None
+
+    def recipe(self) -> RefactorRecipe | None:
+        if self.parts is None:
+            return None
+        return self.parts.recipe_for(self.finding)
+
+
 @dataclass(frozen=True)
-class DataclassPayloadProjectionFieldValue:
-    """One mirrored return-dict field value routed through a dataclass authority."""
+class ReturnDictFieldValue:
+    """One string-key return-dict field and the expression assigned to it."""
 
     field_name: str
     value_node: ast.expr
 
 
 @dataclass(frozen=True)
-class DataclassPayloadProjectionTarget:
-    """Source-index target for a return dict that mirrors dataclass field names."""
+class FunctionProjectionTarget:
+    """Common identity for a projection located inside one function or method."""
 
     source_path: str
     function_qualname: str
+
+
+ProjectionTargetT = TypeVar("ProjectionTargetT", bound=FunctionProjectionTarget)
+
+@dataclass(frozen=True)
+class ReturnDictProjectionTarget(FunctionProjectionTarget):
+    """Source-index target for a return dict with named string-key fields."""
+
     target: AstTargetDigest
     node: ast.FunctionDef | ast.AsyncFunctionDef
     return_node: ast.Return
     dict_node: ast.Dict
-    field_values: tuple[DataclassPayloadProjectionFieldValue, ...]
+    field_values: tuple[ReturnDictFieldValue, ...]
+
+
+class ReturnDictFieldValueExtractor:
+    """Shared extraction of selected string-key fields from return dictionaries."""
+
+    finding: RefactorFinding
+
+    def field_values(self, dict_node: ast.Dict) -> tuple[ReturnDictFieldValue, ...]:
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        values: list[ReturnDictFieldValue] = []
+        for key_node, value_node in zip(dict_node.keys, dict_node.values, strict=True):
+            field_name = self.string_key_value(key_node)
+            if field_name in field_names:
+                values.append(
+                    ReturnDictFieldValue(
+                        field_name=field_name,
+                        value_node=value_node,
+                    )
+                )
+        return tuple(values)
+
+    @staticmethod
+    def string_key_value(node: ast.expr | None) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
 
 
 @dataclass(frozen=True)
@@ -21772,11 +22161,179 @@ class DataclassPayloadAuthorityTarget:
     node: ast.ClassDef
 
 
+class FunctionReturnNodeAuthority:
+    """Nominal AST query for the unique return statement at a source line."""
+
+    @staticmethod
+    def return_node_at_line(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        line: int,
+    ) -> ast.Return | None:
+        matches = tuple(
+            child
+            for child in ast.walk(node)
+            if isinstance(child, ast.Return) and child.lineno == line
+        )
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+
+class DataclassAuthorityMappingRecipeBuilder(
+    PartsBackedMappingRecipeBuilder[RecipePartsT],
+    Generic[ProjectionTargetT, RecipePartsT],
+    ABC,
+):
+    """Shared seed-to-authority workflow for dataclass projection recipes."""
+
+    def explains_rejection(self) -> bool:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return False
+        mapping_name = self.finding.metrics.plan_mapping_name
+        return mapping_name is not None and ":return@" in mapping_name
+
+    @cached_property
+    def parts(self) -> RecipePartsT | None:
+        return (
+            Maybe.of(FindingSemanticMirrorLocations(self.finding).optional_seed_locations())
+            .project(self.parts_from_seed)
+            .unwrap_or_none()
+        )
+
+    def parts_from_seed(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+    ) -> RecipePartsT | None:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return None
+        projection_source_path = SourcePathResolutionAuthority.from_source_index(
+            seed.projection_file_path(),
+            self.source_index,
+        ).optional_path()
+        authority_source_path = SourcePathResolutionAuthority.from_source_index(
+            seed.authority_file_path(),
+            self.source_index,
+        ).optional_path()
+        if projection_source_path is None or authority_source_path is None:
+            return None
+        if self.module_import_graph.import_would_create_cycle(
+            importing_file_path=projection_source_path,
+            imported_file_path=authority_source_path,
+        ):
+            return None
+        authority = self.authority_target(seed, authority_source_path)
+        projection = self.projection_target(seed, projection_source_path)
+        return (
+            Maybe.of((authority, projection))
+            .filter(lambda row: row[0] is not None and row[1] is not None)
+            .project(lambda row: self.recipe_parts(row[0], row[1]))
+            .unwrap_or_none()
+        )
+
+    def authority_target(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> DataclassPayloadAuthorityTarget | None:
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        return (
+            Maybe.of(self.finding.metrics.plan_source_name)
+            .with_projection(
+                lambda authority_name: MappingSemanticMirrorRecipeStrategy.authority_class_target(
+                    self,
+                    seed.authority_source_location(),
+                    authority_name,
+                )
+            )
+            .filter(
+                lambda row: self.resolved_target_matches_fields(
+                    row[1],
+                    field_names,
+                )
+            )
+            .map(
+                lambda row: DataclassPayloadAuthorityTarget(
+                    source_path=source_path,
+                    class_name=row[0],
+                    target=row[1].target,
+                    node=row[1].node,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    def resolved_target_matches_fields(
+        self,
+        resolved_target: ResolvedClassTarget,
+        field_names: frozenset[str],
+    ) -> bool:
+        return self.is_dataclass_authority(resolved_target.node) and (
+            field_names <= frozenset(self.annotated_field_names(resolved_target.node))
+        )
+
+    @abstractmethod
+    def projection_target(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> ProjectionTargetT | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def recipe_parts(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: ProjectionTargetT,
+    ) -> RecipePartsT | None:
+        raise NotImplementedError
+
+    def import_source(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: FunctionProjectionTarget,
+    ) -> str | None:
+        if projection.source_path == authority.source_path:
+            return None
+        return MappingSemanticMirrorRecipeStrategy.import_source_for_path(
+            self,
+            projection_path=projection.source_path,
+            authority_path=authority.source_path,
+            authority_name=authority.class_name,
+        )
+
+    @staticmethod
+    def is_dataclass_authority(node: ast.ClassDef) -> bool:
+        return any(
+            DataclassAuthorityMappingRecipeBuilder.decorator_name(decorator)
+            == "dataclass"
+            for decorator in node.decorator_list
+        )
+
+    @staticmethod
+    def decorator_name(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Call):
+            return DataclassAuthorityMappingRecipeBuilder.decorator_name(node.func)
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+    @staticmethod
+    def annotated_field_names(node: ast.ClassDef) -> tuple[str, ...]:
+        return tuple(
+            statement.target.id
+            for statement in node.body
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+        )
+
+
 @dataclass(frozen=True)
-class DataclassPayloadProjectionRecipeParts:
+class DataclassPayloadProjectionRecipeParts(FindingRecipeParts):
     """Executable source rewrite facts for dataclass-owned payload keys."""
 
-    projection: DataclassPayloadProjectionTarget
+    projection: ReturnDictProjectionTarget
     authority: DataclassPayloadAuthorityTarget
     method_name: str
     projection_old_source: str
@@ -21814,7 +22371,11 @@ class DataclassPayloadProjectionRecipeParts:
 
 @dataclass(frozen=True, kw_only=True)
 class DataclassPayloadProjectionMappingRecipeBuilder(
-    MappingSemanticMirrorRecipeBuilder
+    ReturnDictFieldValueExtractor,
+    DataclassAuthorityMappingRecipeBuilder[
+        ReturnDictProjectionTarget,
+        DataclassPayloadProjectionRecipeParts,
+    ],
 ):
     """Derive return-dict payload keys from the mirrored dataclass authority."""
 
@@ -21823,20 +22384,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     payload_method_name: ClassVar[str] = "payload_from_field_values"
 
     finding: RefactorFinding
-
-    def supports_finding(self) -> bool:
-        return self.parts is not None
-
-    def explains_rejection(self) -> bool:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return False
-        mapping_name = self.finding.metrics.plan_mapping_name
-        return mapping_name is not None and ":return@" in mapping_name
-
-    def recipe(self) -> RefactorRecipe | None:
-        if self.parts is None:
-            return None
-        return self.parts.recipe_for(self.finding)
 
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
@@ -21863,69 +22410,11 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             "whose string keys match annotated dataclass authority fields"
         )
 
-    @cached_property
-    def parts(self) -> DataclassPayloadProjectionRecipeParts | None:
-        return (
-            Maybe.of(FindingSemanticMirrorLocations(self.finding).optional_seed_locations())
-            .project(self.parts_from_seed)
-            .unwrap_or_none()
-        )
-
-    def parts_from_seed(
-        self,
-        seed: SemanticMirrorRecipeSeedLocations,
-    ) -> DataclassPayloadProjectionRecipeParts | None:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return None
-        projection_source_path = self.resolved_source_path(
-            seed.projection_file_path()
-        )
-        authority_source_path = self.resolved_source_path(seed.authority_file_path())
-        if projection_source_path is None or authority_source_path is None:
-            return None
-        if self.import_would_create_cycle(projection_source_path, authority_source_path):
-            return None
-        authority = self.authority_target(seed, authority_source_path)
-        projection = self.projection_target(seed, projection_source_path)
-        return (
-            Maybe.of((authority, projection))
-            .filter(lambda row: row[0] is not None and row[1] is not None)
-            .project(lambda row: self.recipe_parts(row[0], row[1]))
-            .unwrap_or_none()
-        )
-
-    def authority_target(
-        self,
-        seed: SemanticMirrorRecipeSeedLocations,
-        source_path: str,
-    ) -> DataclassPayloadAuthorityTarget | None:
-        authority_name = self.finding.metrics.plan_source_name
-        if authority_name is None:
-            return None
-        resolved_target = MappingSemanticMirrorRecipeStrategy.authority_class_target(
-            self,
-            seed.authority_source_location(),
-            authority_name,
-        )
-        if resolved_target is None:
-            return None
-        if not self.is_dataclass_authority(resolved_target.node):
-            return None
-        field_names = frozenset(self.finding.metrics.plan_field_names)
-        if not field_names <= frozenset(self.annotated_field_names(resolved_target.node)):
-            return None
-        return DataclassPayloadAuthorityTarget(
-            source_path=source_path,
-            class_name=authority_name,
-            target=resolved_target.target,
-            node=resolved_target.node,
-        )
-
     def projection_target(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
         source_path: str,
-    ) -> DataclassPayloadProjectionTarget | None:
+    ) -> ReturnDictProjectionTarget | None:
         function_qualname = seed.projection_subject()
         target_ids = SourceIndexTargetSelector.for_function_or_method(
             file_path=source_path,
@@ -21937,7 +22426,10 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         node = self.ast_target_nodes_by_id.get(target.target_id)
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             return None
-        return_node = self.return_node_at_line(node, seed.projection_line())
+        return_node = FunctionReturnNodeAuthority.return_node_at_line(
+            node,
+            seed.projection_line(),
+        )
         if return_node is None or not isinstance(return_node.value, ast.Dict):
             return None
         field_values = self.field_values(return_node.value)
@@ -21945,7 +22437,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             self.finding.metrics.plan_field_names
         ):
             return None
-        return DataclassPayloadProjectionTarget(
+        return ReturnDictProjectionTarget(
             source_path=source_path,
             function_qualname=function_qualname,
             target=target,
@@ -21958,7 +22450,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     def recipe_parts(
         self,
         authority: DataclassPayloadAuthorityTarget,
-        projection: DataclassPayloadProjectionTarget,
+        projection: ReturnDictProjectionTarget,
     ) -> DataclassPayloadProjectionRecipeParts | None:
         projection_rewrite = self.projection_rewrite_parts(
             authority,
@@ -21987,7 +22479,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     def projection_rewrite_parts(
         self,
         authority: DataclassPayloadAuthorityTarget,
-        projection: DataclassPayloadProjectionTarget,
+        projection: ReturnDictProjectionTarget,
     ) -> tuple[str, str] | None:
         source = self.sources_by_file_path[projection.source_path]
         geometry = SourceTextGeometry(source)
@@ -21997,20 +22489,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         replacement_dict = self.replacement_dict(authority, projection)
         start_offset, end_offset = dict_offsets
         return source[start_offset:end_offset], ast.unparse(replacement_dict)
-
-    def import_source(
-        self,
-        authority: DataclassPayloadAuthorityTarget,
-        projection: DataclassPayloadProjectionTarget,
-    ) -> str | None:
-        if projection.source_path == authority.source_path:
-            return None
-        return MappingSemanticMirrorRecipeStrategy.import_source_for_path(
-            self,
-            projection_path=projection.source_path,
-            authority_path=authority.source_path,
-            authority_name=authority.class_name,
-        )
 
     def authority_replacement_source(
         self,
@@ -22043,7 +22521,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     def replacement_dict(
         self,
         authority: DataclassPayloadAuthorityTarget,
-        projection: DataclassPayloadProjectionTarget,
+        projection: ReturnDictProjectionTarget,
     ) -> ast.Dict:
         field_names = frozenset(item.field_name for item in projection.field_values)
         field_values_by_name = {
@@ -22092,39 +22570,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             ],
         )
 
-    def field_values(
-        self,
-        dict_node: ast.Dict,
-    ) -> tuple[DataclassPayloadProjectionFieldValue, ...]:
-        field_names = frozenset(self.finding.metrics.plan_field_names)
-        values = []
-        for key_node, value_node in zip(dict_node.keys, dict_node.values, strict=True):
-            field_name = self.string_key_value(key_node)
-            if field_name in field_names:
-                values.append(
-                    DataclassPayloadProjectionFieldValue(
-                        field_name=field_name,
-                        value_node=value_node,
-                    )
-                )
-        return tuple(values)
-
-    def import_would_create_cycle(
-        self,
-        projection_source_path: str,
-        authority_source_path: str,
-    ) -> bool:
-        return self.module_import_graph.import_would_create_cycle(
-            importing_file_path=projection_source_path,
-            imported_file_path=authority_source_path,
-        )
-
-    def resolved_source_path(self, file_path: str) -> str | None:
-        return SourcePathResolutionAuthority.from_source_index(
-            file_path,
-            self.source_index,
-        ).optional_path()
-
     def module_target(self, source_path: str) -> AstTargetDigest | None:
         module_targets = tuple(
             target
@@ -22134,55 +22579,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         if len(module_targets) != 1:
             return None
         return module_targets[0]
-
-    @staticmethod
-    def return_node_at_line(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-        line: int,
-    ) -> ast.Return | None:
-        matches = tuple(
-            child
-            for child in ast.walk(node)
-            if isinstance(child, ast.Return) and child.lineno == line
-        )
-        if len(matches) != 1:
-            return None
-        return matches[0]
-
-    @staticmethod
-    def is_dataclass_authority(node: ast.ClassDef) -> bool:
-        return any(
-            DataclassPayloadProjectionMappingRecipeBuilder.decorator_name(decorator)
-            == "dataclass"
-            for decorator in node.decorator_list
-        )
-
-    @staticmethod
-    def decorator_name(node: ast.expr) -> str | None:
-        if isinstance(node, ast.Call):
-            return DataclassPayloadProjectionMappingRecipeBuilder.decorator_name(
-                node.func
-            )
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return node.attr
-        return None
-
-    @staticmethod
-    def annotated_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-        return tuple(
-            statement.target.id
-            for statement in node.body
-            if isinstance(statement, ast.AnnAssign)
-            and isinstance(statement.target, ast.Name)
-        )
-
-    @staticmethod
-    def string_key_value(node: ast.expr | None) -> str | None:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        return None
 
     @classmethod
     def payload_method_source(cls) -> str:
@@ -22199,6 +22595,310 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
+class BoundarySourceContextReturnDictRecipeParts(FindingRecipeParts):
+    """Executable facts for replacing a source-scope return dict with a carrier."""
+
+    source_path: str
+    function_qualname: str
+    insertion_qualname: str
+    carrier_name: str
+    projection: ReturnDictProjectionTarget
+    old_source: str
+    new_source: str
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        return (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-source-context-carrier",
+                reason=(
+                    "Replace formal source-scope string-key return data with a "
+                    "declared source-context carrier."
+                ),
+                target_shape=RefactorRecipeTargetShape.BOUNDARY_SOURCE_CONTEXT_AUTHORITY,
+            )
+            .ensure_import(
+                self.source_path,
+                "from dataclasses import dataclass\n",
+                rationale="Import the dataclass decorator for the source-context carrier.",
+            )
+            .insert_before_target(
+                self.insertion_qualname,
+                self.carrier_source(),
+                source_path=self.source_path,
+                rationale="Declare the nominal source-context carrier at the owner boundary.",
+            )
+            .replace_text(
+                self.function_qualname,
+                self.old_source,
+                self.new_source,
+                source_path=self.source_path,
+                rationale="Return the source-context carrier instead of a string-key dict.",
+            )
+        )
+
+    def carrier_source(self) -> str:
+        field_lines = tuple(
+            f"    {field_name}: object\n"
+            for field_name in self.field_names()
+        )
+        return "".join(
+            (
+                "@dataclass(frozen=True)\n",
+                f"class {self.carrier_name}:\n",
+                *field_lines,
+                "\n",
+            )
+        )
+
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(field.field_name for field in self.projection.field_values)
+
+
+@dataclass(frozen=True)
+class BoundarySourceContextEvidenceSelection:
+    """Resolved source evidence for one source-context return-dict finding."""
+
+    source_path: str
+    evidence: SourceLocation
+
+
+@dataclass(frozen=True)
+class BoundarySourceContextCarrierSelection:
+    """Carrier insertion facts for one source-context return-dict projection."""
+
+    source_path: str
+    projection: ReturnDictProjectionTarget
+    carrier_name: str
+    insertion_qualname: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class BoundarySourceContextReturnDictMappingRecipeBuilder(
+    ReturnDictFieldValueExtractor,
+    PartsBackedMappingRecipeBuilder[BoundarySourceContextReturnDictRecipeParts]
+):
+    """Nominalize formal source-scope return dictionaries as dataclass carriers."""
+
+    mapping_name: ClassVar[str] = "formal_boundary_source_scope_return_dict"
+    registration_order: ClassVar[int] = 80
+    context_mapping_prefix: ClassVar[str] = "formal_boundary_source_scope_"
+
+    finding: RefactorFinding
+
+    def explains_rejection(self) -> bool:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return False
+        mapping_name = self.finding.metrics.plan_mapping_name
+        return mapping_name is not None and mapping_name.startswith(
+            self.context_mapping_prefix
+        )
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return "source-context carrier extraction requires mapping metrics"
+        if self.finding.metrics.plan_mapping_name != self.mapping_name:
+            return (
+                "source-context carrier extraction is executable for return-dict "
+                "source scopes; call-site kwargs require a receiving carrier boundary"
+            )
+        evidence = FindingPrimaryEvidence(self.finding).source_location
+        if evidence is None:
+            return "source-context carrier extraction requires primary source evidence"
+        if self.parts is not None:
+            return "source-context carrier extraction has an executable return-dict recipe"
+        return (
+            "source-context carrier extraction requires one source-index-resolved "
+            "function or top-level method return dict whose string keys match the finding"
+        )
+
+    @cached_property
+    def parts(self) -> BoundarySourceContextReturnDictRecipeParts | None:
+        return (
+            Maybe.of(FindingPrimaryEvidence(self.finding).source_location)
+            .filter(lambda _evidence: isinstance(self.finding.metrics, MappingMetrics))
+            .with_projection(
+                lambda evidence: SourcePathResolutionAuthority.from_source_index(
+                    evidence.file_path,
+                    self.source_index,
+                ).optional_path()
+            )
+            .map(
+                lambda row: BoundarySourceContextEvidenceSelection(
+                    evidence=row[0],
+                    source_path=row[1],
+                )
+            )
+            .with_projection(
+                lambda selection: self.projection_target(
+                    selection.source_path,
+                    selection.evidence,
+                )
+            )
+            .project(
+                lambda row: self.carrier_selection(
+                    source_path=row[0].source_path,
+                    projection=row[1],
+                )
+            )
+            .project(self.parts_from_carrier_selection)
+            .unwrap_or_none()
+        )
+
+    def carrier_selection(
+        self,
+        *,
+        source_path: str,
+        projection: ReturnDictProjectionTarget,
+    ) -> BoundarySourceContextCarrierSelection | None:
+        return (
+            Maybe.of(self.carrier_name(projection.function_qualname))
+            .filter(
+                lambda carrier_name: carrier_name.isidentifier()
+                and not self.class_name_conflicts(source_path, carrier_name)
+            )
+            .with_projection(
+                lambda carrier_name: self.insertion_qualname(
+                    projection.function_qualname
+                )
+            )
+            .map(
+                lambda row: BoundarySourceContextCarrierSelection(
+                    source_path=source_path,
+                    projection=projection,
+                    carrier_name=row[0],
+                    insertion_qualname=row[1],
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    def parts_from_carrier_selection(
+        self,
+        selection: BoundarySourceContextCarrierSelection,
+    ) -> BoundarySourceContextReturnDictRecipeParts | None:
+        return (
+            Maybe.of(
+                self.projection_rewrite_parts(
+                    selection.carrier_name,
+                    selection.projection,
+                )
+            )
+            .map(
+                lambda rewrite: BoundarySourceContextReturnDictRecipeParts(
+                    source_path=selection.source_path,
+                    function_qualname=selection.projection.function_qualname,
+                    insertion_qualname=selection.insertion_qualname,
+                    carrier_name=selection.carrier_name,
+                    projection=selection.projection,
+                    old_source=rewrite.old_source,
+                    new_source=rewrite.new_source,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    def projection_target(
+        self,
+        source_path: str,
+        evidence: SourceLocation,
+    ) -> ReturnDictProjectionTarget | None:
+        function_qualname = evidence.subject_symbol
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path,
+            qualname=function_qualname,
+        ).target_ids(self)
+        if len(target_ids) != 1:
+            return None
+        target = self.source_index.target_by_id[target_ids[0]]
+        node = self.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return_node = FunctionReturnNodeAuthority.return_node_at_line(
+            node,
+            evidence.line,
+        )
+        if return_node is None or not isinstance(return_node.value, ast.Dict):
+            return None
+        field_values = self.field_values(return_node.value)
+        if frozenset(field.field_name for field in field_values) != frozenset(
+            self.finding.metrics.plan_field_names
+        ):
+            return None
+        return ReturnDictProjectionTarget(
+            source_path=source_path,
+            function_qualname=function_qualname,
+            target=target,
+            node=node,
+            return_node=return_node,
+            dict_node=return_node.value,
+            field_values=field_values,
+        )
+
+    def projection_rewrite_parts(
+        self,
+        carrier_name: str,
+        projection: ReturnDictProjectionTarget,
+    ) -> SourceTextReplacement | None:
+        source = self.sources_by_file_path[projection.source_path]
+        geometry = SourceTextGeometry(source)
+        return (
+            Maybe.of(geometry.node_offsets(projection.dict_node))
+            .map(SourceTextSpan.from_offsets)
+            .combine(
+                lambda _span: self.carrier_constructor_source(
+                    carrier_name,
+                    projection,
+                ),
+                lambda span, new_source: span.replacement(source, new_source),
+            )
+            .unwrap_or_none()
+        )
+
+    def carrier_constructor_source(
+        self,
+        carrier_name: str,
+        projection: ReturnDictProjectionTarget,
+    ) -> str | None:
+        values_by_field = {
+            field.field_name: field.value_node for field in projection.field_values
+        }
+        assignments: list[str] = []
+        for field_name in self.finding.metrics.plan_field_names:
+            value_node = values_by_field.get(field_name)
+            if value_node is None:
+                return None
+            assignments.append(f"{field_name}={ast.unparse(value_node)}")
+        return f"{carrier_name}({', '.join(assignments)})"
+
+    def insertion_qualname(self, function_qualname: str) -> str | None:
+        owner_qualname, separator, _method_name = function_qualname.rpartition(".")
+        if not separator:
+            return function_qualname
+        if "." in owner_qualname:
+            return None
+        owner_target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            qualnames=(owner_qualname,),
+        ).target_ids(self)
+        if len(owner_target_ids) != 1:
+            return None
+        return owner_qualname
+
+    def class_name_conflicts(self, source_path: str, class_name: str) -> bool:
+        return any(
+            target.file_path == source_path
+            and target.node_kind == AstTargetNodeKind.CLASS.value
+            and target.qualname.rsplit(".", maxsplit=1)[-1] == class_name
+            for target in self.source_index.ast_targets
+        )
+
+    @staticmethod
+    def carrier_name(function_qualname: str) -> str:
+        leaf_name = function_qualname.rsplit(".", maxsplit=1)[-1]
+        return f"{_pascal_case_identifier(leaf_name)}Context"
+
+
+@dataclass(frozen=True)
 class DataclassConstructorProjectionMethod:
     """Authority-owned method that projects dataclass fields into a constructor."""
 
@@ -22207,18 +22907,22 @@ class DataclassConstructorProjectionMethod:
 
 
 @dataclass(frozen=True)
-class DataclassConstructorProjectionCallTarget:
-    """External constructor call that forwards dataclass-owned field values."""
+class DataclassCallProjectionTarget(FunctionProjectionTarget):
+    """Common call-site projection fields shared by dataclass call rewrites."""
 
-    source_path: str
-    function_qualname: str
     call_node: ast.Call
-    field_values_by_name: Mapping[str, ast.expr]
     remaining_keywords: tuple[ast.keyword, ...]
 
 
 @dataclass(frozen=True)
-class DataclassConstructorProjectionRecipeParts:
+class DataclassConstructorProjectionCallTarget(DataclassCallProjectionTarget):
+    """External constructor call that forwards dataclass-owned field values."""
+
+    field_values_by_name: Mapping[str, ast.expr]
+
+
+@dataclass(frozen=True)
+class DataclassConstructorProjectionRecipeParts(FindingRecipeParts):
     """Executable facts for routing a constructor projection through a dataclass."""
 
     projection: DataclassConstructorProjectionCallTarget
@@ -22253,105 +22957,75 @@ class DataclassConstructorProjectionRecipeParts:
         )
 
 
+@dataclass(frozen=True)
+class DataclassConstructorAuthorityMethodSelection:
+    """Resolved authority method for one constructor projection."""
+
+    constructor_name: str
+    authority_method: DataclassConstructorProjectionMethod
+
+
+CallProjectionTargetT = TypeVar(
+    "CallProjectionTargetT",
+    bound=DataclassCallProjectionTarget,
+)
+CallProjectionPartsT = TypeVar("CallProjectionPartsT", bound=FindingRecipeParts)
+
+
+class DataclassCallProjectionMappingRecipeBuilder(
+    DataclassAuthorityMappingRecipeBuilder[
+        CallProjectionTargetT,
+        CallProjectionPartsT,
+    ],
+    Generic[CallProjectionTargetT, CallProjectionPartsT],
+    ABC,
+):
+    """Shared behavior for dataclass-backed call projection builders."""
+
+    metrics_rejection_reason: ClassVar[str]
+    executable_rejection_reason: ClassVar[str]
+    missing_rejection_reason: ClassVar[str]
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return self.metrics_rejection_reason
+        if self.parts is not None:
+            return self.executable_rejection_reason
+        return self.missing_rejection_reason
+
+    def remaining_keywords(self, call_node: ast.Call) -> tuple[ast.keyword, ...]:
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        return tuple(
+            keyword
+            for keyword in call_node.keywords
+            if keyword.arg is not None and keyword.arg not in field_names
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class DataclassConstructorProjectionMappingRecipeBuilder(
-    MappingSemanticMirrorRecipeBuilder
+    DataclassCallProjectionMappingRecipeBuilder[
+        DataclassConstructorProjectionCallTarget,
+        DataclassConstructorProjectionRecipeParts,
+    ]
 ):
     """Derive constructor keyword mirrors through an existing dataclass method."""
 
     mapping_name: ClassVar[str] = "dataclass_constructor_projection"
     registration_order: ClassVar[int] = 1010
+    metrics_rejection_reason: ClassVar[str] = (
+        "dataclass constructor projection requires mapping metrics"
+    )
+    executable_rejection_reason: ClassVar[str] = (
+        "dataclass constructor projection has an executable authority recipe"
+    )
+    missing_rejection_reason: ClassVar[str] = (
+        "dataclass constructor projection requires a return constructor call whose "
+        "keyword fields match a dataclass authority and an existing authority method "
+        "that forwards those fields"
+    )
 
     finding: RefactorFinding
-
-    def supports_finding(self) -> bool:
-        return self.parts is not None
-
-    def explains_rejection(self) -> bool:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return False
-        mapping_name = self.finding.metrics.plan_mapping_name
-        return mapping_name is not None and ":return@" in mapping_name
-
-    def recipe(self) -> RefactorRecipe | None:
-        if self.parts is None:
-            return None
-        return self.parts.recipe_for(self.finding)
-
-    def rejection_reason(self) -> str:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return "dataclass constructor projection requires mapping metrics"
-        if self.parts is not None:
-            return "dataclass constructor projection has an executable authority recipe"
-        return (
-            "dataclass constructor projection requires a return constructor call whose "
-            "keyword fields match a dataclass authority and an existing authority method "
-            "that forwards those fields"
-        )
-
-    @cached_property
-    def parts(self) -> DataclassConstructorProjectionRecipeParts | None:
-        return (
-            Maybe.of(FindingSemanticMirrorLocations(self.finding).optional_seed_locations())
-            .project(self.parts_from_seed)
-            .unwrap_or_none()
-        )
-
-    def parts_from_seed(
-        self,
-        seed: SemanticMirrorRecipeSeedLocations,
-    ) -> DataclassConstructorProjectionRecipeParts | None:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return None
-        projection_source_path = self.resolved_source_path(
-            seed.projection_file_path()
-        )
-        authority_source_path = self.resolved_source_path(seed.authority_file_path())
-        if projection_source_path is None or authority_source_path is None:
-            return None
-        if self.import_would_create_cycle(projection_source_path, authority_source_path):
-            return None
-        authority = self.authority_target(seed, authority_source_path)
-        projection = self.projection_target(seed, projection_source_path)
-        return (
-            Maybe.of((authority, projection))
-            .filter(lambda row: row[0] is not None and row[1] is not None)
-            .project(lambda row: self.recipe_parts(row[0], row[1]))
-            .unwrap_or_none()
-        )
-
-    def authority_target(
-        self,
-        seed: SemanticMirrorRecipeSeedLocations,
-        source_path: str,
-    ) -> DataclassPayloadAuthorityTarget | None:
-        authority_name = self.finding.metrics.plan_source_name
-        if authority_name is None:
-            return None
-        resolved_target = MappingSemanticMirrorRecipeStrategy.authority_class_target(
-            self,
-            seed.authority_source_location(),
-            authority_name,
-        )
-        if resolved_target is None:
-            return None
-        if not DataclassPayloadProjectionMappingRecipeBuilder.is_dataclass_authority(
-            resolved_target.node
-        ):
-            return None
-        field_names = frozenset(self.finding.metrics.plan_field_names)
-        if not field_names <= frozenset(
-            DataclassPayloadProjectionMappingRecipeBuilder.annotated_field_names(
-                resolved_target.node
-            )
-        ):
-            return None
-        return DataclassPayloadAuthorityTarget(
-            source_path=source_path,
-            class_name=authority_name,
-            target=resolved_target.target,
-            node=resolved_target.node,
-        )
 
     def projection_target(
         self,
@@ -22369,7 +23043,7 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         node = self.ast_target_nodes_by_id.get(target.target_id)
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             return None
-        return_node = DataclassPayloadProjectionMappingRecipeBuilder.return_node_at_line(
+        return_node = FunctionReturnNodeAuthority.return_node_at_line(
             node,
             seed.projection_line(),
         )
@@ -22404,26 +23078,38 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         authority: DataclassPayloadAuthorityTarget,
         projection: DataclassConstructorProjectionCallTarget,
     ) -> DataclassConstructorProjectionRecipeParts | None:
-        constructor_name = _call_name(projection.call_node.func)
-        if constructor_name is None:
-            return None
-        authority_method = self.authority_method(authority.node, constructor_name)
-        if authority_method is None:
-            return None
-        projection_rewrite = self.projection_rewrite_parts(
-            authority,
-            authority_method,
-            projection,
-        )
-        if projection_rewrite is None:
-            return None
-        return DataclassConstructorProjectionRecipeParts(
-            projection=projection,
-            authority=authority,
-            authority_method=authority_method,
-            projection_old_source=projection_rewrite[0],
-            projection_new_source=projection_rewrite[1],
-            import_source=self.import_source(authority, projection),
+        return (
+            Maybe.of(_call_name(projection.call_node.func))
+            .with_projection(
+                lambda constructor_name: self.authority_method(
+                    authority.node,
+                    constructor_name,
+                )
+            )
+            .map(
+                lambda row: DataclassConstructorAuthorityMethodSelection(
+                    constructor_name=row[0],
+                    authority_method=row[1],
+                )
+            )
+            .with_projection(
+                lambda selection: self.projection_rewrite_parts(
+                    authority,
+                    selection.authority_method,
+                    projection,
+                )
+            )
+            .map(
+                lambda row: DataclassConstructorProjectionRecipeParts(
+                    projection=projection,
+                    authority=authority,
+                    authority_method=row[0].authority_method,
+                    projection_old_source=row[1].old_source,
+                    projection_new_source=row[1].new_source,
+                    import_source=self.import_source(authority, projection),
+                )
+            )
+            .unwrap_or_none()
         )
 
     def authority_method(
@@ -22474,20 +23160,23 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         authority: DataclassPayloadAuthorityTarget,
         authority_method: DataclassConstructorProjectionMethod,
         projection: DataclassConstructorProjectionCallTarget,
-    ) -> tuple[str, str] | None:
+    ) -> SourceTextReplacement | None:
         source = self.sources_by_file_path[projection.source_path]
         geometry = SourceTextGeometry(source)
-        call_offsets = geometry.node_offsets(projection.call_node)
-        if call_offsets is None:
-            return None
         replacement_call = self.replacement_call(authority, authority_method, projection)
-        start_offset, end_offset = call_offsets
         return (
-            source[start_offset:end_offset],
-            PythonExpressionSourceFormatter().replacement_source(
-                replacement_call,
-                line_prefix=geometry.line_prefix(start_offset),
-            ),
+            Maybe.of(geometry.node_offsets(projection.call_node))
+            .map(SourceTextSpan.from_offsets)
+            .map(
+                lambda span: span.replacement(
+                    source,
+                    PythonExpressionSourceFormatter().replacement_source(
+                        replacement_call,
+                        line_prefix=geometry.line_prefix(span.start_offset),
+                    ),
+                )
+            )
+            .unwrap_or_none()
         )
 
     def replacement_call(
@@ -22529,44 +23218,6 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
             if keyword.arg in field_names
         }
 
-    def remaining_keywords(self, call_node: ast.Call) -> tuple[ast.keyword, ...]:
-        field_names = frozenset(self.finding.metrics.plan_field_names)
-        return tuple(
-            keyword
-            for keyword in call_node.keywords
-            if keyword.arg is not None and keyword.arg not in field_names
-        )
-
-    def import_source(
-        self,
-        authority: DataclassPayloadAuthorityTarget,
-        projection: DataclassConstructorProjectionCallTarget,
-    ) -> str | None:
-        if projection.source_path == authority.source_path:
-            return None
-        return MappingSemanticMirrorRecipeStrategy.import_source_for_path(
-            self,
-            projection_path=projection.source_path,
-            authority_path=authority.source_path,
-            authority_name=authority.class_name,
-        )
-
-    def import_would_create_cycle(
-        self,
-        projection_source_path: str,
-        authority_source_path: str,
-    ) -> bool:
-        return self.module_import_graph.import_would_create_cycle(
-            importing_file_path=projection_source_path,
-            imported_file_path=authority_source_path,
-        )
-
-    def resolved_source_path(self, file_path: str) -> str | None:
-        return SourcePathResolutionAuthority.from_source_index(
-            file_path,
-            self.source_index,
-        ).optional_path()
-
     @staticmethod
     def self_field_name(node: ast.expr) -> str | None:
         if (
@@ -22579,18 +23230,14 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class DataclassContextCallProjectionTarget:
+class DataclassContextCallProjectionTarget(DataclassCallProjectionTarget):
     """Call site whose loose keywords can move into a dataclass context value."""
 
-    source_path: str
-    function_qualname: str
-    call_node: ast.Call
     field_keywords_by_name: Mapping[str, ast.keyword]
-    remaining_keywords: tuple[ast.keyword, ...]
 
 
 @dataclass(frozen=True)
-class DataclassContextCallProjectionRecipeParts:
+class DataclassContextCallProjectionRecipeParts(FindingRecipeParts):
     """Executable rewrite facts for a dataclass-context call projection."""
 
     projection: DataclassContextCallProjectionTarget
@@ -22622,106 +23269,27 @@ class DataclassContextCallProjectionRecipeParts:
 
 @dataclass(frozen=True, kw_only=True)
 class DataclassContextCallProjectionMappingRecipeBuilder(
-    MappingSemanticMirrorRecipeBuilder
+    DataclassCallProjectionMappingRecipeBuilder[
+        DataclassContextCallProjectionTarget,
+        DataclassContextCallProjectionRecipeParts,
+    ]
 ):
     """Route loose call keyword mirrors through a dataclass context authority."""
 
     mapping_name: ClassVar[str] = "dataclass_context_call_projection"
     registration_order: ClassVar[int] = 1005
+    metrics_rejection_reason: ClassVar[str] = (
+        "dataclass context call projection requires mapping metrics"
+    )
+    executable_rejection_reason: ClassVar[str] = (
+        "dataclass context call projection has an executable authority recipe"
+    )
+    missing_rejection_reason: ClassVar[str] = (
+        "dataclass context call projection requires a return call whose loose "
+        "keyword names exactly match annotated dataclass authority fields"
+    )
 
     finding: RefactorFinding
-
-    def supports_finding(self) -> bool:
-        return self.parts is not None
-
-    def explains_rejection(self) -> bool:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return False
-        mapping_name = self.finding.metrics.plan_mapping_name
-        return mapping_name is not None and ":return@" in mapping_name
-
-    def recipe(self) -> RefactorRecipe | None:
-        if self.parts is None:
-            return None
-        return self.parts.recipe_for(self.finding)
-
-    def rejection_reason(self) -> str:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return "dataclass context call projection requires mapping metrics"
-        if self.parts is not None:
-            return (
-                "dataclass context call projection has an executable authority recipe"
-            )
-        return (
-            "dataclass context call projection requires a return call whose loose "
-            "keyword names exactly match annotated dataclass authority fields"
-        )
-
-    @cached_property
-    def parts(self) -> DataclassContextCallProjectionRecipeParts | None:
-        return (
-            Maybe.of(
-                FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
-            )
-            .project(self.parts_from_seed)
-            .unwrap_or_none()
-        )
-
-    def parts_from_seed(
-        self,
-        seed: SemanticMirrorRecipeSeedLocations,
-    ) -> DataclassContextCallProjectionRecipeParts | None:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return None
-        projection_source_path = self.resolved_source_path(seed.projection_file_path())
-        authority_source_path = self.resolved_source_path(seed.authority_file_path())
-        if projection_source_path is None or authority_source_path is None:
-            return None
-        if self.import_would_create_cycle(
-            projection_source_path, authority_source_path
-        ):
-            return None
-        authority = self.authority_target(seed, authority_source_path)
-        projection = self.projection_target(seed, projection_source_path)
-        return (
-            Maybe.of((authority, projection))
-            .filter(lambda row: row[0] is not None and row[1] is not None)
-            .project(lambda row: self.recipe_parts(row[0], row[1]))
-            .unwrap_or_none()
-        )
-
-    def authority_target(
-        self,
-        seed: SemanticMirrorRecipeSeedLocations,
-        source_path: str,
-    ) -> DataclassPayloadAuthorityTarget | None:
-        authority_name = self.finding.metrics.plan_source_name
-        if authority_name is None:
-            return None
-        resolved_target = MappingSemanticMirrorRecipeStrategy.authority_class_target(
-            self,
-            seed.authority_source_location(),
-            authority_name,
-        )
-        if resolved_target is None:
-            return None
-        if not DataclassPayloadProjectionMappingRecipeBuilder.is_dataclass_authority(
-            resolved_target.node
-        ):
-            return None
-        field_names = frozenset(self.finding.metrics.plan_field_names)
-        if not field_names <= frozenset(
-            DataclassPayloadProjectionMappingRecipeBuilder.annotated_field_names(
-                resolved_target.node
-            )
-        ):
-            return None
-        return DataclassPayloadAuthorityTarget(
-            source_path=source_path,
-            class_name=authority_name,
-            target=resolved_target.target,
-            node=resolved_target.node,
-        )
 
     def projection_target(
         self,
@@ -22740,7 +23308,7 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             return None
         return_node = (
-            DataclassPayloadProjectionMappingRecipeBuilder.return_node_at_line(
+            FunctionReturnNodeAuthority.return_node_at_line(
                 node,
                 seed.projection_line(),
             )
@@ -22836,45 +23404,6 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
             for keyword in call_node.keywords
             if keyword.arg in field_names
         }
-
-    def remaining_keywords(self, call_node: ast.Call) -> tuple[ast.keyword, ...]:
-        field_names = frozenset(self.finding.metrics.plan_field_names)
-        return tuple(
-            keyword
-            for keyword in call_node.keywords
-            if keyword.arg is not None and keyword.arg not in field_names
-        )
-
-    def import_source(
-        self,
-        authority: DataclassPayloadAuthorityTarget,
-        projection: DataclassContextCallProjectionTarget,
-    ) -> str | None:
-        if projection.source_path == authority.source_path:
-            return None
-        return MappingSemanticMirrorRecipeStrategy.import_source_for_path(
-            self,
-            projection_path=projection.source_path,
-            authority_path=authority.source_path,
-            authority_name=authority.class_name,
-        )
-
-    def import_would_create_cycle(
-        self,
-        projection_source_path: str,
-        authority_source_path: str,
-    ) -> bool:
-        return self.module_import_graph.import_would_create_cycle(
-            importing_file_path=projection_source_path,
-            imported_file_path=authority_source_path,
-        )
-
-    def resolved_source_path(self, file_path: str) -> str | None:
-        return SourcePathResolutionAuthority.from_source_index(
-            file_path,
-            self.source_index,
-        ).optional_path()
-
 
 @dataclass(frozen=True)
 class GenericRoleCaseLiteralAuthority:

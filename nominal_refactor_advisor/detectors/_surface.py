@@ -344,7 +344,7 @@ class ExistingNominalAuthorityReuseDetector(
                             candidate.class_name,
                         ),
                         field_names=candidate.shared_field_names,
-                        execution_level="existing_nominal_authority",
+                        execution_level=FieldFamilyRelationLevel.EXISTING_NOMINAL_AUTHORITY.value,
                     ),
                 )
             )
@@ -417,7 +417,7 @@ class NominalAuthorityImplementationRetreatDetector(
                     ),
                     metrics=NOMINAL_AUTHORITY_IMPLEMENTATION_RETREAT_METRICS_AUTHORITY.metrics(
                         candidate,
-                        execution_level="implementation_neutral_nominal_root",
+                        execution_level=FieldFamilyRelationLevel.IMPLEMENTATION_NEUTRAL_NOMINAL_ROOT.value,
                     ),
                 )
             )
