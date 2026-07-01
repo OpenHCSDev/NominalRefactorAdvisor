@@ -7,6 +7,7 @@ from collections.abc import Callable
 from collections import Counter
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+from functools import lru_cache
 import hashlib
 import os
 from pathlib import Path
@@ -35,7 +36,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 11
+    version: int = 12
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -270,6 +271,45 @@ class SourceFileSignatureCachePayload:
     entries: tuple[CachedSourceFileSignature, ...]
 
 
+def detector_module_source_hash(detector_type: type[IssueDetector]) -> str:
+    """Hash the module file that owns one detector implementation."""
+
+    module = sys.modules.get(detector_type.__module__)
+    if module is None:
+        return _text_hash(detector_type.__module__)
+    raw_file_path = module.__dict__.get("__file__")
+    if not isinstance(raw_file_path, str):
+        return _text_hash(detector_type.__module__)
+    file_path = Path(raw_file_path)
+    try:
+        path_stat = file_path.stat()
+    except OSError:
+        return _text_hash(str(file_path))
+    return _detector_module_file_hash(
+        str(file_path.resolve()),
+        path_stat.st_mtime_ns,
+        path_stat.st_size,
+    )
+
+
+@lru_cache(maxsize=None)
+def _detector_module_file_hash(
+    path_text: str,
+    mtime_ns: int,
+    size: int,
+) -> str:
+    del mtime_ns, size
+    try:
+        payload = Path(path_text).read_bytes()
+    except OSError:
+        payload = path_text.encode("utf-8")
+    return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.blake2s(text.encode("utf-8"), digest_size=16).hexdigest()
+
+
 def semantic_module_hash(module: ParsedModule) -> str:
     payload = ast.dump(module.module, include_attributes=True)
     return hashlib.blake2s(payload.encode("utf-8"), digest_size=16).hexdigest()
@@ -323,6 +363,7 @@ class DetectorTypeSignature:
     implementation_import_path: str
     qualname: str
     first_lineno: int
+    implementation_source_hash: str
 
 
 @dataclass(frozen=True)
@@ -384,6 +425,7 @@ class DetectorRegistrySignature:
             implementation_import_path=detector_type.__module__,
             qualname=detector_type.__qualname__,
             first_lineno=first_lineno,
+            implementation_source_hash=detector_module_source_hash(detector_type),
         )
 
 

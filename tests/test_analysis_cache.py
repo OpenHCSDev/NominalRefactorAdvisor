@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import importlib.util
 from pathlib import Path
+import sys
 from time import sleep
 
 import pytest
@@ -21,6 +23,7 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisFindingCache,
+    DetectorRegistrySignature,
 )
 from nominal_refactor_advisor.ast_tools import (
     ExportDictShapeFamily,
@@ -63,6 +66,16 @@ class CountingSemanticCacheDetector(IssueDetector):
         return []
 
 
+def _load_dynamic_detector(detector_module_path: Path, module_name: str) -> type:
+    spec = importlib.util.spec_from_file_location(module_name, detector_module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module.DynamicDetector
+
+
 def test_custom_cache_dir_uses_non_colliding_sibling_paths(tmp_path: Path) -> None:
     default_parse_cache = tmp_path / ".nra-cache" / "ast"
     custom_parse_cache = tmp_path / "run-cache"
@@ -93,6 +106,50 @@ def test_default_parse_cache_uses_cache_home_root_identity(
     assert cache_dir.parent.parent == cache_home
     assert cache_dir.parent.name.startswith("pkg-")
     assert cache_dir.name == "ast"
+
+
+def test_detector_registry_signature_tracks_detector_module_source(
+    tmp_path: Path,
+) -> None:
+    module_name = "dynamic_signature_detector_module"
+    module_path = tmp_path / f"{module_name}.py"
+
+    def write_detector(helper_value: int) -> None:
+        module_path.write_text(
+            "from nominal_refactor_advisor.detectors import IssueDetector\n"
+            "\n"
+            "class DynamicDetector(IssueDetector):\n"
+            "    detector_id = 'dynamic_signature_detector'\n"
+            f"    helper_value = {helper_value}\n"
+            "\n"
+            "    def _collect_findings(self, modules, config):\n"
+            "        del modules, config\n"
+            "        return []\n",
+            encoding="utf-8",
+        )
+
+    try:
+        write_detector(1)
+        first_detector = _load_dynamic_detector(module_path, module_name)
+        first_signature = DetectorRegistrySignature.from_detector_types(
+            (first_detector,)
+        )
+
+        sleep(0.01)
+        write_detector(2)
+        second_detector = _load_dynamic_detector(module_path, module_name)
+        second_signature = DetectorRegistrySignature.from_detector_types(
+            (second_detector,)
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+        IssueDetector.__registry__.pop("dynamic_signature_detector", None)
+
+    assert first_signature != second_signature
+    assert (
+        first_signature.detector_types[0].implementation_source_hash
+        != second_signature.detector_types[0].implementation_source_hash
+    )
 
 
 def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(
