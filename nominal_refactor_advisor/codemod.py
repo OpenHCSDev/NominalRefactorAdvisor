@@ -13936,21 +13936,24 @@ class SourceRewriteSimulationResult(ABC, metaclass=AutoRegisterMeta):
 
     def simulation_payload(self) -> SourceRewriteSimulationPayload:
         return SourceRewriteSimulationPayload(
-            result=self,
+            simulation=self.simulation,
+            architecture_guard_report=self.architecture_guard_report,
         )
 
 
 @dataclass(frozen=True)
-class SourceRewriteSimulationPayload:
+class SourceRewriteSimulationPayload(SourceRewriteSimulationResult):
     """Nominal JSON payload for guarded source rewrite simulation results."""
 
-    result: SourceRewriteSimulationResult
+    @property
+    def guard_subject(self) -> str:
+        return "Codemod simulation payload"
 
     def to_dict(self) -> JsonObject:
         return {
-            "simulation": self.result.simulation.to_dict(),
-            "architecture_guard_report": self.result.architecture_guard_report.to_dict(),
-            "is_clean": self.result.is_clean,
+            "simulation": self.simulation.to_dict(),
+            "architecture_guard_report": self.architecture_guard_report.to_dict(),
+            "is_clean": self.is_clean,
         }
 
 

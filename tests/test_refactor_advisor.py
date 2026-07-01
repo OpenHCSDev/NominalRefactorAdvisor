@@ -752,7 +752,12 @@ def test_codemod_source_snapshot_executes_recipe_document(
     diff = snapshot.unified_diff(simulation.simulation)
 
     assert simulation.is_clean is True
-    assert isinstance(simulation.simulation_payload(), SourceRewriteSimulationPayload)
+    simulation_payload = simulation.simulation_payload()
+    assert isinstance(simulation_payload, SourceRewriteSimulationPayload)
+    assert simulation_payload.simulation is simulation.simulation
+    assert simulation_payload.architecture_guard_report is (
+        simulation.architecture_guard_report
+    )
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+        return AlphaAuthority.run(value)" in diff
     assert simulation.apply() == (module_path.as_posix(),)
