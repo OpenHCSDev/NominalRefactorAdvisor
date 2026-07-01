@@ -14656,6 +14656,18 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             counts[key] = counts.get(key, 0) + 1
         return counts
 
+    @property
+    def sequence(self) -> CodemodPlanSequence:
+        return CodemodPlanSequence.from_document(self.document)
+
+    @property
+    def executable(self) -> bool:
+        return self.document.has_recipes
+
+    @property
+    def site_count(self) -> int:
+        return len(self.site_plans)
+
     @classmethod
     def from_execution_class(
         cls,
@@ -14711,6 +14723,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             "class_id": self.execution_class.class_id,
             "execution_class": self.execution_class.to_dict(),
             "subsystem": self.execution_class.subsystem,
+            "executable": self.executable,
             "finding_ids": self.finding_ids,
             "finding_count": self.finding_count,
             "expected_removed_finding_ids": self.expected_removed_finding_ids,
@@ -14726,7 +14739,9 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             ),
             "replacement_scaffold": self.replacement_scaffold.to_dict(),
             "document": self.document.to_dict(),
+            "sequence": self.sequence.to_dict(),
             "synthesis_status_counts": self.status_counts,
+            "site_count": self.site_count,
             "site_plans": tuple(site_plan.to_dict() for site_plan in self.site_plans),
             "synthesis_records": tuple(
                 record.to_dict() for record in self.synthesis_records

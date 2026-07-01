@@ -1476,6 +1476,27 @@ class CodemodClassPlanProjectedDelta:
             for finding_id in self.class_plan.expected_removed_finding_ids
         )
 
+    @property
+    def projected_result_status(self) -> str:
+        statuses = tuple(change.status for change in self.changes)
+        if CodemodFindingClassStatus.MOVED in statuses:
+            return CodemodFindingClassStatus.MOVED.value
+        if statuses and all(
+            status is CodemodFindingClassStatus.ELIMINATED for status in statuses
+        ):
+            return CodemodFindingClassStatus.ELIMINATED.value
+        if CodemodFindingClassStatus.PARTIALLY_ELIMINATED in statuses:
+            return CodemodFindingClassStatus.PARTIALLY_ELIMINATED.value
+        if CodemodFindingClassStatus.PERSISTED in statuses:
+            return CodemodFindingClassStatus.PERSISTED.value
+        if CodemodFindingClassStatus.INTRODUCED in statuses:
+            return CodemodFindingClassStatus.INTRODUCED.value
+        if CodemodFindingClassStatus.UNCHANGED in statuses:
+            return CodemodFindingClassStatus.UNCHANGED.value
+        if self.fulfilled_expected_removals:
+            return CodemodFindingClassStatus.ELIMINATED.value
+        return CodemodFindingClassStatus.PERSISTED.value
+
     def to_dict(self) -> JsonObject:
         return {
             "class_id": self.class_plan.execution_class.class_id,
@@ -1486,10 +1507,12 @@ class CodemodClassPlanProjectedDelta:
             "expected_removed_finding_count": (
                 self.class_plan.expected_removed_finding_count
             ),
+            "projected_result_status": self.projected_result_status,
             "fulfilled_expected_removals": self.fulfilled_expected_removals,
             "status_counts": self.status_counts,
             "changes": tuple(change.to_dict() for change in self.changes),
             "site_deltas": tuple(site_delta.to_dict() for site_delta in self.site_deltas),
+            "class_plan": self.class_plan.to_dict(),
         }
 
 

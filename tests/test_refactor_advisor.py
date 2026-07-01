@@ -16523,6 +16523,9 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert class_payload["replacement_scaffold"]["selected_count"] >= 1
     assert class_payload["synthesis_status_counts"]["planned"] == 1
     assert len(class_payload["site_plans"]) == 1
+    assert class_payload["executable"] is True
+    assert class_payload["sequence"]["stages"][0] == class_payload["document"]
+    assert class_payload["site_count"] == 1
     assert site_plan["finding_id"] == class_payload["finding_ids"][0]
     assert site_plan["selector"]["selector"] == "finding_evidence_target"
     assert site_plan["selector_resolution"]["selected_count"] >= 1
@@ -16899,6 +16902,8 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert class_delta["fulfilled_expected_removals"] is True
     assert class_delta["status_counts"]["eliminated"] >= 1
     assert class_delta["changes"][0]["status"] == "eliminated"
+    assert class_delta["projected_result_status"] == "eliminated"
+    assert class_delta["class_plan"]["site_count"] == 1
     assert site_delta["finding_id"] == payload["classes"][0]["finding_ids"][0]
     assert site_delta["status_counts"]["eliminated"] >= 1
     assert site_delta["fulfilled_expected_removal"] is True
