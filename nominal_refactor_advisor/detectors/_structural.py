@@ -1240,34 +1240,36 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
                     f"Classes {', '.join(group.class_names[:6])} under base family {group.base_names} are helper-backed wrappers over {', '.join(helper_names[:6])} via wrapper kinds {', '.join(wrapper_kinds)}."
                 ),
                 evidence[:8],
-                scaffold=(
-                    "class HelperBackedTemplate(ABC):\n"
-                    "    helper: ClassVar[Callable[..., object | None]]\n\n"
-                    "    def build(self, *args, **kwargs):\n"
-                    "        return type(self).helper(*args, **kwargs)\n\n"
-                    "# Forbidden shape:\n"
-                    "# def build(self, request):\n"
-                    "#     if self.helper == 'case_a': ...\n"
-                    "#     if self.helper == 'case_b': ...\n"
-                    "# Child variants must remain opaque to the ABC; use direct callable dispatch or keep explicit overrides."
-                ),
-                codemod_patch=(
-                    "# Keep the concrete subclasses explicit; move only the repeated forwarding method into the shared base.\n"
-                    "# Put helper identity, result wrapping, and guard policy on classvars/mixins only when the base can call the helper directly.\n"
-                    "# Do not replace readable strategy subclasses with dynamic class materialization.\n"
-                    "# Do not collapse child behavior into `if self.helper == ...` or other base-class sentinel dispatch; that defeats ABC opacity and should remain a finding."
-                ),
-                metrics=RepeatedMethodMetrics.from_duplicate_family(
-                    duplicate_site_count=len(group.class_names),
-                    statement_count=1,
-                    class_count=len(group.class_names),
-                    method_symbols=tuple(
-                        f"{class_name}.{method_name}"
-                        for class_name, method_name in zip(
-                            group.class_names,
-                            group.method_names,
-                            strict=True,
-                        )
+                FindingBuildContext(
+                    scaffold=(
+                        "class HelperBackedTemplate(ABC):\n"
+                        "    helper: ClassVar[Callable[..., object | None]]\n\n"
+                        "    def build(self, *args, **kwargs):\n"
+                        "        return type(self).helper(*args, **kwargs)\n\n"
+                        "# Forbidden shape:\n"
+                        "# def build(self, request):\n"
+                        "#     if self.helper == 'case_a': ...\n"
+                        "#     if self.helper == 'case_b': ...\n"
+                        "# Child variants must remain opaque to the ABC; use direct callable dispatch or keep explicit overrides."
+                    ),
+                    codemod_patch=(
+                        "# Keep the concrete subclasses explicit; move only the repeated forwarding method into the shared base.\n"
+                        "# Put helper identity, result wrapping, and guard policy on classvars/mixins only when the base can call the helper directly.\n"
+                        "# Do not replace readable strategy subclasses with dynamic class materialization.\n"
+                        "# Do not collapse child behavior into `if self.helper == ...` or other base-class sentinel dispatch; that defeats ABC opacity and should remain a finding."
+                    ),
+                    metrics=RepeatedMethodMetrics.from_duplicate_family(
+                        duplicate_site_count=len(group.class_names),
+                        statement_count=1,
+                        class_count=len(group.class_names),
+                        method_symbols=tuple(
+                            f"{class_name}.{method_name}"
+                            for class_name, method_name in zip(
+                                group.class_names,
+                                group.method_names,
+                                strict=True,
+                            )
+                        ),
                     ),
                 ),
             )

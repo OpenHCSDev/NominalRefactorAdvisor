@@ -2566,6 +2566,65 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     assert "replacement_lines=import_lines" in rewritten_source
 
 
+def test_semantic_mirror_context_call_projection_synthesizes_dataclass_context_recipe(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class FindingBuildContext:\n"
+        "    scaffold: str | None = None\n"
+        "    codemod_patch: str | None = None\n"
+        "    metrics: object | None = None\n"
+        "\n"
+        "class Detector:\n"
+        "    def build_finding(self, summary, evidence, context=None, **overrides):\n"
+        "        return (summary, evidence, context, overrides)\n"
+        "\n"
+        "    def collect(self, evidence, metric):\n"
+        "        return [\n"
+        "            self.build_finding(\n"
+        "                'summary',\n"
+        "                evidence,\n"
+        "                scaffold='scaffold',\n"
+        "                codemod_patch='patch',\n"
+        "                metrics=metric,\n"
+        "            )\n"
+        "        ]\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.detector_id == "semantic_mirror_without_descent"
+        and item.metrics.plan_source_name == "FindingBuildContext"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten_source = next(iter(simulation.simulation.rewritten_sources.values()))
+    recipe = plan.document.recipes[0]
+
+    assert record.status.value == "planned"
+    assert record.recipe_target_shape == "dataclass_context_call_projection"
+    assert plan.expected_removed_finding_count == 1
+    assert simulation.is_clean is True
+    assert tuple(
+        operation.operation_kind().value for operation in recipe.operations
+    ) == ("replace_text",)
+    assert "FindingBuildContext(" in rewritten_source
+    assert 'scaffold="scaffold"' in rewritten_source
+    assert 'codemod_patch="patch"' in rewritten_source
+    assert "metrics=metric" in rewritten_source
+
+
 def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     tmp_path: Path,
 ) -> None:
