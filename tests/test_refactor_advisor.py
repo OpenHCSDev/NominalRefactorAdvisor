@@ -6553,6 +6553,7 @@ def test_parse_python_modules_can_skip_test_trees(tmp_path: Path) -> None:
     _write_module(tmp_path, "pkg/prod.py", "\nclass Production:\n    pass\n")
     _write_module(tmp_path, "tests/test_prod.py", "\nclass TestProduction:\n    pass\n")
     _write_module(tmp_path, "pkg/test_helper.py", "\nclass TestHelper:\n    pass\n")
+    _write_module(tmp_path, ".nra-cache/generated.py", "\nclass CachedArtifact:\n    pass\n")
 
     production_modules = parse_python_modules(
         tmp_path,

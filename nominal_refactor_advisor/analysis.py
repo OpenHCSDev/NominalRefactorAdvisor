@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cached_property
 import os
 from pathlib import Path
 from typing import ClassVar
@@ -66,6 +67,12 @@ class AnalysisPathScope:
 
     analysis_roots: tuple[Path, ...]
     report_roots: tuple[Path, ...] = ()
+    _report_path_inclusions_by_file_path: dict[str, bool] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @classmethod
     def from_requested_roots(
@@ -109,16 +116,26 @@ class AnalysisPathScope:
             finding
             for finding in findings
             if any(
-                self.includes_report_path(Path(item.file_path))
+                self.includes_report_file_path(item.file_path)
                 for item in finding.evidence
             )
         ]
 
+    @cached_property
+    def resolved_report_roots(self) -> tuple[Path, ...]:
+        return tuple(root.resolve() for root in self.report_roots)
+
+    def includes_report_file_path(self, file_path: str) -> bool:
+        cache = self._report_path_inclusions_by_file_path
+        if file_path not in cache:
+            cache[file_path] = self.includes_report_path(Path(file_path))
+        return cache[file_path]
+
     def includes_report_path(self, file_path: Path) -> bool:
         candidate = file_path.resolve()
         return any(
-            self._root_contains_path(root.resolve(), candidate)
-            for root in self.report_roots
+            self._root_contains_path(root, candidate)
+            for root in self.resolved_report_roots
         )
 
     @staticmethod
@@ -767,8 +784,16 @@ class AnalysisCacheIdentityAuthority:
     config: DetectorConfig
     source_policy: PythonSourcePathPolicy | None = None
     source_signature_cache: SourceFileSignatureCache | None = None
+    source_paths: tuple[Path, ...] | None = None
 
     def cache_identity(self) -> AnalysisCacheIdentity:
+        if self.source_paths is not None:
+            return AnalysisCacheIdentity.from_source_paths(
+                self.roots,
+                self.source_paths,
+                self.config,
+                source_signature_cache=self.source_signature_cache,
+            )
         return AnalysisCacheIdentity.from_roots(
             self.roots,
             self.config,
@@ -796,6 +821,7 @@ class AnalysisCacheResolutionAuthority:
         analysis_cache_dir: Path | None,
         analysis_workers: int,
         source_policy: PythonSourcePathPolicy | None,
+        source_paths: tuple[Path, ...] | None,
         semantic_descent_source: SemanticDescentGraphAnalysisSource,
     ) -> None:
         self._roots = roots
@@ -805,6 +831,7 @@ class AnalysisCacheResolutionAuthority:
         self._analysis_cache_dir = analysis_cache_dir
         self._analysis_workers = analysis_workers
         self._source_policy = source_policy
+        self._source_paths = source_paths
         self._semantic_descent_source = semantic_descent_source
 
     @property
@@ -830,6 +857,7 @@ class AnalysisCacheResolutionAuthority:
             self._config,
             self._source_policy,
             AnalysisFindingCache(self._analysis_cache_dir).source_signature_cache(),
+            self._source_paths,
         ).cache_identity()
         analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
         with analysis_cache.rebuild_lease(cache_identity) as rebuild_lease:
@@ -1230,7 +1258,7 @@ class AnalysisCacheMissStrategy(AnalysisCacheStatusStrategy):
 
 def analyze_modules_with_cache(
     roots: tuple[Path, ...],
-    modules: list,
+    modules: list[ParsedModule],
     config: DetectorConfig | None = None,
     *,
     analysis_cache_dir: Path | None = None,
@@ -1241,11 +1269,13 @@ def analyze_modules_with_cache(
     """Run detector analysis with a persistent finding cache when configured."""
 
     config = config or DetectorConfig()
+    source_paths = tuple(module.path for module in modules)
     cache_result = load_analysis_cache_for_roots(
         roots,
         config,
         analysis_cache_dir=analysis_cache_dir,
         source_policy=source_policy,
+        source_paths=source_paths,
     )
     authority = AnalysisCacheResolutionAuthority(
         roots=roots,
@@ -1255,6 +1285,7 @@ def analyze_modules_with_cache(
         analysis_cache_dir=analysis_cache_dir,
         analysis_workers=analysis_workers,
         source_policy=source_policy,
+        source_paths=source_paths,
         semantic_descent_source=(
             semantic_descent_source or SemanticDescentGraphAnalysisSource()
         ),
@@ -1270,6 +1301,7 @@ def load_analysis_cache_for_roots(
     *,
     analysis_cache_dir: Path | None = None,
     source_policy: PythonSourcePathPolicy | None = None,
+    source_paths: tuple[Path, ...] | None = None,
 ) -> CachedAnalysisResult:
     """Load detector findings from persistent cache without parsed modules."""
 
@@ -1281,6 +1313,7 @@ def load_analysis_cache_for_roots(
         config,
         source_policy,
         AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
+        source_paths,
     )
     cache_identity = identity_authority.cache_identity()
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)

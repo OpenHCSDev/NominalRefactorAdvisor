@@ -89,6 +89,7 @@ _IGNORED_PYTHON_TREE_DIRS = frozenset(
         ".hg",
         ".mypy_cache",
         ".nox",
+        ".nra-cache",
         ".pytest_cache",
         ".ruff_cache",
         ".tox",

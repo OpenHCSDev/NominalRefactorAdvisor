@@ -417,6 +417,24 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             roots,
             source_policy=source_policy,
         )
+        return cls.from_source_paths(
+            roots,
+            source_paths,
+            config,
+            source_signature_cache=source_signature_cache,
+        )
+
+    @classmethod
+    def from_source_paths(
+        cls,
+        roots: tuple[Path, ...],
+        source_paths: tuple[Path, ...],
+        config: DetectorConfig,
+        *,
+        source_signature_cache: "SourceFileSignatureCache | None" = None,
+    ) -> "AnalysisCacheIdentity":
+        """Build an exact cache identity from an already discovered source set."""
+
         source_files = (
             source_signature_cache.source_file_signatures(source_paths)
             if source_signature_cache is not None
@@ -472,19 +490,31 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
         *,
         source_policy: PythonSourcePathPolicy | None = None,
     ) -> "AnalysisCacheFamilyIdentity":
-        source_file_paths = tuple(
-            str(path.resolve())
-            for path in python_source_paths_for_roots(
-                roots,
-                source_policy=source_policy,
-            )
+        source_paths = python_source_paths_for_roots(
+            roots,
+            source_policy=source_policy,
         )
+        return cls.from_source_paths(
+            roots,
+            source_paths,
+            config,
+        )
+
+    @classmethod
+    def from_source_paths(
+        cls,
+        roots: tuple[Path, ...],
+        source_paths: tuple[Path, ...],
+        config: DetectorConfig,
+    ) -> "AnalysisCacheFamilyIdentity":
+        """Build the stable cache family from known source file paths."""
+
         return cls(
             config=detector_config_signature(config),
             detector_registry=DetectorRegistrySignature.current(),
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=tuple(str(root.resolve()) for root in roots),
-            source_file_paths=source_file_paths,
+            source_file_paths=tuple(str(path.resolve()) for path in source_paths),
         )
 
     @classmethod

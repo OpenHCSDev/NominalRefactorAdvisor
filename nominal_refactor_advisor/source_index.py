@@ -108,15 +108,18 @@ class AstTargetDigest:
 
     @property
     def is_module(self) -> bool:
-        return self.node_kind.is_module
+        return self.node_type == AstTargetNodeKind.MODULE.value
 
     @property
     def is_class(self) -> bool:
-        return self.node_kind.is_class
+        return self.node_type == AstTargetNodeKind.CLASS.value
 
     @property
     def is_function_like(self) -> bool:
-        return self.node_kind.is_function_like
+        return (
+            self.node_type == AstTargetNodeKind.FUNCTION.value
+            or self.node_type == AstTargetNodeKind.METHOD.value
+        )
 
     def contains_line(self, line: int) -> bool:
         return self.line <= line <= self.end_line
@@ -633,33 +636,26 @@ class EvidenceTargetResolver:
     def target_ids_for_evidence(self, evidence: SourceLocation) -> tuple[str, ...]:
         file_targets = self._targets_in_file(evidence.file_path)
         symbol = evidence.subject_symbol
-        symbol_matches = tuple(
-            target
-            for target in file_targets
-            if target.contains_line(evidence.line) and target.matches_symbol(symbol)
-        )
+        symbol_matches: list[AstTargetDigest] = []
+        non_module_matches: list[AstTargetDigest] = []
+        module_matches: list[AstTargetDigest] = []
+        line_matches: list[AstTargetDigest] = []
+        for target in file_targets:
+            if not target.contains_line(evidence.line):
+                continue
+            line_matches.append(target)
+            if target.matches_symbol(symbol):
+                symbol_matches.append(target)
+            if target.is_module:
+                module_matches.append(target)
+            else:
+                non_module_matches.append(target)
         if symbol_matches:
             return self._target_ids(symbol_matches)
-
-        non_module_matches = tuple(
-            target
-            for target in file_targets
-            if not target.is_module and target.contains_line(evidence.line)
-        )
         if non_module_matches:
             return self._target_ids(non_module_matches)
-
-        module_matches = tuple(
-            target
-            for target in file_targets
-            if target.is_module and target.contains_line(evidence.line)
-        )
         if module_matches:
             return self._target_ids(module_matches)
-
-        line_matches = tuple(
-            target for target in file_targets if target.contains_line(evidence.line)
-        )
         return self._target_ids(line_matches)
 
     def _targets_in_file(self, file_path: str) -> tuple[AstTargetDigest, ...]:

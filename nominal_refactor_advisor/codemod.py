@@ -10811,10 +10811,28 @@ def codemod_dsl_payload_reader_profile_rules() -> tuple[
 
 
 @dataclass(frozen=True)
-class CodemodDslFieldManifest:
-    """One JSON field accepted by a registered codemod DSL payload."""
+class CodemodDslRegistryEntryFieldManifest(ABC, metaclass=AutoRegisterMeta):
+    """One field row inside a registry-entry manifest projection."""
+
+    __registry__: ClassVar[
+        dict[str, type["CodemodDslRegistryEntryFieldManifest"]]
+    ] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __skip_if_no_key__ = True
+    registry_key_suffix: ClassVar[str] = "Manifest"
 
     field_name: str
+
+    @abstractmethod
+    def to_dict(self) -> JsonObject:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CodemodDslFieldManifest(CodemodDslRegistryEntryFieldManifest):
+    """One JSON field accepted by a registered codemod DSL payload."""
+
     constructor_argument_name: str
     reader_profile: CodemodDslPayloadReaderProfile
 
@@ -11101,10 +11119,17 @@ class CodemodDslRegistryEntryManifest:
 
     class_name: str
     description: str
-    payload_fields: tuple[CodemodDslFieldManifest, ...]
+    payload_fields: tuple[CodemodDslRegistryEntryFieldManifest, ...]
 
     def payload_field_dicts(self) -> tuple[JsonObject, ...]:
         return tuple(field.to_dict() for field in self.payload_fields)
+
+    def registry_entry_payload(self) -> JsonObject:
+        return {
+            "class_name": self.class_name,
+            "description": self.description,
+            "payload_fields": self.payload_field_dicts(),
+        }
 
 
 @dataclass(frozen=True)
@@ -11141,12 +11166,10 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
     def to_dict(self) -> JsonObject:
         return {
             "operation": self.operation,
-            "class_name": self.class_name,
-            "description": self.description,
+            **self.registry_entry_payload(),
             "target_fields": tuple(
                 field.to_dict() for field in codemod_target_fields()
             ),
-            "payload_fields": self.payload_field_dicts(),
             "common_fields": tuple(
                 field.to_dict() for field in codemod_common_fields()
             ),
@@ -11195,9 +11218,7 @@ class CodemodDslSelectorManifest(CodemodDslRegistryEntryManifest):
     def to_dict(self) -> JsonObject:
         return {
             "selector": self.selector,
-            "class_name": self.class_name,
-            "description": self.description,
-            "payload_fields": self.payload_field_dicts(),
+            **self.registry_entry_payload(),
             "example_payload": self.example_payload(),
         }
 
@@ -23468,7 +23489,7 @@ class AutoregisterInstanceViewRecipeBuilder(ContextualSemanticMirrorRecipeBuilde
         if not isinstance(value, ast.Dict):
             return False
         operation = DeriveAutoregisterInstanceViewOperation(
-            target=SourceRewriteTarget(file_path=resolved_source_path),
+            target=SourceRewriteTarget(file_path=parts.source_path),
             base_name=parts.base_name,
             assignment_name=parts.assignment_name,
             class_key_pairs=parts.class_key_pairs,

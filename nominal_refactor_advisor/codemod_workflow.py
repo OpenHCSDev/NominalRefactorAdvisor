@@ -28,6 +28,8 @@ from .ast_tools import ParsedModule, parse_python_module_roots
 from .codemod import (
     ArchitectureGuardSuite,
     CodemodDslFieldKind,
+    CodemodDslRegistryEntryFieldManifest,
+    CodemodDslRegistryEntryManifest,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
@@ -88,10 +90,9 @@ class CodemodFindingClassStatus(StrEnum):
 
 
 @dataclass(frozen=True)
-class CodemodWorkflowPlanFieldManifest:
+class CodemodWorkflowPlanFieldManifest(CodemodDslRegistryEntryFieldManifest):
     """One JSON field accepted by an executable codemod workflow plan."""
 
-    field_name: str
     value_kind: CodemodDslFieldKind
     required: bool
     description: str
@@ -108,21 +109,16 @@ class CodemodWorkflowPlanFieldManifest:
 
 
 @dataclass(frozen=True)
-class CodemodWorkflowPlanManifest:
+class CodemodWorkflowPlanManifest(CodemodDslRegistryEntryManifest):
     """Registry-derived schema and example for one workflow-plan DSL entry."""
 
     workflow: CodemodWorkflowPlanKind
-    class_name: str
-    description: str
-    payload_fields: tuple[CodemodWorkflowPlanFieldManifest, ...]
     example_payload: JsonObject
 
     def to_dict(self) -> JsonObject:
         return {
             "workflow": self.workflow.value,
-            "class_name": self.class_name,
-            "description": self.description,
-            "payload_fields": tuple(field.to_dict() for field in self.payload_fields),
+            **self.registry_entry_payload(),
             "example_payload": self.example_payload,
         }
 
