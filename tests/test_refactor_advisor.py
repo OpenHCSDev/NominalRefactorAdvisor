@@ -19540,6 +19540,21 @@ def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     assert payload["finding_payload_mode"] == "semantic_work_queue"
     assert payload["supporting_raw_finding_count"] == 1
     assert "supporting_raw_findings" not in payload
+    assert work_queue[0]["detector_id"] == "semantic_mirror_without_descent"
+    assert work_queue[0]["title"] == (
+        "Semantic mirror should descend to its nominal authority"
+    )
+    assert isinstance(work_queue[0]["stable_id"], str)
+    assert work_queue[0]["summary"] == (
+        "`Handler` has 1 raw mirror signal(s) from "
+        "semantic_mirror_without_descent; missing derivation path: "
+        "mapping_literal has semantic overlap with class_family `Handler`; "
+        "projection enumerates nominal facts directly."
+    )
+    assert work_queue[0]["relation_context"] == (
+        "mapping_literal has semantic overlap with class_family `Handler`; "
+        "projection enumerates nominal facts directly"
+    )
     assert work_queue[0]["source"] == "ssot_finding"
     assert work_queue[0]["authority_candidate"] == "Handler"
     assert work_queue[0]["detector_ids"] == ("semantic_mirror_without_descent",)

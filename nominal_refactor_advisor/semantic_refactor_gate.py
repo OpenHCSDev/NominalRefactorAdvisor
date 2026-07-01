@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from .codemod import (
     CodemodCandidate,
     JsonObject,
 )
-from .detectors import IssueDetector
+from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
 from .impact_ranking import RefactorImpactRankingReport, RefactorImpactTrajectory
 from .models import RefactorFinding, SemanticRecord
 from .semantic_descent import (
@@ -187,7 +188,7 @@ class DescentCertificateFindingAuthority:
             if certificate.edge.projection_id in projection_ids
         )
 
-    def authority_candidate_for_finding(self, finding: RefactorFinding) -> str:
+    def authority_label_for_finding(self, finding: RefactorFinding) -> str:
         certificate = self.certificate_for_finding(finding)
         if certificate is not None:
             return self.graph.authority_catalog.authority_for_edge(
@@ -199,13 +200,13 @@ class DescentCertificateFindingAuthority:
             return finding.evidence[0].symbol
         return finding.title
 
-    def missing_derivation_path_for_finding(self, finding: RefactorFinding) -> str:
+    def descent_path_for_finding(self, finding: RefactorFinding) -> str:
         certificate = self.certificate_for_finding(finding)
         if certificate is not None:
             return certificate.missing_derivation_path
         if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
             return finding.relation_context
-        return SemanticRefactorGateWorkItem.missing_derivation_path_for_detectors(
+        return SemanticRefactorGateWorkItem.descent_path_for_detectors(
             (finding.detector_id,)
         )
 
@@ -215,8 +216,8 @@ class DescentCertificateFindingAuthority:
     ) -> "SemanticRefactorFindingGroupKey":
         return SemanticRefactorFindingGroupKey(
             priority_tier=priority_tier_for_detector_ids((finding.detector_id,)),
-            authority_candidate=self.authority_candidate_for_finding(finding),
-            missing_derivation_path=self.missing_derivation_path_for_finding(finding),
+            authority_label=self.authority_label_for_finding(finding),
+            descent_path=self.descent_path_for_finding(finding),
         )
 
     def matched_fact_count(
@@ -267,8 +268,8 @@ class SemanticRefactorFindingGroupKey:
     """Graph-derived identity for one semantic gate work item."""
 
     priority_tier: str
-    authority_candidate: str
-    missing_derivation_path: str
+    authority_label: str
+    descent_path: str
 
 
 @dataclass(frozen=True)
@@ -297,7 +298,7 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
     """One load-bearing authority target exposed by the semantic refactor gate."""
 
     opportunity_kind: str
-    authority_candidate: str
+    authority_target_label: str
     priority_tier: str
     detector_ids: tuple[str, ...]
     actionability: str
@@ -313,7 +314,7 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
         applicability = candidate.applicability
         return cls(
             opportunity_kind=candidate.opportunity_key.kind,
-            authority_candidate=candidate.opportunity_key.label,
+            authority_target_label=candidate.opportunity_key.label,
             priority_tier=priority_tier_for_detector_ids(
                 candidate.opportunity.detector_ids
             ),
@@ -331,7 +332,7 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
         return JsonObject(
             {
                 "opportunity_kind": self.opportunity_kind,
-                "authority_candidate": self.authority_candidate,
+                "authority_candidate": self.authority_target_label,
                 "priority_tier": self.priority_tier,
                 "detector_ids": self.detector_ids,
                 "actionability": self.actionability,
@@ -345,7 +346,7 @@ class SemanticRefactorAuthorityTarget(SemanticRecord):
         return (
             (
                 f"     {index}. {self.opportunity_kind} "
-                f"`{self.authority_candidate}` -> "
+                f"`{self.authority_target_label}` -> "
                 f"{self.removal_prediction.removed_count} finding(s), "
                 f"{self.removal_prediction.target_count} target(s), "
                 f"{self.actionability}, priority {self.priority_tier}"
@@ -360,11 +361,9 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
     """One authority-boundary task that replaces raw finding iteration."""
 
     source: str
-    priority_tier: str
+    group_key: SemanticRefactorFindingGroupKey
     label: str
-    authority_candidate: str
     authority_candidates: tuple[str, ...]
-    missing_derivation_path: str
     detector_ids: tuple[str, ...]
     actionability: str
     finding_ids: tuple[str, ...]
@@ -383,13 +382,15 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
     ) -> "SemanticRefactorGateWorkItem":
         return cls(
             source="impact_candidate",
-            priority_tier=target.priority_tier,
-            label=target.authority_candidate,
-            authority_candidate=target.authority_candidate,
-            authority_candidates=(target.authority_candidate,),
-            missing_derivation_path=cls.missing_derivation_path_for_detectors(
-                target.detector_ids
+            group_key=SemanticRefactorFindingGroupKey(
+                priority_tier=target.priority_tier,
+                authority_label=target.authority_target_label,
+                descent_path=cls.descent_path_for_detectors(
+                    target.detector_ids
+                ),
             ),
+            label=target.authority_target_label,
+            authority_candidates=(target.authority_target_label,),
             detector_ids=target.detector_ids,
             actionability=target.actionability,
             finding_ids=(),
@@ -430,7 +431,7 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             finding_descent_graph
         )
         authority_candidates = _unique_strings(
-            certificate_authority.authority_candidate_for_finding(finding)
+            certificate_authority.authority_label_for_finding(finding)
             for finding in findings
         )
         evidence_symbols = _unique_strings(
@@ -438,6 +439,7 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         )
         detector_ids = _unique_strings(finding.detector_id for finding in findings)
         certificates = certificate_authority.certificates_for_findings(findings)
+        group_key = certificate_authority.group_key_for_finding(first_finding)
         label = first_finding.title
         if len(findings) > 1:
             label = f"{label} ({len(findings)} raw signals)"
@@ -445,13 +447,9 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             label = f"{authority_candidates[0]} semantic descent boundary"
         return cls(
             source="ssot_finding",
-            priority_tier=priority_tier_for_detector_ids(detector_ids),
+            group_key=group_key,
             label=label,
-            authority_candidate=authority_candidates[0],
             authority_candidates=authority_candidates,
-            missing_derivation_path=(
-                certificate_authority.missing_derivation_path_for_finding(first_finding)
-            ),
             detector_ids=detector_ids,
             actionability="semantic_agent_refactor",
             finding_ids=tuple(finding.stable_id for finding in findings),
@@ -474,12 +472,17 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
     def to_dict(self) -> JsonObject:
         return JsonObject(
             {
+                "stable_id": self.stable_id,
+                "detector_id": self.primary_detector_id,
+                "title": self.primary_title,
+                "summary": self.summary,
+                "relation_context": self.group_key.descent_path,
                 "source": self.source,
-                "priority_tier": self.priority_tier,
+                "priority_tier": self.group_key.priority_tier,
                 "label": self.label,
-                "authority_candidate": self.authority_candidate,
+                "authority_candidate": self.group_key.authority_label,
                 "authority_candidates": self.authority_candidates,
-                "missing_derivation_path": self.missing_derivation_path,
+                "missing_derivation_path": self.group_key.descent_path,
                 "detector_ids": self.detector_ids,
                 "actionability": self.actionability,
                 "finding_ids": self.finding_ids,
@@ -494,10 +497,44 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         )
 
     @property
+    def stable_id(self) -> str:
+        payload = "|".join(
+            (
+                self.primary_detector_id,
+                self.group_key.authority_label,
+                self.group_key.descent_path,
+                *self.detector_ids,
+                *self.finding_ids,
+            )
+        )
+        return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
+
+    @property
+    def primary_detector_id(self) -> str:
+        detector_id = SemanticMirrorWithoutDescentDetector.effective_detector_id()
+        if detector_id is None:
+            raise TypeError("SemanticMirrorWithoutDescentDetector has no detector id")
+        return detector_id
+
+    @property
+    def primary_title(self) -> str:
+        return SemanticMirrorWithoutDescentDetector.finding_spec.title
+
+    @property
+    def summary(self) -> str:
+        return (
+            f"`{self.group_key.authority_label}` has "
+            f"{self.removal_prediction.removed_count} "
+            "raw mirror signal(s) from "
+            f"{', '.join(self.detector_ids)}; missing derivation path: "
+            f"{self.group_key.descent_path}."
+        )
+
+    @property
     def priority_rank(self) -> tuple[int, int, int, int, int, int, str]:
         return (
             int(not detector_ids_have_semantic_mirror_role(self.detector_ids)),
-            int(not priority_tier_has_ssot_authority_role(self.priority_tier)),
+            int(not priority_tier_has_ssot_authority_role(self.group_key.priority_tier)),
             -self.matched_fact_count,
             -self.certificate_count,
             -self.removal_prediction.removed_count,
@@ -506,7 +543,7 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         )
 
     @staticmethod
-    def missing_derivation_path_for_detectors(detector_ids: tuple[str, ...]) -> str:
+    def descent_path_for_detectors(detector_ids: tuple[str, ...]) -> str:
         if detector_ids_have_semantic_mirror_role(detector_ids):
             return (
                 "projection must be derived from the nominal authority registry, "
@@ -790,10 +827,12 @@ class SemanticRefactorGateReport(SemanticRecord):
         for index, item in enumerate(self.work_queue[:5], start=1):
             lines.append(
                 f"     {index}. {item.label} -> {item.actionability}, "
-                f"priority {item.priority_tier}"
+                f"priority {item.group_key.priority_tier}"
             )
-            lines.append(f"        authority candidate: {item.authority_candidate}")
-            lines.append(f"        missing descent: {item.missing_derivation_path}")
+            lines.append(
+                f"        authority candidate: {item.group_key.authority_label}"
+            )
+            lines.append(f"        missing descent: {item.group_key.descent_path}")
             if item.certificate_count:
                 lines.append(
                     "        descent certificates: "

@@ -392,8 +392,8 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
         finding_descent_graph=graph,
     )
 
-    assert work_item.authority_candidate == "AxisRoleAuthority"
-    assert work_item.missing_derivation_path == finding.relation_context
+    assert work_item.group_key.authority_label == "AxisRoleAuthority"
+    assert work_item.group_key.descent_path == finding.relation_context
     assert work_item.evidence_symbols == ("local_cases",)
     assert work_item.certificate_count == 1
     assert work_item.matched_fact_count == 2
