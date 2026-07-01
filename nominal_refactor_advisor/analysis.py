@@ -622,6 +622,7 @@ def analyze_detector_types(
     detector_types: tuple[type[IssueDetector], ...],
     analysis_workers: int = 1,
     semantic_descent_source: "SemanticDescentGraphAnalysisSource | None" = None,
+    detector_type_minimum_auto_work_items: int = 64,
 ) -> list[RefactorFinding]:
     """Run selected detector classes against parsed modules."""
 
@@ -643,7 +644,7 @@ def analyze_detector_types(
                 config=config,
                 detector_types=non_graph_detector_types,
                 analysis_workers=analysis_workers,
-                minimum_auto_work_items=64,
+                minimum_auto_work_items=detector_type_minimum_auto_work_items,
             ).sorted_findings()
         )
     if graph_detector_types:
@@ -1441,6 +1442,7 @@ class FastCachedPathAnalysisAuthority:
             detector_types=detector_types,
             analysis_workers=self._request.analysis_workers,
             semantic_descent_source=self._request.semantic_descent_source,
+            detector_type_minimum_auto_work_items=4,
         )
 
     def _changed_modules(self, changed_paths: frozenset[str]) -> list[ParsedModule]:

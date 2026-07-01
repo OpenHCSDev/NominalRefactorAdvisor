@@ -6835,6 +6835,58 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
     assert global_module_batches == [("a.py", "b.py"), ("a.py", "b.py")]
 
 
+def test_fast_partial_changed_analysis_uses_low_auto_parallel_threshold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    module = parse_python_modules(tmp_path)[0]
+    observed_thresholds: list[int] = []
+
+    def fake_analyze_detector_types(
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+        *,
+        detector_types: tuple[type[base_detectors.IssueDetector], ...],
+        analysis_workers: int = 1,
+        semantic_descent_source: object | None = None,
+        detector_type_minimum_auto_work_items: int = 64,
+    ) -> list[RefactorFinding]:
+        del modules, config, detector_types, analysis_workers, semantic_descent_source
+        observed_thresholds.append(detector_type_minimum_auto_work_items)
+        return []
+
+    authority = FastCachedPathAnalysisAuthority(
+        CachedPathAnalysisRequest(
+            roots=(tmp_path / "pkg",),
+            config=DetectorConfig(),
+            parse_cache_dir=tmp_path / ".nra-cache" / "ast",
+            use_parse_cache=True,
+            parse_workers=1,
+            analysis_workers=0,
+            source_policy=None,
+            reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
+        )
+    )
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.analyze_detector_types",
+        fake_analyze_detector_types,
+    )
+    monkeypatch.setattr(
+        authority,
+        "_changed_modules",
+        lambda changed_paths: [module],
+    )
+
+    findings = authority._changed_findings(
+        frozenset({module.path.resolve().as_posix()}),
+        detector_types=(),
+    )
+
+    assert findings == []
+    assert observed_thresholds == [4]
+
+
 def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
