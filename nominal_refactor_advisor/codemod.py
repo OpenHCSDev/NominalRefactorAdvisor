@@ -1281,7 +1281,8 @@ class SourceModuleImportGraph:
     """Source-index-local import graph for cycle-safe generated imports."""
 
     source_index: SourceIndex
-    module_nodes_by_file_path: Mapping[str, ast.Module]
+    module_nodes_by_file_path: Mapping[str, ast.Module] = field(default_factory=dict)
+    imported_modules_by_module: Mapping[str, frozenset[str]] | None = None
 
     @cached_property
     def source_file_by_path(self) -> dict[str, SourceFileDigest]:
@@ -1293,6 +1294,8 @@ class SourceModuleImportGraph:
 
     @cached_property
     def import_edges_by_module(self) -> dict[str, frozenset[str]]:
+        if self.imported_modules_by_module is not None:
+            return dict(self.imported_modules_by_module)
         return {
             source_file.module_name: self.import_edges_for_source_file(source_file)
             for source_file in self.source_index.files
@@ -1395,6 +1398,100 @@ class SourceModuleImportGraph:
         if imported_module:
             return ".".join((*package_parts, *imported_module.split(".")))
         return ".".join(package_parts)
+
+
+@dataclass(frozen=True)
+class CodemodSourceContext:
+    """Cached global semantic source context for focused codemod planning."""
+
+    source_index: SourceIndex
+    sources_by_file_path: Mapping[str, str]
+    class_family_index: ClassFamilyIndex
+    imported_modules_by_module: Mapping[str, frozenset[str]]
+
+    @classmethod
+    def from_modules(
+        cls,
+        modules: Iterable[ParsedModule],
+        findings: Iterable[RefactorFinding] = (),
+    ) -> "CodemodSourceContext":
+        module_tuple = tuple(modules)
+        source_index_artifacts = build_source_index_artifacts(
+            module_tuple,
+            tuple(findings),
+        )
+        module_nodes_by_file_path = {
+            Path(module.path).as_posix(): module.module for module in module_tuple
+        }
+        import_graph = SourceModuleImportGraph(
+            source_index=source_index_artifacts.source_index,
+            module_nodes_by_file_path=module_nodes_by_file_path,
+        )
+        return cls(
+            source_index=source_index_artifacts.source_index,
+            sources_by_file_path={
+                Path(module.path).as_posix(): module.source for module in module_tuple
+            },
+            class_family_index=build_class_family_index(module_tuple),
+            imported_modules_by_module=import_graph.import_edges_by_module,
+        )
+
+    @property
+    def module_import_graph(self) -> SourceModuleImportGraph:
+        return SourceModuleImportGraph(
+            source_index=self.source_index,
+            imported_modules_by_module=self.imported_modules_by_module,
+        )
+
+    def snapshot_for_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+    ) -> "CodemodSourceSnapshot":
+        module_tuple = self.parsed_modules_for_findings(tuple(findings))
+        return CodemodSourceSnapshot(
+            source_index=self.source_index,
+            sources_by_file_path=dict(self.sources_by_file_path),
+            class_family_index=self.class_family_index,
+            module_node_cache={
+                Path(module.path).as_posix(): module.module for module in module_tuple
+            },
+            ast_target_node_cache=(
+                AstTargetNodeIndex.nodes_by_target_identifier_from_modules(
+                    self.source_index,
+                    module_tuple,
+                )
+            ),
+            module_import_graph_cache=self.module_import_graph,
+        )
+
+    def parsed_modules_for_findings(
+        self,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[ParsedModule, ...]:
+        return tuple(
+            _parsed_module_from_source(file_path, self.sources_by_file_path[file_path])
+            for file_path in self.source_paths_for_findings(findings)
+        )
+
+    def source_paths_for_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+    ) -> tuple[str, ...]:
+        source_paths: set[str] = set()
+        finding_ids: list[str] = []
+        for finding in findings:
+            finding_ids.append(finding.stable_id)
+            source_paths.update(
+                evidence.file_path
+                for evidence in finding.evidence
+                if evidence.file_path in self.sources_by_file_path
+            )
+        source_paths.update(
+            self.source_index.target_by_id[target_id].file_path
+            for target_id in self.source_index.target_ids_for_finding_ids(finding_ids)
+            if target_id in self.source_index.target_by_id
+        )
+        return tuple(sorted(source_paths))
 
 
 def _parsed_module_from_source(file_path: str, source: str) -> ParsedModule:
@@ -1613,6 +1710,11 @@ class CodemodSelectorContext:
         repr=False,
         compare=False,
     )
+    module_import_graph_cache: SourceModuleImportGraph | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     _direct_class_declaration_indexes_by_file_path: dict[
         str, "ClassDirectDeclarationIndex"
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
@@ -1660,6 +1762,8 @@ class CodemodSelectorContext:
 
     @cached_property
     def module_import_graph(self) -> SourceModuleImportGraph:
+        if self.module_import_graph_cache is not None:
+            return self.module_import_graph_cache
         return SourceModuleImportGraph(
             source_index=self.source_index,
             module_nodes_by_file_path=self.module_nodes_by_file_path,
@@ -1931,15 +2035,20 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodSourceSnapshot":
         modules = tuple(_parsed_modules_from_source_mapping(source_by_path))
         source_index_artifacts = build_source_index_artifacts(modules, ())
+        module_node_cache = {
+            Path(module.path).as_posix(): module.module for module in modules
+        }
         return cls(
             source_index=source_index_artifacts.source_index,
             sources_by_file_path=dict(source_by_path),
             class_family_index=build_class_family_index(modules),
-            module_node_cache={
-                Path(module.path).as_posix(): module.module for module in modules
-            },
+            module_node_cache=module_node_cache,
             ast_target_node_cache=(
                 source_index_artifacts.target_artifacts.node_cache.nodes_by_target_id
+            ),
+            module_import_graph_cache=SourceModuleImportGraph(
+                source_index=source_index_artifacts.source_index,
+                module_nodes_by_file_path=module_node_cache,
             ),
         )
 
@@ -1955,17 +2064,22 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             module_tuple,
             finding_tuple,
         )
+        module_node_cache = {
+            Path(module.path).as_posix(): module.module for module in module_tuple
+        }
         return cls(
             source_index=source_index_artifacts.source_index,
             sources_by_file_path={
-                str(module.path): module.source for module in module_tuple
+                Path(module.path).as_posix(): module.source for module in module_tuple
             },
             class_family_index=build_class_family_index(module_tuple),
-            module_node_cache={
-                Path(module.path).as_posix(): module.module for module in module_tuple
-            },
+            module_node_cache=module_node_cache,
             ast_target_node_cache=(
                 source_index_artifacts.target_artifacts.node_cache.nodes_by_target_id
+            ),
+            module_import_graph_cache=SourceModuleImportGraph(
+                source_index=source_index_artifacts.source_index,
+                module_nodes_by_file_path=module_node_cache,
             ),
         )
 

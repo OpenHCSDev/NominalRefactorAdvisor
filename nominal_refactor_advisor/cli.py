@@ -31,10 +31,10 @@ from .analysis import (
     analysis_cache_dir_for_root,
     analyze_lean_export,
     analyze_modules_with_cache,
-    analyze_path,
-    analyze_paths,
-    plan_path,
-    plan_paths,
+    analyze_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
+    analyze_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
+    plan_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
+    plan_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
 )
 from .analysis_cache import (
     AnalysisCacheStatus,
@@ -44,7 +44,6 @@ from .analysis_cache import (
 )
 from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
 from .cache_paths import (
-    ParseCacheDirectory,
     ParseCachePolicy,
     default_parse_cache_dir,
 )
@@ -56,9 +55,7 @@ from .calibration import (
 from .codemod import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
-    ArchitectureGuardSuite,
     AuthorityBoundaryPlan,
-    AuthorityBoundaryRewrite,
     CodemodCandidate,
     CodemodAutomationLevel,
     CodemodJsonReport,
@@ -74,8 +71,10 @@ from .codemod import (
     CodemodTargetSelector,
     CodemodSimulationReport,
     CodemodSimulationStatus,
+    CodemodSourceContext,
     CodemodSourceSnapshot,
     FindingRecipePlan,
+    FindingRecipePlanSimulation,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesizer,
     JsonArray,
@@ -84,15 +83,11 @@ from .codemod import (
     NEW_SOURCE_PAYLOAD_FIELD,
     OLD_SOURCE_PAYLOAD_FIELD,
     PlannedSourceRewrite,
-    RefactorRecipe,
     RefactorRecipeOperationKind,
-    RefactorRecipeOperation,
     RefactorRecipeOperationPlanTemplate,
     RefactorRecipeOperationTemplate,
-    RefactorRecipeRewrite,
     SourcePathCandidateAuthority,
     SourceIndexTargetSelector,
-    SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_class_plan_from_findings,
     codemod_plan_from_findings,
@@ -102,6 +97,7 @@ from .codemod import (
     evaluate_architecture_guards,
     module_name_from_source_path,
 )
+from .codemod_source_cache import CodemodSourceContextCache
 from .codemod_workflow import (
     CodemodFixpointReport,
     CodemodFixpointRunner,
@@ -161,7 +157,7 @@ from .semantic_descent import (
     SemanticDescentGraphPayloadReport,
     build_finding_backed_semantic_descent_graph,
 )
-from .source_index import SourceIndex, build_source_index
+from .source_index import build_source_index
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
@@ -1188,6 +1184,69 @@ class FastPreparseSemanticDescentSourceAuthority:
         if not self.preparse_cache_policy.uses_evidence_local_partial_reuse:
             return None
         return self.cache_context.latest_graph()
+
+
+@dataclass(frozen=True)
+class SourceSnapshotCacheEligibility:
+    """Decide whether source-snapshot demand can use cached source context."""
+
+    include_impact_ranking: bool
+    codemod_plan_sequence_has_recipes: bool
+    codemod_scan_query_needs_source_snapshot: bool
+    codemod_fixpoint: bool
+    codemod_refactor_goal_requested: bool
+    codemod_workflow_plan_requested: bool
+
+    @property
+    def needs_source_snapshot(self) -> bool:
+        return (
+            self.include_impact_ranking
+            or self.codemod_plan_sequence_has_recipes
+            or self.codemod_scan_query_needs_source_snapshot
+        )
+
+    @property
+    def requires_parsed_modules(self) -> bool:
+        return (
+            self.codemod_fixpoint
+            or self.codemod_refactor_goal_requested
+            or self.codemod_workflow_plan_requested
+            or self.codemod_plan_sequence_has_recipes
+        )
+
+    @property
+    def can_use_cached_source_context(self) -> bool:
+        return self.needs_source_snapshot and not self.requires_parsed_modules
+
+
+@dataclass(frozen=True)
+class SourceSnapshotSeedFindingSelection:
+    """Choose the findings whose source files need parsed nodes for a query."""
+
+    findings: list[RefactorFinding]
+    codemod_synthesize_plan: bool
+    detector_ids: tuple[str, ...] = ()
+    finding_ids: tuple[str, ...] = ()
+
+    def selected(self) -> list[RefactorFinding]:
+        if not self.codemod_synthesize_plan:
+            return self.findings
+        selected_findings = self.findings
+        if self.detector_ids:
+            detector_id_set = frozenset(self.detector_ids)
+            selected_findings = [
+                finding
+                for finding in selected_findings
+                if finding.detector_id in detector_id_set
+            ]
+        if self.finding_ids:
+            finding_id_set = frozenset(self.finding_ids)
+            selected_findings = [
+                finding
+                for finding in selected_findings
+                if finding.stable_id in finding_id_set
+            ]
+        return selected_findings
 
 
 @dataclass(frozen=True)
@@ -2728,7 +2787,7 @@ class CodemodAuthoringBundleWriter:
         )
         selector_path = record_dir / "selector.json"
         scaffold_path = record_dir / "replacement-scaffold.json"
-        plan_path = record_dir / "replacement-plan.json"
+        replacement_plan_path = record_dir / "replacement-plan.json"
         operation_template_path = record_dir / "selected-operation-template.json"
         selected_scaffold_path = record_dir / "selected-operation-scaffold.json"
         selected_plan_path = record_dir / "selected-operation-plan.json"
@@ -2740,7 +2799,7 @@ class CodemodAuthoringBundleWriter:
         )
         write_cli_json_artifact(selector_path, selector_payload)
         write_cli_json_artifact(scaffold_path, scaffold.to_dict())
-        write_cli_json_artifact(plan_path, scaffold.document.to_dict())
+        write_cli_json_artifact(replacement_plan_path, scaffold.document.to_dict())
         write_cli_json_artifact(operation_template_path, operation_template.to_dict())
         write_cli_json_artifact(selected_scaffold_path, selected_scaffold.to_dict())
         write_cli_json_artifact(
@@ -2750,7 +2809,7 @@ class CodemodAuthoringBundleWriter:
             authoring_record.finding_id,
             selector_path,
             scaffold_path,
-            plan_path,
+            replacement_plan_path,
             operation_template_path,
             selected_scaffold_path,
             selected_plan_path,
@@ -5565,6 +5624,17 @@ def main() -> int:
         if fast_codemod_execution_result is not None:
             return fast_codemod_execution_result
 
+    source_snapshot_cache_eligibility = SourceSnapshotCacheEligibility(
+        include_impact_ranking=args.include_impact_ranking,
+        codemod_plan_sequence_has_recipes=codemod_plan_sequence.has_recipes,
+        codemod_scan_query_needs_source_snapshot=(
+            codemod_scan_query_mode.needs_source_snapshot
+        ),
+        codemod_fixpoint=args.codemod_fixpoint,
+        codemod_refactor_goal_requested=args.codemod_refactor_goal is not None,
+        codemod_workflow_plan_requested=codemod_workflow_plan is not None,
+    )
+    cached_source_context = None
     if args.import_lean_export is None:
         preparse_cache_policy = JsonSummaryPreparseCachePolicy(
             json_enabled=args.json,
@@ -5574,7 +5644,10 @@ def main() -> int:
                 args.codemod_fixpoint
                 or args.codemod_refactor_goal is not None
                 or codemod_plan_sequence.has_recipes
-                or codemod_scan_query_mode.needs_source_snapshot
+                or (
+                    codemod_scan_query_mode.needs_source_snapshot
+                    and not source_snapshot_cache_eligibility.can_use_cached_source_context
+                )
             ),
             analysis_cache_dir=analysis_cache_dir,
             focused_report_filter=path_scope.has_report_filter,
@@ -5583,10 +5656,18 @@ def main() -> int:
         cached_semantic_descent_graph = None
         analysis_cache_identity = None
         preparse_cache_mode = preparse_cache_policy.mode
+        source_context_cache_lookup_enabled = (
+            source_snapshot_cache_eligibility.can_use_cached_source_context
+            and analysis_cache_dir is not None
+            and args.use_parse_cache
+            and not args.include_impact_ranking
+        )
+        cache_lookup_enabled = (
+            preparse_cache_policy.cache_lookup_enabled and preparse_cache_mode.enabled
+        ) or source_context_cache_lookup_enabled
         if (
             codemod_scan_query_mode.needs_analysis
-            and preparse_cache_policy.cache_lookup_enabled
-            and preparse_cache_mode.enabled
+            and cache_lookup_enabled
         ):
             started = perf_counter()
             fast_semantic_descent_context = FastPreparseSemanticDescentSourceAuthority(
@@ -5606,8 +5687,12 @@ def main() -> int:
                 parse_workers=args.parse_workers,
                 analysis_workers=args.analysis_workers,
                 source_policy=source_policy,
-                reuse_policy=preparse_cache_mode.reuse_policy(
-                    focused_report_filter=path_scope.has_report_filter
+                reuse_policy=(
+                    preparse_cache_mode.reuse_policy(
+                        focused_report_filter=path_scope.has_report_filter
+                    )
+                    if preparse_cache_mode.enabled
+                    else FastCacheReusePolicy.EXACT_ONLY
                 ),
                 semantic_descent_source=fast_semantic_descent_analysis_source,
             )
@@ -5651,6 +5736,14 @@ def main() -> int:
                 ):
                     cached_semantic_descent_graph = latest_semantic_descent_graph
                 if cached_semantic_descent_graph is None:
+                    fast_cache_result = None
+            if fast_cache_result is not None and source_context_cache_lookup_enabled:
+                source_context_lookup = CodemodSourceContextCache(
+                    analysis_cache_dir
+                ).load(fast_cache_result.cache_identity)
+                if source_context_lookup.status is AnalysisCacheStatus.HIT:
+                    cached_source_context = source_context_lookup.context
+                else:
                     fast_cache_result = None
             fast_cache_seconds = round(perf_counter() - started, 3)
         if fast_cache_result is not None:
@@ -5842,7 +5935,30 @@ def main() -> int:
         or codemod_scan_query_mode.needs_source_snapshot
     ):
         started = perf_counter()
-        source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+        source_snapshot_seed_findings = SourceSnapshotSeedFindingSelection(
+            findings=findings,
+            codemod_synthesize_plan=codemod_scan_query_mode.synthesize_plan,
+            detector_ids=tuple(args.codemod_goal_detectors),
+            finding_ids=tuple(args.codemod_goal_finding_ids),
+        ).selected()
+        if (
+            cached_source_context is not None
+            and source_snapshot_cache_eligibility.can_use_cached_source_context
+        ):
+            source_snapshot = cached_source_context.snapshot_for_findings(
+                source_snapshot_seed_findings
+            )
+        elif source_snapshot_cache_eligibility.can_use_cached_source_context:
+            source_context = CodemodSourceContext.from_modules(modules, findings)
+            CodemodSourceContextCache(analysis_cache_dir).store(
+                analysis_cache_identity,
+                source_context,
+            )
+            source_snapshot = source_context.snapshot_for_findings(
+                source_snapshot_seed_findings
+            )
+        else:
+            source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
         source_index_seconds = round(perf_counter() - started, 3)
 
     scan_query_result = CodemodScanQueryCliCommand.run_first(

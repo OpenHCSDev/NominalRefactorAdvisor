@@ -6,6 +6,7 @@ from pathlib import Path
 from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
+    CodemodSourceContext,
     CodemodSourceSnapshot,
     codemod_plan_from_findings,
 )
@@ -644,6 +645,47 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
+
+
+def test_codemod_source_context_hydrates_selected_finding_files_only(
+    tmp_path: Path,
+) -> None:
+    alpha_path = tmp_path / "alpha.py"
+    beta_path = tmp_path / "beta.py"
+    alpha_path.write_text("import beta\n\nclass Alpha:\n    pass\n", encoding="utf-8")
+    beta_path.write_text("class Beta:\n    pass\n", encoding="utf-8")
+    modules = parse_python_modules(tmp_path, use_parse_cache=False, parse_workers=1)
+    alpha_finding = RefactorFinding(
+        detector_id="semantic_mirror_without_descent",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Alpha mirror",
+        summary="alpha mirrors beta",
+        why="projection mirrors an authority",
+        capability_gap="derive the projection",
+        relation_context="missing derivation path",
+        evidence=(SourceLocation(alpha_path.as_posix(), 3, "Alpha"),),
+    )
+    beta_finding = replace(
+        alpha_finding,
+        title="Beta mirror",
+        evidence=(SourceLocation(beta_path.as_posix(), 1, "Beta"),),
+    )
+
+    context = CodemodSourceContext.from_modules(
+        modules,
+        (alpha_finding, beta_finding),
+    )
+    snapshot = context.snapshot_for_findings((alpha_finding,))
+
+    assert tuple(snapshot.module_node_cache or {}) == (alpha_path.as_posix(),)
+    assert {
+        snapshot.source_index.target_by_id[target_id].file_path
+        for target_id in snapshot.ast_target_node_cache or {}
+    } == {alpha_path.as_posix()}
+    assert snapshot.module_import_graph.import_would_create_cycle(
+        importing_file_path=beta_path.as_posix(),
+        imported_file_path=alpha_path.as_posix(),
+    )
 
 
 def test_semantic_mirror_role_finding_uses_shared_synthesis_route(
