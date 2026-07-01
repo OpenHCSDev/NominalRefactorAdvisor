@@ -2255,6 +2255,181 @@ def test_semantic_mirror_mapping_finding_has_dsl_action_key(
     assert "no safe mapping recipe exists yet" in record.reason
 
 
+def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactorAction:\n"
+        "    kind: str\n"
+        "    description: str\n"
+        "    confidence: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class ActionReport:\n"
+        "    action: RefactorAction\n"
+        "    emitted: bool\n"
+        "\n"
+        "    def to_dict(self):\n"
+        "        return {\n"
+        "            'kind': self.action.kind,\n"
+        "            'description': self.action.description,\n"
+        "            'confidence': self.action.confidence,\n"
+        "            'emitted': self.emitted,\n"
+        "        }\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
+    )
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == "semantic_mirror_without_descent"
+        and item.metrics.plan_source_name == "RefactorAction"
+        and item.metrics.plan_mapping_name == "ActionReport.to_dict:return@15"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+
+    assert record.status.value == "planned"
+    assert plan.expected_removed_finding_count == 1
+    assert simulation.is_clean is True
+    assert record.recipe_target_shape == "dataclass_payload_projection"
+    assert record.semantic_repair_plan is not None
+    assert record.semantic_repair_plan.repair_kind == "mapping"
+    assert "def payload_from_field_values(cls, **values)" in rewritten_source
+    assert "**RefactorAction.payload_from_field_values(" in rewritten_source
+    assert "kind=self.action.kind" in rewritten_source
+    assert "description=self.action.description" in rewritten_source
+    assert "confidence=self.action.confidence" in rewritten_source
+    assert "'emitted': self.emitted" in rewritten_source
+
+
+def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_recipe(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "model.py").write_text(
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactorAction:\n"
+        "    kind: str\n"
+        "    description: str\n"
+        "    confidence: str\n",
+        encoding="utf-8",
+    )
+    (package_dir / "report.py").write_text(
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class ActionReport:\n"
+        "    action: object\n"
+        "    emitted: bool\n"
+        "\n"
+        "    def to_dict(self):\n"
+        "        return {\n"
+        "            'kind': self.action.kind,\n"
+        "            'description': self.action.description,\n"
+        "            'confidence': self.action.confidence,\n"
+        "            'emitted': self.emitted,\n"
+        "        }\n",
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
+    )
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == "semantic_mirror_without_descent"
+        and item.metrics.plan_source_name == "RefactorAction"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten_model = simulation.simulation.rewritten_sources[
+        (package_dir / "model.py").as_posix()
+    ]
+    rewritten_report = simulation.simulation.rewritten_sources[
+        (package_dir / "report.py").as_posix()
+    ]
+
+    assert record.status.value == "planned"
+    assert record.recipe_target_shape == "dataclass_payload_projection"
+    assert simulation.is_clean is True
+    assert "def payload_from_field_values(cls, **values)" in rewritten_model
+    assert "from .model import RefactorAction" in rewritten_report
+    assert "**RefactorAction.payload_from_field_values(" in rewritten_report
+    assert "'emitted': self.emitted" in rewritten_report
+
+
+def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "model.py").write_text(
+        "from dataclasses import dataclass\n"
+        "from .report import ActionReport\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactorAction:\n"
+        "    kind: str\n"
+        "    description: str\n"
+        "    confidence: str\n",
+        encoding="utf-8",
+    )
+    (package_dir / "report.py").write_text(
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class ActionReport:\n"
+        "    action: object\n"
+        "    emitted: bool\n"
+        "\n"
+        "    def to_dict(self):\n"
+        "        return {\n"
+        "            'kind': self.action.kind,\n"
+        "            'description': self.action.description,\n"
+        "            'confidence': self.action.confidence,\n"
+        "            'emitted': self.emitted,\n"
+        "        }\n",
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
+    )
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == "semantic_mirror_without_descent"
+        and item.metrics.plan_source_name == "RefactorAction"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+
+    assert record.status.value == "rejected_by_safety_check"
+    assert "module cycle" in record.reason
+
+
 def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     tmp_path: Path,
 ) -> None:

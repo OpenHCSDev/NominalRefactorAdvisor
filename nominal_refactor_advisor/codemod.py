@@ -321,6 +321,7 @@ class RefactorRecipeTargetShape(StrEnum):
 
     AUTOREGISTER_CLASS_REGISTRY = "autoregister_class_registry"
     AUTOREGISTER_STRATEGY_FAMILY = "autoregister_strategy_family"
+    DATACLASS_PAYLOAD_PROJECTION = "dataclass_payload_projection"
     ROLE_CASE_AUTHORITY = "role_case_authority"
 
 
@@ -1275,6 +1276,127 @@ def module_name_from_source_path(file_path: str) -> str:
     return "__main__"
 
 
+@dataclass(frozen=True)
+class SourceModuleImportGraph:
+    """Source-index-local import graph for cycle-safe generated imports."""
+
+    source_index: SourceIndex
+    module_nodes_by_file_path: Mapping[str, ast.Module]
+
+    @cached_property
+    def source_file_by_path(self) -> dict[str, SourceFileDigest]:
+        return {source_file.file_path: source_file for source_file in self.source_index.files}
+
+    @cached_property
+    def known_module_names(self) -> frozenset[str]:
+        return frozenset(source_file.module_name for source_file in self.source_index.files)
+
+    @cached_property
+    def import_edges_by_module(self) -> dict[str, frozenset[str]]:
+        return {
+            source_file.module_name: self.import_edges_for_source_file(source_file)
+            for source_file in self.source_index.files
+        }
+
+    def import_edges_for_source_file(
+        self,
+        source_file: SourceFileDigest,
+    ) -> frozenset[str]:
+        module_node = self.module_nodes_by_file_path.get(source_file.file_path)
+        if module_node is None:
+            return frozenset()
+        edges: set[str] = set()
+        for statement in module_node.body:
+            edges.update(self.statement_edges(source_file, statement))
+        return frozenset(edges)
+
+    def statement_edges(
+        self,
+        source_file: SourceFileDigest,
+        statement: ast.stmt,
+    ) -> frozenset[str]:
+        if isinstance(statement, ast.Import):
+            return frozenset(
+                edge
+                for alias in statement.names
+                for edge in self.known_import_targets(alias.name)
+            )
+        if isinstance(statement, ast.ImportFrom):
+            resolved_module = self.resolve_import_from_module(
+                source_file,
+                imported_module=statement.module,
+                level=statement.level,
+            )
+            if resolved_module is None:
+                return frozenset()
+            edges = set(self.known_import_targets(resolved_module))
+            for alias in statement.names:
+                if alias.name == "*":
+                    continue
+                edges.update(self.known_import_targets(f"{resolved_module}.{alias.name}"))
+            return frozenset(edges)
+        return frozenset()
+
+    def known_import_targets(self, module_name: str) -> frozenset[str]:
+        if module_name in self.known_module_names:
+            return frozenset((module_name,))
+        return frozenset()
+
+    def import_would_create_cycle(
+        self,
+        *,
+        importing_file_path: str,
+        imported_file_path: str,
+    ) -> bool:
+        importing_module = self.module_name_for_file_path(importing_file_path)
+        imported_module = self.module_name_for_file_path(imported_file_path)
+        if importing_module is None or imported_module is None:
+            return True
+        if importing_module == imported_module:
+            return False
+        return self.module_reaches(imported_module, importing_module)
+
+    def module_name_for_file_path(self, file_path: str) -> str | None:
+        source_file = self.source_file_by_path.get(file_path)
+        if source_file is None:
+            return None
+        return source_file.module_name
+
+    def module_reaches(self, start_module: str, target_module: str) -> bool:
+        visited: set[str] = set()
+        stack = [start_module]
+        while stack:
+            module_name = stack.pop()
+            if module_name in visited:
+                continue
+            visited.add(module_name)
+            for imported_module in self.import_edges_by_module.get(module_name, ()):
+                if imported_module == target_module:
+                    return True
+                stack.append(imported_module)
+        return False
+
+    @staticmethod
+    def resolve_import_from_module(
+        source_file: SourceFileDigest,
+        *,
+        imported_module: str | None,
+        level: int,
+    ) -> str | None:
+        if level == 0:
+            return imported_module
+        package_parts = source_file.module_name.split(".")
+        if not source_file.is_package_init:
+            package_parts = package_parts[:-1]
+        if level > 1:
+            if level - 1 > len(package_parts):
+                return None
+            package_parts = package_parts[: len(package_parts) - (level - 1)]
+        if imported_module:
+            return ".".join((*package_parts, *imported_module.split(".")))
+        return ".".join(package_parts)
+
+
 def _parsed_module_from_source(file_path: str, source: str) -> ParsedModule:
     path = Path(file_path)
     return ParsedModule(
@@ -1535,6 +1657,13 @@ class CodemodSelectorContext:
             file_path: ast.parse(source, filename=file_path)
             for file_path, source in self.sources_by_file_path.items()
         }
+
+    @cached_property
+    def module_import_graph(self) -> SourceModuleImportGraph:
+        return SourceModuleImportGraph(
+            source_index=self.source_index,
+            module_nodes_by_file_path=self.module_nodes_by_file_path,
+        )
 
     def direct_class_declaration_index_for_file(
         self,
@@ -4031,6 +4160,14 @@ class SourceTextGeometry:
 
     def node_span_offsets(self, span: SourceNodeSpan) -> tuple[int, int]:
         return self._line_span_offsets(span.start_line, span.end_line)
+
+    def node_offsets(self, node: ast.expr | ast.stmt) -> tuple[int, int] | None:
+        span = SourceByteSpan.from_node(node)
+        if span is None or not span.fits_lines(self.lines):
+            return None
+        start_offset = self.line_offsets[span.start_line_index] + span.start_byte
+        end_offset = self.line_offsets[span.end_line_index] + span.end_byte
+        return start_offset, end_offset
 
     def line_indent(self, offset: int) -> str:
         line_start = self.source.rfind("\n", 0, offset) + 1
@@ -17118,19 +17255,12 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
 
     @staticmethod
     def node_offsets(source: str, node: ast.AST) -> tuple[int, int]:
-        try:
-            start_line = node.lineno
-            start_column = node.col_offset
-            end_line = node.end_lineno
-            end_column = node.end_col_offset
-        except AttributeError:
+        if not isinstance(node, ast.expr | ast.stmt):
             raise ValueError("AST node lacks source offsets")
-        if end_line is None or end_column is None:
+        offsets = SourceTextGeometry(source).node_offsets(node)
+        if offsets is None:
             raise ValueError("AST node lacks source offsets")
-        geometry = SourceTextGeometry(source)
-        start_offset = geometry.line_offsets[start_line - 1] + start_column
-        end_offset = geometry.line_offsets[end_line - 1] + end_column
-        return start_offset, end_offset
+        return offsets
 
     @classmethod
     def delete_node_replacement(
@@ -20751,6 +20881,7 @@ class MappingSemanticMirrorRecipeBuilder(
     __registry_key__ = "mapping_name"
     __skip_if_no_key__ = True
     mapping_name: ClassVar[str]
+    registration_order: ClassVar[int] = 100
 
     finding: RefactorFinding
 
@@ -20767,16 +20898,44 @@ class MappingSemanticMirrorRecipeBuilder(
         mapping_name = finding.metrics.plan_mapping_name
         if mapping_name is None:
             return None
-        builder_type = cls.__registry__.get(mapping_name)
-        if builder_type is None:
-            return None
-        return builder_type(
-            source_index=context.source_index,
-            sources_by_file_path=context.sources_by_file_path,
-            class_family_index=context.class_family_index,
-            ast_target_node_cache=context.ast_target_node_cache,
-            finding=finding,
+        for builder_type in cls.builder_types_for(mapping_name):
+            builder = builder_type(
+                source_index=context.source_index,
+                sources_by_file_path=context.sources_by_file_path,
+                class_family_index=context.class_family_index,
+                ast_target_node_cache=context.ast_target_node_cache,
+                finding=finding,
+            )
+            if builder.supports_finding():
+                return builder
+        return None
+
+    @classmethod
+    def builder_types_for(
+        cls,
+        mapping_name: str,
+    ) -> tuple[type["MappingSemanticMirrorRecipeBuilder"], ...]:
+        exact_builder_type = cls.__registry__.get(mapping_name)
+        generic_builder_types = tuple(
+            builder_type
+            for registered_name, builder_type in cls.__registry__.items()
+            if registered_name != mapping_name
         )
+        ordered_generic_types = sorted_tuple(
+            generic_builder_types,
+            key=lambda item: (item.registration_order, item.__name__),
+        )
+        if exact_builder_type is None:
+            return ordered_generic_types
+        return (exact_builder_type, *ordered_generic_types)
+
+    def supports_finding(self) -> bool:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return False
+        return self.finding.metrics.plan_mapping_name == self.mapping_name
+
+    def explains_rejection(self) -> bool:
+        return self.supports_finding()
 
     @classmethod
     def rejection_reason_from_context(
@@ -20786,8 +20945,37 @@ class MappingSemanticMirrorRecipeBuilder(
     ) -> str:
         builder = cls.builder_for(finding, context)
         if builder is None:
+            reasons = cls.unmatched_builder_reasons(finding, context)
+            if reasons:
+                return "; ".join(dict.fromkeys(reasons))
             return "no registered mapping-mirror recipe builder matched the finding"
         return builder.rejection_reason()
+
+    @classmethod
+    def unmatched_builder_reasons(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> tuple[str, ...]:
+        if context is None or not isinstance(finding.metrics, MappingMetrics):
+            return ()
+        mapping_name = finding.metrics.plan_mapping_name
+        if mapping_name is None:
+            return ()
+        return tuple(
+            builder.rejection_reason()
+            for builder_type in cls.builder_types_for(mapping_name)
+            for builder in (
+                builder_type(
+                    source_index=context.source_index,
+                    sources_by_file_path=context.sources_by_file_path,
+                    class_family_index=context.class_family_index,
+                    ast_target_node_cache=context.ast_target_node_cache,
+                    finding=finding,
+                ),
+            )
+            if builder.explains_rejection()
+        )
 
     @abstractmethod
     def recipe(self) -> RefactorRecipe | None:
@@ -20796,6 +20984,496 @@ class MappingSemanticMirrorRecipeBuilder(
     @abstractmethod
     def rejection_reason(self) -> str:
         raise NotImplementedError
+
+@dataclass(frozen=True)
+class DataclassPayloadProjectionFieldValue:
+    """One mirrored return-dict field value routed through a dataclass authority."""
+
+    field_name: str
+    value_node: ast.expr
+
+
+@dataclass(frozen=True)
+class DataclassPayloadProjectionTarget:
+    """Source-index target for a return dict that mirrors dataclass field names."""
+
+    source_path: str
+    function_qualname: str
+    target: AstTargetDigest
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    return_node: ast.Return
+    dict_node: ast.Dict
+    field_values: tuple[DataclassPayloadProjectionFieldValue, ...]
+
+
+@dataclass(frozen=True)
+class DataclassPayloadAuthorityTarget:
+    """Dataclass authority that owns projected payload field names."""
+
+    source_path: str
+    class_name: str
+    target: AstTargetDigest
+    node: ast.ClassDef
+
+
+@dataclass(frozen=True)
+class DataclassPayloadProjectionRecipeParts:
+    """Executable source rewrite facts for dataclass-owned payload keys."""
+
+    projection: DataclassPayloadProjectionTarget
+    authority: DataclassPayloadAuthorityTarget
+    projection_rewrite_target: AstTargetDigest
+    method_name: str
+    projection_replacement_source: str
+    authority_replacement_source: str | None
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-derive-dataclass-payload-projection",
+            reason="Derive mirrored payload keys from the dataclass authority.",
+            target_shape=RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
+        ).replace_target(
+            self.projection_replacement_source,
+            target_identifier=self.projection_rewrite_target.target_id,
+            rationale="Replace mirrored return-dict keys with an authority-owned projection.",
+        )
+        if self.authority_replacement_source is not None:
+            recipe = recipe.replace_target(
+                self.authority_replacement_source,
+                target_identifier=self.authority.target.target_id,
+                rationale="Add the authority-owned payload projection method.",
+            )
+        return recipe
+
+
+@dataclass(frozen=True, kw_only=True)
+class DataclassPayloadProjectionMappingRecipeBuilder(
+    MappingSemanticMirrorRecipeBuilder
+):
+    """Derive return-dict payload keys from the mirrored dataclass authority."""
+
+    mapping_name: ClassVar[str] = "dataclass_payload_projection"
+    registration_order: ClassVar[int] = 1000
+    payload_method_name: ClassVar[str] = "payload_from_field_values"
+
+    finding: RefactorFinding
+
+    def supports_finding(self) -> bool:
+        return self.parts is not None
+
+    def explains_rejection(self) -> bool:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return False
+        mapping_name = self.finding.metrics.plan_mapping_name
+        return mapping_name is not None and ":return@" in mapping_name
+
+    def recipe(self) -> RefactorRecipe | None:
+        if self.parts is None:
+            return None
+        return self.parts.recipe_for(self.finding)
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return "dataclass payload projection requires mapping metrics"
+        locations = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+        if locations is None:
+            return "dataclass payload projection requires projection and authority locations"
+        projection_source_path = self.resolved_source_path(
+            locations.projection_location.file_path
+        )
+        authority_source_path = self.resolved_source_path(
+            locations.authority_location.file_path
+        )
+        if projection_source_path is None or authority_source_path is None:
+            return "dataclass payload projection requires source-index-resolved files"
+        if self.import_would_create_cycle(projection_source_path, authority_source_path):
+            return (
+                "dataclass payload projection import would create a module cycle"
+            )
+        if self.parts is not None:
+            return "dataclass payload projection has an executable authority-key recipe"
+        return (
+            "dataclass payload projection requires a same-file function return dict "
+            "whose string keys match annotated dataclass authority fields"
+        )
+
+    @cached_property
+    def parts(self) -> DataclassPayloadProjectionRecipeParts | None:
+        return (
+            Maybe.of(FindingSemanticMirrorLocations(self.finding).optional_seed_locations())
+            .project(self.parts_from_seed)
+            .unwrap_or_none()
+        )
+
+    def parts_from_seed(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+    ) -> DataclassPayloadProjectionRecipeParts | None:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return None
+        projection_source_path = self.resolved_source_path(
+            seed.projection_location.file_path
+        )
+        authority_source_path = self.resolved_source_path(seed.authority_location.file_path)
+        if projection_source_path is None or authority_source_path is None:
+            return None
+        if self.import_would_create_cycle(projection_source_path, authority_source_path):
+            return None
+        authority = self.authority_target(seed, authority_source_path)
+        projection = self.projection_target(seed, projection_source_path)
+        return (
+            Maybe.of((authority, projection))
+            .filter(lambda row: row[0] is not None and row[1] is not None)
+            .project(lambda row: self.recipe_parts(row[0], row[1]))
+            .unwrap_or_none()
+        )
+
+    def authority_target(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> DataclassPayloadAuthorityTarget | None:
+        authority_name = self.finding.metrics.plan_source_name
+        if authority_name is None:
+            return None
+        resolved_target = MappingSemanticMirrorRecipeStrategy.authority_class_target(
+            self,
+            seed.authority_location,
+            authority_name,
+        )
+        if resolved_target is None:
+            return None
+        if not self.is_dataclass_authority(resolved_target.node):
+            return None
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        if not field_names <= frozenset(self.annotated_field_names(resolved_target.node)):
+            return None
+        return DataclassPayloadAuthorityTarget(
+            source_path=source_path,
+            class_name=authority_name,
+            target=resolved_target.target,
+            node=resolved_target.node,
+        )
+
+    def projection_target(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> DataclassPayloadProjectionTarget | None:
+        function_qualname = EvidenceSymbol(seed.projection_location.symbol).subject
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path,
+            qualname=function_qualname,
+        ).target_ids(self)
+        if len(target_ids) != 1:
+            return None
+        target = self.source_index.target_by_id[target_ids[0]]
+        node = self.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return_node = self.return_node_at_line(node, seed.projection_location.line)
+        if return_node is None or not isinstance(return_node.value, ast.Dict):
+            return None
+        field_values = self.field_values(return_node.value)
+        if frozenset(item.field_name for item in field_values) != frozenset(
+            self.finding.metrics.plan_field_names
+        ):
+            return None
+        return DataclassPayloadProjectionTarget(
+            source_path=source_path,
+            function_qualname=function_qualname,
+            target=target,
+            node=node,
+            return_node=return_node,
+            dict_node=return_node.value,
+            field_values=field_values,
+        )
+
+    def recipe_parts(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassPayloadProjectionTarget,
+    ) -> DataclassPayloadProjectionRecipeParts | None:
+        projection_rewrite = self.projection_rewrite(
+            authority,
+            projection,
+        )
+        if projection_rewrite is None:
+            return None
+        authority_replacement_source = None
+        if not MappingSemanticMirrorRecipeStrategy.class_defines_method(
+            authority.node,
+            self.payload_method_name,
+        ):
+            authority_replacement_source = self.authority_replacement_source(authority)
+            if authority_replacement_source is None:
+                return None
+        return DataclassPayloadProjectionRecipeParts(
+            projection=projection,
+            authority=authority,
+            projection_rewrite_target=projection_rewrite.target,
+            method_name=self.payload_method_name,
+            projection_replacement_source=projection_rewrite.replacement_source,
+            authority_replacement_source=authority_replacement_source,
+        )
+
+    def projection_rewrite(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassPayloadProjectionTarget,
+    ) -> RefactorRecipeRewrite | None:
+        function_source = self.projection_replacement_source(authority, projection)
+        if function_source is None:
+            return None
+        if projection.source_path == authority.source_path:
+            return RefactorRecipeRewrite(
+                target=SourceRewriteTarget(target_id=projection.target.target_id),
+                replacement_source=function_source,
+            )
+        module_target = self.module_target(projection.source_path)
+        if module_target is None:
+            return None
+        import_source = MappingSemanticMirrorRecipeStrategy.import_source_for_path(
+            self,
+            projection_path=projection.source_path,
+            authority_path=authority.source_path,
+            authority_name=authority.class_name,
+        )
+        import_replacements = EnsureImportOperation(
+            target=SourceRewriteTarget(file_path=projection.source_path),
+            payload_value=import_source,
+        ).line_replacements(self.source_index, self.sources_by_file_path)
+        function_replacement = SourceLineReplacement(
+            file_path=projection.source_path,
+            start_line=projection.target.line,
+            end_line=projection.target.end_line,
+            replacement_lines=SourceTargetEditor.source_lines(function_source),
+            rationale="Replace mirrored return-dict keys with an authority-owned projection.",
+        )
+        module_source = SourceTargetEditor(
+            self.sources_by_file_path,
+            module_target,
+        ).replacement_source((*import_replacements, function_replacement))
+        return RefactorRecipeRewrite(
+            target=SourceRewriteTarget(target_id=module_target.target_id),
+            replacement_source=module_source,
+        )
+
+    def projection_replacement_source(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassPayloadProjectionTarget,
+    ) -> str | None:
+        source = self.sources_by_file_path[projection.source_path]
+        geometry = SourceTextGeometry(source)
+        dict_offsets = geometry.node_offsets(projection.dict_node)
+        if dict_offsets is None:
+            return None
+        replacement_dict = self.replacement_dict(authority, projection)
+        replacement_source = ast.unparse(replacement_dict)
+        start_offset, end_offset = dict_offsets
+        target_start = geometry.line_offsets[projection.target.line - 1]
+        target_end = (
+            geometry.line_offsets[projection.target.end_line]
+            if projection.target.end_line < len(geometry.line_offsets)
+            else geometry.end_offset
+        )
+        return geometry.source_with_replacements_in_span(
+            target_start,
+            target_end,
+            (
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=start_offset,
+                    end_offset=end_offset,
+                    replacement_source=replacement_source,
+                ),
+            ),
+        )
+
+    def authority_replacement_source(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+    ) -> str | None:
+        source = self.sources_by_file_path[authority.source_path]
+        geometry = SourceTextGeometry(source)
+        insertion_offset = RepeatedBuilderCallFindingRecipeSynthesizer.class_method_insertion_offset(
+            source,
+            authority.node,
+        )
+        target_start = geometry.line_offsets[authority.target.line - 1]
+        target_end = (
+            geometry.line_offsets[authority.target.end_line]
+            if authority.target.end_line < len(geometry.line_offsets)
+            else geometry.end_offset
+        )
+        return geometry.source_with_replacements_in_span(
+            target_start,
+            target_end,
+            (
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=insertion_offset,
+                    end_offset=insertion_offset,
+                    replacement_source=self.payload_method_source(),
+                ),
+            ),
+        )
+
+    def replacement_dict(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassPayloadProjectionTarget,
+    ) -> ast.Dict:
+        field_names = frozenset(item.field_name for item in projection.field_values)
+        field_values_by_name = {
+            item.field_name: item.value_node for item in projection.field_values
+        }
+        replacement_keys: list[ast.expr | None] = []
+        replacement_values: list[ast.expr] = []
+        inserted_authority_projection = False
+        for key_node, value_node in zip(
+            projection.dict_node.keys,
+            projection.dict_node.values,
+            strict=True,
+        ):
+            field_name = self.string_key_value(key_node)
+            if field_name in field_names:
+                if not inserted_authority_projection:
+                    replacement_keys.append(None)
+                    replacement_values.append(
+                        self.payload_method_call(authority, field_values_by_name)
+                    )
+                    inserted_authority_projection = True
+                continue
+            replacement_keys.append(key_node)
+            replacement_values.append(value_node)
+        replacement_dict = ast.Dict(
+            keys=replacement_keys,
+            values=replacement_values,
+        )
+        return ast.fix_missing_locations(replacement_dict)
+
+    def payload_method_call(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        field_values_by_name: Mapping[str, ast.expr],
+    ) -> ast.Call:
+        return ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id=authority.class_name, ctx=ast.Load()),
+                attr=self.payload_method_name,
+                ctx=ast.Load(),
+            ),
+            args=[],
+            keywords=[
+                ast.keyword(arg=field_name, value=field_values_by_name[field_name])
+                for field_name in self.finding.metrics.plan_field_names
+            ],
+        )
+
+    def field_values(
+        self,
+        dict_node: ast.Dict,
+    ) -> tuple[DataclassPayloadProjectionFieldValue, ...]:
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        values = []
+        for key_node, value_node in zip(dict_node.keys, dict_node.values, strict=True):
+            field_name = self.string_key_value(key_node)
+            if field_name in field_names:
+                values.append(
+                    DataclassPayloadProjectionFieldValue(
+                        field_name=field_name,
+                        value_node=value_node,
+                    )
+                )
+        return tuple(values)
+
+    def import_would_create_cycle(
+        self,
+        projection_source_path: str,
+        authority_source_path: str,
+    ) -> bool:
+        return self.module_import_graph.import_would_create_cycle(
+            importing_file_path=projection_source_path,
+            imported_file_path=authority_source_path,
+        )
+
+    def resolved_source_path(self, file_path: str) -> str | None:
+        return SourcePathResolutionAuthority.from_source_index(
+            file_path,
+            self.source_index,
+        ).optional_path()
+
+    def module_target(self, source_path: str) -> AstTargetDigest | None:
+        module_targets = tuple(
+            target
+            for target in self.source_index.ast_targets
+            if target.file_path == source_path and target.is_module
+        )
+        if len(module_targets) != 1:
+            return None
+        return module_targets[0]
+
+    @staticmethod
+    def return_node_at_line(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        line: int,
+    ) -> ast.Return | None:
+        matches = tuple(
+            child
+            for child in ast.walk(node)
+            if isinstance(child, ast.Return) and child.lineno == line
+        )
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    @staticmethod
+    def is_dataclass_authority(node: ast.ClassDef) -> bool:
+        return any(
+            DataclassPayloadProjectionMappingRecipeBuilder.decorator_name(decorator)
+            == "dataclass"
+            for decorator in node.decorator_list
+        )
+
+    @staticmethod
+    def decorator_name(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Call):
+            return DataclassPayloadProjectionMappingRecipeBuilder.decorator_name(
+                node.func
+            )
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+    @staticmethod
+    def annotated_field_names(node: ast.ClassDef) -> tuple[str, ...]:
+        return tuple(
+            statement.target.id
+            for statement in node.body
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+        )
+
+    @staticmethod
+    def string_key_value(node: ast.expr | None) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    @classmethod
+    def payload_method_source(cls) -> str:
+        return (
+            "\n"
+            "    @classmethod\n"
+            f"    def {cls.payload_method_name}(cls, **values):\n"
+            "        return {\n"
+            "            field_name: values[field_name]\n"
+            "            for field_name in cls.__dataclass_fields__\n"
+            "            if field_name in values\n"
+            "        }\n"
+        )
 
 
 @dataclass(frozen=True)
@@ -21223,12 +21901,7 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
     ) -> tuple[int, int] | None:
         if not isinstance(node, (ast.expr, ast.stmt)):
             return None
-        span = SourceByteSpan.from_node(node)
-        if span is None or not span.fits_lines(geometry.lines):
-            return None
-        start_offset = geometry.line_offsets[span.start_line_index] + span.start_byte
-        end_offset = geometry.line_offsets[span.end_line_index] + span.end_byte
-        return start_offset, end_offset
+        return geometry.node_offsets(node)
 
     @staticmethod
     def target_span_offsets(
@@ -23572,7 +24245,10 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         return FindingRecipeEvaluation(
             rejection_reason=self.rejection_reason_from_builder(
                 finding,
-                "no registered mapping-mirror recipe builder matched the finding",
+                MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
+                    finding,
+                    context,
+                ),
             )
         )
 
