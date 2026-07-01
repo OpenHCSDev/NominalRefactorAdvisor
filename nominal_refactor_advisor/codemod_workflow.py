@@ -305,12 +305,16 @@ class CodemodFindingIdTransition:
     @property
     def removed_ids(self) -> tuple[str, ...]:
         after_ids = frozenset(self.after_ids)
-        return tuple(finding_id for finding_id in self.before_ids if finding_id not in after_ids)
+        return tuple(
+            finding_id for finding_id in self.before_ids if finding_id not in after_ids
+        )
 
     @property
     def added_ids(self) -> tuple[str, ...]:
         before_ids = frozenset(self.before_ids)
-        return tuple(finding_id for finding_id in self.after_ids if finding_id not in before_ids)
+        return tuple(
+            finding_id for finding_id in self.after_ids if finding_id not in before_ids
+        )
 
     @property
     def before_count(self) -> int:
@@ -1442,9 +1446,7 @@ class CodemodClassPlanProjectedDelta:
     ) -> "CodemodClassPlanProjectedDelta":
         return cls(
             class_plan=class_plan,
-            changes=finding_class_delta.changes_for_before_ids(
-                class_plan.finding_ids
-            ),
+            changes=finding_class_delta.changes_for_before_ids(class_plan.finding_ids),
         )
 
     @property
@@ -1511,7 +1513,9 @@ class CodemodClassPlanProjectedDelta:
             "fulfilled_expected_removals": self.fulfilled_expected_removals,
             "status_counts": self.status_counts,
             "changes": tuple(change.to_dict() for change in self.changes),
-            "site_deltas": tuple(site_delta.to_dict() for site_delta in self.site_deltas),
+            "site_deltas": tuple(
+                site_delta.to_dict() for site_delta in self.site_deltas
+            ),
             "class_plan": self.class_plan.to_dict(),
         }
 
@@ -1571,6 +1575,7 @@ class CodemodClassPlanSiteProjectedDelta:
             "fulfilled_expected_removal": self.fulfilled_expected_removal,
             "status_counts": self.status_counts,
             "changes": tuple(change.to_dict() for change in self.changes),
+            "site_plan": self.site_plan.to_dict(),
         }
 
 
@@ -1598,7 +1603,9 @@ class CodemodClassPlanProjectedDeltaReport:
     def to_dict(self) -> JsonObject:
         return {
             "class_count": len(self.class_deltas),
-            "classes": tuple(class_delta.to_dict() for class_delta in self.class_deltas),
+            "classes": tuple(
+                class_delta.to_dict() for class_delta in self.class_deltas
+            ),
         }
 
 

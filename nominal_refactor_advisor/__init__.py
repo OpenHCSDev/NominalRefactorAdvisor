@@ -59,6 +59,7 @@ from .codemod import (
     NonOverlappingPlannedRewriteSelector,
     PlannedSourceRewrite,
     RefactorRecipe,
+    RefactorRecipeTargetShape,
     RefactorRecipeOperation,
     RefactorRecipeOperationCompiler,
     RefactorRecipeOperationKind,

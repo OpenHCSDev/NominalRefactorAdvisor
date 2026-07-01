@@ -296,6 +296,14 @@ class RefactorRecipeOperationKind(StrEnum):
     REPLACE_TEXT = "replace_text"
 
 
+class RefactorRecipeTargetShape(StrEnum):
+    """Architectural target shape produced by a synthesized codemod recipe."""
+
+    AUTOREGISTER_CLASS_REGISTRY = "autoregister_class_registry"
+    AUTOREGISTER_STRATEGY_FAMILY = "autoregister_strategy_family"
+    ROLE_CASE_AUTHORITY = "role_case_authority"
+
+
 class SourceNodeDecoratorPolicy(StrEnum):
     """Whether source node spans include decorators."""
 
@@ -10873,7 +10881,13 @@ class CodemodDslManifest:
         return {
             "plan_fields": ("authority_boundaries", "recipes", "architecture_guards"),
             "plan_sequence_fields": ("stages",),
-            "recipe_fields": ("recipe_id", "rewrites", "operations", "reason"),
+            "recipe_fields": (
+                "recipe_id",
+                "rewrites",
+                "operations",
+                "reason",
+                "target_shape",
+            ),
             "operation_plan_template_fields": (
                 "recipe_id",
                 "reason",
@@ -12433,6 +12447,22 @@ class RefactorRecipe:
     rewrites: tuple[RefactorRecipeRewrite, ...] = ()
     operations: tuple[RefactorRecipeOperation, ...] = ()
     reason: str = ""
+    target_shape: RefactorRecipeTargetShape | None = None
+
+    @staticmethod
+    def shared_target_shape(
+        recipes: Iterable["RefactorRecipe"],
+    ) -> RefactorRecipeTargetShape | None:
+        target_shapes = tuple(
+            dict.fromkeys(
+                recipe.target_shape
+                for recipe in recipes
+                if recipe.target_shape is not None
+            )
+        )
+        if len(target_shapes) == 1:
+            return target_shapes[0]
+        return None
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return tuple(
@@ -13136,12 +13166,15 @@ class RefactorRecipe:
         )
 
     def to_dict(self) -> JsonObject:
-        return {
+        payload: JsonObject = {
             "recipe_id": self.recipe_id,
             "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
             "operations": tuple(operation.to_dict() for operation in self.operations),
             "reason": self.reason,
         }
+        if self.target_shape is not None:
+            payload["target_shape"] = self.target_shape.value
+        return payload
 
 
 @dataclass(frozen=True)
@@ -13539,6 +13572,7 @@ class CodemodPlanJsonParser:
 
     def refactor_recipe(self, row: JsonValue) -> RefactorRecipe:
         payload = self.object_row(row, "refactor recipe rows")
+        target_shape = self.optional_string_field(payload, "target_shape")
         return RefactorRecipe(
             recipe_id=self.required_string_field(payload, "recipe_id"),
             rewrites=tuple(
@@ -13550,6 +13584,9 @@ class CodemodPlanJsonParser:
                 for item in self.array_field(payload, "operations")
             ),
             reason=self.optional_string_field(payload, "reason"),
+            target_shape=(
+                RefactorRecipeTargetShape(target_shape) if target_shape else None
+            ),
         )
 
     def refactor_recipe_rewrite(self, row: JsonValue) -> RefactorRecipeRewrite:
@@ -14257,6 +14294,20 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
         return recipe.recipe_id
 
     @property
+    def recipe_payload(self) -> JsonObject | None:
+        recipe = self.evaluation.recipe
+        if recipe is None:
+            return None
+        return recipe.to_dict()
+
+    @property
+    def recipe_target_shape(self) -> str:
+        recipe = self.evaluation.recipe
+        if recipe is None or recipe.target_shape is None:
+            return ""
+        return recipe.target_shape.value
+
+    @property
     def semantic_repair_plan(self) -> SemanticDescentRepairPlan | None:
         return self.evaluation.semantic_repair_plan
 
@@ -14284,6 +14335,8 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
                 action_key.to_dict() for action_key in self.action_keys
             ),
             "recipe_id": self.recipe_id,
+            "recipe": self.recipe_payload,
+            "target_shape": self.recipe_target_shape,
             "semantic_repair_plan": (
                 None
                 if self.semantic_repair_plan is None
@@ -14668,6 +14721,22 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     def site_count(self) -> int:
         return len(self.site_plans)
 
+    @property
+    def target_shapes(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                record.recipe_target_shape
+                for record in self.synthesis_records
+                if record.recipe_target_shape
+            )
+        )
+
+    @property
+    def target_shape(self) -> str:
+        if len(self.target_shapes) == 1:
+            return self.target_shapes[0]
+        return ""
+
     @classmethod
     def from_execution_class(
         cls,
@@ -14711,9 +14780,12 @@ class FindingRecipeClassPlan(CodemodJsonReport):
                         rewrite for recipe in recipes for rewrite in recipe.rewrites
                     ),
                     operations=tuple(
-                        operation for recipe in recipes for operation in recipe.operations
+                        operation
+                        for recipe in recipes
+                        for operation in recipe.operations
                     ),
                     reason="Batch one graph-clustered smell class into one executable plan.",
+                    target_shape=RefactorRecipe.shared_target_shape(recipes),
                 ),
             )
         )
@@ -14724,6 +14796,8 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             "execution_class": self.execution_class.to_dict(),
             "subsystem": self.execution_class.subsystem,
             "executable": self.executable,
+            "target_shape": self.target_shape,
+            "target_shapes": self.target_shapes,
             "finding_ids": self.finding_ids,
             "finding_count": self.finding_count,
             "expected_removed_finding_ids": self.expected_removed_finding_ids,
@@ -14885,7 +14959,9 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         findings_by_id = {finding.stable_id: finding for finding in findings}
         execution_plan = build_refactor_execution_plan(list(findings), root)
         return tuple(
-            tuple(findings_by_id[finding_id] for finding_id in execution_class.finding_ids)
+            tuple(
+                findings_by_id[finding_id] for finding_id in execution_class.finding_ids
+            )
             for execution_class in execution_plan.classes
         )
 
@@ -15581,8 +15657,7 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
     def class_names(finding: RefactorFinding) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
-                EvidenceSymbol(evidence.symbol).subject
-                for evidence in finding.evidence
+                EvidenceSymbol(evidence.symbol).subject for evidence in finding.evidence
             )
         )
 
@@ -16120,9 +16195,7 @@ class NamedFunctionCollectorExtraction(CollectorExtraction):
         if transformer.append_rewrite_count == 0:
             return None
         return [
-            statement
-            for statement in rewritten_body
-            if isinstance(statement, ast.stmt)
+            statement for statement in rewritten_body if isinstance(statement, ast.stmt)
         ]
 
     def collector_body(self) -> list[ast.stmt]:
@@ -16180,9 +16253,7 @@ class AstStreamCollectorExtraction(CollectorExtraction):
                     tuple(
                         components
                         for statement in shape_and_module[0].body
-                        if (
-                            components := ast_stream_loop_components(statement)
-                        )
+                        if (components := ast_stream_loop_components(statement))
                         is not None
                     )
                 ),
@@ -16217,9 +16288,7 @@ class AstStreamCollectorExtraction(CollectorExtraction):
         if transformer.append_rewrite_count == 0:
             return None
         return [
-            statement
-            for statement in rewritten_body
-            if isinstance(statement, ast.stmt)
+            statement for statement in rewritten_body if isinstance(statement, ast.stmt)
         ]
 
     def collector_body(self) -> list[ast.stmt]:
@@ -19887,6 +19956,7 @@ class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-convert-manual-registry",
             reason="Replace manual registry writes with AutoRegisterMeta.",
+            target_shape=RefactorRecipeTargetShape.AUTOREGISTER_CLASS_REGISTRY,
         ).convert_manual_registry_to_autoregister(
             source_path,
             base_name=autoregister_base_name(
@@ -20518,14 +20588,13 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
         recipe = RefactorRecipe(
             recipe_id=f"{self.finding.stable_id}-derive-generic-role-case-table",
             reason="Derive repeated role-case literals from one nominal authority.",
+            target_shape=RefactorRecipeTargetShape.ROLE_CASE_AUTHORITY,
         )
         for target_rewrite in parts.file_rewrites:
             recipe = recipe.replace_target(
                 target_rewrite.replacement_source,
                 target_identifier=target_rewrite.module_target.target_id,
-                rationale=(
-                    "Derive role-case literals from the shared authority."
-                ),
+                rationale=("Derive role-case literals from the shared authority."),
             )
         return recipe
 
@@ -20746,7 +20815,9 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
             file_path=file_path,
             start_line=insertion_line,
             end_line=insertion_line - 1,
-            replacement_lines=SourceTargetEditor.source_lines(authority_source.source()),
+            replacement_lines=SourceTargetEditor.source_lines(
+                authority_source.source()
+            ),
             rationale="Insert nominal role-case authority.",
         )
 
@@ -20843,9 +20914,7 @@ class GenericRoleCaseTableRecipeParts:
 class LocalRoleCaseConstructibleItem(ABC, metaclass=AutoRegisterMeta):
     """Nominal contract for rendered role-case rows."""
 
-    __registry__: ClassVar[
-        dict[str, type["LocalRoleCaseConstructibleItem"]]
-    ] = {}
+    __registry__: ClassVar[dict[str, type["LocalRoleCaseConstructibleItem"]]] = {}
     __registry_key__ = "registry_key"
 
     @staticmethod
@@ -21348,6 +21417,7 @@ class LocalRoleCaseLogicRecipeParts:
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-extract-local-role-case-authority",
                 reason="Move local role-case literals behind a nominal authority.",
+                target_shape=RefactorRecipeTargetShape.ROLE_CASE_AUTHORITY,
             )
             .insert_before_target(
                 self.insertion_qualname,
@@ -21514,7 +21584,9 @@ class LocalRoleCaseMappingExtractionStrategy(LocalRoleCaseBodyExtractionStrategy
         return (
             Maybe.of(mapping_name)
             .filter(lambda _mapping_name: bool(items))
-            .combine(lambda _mapping_name: lookup, lambda name, axis_name: (name, axis_name))
+            .combine(
+                lambda _mapping_name: lookup, lambda name, axis_name: (name, axis_name)
+            )
             .filter(lambda row: row[1] in FunctionParameterProjection.all_names(node))
             .map(
                 lambda row: LocalRoleCaseAuthorityExtraction(
@@ -21544,7 +21616,11 @@ class LocalRoleCaseBranchExtractionStrategy(LocalRoleCaseBodyExtractionStrategy)
     ) -> LocalRoleCaseBranchAuthorityExtraction | None:
         return (
             Maybe.of(builder.suffix_branch_slice(body))
-            .project(lambda branch_slice: self.extraction_from_slice(builder, source_path, node, body, branch_slice))
+            .project(
+                lambda branch_slice: self.extraction_from_slice(
+                    builder, source_path, node, body, branch_slice
+                )
+            )
             .unwrap_or_none()
         )
 
@@ -21566,10 +21642,16 @@ class LocalRoleCaseBranchExtractionStrategy(LocalRoleCaseBodyExtractionStrategy)
             source_segments,
             default_statement.value if default_statement is not None else None,
         )
-        items = self.branch_items(builder, source_segments, branch_statements, parameter_name)
+        items = self.branch_items(
+            builder, source_segments, branch_statements, parameter_name
+        )
         return (
             Maybe.of((parameter_name, prelude_source, default_source, items))
-            .filter(lambda row: row[0] is not None and row[1] is not None and row[2] is not None)
+            .filter(
+                lambda row: row[0] is not None
+                and row[1] is not None
+                and row[2] is not None
+            )
             .filter(lambda row: bool(row[3]))
             .filter(lambda row: builder.branch_items_cover_finding(row[3]))
             .map(
@@ -21597,9 +21679,13 @@ class LocalRoleCaseBranchExtractionStrategy(LocalRoleCaseBodyExtractionStrategy)
         for statement in branch_statements:
             if not isinstance(statement, ast.If) or statement.orelse:
                 return ()
-            if len(statement.body) != 1 or not isinstance(statement.body[0], ast.Return):
+            if len(statement.body) != 1 or not isinstance(
+                statement.body[0], ast.Return
+            ):
                 return ()
-            result_source = builder.node_source(source_segments, statement.body[0].value)
+            result_source = builder.node_source(
+                source_segments, statement.body[0].value
+            )
             if result_source is None:
                 return ()
             condition_items = builder.branch_items_for_condition(
@@ -21644,8 +21730,16 @@ class LocalRoleCaseAssignmentExtractionStrategy(LocalRoleCaseBodyExtractionStrat
         )
         return (
             Maybe.of((prelude_source, return_source, chain))
-            .filter(lambda row: row[0] is not None and row[1] is not None and row[2] is not None)
-            .project(lambda row: self.extraction_from_chain(builder, node, row[0], row[1], row[2]))
+            .filter(
+                lambda row: row[0] is not None
+                and row[1] is not None
+                and row[2] is not None
+            )
+            .project(
+                lambda row: self.extraction_from_chain(
+                    builder, node, row[0], row[1], row[2]
+                )
+            )
             .unwrap_or_none()
         )
 
@@ -21704,7 +21798,11 @@ class LocalRoleCaseGuardExtractionStrategy(LocalRoleCaseExtractionStrategy):
         body = builder.semantic_body(node)
         return (
             Maybe.of(LocalRoleGuardReturnWindow.from_body(body))
-            .project(lambda window: self.extraction_from_window(builder, source_path, node, body, window))
+            .project(
+                lambda window: self.extraction_from_window(
+                    builder, source_path, node, body, window
+                )
+            )
             .unwrap_or_none()
         )
 
@@ -21852,9 +21950,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 lambda row: LocalRoleCaseLogicRecipeParts(
                     source_path=resolved_source_path,
                     function_qualname=target_digest.qualname,
-                    insertion_qualname=self.insertion_qualname(
-                        target_digest.qualname
-                    ),
+                    insertion_qualname=self.insertion_qualname(target_digest.qualname),
                     authority_name=f"{row[2]}RoleCaseAuthority",
                     item_class_name=f"{row[2]}RoleCase",
                     extraction=row[1],
@@ -22584,9 +22680,9 @@ class ContextualSemanticMirrorRecipeBuilder(
 ):
     """Shared lifecycle for semantic-mirror builders that require selector context."""
 
-    __registry__: ClassVar[
-        dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]
-    ] = {}
+    __registry__: ClassVar[dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]] = (
+        {}
+    )
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
@@ -22733,9 +22829,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
     def parts(self) -> ClassFamilyCollectionSemanticMirrorRecipeParts | None:
         return (
             Maybe.of(
-                FindingSemanticMirrorLocations(
-                    self.finding
-                ).optional_seed_locations()
+                FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
             )
             .combine(
                 lambda _seed: self.finding.metrics.plan_registry_name,
@@ -22927,6 +23021,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
         if isinstance(value, ast.Set):
             return "set"
         return "tuple"
+
 
 @dataclass(frozen=True)
 class AutoregisterInstanceViewRecipeParts:
@@ -23542,6 +23637,7 @@ class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-dispatch-to-polymorphism",
             reason="Replace literal dispatch with AutoRegisterMeta strategy family.",
+            target_shape=RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY,
         ).dispatch_to_polymorphism(
             target_digest.qualname,
             source_path=target_digest.file_path,
@@ -23684,7 +23780,11 @@ class ProjectedBatchRewriteSet:
 
     rewrites: tuple[PlannedSourceRewrite, ...]
 
-    def recipe(self) -> RefactorRecipe:
+    def recipe(
+        self,
+        *,
+        target_shape: RefactorRecipeTargetShape | None = None,
+    ) -> RefactorRecipe:
         return RefactorRecipe(
             recipe_id="finding-backed-merged-codemod-plan",
             rewrites=tuple(
@@ -23699,6 +23799,7 @@ class ProjectedBatchRewriteSet:
                 "Batch overlapping executable advisor findings into one "
                 "source-merge pass."
             ),
+            target_shape=target_shape,
         )
 
 
@@ -23890,6 +23991,7 @@ class FindingRecipePlanBuilder:
                     operation for recipe in recipes for operation in recipe.operations
                 ),
                 reason="Batch executable advisor findings into one source-merge pass.",
+                target_shape=RefactorRecipe.shared_target_shape(recipes),
             ),
         )
 
@@ -23898,9 +24000,14 @@ class FindingRecipePlanBuilder:
         recipes: Iterable[RefactorRecipe],
         selector_context: CodemodSelectorContext | None,
     ) -> RefactorRecipe | None:
+        recipe_tuple = tuple(recipes)
         return (
-            Maybe.of(self.projected_batch_rewrite_set(recipes, selector_context))
-            .project(ProjectedBatchRewriteSet.recipe)
+            Maybe.of(self.projected_batch_rewrite_set(recipe_tuple, selector_context))
+            .project(
+                lambda rewrite_set: rewrite_set.recipe(
+                    target_shape=RefactorRecipe.shared_target_shape(recipe_tuple)
+                )
+            )
             .unwrap_or_none()
         )
 

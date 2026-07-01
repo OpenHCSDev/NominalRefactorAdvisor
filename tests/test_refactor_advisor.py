@@ -109,6 +109,7 @@ from nominal_refactor_advisor.codemod import (
     FindingEvidenceTargetSelector,
     InheritanceEdgeTargetSelector,
     RefactorRecipe,
+    RefactorRecipeTargetShape,
     RefactorRecipeOperation,
     RefactorRecipeOperationTemplate,
     RecipeCallReplacement,
@@ -6796,7 +6797,9 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
 
         @staticmethod
         def class_count(module: ParsedModule) -> int:
-            return sum(isinstance(node, ast.ClassDef) for node in ast.walk(module.module))
+            return sum(
+                isinstance(node, ast.ClassDef) for node in ast.walk(module.module)
+            )
 
     for registry_key, detector_type in tuple(
         base_detectors.IssueDetector.__registry__.items()
@@ -9474,7 +9477,9 @@ def test_named_function_collector_boilerplate_synthesizes_shared_traversal_recip
         == "NamedFunctionCollectorBoilerplateFindingRecipeSynthesizer"
     )
     assert plan.expected_removed_finding_count == 1
-    assert "def _local_candidates_for_function(module, qualname, function):" in rewritten
+    assert (
+        "def _local_candidates_for_function(module, qualname, function):" in rewritten
+    )
     assert "return _collect_named_function_candidates" in rewritten
     assert "yield LocalCandidate" in rewritten
     assert after_findings == ()
@@ -11370,6 +11375,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
             "recipes": [
                 {
                     "recipe_id": "alpha-recipe",
+                    "target_shape": "autoregister_strategy_family",
                     "rewrites": [
                         {
                             "target_qualname": "Alpha.run",
@@ -11391,6 +11397,10 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     assert document.authority_boundaries[0].boundary_id == "alpha-run"
     assert document.guard_suite.rules[0].rule_id == "alpha-boundary"
     assert document.recipes[0].recipe_id == "alpha-recipe"
+    assert (
+        document.recipes[0].target_shape
+        is RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY
+    )
     assert document.recipes[0].rewrites[0].target.source_path == "pkg/mod.py"
 
 
@@ -11458,6 +11468,7 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
     assert len(operations) >= 25
     assert len(selectors) >= 6
     assert unknown_fields == []
+    assert "target_shape" in manifest["recipe_fields"]
     assert manifest["plan_sequence_fields"] == ("stages",)
     assert manifest["operation_plan_template_fields"] == (
         "recipe_id",
@@ -16467,8 +16478,7 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
     )
     payload = delta.to_dict()
     statuses_by_title = {
-        change["signature"]["title"]: change["status"]
-        for change in payload["changes"]
+        change["signature"]["title"]: change["status"] for change in payload["changes"]
     }
 
     assert payload["moved_class_count"] == 1
@@ -16524,6 +16534,8 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert class_payload["synthesis_status_counts"]["planned"] == 1
     assert len(class_payload["site_plans"]) == 1
     assert class_payload["executable"] is True
+    assert class_payload["target_shape"] == "autoregister_class_registry"
+    assert class_payload["target_shapes"] == ("autoregister_class_registry",)
     assert class_payload["sequence"]["stages"][0] == class_payload["document"]
     assert class_payload["site_count"] == 1
     assert site_plan["finding_id"] == class_payload["finding_ids"][0]
@@ -16531,7 +16543,14 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert site_plan["selector_resolution"]["selected_count"] >= 1
     assert site_plan["replacement_scaffold"]["selected_count"] >= 1
     assert site_plan["synthesis_record"]["status"] == "planned"
+    assert site_plan["synthesis_record"]["recipe"]["operations"][0]["operation"] == (
+        "convert_manual_registry_to_autoregister"
+    )
+    assert site_plan["synthesis_record"]["target_shape"] == (
+        "autoregister_class_registry"
+    )
     assert recipe["recipe_id"] == "finding-class-codemod-plan"
+    assert recipe["target_shape"] == "autoregister_class_registry"
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
 
 
@@ -16543,18 +16562,12 @@ def test_codemod_class_plan_groups_semantic_findings_by_authority(
     _write_module(
         tmp_path,
         "pkg/first.py",
-        (
-            "class FirstAxisConsumer:\n"
-            "    role_cases = {'applied': 1, 'diff': 2}\n"
-        ),
+        ("class FirstAxisConsumer:\n" "    role_cases = {'applied': 1, 'diff': 2}\n"),
     )
     _write_module(
         tmp_path,
         "pkg/second.py",
-        (
-            "class SecondAxisConsumer:\n"
-            "    role_cases = {'applied': 3, 'diff': 4}\n"
-        ),
+        ("class SecondAxisConsumer:\n" "    role_cases = {'applied': 3, 'diff': 4}\n"),
     )
     first = RefactorFinding(
         detector_id="generic_role_case_table",
@@ -16635,9 +16648,10 @@ def test_codemod_class_plan_groups_semantic_findings_by_authority(
     assert class_payload["finding_count"] == 2
     assert len(class_payload["site_plans"]) == 2
     assert set(class_payload["finding_ids"]) == {first.stable_id, second.stable_id}
-    assert {
-        site_plan["finding_id"] for site_plan in class_payload["site_plans"]
-    } == {first.stable_id, second.stable_id}
+    assert {site_plan["finding_id"] for site_plan in class_payload["site_plans"]} == {
+        first.stable_id,
+        second.stable_id,
+    }
     assert unrelated.stable_id not in class_payload["finding_ids"]
 
 
@@ -16789,6 +16803,10 @@ def test_finding_recipe_plan_merges_overlapping_role_case_module_rewrites(
     assert plan.expected_removed_finding_count == 2
     assert plan.report.to_dict()["status_counts"] == {"planned": 2}
     assert plan.document.recipes[0].recipe_id == "finding-backed-merged-codemod-plan"
+    assert (
+        plan.document.recipes[0].target_shape
+        is RefactorRecipeTargetShape.ROLE_CASE_AUTHORITY
+    )
     assert len(plan.document.recipes[0].rewrites) == 1
     assert simulation.is_clean is True
     assert "+class AxisRoleCaseAuthority:" in diff
@@ -16842,9 +16860,7 @@ def test_module_cli_synthesizes_class_plan_with_scaffolds(
     assert class_payload["site_plans"][0]["selector"]["selector"] == (
         "finding_evidence_target"
     )
-    assert (
-        class_payload["site_plans"][0]["replacement_scaffold"]["selected_count"] >= 1
-    )
+    assert class_payload["site_plans"][0]["replacement_scaffold"]["selected_count"] >= 1
     assert (
         class_payload["document"]["recipes"][0]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"
@@ -16904,9 +16920,20 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert class_delta["changes"][0]["status"] == "eliminated"
     assert class_delta["projected_result_status"] == "eliminated"
     assert class_delta["class_plan"]["site_count"] == 1
+    assert class_delta["class_plan"]["target_shape"] == "autoregister_class_registry"
     assert site_delta["finding_id"] == payload["classes"][0]["finding_ids"][0]
     assert site_delta["status_counts"]["eliminated"] >= 1
     assert site_delta["fulfilled_expected_removal"] is True
+    assert site_delta["site_plan"]["selector"]["selector"] == "finding_evidence_target"
+    assert (
+        site_delta["site_plan"]["synthesis_record"]["recipe"]["operations"][0][
+            "operation"
+        ]
+        == "convert_manual_registry_to_autoregister"
+    )
+    assert site_delta["site_plan"]["synthesis_record"]["target_shape"] == (
+        "autoregister_class_registry"
+    )
 
 
 def test_module_cli_simulates_projected_findings_with_executable_continuation(
@@ -17071,6 +17098,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import FindingRecipeClassPlanReport
     from nominal_refactor_advisor import NominalBoundaryExtractionGoalTargetPolicy
     from nominal_refactor_advisor import ProjectedScanModuleSet
+    from nominal_refactor_advisor import RefactorRecipeTargetShape
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
     from nominal_refactor_advisor import codemod_dsl_manifest
@@ -17137,6 +17165,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodFindingClassDelta.__name__ == "CodemodFindingClassDelta"
     assert CodemodFindingClassSignature.__name__ == "CodemodFindingClassSignature"
     assert CodemodFindingClassStatus.MOVED.value == "moved"
+    assert (
+        RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY.value
+        == "autoregister_strategy_family"
+    )
     assert finding_change.expected_removed_finding_count == 1
     assert finding_change.to_dict()["finding_delta"]["removed_finding_ids"] == ("a",)
     assert CodemodClassPlanProjectedDelta.__name__ == "CodemodClassPlanProjectedDelta"
@@ -19211,7 +19243,10 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     assert third_result.returncode == 0, third_result.stderr
     assert third_timing["parse_seconds"] == 0.0
     assert third_timing["analysis_cache_status"] == "partial"
-    assert third_graph_payload["active_graph_source"] in {"repository", "finding_backed"}
+    assert third_graph_payload["active_graph_source"] in {
+        "repository",
+        "finding_backed",
+    }
 
 
 def test_module_cli_can_disable_auto_context_root_for_file_scope(
@@ -20694,6 +20729,10 @@ def test_runtime_semantic_branch_chain_synthesizes_dispatch_recipe(
     assert operation["case_key_attribute"] == "runtime_case"
     assert operation["dispatch_axis_expression"] == "materialization_request"
     assert operation["literal_cases"] == ("'local_cover'", "'frontier'")
+    assert (
+        plan.document.recipes[0].target_shape
+        is RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY
+    )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
     simulation.document_simulation.apply()
