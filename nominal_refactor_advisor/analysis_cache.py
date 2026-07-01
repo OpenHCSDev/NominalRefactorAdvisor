@@ -23,7 +23,7 @@ from .ast_tools import (
 )
 from .detectors import DetectorConfig, IssueDetector
 from .finding_counts import FindingSummary
-from .models import RefactorFinding
+from .models import RefactorFinding, SourceLocation
 from .planner import RefactorExecutionPlanLoopProjection, RefactorExecutionPlanReport
 
 DetectorConfigSignatureValue: TypeAlias = int | tuple[int, ...]
@@ -36,7 +36,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 13
+    version: int = 15
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -83,6 +83,58 @@ def analysis_cache_lookup(
     """Build the canonical cache lookup record for one status."""
 
     return AnalysisCacheLookup(status, findings)
+
+
+class CachedFindingPayloadShape:
+    """Validate persisted finding payloads before cache reuse."""
+
+    @staticmethod
+    def findings_from_sequence(
+        value: list[RefactorFinding] | tuple[RefactorFinding, ...],
+    ) -> tuple[RefactorFinding, ...] | None:
+        findings: list[RefactorFinding] = []
+        for item in value:
+            if not isinstance(item, RefactorFinding):
+                return None
+            if not isinstance(item.evidence, tuple):
+                return None
+            if any(
+                not isinstance(evidence, SourceLocation)
+                for evidence in item.evidence
+            ):
+                return None
+            findings.append(item)
+        return tuple(findings)
+
+    @staticmethod
+    def findings_from_value(
+        value: AnalysisCachePayloadValue | None,
+    ) -> tuple[RefactorFinding, ...] | None:
+        if not isinstance(value, list):
+            return None
+        return CachedFindingPayloadShape.findings_from_sequence(value)
+
+    @classmethod
+    def findings_from_payload(
+        cls,
+        payload: AnalysisCachePayload,
+    ) -> tuple[RefactorFinding, ...] | None:
+        return cls.findings_from_value(payload.get("findings"))
+
+    @classmethod
+    def require_findings(
+        cls,
+        value: list[RefactorFinding],
+        *,
+        cache_surface: str,
+    ) -> tuple[RefactorFinding, ...]:
+        findings = cls.findings_from_value(value)
+        if findings is None:
+            raise TypeError(
+                f"{cache_surface} received RefactorFinding payloads with "
+                "non-SourceLocation evidence."
+            )
+        return findings
 
 
 @dataclass(frozen=True)
@@ -640,6 +692,130 @@ AnalysisCachePayload: TypeAlias = dict[str, AnalysisCachePayloadValue]
 AnalysisCacheLookupLoader: TypeAlias = Callable[
     [AnalysisCacheIdentity], AnalysisCacheLookup
 ]
+AnalysisLatestFindingLookup: TypeAlias = tuple[
+    AnalysisCacheIdentity,
+    tuple[RefactorFinding, ...],
+]
+
+
+class FindingCachePayloadValidationMixin:
+    """Shared validation for persisted finding-cache payload records."""
+
+    findings: tuple[RefactorFinding, ...]
+
+    @property
+    def has_valid_findings(self) -> bool:
+        return (
+            CachedFindingPayloadShape.findings_from_sequence(self.findings)
+            is not None
+        )
+
+
+@dataclass(frozen=True)
+class AnalysisFindingCacheEntryPayload(FindingCachePayloadValidationMixin):
+    """Persisted exact detector-finding cache payload."""
+
+    identity: AnalysisCacheEntryIdentity
+    findings: tuple[RefactorFinding, ...]
+
+    @classmethod
+    def from_findings(
+        cls,
+        identity: AnalysisCacheEntryIdentity,
+        findings: list[RefactorFinding],
+    ) -> "AnalysisFindingCacheEntryPayload":
+        return cls(
+            identity=identity,
+            findings=CachedFindingPayloadShape.require_findings(
+                findings,
+                cache_surface=cls.__name__,
+            ),
+        )
+
+    def lookup(self) -> AnalysisCacheLookup:
+        return analysis_cache_lookup(AnalysisCacheStatus.HIT, self.findings)
+
+
+@dataclass(frozen=True)
+class AnalysisPartialFindingCachePayload(FindingCachePayloadValidationMixin):
+    """Persisted evidence-local partial finding-cache payload."""
+
+    identity: AnalysisCacheIdentity
+    previous_identity: AnalysisCacheIdentity
+    findings: tuple[RefactorFinding, ...]
+
+    @classmethod
+    def from_findings(
+        cls,
+        identity: AnalysisCacheIdentity,
+        previous_identity: AnalysisCacheIdentity,
+        findings: list[RefactorFinding],
+    ) -> "AnalysisPartialFindingCachePayload":
+        return cls(
+            identity=identity,
+            previous_identity=previous_identity,
+            findings=CachedFindingPayloadShape.require_findings(
+                findings,
+                cache_surface=cls.__name__,
+            ),
+        )
+
+    def lookup(self) -> AnalysisCacheLookup:
+        return analysis_cache_lookup(AnalysisCacheStatus.PARTIAL, self.findings)
+
+
+@dataclass(frozen=True)
+class AnalysisLatestFindingCachePayload(FindingCachePayloadValidationMixin):
+    """Persisted latest-finding cache payload."""
+
+    family_identity: AnalysisCacheFamilyIdentity
+    identity: AnalysisCacheIdentity
+    findings: tuple[RefactorFinding, ...]
+
+    @classmethod
+    def from_findings(
+        cls,
+        identity: AnalysisCacheIdentity,
+        findings: list[RefactorFinding],
+    ) -> "AnalysisLatestFindingCachePayload":
+        finding_tuple = CachedFindingPayloadShape.require_findings(
+            findings,
+            cache_surface=cls.__name__,
+        )
+        return cls(
+            family_identity=AnalysisCacheFamilyIdentity.from_analysis_identity(identity),
+            identity=identity,
+            findings=finding_tuple,
+        )
+
+    def lookup(self) -> AnalysisLatestFindingLookup:
+        return self.identity, self.findings
+
+
+SerializableAnalysisCachePayload: TypeAlias = (
+    AnalysisCachePayload
+    | AnalysisFindingCacheEntryPayload
+    | AnalysisPartialFindingCachePayload
+    | AnalysisLatestFindingCachePayload
+)
+
+
+@dataclass(frozen=True)
+class AnalysisCacheSerializedPayloadLookup:
+    """Result of loading one serialized analysis-cache payload."""
+
+    payload: SerializableAnalysisCachePayload | None = None
+
+    @classmethod
+    def hit(
+        cls,
+        payload: SerializableAnalysisCachePayload,
+    ) -> "AnalysisCacheSerializedPayloadLookup":
+        return cls(payload=payload)
+
+    @classmethod
+    def miss(cls) -> "AnalysisCacheSerializedPayloadLookup":
+        return cls()
 
 
 @dataclass(frozen=True)
@@ -675,7 +851,11 @@ class AnalysisCacheStorage:
     def cache_file_path(self, file_name: str) -> Path:
         return self.storage_root / file_name
 
-    def load_payload(self, cache_path: Path) -> AnalysisCachePayload | None:
+    def load_serializable_payload(
+        self,
+        cache_path: Path,
+    ) -> AnalysisCacheSerializedPayloadLookup:
+        lookup = AnalysisCacheSerializedPayloadLookup.miss()
         try:
             with cache_path.open("rb") as handle:
                 payload = pickle.load(handle)
@@ -689,15 +869,82 @@ class AnalysisCacheStorage:
             AttributeError,
             ImportError,
         ):
-            return None
+            payload = None
+        if not isinstance(
+            payload,
+            (
+                dict,
+                AnalysisFindingCacheEntryPayload,
+                AnalysisPartialFindingCachePayload,
+                AnalysisLatestFindingCachePayload,
+            ),
+        ):
+            return lookup
+        return AnalysisCacheSerializedPayloadLookup.hit(payload)
+
+    def load_payload(self, cache_path: Path) -> AnalysisCachePayload | None:
+        payload = self.load_serializable_payload(cache_path).payload
         if not isinstance(payload, dict):
             return None
         return payload
 
-    def store_payload_atomic(
+    def load_finding_payload(
         self,
         cache_path: Path,
-        payload: AnalysisCachePayload,
+        identity: AnalysisCacheEntryIdentity,
+    ) -> AnalysisFindingCacheEntryPayload | None:
+        payload = self.load_serializable_payload(cache_path).payload
+        if not isinstance(payload, AnalysisFindingCacheEntryPayload):
+            return None
+        if payload.identity != identity:
+            return None
+        if not payload.has_valid_findings:
+            return None
+        return payload
+
+    def load_partial_finding_payload(
+        self,
+        cache_path: Path,
+        identity: AnalysisCacheIdentity,
+        previous_identity: AnalysisCacheIdentity,
+    ) -> AnalysisPartialFindingCachePayload | None:
+        payload = self.load_serializable_payload(cache_path).payload
+        if not isinstance(payload, AnalysisPartialFindingCachePayload):
+            return None
+        if payload.identity != identity:
+            return None
+        if payload.previous_identity != previous_identity:
+            return None
+        if not payload.has_valid_findings:
+            return None
+        return payload
+
+    def load_latest_finding_payload(
+        self,
+        cache_path: Path,
+        family_identity: AnalysisCacheFamilyIdentity,
+    ) -> AnalysisLatestFindingCachePayload | None:
+        payload = self.load_serializable_payload(cache_path).payload
+        if not isinstance(payload, AnalysisLatestFindingCachePayload):
+            return None
+        if payload.family_identity != family_identity:
+            return None
+        if not payload.has_valid_findings:
+            return None
+        return payload
+
+    def load_latest_finding_lookup(
+        self,
+        cache_path: Path,
+        family_identity: AnalysisCacheFamilyIdentity,
+    ) -> AnalysisLatestFindingLookup | None:
+        payload = self.load_latest_finding_payload(cache_path, family_identity)
+        return None if payload is None else payload.lookup()
+
+    def store_serializable_payload_atomic(
+        self,
+        cache_path: Path,
+        payload: SerializableAnalysisCachePayload,
     ) -> None:
         self.ensure_directory()
         started = monotonic()
@@ -709,6 +956,34 @@ class AnalysisCacheStorage:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, cache_path)
+
+    def store_payload_atomic(
+        self,
+        cache_path: Path,
+        payload: AnalysisCachePayload,
+    ) -> None:
+        self.store_serializable_payload_atomic(cache_path, payload)
+
+    def store_finding_payload_atomic(
+        self,
+        cache_path: Path,
+        payload: AnalysisFindingCacheEntryPayload,
+    ) -> None:
+        self.store_serializable_payload_atomic(cache_path, payload)
+
+    def store_partial_finding_payload_atomic(
+        self,
+        cache_path: Path,
+        payload: AnalysisPartialFindingCachePayload,
+    ) -> None:
+        self.store_serializable_payload_atomic(cache_path, payload)
+
+    def store_latest_finding_payload_atomic(
+        self,
+        cache_path: Path,
+        payload: AnalysisLatestFindingCachePayload,
+    ) -> None:
+        self.store_serializable_payload_atomic(cache_path, payload)
 
 
 class SourceFileSignatureCache:
@@ -860,17 +1135,10 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
-        payload = storage.load_payload(storage.entry_path(identity))
+        payload = storage.load_finding_payload(storage.entry_path(identity), identity)
         if payload is None:
             return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        if payload.get("identity") != identity:
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        findings = payload.get("findings")
-        if not isinstance(findings, list):
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        if not all(isinstance(finding, RefactorFinding) for finding in findings):
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        return analysis_cache_lookup(AnalysisCacheStatus.HIT, tuple(findings))
+        return payload.lookup()
 
     def store(
         self,
@@ -884,9 +1152,12 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return
-        payload: AnalysisCachePayload = {"identity": identity, "findings": findings}
+        payload = AnalysisFindingCacheEntryPayload.from_findings(
+            identity,
+            findings,
+        )
         try:
-            storage.store_payload_atomic(storage.entry_path(identity), payload)
+            storage.store_finding_payload_atomic(storage.entry_path(identity), payload)
             if isinstance(identity, AnalysisCacheIdentity):
                 self._store_summary(
                     identity,
@@ -965,19 +1236,14 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
-        payload = storage.load_payload(storage.partial_path(identity))
+        payload = storage.load_partial_finding_payload(
+            storage.partial_path(identity),
+            identity,
+            previous_identity,
+        )
         if payload is None:
             return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        if payload.get("identity") != identity:
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        if payload.get("previous_identity") != previous_identity:
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        findings = payload.get("findings")
-        if not isinstance(findings, list):
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        if not all(isinstance(finding, RefactorFinding) for finding in findings):
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        return analysis_cache_lookup(AnalysisCacheStatus.PARTIAL, tuple(findings))
+        return payload.lookup()
 
     def store_partial(
         self,
@@ -988,37 +1254,30 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return
-        payload: AnalysisCachePayload = {
-            "identity": identity,
-            "previous_identity": previous_identity,
-            "findings": findings,
-        }
+        payload = AnalysisPartialFindingCachePayload.from_findings(
+            identity,
+            previous_identity,
+            findings,
+        )
         try:
-            storage.store_payload_atomic(storage.partial_path(identity), payload)
+            storage.store_partial_finding_payload_atomic(
+                storage.partial_path(identity),
+                payload,
+            )
         except OSError:
             return
 
     def load_latest(
         self,
         family_identity: AnalysisCacheFamilyIdentity,
-    ) -> tuple[AnalysisCacheIdentity, tuple[RefactorFinding, ...]] | None:
+    ) -> AnalysisLatestFindingLookup | None:
         storage = self.storage()
         if storage is None:
             return None
-        payload = storage.load_payload(storage.latest_path(family_identity))
-        if payload is None:
-            return None
-        if payload.get("family_identity") != family_identity:
-            return None
-        identity = payload.get("identity")
-        if not isinstance(identity, AnalysisCacheIdentity):
-            return None
-        findings = payload.get("findings")
-        if not isinstance(findings, list):
-            return None
-        if not all(isinstance(finding, RefactorFinding) for finding in findings):
-            return None
-        return identity, tuple(findings)
+        return storage.load_latest_finding_lookup(
+            storage.latest_path(family_identity),
+            family_identity,
+        )
 
     def _store_latest(
         self,
@@ -1026,13 +1285,11 @@ class AnalysisFindingCache:
         findings: list[RefactorFinding],
         storage: AnalysisCacheStorage,
     ) -> None:
-        family_identity = AnalysisCacheFamilyIdentity.from_analysis_identity(identity)
-        payload: AnalysisCachePayload = {
-            "family_identity": family_identity,
-            "identity": identity,
-            "findings": findings,
-        }
-        storage.store_payload_atomic(storage.latest_path(family_identity), payload)
+        payload = AnalysisLatestFindingCachePayload.from_findings(identity, findings)
+        storage.store_latest_finding_payload_atomic(
+            storage.latest_path(payload.family_identity),
+            payload,
+        )
 
     def _store_summary(
         self,

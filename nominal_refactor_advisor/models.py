@@ -744,6 +744,26 @@ class RefactorFinding(FindingSemantics):
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.evidence, tuple):
+            raise TypeError(
+                f"{type(self).__name__}.evidence for detector "
+                f"{self.detector_id!r} must be a tuple of SourceLocation records; "
+                f"got {type(self.evidence).__name__}."
+            )
+        invalid_items = tuple(
+            item for item in self.evidence if not isinstance(item, SourceLocation)
+        )
+        if invalid_items:
+            invalid_types = ", ".join(
+                sorted({type(item).__name__ for item in invalid_items})
+            )
+            raise TypeError(
+                f"{type(self).__name__}.evidence for detector "
+                f"{self.detector_id!r} must contain SourceLocation records; "
+                f"got {invalid_types}."
+            )
+
     @cached_property
     def stable_id(self) -> str:
         """Source-derived finding id for compact, repeatable agent targeting."""

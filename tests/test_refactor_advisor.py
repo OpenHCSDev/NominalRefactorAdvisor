@@ -24382,6 +24382,12 @@ def test_detects_option_record_quotient_family(tmp_path: Path) -> None:
     assert "JsonOptions" in finding.summary
     assert "TiffOptions" in finding.summary
     assert "schema catalog" in finding.summary
+    assert all(isinstance(item, SourceLocation) for item in finding.evidence)
+    assert {item.symbol for item in finding.evidence} == {
+        "CsvOptions",
+        "JsonOptions",
+        "TiffOptions",
+    }
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
 

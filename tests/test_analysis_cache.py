@@ -216,6 +216,39 @@ def test_analysis_cache_rebuild_lease_waits_for_exact_cache_entry(
     assert future.result(timeout=1.0) == (False, AnalysisCacheStatus.HIT)
 
 
+def test_analysis_cache_rejects_malformed_finding_evidence(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    identity = AnalysisCacheIdentity.from_roots((package_root,), DetectorConfig())
+    cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
+    storage = cache.storage()
+    assert storage is not None
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Malformed evidence",
+        why="malformed evidence",
+        capability_gap="malformed evidence",
+        relation_context="malformed evidence",
+    )
+    finding = finding_spec.build(
+        "malformed_evidence",
+        "malformed evidence",
+        (SourceLocation((package_root / "mod.py").as_posix(), 1, "VALUE"),),
+    )
+    object.__setattr__(finding, "evidence", (finding.evidence,))
+    storage.store_payload_atomic(
+        storage.entry_path(identity),
+        {"identity": identity, "findings": [finding]},
+    )
+
+    assert cache.load(identity).status is AnalysisCacheStatus.MISS
+    with pytest.raises(TypeError, match="non-SourceLocation evidence"):
+        cache.store(identity, [finding])
+
+
 def test_cross_module_candidate_detector_reuses_contextual_global_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

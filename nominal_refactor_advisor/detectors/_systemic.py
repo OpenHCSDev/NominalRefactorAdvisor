@@ -4875,6 +4875,7 @@ declare_candidate_rule_detector(
         _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     ),
     summary=lambda candidate: f"{candidate.file_path} declares option record family {candidate.class_names} over fields {candidate.field_names}; derive the records from one typed option schema catalog.",
+    evidence=lambda candidate: candidate.evidence,
     scaffold=lambda candidate: "OPTION_SCHEMAS = (\n    OptionSchema('csv', CsvOptions, fields=(...)),\n    OptionSchema('json', JsonOptions, fields=(...)),\n)\n\n# Derive concrete frozen records and defaults from the schema catalog.",
     codemod_patch=lambda candidate: "# Keep the public option record names, but derive their field/default declarations from one schema catalog.\n# The only per-option residue should be semantic field/default differences.",
     metrics=lambda candidate: MappingMetrics.from_field_names(
