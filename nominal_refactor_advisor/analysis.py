@@ -24,6 +24,7 @@ from .analysis_cache import (
     GlobalDetectorAnalysisCacheIdentity,
     GlobalModuleContextSignature,
     PerModuleAnalysisCacheIdentity,
+    SourceFileSignatureCache,
 )
 from .ast_tools import (
     ParsedModule,
@@ -704,12 +705,14 @@ class AnalysisCacheIdentityAuthority:
     roots: tuple[Path, ...]
     config: DetectorConfig
     source_policy: PythonSourcePathPolicy | None = None
+    source_signature_cache: SourceFileSignatureCache | None = None
 
     def cache_identity(self) -> AnalysisCacheIdentity:
         return AnalysisCacheIdentity.from_roots(
             self.roots,
             self.config,
             source_policy=self.source_policy,
+            source_signature_cache=self.source_signature_cache,
         )
 
     def family_identity(
@@ -764,6 +767,7 @@ class AnalysisCacheResolutionAuthority:
             self._roots,
             self._config,
             self._source_policy,
+            AnalysisFindingCache(self._analysis_cache_dir).source_signature_cache(),
         ).cache_identity()
         analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
         with analysis_cache.rebuild_lease(cache_identity) as rebuild_lease:
@@ -1212,6 +1216,7 @@ def load_analysis_cache_for_roots(
         roots,
         config,
         source_policy,
+        AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
     )
     cache_identity = identity_authority.cache_identity()
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
@@ -1256,6 +1261,7 @@ def load_analysis_summary_for_roots(
         roots,
         config,
         source_policy,
+        AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
     )
     cache_identity = identity_authority.cache_identity()
     summary_lookup = AnalysisFindingCache(analysis_cache_dir).load_summary(
@@ -1379,6 +1385,19 @@ class FastCachedPathAnalysisAuthority:
             raise ValueError("partial cache reuse requires cache identity")
         if cache_result.previous_cache_identity is None:
             raise ValueError("partial cache reuse requires previous cache identity")
+        analysis_cache = AnalysisFindingCache(self._request.analysis_cache_dir)
+        partial_cache_lookup = analysis_cache.load_partial(
+            cache_result.cache_identity,
+            cache_result.previous_cache_identity,
+        )
+        if partial_cache_lookup.status is AnalysisCacheStatus.PARTIAL:
+            return CachedAnalysisResult(
+                list(partial_cache_lookup.findings),
+                AnalysisCacheStatus.PARTIAL,
+                cache_identity=cache_result.cache_identity,
+                previous_cache_identity=cache_result.previous_cache_identity,
+                previous_findings=cache_result.previous_findings,
+            )
         changed_paths = ChangedSourcePathAuthority.paths(
             cache_result.cache_identity,
             cache_result.previous_cache_identity,
@@ -1418,6 +1437,11 @@ class FastCachedPathAnalysisAuthority:
                 ),
             ],
             detector_types=default_detector_types_for_analysis(),
+        )
+        analysis_cache.store_partial(
+            cache_result.cache_identity,
+            cache_result.previous_cache_identity,
+            findings,
         )
         return CachedAnalysisResult(
             findings,

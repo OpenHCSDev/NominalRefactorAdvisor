@@ -40,6 +40,16 @@ class AnalysisCacheSchema:
 analysis_cache_schema = AnalysisCacheSchema()
 
 
+@dataclass(frozen=True)
+class SourceFileSignatureCacheSchema:
+    """Nominal schema identity for persisted source-content signature entries."""
+
+    version: int = 1
+
+
+source_file_signature_cache_schema = SourceFileSignatureCacheSchema()
+
+
 class AnalysisCacheStatus(StrEnum):
     """Observable result of consulting the persistent finding cache."""
 
@@ -170,6 +180,48 @@ class SourceFileSignature:
                 digest_size=16,
             ).hexdigest(),
         )
+
+
+@dataclass(frozen=True)
+class CachedSourceFileSignature:
+    """Content hash cached under a stable filesystem stat identity."""
+
+    path: str
+    mtime_ns: int
+    size: int
+    source_hash: str
+
+    @classmethod
+    def from_path(
+        cls,
+        path: Path,
+        path_stat: os.stat_result,
+        source_hash: str,
+    ) -> "CachedSourceFileSignature":
+        return cls(
+            path=str(path.resolve()),
+            mtime_ns=path_stat.st_mtime_ns,
+            size=path_stat.st_size,
+            source_hash=source_hash,
+        )
+
+    def matches(self, path: Path, path_stat: os.stat_result) -> bool:
+        return (
+            self.path == str(path.resolve())
+            and self.mtime_ns == path_stat.st_mtime_ns
+            and self.size == path_stat.st_size
+        )
+
+    def source_file_signature(self) -> SourceFileSignature:
+        return SourceFileSignature(path=self.path, source_hash=self.source_hash)
+
+
+@dataclass(frozen=True)
+class SourceFileSignatureCachePayload:
+    """Persisted manifest of source-content signatures for cache identity building."""
+
+    schema: SourceFileSignatureCacheSchema
+    entries: tuple[CachedSourceFileSignature, ...]
 
 
 def semantic_module_hash(module: ParsedModule) -> str:
@@ -311,13 +363,16 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         *,
         source_policy: PythonSourcePathPolicy | None = None,
+        source_signature_cache: "SourceFileSignatureCache | None" = None,
     ) -> "AnalysisCacheIdentity":
-        source_files = tuple(
-            SourceFileSignature.from_path(path)
-            for path in python_source_paths_for_roots(
-                roots,
-                source_policy=source_policy,
-            )
+        source_paths = python_source_paths_for_roots(
+            roots,
+            source_policy=source_policy,
+        )
+        source_files = (
+            source_signature_cache.source_file_signatures(source_paths)
+            if source_signature_cache is not None
+            else tuple(SourceFileSignature.from_path(path) for path in source_paths)
         )
         return cls(
             config=detector_config_signature(config),
@@ -501,6 +556,7 @@ AnalysisCachePayloadValue: TypeAlias = (
     AnalysisCacheEntryIdentity
     | AnalysisCacheFamilyIdentity
     | AnalysisFindingSummary
+    | SourceFileSignatureCachePayload
     | list[RefactorFinding]
 )
 AnalysisCachePayload: TypeAlias = dict[str, AnalysisCachePayloadValue]
@@ -524,6 +580,12 @@ class AnalysisCacheStorage:
 
     def summary_path(self, identity: AnalysisCacheIdentity) -> Path:
         return self.cache_file_path(f"{identity.cache_token}.summary.pickle")
+
+    def partial_path(self, identity: AnalysisCacheIdentity) -> Path:
+        return self.cache_file_path(f"{identity.cache_token}.partial.pickle")
+
+    def source_signature_cache_path(self) -> Path:
+        return self.cache_file_path("source-file-signatures.pickle")
 
     def rebuild_lock_path(self, identity: AnalysisCacheIdentity) -> Path:
         return self.cache_file_path(f"{identity.cache_token}.lock")
@@ -565,6 +627,84 @@ class AnalysisCacheStorage:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, cache_path)
+
+
+class SourceFileSignatureCache:
+    """Persist source-content hashes behind cheap stat invalidation."""
+
+    def __init__(self, storage: AnalysisCacheStorage | None) -> None:
+        self._storage = storage
+        self._entries_by_path: dict[str, CachedSourceFileSignature] | None = None
+        self._dirty = False
+
+    def source_file_signatures(
+        self,
+        paths: tuple[Path, ...],
+    ) -> tuple[SourceFileSignature, ...]:
+        try:
+            return tuple(self.source_file_signature(path) for path in paths)
+        finally:
+            self.store_if_dirty()
+
+    def source_file_signature(self, path: Path) -> SourceFileSignature:
+        path_stat = path.stat()
+        cache_key = str(path.resolve())
+        cached_signature = self.entries_by_path.get(cache_key)
+        if cached_signature is not None and cached_signature.matches(path, path_stat):
+            return cached_signature.source_file_signature()
+        source_hash = hashlib.blake2s(path.read_bytes(), digest_size=16).hexdigest()
+        updated_signature = CachedSourceFileSignature.from_path(
+            path,
+            path_stat,
+            source_hash,
+        )
+        self.entries_by_path[cache_key] = updated_signature
+        self._dirty = True
+        return updated_signature.source_file_signature()
+
+    @property
+    def entries_by_path(self) -> dict[str, CachedSourceFileSignature]:
+        if self._entries_by_path is None:
+            self._entries_by_path = self._load_entries()
+        return self._entries_by_path
+
+    def _load_entries(self) -> dict[str, CachedSourceFileSignature]:
+        if self._storage is None:
+            return {}
+        payload = self._storage.load_payload(
+            self._storage.source_signature_cache_path()
+        )
+        if payload is None:
+            return {}
+        manifest = payload.get("source_file_signatures")
+        if not isinstance(manifest, SourceFileSignatureCachePayload):
+            return {}
+        if manifest.schema != source_file_signature_cache_schema:
+            return {}
+        return {entry.path: entry for entry in manifest.entries}
+
+    def store_if_dirty(self) -> None:
+        if not self._dirty or self._storage is None:
+            return
+        payload: AnalysisCachePayload = {
+            "source_file_signatures": SourceFileSignatureCachePayload(
+                schema=source_file_signature_cache_schema,
+                entries=tuple(
+                    sorted(
+                        self.entries_by_path.values(),
+                        key=lambda entry: entry.path,
+                    )
+                ),
+            ),
+        }
+        try:
+            self._storage.store_payload_atomic(
+                self._storage.source_signature_cache_path(),
+                payload,
+            )
+        except OSError:
+            return
+        self._dirty = False
 
 
 @dataclass(frozen=True)
@@ -693,6 +833,47 @@ class AnalysisFindingCache:
             return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
         return AnalysisFindingSummaryLookup(AnalysisCacheStatus.HIT, summary)
 
+    def load_partial(
+        self,
+        identity: AnalysisCacheIdentity,
+        previous_identity: AnalysisCacheIdentity,
+    ) -> AnalysisCacheLookup:
+        storage = self.storage()
+        if storage is None:
+            return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
+        payload = storage.load_payload(storage.partial_path(identity))
+        if payload is None:
+            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+        if payload.get("identity") != identity:
+            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+        if payload.get("previous_identity") != previous_identity:
+            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+        findings = payload.get("findings")
+        if not isinstance(findings, list):
+            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+        if not all(isinstance(finding, RefactorFinding) for finding in findings):
+            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+        return analysis_cache_lookup(AnalysisCacheStatus.PARTIAL, tuple(findings))
+
+    def store_partial(
+        self,
+        identity: AnalysisCacheIdentity,
+        previous_identity: AnalysisCacheIdentity,
+        findings: list[RefactorFinding],
+    ) -> None:
+        storage = self.storage()
+        if storage is None:
+            return
+        payload: AnalysisCachePayload = {
+            "identity": identity,
+            "previous_identity": previous_identity,
+            "findings": findings,
+        }
+        try:
+            storage.store_payload_atomic(storage.partial_path(identity), payload)
+        except OSError:
+            return
+
     def load_latest(
         self,
         family_identity: AnalysisCacheFamilyIdentity,
@@ -759,6 +940,12 @@ class AnalysisFindingCache:
         if self.storage_root is None:
             return None
         return AnalysisCacheStorage(self.storage_root)
+
+    def source_signature_cache(self) -> SourceFileSignatureCache | None:
+        storage = self.storage()
+        if storage is None:
+            return None
+        return SourceFileSignatureCache(storage)
 
 
 def detector_config_signature(

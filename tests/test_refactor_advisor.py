@@ -6771,9 +6771,23 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
         )
     ).result()
+    second_fast_result = FastCachedPathAnalysisAuthority(
+        CachedPathAnalysisRequest(
+            roots=(root,),
+            config=DetectorConfig(),
+            parse_cache_dir=cache_dir,
+            use_parse_cache=True,
+            parse_workers=1,
+            analysis_workers=1,
+            source_policy=None,
+            reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
+        )
+    ).result()
 
     assert fast_result is not None
+    assert second_fast_result is not None
     assert fast_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert second_fast_result.cache_status is AnalysisCacheStatus.PARTIAL
     assert {finding.summary for finding in first_findings} == {
         "global a.py",
         "global b.py",
@@ -6781,6 +6795,12 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
         "local b.py",
     }
     assert {finding.summary for finding in fast_result.findings} == {
+        "global a.py",
+        "global b.py",
+        "local a.py",
+        "local b.py",
+    }
+    assert {finding.summary for finding in second_fast_result.findings} == {
         "global a.py",
         "global b.py",
         "local a.py",

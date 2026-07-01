@@ -526,6 +526,61 @@ def test_collected_family_items_are_persisted_beside_parse_cache(tmp_path: Path)
     ]
 
 
+def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    first_path = package_root / "a.py"
+    second_path = package_root / "b.py"
+    first_path.write_text("VALUE = 1\n", encoding="utf-8")
+    second_path.write_text("VALUE = 2\n", encoding="utf-8")
+    cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
+    source_signature_cache = cache.source_signature_cache()
+    assert source_signature_cache is not None
+    original_read_bytes = Path.read_bytes
+
+    first_identity = AnalysisCacheIdentity.from_roots(
+        (package_root,),
+        DetectorConfig(),
+        source_signature_cache=source_signature_cache,
+    )
+
+    def fail_read_bytes(path: Path) -> bytes:
+        raise AssertionError(f"unexpected source reread for {path}")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+    cached_source_signature_cache = cache.source_signature_cache()
+    assert cached_source_signature_cache is not None
+    second_identity = AnalysisCacheIdentity.from_roots(
+        (package_root,),
+        DetectorConfig(),
+        source_signature_cache=cached_source_signature_cache,
+    )
+
+    assert second_identity == first_identity
+
+    read_paths: list[Path] = []
+
+    def count_read_bytes(path: Path) -> bytes:
+        read_paths.append(path.resolve())
+        return original_read_bytes(path)
+
+    second_path.write_text("VALUE = 200\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "read_bytes", count_read_bytes)
+    invalidated_source_signature_cache = cache.source_signature_cache()
+    assert invalidated_source_signature_cache is not None
+    changed_identity = AnalysisCacheIdentity.from_roots(
+        (package_root,),
+        DetectorConfig(),
+        source_signature_cache=invalidated_source_signature_cache,
+    )
+
+    assert changed_identity != first_identity
+    assert read_paths == [second_path.resolve()]
+
+
 def test_changed_path_root_assignment_returns_absolute_owner_for_relative_root(
     tmp_path: Path,
     monkeypatch,
