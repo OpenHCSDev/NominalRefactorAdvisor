@@ -265,6 +265,7 @@ class CancelableCompositionKind(StrEnum):
 class ArchitectureGuardViolationKind(StrEnum):
     """Kinds of post-refactor architecture guard violations."""
 
+    FORBIDDEN_ATTRIBUTE = "forbidden_attribute"
     FORBIDDEN_CALL = "forbidden_call"
     FORBIDDEN_LITERAL_DISPATCH = "forbidden_literal_dispatch"
 
@@ -467,6 +468,7 @@ class ArchitectureGuardRule:
     """Caller-supplied invariant for a completed authority-boundary refactor."""
 
     rule_id: str
+    forbidden_attribute_names: tuple[str, ...] = ()
     forbidden_call_names: tuple[str, ...] = ()
     forbidden_literal_dispatch_subjects: tuple[str, ...] = ()
     file_path_suffixes: tuple[str, ...] = ()
@@ -480,6 +482,7 @@ class ArchitectureGuardRule:
     def to_dict(self) -> JsonObject:
         return {
             "rule_id": self.rule_id,
+            "forbidden_attribute_names": self.forbidden_attribute_names,
             "forbidden_call_names": self.forbidden_call_names,
             "forbidden_literal_dispatch_subjects": (
                 self.forbidden_literal_dispatch_subjects
@@ -2273,11 +2276,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             base_snapshot=rewrite_snapshot,
             source_overlay_by_file_path=simulation.rewritten_sources,
         )
+        active_guard_suite = document.combined_guard_suite
         architecture_guard_report = (
-            document.guard_suite.clean_report()
-            if document.guard_suite.is_empty
+            active_guard_suite.clean_report()
+            if active_guard_suite.is_empty
             else after_snapshot_projection.snapshot.evaluate_guard_suite(
-                document.guard_suite
+                active_guard_suite
             )
         )
         return CodemodPlanDocumentSimulation(
@@ -5831,6 +5835,32 @@ class ClassMemberPromotedBase(ClassMemberPromotionSpec):
 
 
 @dataclass(frozen=True)
+class ClassHeaderRewriteabilityPolicy:
+    """Nominal policy for deciding whether a class-header span can be rewritten."""
+
+    start_line: int
+    end_line: int
+    source_line_count: int
+    header_source: str
+
+    @property
+    def can_rewrite(self) -> bool:
+        return self.span_is_in_source and self.header_is_parseable
+
+    @property
+    def span_is_in_source(self) -> bool:
+        return 1 <= self.start_line <= self.end_line <= self.source_line_count
+
+    @property
+    def header_is_parseable(self) -> bool:
+        try:
+            ast.parse(self.header_source)
+        except SyntaxError:
+            return False
+        return True
+
+
+@dataclass(frozen=True)
 class ClassHeaderSpanSourceAuthority:
     """Rewrite a class header over its full source span."""
 
@@ -5892,15 +5922,12 @@ class ClassHeaderSpanSourceAuthority:
 
     @property
     def can_rewrite(self) -> bool:
-        if self.start_line < 1 or self.end_line < self.start_line:
-            return False
-        if self.end_line > len(self.source_lines):
-            return False
-        try:
-            ast.parse(f"{''.join(self.header_lines(self.base_items, ''))}    pass\n")
-        except SyntaxError:
-            return False
-        return True
+        return ClassHeaderRewriteabilityPolicy(
+            start_line=self.start_line,
+            end_line=self.end_line,
+            source_line_count=len(self.source_lines),
+            header_source=f"{''.join(self.header_lines(self.base_items, ''))}    pass\n",
+        ).can_rewrite
 
     def with_added_base(self, base_name: str) -> tuple[str, ...]:
         if base_name in self.base_items:
@@ -7102,9 +7129,26 @@ class DeleteTargetOperation(RefactorRecipeOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        del source_by_path
         target_identifier = self.target.required_target_id(source_index)
         target_digest = source_index.target_by_id[target_identifier]
+        target_node = AstTargetNodeIndex(
+            source_index,
+            source_by_path,
+        ).nodes_by_target_identifier().get(target_identifier)
+        if isinstance(target_node, ast.stmt):
+            target_span = SourceNodeSpan(
+                target_node,
+                SourceNodeDecoratorPolicy.INCLUDE,
+            )
+            return (
+                SourceLineReplacement(
+                    file_path=target_digest.file_path,
+                    start_line=target_span.start_line,
+                    end_line=target_span.end_line,
+                    rationale=self.rationale
+                    or f"Delete target {target_digest.qualname!r}.",
+                ),
+            )
         return (
             SourceLineReplacement.delete_target(
                 target_digest,
@@ -13334,6 +13378,7 @@ class RefactorRecipe:
     recipe_id: str
     rewrites: tuple[RefactorRecipeRewrite, ...] = ()
     operations: tuple[RefactorRecipeOperation, ...] = ()
+    guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
     reason: str = ""
     target_shape: RefactorRecipeTargetShape | None = None
 
@@ -13362,6 +13407,20 @@ class RefactorRecipe:
             for item in (*self.rewrites, *self.operations)
             for target in item.referenced_source_targets()
         )
+
+    def with_architecture_guard(
+        self,
+        rule: ArchitectureGuardRule,
+    ) -> "RefactorRecipe":
+        return replace(self, guard_suite=self.guard_suite.with_rule(rule))
+
+    def active_guard_suite(
+        self,
+        guard_suite: ArchitectureGuardSuite | None = None,
+    ) -> ArchitectureGuardSuite:
+        if guard_suite is None:
+            return self.guard_suite
+        return guard_suite.merge(self.guard_suite)
 
     def replace_target(
         self,
@@ -14064,7 +14123,7 @@ class RefactorRecipe:
         return snapshot.simulate_recipe(
             self,
             backend=backend,
-            guard_suite=guard_suite,
+            guard_suite=self.active_guard_suite(guard_suite),
         )
 
     def to_dict(self) -> JsonObject:
@@ -14072,6 +14131,7 @@ class RefactorRecipe:
             "recipe_id": self.recipe_id,
             "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
             "operations": tuple(operation.to_dict() for operation in self.operations),
+            "architecture_guards": self.guard_suite.to_dict(),
             "reason": self.reason,
         }
         if self.target_shape is not None:
@@ -14119,6 +14179,7 @@ class CodemodPlanDocument:
         *,
         source_path: str,
         target_qualname: str,
+        forbidden_attribute_names: Iterable[str] = (),
         forbidden_call_names: Iterable[str] = (),
         rule_id: str | None = None,
         reason: str = "",
@@ -14143,6 +14204,7 @@ class CodemodPlanDocument:
         )
         guard = ArchitectureGuardRule(
             rule_id=rule_id or f"{target_qualname}-no-residual-compat-calls",
+            forbidden_attribute_names=tuple(forbidden_attribute_names),
             forbidden_call_names=call_names,
             file_path_suffixes=(source_path,),
             reason=eraser_reason,
@@ -14170,7 +14232,11 @@ class CodemodPlanDocument:
 
     @property
     def has_architecture_guards(self) -> bool:
-        return not self.guard_suite.is_empty
+        return not self.combined_guard_suite.is_empty
+
+    @property
+    def combined_guard_suite(self) -> ArchitectureGuardSuite:
+        return self.guard_suite.merge(*(recipe.guard_suite for recipe in self.recipes))
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return tuple(
@@ -14322,7 +14388,7 @@ class CodemodPlanSequence:
     @property
     def guard_suite(self) -> ArchitectureGuardSuite:
         return ArchitectureGuardSuite().merge(
-            *(document.guard_suite for document in self.documents)
+            *(document.combined_guard_suite for document in self.documents)
         )
 
     @property
@@ -14532,6 +14598,7 @@ class CodemodPlanJsonParser:
                 self.refactor_recipe_operation(item)
                 for item in self.array_field(payload, "operations")
             ),
+            guard_suite=self.architecture_guard_suite(payload),
             reason=self.optional_string_field(payload, "reason"),
             target_shape=(
                 RefactorRecipeTargetShape(target_shape) if target_shape else None
@@ -14572,6 +14639,10 @@ class CodemodPlanJsonParser:
         payload = self.object_row(row, "architecture guard rules")
         return ArchitectureGuardRule(
             rule_id=self.required_string_field(payload, "rule_id"),
+            forbidden_attribute_names=self.string_tuple_field(
+                payload,
+                "forbidden_attribute_names",
+            ),
             forbidden_call_names=self.string_tuple_field(
                 payload,
                 "forbidden_call_names",
@@ -15730,6 +15801,9 @@ class FindingRecipeClassPlan(CodemodJsonReport):
                         for recipe in recipes
                         for operation in recipe.operations
                     ),
+                    guard_suite=ArchitectureGuardSuite().merge(
+                        *(recipe.guard_suite for recipe in recipes)
+                    ),
                     reason="Batch one graph-clustered smell class into one executable plan.",
                     target_shape=RefactorRecipe.shared_target_shape(recipes),
                 ),
@@ -16106,6 +16180,106 @@ class SingleSourcePathFindingMixin:
         if len(file_paths) != 1:
             return None
         return next(iter(file_paths))
+
+
+class FlattenedProjectionPropertyFindingRecipeSynthesizer(
+    SingleSourcePathFindingMixin,
+    FindingRecipeSynthesizer,
+):
+    """Delete flattened compatibility properties after nested records are authoritative."""
+
+    detector_id = "flattened_projection_property"
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        del context
+        source_path = self.source_path(finding)
+        property_symbols = self.property_symbols(finding)
+        property_names = self.property_names(finding)
+        if source_path is None or not property_symbols or not property_names:
+            return None
+        reason = (
+            "Delete flattened compatibility projection properties and fail if callers "
+            "still use the shadow flattened API."
+        )
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-dead-compatibility-eraser",
+            reason=reason,
+            target_shape=RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE,
+        ).with_architecture_guard(
+            ArchitectureGuardRule(
+                rule_id=f"{finding.stable_id}-no-flattened-projection-callers",
+                forbidden_attribute_names=property_names,
+                file_path_suffixes=(source_path,),
+                reason=reason,
+            )
+        )
+        for property_symbol in property_symbols:
+            recipe = recipe.delete_target(
+                property_symbol,
+                source_path=source_path,
+                rationale=reason,
+            )
+        return recipe
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        source_path = self.source_path(finding)
+        if source_path is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((source_path, symbol) for symbol in self.property_symbols(finding)),
+        )
+
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        if self.source_path(finding) is None:
+            return "flattened projection erasure requires one source file"
+        if not self.property_symbols(finding):
+            return "flattened projection erasure requires property symbols"
+        return super().rejection_reason_for_finding(finding, context)
+
+    @staticmethod
+    def property_symbols(finding: RefactorFinding) -> tuple[str, ...]:
+        evidence_symbols = tuple(
+            dict.fromkeys(
+                evidence.symbol
+                for evidence in finding.evidence
+                if "." in evidence.symbol
+            )
+        )
+        class_names = tuple(
+            dict.fromkeys(symbol.rsplit(".", maxsplit=1)[0] for symbol in evidence_symbols)
+        )
+        if len(class_names) == 1 and finding.metrics.plan_field_names:
+            class_name = class_names[0]
+            return tuple(
+                f"{class_name}.{field_name}"
+                for field_name in finding.metrics.plan_field_names
+            )
+        return evidence_symbols
+
+    @staticmethod
+    def property_names(finding: RefactorFinding) -> tuple[str, ...]:
+        if finding.metrics.plan_field_names:
+            return finding.metrics.plan_field_names
+        return tuple(
+            dict.fromkeys(
+                symbol.rsplit(".", maxsplit=1)[-1]
+                for symbol in FlattenedProjectionPropertyFindingRecipeSynthesizer.property_symbols(
+                    finding
+                )
+            )
+        )
 
 
 class RepeatedFieldFamilyFindingRecipeSynthesizer(
@@ -26044,6 +26218,7 @@ class ProjectedBatchRewriteSet:
     def recipe(
         self,
         *,
+        guard_suite: ArchitectureGuardSuite | None = None,
         target_shape: RefactorRecipeTargetShape | None = None,
     ) -> RefactorRecipe:
         return RefactorRecipe(
@@ -26060,6 +26235,7 @@ class ProjectedBatchRewriteSet:
                 "Batch overlapping executable advisor findings into one "
                 "source-merge pass."
             ),
+            guard_suite=guard_suite or ArchitectureGuardSuite(),
             target_shape=target_shape,
         )
 
@@ -26133,7 +26309,7 @@ class FindingRecipePlanBuilder:
             )
         return FindingRecipePlan(
             document=CodemodPlanDocument(
-                recipes=self.merged_recipes(recipes, selector_context)
+                recipes=self.merged_recipes(recipes, selector_context),
             ),
             expected_removed_finding_ids=tuple(expected_removed_finding_ids),
             report=FindingRecipeSynthesisReport(tuple(synthesis_records)),
@@ -26247,6 +26423,9 @@ class FindingRecipePlanBuilder:
                 operations=tuple(
                     operation for recipe in recipes for operation in recipe.operations
                 ),
+                guard_suite=ArchitectureGuardSuite().merge(
+                    *(recipe.guard_suite for recipe in recipes)
+                ),
                 reason="Batch executable advisor findings into one source-merge pass.",
                 target_shape=RefactorRecipe.shared_target_shape(recipes),
             ),
@@ -26262,6 +26441,9 @@ class FindingRecipePlanBuilder:
             Maybe.of(self.projected_batch_rewrite_set(recipe_tuple, selector_context))
             .project(
                 lambda rewrite_set: rewrite_set.recipe(
+                    guard_suite=ArchitectureGuardSuite().merge(
+                        *(recipe.guard_suite for recipe in recipe_tuple)
+                    ),
                     target_shape=RefactorRecipe.shared_target_shape(recipe_tuple)
                 )
             )
@@ -28639,6 +28821,10 @@ class _ArchitectureGuardVisitor(ast.NodeVisitor):
             self._visit_inline_dict_get_dispatch(node)
         self.generic_visit(node)
 
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        self._append_forbidden_attribute_violations(node, node.attr)
+        self.generic_visit(node)
+
     def visit_If(self, node: ast.If) -> None:
         for rule in self.rules:
             for subject in rule.forbidden_literal_dispatch_subjects:
@@ -28700,6 +28886,21 @@ class _ArchitectureGuardVisitor(ast.NodeVisitor):
                     ArchitectureGuardViolationKind.FORBIDDEN_CALL,
                     call_name,
                     f"Forbidden call {call_name!r}: {rule.reason}",
+                )
+
+    def _append_forbidden_attribute_violations(
+        self,
+        node: ast.Attribute,
+        attribute_name: str,
+    ) -> None:
+        for rule in self.rules:
+            if attribute_name in rule.forbidden_attribute_names:
+                self._append_violation(
+                    rule,
+                    node,
+                    ArchitectureGuardViolationKind.FORBIDDEN_ATTRIBUTE,
+                    attribute_name,
+                    f"Forbidden attribute {attribute_name!r}: {rule.reason}",
                 )
 
     def _append_literal_dispatch_violations(

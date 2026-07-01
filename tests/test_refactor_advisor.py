@@ -11819,6 +11819,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
             "architecture_guards": [
                 {
                     "rule_id": "alpha-boundary",
+                    "forbidden_attribute_names": ["legacy_alpha_value"],
                     "forbidden_call_names": ["legacy_alpha"],
                     "file_path_suffixes": ["alpha.py"],
                 }
@@ -11827,6 +11828,12 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
                 {
                     "recipe_id": "alpha-recipe",
                     "target_shape": "autoregister_strategy_family",
+                    "architecture_guards": [
+                        {
+                            "rule_id": "alpha-recipe-boundary",
+                            "forbidden_attribute_names": ["legacy_recipe_value"],
+                        }
+                    ],
                     "rewrites": [
                         {
                             "target_qualname": "Alpha.run",
@@ -11847,7 +11854,14 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     assert document.has_architecture_guards is True
     assert document.authority_boundaries[0].boundary_id == "alpha-run"
     assert document.guard_suite.rules[0].rule_id == "alpha-boundary"
+    assert document.guard_suite.rules[0].forbidden_attribute_names == (
+        "legacy_alpha_value",
+    )
     assert document.recipes[0].recipe_id == "alpha-recipe"
+    assert document.recipes[0].guard_suite.rules[0].rule_id == "alpha-recipe-boundary"
+    assert document.recipes[0].guard_suite.rules[0].forbidden_attribute_names == (
+        "legacy_recipe_value",
+    )
     assert (
         document.recipes[0].target_shape
         is RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY
@@ -15411,6 +15425,44 @@ def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers
     assert simulation.is_clean is False
     assert simulation.architecture_guard_report.violation_count == 1
     assert "legacy_helper" in simulation.architecture_guard_report.violations[0].detail
+
+
+def test_dead_compatibility_eraser_fails_on_remaining_attribute_callers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass PreparedComplex:\n"
+        "    def __init__(self, ligand):\n"
+        "        self.ligand = ligand\n\n"
+        "    @property\n"
+        "    def ligand_coords(self):\n"
+        "        return self.ligand.coords\n\n\n"
+        "def caller(complex):\n"
+        "    return complex.ligand_coords\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    document = CodemodPlanDocument.dead_compatibility_eraser(
+        source_path=module_path.as_posix(),
+        target_qualname="PreparedComplex.ligand_coords",
+        forbidden_attribute_names=("ligand_coords",),
+    )
+
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is False
+    assert simulation.architecture_guard_report.violation_count == 1
+    violation = simulation.architecture_guard_report.violations[0]
+    assert violation.violation_kind is ArchitectureGuardViolationKind.FORBIDDEN_ATTRIBUTE
+    assert "ligand_coords" in violation.detail
 
 
 def test_apply_selected_targets_operation_projects_template_over_selector(
@@ -22197,6 +22249,67 @@ def test_detects_flattened_projection_property_local_minimum(tmp_path: Path) -> 
     assert "pocket_elements" in finding.summary
     assert "obj.ligand.coords" in (finding.scaffold or "")
     assert "obj.pocket.elements" in (finding.scaffold or "")
+
+
+def test_flattened_projection_property_findings_synthesize_dead_compatibility_eraser(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass AtomSet:\n"
+        "    coords: object\n"
+        "    radii: object\n"
+        "    elements: object\n\n\n"
+        "@dataclass(frozen=True)\nclass PreparedComplex:\n"
+        "    ligand: AtomSet\n"
+        "    pocket: AtomSet\n\n"
+        "    @property\n"
+        "    def ligand_coords(self):\n"
+        "        return self.ligand.coords\n\n"
+        "    @property\n"
+        "    def ligand_radii(self):\n"
+        "        return self.ligand.radii\n\n"
+        "    @property\n"
+        "    def pocket_coords(self):\n"
+        "        return self.pocket.coords\n\n"
+        "    @property\n"
+        "    def pocket_elements(self):\n"
+        "        return self.pocket.elements\n\n\n"
+        "def caller(complex):\n"
+        "    return complex.ligand_coords\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "flattened_projection_property"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("flattened_projection_property",),
+        selector_context=snapshot,
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    recipe = plan.document.recipes[0]
+
+    assert plan.expected_removed_finding_count == 1
+    assert recipe.target_shape is RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE
+    assert recipe.guard_suite.rules[0].forbidden_attribute_names == (
+        "ligand_coords",
+        "ligand_radii",
+        "pocket_coords",
+        "pocket_elements",
+    )
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert simulation.is_clean is False
+    assert any(
+        violation.violation_kind is ArchitectureGuardViolationKind.FORBIDDEN_ATTRIBUTE
+        and violation.location.symbol == "ligand_coords"
+        for violation in simulation.architecture_guard_report.violations
+    )
 
 
 def test_detects_transport_wrapper_chain(tmp_path: Path) -> None:
