@@ -989,14 +989,20 @@ SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY = (
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceTargetSpan:
+class AstTargetGeometryKey:
+    """Stable key joining source-index target geometry to parsed AST nodes."""
+
+    qualname: str
+    line: int
+    end_line: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceTargetSpan(AstTargetGeometryKey):
     """Resolved source-index target span shared by codemod analyses."""
 
     target_id: str
     file_path: str
-    qualname: str
-    line: int
-    end_line: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -25924,15 +25930,6 @@ class ContainingClassTargetBoundaryPolicy:
 
 _FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 _TargetNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
-
-
-@dataclass(frozen=True)
-class AstTargetGeometryKey:
-    """Stable key joining source-index target geometry to parsed AST nodes."""
-
-    qualname: str
-    line: int
-    end_line: int
 
 
 @dataclass(frozen=True, kw_only=True)
