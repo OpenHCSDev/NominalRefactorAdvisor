@@ -16491,6 +16491,69 @@ def test_codemod_class_plan_groups_semantic_findings_by_authority(
     assert unrelated.stable_id not in class_payload["finding_ids"]
 
 
+def test_generic_role_case_table_synthesis_derives_authority_constants(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "class FirstAxisConsumer:\n"
+            "    role_cases = {'applied': 1, 'diff': 2}\n\n\n"
+            "class SecondAxisConsumer:\n"
+            "    role_cases = {'applied': 3, 'diff': 4}\n"
+        ),
+    )
+    finding = RefactorFinding(
+        detector_id="generic_role_case_table",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Concrete role-case tables should move behind one generic axis authority",
+        summary="consumers mirror role-case literals",
+        why="case literals repeat a semantic fact family",
+        capability_gap="one generic case-table authority owned by the semantic axis",
+        relation_context="case-table literals are confusable under one axis owner",
+        evidence=(
+            SourceLocation(
+                module_path.as_posix(),
+                1,
+                "FirstAxisConsumer:role_cases:applied,diff",
+            ),
+            SourceLocation(
+                module_path.as_posix(),
+                5,
+                "SecondAxisConsumer:role_cases:applied,diff",
+            ),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="generic_role_case_table",
+            source_name="AxisRoleCase",
+            field_names=("applied", "diff"),
+        ),
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = snapshot.plan_from_findings(
+        (finding,),
+        detector_ids=("generic_role_case_table",),
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    diff = snapshot.unified_diff(simulation.simulation)
+
+    assert plan.rejected_count == 0
+    assert plan.records[0].status.value == "planned"
+    assert simulation.is_clean is True
+    assert "+class AxisRoleCaseAuthority:" in diff
+    assert "+    APPLIED = 'applied'" in diff
+    assert "+    DIFF = 'diff'" in diff
+    assert "AxisRoleCaseAuthority.APPLIED" in diff
+    assert "AxisRoleCaseAuthority.DIFF" in diff
+    assert "-    role_cases = {'applied': 1, 'diff': 2}" in diff
+    assert "-    role_cases = {'applied': 3, 'diff': 4}" in diff
+
+
 def test_module_cli_synthesizes_class_plan_with_scaffolds(
     tmp_path: Path,
 ) -> None:

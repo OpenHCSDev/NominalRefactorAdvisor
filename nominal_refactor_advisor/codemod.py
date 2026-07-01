@@ -20305,6 +20305,464 @@ class MappingSemanticMirrorRecipeBuilder(
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class GenericRoleCaseLiteralAuthority:
+    """Nominal owner for exact role-case string literals."""
+
+    names_by_literal: Mapping[str, str]
+
+    @classmethod
+    def from_literals(
+        cls, literals: Iterable[str]
+    ) -> "GenericRoleCaseLiteralAuthority | None":
+        pairs = tuple(
+            (literal, cls.constant_name(literal))
+            for literal in sorted_tuple({literal for literal in literals if literal})
+        )
+        if not pairs or any(name is None for _, name in pairs):
+            return None
+        names = tuple(name for _, name in pairs if name is not None)
+        if len(set(names)) != len(names):
+            return None
+        return cls({literal: name for literal, name in pairs if name is not None})
+
+    @classmethod
+    def from_finding(
+        cls,
+        finding: RefactorFinding,
+    ) -> "GenericRoleCaseLiteralAuthority | None":
+        return cls.from_literals(cls.literals_from_finding(finding))
+
+    @classmethod
+    def literals_from_finding(cls, finding: RefactorFinding) -> tuple[str, ...]:
+        evidence_literals = tuple(
+            literal
+            for evidence in finding.evidence
+            for literal in cls.literals_from_evidence_symbol(evidence.symbol)
+        )
+        if evidence_literals:
+            return sorted_tuple(evidence_literals)
+        return finding.metrics.plan_field_names
+
+    @staticmethod
+    def literals_from_evidence_symbol(symbol: str) -> tuple[str, ...]:
+        marker = ":role_cases:"
+        if marker not in symbol:
+            return ()
+        return tuple(
+            literal.strip()
+            for literal in symbol.split(marker, maxsplit=1)[1].split(",")
+            if literal.strip()
+        )
+
+    @property
+    def literals(self) -> frozenset[str]:
+        return frozenset(self.names_by_literal)
+
+    @property
+    def authority_rows(self) -> tuple[str, ...]:
+        return tuple(
+            f"    {name} = {literal!r}"
+            for literal, name in sorted(
+                self.names_by_literal.items(),
+                key=lambda item: item[1],
+            )
+        )
+
+    def reference_for(self, authority_name: str, literal: str) -> str:
+        return f"{authority_name}.{self.names_by_literal[literal]}"
+
+    @staticmethod
+    def constant_name(literal: str) -> str | None:
+        parts = tuple(part for part in re.split(r"[^0-9A-Za-z]+", literal) if part)
+        if not parts:
+            return None
+        name = "_".join(part.upper() for part in parts)
+        if name[0].isdigit():
+            name = f"CASE_{name}"
+        if not name.isidentifier():
+            return None
+        return name
+
+
+@dataclass(frozen=True)
+class GenericRoleCaseAuthoritySource:
+    """Render a nominal authority for shared role-case literals."""
+
+    authority_name: str
+    literal_authority: GenericRoleCaseLiteralAuthority
+
+    def source(self) -> str:
+        rows = "\n".join(self.literal_authority.authority_rows)
+        return (
+            f"class {self.authority_name}:\n"
+            f"{rows}\n\n"
+            "    @classmethod\n"
+            "    def cases(cls):\n"
+            "        return (\n"
+            f"{self.case_rows()}\n"
+            "        )\n"
+            "\n\n"
+        )
+
+    def case_rows(self) -> str:
+        return "\n".join(
+            f"            cls.{name},"
+            for name in sorted(self.literal_authority.names_by_literal.values())
+        )
+
+
+@dataclass(frozen=True)
+class GenericRoleCaseTargetRewrite(ReplacementSource):
+    """Replacement source for one owner target using authority members."""
+
+    target: AstTargetDigest
+    replacement_count: int
+
+
+@dataclass(frozen=True)
+class GenericRoleCaseFileRewrite(ReplacementSource):
+    """Replacement source for one full module touched by a role-case recipe."""
+
+    module_target: AstTargetDigest
+
+
+@dataclass(frozen=True, kw_only=True)
+class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder):
+    """Derive exact role-case string literals from one nominal authority."""
+
+    mapping_name: ClassVar[str] = "generic_role_case_table"
+    finding: RefactorFinding
+
+    def recipe(self) -> RefactorRecipe | None:
+        parts = self.parts()
+        if parts is None:
+            return None
+        recipe = RefactorRecipe(
+            recipe_id=f"{self.finding.stable_id}-derive-generic-role-case-table",
+            reason="Derive repeated role-case literals from one nominal authority.",
+        )
+        for target_rewrite in parts.file_rewrites:
+            recipe = recipe.replace_target(
+                target_rewrite.replacement_source,
+                target_identifier=target_rewrite.module_target.target_id,
+                rationale=(
+                    "Derive role-case literals from the shared authority."
+                ),
+            )
+        return recipe
+
+    def parts(self) -> "GenericRoleCaseTableRecipeParts | None":
+        literal_authority = GenericRoleCaseLiteralAuthority.from_finding(self.finding)
+        if literal_authority is None:
+            return None
+        authority_name = self.authority_name()
+        if self.class_name_conflicts(authority_name):
+            return None
+        target_rewrites = self.target_rewrites(literal_authority, authority_name)
+        if len(target_rewrites) < 2:
+            return None
+        authority_path = target_rewrites[0].target.file_path
+        authority_source = GenericRoleCaseAuthoritySource(
+            authority_name=authority_name,
+            literal_authority=literal_authority,
+        )
+        authority_location = SemanticMirrorAuthorityLocation.at_authority_file(
+            authority_path=authority_path,
+            authority_name=authority_name,
+        )
+        file_rewrites = self.file_rewrites(
+            authority_location=authority_location,
+            authority_source=authority_source,
+            target_rewrites=target_rewrites,
+        )
+        if len(file_rewrites) != len(
+            {rewrite.target.file_path for rewrite in target_rewrites}
+        ):
+            return None
+        return GenericRoleCaseTableRecipeParts(
+            authority_source=authority_source,
+            target_rewrites=target_rewrites,
+            file_rewrites=file_rewrites,
+        )
+
+    def rejection_reason(self) -> str:
+        literal_authority = GenericRoleCaseLiteralAuthority.from_finding(self.finding)
+        if literal_authority is None:
+            return "generic role-case evidence exposes no safe exact string literals"
+        authority_name = self.authority_name()
+        if self.class_name_conflicts(authority_name):
+            return f"authority class {authority_name!r} already exists"
+        target_rewrites = self.target_rewrites(literal_authority, authority_name)
+        if len(target_rewrites) < 2:
+            return (
+                "generic role-case rewrite needs at least two owner targets with "
+                "replaceable exact string literals"
+            )
+        authority_source = GenericRoleCaseAuthoritySource(
+            authority_name=authority_name,
+            literal_authority=literal_authority,
+        )
+        authority_path = target_rewrites[0].target.file_path
+        authority_location = SemanticMirrorAuthorityLocation.at_authority_file(
+            authority_path=authority_path,
+            authority_name=authority_name,
+        )
+        file_rewrites = self.file_rewrites(
+            authority_location=authority_location,
+            authority_source=authority_source,
+            target_rewrites=target_rewrites,
+        )
+        if len(file_rewrites) != len(
+            {rewrite.target.file_path for rewrite in target_rewrites}
+        ):
+            return "generic role-case rewrite could not resolve module targets"
+        return "generic role-case table derivation is available"
+
+    def authority_name(self) -> str:
+        source_name = self.finding.metrics.plan_source_name or "role_case"
+        stem = _pascal_case_identifier(source_name)
+        if not stem:
+            stem = "RoleCase"
+        if stem.endswith("Authority"):
+            return f"{stem}RoleCaseAuthority"
+        return f"{stem}Authority"
+
+    def selected_targets(self) -> tuple[AstTargetDigest, ...]:
+        target_ids = FindingEvidenceTargetSelector(
+            (self.finding.stable_id,)
+        ).target_ids(self)
+        return tuple(
+            self.source_index.target_by_id[target_id]
+            for target_id in dict.fromkeys(target_ids)
+        )
+
+    def target_rewrites(
+        self,
+        literal_authority: GenericRoleCaseLiteralAuthority,
+        authority_name: str,
+    ) -> tuple[GenericRoleCaseTargetRewrite, ...]:
+        rewrites = tuple(
+            rewrite
+            for target in self.selected_targets()
+            if (
+                rewrite := self.target_rewrite(
+                    target,
+                    literal_authority,
+                    authority_name,
+                )
+            )
+            is not None
+        )
+        return sorted_tuple(
+            rewrites,
+            key=lambda item: (item.target.file_path, item.target.line),
+        )
+
+    def target_rewrite(
+        self,
+        target: AstTargetDigest,
+        literal_authority: GenericRoleCaseLiteralAuthority,
+        authority_name: str,
+    ) -> GenericRoleCaseTargetRewrite | None:
+        node = self.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        source = self.sources_by_file_path[target.file_path]
+        geometry = SourceTextGeometry(source)
+        replacements = self.literal_replacements(
+            node,
+            geometry,
+            literal_authority,
+            authority_name,
+        )
+        if not replacements:
+            return None
+        start_offset, end_offset = self.target_span_offsets(target, geometry)
+        replacement_source = geometry.source_with_replacements_in_span(
+            start_offset,
+            end_offset,
+            replacements,
+        )
+        return GenericRoleCaseTargetRewrite(
+            target=target,
+            replacement_source=replacement_source,
+            replacement_count=len(replacements),
+        )
+
+    def file_rewrites(
+        self,
+        *,
+        authority_location: "SemanticMirrorAuthorityLocation",
+        authority_source: GenericRoleCaseAuthoritySource,
+        target_rewrites: tuple[GenericRoleCaseTargetRewrite, ...],
+    ) -> tuple[GenericRoleCaseFileRewrite, ...]:
+        rewrites = []
+        for file_path in sorted(
+            {rewrite.target.file_path for rewrite in target_rewrites}
+        ):
+            module_target = self.module_target(file_path)
+            if module_target is None:
+                return ()
+            line_replacements = self.file_line_replacements(
+                file_path=file_path,
+                authority_location=authority_location,
+                authority_source=authority_source,
+                target_rewrites=tuple(
+                    rewrite
+                    for rewrite in target_rewrites
+                    if rewrite.target.file_path == file_path
+                ),
+            )
+            replacement_source = SourceTargetEditor(
+                self.sources_by_file_path,
+                module_target,
+            ).replacement_source(line_replacements)
+            rewrites.append(
+                GenericRoleCaseFileRewrite(
+                    module_target=module_target,
+                    replacement_source=replacement_source,
+                )
+            )
+        return tuple(rewrites)
+
+    def file_line_replacements(
+        self,
+        *,
+        file_path: str,
+        authority_location: "SemanticMirrorAuthorityLocation",
+        authority_source: GenericRoleCaseAuthoritySource,
+        target_rewrites: tuple[GenericRoleCaseTargetRewrite, ...],
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = [
+            SourceLineReplacement(
+                file_path=file_path,
+                start_line=rewrite.target.line,
+                end_line=rewrite.target.end_line,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    rewrite.replacement_source
+                ),
+                rationale="Replace local role-case literals with shared authority.",
+            )
+            for rewrite in target_rewrites
+        ]
+        if file_path == authority_location.authority_path:
+            replacements.append(
+                self.authority_insertion_replacement(file_path, authority_source)
+            )
+        else:
+            replacements.extend(
+                self.authority_import_replacements(
+                    authority_location.with_projection_path(file_path)
+                )
+            )
+        return tuple(replacements)
+
+    def authority_insertion_replacement(
+        self,
+        file_path: str,
+        authority_source: GenericRoleCaseAuthoritySource,
+    ) -> SourceLineReplacement:
+        source = self.sources_by_file_path[file_path]
+        insertion_line = ModuleImportInsertionPoint(source, file_path).line_number
+        return SourceLineReplacement(
+            file_path=file_path,
+            start_line=insertion_line,
+            end_line=insertion_line - 1,
+            replacement_lines=SourceTargetEditor.source_lines(authority_source.source()),
+            rationale="Insert nominal role-case authority.",
+        )
+
+    def authority_import_replacements(
+        self,
+        location: "SemanticMirrorAuthorityLocation",
+    ) -> tuple[SourceLineReplacement, ...]:
+        return EnsureImportOperation(
+            target=SourceRewriteTarget(source_path=location.projection_path),
+            payload_value=location.import_source(),
+            rationale="Import nominal role-case authority.",
+        ).line_replacements(self.source_index, self.sources_by_file_path)
+
+    def module_target(self, file_path: str) -> AstTargetDigest | None:
+        module_targets = tuple(
+            target
+            for target in self.source_index.ast_targets
+            if target.file_path == file_path and target.is_module
+        )
+        if len(module_targets) != 1:
+            return None
+        return module_targets[0]
+
+    def literal_replacements(
+        self,
+        node: ast.AST,
+        geometry: SourceTextGeometry,
+        literal_authority: GenericRoleCaseLiteralAuthority,
+        authority_name: str,
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        replacements = []
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Constant) or not isinstance(child.value, str):
+                continue
+            if child.value not in literal_authority.literals:
+                continue
+            offsets = self.node_offsets(child, geometry)
+            if offsets is None:
+                return ()
+            start_offset, end_offset = offsets
+            replacements.append(
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=start_offset,
+                    end_offset=end_offset,
+                    replacement_source=literal_authority.reference_for(
+                        authority_name,
+                        child.value,
+                    ),
+                )
+            )
+        return tuple(replacements)
+
+    @staticmethod
+    def node_offsets(
+        node: ast.AST,
+        geometry: SourceTextGeometry,
+    ) -> tuple[int, int] | None:
+        if not isinstance(node, (ast.expr, ast.stmt)):
+            return None
+        span = SourceByteSpan.from_node(node)
+        if span is None or not span.fits_lines(geometry.lines):
+            return None
+        start_offset = geometry.line_offsets[span.start_line_index] + span.start_byte
+        end_offset = geometry.line_offsets[span.end_line_index] + span.end_byte
+        return start_offset, end_offset
+
+    @staticmethod
+    def target_span_offsets(
+        target: AstTargetDigest,
+        geometry: SourceTextGeometry,
+    ) -> tuple[int, int]:
+        start_offset = geometry.line_offsets[target.line - 1]
+        if target.end_line < len(geometry.line_offsets):
+            return start_offset, geometry.line_offsets[target.end_line]
+        return start_offset, geometry.end_offset
+
+    def class_name_conflicts(self, class_name: str) -> bool:
+        return any(
+            target.node_kind == AstTargetNodeKind.CLASS.value
+            and target.qualname == class_name
+            for target in self.source_index.ast_targets
+        )
+
+
+@dataclass(frozen=True)
+class GenericRoleCaseTableRecipeParts:
+    """Executable recipe facts for generic role-case table derivation."""
+
+    authority_source: GenericRoleCaseAuthoritySource
+    target_rewrites: tuple[GenericRoleCaseTargetRewrite, ...]
+    file_rewrites: tuple[GenericRoleCaseFileRewrite, ...]
+
+
 class LocalRoleCaseConstructibleItem(ABC, metaclass=AutoRegisterMeta):
     """Nominal contract for rendered role-case rows."""
 
@@ -21980,6 +22438,66 @@ class SemanticMirrorAuthorityLocation:
     authority_path: str
     authority_name: str
 
+    @classmethod
+    def at_authority_file(
+        cls,
+        *,
+        authority_path: str,
+        authority_name: str,
+    ) -> "SemanticMirrorAuthorityLocation":
+        return cls(
+            projection_path=authority_path,
+            authority_path=authority_path,
+            authority_name=authority_name,
+        )
+
+    def with_projection_path(
+        self,
+        projection_path: str,
+    ) -> "SemanticMirrorAuthorityLocation":
+        return replace(self, projection_path=projection_path)
+
+    def import_source(self) -> str:
+        relative_module = self.relative_module_name()
+        if relative_module is not None:
+            return f"from {relative_module} import {self.authority_name}\n"
+        module_name = module_name_from_source_path(self.authority_path)
+        return f"from {module_name} import {self.authority_name}\n"
+
+    def relative_module_name(self) -> str | None:
+        projection_package = self.package_parts(Path(self.projection_path).parent)
+        authority_path = Path(self.authority_path)
+        authority_package = self.package_parts(authority_path.parent)
+        if not projection_package or not authority_package:
+            return None
+        common_length = self.common_prefix_length(projection_package, authority_package)
+        if common_length == 0:
+            return None
+        dots = "." * (len(projection_package) - common_length + 1)
+        authority_module_parts = (
+            *authority_package[common_length:],
+            authority_path.stem,
+        )
+        return f"{dots}{'.'.join(authority_module_parts)}"
+
+    @staticmethod
+    def package_parts(directory: Path) -> tuple[str, ...]:
+        parts: list[str] = []
+        current = directory
+        while (current / "__init__.py").exists():
+            parts.insert(0, current.name)
+            current = current.parent
+        return tuple(parts)
+
+    @staticmethod
+    def common_prefix_length(left: tuple[str, ...], right: tuple[str, ...]) -> int:
+        length = 0
+        for left_part, right_part in zip(left, right, strict=False):
+            if left_part != right_part:
+                break
+            length += 1
+        return length
+
 
 @dataclass(frozen=True, kw_only=True)
 class ContextualSemanticMirrorRecipeBuilder(
@@ -22108,11 +22626,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
         if self.projection_path != self.authority_path:
             recipe = recipe.ensure_import(
                 self.projection_path,
-                SemanticMirrorAuthorityImportSource(
-                    projection_path=self.projection_path,
-                    authority_path=self.authority_path,
-                    authority_name=self.authority_name,
-                ).source(),
+                self.import_source(),
             )
         return recipe.replace_module_assignment(
             self.projection_path,
@@ -22336,53 +22850,6 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
         if isinstance(value, ast.Set):
             return "set"
         return "tuple"
-
-
-@dataclass(frozen=True)
-class SemanticMirrorAuthorityImportSource(SemanticMirrorAuthorityLocation):
-    """Render import source for projection files that need an authority class."""
-
-    def source(self) -> str:
-        relative_module = self.relative_module_name()
-        if relative_module is not None:
-            return f"from {relative_module} import {self.authority_name}\n"
-        module_name = module_name_from_source_path(self.authority_path)
-        return f"from {module_name} import {self.authority_name}\n"
-
-    def relative_module_name(self) -> str | None:
-        projection_package = self.package_parts(Path(self.projection_path).parent)
-        authority_path = Path(self.authority_path)
-        authority_package = self.package_parts(authority_path.parent)
-        if not projection_package or not authority_package:
-            return None
-        common_length = self.common_prefix_length(projection_package, authority_package)
-        if common_length == 0:
-            return None
-        dots = "." * (len(projection_package) - common_length + 1)
-        authority_module_parts = (
-            *authority_package[common_length:],
-            authority_path.stem,
-        )
-        return f"{dots}{'.'.join(authority_module_parts)}"
-
-    @staticmethod
-    def package_parts(directory: Path) -> tuple[str, ...]:
-        parts: list[str] = []
-        current = directory
-        while (current / "__init__.py").exists():
-            parts.insert(0, current.name)
-            current = current.parent
-        return tuple(parts)
-
-    @staticmethod
-    def common_prefix_length(left: tuple[str, ...], right: tuple[str, ...]) -> int:
-        length = 0
-        for left_part, right_part in zip(left, right, strict=False):
-            if left_part != right_part:
-                break
-            length += 1
-        return length
-
 
 @dataclass(frozen=True)
 class AutoregisterInstanceViewRecipeParts:
