@@ -108,6 +108,7 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeClassPlanReport,
     FindingEvidenceTargetSelector,
     InheritanceEdgeTargetSelector,
+    OperationTemplateTargetBindings,
     RefactorRecipe,
     RefactorRecipeTargetShape,
     RefactorRecipeOperation,
@@ -11468,13 +11469,18 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
     assert len(operations) >= 25
     assert len(selectors) >= 6
     assert unknown_fields == []
-    assert "target_shape" in manifest["recipe_fields"]
+    assert manifest["plan_fields"] == CodemodPlanDocument.dsl_field_names()
+    assert manifest["recipe_fields"] == RefactorRecipe.dsl_field_names()
     assert manifest["plan_sequence_fields"] == ("stages",)
     assert manifest["operation_plan_template_fields"] == (
         "recipe_id",
         "reason",
         "setup_operations",
         "operation_templates",
+    )
+    assert (
+        manifest["operation_template_target_fields"]
+        == OperationTemplateTargetBindings.field_names()
     )
     assert set(manifest["operation_template_target_fields"]) >= {
         "qualname",

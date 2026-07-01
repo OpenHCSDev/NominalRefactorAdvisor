@@ -26,7 +26,7 @@ import textwrap
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
@@ -122,6 +122,15 @@ JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
 PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadSourceT = TypeVar("PayloadSourceT")
 PayloadValueT = TypeVar("PayloadValueT")
+DataclassRecordT = TypeVar("DataclassRecordT")
+
+
+def dataclass_payload_field_names(
+    record_type: type[DataclassRecordT],
+) -> tuple[str, ...]:
+    """Return JSON payload field names owned by a dataclass declaration."""
+
+    return tuple(record_field.name for record_field in dataclass_fields(record_type))
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -989,6 +998,52 @@ class SourceTargetSpan:
     qualname: str
     line: int
     end_line: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class OperationTemplateTargetBindings(SourceTargetSpan):
+    """String bindings exposed to selected-target operation templates."""
+
+    node_kind: str
+    name: str
+    source: str
+    leading_indent: str
+
+    @classmethod
+    def from_target(
+        cls,
+        target: AstTargetDigest,
+        source: str,
+    ) -> "OperationTemplateTargetBindings":
+        return cls(
+            target_id=target.target_id,
+            file_path=target.file_path,
+            qualname=target.qualname,
+            line=target.line,
+            end_line=target.end_line,
+            node_kind=target.node_kind.value,
+            name=target.name,
+            source=source,
+            leading_indent=cls.leading_indent_for_source(source),
+        )
+
+    @classmethod
+    def field_names(cls) -> tuple[str, ...]:
+        return dataclass_payload_field_names(cls)
+
+    @property
+    def string_values(self) -> Mapping[str, str]:
+        return {
+            field_name: str(field_value)
+            for field_name, field_value in asdict(self).items()
+        }
+
+    @staticmethod
+    def leading_indent_for_source(source: str) -> str:
+        if not source:
+            return ""
+        first_line = source.splitlines()[0]
+        return first_line[: len(first_line) - len(first_line.lstrip())]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3164,17 +3219,7 @@ class OperationTemplateTargetContext:
 
     @classmethod
     def template_field_names(cls) -> tuple[str, ...]:
-        return (
-            "target_id",
-            "file_path",
-            "node_kind",
-            "name",
-            "qualname",
-            "line",
-            "end_line",
-            "source",
-            "leading_indent",
-        )
+        return OperationTemplateTargetBindings.field_names()
 
     @classmethod
     def from_selector_context(
@@ -3195,24 +3240,10 @@ class OperationTemplateTargetContext:
     @property
     def target_bindings(self) -> Mapping[str, str]:
         source = self.target_source
-        return {
-            "target_id": self.target.target_id,
-            "file_path": self.target.file_path,
-            "node_kind": self.target.node_kind.value,
-            "name": self.target.name,
-            "qualname": self.target.qualname,
-            "line": str(self.target.line),
-            "end_line": str(self.target.end_line),
-            "source": source,
-            "leading_indent": self.leading_indent_for_source(source),
-        }
-
-    @staticmethod
-    def leading_indent_for_source(source: str) -> str:
-        if not source:
-            return ""
-        first_line = source.splitlines()[0]
-        return first_line[: len(first_line) - len(first_line.lstrip())]
+        return OperationTemplateTargetBindings.from_target(
+            self.target,
+            source,
+        ).string_values
 
     def expanded_json_value(self, value: JsonValue) -> JsonValue:
         if isinstance(value, str):
@@ -3330,6 +3361,15 @@ class RefactorRecipeOperationPlanTemplate:
         )
     )
     selected_operation_templates: tuple[RefactorRecipeOperationTemplate, ...] = ()
+
+    @classmethod
+    def dsl_field_names(cls) -> tuple[str, ...]:
+        return (
+            "recipe_id",
+            "reason",
+            "setup_operations",
+            OPERATION_TEMPLATES_PAYLOAD_FIELD,
+        )
 
     @classmethod
     def from_json_value(
@@ -10879,20 +10919,11 @@ class CodemodDslManifest:
 
     def to_dict(self) -> JsonObject:
         return {
-            "plan_fields": ("authority_boundaries", "recipes", "architecture_guards"),
-            "plan_sequence_fields": ("stages",),
-            "recipe_fields": (
-                "recipe_id",
-                "rewrites",
-                "operations",
-                "reason",
-                "target_shape",
-            ),
+            "plan_fields": CodemodPlanDocument.dsl_field_names(),
+            "plan_sequence_fields": CodemodPlanSequence.dsl_field_names(),
+            "recipe_fields": RefactorRecipe.dsl_field_names(),
             "operation_plan_template_fields": (
-                "recipe_id",
-                "reason",
-                "setup_operations",
-                "operation_templates",
+                RefactorRecipeOperationPlanTemplate.dsl_field_names()
             ),
             "operation_plan_template_example": (
                 codemod_dsl_operation_plan_template_example_payload()
@@ -12449,6 +12480,10 @@ class RefactorRecipe:
     reason: str = ""
     target_shape: RefactorRecipeTargetShape | None = None
 
+    @classmethod
+    def dsl_field_names(cls) -> tuple[str, ...]:
+        return dataclass_payload_field_names(cls)
+
     @staticmethod
     def shared_target_shape(
         recipes: Iterable["RefactorRecipe"],
@@ -13186,6 +13221,10 @@ class CodemodPlanDocument:
     guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
 
     @classmethod
+    def dsl_field_names(cls) -> tuple[str, ...]:
+        return ("authority_boundaries", "recipes", "architecture_guards")
+
+    @classmethod
     def compose(
         cls,
         documents: Iterable["CodemodPlanDocument"],
@@ -13341,6 +13380,10 @@ class CodemodPlanSequence:
     """Ordered codemod documents resolved against each prior simulated stage."""
 
     documents: tuple[CodemodPlanDocument, ...] = ()
+
+    @classmethod
+    def dsl_field_names(cls) -> tuple[str, ...]:
+        return ("stages",)
 
     @classmethod
     def compose(
