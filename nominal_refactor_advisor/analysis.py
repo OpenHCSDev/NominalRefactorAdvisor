@@ -1418,10 +1418,6 @@ class FastCachedPathAnalysisAuthority:
             ],
             detector_types=default_detector_types_for_analysis(),
         )
-        AnalysisFindingCache(self._request.analysis_cache_dir).store(
-            cache_result.cache_identity,
-            findings,
-        )
         return CachedAnalysisResult(
             findings,
             AnalysisCacheStatus.PARTIAL,

@@ -6758,6 +6758,83 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
     assert global_module_batches == [("a.py", "b.py")]
 
 
+def test_fast_partial_cache_does_not_poison_exact_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/a.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg/b.py", "\nclass Beta:\n    pass\n")
+    root = tmp_path / "pkg"
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    global_module_batches: list[tuple[str, ...]] = []
+    finding_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Evidence-local cache exact isolation",
+        "evidence-local cache exact isolation",
+        "evidence-local cache exact isolation",
+        "evidence-local cache exact isolation",
+    )
+
+    class SourceSensitiveGlobalDetector(base_detectors.IssueDetector):
+        detector_id = "evidence_local_exact_isolation_global"
+
+        def _collect_findings(
+            self,
+            modules: list[ParsedModule],
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            global_module_batches.append(tuple(module.path.name for module in modules))
+            return [
+                finding_spec.build(
+                    self.detector_id,
+                    f"{module.path.name}:{self.class_count(module)}",
+                    (SourceLocation(str(module.path), 1, "global"),),
+                )
+                for module in modules
+            ]
+
+        @staticmethod
+        def class_count(module: ParsedModule) -> int:
+            return sum(isinstance(node, ast.ClassDef) for node in ast.walk(module.module))
+
+    for registry_key, detector_type in tuple(
+        base_detectors.IssueDetector.__registry__.items()
+    ):
+        if detector_type is SourceSensitiveGlobalDetector:
+            del base_detectors.IssueDetector.__registry__[registry_key]
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (SourceSensitiveGlobalDetector,),
+    )
+
+    first_findings = analyze_paths((root,), DetectorConfig(), cache_dir=cache_dir)
+    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+    fast_result = FastCachedPathAnalysisAuthority(
+        CachedPathAnalysisRequest(
+            roots=(root,),
+            config=DetectorConfig(),
+            parse_cache_dir=cache_dir,
+            use_parse_cache=True,
+            parse_workers=1,
+            analysis_workers=1,
+            source_policy=None,
+            reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
+        )
+    ).result()
+    exact_findings = analyze_paths((root,), DetectorConfig(), cache_dir=cache_dir)
+
+    assert fast_result is not None
+    assert fast_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert {finding.summary for finding in first_findings} == {"a.py:1", "b.py:1"}
+    assert {finding.summary for finding in fast_result.findings} == {
+        "a.py:1",
+        "b.py:1",
+    }
+    assert {finding.summary for finding in exact_findings} == {"a.py:1", "b.py:2"}
+    assert global_module_batches == [("a.py", "b.py"), ("a.py", "b.py")]
+
+
 def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -16381,6 +16458,7 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     class_payload = payload["classes"][0]
     recipe = class_payload["document"]["recipes"][0]
     operation = recipe["operations"][0]
+    site_plan = class_payload["site_plans"][0]
 
     assert isinstance(report, FindingRecipeClassPlanReport)
     assert isinstance(report.classes[0], FindingRecipeClassPlan)
@@ -16390,6 +16468,12 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert class_payload["selector"]["selector"] == "finding_evidence_target"
     assert class_payload["replacement_scaffold"]["selected_count"] >= 1
     assert class_payload["synthesis_status_counts"]["planned"] == 1
+    assert len(class_payload["site_plans"]) == 1
+    assert site_plan["finding_id"] == class_payload["finding_ids"][0]
+    assert site_plan["selector"]["selector"] == "finding_evidence_target"
+    assert site_plan["selector_resolution"]["selected_count"] >= 1
+    assert site_plan["replacement_scaffold"]["selected_count"] >= 1
+    assert site_plan["synthesis_record"]["status"] == "planned"
     assert recipe["recipe_id"] == "finding-class-codemod-plan"
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
 
@@ -16492,7 +16576,11 @@ def test_codemod_class_plan_groups_semantic_findings_by_authority(
 
     assert payload["class_count"] == 1
     assert class_payload["finding_count"] == 2
+    assert len(class_payload["site_plans"]) == 2
     assert set(class_payload["finding_ids"]) == {first.stable_id, second.stable_id}
+    assert {
+        site_plan["finding_id"] for site_plan in class_payload["site_plans"]
+    } == {first.stable_id, second.stable_id}
     assert unrelated.stable_id not in class_payload["finding_ids"]
 
 
@@ -16693,6 +16781,13 @@ def test_module_cli_synthesizes_class_plan_with_scaffolds(
     assert payload["executable_class_count"] == 1
     assert class_payload["selector"]["selector"] == "finding_evidence_target"
     assert class_payload["replacement_scaffold"]["selected_count"] >= 1
+    assert len(class_payload["site_plans"]) == 1
+    assert class_payload["site_plans"][0]["selector"]["selector"] == (
+        "finding_evidence_target"
+    )
+    assert (
+        class_payload["site_plans"][0]["replacement_scaffold"]["selected_count"] >= 1
+    )
     assert (
         class_payload["document"]["recipes"][0]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"

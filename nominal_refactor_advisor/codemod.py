@@ -14561,6 +14561,59 @@ class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
         }
 
 
+@dataclass(frozen=True, kw_only=True)
+class FindingRecipeClassSitePlan(FindingRecipeSynthesisRecord):
+    """One finding site inside a graph-clustered smell class."""
+
+    replacement_scaffold: CodemodReplacementPlanScaffoldReport
+
+    @classmethod
+    def from_synthesis_record(
+        cls,
+        synthesis_record: FindingRecipeSynthesisRecord,
+        context: CodemodSourceSnapshot,
+    ) -> "FindingRecipeClassSitePlan":
+        return cls(
+            finding_id=synthesis_record.finding_id,
+            detector_id=synthesis_record.detector_id,
+            title=synthesis_record.title,
+            status=synthesis_record.status,
+            scaffold=synthesis_record.scaffold,
+            codemod_patch=synthesis_record.codemod_patch,
+            summary=synthesis_record.summary,
+            capability_gap=synthesis_record.capability_gap,
+            evaluation=synthesis_record.evaluation,
+            synthesizer_name=synthesis_record.synthesizer_name,
+            action_keys=synthesis_record.action_keys,
+            reason=synthesis_record.reason,
+            replacement_scaffold=context.replacement_plan_scaffold_report(
+                synthesis_record.evidence_selector
+            ),
+        )
+
+    @property
+    def selector(self) -> FindingEvidenceTargetSelector:
+        return self.evidence_selector
+
+    @property
+    def selector_resolution(self) -> CodemodSelectorResolutionReport:
+        return self.replacement_scaffold.selector_resolution
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "finding_id": self.finding_id,
+                "detector_id": self.detector_id,
+                "title": self.title,
+                "status": self.status.value,
+                "selector": self.selector.to_dict(),
+                "selector_resolution": self.selector_resolution.to_dict(),
+                "replacement_scaffold": self.replacement_scaffold.to_dict(),
+                "synthesis_record": super().to_dict(),
+            }
+        )
+
+
 @dataclass(frozen=True)
 class FindingRecipeClassPlan(CodemodJsonReport):
     """One graph-clustered smell class with executable DSL planning context."""
@@ -14568,7 +14621,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     execution_class: RefactorExecutionClass
     selector: FindingEvidenceTargetSelector
     replacement_scaffold: CodemodReplacementPlanScaffoldReport
-    synthesis_records: tuple[FindingRecipeSynthesisRecord, ...]
+    site_plans: tuple[FindingRecipeClassSitePlan, ...]
     document: CodemodPlanDocument
 
     @property
@@ -14578,6 +14631,10 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     @property
     def finding_count(self) -> int:
         return self.execution_class.finding_count
+
+    @property
+    def synthesis_records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
+        return self.site_plans
 
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
@@ -14615,7 +14672,10 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             execution_class=execution_class,
             selector=selector,
             replacement_scaffold=context.replacement_plan_scaffold_report(selector),
-            synthesis_records=class_records,
+            site_plans=tuple(
+                FindingRecipeClassSitePlan.from_synthesis_record(record, context)
+                for record in class_records
+            ),
             document=cls.document_from_records(class_records),
         )
 
@@ -14666,6 +14726,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             "replacement_scaffold": self.replacement_scaffold.to_dict(),
             "document": self.document.to_dict(),
             "synthesis_status_counts": self.status_counts,
+            "site_plans": tuple(site_plan.to_dict() for site_plan in self.site_plans),
             "synthesis_records": tuple(
                 record.to_dict() for record in self.synthesis_records
             ),
