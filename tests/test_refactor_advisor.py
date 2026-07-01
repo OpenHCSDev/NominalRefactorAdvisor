@@ -6755,7 +6755,7 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
         "local b.py",
     }
     assert local_calls == {"a.py": 1, "b.py": 2}
-    assert global_module_batches == [("a.py", "b.py"), ("b.py",)]
+    assert global_module_batches == [("a.py", "b.py")]
 
 
 def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(
@@ -6831,20 +6831,25 @@ def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> 
     plan = DetectorAnalysisWorkerPlan(
         requested_worker_count=0,
         work_item_count=8,
-        module_count=4,
         max_auto_worker_count=4,
     )
     single_file_plan = DetectorAnalysisWorkerPlan(
         requested_worker_count=0,
         work_item_count=8,
-        module_count=1,
+        max_auto_worker_count=4,
+    )
+    small_work_plan = DetectorAnalysisWorkerPlan(
+        requested_worker_count=0,
+        work_item_count=1,
         max_auto_worker_count=4,
     )
 
     assert plan.effective_worker_count > 1
     assert plan.uses_process_pool is True
-    assert single_file_plan.effective_worker_count == 1
-    assert single_file_plan.uses_process_pool is False
+    assert single_file_plan.effective_worker_count > 1
+    assert single_file_plan.uses_process_pool is True
+    assert small_work_plan.effective_worker_count == 1
+    assert small_work_plan.uses_process_pool is False
 
 
 def test_reference_count_index_caches_requested_symbol_only(tmp_path: Path) -> None:
@@ -19018,6 +19023,32 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     assert second_timing["analysis_cache_status"] == "hit"
     assert graph_payload["active_graph_source"] in {"repository", "finding_backed"}
     assert int(repository_graph["authority_count"]) >= 1
+
+    focused_path.write_text(
+        "from .alpha import AlphaHandler, Handler\n\n\n"
+        "class BetaHandler(Handler):\n"
+        "    handler_id = 'beta'\n\n"
+        "    def run(self):\n"
+        "        return 'beta-changed'\n\n\n"
+        "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n"
+    )
+    third_result = subprocess.run(
+        command,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    third_payload = json.loads(third_result.stdout)
+    third_timing = cast(dict[str, object], third_payload["timing"])
+    third_graph_payload = cast(
+        dict[str, object], third_payload["semantic_descent_graph"]
+    )
+
+    assert third_result.returncode == 0, third_result.stderr
+    assert third_timing["parse_seconds"] == 0.0
+    assert third_timing["analysis_cache_status"] == "partial"
+    assert third_graph_payload["active_graph_source"] in {"repository", "finding_backed"}
 
 
 def test_module_cli_can_disable_auto_context_root_for_file_scope(

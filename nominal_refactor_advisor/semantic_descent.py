@@ -297,6 +297,26 @@ class SemanticDescentModuleSignature:
 
 
 @dataclass(frozen=True)
+class SemanticDescentModuleFamilySignature:
+    """Source-set member identity for latest semantic-descent graph reuse."""
+
+    path: str
+    parsed_import_name: str
+    is_package_init: bool
+
+    @classmethod
+    def from_module_signature(
+        cls,
+        signature: SemanticDescentModuleSignature,
+    ) -> "SemanticDescentModuleFamilySignature":
+        return cls(
+            path=signature.path,
+            parsed_import_name=signature.parsed_import_name,
+            is_package_init=signature.is_package_init,
+        )
+
+
+@dataclass(frozen=True)
 class SemanticDescentGraphCacheIdentity:
     """Complete invalidation identity for one semantic-descent graph."""
 
@@ -357,6 +377,47 @@ class SemanticDescentGraphCacheIdentity:
                 roots,
                 source_policy=source_policy,
             )
+        )
+
+    @property
+    def cache_token(self) -> str:
+        return hashlib.blake2s(
+            repr(self).encode("utf-8"),
+            digest_size=self.schema.digest_size,
+        ).hexdigest()
+
+
+@dataclass(frozen=True)
+class SemanticDescentGraphCacheFamilyIdentity:
+    """Source-set family identity for latest semantic-descent graph reuse."""
+
+    schema: SemanticDescentGraphCacheSchema
+    implementation: SemanticDescentImplementationSignature
+    python_version: tuple[int, int]
+    modules: tuple[SemanticDescentModuleFamilySignature, ...]
+
+    @classmethod
+    def from_identity(
+        cls,
+        identity: SemanticDescentGraphCacheIdentity,
+    ) -> "SemanticDescentGraphCacheFamilyIdentity":
+        return cls(
+            schema=identity.schema,
+            implementation=identity.implementation,
+            python_version=identity.python_version,
+            modules=tuple(
+                SemanticDescentModuleFamilySignature.from_module_signature(module)
+                for module in identity.modules
+            ),
+        )
+
+    @classmethod
+    def from_path_identities(
+        cls,
+        identities: tuple[PythonModulePathIdentity, ...],
+    ) -> "SemanticDescentGraphCacheFamilyIdentity":
+        return cls.from_identity(
+            SemanticDescentGraphCacheIdentity.from_path_identities(identities)
         )
 
     @property
@@ -1873,31 +1934,66 @@ class SemanticDescentGraphCache:
 
     storage_root: Path | None
 
+    def _load_payload(
+        self,
+        cache_path: Path,
+    ) -> (
+        dict[
+            str,
+            SemanticDescentGraph
+            | SemanticDescentGraphCacheIdentity
+            | SemanticDescentGraphCacheFamilyIdentity,
+        ]
+        | None
+    ):
+        try:
+            with cache_path.open("rb") as handle:
+                payload = pickle.load(handle)
+        except FileNotFoundError:
+            return None
+        except (OSError, pickle.PickleError, EOFError) as exc:
+            raise SemanticDescentGraphCacheReadError(
+                f"Could not read semantic-descent graph cache entry {cache_path.name}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise SemanticDescentGraphCacheReadError(
+                f"Semantic-descent graph cache entry {cache_path.name} is not a mapping"
+            )
+        return payload
+
     def load(
         self,
         identity: SemanticDescentGraphCacheIdentity,
     ) -> SemanticDescentGraphCacheLookup:
         if self.storage_root is None:
             return SemanticDescentGraphCacheDisabled()
-        try:
-            with self._entry_path(identity).open("rb") as handle:
-                payload = pickle.load(handle)
-        except FileNotFoundError:
+        payload = self._load_payload(self._entry_path(identity))
+        if payload is None:
             return SemanticDescentGraphCacheMiss()
-        except (OSError, pickle.PickleError, EOFError) as exc:
-            raise SemanticDescentGraphCacheReadError(
-                f"Could not read semantic-descent graph cache entry {identity.cache_token}"
-            ) from exc
-        if not isinstance(payload, dict):
-            raise SemanticDescentGraphCacheReadError(
-                f"Semantic-descent graph cache entry {identity.cache_token} is not a mapping"
-            )
         if payload.get("identity") != identity:
             return SemanticDescentGraphCacheMiss()
         graph = payload.get("graph")
         if not isinstance(graph, SemanticDescentGraph):
             raise SemanticDescentGraphCacheReadError(
                 f"Semantic-descent graph cache entry {identity.cache_token} has invalid graph payload"
+            )
+        return SemanticDescentGraphCacheHit(graph)
+
+    def load_latest(
+        self,
+        family_identity: SemanticDescentGraphCacheFamilyIdentity,
+    ) -> SemanticDescentGraphCacheLookup:
+        if self.storage_root is None:
+            return SemanticDescentGraphCacheDisabled()
+        payload = self._load_payload(self._latest_path(family_identity))
+        if payload is None:
+            return SemanticDescentGraphCacheMiss()
+        if payload.get("family_identity") != family_identity:
+            return SemanticDescentGraphCacheMiss()
+        graph = payload.get("graph")
+        if not isinstance(graph, SemanticDescentGraph):
+            raise SemanticDescentGraphCacheReadError(
+                f"Semantic-descent graph latest cache entry {family_identity.cache_token} has invalid graph payload"
             )
         return SemanticDescentGraphCacheHit(graph)
 
@@ -1916,6 +2012,19 @@ class SemanticDescentGraphCache:
                     handle,
                     protocol=pickle.HIGHEST_PROTOCOL,
                 )
+            family_identity = SemanticDescentGraphCacheFamilyIdentity.from_identity(
+                identity
+            )
+            with self._latest_path(family_identity).open("wb") as handle:
+                pickle.dump(
+                    {
+                        "family_identity": family_identity,
+                        "identity": identity,
+                        "graph": graph,
+                    },
+                    handle,
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
         except OSError:
             return
 
@@ -1923,6 +2032,14 @@ class SemanticDescentGraphCache:
         if self.storage_root is None:
             raise ValueError("semantic descent graph cache directory is disabled")
         return self.storage_root / f"{identity.cache_token}.pickle"
+
+    def _latest_path(
+        self,
+        family_identity: SemanticDescentGraphCacheFamilyIdentity,
+    ) -> Path:
+        if self.storage_root is None:
+            raise ValueError("semantic descent graph cache directory is disabled")
+        return self.storage_root / f"latest-{family_identity.cache_token}.pickle"
 
 
 def build_semantic_descent_graph(
@@ -1959,16 +2076,30 @@ def load_cached_semantic_descent_graph_for_roots(
 ) -> SemanticDescentGraph | None:
     """Load a semantic-descent graph cache entry addressable before AST parsing."""
 
-    if cache_dir is None:
-        return None
     identities = python_module_path_identities_for_roots(
         roots,
         source_policy=source_policy,
     )
-    if not identities:
-        return None
     identity = SemanticDescentGraphCacheIdentity.from_path_identities(identities)
     return SemanticDescentGraphCache(cache_dir).load(identity).graph
+
+
+def load_latest_semantic_descent_graph_for_roots(
+    roots: tuple[Path, ...],
+    *,
+    cache_dir: Path | None,
+    source_policy: PythonSourcePathPolicy | None = None,
+) -> SemanticDescentGraph | None:
+    """Load the latest graph for a source-set family before AST parsing."""
+
+    identities = python_module_path_identities_for_roots(
+        roots,
+        source_policy=source_policy,
+    )
+    family_identity = SemanticDescentGraphCacheFamilyIdentity.from_path_identities(
+        identities
+    )
+    return SemanticDescentGraphCache(cache_dir).load_latest(family_identity).graph
 
 
 @dataclass(frozen=True)

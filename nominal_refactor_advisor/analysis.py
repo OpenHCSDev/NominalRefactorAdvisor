@@ -171,17 +171,13 @@ class DetectorAnalysisWorkerPlan:
 
     requested_worker_count: int
     work_item_count: int
-    module_count: int
     minimum_auto_work_items: int = 4
     max_auto_worker_count: int = 16
 
     @property
     def effective_worker_count(self) -> int:
         if self.requested_worker_count == 0:
-            if (
-                self.module_count < 2
-                or self.work_item_count < self.minimum_auto_work_items
-            ):
+            if self.work_item_count < self.minimum_auto_work_items:
                 return 1
             cpu_count = os.cpu_count()
             if cpu_count is None:
@@ -196,6 +192,12 @@ class DetectorAnalysisWorkerPlan:
     @property
     def uses_process_pool(self) -> bool:
         return self.effective_worker_count > 1
+
+    @property
+    def process_map_chunksize(self) -> int:
+        if not self.uses_process_pool:
+            return 1
+        return max(1, self.work_item_count // (self.effective_worker_count * 2))
 
 
 @dataclass(frozen=True)
@@ -296,7 +298,6 @@ class DetectorTypeShardRunner:
             worker_plan=DetectorAnalysisWorkerPlan(
                 requested_worker_count=analysis_workers,
                 work_item_count=len(detector_types),
-                module_count=len(modules),
                 minimum_auto_work_items=minimum_auto_work_items,
             ),
         )
@@ -314,6 +315,7 @@ class DetectorTypeShardRunner:
                     executor.map(
                         detect_with_active_worker_state,
                         self.detector_types,
+                        chunksize=self.worker_plan.process_map_chunksize,
                     )
                 )
         return [
@@ -396,6 +398,52 @@ class DetectorTypePartition:
     @property
     def has_global_detectors(self) -> bool:
         return bool(self.global_detector_types)
+
+
+@dataclass(frozen=True)
+class EvidenceLocalPartialDetectorSelection:
+    """Detector families valid for changed-module reruns in partial cache mode."""
+
+    rerun_detector_family: tuple[type[IssueDetector], ...]
+
+    @classmethod
+    def from_detector_types(
+        cls,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> "EvidenceLocalPartialDetectorSelection":
+        partition = DetectorTypePartition.from_detector_types(detector_types)
+        graph_detector_types = tuple(
+            detector_type
+            for detector_type in partition.contextual_global_detector_types
+            if issubclass(detector_type, SemanticDescentGraphIssueDetector)
+        )
+        return cls(
+            (
+                *partition.per_module_detector_types,
+                *graph_detector_types,
+            )
+        )
+
+    def touching_previous_findings(
+        self,
+        previous_findings: Iterable[RefactorFinding],
+        changed_paths: frozenset[str],
+    ) -> "EvidenceLocalPartialDetectorSelection":
+        touching_detector_ids = frozenset(
+            finding.detector_id
+            for finding in previous_findings
+            if EvidenceLocalFindingReuseAuthority.finding_touches_any_path(
+                finding,
+                changed_paths,
+            )
+        )
+        return type(self)(
+            tuple(
+                detector_type
+                for detector_type in self.rerun_detector_family
+                if detector_type.effective_detector_id() in touching_detector_ids
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -482,8 +530,20 @@ class ChangedSourcePathAuthority:
         )
 
 
+@dataclass(frozen=True)
 class EvidenceLocalFindingReuseAuthority:
     """Reuse cached findings whose evidence does not touch changed files."""
+
+    rerun_detector_types: tuple[type[IssueDetector], ...] = ()
+
+    @property
+    def rerun_detector_ids(self) -> frozenset[str]:
+        return frozenset(
+            detector_id
+            for detector_type in self.rerun_detector_types
+            for detector_id in (detector_type.effective_detector_id(),)
+            if detector_id is not None
+        )
 
     @staticmethod
     def finding_touches_any_path(
@@ -507,16 +567,31 @@ class EvidenceLocalFindingReuseAuthority:
             if not cls.finding_touches_any_path(finding, changed_paths)
         ]
 
-    @classmethod
+    def retained_changed_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+        changed_paths: frozenset[str],
+    ) -> list[RefactorFinding]:
+        rerun_detector_ids = self.rerun_detector_ids
+        return [
+            finding
+            for finding in findings
+            if self.finding_touches_any_path(finding, changed_paths)
+            and finding.detector_id not in rerun_detector_ids
+        ]
+
+    @staticmethod
     def changed_findings(
-        cls,
         findings: Iterable[RefactorFinding],
         changed_paths: frozenset[str],
     ) -> list[RefactorFinding]:
         return [
             finding
             for finding in findings
-            if cls.finding_touches_any_path(finding, changed_paths)
+            if EvidenceLocalFindingReuseAuthority.finding_touches_any_path(
+                finding,
+                changed_paths,
+            )
         ]
 
 
@@ -845,7 +920,6 @@ class IncrementalAnalysisCacheResolver:
         worker_plan = DetectorAnalysisWorkerPlan(
             requested_worker_count=self._analysis_workers,
             work_item_count=len(missing_modules),
-            module_count=len(missing_modules),
         )
         if worker_plan.uses_process_pool:
             state = PerModuleDetectorShardWorkerState(
@@ -862,6 +936,7 @@ class IncrementalAnalysisCacheResolver:
                     executor.map(
                         detect_per_module_shard_with_active_state,
                         range(len(missing_modules)),
+                        chunksize=worker_plan.process_map_chunksize,
                     )
                 )
         return [
@@ -1307,17 +1382,36 @@ class FastCachedPathAnalysisAuthority:
             cache_result.cache_identity,
             cache_result.previous_cache_identity,
         )
-        changed_findings = self._changed_findings(changed_paths)
+        partial_detector_selection = (
+            EvidenceLocalPartialDetectorSelection.from_detector_types(
+                default_detector_types_for_analysis()
+            ).touching_previous_findings(
+                cache_result.previous_findings,
+                changed_paths,
+            )
+        )
+        rerun_detector_types = partial_detector_selection.rerun_detector_family
+        reuse_authority = EvidenceLocalFindingReuseAuthority(rerun_detector_types)
+        changed_findings = self._changed_findings(
+            changed_paths,
+            detector_types=rerun_detector_types,
+        )
         # Evidence-local reuse keeps previous findings whose evidence did not touch
-        # changed paths, then reruns all detector families on changed modules. This
-        # is intentionally a fast loop result, not a proof of full-context absence.
+        # changed paths, retains global/contextual changed-path findings whose
+        # detector contract cannot be rerun on a module slice, then recomputes the
+        # detector families that are valid for changed modules. This is intentionally
+        # a fast loop result, not a proof of full-context absence.
         findings = SortedFindingsAuthority.sort(
             [
                 *EvidenceLocalFindingReuseAuthority.unchanged_findings(
                     cache_result.previous_findings,
                     changed_paths,
                 ),
-                *EvidenceLocalFindingReuseAuthority.changed_findings(
+                *reuse_authority.retained_changed_findings(
+                    cache_result.previous_findings,
+                    changed_paths,
+                ),
+                *reuse_authority.changed_findings(
                     changed_findings,
                     changed_paths,
                 ),
@@ -1336,13 +1430,19 @@ class FastCachedPathAnalysisAuthority:
             previous_findings=cache_result.previous_findings,
         )
 
-    def _changed_findings(self, changed_paths: frozenset[str]) -> list[RefactorFinding]:
+    def _changed_findings(
+        self,
+        changed_paths: frozenset[str],
+        *,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> list[RefactorFinding]:
         changed_modules = self._changed_modules(changed_paths)
         if not changed_modules:
             return []
-        return analyze_modules(
+        return analyze_detector_types(
             changed_modules,
             self._request.config,
+            detector_types=detector_types,
             analysis_workers=self._request.analysis_workers,
             semantic_descent_source=self._request.semantic_descent_source,
         )

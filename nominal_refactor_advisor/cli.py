@@ -156,6 +156,7 @@ from .semantic_descent import (
     build_finding_backed_semantic_descent_graph,
     build_semantic_descent_graph,
     load_cached_semantic_descent_graph_for_roots,
+    load_latest_semantic_descent_graph_for_roots,
 )
 from .source_index import SourceIndex, build_source_index
 
@@ -1035,9 +1036,29 @@ class JsonPayloadImpactRankingPolicy:
 class JsonPreparseCachePayloadMode(Enum):
     """Pre-parse cache payload mode for JSON scans."""
 
-    DISABLED = "disabled"
-    LOOP_SUMMARY = "loop_summary"
-    SEMANTIC_GRAPH_PAYLOAD = "semantic_graph_payload"
+    DISABLED = ("disabled", False, False)
+    LOOP_SUMMARY = ("loop_summary", True, False)
+    SEMANTIC_GRAPH_PAYLOAD = ("semantic_graph_payload", False, True)
+
+    def __new__(
+        cls,
+        value: str,
+        evidence_local_partial: bool,
+        focused_evidence_local_partial: bool,
+    ) -> "JsonPreparseCachePayloadMode":
+        member = object.__new__(cls)
+        member._value_ = value
+        return member
+
+    def __init__(
+        self,
+        value: str,
+        evidence_local_partial: bool,
+        focused_evidence_local_partial: bool,
+    ) -> None:
+        del value
+        self._evidence_local_partial = evidence_local_partial
+        self._focused_evidence_local_partial = focused_evidence_local_partial
 
     @property
     def enabled(self) -> bool:
@@ -1046,6 +1067,14 @@ class JsonPreparseCachePayloadMode(Enum):
     @property
     def requires_semantic_descent_cache(self) -> bool:
         return self is type(self).SEMANTIC_GRAPH_PAYLOAD
+
+    def reuse_policy(self, *, focused_report_filter: bool) -> FastCacheReusePolicy:
+        evidence_local_partial = self._evidence_local_partial or (
+            focused_report_filter and self._focused_evidence_local_partial
+        )
+        if evidence_local_partial:
+            return FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL
+        return FastCacheReusePolicy.EXACT_ONLY
 
 
 @dataclass(frozen=True)
@@ -1057,6 +1086,7 @@ class JsonSummaryPreparseCachePolicy:
     load_bearing_ranking_enabled: bool
     parsed_modules_required: bool
     analysis_cache_dir: Path | None
+    focused_report_filter: bool = False
 
     @property
     def cache_lookup_enabled(self) -> bool:
@@ -1086,6 +1116,13 @@ class JsonSummaryPreparseCachePolicy:
         ):
             return JsonPreparseCachePayloadMode.SEMANTIC_GRAPH_PAYLOAD
         return JsonPreparseCachePayloadMode.DISABLED
+
+    @property
+    def uses_evidence_local_partial_reuse(self) -> bool:
+        return (
+            self.mode.reuse_policy(focused_report_filter=self.focused_report_filter)
+            is FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL
+        )
 
 
 @dataclass(frozen=True)
@@ -5464,6 +5501,7 @@ def main() -> int:
                 or codemod_scan_query_mode.needs_source_snapshot
             ),
             analysis_cache_dir=analysis_cache_dir,
+            focused_report_filter=path_scope.has_report_filter,
         )
         fast_cache_result = None
         cached_semantic_descent_graph = None
@@ -5474,6 +5512,27 @@ def main() -> int:
             and preparse_cache_mode.enabled
         ):
             started = perf_counter()
+            latest_semantic_descent_graph = None
+            if (
+                preparse_cache_policy.uses_evidence_local_partial_reuse
+                and preparse_cache_mode.requires_semantic_descent_cache
+            ):
+                latest_semantic_descent_graph = (
+                    load_latest_semantic_descent_graph_for_roots(
+                        roots,
+                        cache_dir=semantic_descent_cache_dir,
+                        source_policy=source_policy,
+                    )
+                )
+            fast_semantic_descent_analysis_source = semantic_descent_analysis_source
+            if latest_semantic_descent_graph is not None:
+                fast_semantic_descent_analysis_source = SemanticDescentGraphAnalysisSource(
+                    cached_graph=latest_semantic_descent_graph,
+                    cache_dir=semantic_descent_cache_dir,
+                    cache_roots=roots,
+                    source_policy=source_policy,
+                    use_cache=args.use_parse_cache,
+                )
             fast_cache_request = CachedPathAnalysisRequest(
                 roots=roots,
                 config=config,
@@ -5482,12 +5541,10 @@ def main() -> int:
                 parse_workers=args.parse_workers,
                 analysis_workers=args.analysis_workers,
                 source_policy=source_policy,
-                reuse_policy=(
-                    FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL
-                    if preparse_cache_mode is JsonPreparseCachePayloadMode.LOOP_SUMMARY
-                    else FastCacheReusePolicy.EXACT_ONLY
+                reuse_policy=preparse_cache_mode.reuse_policy(
+                    focused_report_filter=path_scope.has_report_filter
                 ),
-                semantic_descent_source=semantic_descent_analysis_source,
+                semantic_descent_source=fast_semantic_descent_analysis_source,
             )
             fast_cache_authority = FastCachedPathAnalysisAuthority(fast_cache_request)
             if (
@@ -5524,6 +5581,11 @@ def main() -> int:
                         source_policy=source_policy,
                     )
                 )
+                if (
+                    cached_semantic_descent_graph is None
+                    and preparse_cache_policy.uses_evidence_local_partial_reuse
+                ):
+                    cached_semantic_descent_graph = latest_semantic_descent_graph
                 if cached_semantic_descent_graph is None:
                     fast_cache_result = None
             fast_cache_seconds = round(perf_counter() - started, 3)
