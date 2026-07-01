@@ -29,7 +29,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields as dataclass_fields, replace
 from enum import StrEnum
-from functools import cached_property
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar
 
@@ -323,10 +323,16 @@ class RefactorRecipeTargetShape(StrEnum):
 
     AUTOREGISTER_CLASS_REGISTRY = "autoregister_class_registry"
     AUTOREGISTER_STRATEGY_FAMILY = "autoregister_strategy_family"
+    BOUNDARY_SOURCE_CONTEXT_AUTHORITY = "boundary_source_context_authority"
+    CONSTRUCTOR_KWARG_CARRIER_PROJECTION = "constructor_kwarg_carrier_projection"
     DATACLASS_CONTEXT_CALL_PROJECTION = "dataclass_context_call_projection"
+    DATACLASS_INHERITANCE_LIFT = "dataclass_inheritance_lift"
     DATACLASS_PAYLOAD_PROJECTION = "dataclass_payload_projection"
     DATACLASS_CONSTRUCTOR_PROJECTION = "dataclass_constructor_projection"
+    DEAD_COMPATIBILITY_ERASURE = "dead_compatibility_eraser"
+    PREFIX_BUNDLE_CARRIER = "prefix_bundle_carrier"
     ROLE_CASE_AUTHORITY = "role_case_authority"
+    TUPLE_DICT_RETURN_RECORD = "tuple_dict_return_record"
 
 
 class SourceNodeDecoratorPolicy(StrEnum):
@@ -1095,7 +1101,7 @@ class SourcePathResolutionStrategy(ABC, metaclass=AutoRegisterMeta):
     def matching_paths(
         self,
         requested_path: str,
-        candidate_paths: tuple[str, ...],
+        projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
         raise NotImplementedError
 
@@ -1108,10 +1114,12 @@ class ExactSourcePathResolutionStrategy(SourcePathResolutionStrategy):
     def matching_paths(
         self,
         requested_path: str,
-        candidate_paths: tuple[str, ...],
+        projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
         return tuple(
-            candidate for candidate in candidate_paths if candidate == requested_path
+            candidate
+            for candidate in projection.paths
+            if candidate == requested_path
         )
 
 
@@ -1123,13 +1131,13 @@ class NormalizedSourcePathResolutionStrategy(SourcePathResolutionStrategy):
     def matching_paths(
         self,
         requested_path: str,
-        candidate_paths: tuple[str, ...],
+        projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
         requested_posix = Path(requested_path).as_posix()
         return tuple(
             candidate
-            for candidate in candidate_paths
-            if Path(candidate).as_posix() == requested_posix
+            for candidate, candidate_posix in projection.normalized_rows
+            if candidate_posix == requested_posix
         )
 
 
@@ -1141,13 +1149,13 @@ class ResolvedSourcePathResolutionStrategy(SourcePathResolutionStrategy):
     def matching_paths(
         self,
         requested_path: str,
-        candidate_paths: tuple[str, ...],
+        projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
-        requested_resolved = Path(requested_path).expanduser().resolve()
+        requested_resolved = _resolved_source_path_text(requested_path)
         return tuple(
             candidate
-            for candidate in candidate_paths
-            if Path(candidate).expanduser().resolve() == requested_resolved
+            for candidate, candidate_resolved in projection.resolved_rows
+            if candidate_resolved == requested_resolved
         )
 
 
@@ -1159,16 +1167,57 @@ class RelativeSuffixSourcePathResolutionStrategy(SourcePathResolutionStrategy):
     def matching_paths(
         self,
         requested_path: str,
-        candidate_paths: tuple[str, ...],
+        projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
         requested = Path(requested_path)
         suffix = f"/{requested.as_posix()}"
         return tuple(
             candidate
-            for candidate in candidate_paths
+            for candidate, candidate_posix in projection.normalized_rows
             if not requested.is_absolute()
-            and Path(candidate).as_posix().endswith(suffix)
+            and candidate_posix.endswith(suffix)
         )
+
+
+@dataclass(frozen=True)
+class SourcePathCandidateSet:
+    """Reusable source-index candidate path set with derived projections."""
+
+    paths: tuple[str, ...]
+
+    @classmethod
+    def from_paths(
+        cls,
+        candidate_paths: tuple[str, ...],
+    ) -> "SourcePathCandidateSet":
+        del cls
+        return _source_path_candidate_set(tuple(sorted(set(candidate_paths))))
+
+    @cached_property
+    def normalized_rows(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (candidate, Path(candidate).as_posix())
+            for candidate in self.paths
+        )
+
+    @cached_property
+    def resolved_rows(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (candidate, _resolved_source_path_text(candidate))
+            for candidate in self.paths
+        )
+
+
+@lru_cache(maxsize=128)
+def _source_path_candidate_set(
+    candidate_paths: tuple[str, ...],
+) -> SourcePathCandidateSet:
+    return SourcePathCandidateSet(candidate_paths)
+
+
+@lru_cache(maxsize=4096)
+def _resolved_source_path_text(path: str) -> str:
+    return Path(path).expanduser().resolve().as_posix()
 
 
 @dataclass(frozen=True)
@@ -1176,7 +1225,7 @@ class SourcePathCandidateAuthority:
     """Base authority for resolving DSL paths against indexed source files."""
 
     requested_path: str
-    candidate_paths: tuple[str, ...]
+    candidate_set: SourcePathCandidateSet
 
     @classmethod
     def from_source_index(
@@ -1186,8 +1235,8 @@ class SourcePathCandidateAuthority:
     ) -> "SourcePathResolutionAuthority":
         return cls(
             requested_path=requested_path,
-            candidate_paths=tuple(
-                sorted({target.file_path for target in source_index.ast_targets})
+            candidate_set=SourcePathCandidateSet.from_paths(
+                tuple(target.file_path for target in source_index.ast_targets)
             ),
         )
 
@@ -1217,13 +1266,12 @@ class SourcePathResolutionAuthority(SourcePathCandidateAuthority):
         )
 
     def matching_paths(self) -> tuple[str, ...]:
-        candidates = tuple(sorted(set(self.candidate_paths)))
         prioritized_matches = (
             *(
                 matches
                 for strategy in SourcePathResolutionStrategy.ordered_strategies()
                 for matches in (
-                    strategy.matching_paths(self.requested_path, candidates),
+                    strategy.matching_paths(self.requested_path, self.candidate_set),
                 )
                 if matches
             ),
@@ -1259,7 +1307,7 @@ class SourceCreationPathAuthority(SourcePathCandidateAuthority):
             sorted(
                 {
                     (Path(candidate).parent / requested.name).as_posix()
-                    for candidate in self.candidate_paths
+                    for candidate in self.candidate_set.paths
                     if Path(candidate).parent.as_posix() == requested_parent
                     or Path(candidate).parent.as_posix().endswith(suffix)
                 }
@@ -1733,7 +1781,7 @@ class CodemodSelectorContext:
         return frozenset(
             SourcePathResolutionAuthority(
                 requested_path=file_path,
-                candidate_paths=self.source_file_paths,
+                candidate_set=SourcePathCandidateSet.from_paths(self.source_file_paths),
             ).required_path()
             for file_path in file_paths
         )
@@ -4378,11 +4426,11 @@ class SourceTextGeometry:
 
     source: str
 
-    @property
+    @cached_property
     def lines(self) -> tuple[str, ...]:
         return tuple(self.source.splitlines(keepends=True))
 
-    @property
+    @cached_property
     def line_offsets(self) -> tuple[int, ...]:
         offsets = []
         offset = 0
@@ -4393,7 +4441,7 @@ class SourceTextGeometry:
             offsets.append(0)
         return tuple(offsets)
 
-    @property
+    @cached_property
     def end_offset(self) -> int:
         return sum(len(line) for line in self.lines)
 
@@ -14066,6 +14114,45 @@ class CodemodPlanDocument:
         )
 
     @classmethod
+    def dead_compatibility_eraser(
+        cls,
+        *,
+        source_path: str,
+        target_qualname: str,
+        forbidden_call_names: Iterable[str] = (),
+        rule_id: str | None = None,
+        reason: str = "",
+    ) -> "CodemodPlanDocument":
+        """Delete a legacy/compat target and guard against residual call sites."""
+
+        call_names = tuple(forbidden_call_names) or (
+            target_qualname.rsplit(".", maxsplit=1)[-1],
+        )
+        eraser_reason = (
+            reason
+            or "Erase the dead compatibility path and fail if any caller still uses it."
+        )
+        recipe = RefactorRecipe(
+            recipe_id=f"{target_qualname}-dead-compatibility-eraser",
+            reason=eraser_reason,
+            target_shape=RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE,
+        ).delete_target(
+            target_qualname,
+            source_path=source_path,
+            rationale=eraser_reason,
+        )
+        guard = ArchitectureGuardRule(
+            rule_id=rule_id or f"{target_qualname}-no-residual-compat-calls",
+            forbidden_call_names=call_names,
+            file_path_suffixes=(source_path,),
+            reason=eraser_reason,
+        )
+        return cls(
+            recipes=(recipe,),
+            guard_suite=ArchitectureGuardSuite((guard,)),
+        )
+
+    @classmethod
     def from_json_value(
         cls,
         payload: JsonObject | JsonArray,
@@ -15962,6 +16049,7 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesize
                 "Replace runtime product-record schema with AST-visible "
                 "dataclass declarations."
             ),
+            target_shape=RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
         )
         if call_kind.is_batch_materializer:
             return recipe.product_records_to_dataclasses(
@@ -16122,7 +16210,11 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(
         return FindingRecipeEvaluation(
             recipe=RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-collapse-fields-to-carrier",
-                reason="Collapse repeated dataclass fields into a nominal carrier.",
+                reason=(
+                    "Lift duplicated dataclass field declarations into a shared "
+                    "nominal base."
+                ),
+                target_shape=RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT,
             ).collapse_fields_to_carrier(
                 source_path,
                 carrier_name=carrier_name,
@@ -16262,9 +16354,10 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
             recipe=RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-collapse-primitive-carrier",
                 reason=(
-                    "Collapse exact repeated primitive role fields into a nominal "
-                    "carrier."
+                    "Extract repeated prefix/role primitive fields into one nominal "
+                    "bundle carrier."
                 ),
+                target_shape=RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER,
             ).collapse_fields_to_carrier(
                 parts.source_path,
                 carrier_name=parts.carrier_name,
@@ -16315,7 +16408,10 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
             class_names=class_names,
             field_names=metrics.plan_field_names,
         )
-        carrier_name = self.required_carrier_name(class_names)
+        carrier_name = self.required_carrier_name(
+            class_names,
+            metrics.plan_field_names,
+        )
         self.require_available_carrier_name(
             resolved_context,
             source_path=source_path,
@@ -16469,13 +16565,17 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
                 ),
             )
 
-    def required_carrier_name(self, class_names: tuple[str, ...]) -> str:
-        carrier_name = self.carrier_name_or_none(class_names)
+    def required_carrier_name(
+        self,
+        class_names: tuple[str, ...],
+        field_names: tuple[str, ...],
+    ) -> str:
+        carrier_name = self.carrier_name_or_none(class_names, field_names)
         if carrier_name is None:
             raise ParallelPrimitiveCarrierRejection(
                 (
                     "parallel primitive carrier collapse requires a shared "
-                    "class-name prefix or suffix"
+                    "class-name prefix/suffix or field-name prefix"
                 ),
             )
         return carrier_name
@@ -16520,7 +16620,10 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
         )
 
     @staticmethod
-    def carrier_name_or_none(class_names: tuple[str, ...]) -> str | None:
+    def carrier_name_or_none(
+        class_names: tuple[str, ...],
+        field_names: tuple[str, ...] = (),
+    ) -> str | None:
         prefix_tokens = (
             ParallelPrimitiveCarrierFindingRecipeSynthesizer.longest_common_raw_prefix(
                 class_names
@@ -16533,8 +16636,20 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
         )
         tokens = prefix_tokens or suffix_tokens
         if not tokens:
-            return None
+            return ParallelPrimitiveCarrierFindingRecipeSynthesizer.field_prefix_carrier_name_or_none(
+                field_names
+            )
         return f"{CLASS_NAME_ALGEBRA.public_name_from_tokens(tokens)}Base"
+
+    @classmethod
+    def field_prefix_carrier_name_or_none(
+        cls,
+        field_names: tuple[str, ...],
+    ) -> str | None:
+        prefix_tokens = cls.longest_common_raw_prefix(field_names)
+        if not prefix_tokens:
+            return None
+        return f"{CLASS_NAME_ALGEBRA.public_name_from_tokens(prefix_tokens)}Carrier"
 
     @staticmethod
     def raw_name_tokens(name: str) -> tuple[str, ...]:
@@ -21945,7 +22060,7 @@ class DataclassConstructorProjectionRecipeParts:
             reason=(
                 "Derive mirrored constructor fields from the dataclass authority method."
             ),
-            target_shape=RefactorRecipeTargetShape.DATACLASS_CONSTRUCTOR_PROJECTION,
+            target_shape=RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
         )
         if self.import_source is not None:
             recipe = recipe.ensure_import(

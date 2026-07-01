@@ -1427,6 +1427,7 @@ def test_parallel_primitive_carrier_synthesis_collapses_exact_dataclass_fields(
         plan.records[0].synthesizer_name
         == "ParallelPrimitiveCarrierFindingRecipeSynthesizer"
     )
+    assert plan.records[0].recipe_target_shape == "prefix_bundle_carrier"
     assert operation["operation"] == "collapse_fields_to_carrier"
     assert operation["carrier_name"] == "SourceLocationEvidencePropertyBase"
     assert "class SourceLocationEvidencePropertyBase:" in rewritten
@@ -1442,6 +1443,67 @@ def test_parallel_primitive_carrier_synthesis_collapses_exact_dataclass_fields(
     assert rewritten.count("line_attribute_name: str") == 1
     assert rewritten.count("symbol_attribute_name: str") == 1
     assert simulation.is_clean is True
+
+
+def test_parallel_primitive_carrier_uses_field_prefix_when_class_names_do_not_name_bundle(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class AlphaThing:\n"
+        "    source_workspace_path: str\n"
+        "    source_workspace_line: str\n"
+        "    source_workspace_symbol: str\n"
+        "    alpha_only: bool\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class BetaWidget:\n"
+        "    source_workspace_path: str\n"
+        "    source_workspace_line: str\n"
+        "    source_workspace_symbol: str\n"
+        "    beta_only: int\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        detector_id="parallel_primitive_carrier",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Parallel primitive fields should become a nominal carrier",
+        summary="primitive source workspace roles repeat across records",
+        why="parallel primitive fields mirror one source-workspace authority",
+        capability_gap="single nominal carrier for correlated primitive roles",
+        relation_context=(
+            "same primitive identity role bundle is repeated across record classes"
+        ),
+        evidence=(
+            SourceLocation(module_path.as_posix(), 4, "AlphaThing"),
+            SourceLocation(module_path.as_posix(), 11, "BetaWidget"),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="parallel_primitive_carrier",
+            field_names=(
+                "source_workspace_path",
+                "source_workspace_line",
+                "source_workspace_symbol",
+            ),
+            identity_field_names=(
+                "source_workspace_path",
+                "source_workspace_line",
+                "source_workspace_symbol",
+            ),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    operation = plan.document.recipes[0].operations[0].to_dict()
+
+    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].recipe_target_shape == "prefix_bundle_carrier"
+    assert operation["carrier_name"] == "SourceWorkspaceCarrier"
 
 
 def test_parallel_primitive_carrier_rejects_mismatched_field_defaults(
@@ -2611,7 +2673,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "planned"
-    assert record.recipe_target_shape == "dataclass_constructor_projection"
+    assert record.recipe_target_shape == "constructor_kwarg_carrier_projection"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert tuple(operation.operation_kind().value for operation in recipe.operations) == (

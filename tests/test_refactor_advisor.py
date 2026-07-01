@@ -1720,6 +1720,9 @@ def test_runtime_product_record_findings_synthesize_recipe_plan(
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
+    assert plan.document.recipes[0].target_shape is (
+        RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
+    )
     assert plan.document.recipes[0].operations[0].to_dict()["operation"] == (
         "product_record_to_dataclass"
     )
@@ -7122,13 +7125,11 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
     }
     assert {finding.summary for finding in fast_result.findings} == {
         "global a.py",
-        "global b.py",
         "local a.py",
         "local b.py",
     }
     assert {finding.summary for finding in second_fast_result.findings} == {
         "global a.py",
-        "global b.py",
         "local a.py",
         "local b.py",
     }
@@ -7207,10 +7208,7 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
     assert fast_result is not None
     assert fast_result.cache_status is AnalysisCacheStatus.PARTIAL
     assert {finding.summary for finding in first_findings} == {"a.py:1", "b.py:1"}
-    assert {finding.summary for finding in fast_result.findings} == {
-        "a.py:1",
-        "b.py:1",
-    }
+    assert {finding.summary for finding in fast_result.findings} == {"a.py:1"}
     assert {finding.summary for finding in exact_findings} == {"a.py:1", "b.py:2"}
     assert global_module_batches == [("a.py", "b.py"), ("a.py", "b.py")]
 
@@ -15380,6 +15378,39 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
     assert "def keep" in rewritten
     assert "obsolete_method" not in rewritten
     assert "obsolete_function" not in rewritten
+
+
+def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef legacy_helper(value):\n"
+        "    return value\n\n\n"
+        "def caller(value):\n"
+        "    return legacy_helper(value)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    document = CodemodPlanDocument.dead_compatibility_eraser(
+        source_path=module_path.as_posix(),
+        target_qualname="legacy_helper",
+    )
+
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    recipe = document.recipes[0]
+
+    assert recipe.target_shape is RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE
+    assert simulation.is_clean is False
+    assert simulation.architecture_guard_report.violation_count == 1
+    assert "legacy_helper" in simulation.architecture_guard_report.violations[0].detail
 
 
 def test_apply_selected_targets_operation_projects_template_over_selector(

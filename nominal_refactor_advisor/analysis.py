@@ -571,13 +571,8 @@ class EvidenceLocalFindingReuseAuthority:
         findings: Iterable[RefactorFinding],
         changed_paths: frozenset[str],
     ) -> list[RefactorFinding]:
-        rerun_detector_ids = self.rerun_detector_ids
-        return [
-            finding
-            for finding in findings
-            if self.finding_touches_any_path(finding, changed_paths)
-            and finding.detector_id not in rerun_detector_ids
-        ]
+        del findings, changed_paths
+        return []
 
     @staticmethod
     def changed_findings(
@@ -1496,10 +1491,10 @@ class FastCachedPathAnalysisAuthority:
             detector_types=rerun_detector_types,
         )
         # Evidence-local reuse keeps previous findings whose evidence did not touch
-        # changed paths, retains global/contextual changed-path findings whose
-        # detector contract cannot be rerun on a module slice, then recomputes the
-        # detector families that are valid for changed modules. This is intentionally
-        # a fast loop result, not a proof of full-context absence.
+        # changed paths, then recomputes detector families that are valid for
+        # changed-module slices. Changed-path findings from non-rerunnable detector
+        # families are dropped rather than replayed stale. This is intentionally a
+        # fast loop result, not a proof of full-context absence.
         findings = SortedFindingsAuthority.sort(
             [
                 *EvidenceLocalFindingReuseAuthority.unchanged_findings(
