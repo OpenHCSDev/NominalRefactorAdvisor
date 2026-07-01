@@ -47,6 +47,11 @@ from .candidate_collection_semantics import (
 )
 from .class_index import ClassFamilyIndex, build_class_family_index
 from .collection_algebra import sorted_tuple
+from .detectors._base import (
+    CandidateCollectorBaseShape,
+    CandidateCollectorScope,
+    DerivedCandidateCollectorMixin,
+)
 from .impact_ranking import (
     RefactorImpactKey,
     RefactorImpactOpportunity,
@@ -8382,6 +8387,17 @@ class CandidateCollectorBaseNameSet:
     unconfigured: str
     configured: str
 
+    @classmethod
+    def from_scope(cls, scope: CandidateCollectorScope) -> "CandidateCollectorBaseNameSet":
+        return cls(
+            unconfigured=DerivedCandidateCollectorMixin.collector_base_name_for_shape(
+                CandidateCollectorBaseShape(scope=scope, uses_config=False)
+            ),
+            configured=DerivedCandidateCollectorMixin.collector_base_name_for_shape(
+                CandidateCollectorBaseShape(scope=scope, uses_config=True)
+            ),
+        )
+
     def for_config_usage(self, uses_config: bool) -> str:
         if uses_config:
             return self.configured
@@ -8450,9 +8466,8 @@ class WholeModuleCandidateCollectorScopeSource(CandidateCollectorScopeSource):
     """Generate a candidate method from a whole-module-list collector."""
 
     scope_key = "modules"
-    collector_base_names = CandidateCollectorBaseNameSet(
-        unconfigured="CrossModuleCollectorCandidateDetector",
-        configured="ConfiguredCrossModuleCollectorCandidateDetector",
+    collector_base_names = CandidateCollectorBaseNameSet.from_scope(
+        CandidateCollectorScope.CROSS_MODULE
     )
 
 
@@ -8460,9 +8475,8 @@ class PerModuleItemCandidateCollectorScopeSource(CandidateCollectorScopeSource):
     """Generate a candidate method by flattening one-module item collectors."""
 
     scope_key = "module_items"
-    collector_base_names = CandidateCollectorBaseNameSet(
-        unconfigured="FlattenedModuleCollectorCandidateDetector",
-        configured="ConfiguredFlattenedModuleCollectorCandidateDetector",
+    collector_base_names = CandidateCollectorBaseNameSet.from_scope(
+        CandidateCollectorScope.FLATTENED_MODULE
     )
 
 
@@ -21347,6 +21361,14 @@ class LocalRoleCaseItemBase(LocalRoleCaseConstructibleItem):
 
 
 @dataclass(frozen=True)
+class LocalRoleCaseAssignmentValueSet:
+    """Shared value-source coordinates for assignment role cases."""
+
+    value_sources: tuple[str, ...]
+    value_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class LocalRoleCaseBranchItem(LocalRoleCaseItemBase):
     """One ordered branch case extracted from local role-case guard logic."""
 
@@ -21373,11 +21395,11 @@ class LocalRoleCaseBranchItem(LocalRoleCaseItemBase):
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseAssignmentItem(LocalRoleCaseItemBase):
+class LocalRoleCaseAssignmentItem(
+    LocalRoleCaseItemBase,
+    LocalRoleCaseAssignmentValueSet,
+):
     """One ordered branch case assigning local result values."""
-
-    value_sources: tuple[str, ...]
-    value_names: tuple[str, ...]
 
     def construction_source(self, item_class_name: str) -> str:
         factories = tuple(
@@ -21394,11 +21416,8 @@ class LocalRoleCaseAssignmentItem(LocalRoleCaseItemBase):
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseAssignmentDefault:
+class LocalRoleCaseAssignmentDefault(LocalRoleCaseAssignmentValueSet):
     """Default value factories for assignment branch extraction."""
-
-    value_sources: tuple[str, ...]
-    value_names: tuple[str, ...]
 
     def result_source(self) -> str:
         expression_source = AxisValueExpressionSource(self.value_names)

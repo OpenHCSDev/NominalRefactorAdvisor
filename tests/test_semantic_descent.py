@@ -3395,6 +3395,49 @@ def test_semantic_descent_treats_constructor_guard_as_dataclass_descent(
     )
 
 
+def test_semantic_descent_treats_direct_dataclass_construction_as_sibling_descent(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class ReplacementSpan:\n"
+        "    file_path: str\n"
+        "    start_line: int\n"
+        "    end_line: int\n"
+        "    replacement_lines: tuple[str, ...]\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class BlankLineRun:\n"
+        "    file_path: str\n"
+        "    start_line: int\n"
+        "    end_line: int\n"
+        "    blank_line_count: int\n"
+        "\n"
+        "def replacement(span):\n"
+        "    return (\n"
+        "        ReplacementSpan(\n"
+        "            file_path=span.file_path,\n"
+        "            start_line=span.start_line,\n"
+        "            end_line=span.end_line,\n"
+        "            replacement_lines=(),\n"
+        "        ),\n"
+        "    )\n",
+    )
+
+    graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+
+    blank_line_authority = next(
+        authority for authority in graph.authorities if authority.name == "BlankLineRun"
+    )
+    assert not any(
+        certificate.edge.authority_id == blank_line_authority.authority_id
+        for certificate in graph.certificates
+    )
+
+
 def test_semantic_descent_treats_subclass_construction_as_schema_descent(
     tmp_path: Path,
 ) -> None:

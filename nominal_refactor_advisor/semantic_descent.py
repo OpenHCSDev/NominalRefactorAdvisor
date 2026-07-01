@@ -913,8 +913,14 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         ):
             return False
         if (
-            context.dataclass_descent.projection_materializes_any_dataclass_authority(
-                candidate.projection,
+            (
+                context.dataclass_descent.projection_constructs_unrelated_dataclass_authority(
+                    candidate.projection,
+                    candidate.authority,
+                )
+                or context.dataclass_descent.projection_materializes_any_dataclass_authority(
+                    candidate.projection,
+                )
             )
             and not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
@@ -934,6 +940,10 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
                 )
                 or context.dataclass_descent.projection_materializes_any_dataclass_authority(
                     candidate.projection,
+                )
+                or context.dataclass_descent.projection_constructs_unrelated_dataclass_authority(
+                    candidate.projection,
+                    candidate.authority,
                 )
             )
         )
@@ -2874,6 +2884,50 @@ class ProjectionClassSymbolLineageIndex:
 
 
 @dataclass(frozen=True)
+class DataclassAuthorityNameAffinity:
+    """Conservative name affinity between dataclass schema authorities."""
+
+    left: SemanticAuthority
+    right: SemanticAuthority
+
+    @cached_property
+    def left_tokens(self) -> frozenset[str]:
+        return self.specific_tokens(self.left.name)
+
+    @cached_property
+    def right_tokens(self) -> frozenset[str]:
+        return self.specific_tokens(self.right.name)
+
+    def has_affinity(self) -> bool:
+        return bool(self.left_tokens & self.right_tokens)
+
+    @classmethod
+    def specific_tokens(cls, raw_name: str) -> frozenset[str]:
+        return frozenset(
+            token
+            for token in NormalizeNameProjection.token_set(raw_name)
+            if token not in cls.weak_tokens()
+        )
+
+    @staticmethod
+    def weak_tokens() -> frozenset[str]:
+        return SemanticRoleIdentityToken.authority_affinity_weak_values() | frozenset(
+            (
+                "candidate",
+                "count",
+                "file",
+                "line",
+                "path",
+                "range",
+                "replacement",
+                "run",
+                "source",
+                "span",
+            )
+        )
+
+
+@dataclass(frozen=True)
 class ConstructionAuthorityResolver:
     """Resolve owner construction sites that descend to semantic authorities."""
 
@@ -3054,6 +3108,12 @@ class DataclassProjectionDescentAuthority:
     def projection_materializes_any_dataclass_authority_cache(self) -> dict[str, bool]:
         return {}
 
+    @cached_property
+    def constructed_dataclass_authorities_by_projection_id(
+        self,
+    ) -> dict[str, tuple[SemanticAuthority, ...]]:
+        return {}
+
     def projection_descends_to_authority(
         self,
         projection: PresentationProjection,
@@ -3082,6 +3142,45 @@ class DataclassProjectionDescentAuthority:
             cache[projection.projection_id] = (
                 self._projection_materializes_any_dataclass_authority_uncached(
                     projection,
+                )
+            )
+        return cache[projection.projection_id]
+
+    def projection_constructs_any_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+    ) -> bool:
+        return bool(self.constructed_dataclass_authorities(projection))
+
+    def projection_constructs_unrelated_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return any(
+            constructed_authority.authority_id == authority.authority_id
+            or not DataclassAuthorityNameAffinity(
+                constructed_authority,
+                authority,
+            ).has_affinity()
+            for constructed_authority in self.constructed_dataclass_authorities(
+                projection,
+            )
+        )
+
+    def constructed_dataclass_authorities(
+        self,
+        projection: PresentationProjection,
+    ) -> tuple[SemanticAuthority, ...]:
+        cache = self.constructed_dataclass_authorities_by_projection_id
+        if projection.projection_id not in cache:
+            cache[projection.projection_id] = tuple(
+                authority
+                for authority in self.dataclass_authorities
+                if self.projection_owner_constructs_dataclass_authority(
+                    projection,
+                    authority,
+                    self.fact_authority_index.facts_for_authority(authority.authority_id),
                 )
             )
         return cache[projection.projection_id]
