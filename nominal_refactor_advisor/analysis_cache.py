@@ -36,7 +36,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 12
+    version: int = 13
 
 
 analysis_cache_schema = AnalysisCacheSchema()

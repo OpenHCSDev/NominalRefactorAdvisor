@@ -1736,12 +1736,8 @@ class CodemodSimulationFindingProjection:
                 findings=list(self.findings),
             )
         detector_types = default_detector_types_for_analysis()
-        detector_selection = (
-            EvidenceLocalPartialDetectorSelection.from_detector_types(detector_types)
-            .touching_previous_findings(
-                self.findings,
-                changed_paths,
-            )
+        detector_selection = EvidenceLocalPartialDetectorSelection.from_detector_types(
+            detector_types
         )
         rerun_detector_types = detector_selection.rerun_detector_family
         reuse_authority = EvidenceLocalFindingReuseAuthority(rerun_detector_types)

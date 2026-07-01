@@ -6885,8 +6885,13 @@ def _returned_sequence_name(
     return None
 
 
-class NamedSubclassFilterCallRule(AstPredicateRule[str, ast.Call, str]):
+class SubclassFilterNameRule(AstPredicateRule[str, ast.AST, str]):
+    """Rule family for names used to filter subclass traversal members."""
+
+
+class NamedSubclassFilterCallRule(SubclassFilterNameRule):
     node_type = ast.Call
+    rule_order = 10
 
     def project_ast(self, node: ast.Call, current_name: str) -> str | None:
         if name_id(node.func) is None:
@@ -6896,8 +6901,9 @@ class NamedSubclassFilterCallRule(AstPredicateRule[str, ast.Call, str]):
         return name_id(node.func)
 
 
-class DictBackedSubclassFilterRule(AstPredicateRule[str, ast.Call, str]):
+class DictBackedSubclassFilterRule(SubclassFilterNameRule):
     node_type = ast.Call
+    rule_order = 20
 
     def project_ast(self, node: ast.Call, current_name: str) -> str | None:
         match = attribute_call_match(
@@ -6914,13 +6920,16 @@ class DictBackedSubclassFilterRule(AstPredicateRule[str, ast.Call, str]):
         return attribute_name if isinstance(attribute_name, str) else None
 
 
-SUBCLASS_FILTER_NAME_GRAMMAR = AstPredicateGrammar[str, str](
-    (NamedSubclassFilterCallRule(), DictBackedSubclassFilterRule())
-)
+SUBCLASS_FILTER_NAME_GRAMMAR = AstPredicateGrammar[str, str](SubclassFilterNameRule)
 
 
-class QueueExtendingSubclassLoopRule(AstPredicateRule[str, ast.While, str]):
+class SubclassLoopRule(AstPredicateRule[str, ast.AST, str]):
+    """Rule family for loop shapes that advance subclass traversal queues."""
+
+
+class QueueExtendingSubclassLoopRule(SubclassLoopRule):
     node_type = ast.While
+    rule_order = 10
 
     def project_ast(self, node: ast.While, queue_name: str) -> str | None:
         current_name: str | None = None
@@ -6942,9 +6951,7 @@ class QueueExtendingSubclassLoopRule(AstPredicateRule[str, ast.While, str]):
         return current_name if extends_queue else None
 
 
-SUBCLASS_LOOP_GRAMMAR = AstPredicateGrammar[str, str](
-    (QueueExtendingSubclassLoopRule(),)
-)
+SUBCLASS_LOOP_GRAMMAR = AstPredicateGrammar[str, str](SubclassLoopRule)
 
 
 class SubclassTraversalProfile:

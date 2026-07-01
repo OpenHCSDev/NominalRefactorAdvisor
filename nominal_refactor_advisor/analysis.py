@@ -444,28 +444,6 @@ class EvidenceLocalPartialDetectorSelection:
             )
         )
 
-    def touching_previous_findings(
-        self,
-        previous_findings: Iterable[RefactorFinding],
-        changed_paths: frozenset[str],
-    ) -> "EvidenceLocalPartialDetectorSelection":
-        touching_detector_ids = frozenset(
-            finding.detector_id
-            for finding in previous_findings
-            if EvidenceLocalFindingReuseAuthority.finding_touches_any_path(
-                finding,
-                changed_paths,
-            )
-        )
-        return type(self)(
-            tuple(
-                detector_type
-                for detector_type in self.rerun_detector_family
-                if issubclass(detector_type, SemanticDescentGraphIssueDetector)
-                or detector_type.effective_detector_id() in touching_detector_ids
-            )
-        )
-
 
 @dataclass(frozen=True)
 class DetectorPriorityIndex:
@@ -764,6 +742,17 @@ class SemanticDescentGraphAnalysisSource:
         if self.cached_graph is not None:
             return self.cached_graph.overlay_modules(tuple(modules))
         return self.cache_context.graph_for_modules(modules)
+
+    def with_latest_cached_graph(self) -> "SemanticDescentGraphAnalysisSource":
+        if self.cached_graph is not None:
+            return self
+        cached_graph = self.cache_context.latest_graph()
+        if cached_graph is None:
+            return self
+        return type(self)(
+            cached_graph=cached_graph,
+            cache_context=self.cache_context,
+        )
 
 
 @dataclass(frozen=True)
@@ -1497,13 +1486,8 @@ class FastCachedPathAnalysisAuthority:
             cache_result.cache_identity,
             cache_result.previous_cache_identity,
         )
-        partial_detector_selection = (
-            EvidenceLocalPartialDetectorSelection.from_detector_types(
-                default_detector_types_for_analysis()
-            ).touching_previous_findings(
-                cache_result.previous_findings,
-                changed_paths,
-            )
+        partial_detector_selection = EvidenceLocalPartialDetectorSelection.from_detector_types(
+            default_detector_types_for_analysis()
         )
         rerun_detector_types = partial_detector_selection.rerun_detector_family
         reuse_authority = EvidenceLocalFindingReuseAuthority(rerun_detector_types)
@@ -1560,7 +1544,9 @@ class FastCachedPathAnalysisAuthority:
             self._request.config,
             detector_types=detector_types,
             analysis_workers=self._request.analysis_workers,
-            semantic_descent_source=self._request.semantic_descent_source,
+            semantic_descent_source=(
+                self._request.semantic_descent_source.with_latest_cached_graph()
+            ),
             detector_type_minimum_auto_work_items=4,
         )
 

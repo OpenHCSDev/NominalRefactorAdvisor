@@ -10,6 +10,8 @@ from typing import Any, Callable, ClassVar, Generic, Sequence, TypeVar, cast, ov
 
 from metaclass_registry import AutoRegisterMeta
 
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+
 T = TypeVar("T")
 U = TypeVar("U")
 V = TypeVar("V")
@@ -20,12 +22,18 @@ AstB = TypeVar("AstB", bound=ast.AST)
 AstC = TypeVar("AstC", bound=ast.AST)
 OwnerT = TypeVar("OwnerT", bound=ast.AST)
 StepT = TypeVar("StepT", bound="RegisteredEffectStep")
+RuleT = TypeVar("RuleT", bound="AstPredicateRule[Any, ast.AST, Any]")
 
 
-class EffectStep(ABC, Generic[T, U]):
+class EffectStep(ABC, Generic[T, U], metaclass=AutoRegisterMeta):
     """Nominal stage in a typed semantic matching effect pipeline."""
 
-    step_id: str
+    __registry__: ClassVar[dict[str, type["EffectStep[Any, Any]"]]] = {}
+    __registry_key__ = "step_id"
+    __skip_if_no_key__ = True
+
+    step_id: ClassVar[str | None] = None
+    registration_order: ClassVar[int] = 0
 
     @abstractmethod
     def apply(self, value: T) -> U | None:
@@ -84,14 +92,8 @@ class FirstSuccessfulEffectStep(EffectStep[T, U]):
         return None
 
 
-class RegisteredEffectStep(EffectStep[Any, Any], metaclass=AutoRegisterMeta):
+class RegisteredEffectStep(EffectStep[Any, Any]):
     """Metaclass-registered effect step with declarative sequencing."""
-
-    __registry_key__ = "step_id"
-    __skip_if_no_key__ = True
-
-    step_id: ClassVar[str | None] = None
-    registration_order: ClassVar[int] = 0
 
 
 class GuardedEffectStep(RegisteredEffectStep, Generic[T, U]):
@@ -127,10 +129,18 @@ class AstTypedEffectStep(RegisteredEffectStep, Generic[AstT, U]):
         raise NotImplementedError
 
 
-class AstPredicateRule(ABC, Generic[ContextT, AstT, U]):
+class AstPredicateRule(ABC, Generic[ContextT, AstT, U], metaclass=AutoRegisterMeta):
     """Declarative AST matcher rule with shared type narrowing semantics."""
 
+    __registry__: ClassVar[
+        dict[str, type["AstPredicateRule[Any, ast.AST, Any]"]]
+    ] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     node_type: ClassVar[type[AstT]]
+    rule_order: ClassVar[int] = 0
 
     def apply(self, node: ast.AST, context: ContextT) -> U | None:
         narrowed = as_ast(node, self.node_type)
@@ -145,7 +155,11 @@ class AstPredicateRule(ABC, Generic[ContextT, AstT, U]):
 class AstPredicateGrammar(Generic[ContextT, U]):
     """Reusable traversal runner for nominal AST predicate rules."""
 
-    rules: Sequence[AstPredicateRule[ContextT, ast.AST, U]]
+    rule_base: type[AstPredicateRule[ContextT, ast.AST, U]]
+
+    @property
+    def rules(self) -> tuple[AstPredicateRule[ContextT, ast.AST, U], ...]:
+        return registered_ast_predicate_rules(self.rule_base)
 
     def matches_anywhere(self, root: ast.AST, context: ContextT) -> tuple[U, ...]:
         matches: list[U] = []
@@ -193,23 +207,28 @@ class EffectStepClassFamilyAuthority:
 
     @property
     def family_type_names(self) -> frozenset[str]:
-        return frozenset(
-            member_type.__name__ for member_type in self.family_types(self.root_type)
-        )
+        return frozenset(member_type.__name__ for member_type in self.family_types())
 
-    def family_types(
-        self, root_type: type[EffectStep[Any, Any]]
-    ) -> tuple[type[EffectStep[Any, Any]], ...]:
+    def family_types(self) -> tuple[type[EffectStep[Any, Any]], ...]:
         family_types: list[type[EffectStep[Any, Any]]] = []
-        pending = [root_type]
         seen: set[type[EffectStep[Any, Any]]] = set()
-        while pending:
-            member_type = pending.pop(0)
+
+        def append_member(member_type: type[EffectStep[Any, Any]]) -> None:
             if member_type in seen:
-                continue
+                return
             seen.add(member_type)
             family_types.append(member_type)
-            pending.extend(cast(Any, member_type.__subclasses__()))
+
+        registry = cast(
+            dict[str, type[EffectStep[Any, Any]]], self.root_type.__registry__
+        )
+        for registered_type in registry.values():
+            for ancestor in reversed(registered_type.__mro__):
+                if (
+                    isinstance(ancestor, type)
+                    and issubclass(ancestor, self.root_type)
+                ):
+                    append_member(cast(type[EffectStep[Any, Any]], ancestor))
         return tuple(family_types)
 
     def declares_member(
@@ -348,6 +367,23 @@ def registered_effect_steps(step_base: type[StepT]) -> tuple[StepT, ...]:
                 ),
                 key=lambda item: item.registration_order,
             )
+        )
+    )
+
+
+@lru_cache(maxsize=None)
+def registered_ast_predicate_rules(rule_base: type[RuleT]) -> tuple[RuleT, ...]:
+    registry = cast(dict[str, type[RuleT]], AstPredicateRule.__registry__)
+    return tuple(
+        rule_type()
+        for rule_type in sorted(
+            (
+                registered_type
+                for registered_type in registry.values()
+                if issubclass(registered_type, rule_base)
+                and registered_type is not rule_base
+            ),
+            key=lambda item: (item.rule_order, item.__name__),
         )
     )
 
