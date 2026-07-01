@@ -26063,6 +26063,9 @@ class AstTargetNodeIndex:
     source_by_path: Mapping[str, str]
 
     def nodes_by_target_identifier(self) -> dict[str, _TargetNode]:
+        return AstTargetNodeIndexCache.nodes_by_target_identifier(self)
+
+    def nodes_by_target_identifier_uncached(self) -> dict[str, _TargetNode]:
         return self.nodes_by_target_identifier_from_geometry(
             self.source_index,
             self.nodes_by_file_geometry(),
@@ -26102,6 +26105,56 @@ class AstTargetNodeIndex:
         self,
     ) -> AstTargetNodeGeometryIndex:
         return AstTargetNodeGeometryIndex.from_source_mapping(self.source_by_path)
+
+
+@dataclass(frozen=True)
+class AstTargetNodeIndexCacheKey:
+    """Object-identity key for one codemod source snapshot's target-node map."""
+
+    source_index_reference: SourceIndex = field(compare=False, repr=False)
+    source_mapping_reference: Mapping[str, str] = field(compare=False, repr=False)
+    source_index_identity: int
+    source_mapping_identity: int
+
+    @classmethod
+    def from_index(cls, index: AstTargetNodeIndex) -> "AstTargetNodeIndexCacheKey":
+        return cls(
+            source_index_reference=index.source_index,
+            source_mapping_reference=index.source_by_path,
+            source_index_identity=id(index.source_index),
+            source_mapping_identity=id(index.source_by_path),
+        )
+
+
+@dataclass
+class AstTargetNodeIndexCache:
+    """Bounded in-process cache for repeated codemod target-node resolution."""
+
+    max_entries: ClassVar[int] = 16
+    entries: ClassVar[dict[AstTargetNodeIndexCacheKey, dict[str, _TargetNode]]] = {}
+
+    @classmethod
+    def nodes_by_target_identifier(
+        cls,
+        index: AstTargetNodeIndex,
+    ) -> dict[str, _TargetNode]:
+        key = AstTargetNodeIndexCacheKey.from_index(index)
+        nodes = cls.entries.get(key)
+        if nodes is not None:
+            return dict(nodes)
+        nodes_by_target_identifier = index.nodes_by_target_identifier_uncached()
+        cls.store(key, nodes_by_target_identifier)
+        return dict(nodes_by_target_identifier)
+
+    @classmethod
+    def store(
+        cls,
+        key: AstTargetNodeIndexCacheKey,
+        nodes_by_target_identifier: dict[str, _TargetNode],
+    ) -> None:
+        if key not in cls.entries and len(cls.entries) >= cls.max_entries:
+            cls.entries.pop(next(iter(cls.entries)))
+        cls.entries[key] = nodes_by_target_identifier
 
 
 @dataclass(frozen=True)

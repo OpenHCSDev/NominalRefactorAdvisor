@@ -14,7 +14,15 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .analysis import analyze_detector_types, analyze_modules
+from .analysis import (
+    AnalysisPathScope,
+    EvidenceLocalFindingReuseAuthority,
+    EvidenceLocalPartialDetectorSelection,
+    SortedFindingsAuthority,
+    analyze_detector_types,
+    analyze_modules,
+    default_detector_types_for_analysis,
+)
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .codemod import (
     ArchitectureGuardSuite,
@@ -1363,6 +1371,7 @@ class CodemodProjectedFindingReport:
     after_scan: "CodemodFixpointScan"
     source_sequence: CodemodPlanSequence | None = None
     expected_removed_finding_ids: tuple[str, ...] = ()
+    scan_mode: str = "exact"
 
     @property
     def before_finding_count(self) -> int:
@@ -1420,6 +1429,7 @@ class CodemodProjectedFindingReport:
         projected_snapshot = self.after_scan.source_snapshot
         continuation_report = self.continuation_report
         return {
+            "scan_mode": self.scan_mode,
             "before_finding_count": self.before_finding_count,
             "after_finding_count": self.after_finding_count,
             "finding_delta": self.finding_delta.to_dict(),
@@ -1685,6 +1695,7 @@ class CodemodSimulationFindingProjection:
     simulation: CodemodSimulationReport
     config: DetectorConfig
     roots: tuple[Path, ...] = ()
+    report_roots: tuple[Path, ...] = ()
     source_sequence: CodemodPlanSequence | None = None
     expected_removed_finding_ids: tuple[str, ...] = ()
 
@@ -1694,10 +1705,104 @@ class CodemodSimulationFindingProjection:
             simulation=self.simulation,
             roots=self.roots,
         ).modules_after_projection()
+        if self.report_roots:
+            return self.evidence_local_projected_scan(projected_modules)
         return CodemodFixpointScan(
             modules=list(projected_modules),
             findings=analyze_modules(projected_modules, self.config),
         )
+
+    def evidence_local_projected_scan(
+        self,
+        projected_modules: tuple[ParsedModule, ...],
+    ) -> CodemodFixpointScan:
+        changed_paths = self.changed_paths
+        if not changed_paths:
+            return CodemodFixpointScan(
+                modules=list(projected_modules),
+                findings=list(self.findings),
+            )
+        detector_types = default_detector_types_for_analysis()
+        detector_selection = (
+            EvidenceLocalPartialDetectorSelection.from_detector_types(detector_types)
+            .touching_previous_findings(
+                self.findings,
+                changed_paths,
+            )
+        )
+        rerun_detector_types = detector_selection.rerun_detector_family
+        reuse_authority = EvidenceLocalFindingReuseAuthority(rerun_detector_types)
+        changed_findings = self.changed_findings(
+            projected_modules,
+            changed_paths,
+            detector_types=rerun_detector_types,
+        )
+        findings = self.report_scoped_findings(
+            SortedFindingsAuthority.sort(
+                [
+                    *EvidenceLocalFindingReuseAuthority.unchanged_findings(
+                        self.findings,
+                        changed_paths,
+                    ),
+                    *reuse_authority.retained_changed_findings(
+                        self.findings,
+                        changed_paths,
+                    ),
+                    *reuse_authority.changed_findings(
+                        changed_findings,
+                        changed_paths,
+                    ),
+                ],
+                detector_types=detector_types,
+            )
+        )
+        return CodemodFixpointScan(modules=list(projected_modules), findings=findings)
+
+    def changed_findings(
+        self,
+        projected_modules: tuple[ParsedModule, ...],
+        changed_paths: frozenset[str],
+        *,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> list[RefactorFinding]:
+        if not detector_types:
+            return []
+        changed_modules = self.changed_modules(projected_modules, changed_paths)
+        if not changed_modules:
+            return []
+        return analyze_detector_types(
+            changed_modules,
+            self.config,
+            detector_types=detector_types,
+            detector_type_minimum_auto_work_items=4,
+        )
+
+    def changed_modules(
+        self,
+        projected_modules: tuple[ParsedModule, ...],
+        changed_paths: frozenset[str],
+    ) -> list[ParsedModule]:
+        return [
+            module
+            for module in projected_modules
+            if Path(module.path).resolve().as_posix() in changed_paths
+        ]
+
+    @property
+    def changed_paths(self) -> frozenset[str]:
+        return frozenset(
+            Path(path).resolve().as_posix()
+            for path in self.simulation.rewritten_sources
+        )
+
+    def report_scoped_findings(
+        self,
+        findings: list[RefactorFinding],
+    ) -> list[RefactorFinding]:
+        return AnalysisPathScope(
+            analysis_roots=self.roots,
+            report_roots=self.report_roots,
+        ).filter_findings(findings)
 
     def report(self) -> CodemodProjectedFindingReport:
         after_scan = self.scan()
@@ -1706,6 +1811,9 @@ class CodemodSimulationFindingProjection:
             after_scan=after_scan,
             source_sequence=self.source_sequence,
             expected_removed_finding_ids=self.expected_removed_finding_ids,
+            scan_mode=(
+                "evidence_local_partial" if self.report_roots else "exact"
+            ),
         )
 
 

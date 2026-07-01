@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -24,6 +25,7 @@ from nominal_refactor_advisor.analysis import (
     analyze_modules,
     analyze_modules_with_cache,
     analyze_paths,
+    default_detector_types_for_analysis,
 )
 from nominal_refactor_advisor.ast_tools import (
     AccessorWrapperObservationFamily,
@@ -89,6 +91,8 @@ from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardViolationKind,
+    AstTargetNodeIndex,
+    AstTargetNodeIndexCache,
     AuthorityBoundaryPlan,
     AuthorityBoundaryRewrite,
     CodemodActionability,
@@ -822,6 +826,156 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
     rewritten = module_path.read_text()
     assert "detector_id" not in rewritten
     assert "return value + 1" in rewritten
+
+
+def test_recipe_operation_target_nodes_reuse_snapshot_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Detector:\n"
+        "    def normalize(self, value):\n"
+        "        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = (
+        RefactorRecipe(recipe_id="cached-target-node-resolution")
+        .insert_before_target(
+            "Detector",
+            "class DetectorAuthority:\n"
+            "    @staticmethod\n"
+            "    def normalize(value):\n"
+            "        return value\n\n",
+            source_path=module_path.as_posix(),
+        )
+        .replace_function_body(
+            "Detector.normalize",
+            "return DetectorAuthority.normalize(value)",
+            source_path=module_path.as_posix(),
+        )
+    )
+    original = AstTargetNodeIndex.nodes_by_target_identifier_uncached
+    uncached_call_count = 0
+
+    def counted_uncached(index: AstTargetNodeIndex) -> dict[str, object]:
+        nonlocal uncached_call_count
+        uncached_call_count += 1
+        return original(index)
+
+    AstTargetNodeIndexCache.entries.clear()
+    monkeypatch.setattr(
+        AstTargetNodeIndex,
+        "nodes_by_target_identifier_uncached",
+        counted_uncached,
+    )
+
+    recipe.source_rewrite_batch(source_index, source_by_path)
+
+    assert uncached_call_count == 1
+
+
+def test_projected_finding_report_uses_focused_partial_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nominal_refactor_advisor import codemod_workflow
+    from nominal_refactor_advisor.codemod_workflow import (
+        CodemodSimulationFindingProjection,
+    )
+
+    changed_path = tmp_path / "pkg/changed.py"
+    other_path = tmp_path / "pkg/other.py"
+    _write_module(
+        tmp_path,
+        "pkg/changed.py",
+        "class Changed:\n"
+        "    def value(self):\n"
+        "        return 1\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/other.py",
+        "class Other:\n"
+        "    def value(self):\n"
+        "        return 2\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    simulation = (
+        RefactorRecipe(recipe_id="project-changed-source")
+        .replace_function_body(
+            "Changed.value",
+            "return 3",
+            source_path=changed_path.as_posix(),
+        )
+        .simulate_snapshot(snapshot)
+        .simulation
+    )
+    per_module_detector_type = next(
+        detector_type
+        for detector_type in default_detector_types_for_analysis()
+        if detector_type.cache_granularity
+        is base_detectors.DetectorCacheGranularity.PER_MODULE
+    )
+    detector_id = per_module_detector_type.effective_detector_id()
+    assert detector_id is not None
+    before_finding = RefactorFinding(
+        detector_id=detector_id,
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Changed file finding",
+        summary="changed file before finding",
+        why="changed file requires a rerun",
+        capability_gap="focused projected scan",
+        relation_context="changed file evidence",
+        evidence=(SourceLocation(changed_path.as_posix(), 2, "Changed.value"),),
+    )
+    changed_after_finding = replace(
+        before_finding,
+        summary="changed file after finding",
+    )
+    other_after_finding = replace(
+        before_finding,
+        summary="other file after finding",
+        evidence=(SourceLocation(other_path.as_posix(), 2, "Other.value"),),
+    )
+    analyzed_module_paths: list[str] = []
+
+    def forbidden_full_analysis(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("focused projection should not run full analyze_modules")
+
+    def fake_analyze_detector_types(modules, config, *, detector_types, **kwargs):
+        del config, detector_types, kwargs
+        analyzed_module_paths.extend(module.path.as_posix() for module in modules)
+        return [changed_after_finding, other_after_finding]
+
+    monkeypatch.setattr(codemod_workflow, "analyze_modules", forbidden_full_analysis)
+    monkeypatch.setattr(
+        codemod_workflow,
+        "analyze_detector_types",
+        fake_analyze_detector_types,
+    )
+
+    report = CodemodSimulationFindingProjection(
+        modules=tuple(modules),
+        findings=(before_finding,),
+        simulation=simulation,
+        config=DetectorConfig(),
+        roots=(tmp_path,),
+        report_roots=(changed_path,),
+        expected_removed_finding_ids=(before_finding.stable_id,),
+    ).report()
+
+    assert report.scan_mode == "evidence_local_partial"
+    assert analyzed_module_paths == [changed_path.as_posix()]
+    assert tuple(finding.summary for finding in report.after_findings) == (
+        "changed file after finding",
+    )
 
 
 def test_replace_text_operation_allows_empty_json_replacement(

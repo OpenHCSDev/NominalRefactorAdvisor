@@ -3045,6 +3045,7 @@ class CodemodProjectedFindingReporter(ABC):
     findings: list[RefactorFinding]
     config: DetectorConfig
     roots: tuple[Path, ...]
+    report_roots: tuple[Path, ...]
 
     def optional_projected_finding_report(
         self,
@@ -3062,6 +3063,7 @@ class CodemodProjectedFindingReporter(ABC):
             simulation=simulation,
             config=self.config,
             roots=self.roots,
+            report_roots=self.report_roots,
             source_sequence=source_sequence,
             expected_removed_finding_ids=expected_removed_finding_ids,
         ).report()
@@ -4037,6 +4039,7 @@ class CodemodCliExecution(
     findings: list[RefactorFinding]
     config: DetectorConfig
     roots: tuple[Path, ...]
+    report_roots: tuple[Path, ...]
 
     @property
     def requested(self) -> bool:
@@ -4611,6 +4614,7 @@ class CodemodScanQueryCliCommand(
     modules: list[ParsedModule]
     config: DetectorConfig
     roots: tuple[Path, ...]
+    report_roots: tuple[Path, ...]
 
     @classmethod
     def run_first(
@@ -4622,6 +4626,7 @@ class CodemodScanQueryCliCommand(
         modules: list[ParsedModule],
         config: DetectorConfig,
         roots: tuple[Path, ...],
+        report_roots: tuple[Path, ...],
     ) -> int | None:
         for command_type in CliCommand.__registry__.values():
             if not issubclass(command_type, cls):
@@ -4634,6 +4639,7 @@ class CodemodScanQueryCliCommand(
                 modules,
                 config,
                 roots,
+                report_roots,
             )
             if command.requested:
                 return command.run()
@@ -5532,6 +5538,7 @@ def main() -> int:
             findings=[],
             config=config,
             roots=roots,
+            report_roots=path_scope.report_roots,
         ).run()
         if fast_codemod_execution_result is not None:
             return fast_codemod_execution_result
@@ -5824,6 +5831,7 @@ def main() -> int:
         modules,
         config,
         roots,
+        path_scope.report_roots,
     )
     if scan_query_result is not None:
         return scan_query_result
@@ -5880,6 +5888,7 @@ def main() -> int:
         findings=findings,
         config=config,
         roots=roots,
+        report_roots=path_scope.report_roots,
     ).run()
     if codemod_execution_result is not None:
         return codemod_execution_result
