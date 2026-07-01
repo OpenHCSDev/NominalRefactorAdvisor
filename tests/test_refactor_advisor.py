@@ -11568,6 +11568,63 @@ def test_repeated_builder_normalizes_positional_identity_fields(tmp_path: Path) 
     )
 
 
+def test_repeated_builder_synthesizes_single_source_constructor_projection(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RuntimePlan:\n"
+        "    pose_id: str\n"
+        "    score: float\n"
+        "    theorem_handles: tuple[str, ...]\n\n\n"
+        "def alpha(candidate):\n"
+        "    return RuntimePlan(\n"
+        "        pose_id=candidate.pose_id,\n"
+        "        score=candidate.score,\n"
+        "        theorem_handles=tuple(candidate.theorem_handles),\n"
+        "    )\n\n\n"
+        "def beta(entry):\n"
+        "    return RuntimePlan(\n"
+        "        pose_id=entry.pose_id,\n"
+        "        score=entry.score,\n"
+        "        theorem_handles=tuple(entry.theorem_handles),\n"
+        "    )\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert plan.records[0].status.value == "planned"
+    assert plan.document.recipes[0].target_shape == (
+        RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION
+    )
+    assert "def from_source(" in rewritten
+    assert "source: object" in rewritten
+    assert "theorem_handles=tuple(source.theorem_handles)" in rewritten
+    assert "RuntimePlan.from_source(source=candidate)" in rewritten
+    assert "RuntimePlan.from_source(source=entry)" in rewritten
+    simulation.document_simulation.apply()
+    assert not any(
+        finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
 def test_repeated_builder_ignores_declared_owned_builder_authority_calls(
     tmp_path: Path,
 ) -> None:

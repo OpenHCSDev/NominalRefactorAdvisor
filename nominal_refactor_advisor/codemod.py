@@ -40,7 +40,7 @@ from .assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
-from .ast_tools import BuiltinCallName, ParsedModule
+from .ast_tools import BuiltinCallName, ParsedModule, ROOT_NAME_PROJECTION
 from .candidate_collection_semantics import (
     AstStreamLoopComponents,
     NamedFunctionLoopComponents,
@@ -19064,6 +19064,13 @@ class RepeatedCallAuthorityParameter:
     annotation: str
 
 
+class RepeatedBuilderParameterProjection(StrEnum):
+    """How a generated builder parameter is recovered from a matched call."""
+
+    VALUE = "value"
+    ROOT_NAME = "root_name"
+
+
 RepeatedAuthorityParameterT = TypeVar(
     "RepeatedAuthorityParameterT",
     bound=RepeatedCallAuthorityParameter,
@@ -19075,6 +19082,9 @@ class RepeatedBuilderAuthorityParameter(RepeatedCallAuthorityParameter):
     """One generated builder-authority parameter projected from call sites."""
 
     source_field_name: str
+    value_projection: RepeatedBuilderParameterProjection = (
+        RepeatedBuilderParameterProjection.VALUE
+    )
     unwrap_single_tuple: bool = False
 
 
@@ -19110,6 +19120,25 @@ class RepeatedBuilderAuthorityMethod(
     """Generated builder-authority method signature and constructor mapping."""
 
     constructor_arguments: tuple[RepeatedBuilderConstructorArgument, ...]
+    target_shape: RefactorRecipeTargetShape | None = None
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderSourceProjectionTemplate:
+    """One constructor call normalized by replacing its source root with `source`."""
+
+    root_name: str
+    normalized_value_fingerprints: tuple[str, ...]
+    value_sources_by_field: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderInvariantFieldPlan:
+    """One field slot in an invariant-selector builder authority."""
+
+    constructor_argument: RepeatedBuilderConstructorArgument
+    parameter: RepeatedBuilderAuthorityParameter | None = None
+    constant_value: ast.AST | None = None
 
 
 @dataclass(frozen=True)
@@ -19117,11 +19146,13 @@ class RepeatedAuthorityRecipeParts:
     """Executable rewrite sequence for one repeated-call authority extraction."""
 
     rewrite_steps: tuple[RepeatedAuthorityTargetRewrite, ...]
+    target_shape: RefactorRecipeTargetShape | None = None
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
             reason=self.recipe_reason,
+            target_shape=self.target_shape,
         )
         for rewrite_step in self.rewrite_steps:
             recipe = recipe.replace_target(
@@ -19331,6 +19362,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                     ),
                     *call_rewrites,
                 ),
+                target_shape=method.target_shape,
             ),
             "",
         )
@@ -19863,7 +19895,11 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         field_annotations: tuple[tuple[str, str], ...],
         matching_calls: tuple[ast.Call, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
-        return cls.role_authority_method_or_none(
+        return cls.source_projection_authority_method_or_none(
+            metrics,
+            field_annotations,
+            matching_calls,
+        ) or cls.role_authority_method_or_none(
             metrics,
             field_annotations,
         ) or cls.invariant_selector_authority_method_or_none(
@@ -19871,6 +19907,204 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
             field_annotations,
             matching_calls,
         )
+
+    @classmethod
+    def source_projection_authority_method_or_none(
+        cls,
+        metrics: MappingMetrics,
+        field_annotations: tuple[tuple[str, str], ...],
+        matching_calls: tuple[ast.Call, ...],
+    ) -> RepeatedBuilderAuthorityMethod | None:
+        field_names = tuple(field_name for field_name, _annotation in field_annotations)
+        return (
+            Maybe.of(matching_calls)
+            .filter(bool)
+            .project(lambda calls: cls.source_projection_templates(calls, field_names))
+            .filter(cls.source_projection_templates_share_shape)
+            .combine(
+                lambda templates: cls.source_projection_anchor_field_name(
+                    matching_calls,
+                    field_names,
+                ),
+                lambda templates, source_field_name: cls.source_projection_authority_method(
+                    metrics,
+                    templates,
+                    source_field_name,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    @classmethod
+    def source_projection_authority_method(
+        cls,
+        metrics: MappingMetrics,
+        templates: tuple[RepeatedBuilderSourceProjectionTemplate, ...],
+        source_field_name: str,
+    ) -> RepeatedBuilderAuthorityMethod:
+        parameter_name = cls.source_projection_parameter_name(metrics)
+        return RepeatedBuilderAuthorityMethod(
+            method_name=f"from_{parameter_name}",
+            parameters=(
+                RepeatedBuilderAuthorityParameter(
+                    name=parameter_name,
+                    annotation="object",
+                    source_field_name=source_field_name,
+                    value_projection=RepeatedBuilderParameterProjection.ROOT_NAME,
+                ),
+            ),
+            constructor_arguments=tuple(
+                RepeatedBuilderConstructorArgument(
+                    field_name=field_name,
+                    value_source=value_source,
+                )
+                for field_name, value_source in templates[0].value_sources_by_field
+            ),
+            target_shape=RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
+        )
+
+    @classmethod
+    def source_projection_templates(
+        cls,
+        calls: tuple[ast.Call, ...],
+        field_names: tuple[str, ...],
+    ) -> tuple[RepeatedBuilderSourceProjectionTemplate, ...] | None:
+        templates = tuple(
+            cls.source_projection_template_for_call(call, field_names) for call in calls
+        )
+        if any(template is None for template in templates):
+            return None
+        return tuple(template for template in templates if template is not None)
+
+    @staticmethod
+    def source_projection_templates_share_shape(
+        templates: tuple[RepeatedBuilderSourceProjectionTemplate, ...],
+    ) -> bool:
+        template_fingerprints = tuple(
+            template.normalized_value_fingerprints for template in templates
+        )
+        return len(set(template_fingerprints)) == 1
+
+    @classmethod
+    def source_projection_template_for_call(
+        cls,
+        call: ast.Call,
+        field_names: tuple[str, ...],
+    ) -> RepeatedBuilderSourceProjectionTemplate | None:
+        return (
+            Maybe.of(cls.call_source_root_name(call))
+            .combine(
+                lambda root_name: cls.call_keyword_values_by_field(call, field_names),
+                lambda root_name, values_by_field: cls.source_projection_template(
+                    root_name,
+                    field_names,
+                    values_by_field,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    @classmethod
+    def source_projection_template(
+        cls,
+        root_name: str,
+        field_names: tuple[str, ...],
+        values_by_field: Mapping[str, ast.expr],
+    ) -> RepeatedBuilderSourceProjectionTemplate:
+        normalized_values = tuple(
+            cls.source_value_with_root_name(value, root_name, "source")
+            for value in values_by_field.values()
+        )
+        return RepeatedBuilderSourceProjectionTemplate(
+            root_name=root_name,
+            normalized_value_fingerprints=tuple(
+                ast.dump(value, include_attributes=False) for value in normalized_values
+            ),
+            value_sources_by_field=tuple(
+                (
+                    field_name,
+                    ast.unparse(
+                        cls.source_value_with_root_name(
+                            values_by_field[field_name],
+                            root_name,
+                            "source",
+                        )
+                    ),
+                )
+                for field_name in field_names
+            ),
+        )
+
+    @staticmethod
+    def call_source_root_name(call: ast.Call) -> str | None:
+        roots: set[str] = set()
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                continue
+            roots.update(ROOT_NAME_PROJECTION.root_names(keyword.value))
+        if len(roots) != 1:
+            return None
+        return next(iter(roots))
+
+    @staticmethod
+    def call_keyword_values_by_field(
+        call: ast.Call,
+        field_names: tuple[str, ...],
+    ) -> dict[str, ast.expr] | None:
+        values_by_field = {
+            keyword.arg: keyword.value
+            for keyword in call.keywords
+            if keyword.arg is not None
+        }
+        if frozenset(values_by_field) != frozenset(field_names):
+            return None
+        return {field_name: values_by_field[field_name] for field_name in field_names}
+
+    @classmethod
+    def source_projection_anchor_field_name(
+        cls,
+        matching_calls: tuple[ast.Call, ...],
+        field_names: tuple[str, ...],
+    ) -> str | None:
+        values_by_call = tuple(
+            cls.call_keyword_values_by_field(call, field_names) for call in matching_calls
+        )
+        if any(values_by_field is None for values_by_field in values_by_call):
+            return None
+        for field_name in field_names:
+            values = tuple(
+                values_by_field[field_name]
+                for values_by_field in values_by_call
+                if values_by_field is not None
+            )
+            if all(len(ROOT_NAME_PROJECTION.root_names(value)) == 1 for value in values):
+                return field_name
+        return None
+
+    @staticmethod
+    def source_projection_parameter_name(metrics: MappingMetrics) -> str:
+        del metrics
+        return "source"
+
+    @staticmethod
+    def source_value_with_root_name(
+        value: ast.expr,
+        old_root_name: str,
+        new_root_name: str,
+    ) -> ast.expr:
+        class RootNameRewriter(ast.NodeTransformer):
+            def visit_Name(self, node: ast.Name) -> ast.AST:
+                if node.id == old_root_name:
+                    return ast.copy_location(
+                        ast.Name(id=new_root_name, ctx=copy.deepcopy(node.ctx)),
+                        node,
+                    )
+                return node
+
+        rewritten = RootNameRewriter().visit(copy.deepcopy(value))
+        if not isinstance(rewritten, ast.expr):
+            raise TypeError(f"Expected expression rewrite, got {type(rewritten)!r}")
+        return ast.fix_missing_locations(rewritten)
 
     @classmethod
     def role_authority_method_or_none(
@@ -19910,10 +20144,34 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         field_annotations: tuple[tuple[str, str], ...],
         matching_calls: tuple[ast.Call, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
-        if not matching_calls:
-            return None
         field_names = metrics.plan_field_names
         annotation_by_field = dict(field_annotations)
+        return (
+            Maybe.of(matching_calls)
+            .filter(bool)
+            .project(
+                lambda calls: cls.invariant_selector_field_plans(
+                    field_names,
+                    annotation_by_field,
+                    calls,
+                )
+            )
+            .filter(cls.invariant_selector_plan_has_constant_and_parameter)
+            .filter(cls.invariant_selector_plan_has_unique_parameters)
+            .combine(
+                cls.invariant_selector_method_name_for_plans,
+                cls.invariant_selector_authority_method_from_plans,
+            )
+            .unwrap_or_none()
+        )
+
+    @classmethod
+    def invariant_selector_field_plans(
+        cls,
+        field_names: tuple[str, ...],
+        annotation_by_field: Mapping[str, str],
+        matching_calls: tuple[ast.Call, ...],
+    ) -> tuple[RepeatedBuilderInvariantFieldPlan, ...] | None:
         values_by_field = {
             field_name: tuple(
                 keyword.value
@@ -19923,53 +20181,126 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
             )
             for field_name in field_names
         }
-        constructor_arguments: list[RepeatedBuilderConstructorArgument] = []
+        plans = tuple(
+            cls.invariant_selector_field_plan(
+                field_name,
+                annotation_by_field,
+                values_by_field[field_name],
+                call_count=len(matching_calls),
+            )
+            for field_name in field_names
+        )
+        if any(plan is None for plan in plans):
+            return None
+        return tuple(plan for plan in plans if plan is not None)
+
+    @classmethod
+    def invariant_selector_field_plan(
+        cls,
+        field_name: str,
+        annotation_by_field: Mapping[str, str],
+        values: tuple[ast.AST, ...],
+        *,
+        call_count: int,
+    ) -> RepeatedBuilderInvariantFieldPlan | None:
+        return (
+            Maybe.of(values)
+            .filter(lambda field_values: len(field_values) == call_count)
+            .project(lambda field_values: cls.constant_invariant_field_plan(field_name, field_values))
+            .unwrap_or_none()
+        ) or (
+            Maybe.of(values)
+            .filter(lambda field_values: len(field_values) == call_count)
+            .project(
+                lambda field_values: cls.parameter_invariant_field_plan(
+                    field_name,
+                    annotation_by_field,
+                    field_values,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    @classmethod
+    def constant_invariant_field_plan(
+        cls,
+        field_name: str,
+        values: tuple[ast.AST, ...],
+    ) -> RepeatedBuilderInvariantFieldPlan | None:
+        value_sources = tuple(ast.unparse(value) for value in values)
+        if len(set(value_sources)) != 1 or not cls.authority_constant_value(values[0]):
+            return None
+        return RepeatedBuilderInvariantFieldPlan(
+            constructor_argument=RepeatedBuilderConstructorArgument(
+                field_name=field_name,
+                value_source=value_sources[0],
+            ),
+            constant_value=values[0],
+        )
+
+    @classmethod
+    def parameter_invariant_field_plan(
+        cls,
+        field_name: str,
+        annotation_by_field: Mapping[str, str],
+        values: tuple[ast.AST, ...],
+    ) -> RepeatedBuilderInvariantFieldPlan | None:
+        tuple_items = tuple(cls.single_tuple_item(value) for value in values)
+        if any(item is None for item in tuple_items):
+            return None
+        parameter_name = cls.singular_field_name(field_name)
+        return RepeatedBuilderInvariantFieldPlan(
+            constructor_argument=RepeatedBuilderConstructorArgument(
+                field_name=field_name,
+                value_source=f"({parameter_name},)",
+            ),
+            parameter=RepeatedBuilderAuthorityParameter(
+                name=parameter_name,
+                annotation=cls.scalar_annotation(annotation_by_field[field_name]),
+                source_field_name=field_name,
+                unwrap_single_tuple=True,
+            ),
+        )
+
+    @staticmethod
+    def invariant_selector_plan_has_constant_and_parameter(
+        plans: tuple[RepeatedBuilderInvariantFieldPlan, ...],
+    ) -> bool:
+        return any(plan.constant_value is not None for plan in plans) and any(
+            plan.parameter is not None for plan in plans
+        )
+
+    @staticmethod
+    def invariant_selector_plan_has_unique_parameters(
+        plans: tuple[RepeatedBuilderInvariantFieldPlan, ...],
+    ) -> bool:
+        parameter_names = tuple(
+            plan.parameter.name for plan in plans if plan.parameter is not None
+        )
+        return len(set(parameter_names)) == len(parameter_names)
+
+    @classmethod
+    def invariant_selector_method_name_for_plans(
+        cls,
+        plans: tuple[RepeatedBuilderInvariantFieldPlan, ...],
+    ) -> str | None:
+        return cls.invariant_selector_method_name(
+            plan.constant_value for plan in plans if plan.constant_value is not None
+        )
+
+    @staticmethod
+    def invariant_selector_authority_method_from_plans(
+        plans: tuple[RepeatedBuilderInvariantFieldPlan, ...],
+        method_name: str,
+    ) -> RepeatedBuilderAuthorityMethod:
         parameters: list[RepeatedBuilderAuthorityParameter] = []
-        constant_values: list[ast.AST] = []
-        for field_name in field_names:
-            values = values_by_field[field_name]
-            if len(values) != len(matching_calls):
-                return None
-            value_sources = tuple(ast.unparse(value) for value in values)
-            if len(set(value_sources)) == 1 and cls.authority_constant_value(values[0]):
-                constant_values.append(values[0])
-                constructor_arguments.append(
-                    RepeatedBuilderConstructorArgument(
-                        field_name=field_name,
-                        value_source=value_sources[0],
-                    )
-                )
-                continue
-            tuple_items = tuple(cls.single_tuple_item(value) for value in values)
-            if any(item is None for item in tuple_items):
-                return None
-            parameter_name = cls.singular_field_name(field_name)
-            parameters.append(
-                RepeatedBuilderAuthorityParameter(
-                    name=parameter_name,
-                    annotation=cls.scalar_annotation(annotation_by_field[field_name]),
-                    source_field_name=field_name,
-                    unwrap_single_tuple=True,
-                )
-            )
-            constructor_arguments.append(
-                RepeatedBuilderConstructorArgument(
-                    field_name=field_name,
-                    value_source=f"({parameter_name},)",
-                )
-            )
-        parameter_names = tuple(parameter.name for parameter in parameters)
-        if len(set(parameter_names)) != len(parameter_names):
-            return None
-        if not constant_values or not parameters:
-            return None
-        method_name = cls.invariant_selector_method_name(constant_values)
-        if method_name is None:
-            return None
+        for plan in plans:
+            if plan.parameter is not None:
+                parameters.append(plan.parameter)
         return RepeatedBuilderAuthorityMethod(
             method_name=method_name,
             parameters=tuple(parameters),
-            constructor_arguments=tuple(constructor_arguments),
+            constructor_arguments=tuple(plan.constructor_argument for plan in plans),
         )
 
     @classmethod
@@ -20286,6 +20617,11 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
             value = cls.single_tuple_item(value)
             if value is None:
                 return None
+        if parameter.value_projection is RepeatedBuilderParameterProjection.ROOT_NAME:
+            roots = ROOT_NAME_PROJECTION.root_names(value)
+            if len(roots) != 1:
+                return None
+            return next(iter(roots))
         return ast.get_source_segment(source, value)
 
     @staticmethod
