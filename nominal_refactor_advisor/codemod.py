@@ -25540,6 +25540,21 @@ class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
         if len(action_keys) != 1:
             return None
         action_key = action_keys[0]
+        target_digest = self.function_target_digest(action_key, context)
+        if target_digest is None:
+            return None
+        node = context.ast_target_nodes_by_id[target_digest.target_id]
+        if not isinstance(node, ast.FunctionDef):
+            return None
+        if self.extraction_for(finding, node) is None:
+            return None
+        return target_digest, node
+
+    @staticmethod
+    def function_target_digest(
+        action_key: "FindingRecipeActionKey",
+        context: CodemodSelectorContext,
+    ) -> AstTargetDigest | None:
         target_ids = SourceIndexTargetSelector(
             node_kinds=(AstTargetNodeKind.FUNCTION,),
             file_paths=(action_key.file_path,),
@@ -25547,13 +25562,20 @@ class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
         ).target_ids(context)
         if len(target_ids) != 1:
             return None
-        target_digest = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id[target_digest.target_id]
-        if not isinstance(node, ast.FunctionDef):
+        return context.source_index.target_by_id[target_ids[0]]
+
+    @staticmethod
+    def function_or_method_target_digest(
+        action_key: "FindingRecipeActionKey",
+        context: CodemodSelectorContext,
+    ) -> AstTargetDigest | None:
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            action_key.file_path,
+            action_key.subject_name,
+        ).target_ids(context)
+        if len(target_ids) != 1:
             return None
-        if self.extraction_for(finding, node) is None:
-            return None
-        return target_digest, node
+        return context.source_index.target_by_id[target_ids[0]]
 
     def extraction_for(
         self,
@@ -25609,6 +25631,45 @@ class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
             ((evidence.file_path, EvidenceSymbol(evidence.symbol).subject),),
         )
 
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        action_keys = self.action_keys_for_finding(finding)
+        if not action_keys:
+            return "literal dispatch finding lacks a source action key"
+        if len(action_keys) != 1:
+            return "literal dispatch synthesis requires exactly one source action key"
+        if context is None:
+            return "literal dispatch synthesis requires a source selector context"
+        action_key = action_keys[0]
+        exact_target = self.function_target_digest(action_key, context)
+        if exact_target is not None:
+            node = context.ast_target_nodes_by_id[exact_target.target_id]
+            if isinstance(node, ast.FunctionDef):
+                extraction = self.extraction_for(finding, node)
+                if extraction is None:
+                    return (
+                        f"{exact_target.qualname!r} is not a mechanically supported "
+                        "literal-return dispatch; extract the closed-axis authority "
+                        "with the replacement scaffold before simulating."
+                    )
+            return "literal dispatch target is not an AST function"
+        target = self.function_or_method_target_digest(action_key, context)
+        if target is None:
+            return (
+                f"no function or method target matched dispatch action "
+                f"{action_key.subject_name!r}"
+            )
+        if target.node_kind is AstTargetNodeKind.METHOD:
+            return (
+                "dispatch_to_polymorphism currently rewrites module functions; "
+                f"method target {target.qualname!r} requires extracting or owning "
+                "the closed-axis authority at the class boundary first."
+            )
+        return f"dispatch target {target.qualname!r} is not a module function"
+
 
 class StringDispatchFindingRecipeSynthesizer(LiteralDispatchFindingRecipeSynthesizer):
     """Build recipes for closed string-literal dispatch functions."""
@@ -25630,6 +25691,10 @@ class InlineLiteralDispatchFindingRecipeSynthesizer(
     """Build recipes for inline literal dispatch functions."""
 
     detector_id = INLINE_LITERAL_DISPATCH_FINDING_ID
+
+
+class DispatchMetricsFindingRecipeSynthesizer(LiteralDispatchFindingRecipeSynthesizer):
+    """Fallback recipe bridge for findings that already expose dispatch metrics."""
 
 
 class RuntimeSemanticBranchChainFindingRecipeSynthesizer(
@@ -26232,9 +26297,18 @@ class FindingRecipePlanBuilder:
         )
         if synthesizer_type is not None:
             return synthesizer_type()
+        if self.finding_has_dispatch_recipe_shape(finding):
+            return DispatchMetricsFindingRecipeSynthesizer()
         if self.finding_has_semantic_mirror_role(finding):
             return SemanticMirrorRegistrationFindingRecipeSynthesizer()
         return None
+
+    @staticmethod
+    def finding_has_dispatch_recipe_shape(finding: RefactorFinding) -> bool:
+        return (
+            finding.metrics.plan_dispatch_axis is not None
+            and bool(finding.metrics.plan_literal_cases)
+        )
 
     @staticmethod
     def finding_has_semantic_mirror_role(finding: RefactorFinding) -> bool:

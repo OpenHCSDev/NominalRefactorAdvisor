@@ -7959,6 +7959,82 @@ def test_detects_single_literal_discriminator_branches(tmp_path: Path) -> None:
     )
 
 
+def test_literal_discriminator_branch_synthesizes_function_dispatch_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/parser.py"
+    _write_module(
+        tmp_path,
+        "pkg/parser.py",
+        '\ndef scalar_type(kind, payload):\n    if kind == "opaque":\n        return None\n    raise ValueError(kind)\n',
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "literal_discriminator_branch"
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path=source_by_path,
+    )
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("literal_discriminator_branch",),
+        selector_context=context,
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert plan.expected_removed_finding_count == 1
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    assert operation["operation"] == "dispatch_to_polymorphism"
+    assert operation["dispatch_axis_expression"] == "kind"
+    assert operation["literal_cases"] == ("'opaque'",)
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+
+
+def test_literal_discriminator_method_branch_reports_class_boundary_recipe_gap(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/parser.py"
+    _write_module(
+        tmp_path,
+        "pkg/parser.py",
+        '\nclass PortTypeAuthority:\n    def scalar_type(self, payload, kind):\n        if kind == "opaque":\n            return None\n        return payload["scalar_type"]\n',
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "literal_discriminator_branch"
+    )
+    source_index = build_source_index(modules, findings)
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+    )
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("literal_discriminator_branch",),
+        selector_context=context,
+    )
+    record = plan.report.records[0]
+
+    assert plan.expected_removed_finding_count == 0
+    assert record.status.value == "rejected_by_safety_check"
+    assert "method target" in record.reason
+    assert "class boundary" in record.reason
+
+
 def test_detects_string_keyed_formula_subclass_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
