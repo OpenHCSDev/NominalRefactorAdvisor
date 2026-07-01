@@ -17555,6 +17555,12 @@ class RepeatedCallAuthorityParameter:
     annotation: str
 
 
+RepeatedAuthorityParameterT = TypeVar(
+    "RepeatedAuthorityParameterT",
+    bound=RepeatedCallAuthorityParameter,
+)
+
+
 @dataclass(frozen=True)
 class RepeatedBuilderAuthorityParameter(RepeatedCallAuthorityParameter):
     """One generated builder-authority parameter projected from call sites."""
@@ -17572,11 +17578,28 @@ class RepeatedBuilderConstructorArgument:
 
 
 @dataclass(frozen=True)
-class RepeatedBuilderAuthorityMethod:
-    """Generated builder-authority method signature and constructor mapping."""
+class RepeatedAuthorityMethodName:
+    """Shared method identity for generated repeated-call authorities."""
 
     method_name: str
-    parameters: tuple[RepeatedBuilderAuthorityParameter, ...]
+
+
+@dataclass(frozen=True)
+class RepeatedAuthorityMethodSpec(
+    RepeatedAuthorityMethodName,
+    Generic[RepeatedAuthorityParameterT],
+):
+    """Shared method signature for generated repeated-call authorities."""
+
+    parameters: tuple[RepeatedAuthorityParameterT, ...]
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderAuthorityMethod(
+    RepeatedAuthorityMethodSpec[RepeatedBuilderAuthorityParameter]
+):
+    """Generated builder-authority method signature and constructor mapping."""
+
     constructor_arguments: tuple[RepeatedBuilderConstructorArgument, ...]
 
 
@@ -17626,36 +17649,31 @@ class RepeatedMethodCallAuthorityRecipeParts(RepeatedAuthorityRecipeParts):
 
 
 @dataclass(frozen=True)
-class RepeatedMethodCallAuthorityIdentity:
-    """Shared identity for generated repeated method-call authority objects."""
-
-    authority_method_name: str
-
-
-@dataclass(frozen=True)
-class RepeatedMethodCallAuthorityCallSpec(RepeatedMethodCallAuthorityIdentity):
+class RepeatedMethodCallAuthorityCallSpec(RepeatedAuthorityMethodName):
     """Generated call expression for one owner method-call authority."""
 
     argument_sources: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class RepeatedMethodCallAuthoritySourceSpec(RepeatedMethodCallAuthorityIdentity):
+class RepeatedMethodCallAuthoritySourceSpec(
+    RepeatedAuthorityMethodSpec[RepeatedMethodCallAuthorityParameter]
+):
     """Generated helper method source for one method-call authority."""
 
     callee_name: str
-    parameters: tuple[RepeatedMethodCallAuthorityParameter, ...]
     return_annotation: str
 
 
 @dataclass(frozen=True)
-class RepeatedMethodCallAuthorityExtraction(RepeatedMethodCallAuthorityIdentity):
+class RepeatedMethodCallAuthorityExtraction(
+    RepeatedAuthorityMethodSpec[RepeatedMethodCallAuthorityParameter]
+):
     """Resolved owner/callee context for one method-call authority extraction."""
 
     class_target: AstTargetDigest
     class_node: ast.ClassDef
     callee_node: ast.FunctionDef | ast.AsyncFunctionDef
-    parameters: tuple[RepeatedMethodCallAuthorityParameter, ...]
     calls: tuple[ast.Call, ...]
 
 
@@ -17862,7 +17880,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
             source,
             extraction.calls,
             call_spec=RepeatedMethodCallAuthorityCallSpec(
-                authority_method_name=extraction.authority_method_name,
+                method_name=extraction.method_name,
                 argument_sources=(),
             ),
             parameters=extraction.parameters,
@@ -17883,7 +17901,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
             extraction.callee_node,
             source_spec=RepeatedMethodCallAuthoritySourceSpec(
                 callee_name=callee_name,
-                authority_method_name=extraction.authority_method_name,
+                method_name=extraction.method_name,
                 parameters=extraction.parameters,
                 return_annotation=ast.unparse(extraction.callee_node.returns),
             ),
@@ -17965,7 +17983,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                 class_target=class_target,
                 class_node=class_node,
                 callee_node=callee_node,
-                authority_method_name=method_name,
+                method_name=method_name,
                 parameters=parameters,
                 calls=calls,
             ),
@@ -18152,7 +18170,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         )
         arguments_source = "\n".join(argument_lines)
         return (
-            f"self.{spec.authority_method_name}(\n"
+            f"self.{spec.method_name}(\n"
             f"{arguments_source}\n"
             f"{closing_indent})"
         )
@@ -18230,7 +18248,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         )
         return (
             "    def "
-            f"{spec.authority_method_name}(\n"
+            f"{spec.method_name}(\n"
             "        self,\n"
             f"{''.join(parameter_lines)}"
             f"    ) -> {spec.return_annotation}:\n"
