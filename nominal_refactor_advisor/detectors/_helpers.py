@@ -30,6 +30,7 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..semantic_identity import SemanticRoleIdentityToken
+from ..semantic_match import effect_step_class_family_authority
 from ..impact_ranking import RefactorImpactKey
 
 import io
@@ -15398,17 +15399,6 @@ def _derived_metric_count_boilerplate_candidates(
     )
 
 
-_EFFECT_STEP_BASE_NAMES = frozenset(
-    {
-        "AstTypedEffectStep",
-        "EffectStep",
-        "GuardedEffectStep",
-        "RegisteredEffectStep",
-        "SingleCompareEffectStep",
-    }
-)
-
-
 @dataclass(frozen=True)
 class _EffectStepLeakPolicy:
     method_name: str
@@ -15477,9 +15467,9 @@ _EFFECT_STEP_LEAK_POLICY_BY_METHOD = {
 
 
 def _looks_like_effect_step_class(node: ast.ClassDef) -> bool:
-    return node.name.endswith("Step") or bool(
-        set(HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node))
-        & _EFFECT_STEP_BASE_NAMES
+    return effect_step_class_family_authority.declares_member(
+        class_name=node.name,
+        declared_base_names=HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node),
     )
 
 

@@ -185,6 +185,48 @@ class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
 
 
 @dataclass(frozen=True)
+class EffectStepClassFamilyAuthority:
+    """Own runtime and AST-declaration identity for EffectStep roots."""
+
+    root_type: type[EffectStep[Any, Any]]
+    suffix: str = "Step"
+
+    @property
+    def family_type_names(self) -> frozenset[str]:
+        return frozenset(
+            member_type.__name__ for member_type in self.family_types(self.root_type)
+        )
+
+    def family_types(
+        self, root_type: type[EffectStep[Any, Any]]
+    ) -> tuple[type[EffectStep[Any, Any]], ...]:
+        family_types: list[type[EffectStep[Any, Any]]] = []
+        pending = [root_type]
+        seen: set[type[EffectStep[Any, Any]]] = set()
+        while pending:
+            member_type = pending.pop(0)
+            if member_type in seen:
+                continue
+            seen.add(member_type)
+            family_types.append(member_type)
+            pending.extend(cast(Any, member_type.__subclasses__()))
+        return tuple(family_types)
+
+    def declares_member(
+        self,
+        *,
+        class_name: str,
+        declared_base_names: Sequence[str],
+    ) -> bool:
+        return class_name.endswith(self.suffix) or bool(
+            self.family_type_names.intersection(declared_base_names)
+        )
+
+
+effect_step_class_family_authority = EffectStepClassFamilyAuthority(EffectStep)
+
+
+@dataclass(frozen=True)
 class AttributeCallMatch(Generic[OwnerT]):
     call: ast.Call
     attribute: ast.Attribute
