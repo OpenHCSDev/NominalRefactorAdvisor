@@ -11688,6 +11688,12 @@ class SemanticDictBagDetector(PerModuleIssueDetector):
                     relation_context=f"same semantic field family is carried through a {candidate.context_kind.replace('_', ' ')} instead of a nominal record",
                     scaffold=f"{recommendation.rationale}\nBase: {recommendation.base_class_name}\nFields: {key_list}\n\n{recommendation.scaffold}",
                     certification=recommendation.certification,
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=1,
+                        field_names=candidate.key_names,
+                        mapping_name=f"semantic_dict_bag_{candidate.context_kind}",
+                        source_name=recommendation.class_name,
+                    ),
                 )
             )
         return findings

@@ -22540,6 +22540,62 @@ def test_return_dict_record_scaffold_uses_local_annotations(tmp_path: Path) -> N
     assert "skipped_files: List[Path]" in (finding.scaffold or "")
 
 
+def test_semantic_dict_bag_return_record_synthesizes_nominal_record(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom pathlib import Path\nfrom typing import List\n\n\n"
+        "def scaffold_paper():\n"
+        "    created_dirs: List[Path] = []\n"
+        "    created_files: List[Path] = []\n"
+        "    skipped_files: List[Path] = []\n"
+        "    return {\n"
+        "        'created_dirs': created_dirs,\n"
+        "        'created_files': created_files,\n"
+        "        'skipped_files': skipped_files,\n"
+        "    }\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "semantic_dict_bag"
+    )
+    finding = findings[0]
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("semantic_dict_bag",),
+        selector_context=snapshot,
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    carrier_name = finding.metrics.plan_source_name
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.document.recipes[0].target_shape
+        == RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
+    )
+    assert carrier_name is not None
+    assert f"class {carrier_name}:" in rewritten
+    assert "created_dirs: List[Path]" in rewritten
+    assert (
+        f"return {carrier_name}(created_dirs=created_dirs, "
+        "created_files=created_files, skipped_files=skipped_files)"
+    ) in rewritten
+    assert simulation.is_clean is True
+    module_path.write_text(rewritten, encoding="utf-8")
+    assert not any(
+        finding.detector_id == "semantic_dict_bag"
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
 def test_detects_parameter_string_key_payload_contract(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

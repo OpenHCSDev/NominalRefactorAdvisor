@@ -16845,10 +16845,8 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
         )
 
 
-class FormalBoundarySourceScopeFindingRecipeSynthesizer(FindingRecipeSynthesizer):
-    """Build source-context carrier recipes for formal source-scope findings."""
-
-    detector_id = "formal_boundary_stringly_source_scope"
+class MappingBuilderFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+    """Finding synthesizer backed by the mapping-recipe builder registry."""
 
     def recipe_for_finding(
         self,
@@ -16900,6 +16898,20 @@ class FormalBoundarySourceScopeFindingRecipeSynthesizer(FindingRecipeSynthesizer
             finding,
             context,
         )
+
+
+class FormalBoundarySourceScopeFindingRecipeSynthesizer(
+    MappingBuilderFindingRecipeSynthesizer
+):
+    """Build source-context carrier recipes for formal source-scope findings."""
+
+    detector_id = "formal_boundary_stringly_source_scope"
+
+
+class SemanticDictBagFindingRecipeSynthesizer(MappingBuilderFindingRecipeSynthesizer):
+    """Build nominal return-record recipes for executable semantic dict bags."""
+
+    detector_id = "semantic_dict_bag"
 
 
 class RepeatedFieldFamilyFindingRecipeSynthesizer(
@@ -23217,6 +23229,7 @@ class FunctionProjectionTarget:
 
 ProjectionTargetT = TypeVar("ProjectionTargetT", bound=FunctionProjectionTarget)
 
+
 @dataclass(frozen=True)
 class ReturnDictProjectionTarget(FunctionProjectionTarget):
     """Source-index target for a return dict with named string-key fields."""
@@ -23234,11 +23247,71 @@ class ReturnDictFieldValueExtractor:
     finding: RefactorFinding
 
     def field_values(self, dict_node: ast.Dict) -> tuple[ReturnDictFieldValue, ...]:
-        field_names = frozenset(self.finding.metrics.plan_field_names)
+        return ReturnDictProjectionTargetAuthority.field_values(
+            dict_node,
+            self.finding.metrics.plan_field_names,
+        )
+
+    @staticmethod
+    def string_key_value(node: ast.expr | None) -> str | None:
+        return ReturnDictProjectionTargetAuthority.string_key_value(node)
+
+
+class ReturnDictProjectionTargetAuthority:
+    """Resolve return-dict projection targets from source-index function facts."""
+
+    @classmethod
+    def from_function_location(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        function_qualname: str,
+        line: int,
+        field_names: tuple[str, ...],
+    ) -> ReturnDictProjectionTarget | None:
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path,
+            qualname=function_qualname,
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return_node = FunctionReturnNodeAuthority.return_node_at_line(
+            node,
+            line,
+        )
+        if return_node is None or not isinstance(return_node.value, ast.Dict):
+            return None
+        field_values = cls.field_values(return_node.value, field_names)
+        if frozenset(field.field_name for field in field_values) != frozenset(
+            field_names
+        ):
+            return None
+        return ReturnDictProjectionTarget(
+            source_path=source_path,
+            function_qualname=function_qualname,
+            target=target,
+            node=node,
+            return_node=return_node,
+            dict_node=return_node.value,
+            field_values=field_values,
+        )
+
+    @classmethod
+    def field_values(
+        cls,
+        dict_node: ast.Dict,
+        field_names: tuple[str, ...],
+    ) -> tuple[ReturnDictFieldValue, ...]:
+        selected_field_names = frozenset(field_names)
         values: list[ReturnDictFieldValue] = []
         for key_node, value_node in zip(dict_node.keys, dict_node.values, strict=True):
-            field_name = self.string_key_value(key_node)
-            if field_name in field_names:
+            field_name = cls.string_key_value(key_node)
+            if field_name in selected_field_names:
                 values.append(
                     ReturnDictFieldValue(
                         field_name=field_name,
@@ -23252,6 +23325,42 @@ class ReturnDictFieldValueExtractor:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         return None
+
+
+class FunctionCarrierPlacementAuthority:
+    """Resolve where a function-scoped carrier declaration belongs."""
+
+    @staticmethod
+    def insertion_qualname(
+        context: CodemodSelectorContext,
+        function_qualname: str,
+    ) -> str | None:
+        owner_qualname, separator, _method_name = function_qualname.rpartition(".")
+        if not separator:
+            return function_qualname
+        if "." in owner_qualname:
+            return None
+        owner_target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            qualnames=(owner_qualname,),
+        ).target_ids(context)
+        if len(owner_target_ids) != 1:
+            return None
+        return owner_qualname
+
+    @staticmethod
+    def class_name_conflicts(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        class_name: str,
+    ) -> bool:
+        return any(
+            target.file_path == source_path
+            and target.node_kind == AstTargetNodeKind.CLASS.value
+            and target.qualname.rsplit(".", maxsplit=1)[-1] == class_name
+            for target in context.source_index.ast_targets
+        )
 
 
 @dataclass(frozen=True)
@@ -23518,36 +23627,12 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         seed: SemanticMirrorRecipeSeedLocations,
         source_path: str,
     ) -> ReturnDictProjectionTarget | None:
-        function_qualname = seed.projection_subject()
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=source_path,
-            qualname=function_qualname,
-        ).target_ids(self)
-        if len(target_ids) != 1:
-            return None
-        target = self.source_index.target_by_id[target_ids[0]]
-        node = self.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return None
-        return_node = FunctionReturnNodeAuthority.return_node_at_line(
-            node,
-            seed.projection_line(),
-        )
-        if return_node is None or not isinstance(return_node.value, ast.Dict):
-            return None
-        field_values = self.field_values(return_node.value)
-        if frozenset(item.field_name for item in field_values) != frozenset(
-            self.finding.metrics.plan_field_names
-        ):
-            return None
-        return ReturnDictProjectionTarget(
+        return ReturnDictProjectionTargetAuthority.from_function_location(
+            self,
             source_path=source_path,
-            function_qualname=function_qualname,
-            target=target,
-            node=node,
-            return_node=return_node,
-            dict_node=return_node.value,
-            field_values=field_values,
+            function_qualname=seed.projection_subject(),
+            line=seed.projection_line(),
+            field_names=self.finding.metrics.plan_field_names,
         )
 
     def recipe_parts(
@@ -23857,11 +23942,16 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
             Maybe.of(self.carrier_name(projection.function_qualname))
             .filter(
                 lambda carrier_name: carrier_name.isidentifier()
-                and not self.class_name_conflicts(source_path, carrier_name)
+                and not FunctionCarrierPlacementAuthority.class_name_conflicts(
+                    self,
+                    source_path=source_path,
+                    class_name=carrier_name,
+                )
             )
             .with_projection(
-                lambda carrier_name: self.insertion_qualname(
-                    projection.function_qualname
+                lambda carrier_name: FunctionCarrierPlacementAuthority.insertion_qualname(
+                    self,
+                    projection.function_qualname,
                 )
             )
             .map(
@@ -23905,36 +23995,12 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
         source_path: str,
         evidence: SourceLocation,
     ) -> ReturnDictProjectionTarget | None:
-        function_qualname = evidence.subject_symbol
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=source_path,
-            qualname=function_qualname,
-        ).target_ids(self)
-        if len(target_ids) != 1:
-            return None
-        target = self.source_index.target_by_id[target_ids[0]]
-        node = self.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return None
-        return_node = FunctionReturnNodeAuthority.return_node_at_line(
-            node,
-            evidence.line,
-        )
-        if return_node is None or not isinstance(return_node.value, ast.Dict):
-            return None
-        field_values = self.field_values(return_node.value)
-        if frozenset(field.field_name for field in field_values) != frozenset(
-            self.finding.metrics.plan_field_names
-        ):
-            return None
-        return ReturnDictProjectionTarget(
+        return ReturnDictProjectionTargetAuthority.from_function_location(
+            self,
             source_path=source_path,
-            function_qualname=function_qualname,
-            target=target,
-            node=node,
-            return_node=return_node,
-            dict_node=return_node.value,
-            field_values=field_values,
+            function_qualname=evidence.subject_symbol,
+            line=evidence.line,
+            field_names=self.finding.metrics.plan_field_names,
         )
 
     def projection_rewrite_parts(
@@ -23973,32 +24039,264 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
             assignments.append(f"{field_name}={ast.unparse(value_node)}")
         return f"{carrier_name}({', '.join(assignments)})"
 
-    def insertion_qualname(self, function_qualname: str) -> str | None:
-        owner_qualname, separator, _method_name = function_qualname.rpartition(".")
-        if not separator:
-            return function_qualname
-        if "." in owner_qualname:
-            return None
-        owner_target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.CLASS,),
-            qualnames=(owner_qualname,),
-        ).target_ids(self)
-        if len(owner_target_ids) != 1:
-            return None
-        return owner_qualname
-
-    def class_name_conflicts(self, source_path: str, class_name: str) -> bool:
-        return any(
-            target.file_path == source_path
-            and target.node_kind == AstTargetNodeKind.CLASS.value
-            and target.qualname.rsplit(".", maxsplit=1)[-1] == class_name
-            for target in self.source_index.ast_targets
-        )
-
     @staticmethod
     def carrier_name(function_qualname: str) -> str:
         leaf_name = function_qualname.rsplit(".", maxsplit=1)[-1]
         return f"{_pascal_case_identifier(leaf_name)}Context"
+
+
+@dataclass(frozen=True)
+class SemanticReturnDictRecordRecipeParts(FindingRecipeParts):
+    """Executable facts for replacing an anonymous return dict with a record."""
+
+    source_path: str
+    function_qualname: str
+    insertion_qualname: str
+    carrier_name: str
+    projection: ReturnDictProjectionTarget
+    field_annotations: tuple[tuple[str, str], ...]
+    old_source: str
+    new_source: str
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        return (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-return-dict-record",
+                reason=(
+                    "Replace the anonymous return dictionary with a nominal "
+                    "result record."
+                ),
+                target_shape=RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
+            )
+            .ensure_import(
+                self.source_path,
+                "from dataclasses import dataclass\n",
+                rationale="Import the dataclass decorator for the result record.",
+            )
+            .insert_before_target(
+                self.insertion_qualname,
+                self.carrier_source(),
+                source_path=self.source_path,
+                rationale="Declare the nominal result record at the producer boundary.",
+            )
+            .replace_text(
+                self.function_qualname,
+                self.old_source,
+                self.new_source,
+                source_path=self.source_path,
+                rationale="Return the nominal record instead of a string-key dict.",
+            )
+        )
+
+    def carrier_source(self) -> str:
+        annotations_by_field = dict(self.field_annotations)
+        field_lines = tuple(
+            f"    {field_name}: {annotations_by_field.get(field_name, 'object')}\n"
+            for field_name in self.field_names()
+        )
+        return "".join(
+            (
+                "@dataclass(frozen=True)\n",
+                f"class {self.carrier_name}:\n",
+                *field_lines,
+                "\n",
+            )
+        )
+
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(field.field_name for field in self.projection.field_values)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SemanticDictBagReturnRecordMappingRecipeBuilder(
+    ReturnDictFieldValueExtractor,
+    PartsBackedMappingRecipeBuilder[SemanticReturnDictRecordRecipeParts],
+):
+    """Nominalize ordinary semantic return dictionaries as dataclass records."""
+
+    mapping_name: ClassVar[str] = "semantic_dict_bag_return_dict_record"
+    registration_order: ClassVar[int] = 75
+
+    finding: RefactorFinding
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return "semantic return-record extraction requires mapping metrics"
+        if self.finding.metrics.plan_mapping_name != self.mapping_name:
+            return (
+                "semantic dict bag extraction is executable for anonymous return "
+                "records; parameter payloads and serialization bags need distinct "
+                "call-site rewrites"
+            )
+        evidence = FindingPrimaryEvidence(self.finding).source_location
+        if evidence is None:
+            return "semantic return-record extraction requires primary source evidence"
+        if self.parts is not None:
+            return "semantic return-record extraction has an executable recipe"
+        return (
+            "semantic return-record extraction requires one source-index-resolved "
+            "function or method return dict and a non-conflicting result record name"
+        )
+
+    @cached_property
+    def parts(self) -> SemanticReturnDictRecordRecipeParts | None:
+        evidence = FindingPrimaryEvidence(self.finding).source_location
+        if evidence is None or not isinstance(self.finding.metrics, MappingMetrics):
+            return None
+        source_path = SourcePathResolutionAuthority.from_source_index(
+            evidence.file_path,
+            self.source_index,
+        ).optional_path()
+        if source_path is None:
+            return None
+        projection = self.projection_target(source_path, evidence)
+        if projection is None:
+            return None
+        carrier_name = self.carrier_name(projection.source_path)
+        if carrier_name is None:
+            return None
+        insertion_qualname = FunctionCarrierPlacementAuthority.insertion_qualname(
+            self,
+            projection.function_qualname,
+        )
+        if insertion_qualname is None:
+            return None
+        rewrite = self.projection_rewrite_parts(
+            carrier_name,
+            projection,
+        )
+        if rewrite is None:
+            return None
+        return SemanticReturnDictRecordRecipeParts(
+            source_path=projection.source_path,
+            function_qualname=projection.function_qualname,
+            insertion_qualname=insertion_qualname,
+            carrier_name=carrier_name,
+            projection=projection,
+            field_annotations=self.field_annotations(projection),
+            old_source=rewrite.old_source,
+            new_source=rewrite.new_source,
+        )
+
+    def carrier_name(self, source_path: str) -> str | None:
+        carrier_name = self.finding.metrics.plan_source_name
+        if (
+            carrier_name is None
+            or not carrier_name.isidentifier()
+            or FunctionCarrierPlacementAuthority.class_name_conflicts(
+                self,
+                source_path=source_path,
+                class_name=carrier_name,
+            )
+        ):
+            return None
+        return carrier_name
+
+    def projection_target(
+        self,
+        source_path: str,
+        evidence: SourceLocation,
+    ) -> ReturnDictProjectionTarget | None:
+        return ReturnDictProjectionTargetAuthority.from_function_location(
+            self,
+            source_path=source_path,
+            function_qualname=evidence.subject_symbol,
+            line=evidence.line,
+            field_names=self.finding.metrics.plan_field_names,
+        )
+
+    def projection_rewrite_parts(
+        self,
+        carrier_name: str,
+        projection: ReturnDictProjectionTarget,
+    ) -> SourceTextReplacement | None:
+        source = self.sources_by_file_path[projection.source_path]
+        geometry = SourceTextGeometry(source)
+        return (
+            Maybe.of(geometry.node_offsets(projection.dict_node))
+            .map(SourceTextSpan.from_offsets)
+            .combine(
+                lambda _span: self.carrier_constructor_source(
+                    carrier_name,
+                    projection,
+                ),
+                lambda span, new_source: span.replacement(source, new_source),
+            )
+            .unwrap_or_none()
+        )
+
+    def carrier_constructor_source(
+        self,
+        carrier_name: str,
+        projection: ReturnDictProjectionTarget,
+    ) -> str | None:
+        values_by_field = {
+            field.field_name: field.value_node for field in projection.field_values
+        }
+        assignments: list[str] = []
+        for field_name in self.finding.metrics.plan_field_names:
+            value_node = values_by_field.get(field_name)
+            if value_node is None:
+                return None
+            assignments.append(f"{field_name}={ast.unparse(value_node)}")
+        return f"{carrier_name}({', '.join(assignments)})"
+
+    def field_annotations(
+        self,
+        projection: ReturnDictProjectionTarget,
+    ) -> tuple[tuple[str, str], ...]:
+        local_annotations = self.local_annotations(projection.node)
+        parameter_annotations = self.parameter_annotations(projection.node)
+        return tuple(
+            (
+                field.field_name,
+                self.annotation_for_value(
+                    field.value_node,
+                    local_annotations,
+                    parameter_annotations,
+                ),
+            )
+            for field in projection.field_values
+        )
+
+    @staticmethod
+    def local_annotations(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> Mapping[str, str]:
+        return {
+            statement.target.id: ast.unparse(statement.annotation)
+            for statement in ast.walk(node)
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+        }
+
+    @staticmethod
+    def parameter_annotations(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> Mapping[str, str]:
+        parameters = (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        )
+        return {
+            parameter.arg: ast.unparse(parameter.annotation)
+            for parameter in parameters
+            if parameter.annotation is not None
+        }
+
+    @staticmethod
+    def annotation_for_value(
+        value_node: ast.expr,
+        local_annotations: Mapping[str, str],
+        parameter_annotations: Mapping[str, str],
+    ) -> str:
+        if isinstance(value_node, ast.Name):
+            return local_annotations.get(
+                value_node.id,
+                parameter_annotations.get(value_node.id, "object"),
+            )
+        return "object"
 
 
 @dataclass(frozen=True)
