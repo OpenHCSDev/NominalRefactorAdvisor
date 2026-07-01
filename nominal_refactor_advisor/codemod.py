@@ -13869,11 +13869,9 @@ class CodemodSimulationReport:
 
     def to_dict(self) -> JsonObject:
         return {
-            "backend": self.backend.value,
+            **self.parse_validation.to_dict(),
             "applied_rewrite_count": self.applied_rewrite_count,
             "changed_file_paths": self.changed_file_paths,
-            "validated_file_paths": self.validated_file_paths,
-            "parse_valid": self.parse_valid,
             "parse_validation": self.parse_validation.to_dict(),
             "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
         }
@@ -14796,6 +14794,14 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         return len(self.expected_removed_finding_ids)
 
     @property
+    def finding_plan(self) -> FindingRecipePlan:
+        return FindingRecipePlan(
+            document=self.document,
+            expected_removed_finding_ids=self.expected_removed_finding_ids,
+            report=FindingRecipeSynthesisReport(self.synthesis_records),
+        )
+
+    @property
     def status_counts(self) -> JsonObject:
         counts: dict[str, int] = {}
         for record in self.synthesis_records:
@@ -14894,8 +14900,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             "target_shapes": self.target_shapes,
             "finding_ids": self.finding_ids,
             "finding_count": self.finding_count,
-            "expected_removed_finding_ids": self.expected_removed_finding_ids,
-            "expected_removed_finding_count": self.expected_removed_finding_count,
+            **self.finding_plan.to_dict(),
             "batch_priority": self.execution_class.batch_priority,
             "parallel_group": self.execution_class.parallel_group,
             "pattern_sequence": self.execution_class.pattern_sequence.to_dict(),
