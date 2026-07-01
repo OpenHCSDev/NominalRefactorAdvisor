@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from types import new_class
 from typing import Any, ClassVar
 
+from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
+
 
 def _caller_module_name() -> str:
     frame = inspect.currentframe()
@@ -20,27 +22,23 @@ def _caller_module_name() -> str:
         del frame, product_record_frame, caller
 
 
-def is_classvar_annotation(annotation: str) -> bool:
-    return annotation == "ClassVar" or annotation.startswith(
-        ("ClassVar[", "typing.ClassVar[")
-    )
-
-
 _field_classvar_annotation = ClassVar[str]
 
 
 def _field_annotations(field_spec: str):
     annotations = {}
-    for field in (part.strip() for part in field_spec.split(";")):
-        if not field:
+    for field_declaration in (part.strip() for part in field_spec.split(";")):
+        if not field_declaration:
             continue
-        field_name, separator, annotation = field.partition(":")
+        field_name, separator, annotation = field_declaration.partition(":")
         if not separator:
-            raise ValueError(f"Product record field lacks annotation: {field!r}")
+            raise ValueError(
+                f"Product record field lacks annotation: {field_declaration!r}"
+            )
         annotation = annotation.strip()
         annotations[field_name.strip()] = (
             _field_classvar_annotation
-            if is_classvar_annotation(annotation)
+            if CLASSVAR_ANNOTATION_AUTHORITY.matches_source(annotation)
             else annotation
         )
     return annotations

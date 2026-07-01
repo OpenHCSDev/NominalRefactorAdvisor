@@ -19,6 +19,7 @@ from ..candidate_collection_semantics import (
     AstStreamTraversal,
     named_function_loop_components,
 )
+from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..product_record_schema import (
     ProductRecordDeclaredNameExtractor,
     ProductRecordSchemaCallKind,
@@ -34,10 +35,9 @@ from ..impact_ranking import RefactorImpactKey
 import io
 import re
 import tokenize
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Callable, ClassVar, TypeAlias, TypeVar
+from typing import Callable, TypeAlias, TypeVar
 
 from ._base import *
 from ._substrate_support import *
@@ -7887,7 +7887,7 @@ def _abc_optimizer_class_declaration_is_inheritable_metadata(
         or name.isupper()
         or (
             annotation is not None
-            and HELPER_SYNTAX_PROJECTION_AUTHORITY.is_classvar_annotation(annotation)
+            and CLASSVAR_ANNOTATION_AUTHORITY.matches(annotation)
         )
     )
 
@@ -13449,22 +13449,13 @@ class HelperSyntaxProjectionAuthority:
             return prefix
         return f"{prefix}{suffix}"
 
-    def is_classvar_annotation(self, node: ast.AST) -> bool:
-        if isinstance(node, ast.Name):
-            return node.id == "ClassVar"
-        if isinstance(node, ast.Attribute):
-            return node.attr == "ClassVar"
-        if isinstance(node, ast.Subscript):
-            return self.is_classvar_annotation(node.value)
-        return False
-
     def typed_field_map(self, node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
         typed_fields: dict[str, str] = {}
         for statement in node.body:
             if isinstance(statement, ast.AnnAssign) and isinstance(
                 statement.target, ast.Name
             ):
-                if self.is_classvar_annotation(statement.annotation):
+                if CLASSVAR_ANNOTATION_AUTHORITY.matches(statement.annotation):
                     continue
                 typed_fields.setdefault(
                     statement.target.id, ast.unparse(statement.annotation)

@@ -39,6 +39,7 @@ from .assignment_projection import (
     ModuleAssignmentNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
+from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .ast_tools import BuiltinCallName, ParsedModule
 from .candidate_collection_semantics import (
     AstStreamLoopComponents,
@@ -19772,20 +19773,10 @@ class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
             name
             for statement in node.body
             if isinstance(statement, ast.AnnAssign) and statement.value is None
-            if cls.is_classvar_annotation(statement.annotation)
+            if CLASSVAR_ANNOTATION_AUTHORITY.matches(statement.annotation)
             for name in cls.assignment_target_name(statement)
             if name not in cls.registry_declaration_names()
         )
-
-    @classmethod
-    def is_classvar_annotation(cls, annotation: ast.AST) -> bool:
-        if isinstance(annotation, ast.Name):
-            return annotation.id == "ClassVar"
-        if isinstance(annotation, ast.Attribute):
-            return annotation.attr == "ClassVar"
-        if isinstance(annotation, ast.Subscript):
-            return cls.is_classvar_annotation(annotation.value)
-        return False
 
     @staticmethod
     def assignment_target_name(statement: ast.AnnAssign) -> tuple[str, ...]:
