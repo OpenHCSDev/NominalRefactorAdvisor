@@ -1384,22 +1384,14 @@ class SemanticDescentGraphModuleOverlay:
 
     def graph(self) -> SemanticDescentGraph:
         class_index = self.merged_class_index()
-        authorities, facts = SemanticAuthorityBuilder(
-            self.changed_modules,
-            class_index,
-        ).build()
+        authorities, facts = self.merged_authorities_and_facts(class_index)
         projections = self.merged_projections(class_index)
-        mirror_edges = SemanticMirrorResolver(
-            authorities,
-            facts,
-            projections,
-            class_index,
-        ).edges()
         graph_space = SemanticDescentGraphSpace(
             authorities,
             facts,
             projections,
         )
+        mirror_edges = self.merged_mirror_edges(graph_space, class_index)
         certificates = SemanticDescentCertificateBuilder(
             graph_space
         ).certificates_for_edges(mirror_edges)
@@ -1410,6 +1402,103 @@ class SemanticDescentGraphModuleOverlay:
             mirror_edges=mirror_edges,
             certificates=certificates,
             class_index=class_index,
+        )
+
+    def merged_authorities_and_facts(
+        self,
+        class_index: ClassFamilyIndex,
+    ) -> tuple[tuple[SemanticAuthority, ...], tuple[SemanticFact, ...]]:
+        return SemanticAuthorityBuilder(
+            self.changed_modules,
+            class_index,
+        ).build()
+
+    def merged_mirror_edges(
+        self,
+        graph_space: SemanticDescentGraphSpace,
+        class_index: ClassFamilyIndex,
+    ) -> tuple[MirrorEdge, ...]:
+        changed_projection_ids = self.changed_projection_ids(graph_space.projections)
+        changed_authority_ids = self.changed_authority_ids(
+            graph_space.authorities,
+            graph_space.facts,
+        )
+        current_projection_ids = frozenset(
+            projection.projection_id for projection in graph_space.projections
+        )
+        current_authority_ids = frozenset(
+            authority.authority_id for authority in graph_space.authorities
+        )
+        retained_edges = tuple(
+            edge
+            for edge in self.base_graph.mirror_edges
+            if edge.projection_id in current_projection_ids
+            and edge.authority_id in current_authority_ids
+            and edge.projection_id not in changed_projection_ids
+            and edge.authority_id not in changed_authority_ids
+        )
+        resolver = SemanticMirrorResolver(
+            graph_space.authorities,
+            graph_space.facts,
+            graph_space.projections,
+            class_index,
+        )
+        recomputed_edges = (
+            *resolver.edges_for_projection_ids(changed_projection_ids),
+            *resolver.edges_for_authority_ids(changed_authority_ids),
+        )
+        return self._deduplicate_edges((*retained_edges, *recomputed_edges))
+
+    def changed_projection_ids(
+        self,
+        projections: tuple[PresentationProjection, ...],
+    ) -> frozenset[str]:
+        base_projections = self.base_graph.projection_catalog.by_id
+        return frozenset(
+            projection.projection_id
+            for projection in projections
+            if self.resolved_path_text(projection.location.file_path)
+            in self.changed_path_texts
+            or base_projections.get(projection.projection_id) != projection
+        )
+
+    def changed_authority_ids(
+        self,
+        authorities: tuple[SemanticAuthority, ...],
+        facts: tuple[SemanticFact, ...],
+    ) -> frozenset[str]:
+        base_authorities = self.base_graph.authority_catalog.by_id
+        base_facts = self.base_graph.facts_by_authority_id
+        current_facts = SemanticFactAuthorityIndex(facts).by_authority_id
+        current_authorities = {
+            authority.authority_id: authority for authority in authorities
+        }
+        changed_ids = {
+            authority.authority_id
+            for authority in authorities
+            if base_authorities.get(authority.authority_id) != authority
+            or base_facts.get(authority.authority_id, ())
+            != current_facts.get(authority.authority_id, ())
+        }
+        changed_ids.update(
+            authority_id
+            for authority_id in base_authorities
+            if authority_id not in current_authorities
+        )
+        return frozenset(changed_ids)
+
+    @staticmethod
+    def _deduplicate_edges(edges: tuple[MirrorEdge, ...]) -> tuple[MirrorEdge, ...]:
+        by_reference = {
+            (edge.authority_id, edge.projection_id): edge for edge in edges
+        }
+        return sorted_tuple(
+            by_reference.values(),
+            key=lambda item: (
+                -item.match.fact_count,
+                item.authority_id,
+                item.projection_id,
+            ),
         )
 
     def merged_class_index(self) -> ClassFamilyIndex:
@@ -3433,11 +3522,43 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         )
 
     def edges(self) -> tuple[MirrorEdge, ...]:
+        return self._edges_for(self.projections, None)
+
+    def edges_for_projection_ids(
+        self,
+        projection_ids: frozenset[str],
+    ) -> tuple[MirrorEdge, ...]:
+        if not projection_ids:
+            return ()
+        return self._edges_for(
+            tuple(
+                projection
+                for projection in self.projections
+                if projection.projection_id in projection_ids
+            ),
+            None,
+        )
+
+    def edges_for_authority_ids(
+        self,
+        authority_ids: frozenset[str],
+    ) -> tuple[MirrorEdge, ...]:
+        if not authority_ids:
+            return ()
+        return self._edges_for(self.projections, authority_ids)
+
+    def _edges_for(
+        self,
+        projections: tuple[PresentationProjection, ...],
+        authority_ids: frozenset[str] | None,
+    ) -> tuple[MirrorEdge, ...]:
         edges: list[MirrorEdge] = []
-        for projection in self.projections:
+        for projection in projections:
             for authority_id, matches in self._matches_by_authority(
                 projection,
             ).items():
+                if authority_ids is not None and authority_id not in authority_ids:
+                    continue
                 edge = self._edge_for(
                     projection,
                     self.authority_catalog.authority(authority_id),
