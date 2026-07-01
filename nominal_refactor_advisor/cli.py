@@ -736,6 +736,14 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-project-source-index",),
+            action="store_true",
+            help=(
+                "With --codemod-project-findings, include the simulated "
+                "source-index payload in JSON output."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-continuation-plan-out",),
             value_type=Path,
             help=(
@@ -3065,15 +3073,20 @@ class CodemodProjectedFindingReporter(ABC):
             config=self.config,
             roots=self.roots,
             report_roots=self.report_roots,
+            analysis_workers=self.args.analysis_workers,
             semantic_descent_source=self.semantic_descent_source,
             source_sequence=source_sequence,
             expected_removed_finding_ids=expected_removed_finding_ids,
+            include_source_index=self.args.codemod_project_source_index,
+            include_continuation=self.args.codemod_continuation_plan_out is not None,
         ).report()
 
     def write_continuation_plan_if_requested(
         self,
         report: CodemodProjectedFindingReport,
     ) -> None:
+        if self.args.codemod_continuation_plan_out is None:
+            return
         write_cli_json_artifact(
             self.args.codemod_continuation_plan_out,
             report.continuation_report.continuation_sequence.to_dict(),
@@ -5349,6 +5362,8 @@ def main() -> int:
         parser.error(
             "--codemod-continuation-plan-out requires --codemod-project-findings"
         )
+    if args.codemod_project_source_index and not args.codemod_project_findings:
+        parser.error("--codemod-project-source-index requires --codemod-project-findings")
     if args.codemod_workflow_plan is not None and (
         args.codemod_fixpoint or args.codemod_refactor_goal is not None
     ):

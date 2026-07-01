@@ -16799,6 +16799,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
             plan_path.as_posix(),
             "--codemod-simulate",
             "--codemod-project-findings",
+            "--codemod-project-source-index",
         ],
         cwd=repo_root,
         capture_output=True,
@@ -16823,17 +16824,8 @@ def test_module_cli_simulates_projected_findings_for_created_files(
         for target in projected_source_index["ast_targets"]
         if target["file_path"] == created_path.as_posix()
     } >= {"GeneratedAlpha", "GeneratedBeta"}
-    projected_plan = projected_findings["projected_finding_recipe_plan"]
-    assert "document" in projected_plan
-    assert "synthesis_report" in projected_plan
-    projected_continuation = projected_findings["projected_finding_continuation"]
-    assert projected_continuation["has_continuation_stage"] is False
-    assert projected_continuation["finding_recipe_plan"] == projected_plan
-    assert len(projected_continuation["sequence"]["stages"]) == 1
-    assert (
-        projected_continuation["extended_sequence"]
-        == projected_continuation["sequence"]
-    )
+    assert "projected_finding_recipe_plan" not in projected_findings
+    assert "projected_finding_continuation" not in projected_findings
     assert any(
         finding["detector_id"] == "excessive_blank_line_run"
         and any(
@@ -17413,6 +17405,7 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
     projected_continuation = projected_findings["projected_finding_continuation"]
 
     assert result.returncode == 0, result.stderr
+    assert "projected_source_index" not in projected_findings
     assert created_path.exists() is False
     assert any(
         finding["detector_id"] == "runtime_product_record_schema"

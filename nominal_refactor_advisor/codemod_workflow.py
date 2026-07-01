@@ -1373,6 +1373,8 @@ class CodemodProjectedFindingReport:
     source_sequence: CodemodPlanSequence | None = None
     expected_removed_finding_ids: tuple[str, ...] = ()
     scan_mode: str = "exact"
+    include_source_index: bool = False
+    include_continuation: bool = False
 
     @property
     def before_finding_count(self) -> int:
@@ -1427,19 +1429,27 @@ class CodemodProjectedFindingReport:
 
     def to_dict(self) -> JsonObject:
         after_findings = self.after_findings
-        projected_snapshot = self.after_scan.source_snapshot
-        continuation_report = self.continuation_report
-        return {
+        payload = {
             "scan_mode": self.scan_mode,
             "before_finding_count": self.before_finding_count,
             "after_finding_count": self.after_finding_count,
             "finding_delta": self.finding_delta.to_dict(),
             "finding_class_delta": self.finding_class_delta.to_dict(),
             "after_findings": tuple(finding.to_dict() for finding in after_findings),
-            "projected_source_index": projected_snapshot.source_index.to_dict(),
-            "projected_finding_recipe_plan": continuation_report.plan.to_dict(),
-            "projected_finding_continuation": continuation_report.to_dict(),
         }
+        if self.include_source_index:
+            payload["projected_source_index"] = (
+                self.after_scan.source_snapshot.source_index.to_dict()
+            )
+        if self.include_continuation:
+            continuation_report = self.continuation_report
+            payload.update(
+                {
+                    "projected_finding_recipe_plan": continuation_report.plan.to_dict(),
+                    "projected_finding_continuation": continuation_report.to_dict(),
+                }
+            )
+        return payload
 
 
 @dataclass(frozen=True)
@@ -1697,11 +1707,14 @@ class CodemodSimulationFindingProjection:
     config: DetectorConfig
     roots: tuple[Path, ...] = ()
     report_roots: tuple[Path, ...] = ()
+    analysis_workers: int = 1
     semantic_descent_source: SemanticDescentGraphAnalysisSource = field(
         default_factory=SemanticDescentGraphAnalysisSource
     )
     source_sequence: CodemodPlanSequence | None = None
     expected_removed_finding_ids: tuple[str, ...] = ()
+    include_continuation: bool = False
+    include_source_index: bool = False
 
     def scan(self) -> CodemodFixpointScan:
         projected_modules = ProjectedScanModuleSet(
@@ -1782,6 +1795,7 @@ class CodemodSimulationFindingProjection:
                 projected_modules,
                 detector_types,
             ),
+            analysis_workers=self.analysis_workers,
             detector_type_minimum_auto_work_items=4,
         )
 
@@ -1838,6 +1852,8 @@ class CodemodSimulationFindingProjection:
             scan_mode=(
                 "evidence_local_partial" if self.report_roots else "exact"
             ),
+            include_source_index=self.include_source_index,
+            include_continuation=self.include_continuation,
         )
 
 

@@ -1576,6 +1576,17 @@ class CodemodSelectorContext:
             return statement
         return None
 
+    def target_node_for_rewrite_target(
+        self,
+        target: SourceRewriteTarget,
+    ) -> tuple[str, AstTargetDigest, "_TargetNode"]:
+        target_identifier = target.required_target_id(self.source_index)
+        return (
+            target_identifier,
+            self.source_index.target_by_id[target_identifier],
+            self.ast_target_nodes_by_id[target_identifier],
+        )
+
 
 @dataclass(frozen=True)
 class ResolvedClassTarget:
@@ -4353,16 +4364,65 @@ class RefactorRecipeOperation(
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[str, AstTargetDigest, _TargetNode]:
-        target_identifier, target_digest = self.target_digest(source_index)
-        nodes_by_target_identifier = AstTargetNodeIndex(
-            source_index,
-            source_by_path,
-        ).nodes_by_target_identifier()
-        return (
+        return self.target_node_from_context(
+            self.operation_context(source_index, source_by_path, None)
+        )
+
+    def target_node_from_context(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[str, AstTargetDigest, _TargetNode]:
+        return context.target_node_for_rewrite_target(self.target)
+
+    @staticmethod
+    def operation_context(
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        selector_context: CodemodSelectorContext | None,
+    ) -> CodemodSelectorContext:
+        if selector_context is not None:
+            return selector_context
+        return CodemodSelectorContext(
+            source_index=source_index,
+            sources_by_file_path=source_by_path,
+        )
+
+
+class TargetNodeRecipeOperationMixin(ABC):
+    """Operation family whose rewrites require the target AST node."""
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        return self.line_replacements_with_context(source_index, source_by_path)
+
+    def line_replacements_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[SourceLineReplacement, ...]:
+        context = self.operation_context(source_index, source_by_path, selector_context)
+        target_identifier, target_digest, node = self.target_node_from_context(context)
+        return self.line_replacements_for_target_node(
+            context,
             target_identifier,
             target_digest,
-            nodes_by_target_identifier[target_identifier],
+            node,
         )
+
+    @abstractmethod
+    def line_replacements_for_target_node(
+        self,
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
+    ) -> tuple[SourceLineReplacement, ...]:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4579,20 +4639,22 @@ class CreateFileOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteClassAssignmentOperation(StringPayloadOperation):
+class DeleteClassAssignmentOperation(
+    TargetNodeRecipeOperationMixin,
+    StringPayloadOperation,
+):
     """Delete one class-level assignment by attribute name."""
 
     payload_field_name = "attribute_name"
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, node = self.target_node(
-            source_index,
-            source_by_path,
-        )
+        del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a class definition"
@@ -5490,6 +5552,7 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
 
 @dataclass(frozen=True, kw_only=True)
 class ExtractMethodsToClassOperation(
+    TargetNodeRecipeOperationMixin,
     FieldDeclarationSourcesPayloadMixin,
     RefactorRecipeOperation,
 ):
@@ -5573,23 +5636,25 @@ class ExtractMethodsToClassOperation(
             )
         return operation.class_decorator_sources
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        target_identifier, target_digest, node = self.target_node(
-            source_index,
-            source_by_path,
-        )
         del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError("extract_methods_to_class requires a class target")
-        self.validate(source_index, target_digest, node)
+        self.validate(context.source_index, target_digest, node)
         method_nodes = self.selected_method_nodes(node)
         class_would_be_empty = len(method_nodes) == len(node.body)
         return (
-            self.destination_class_insertion(target_digest, node, source_by_path),
+            self.destination_class_insertion(
+                target_digest,
+                node,
+                context.sources_by_file_path,
+            ),
             *self.method_deletions(target_digest, method_nodes, class_would_be_empty),
         )
 
@@ -6809,17 +6874,22 @@ class ExtractAuthorityOperation(RefactorRecipeOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class InsertBeforeTargetOperation(StringPayloadOperation):
+class InsertBeforeTargetOperation(
+    TargetNodeRecipeOperationMixin,
+    StringPayloadOperation,
+):
     """Insert source immediately before a source-index target."""
 
     payload_field_name = SOURCE_PAYLOAD_FIELD
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, _ = self.target_node(source_index, source_by_path)
+        del context, target_identifier, node
         return (
             SourceLineReplacement(
                 file_path=target_digest.file_path,
@@ -6833,17 +6903,22 @@ class InsertBeforeTargetOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class InsertAfterTargetOperation(StringPayloadOperation):
+class InsertAfterTargetOperation(
+    TargetNodeRecipeOperationMixin,
+    StringPayloadOperation,
+):
     """Insert source immediately after a source-index target."""
 
     payload_field_name = SOURCE_PAYLOAD_FIELD
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, _ = self.target_node(source_index, source_by_path)
+        del context, target_identifier, node
         return (
             SourceLineReplacement(
                 file_path=target_digest.file_path,
@@ -8068,34 +8143,39 @@ class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class MoveSymbolToModuleOperation(ModuleSymbolMoveOperation):
+class MoveSymbolToModuleOperation(
+    TargetNodeRecipeOperationMixin,
+    ModuleSymbolMoveOperation,
+):
     """Move one module-level class or function into another existing module."""
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         return (cls.destination_path_payload_binding(),)
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, node = self.target_node(source_index, source_by_path)
+        del target_identifier
         move_plan = SourceTopLevelSymbolMovePlan.from_target(
             target_digest,
             node,
-            source_index,
-            source_by_path,
+            context.source_index,
+            context.sources_by_file_path,
             destination_file_path=SourcePathResolutionAuthority.from_source_index(
                 self.destination_path,
-                source_index,
+                context.source_index,
             ).required_path(),
             rationale=self.rationale,
         )
-        replacements = list(move_plan.line_replacements(source_by_path))
+        replacements = list(move_plan.line_replacements(context.sources_by_file_path))
         import_replacement = self.replacement_import.source_replacement(
             move_plan.source_block,
-            source_by_path,
+            context.sources_by_file_path,
             rationale=self.rationale,
         )
         if import_replacement is not None:
@@ -8200,17 +8280,22 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class AddClassBaseOperation(StringPayloadOperation):
+class AddClassBaseOperation(
+    TargetNodeRecipeOperationMixin,
+    StringPayloadOperation,
+):
     """Add one base class to a class declaration."""
 
     payload_field_name = BASE_NAME_PAYLOAD_FIELD
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, node = self.target_node(source_index, source_by_path)
+        del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a class definition"
@@ -8219,7 +8304,7 @@ class AddClassBaseOperation(StringPayloadOperation):
             return ()
         header_authority = ClassHeaderSpanSourceAuthority(
             node=node,
-            source=source_by_path[target_digest.file_path],
+            source=context.sources_by_file_path[target_digest.file_path],
         )
         return (
             SourceLineReplacement(
@@ -8234,17 +8319,22 @@ class AddClassBaseOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class RemoveClassBaseOperation(StringPayloadOperation):
+class RemoveClassBaseOperation(
+    TargetNodeRecipeOperationMixin,
+    StringPayloadOperation,
+):
     """Remove one base class from a class declaration."""
 
     payload_field_name = BASE_NAME_PAYLOAD_FIELD
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, node = self.target_node(source_index, source_by_path)
+        del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a class definition"
@@ -8253,7 +8343,7 @@ class RemoveClassBaseOperation(StringPayloadOperation):
             return ()
         header_authority = ClassHeaderSpanSourceAuthority(
             node=node,
-            source=source_by_path[target_digest.file_path],
+            source=context.sources_by_file_path[target_digest.file_path],
         )
         return (
             SourceLineReplacement(
@@ -8455,7 +8545,10 @@ class CandidateCacheDetectorProtocolSource:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
+class ExposeGlobalCandidateCacheContextOperation(
+    TargetNodeRecipeOperationMixin,
+    RefactorRecipeOperation,
+):
     """Make a global detector cache by its candidate projection."""
 
     candidate_type_name: str
@@ -8701,25 +8794,27 @@ class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
             return self.import_source
         return self.scope_source.import_source(self.candidate_method_spec)
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, node = self.target_node(source_index, source_by_path)
+        del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a class definition"
             )
         source_path = target_digest.file_path
-        source = source_by_path[source_path]
+        source = context.sources_by_file_path[source_path]
         replacements: list[SourceLineReplacement] = []
         import_source = self.required_import_source
         if import_source:
             replacements.extend(
                 self.required_import_replacements(
-                    source_index,
-                    source_by_path,
+                    context.source_index,
+                    context.sources_by_file_path,
                     source_path,
                     import_source=import_source,
                     default_rationale=(
@@ -10156,6 +10251,7 @@ class DispatchPolymorphismSource(DispatchPolymorphismFamilySpec):
 
 @dataclass(frozen=True, kw_only=True)
 class DispatchToPolymorphismOperation(
+    TargetNodeRecipeOperationMixin,
     BaseNamePayloadOperation,
     MethodNamePayloadMixin,
     DispatchPolymorphismFamilySpec,
@@ -10230,12 +10326,14 @@ class DispatchToPolymorphismOperation(
             raise TypeError("case_key_attribute binding requires dispatch conversion")
         return operation.case_key_attribute
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, node = self.target_node(source_index, source_by_path)
+        del target_identifier
         if not isinstance(node, ast.FunctionDef):
             raise ValueError("dispatch_to_polymorphism requires a function target")
         if target_digest.node_kind is not AstTargetNodeKind.FUNCTION:
@@ -10248,12 +10346,21 @@ class DispatchToPolymorphismOperation(
         source = DispatchPolymorphismSource.from_operation(self, extraction)
         return (
             *self.import_replacements(
-                source_index,
-                source_by_path,
+                context.source_index,
+                context.sources_by_file_path,
                 target_digest.file_path,
             ),
-            self.family_insertion_replacement(source_index, target_digest, source),
-            self.function_body_replacement(target_digest, node, source, source_by_path),
+            self.family_insertion_replacement(
+                context.source_index,
+                target_digest,
+                source,
+            ),
+            self.function_body_replacement(
+                target_digest,
+                node,
+                source,
+                context.sources_by_file_path,
+            ),
         )
 
     def extraction_for(
@@ -10349,20 +10456,25 @@ class DispatchToPolymorphismOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFunctionSignatureOperation(StringPayloadOperation):
+class ReplaceFunctionSignatureOperation(
+    TargetNodeRecipeOperationMixin,
+    StringPayloadOperation,
+):
     """Replace a single-line function signature while preserving its body."""
 
     payload_field_name = "signature_source"
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, node = self.target_node(source_index, source_by_path)
+        del target_identifier
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             raise ValueError(f"Target {target_digest.qualname!r} is not a function")
-        editor = SourceTargetEditor(source_by_path, target_digest)
+        editor = SourceTargetEditor(context.sources_by_file_path, target_digest)
         original_line = editor.file_lines[node.lineno - 1]
         replacement_line = FunctionSignatureSourceAuthority(
             original_line,
@@ -10380,20 +10492,22 @@ class ReplaceFunctionSignatureOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFunctionBodyOperation(StringPayloadOperation):
+class ReplaceFunctionBodyOperation(
+    TargetNodeRecipeOperationMixin,
+    StringPayloadOperation,
+):
     """Replace a function or method body while preserving its signature."""
 
     payload_field_name = "body_source"
 
-    def line_replacements(
+    def line_replacements_for_target_node(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, node = self.target_node(
-            source_index,
-            source_by_path,
-        )
+        del target_identifier
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             raise ValueError(f"Target {target_digest.qualname!r} is not a function")
         if not node.body:
@@ -10406,7 +10520,7 @@ class ReplaceFunctionBodyOperation(StringPayloadOperation):
                 start_line=body_start,
                 end_line=body_end,
                 replacement_lines=self._replacement_lines(
-                    SourceTargetEditor(source_by_path, target_digest),
+                    SourceTargetEditor(context.sources_by_file_path, target_digest),
                     body_start,
                 ),
                 rationale=self.rationale
@@ -13271,6 +13385,16 @@ class RefactorRecipe:
             sources_by_file_path=source_by_path,
             class_family_index=(
                 selector_context.class_family_index
+                if selector_context is not None
+                else None
+            ),
+            module_node_cache=(
+                selector_context.module_nodes_by_file_path
+                if selector_context is not None
+                else None
+            ),
+            ast_target_node_cache=(
+                selector_context.ast_target_nodes_by_id
                 if selector_context is not None
                 else None
             ),
@@ -25380,7 +25504,7 @@ def libcst_available() -> bool:
     return importlib.util.find_spec("libcst") is not None
 
 
-def select_codemod_backend(*, prefer_libcst: bool = True) -> CodemodBackend:
+def select_codemod_backend(*, prefer_libcst: bool = False) -> CodemodBackend:
     """Select the validation backend without requiring optional dependencies."""
 
     if prefer_libcst and libcst_available():
