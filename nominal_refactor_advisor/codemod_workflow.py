@@ -18,6 +18,7 @@ from .analysis import (
     AnalysisPathScope,
     EvidenceLocalFindingReuseAuthority,
     EvidenceLocalPartialDetectorSelection,
+    SemanticDescentGraphAnalysisSource,
     SortedFindingsAuthority,
     analyze_detector_types,
     analyze_modules,
@@ -43,7 +44,7 @@ from .codemod import (
     JsonValue,
     module_name_from_source_path,
 )
-from .detectors import DetectorConfig, IssueDetector
+from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
 from .models import RefactorFinding
 from .source_index import SourceIndex
 
@@ -1389,14 +1390,14 @@ class CodemodProjectedFindingReport:
     def projected_source_index(self) -> SourceIndex:
         return self.after_scan.source_index
 
-    @property
+    @cached_property
     def finding_delta(self) -> CodemodFindingDelta:
         return CodemodFindingDelta.from_findings(
             self.before_findings,
             self.after_findings,
         )
 
-    @property
+    @cached_property
     def finding_class_delta(self) -> CodemodFindingClassDelta:
         return CodemodFindingClassDelta.from_findings(
             self.before_findings,
@@ -1404,7 +1405,7 @@ class CodemodProjectedFindingReport:
             expected_removed_finding_ids=self.expected_removed_finding_ids,
         )
 
-    @property
+    @cached_property
     def continuation_report(self) -> CodemodPlanSequenceContinuationReport:
         projected_snapshot = self.after_scan.source_snapshot
         after_findings = self.after_findings
@@ -1696,6 +1697,9 @@ class CodemodSimulationFindingProjection:
     config: DetectorConfig
     roots: tuple[Path, ...] = ()
     report_roots: tuple[Path, ...] = ()
+    semantic_descent_source: SemanticDescentGraphAnalysisSource = field(
+        default_factory=SemanticDescentGraphAnalysisSource
+    )
     source_sequence: CodemodPlanSequence | None = None
     expected_removed_finding_ids: tuple[str, ...] = ()
 
@@ -1774,7 +1778,27 @@ class CodemodSimulationFindingProjection:
             changed_modules,
             self.config,
             detector_types=detector_types,
+            semantic_descent_source=self.projected_semantic_descent_source(
+                projected_modules,
+                detector_types,
+            ),
             detector_type_minimum_auto_work_items=4,
+        )
+
+    def projected_semantic_descent_source(
+        self,
+        projected_modules: tuple[ParsedModule, ...],
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> SemanticDescentGraphAnalysisSource:
+        if not any(
+            issubclass(detector_type, SemanticDescentGraphIssueDetector)
+            for detector_type in detector_types
+        ):
+            return self.semantic_descent_source
+        return SemanticDescentGraphAnalysisSource(
+            cached_graph=self.semantic_descent_source.graph_for_modules(
+                list(projected_modules)
+            )
         )
 
     def changed_modules(

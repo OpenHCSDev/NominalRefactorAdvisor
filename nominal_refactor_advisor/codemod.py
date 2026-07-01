@@ -100,6 +100,7 @@ from .semantic_match import (
 from .source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
+    SourceFileDigest,
     SourceIndex,
     build_source_index_artifacts,
     iter_statement_definition_nodes,
@@ -1546,6 +1547,35 @@ class CodemodSelectorContext:
     def positional_call_name_index(self) -> "PositionalCallNameIndex":
         return PositionalCallNameIndex.from_module_nodes(self.module_nodes_by_file_path)
 
+    def module_node_for_source_path(self, source_path: str) -> ast.Module | None:
+        resolved_path = SourcePathResolutionAuthority.from_source_index(
+            source_path,
+            self.source_index,
+        ).optional_path()
+        if resolved_path is None:
+            return None
+        return self.module_nodes_by_file_path.get(resolved_path)
+
+    def module_assignment_statement(
+        self,
+        source_path: str,
+        assignment_name: str,
+    ) -> ast.Assign | ast.AnnAssign | None:
+        module = self.module_node_for_source_path(source_path)
+        if module is None:
+            return None
+        matching_statements = tuple(
+            statement
+            for statement in module.body
+            if assignment_name in ModuleAssignmentNameProjection(statement).names
+        )
+        if len(matching_statements) != 1:
+            return None
+        statement = matching_statements[0]
+        if isinstance(statement, ast.Assign | ast.AnnAssign):
+            return statement
+        return None
+
 
 @dataclass(frozen=True)
 class ResolvedClassTarget:
@@ -1800,9 +1830,48 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodSourceSnapshot":
         if not source_overlay:
             return self
-        sources = dict(self.sources_by_file_path)
-        sources.update(source_overlay)
-        return CodemodSourceSnapshot.from_source_mapping(sources)
+        return CodemodSourceSnapshot.from_modules(
+            self.modules_with_source_overlay(source_overlay)
+        )
+
+    def modules_with_source_overlay(
+        self,
+        source_overlay: Mapping[str, str],
+    ) -> tuple[ParsedModule, ...]:
+        existing_paths = frozenset(
+            source_file.file_path for source_file in self.source_index.files
+        )
+        existing_modules = tuple(
+            self.module_with_source_overlay(source_file, source_overlay)
+            for source_file in self.source_index.files
+        )
+        new_modules = tuple(
+            _parsed_module_from_source(file_path, source_overlay[file_path])
+            for file_path in sorted(source_overlay)
+            if file_path not in existing_paths
+        )
+        return (*existing_modules, *new_modules)
+
+    def module_with_source_overlay(
+        self,
+        source_file: SourceFileDigest,
+        source_overlay: Mapping[str, str],
+    ) -> ParsedModule:
+        file_path = source_file.file_path
+        source = source_overlay.get(file_path, self.sources_by_file_path[file_path])
+        if file_path in source_overlay:
+            module_node = _parsed_module_from_source(file_path, source).module
+        elif self.module_node_cache is not None and file_path in self.module_node_cache:
+            module_node = self.module_node_cache[file_path]
+        else:
+            module_node = ast.parse(source, filename=file_path)
+        return ParsedModule(
+            Path(file_path),
+            source_file.module_name,
+            source_file.is_package_init,
+            module_node,
+            source,
+        )
 
     @property
     def parsed_modules(self) -> tuple[ParsedModule, ...]:
@@ -1890,7 +1959,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             backend=backend,
         )
         after_snapshot_projection = CodemodAfterSnapshotProjection(
-            base_sources_by_file_path=rewrite_snapshot.sources_by_file_path,
+            base_snapshot=rewrite_snapshot,
             source_overlay_by_file_path=simulation.rewritten_sources,
         )
         architecture_guard_report = (
@@ -2012,9 +2081,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         self,
         simulation: "CodemodSimulationReport",
     ) -> "CodemodSourceSnapshot":
-        sources = dict(self.sources_by_file_path)
-        sources.update(simulation.rewritten_sources)
-        return CodemodSourceSnapshot.from_source_mapping(sources)
+        return self.with_virtual_sources(simulation.rewritten_sources)
 
     def unified_diff(
         self,
@@ -13904,14 +13971,12 @@ class CodemodSimulationReport:
 class CodemodAfterSnapshotProjection:
     """Lazy source snapshot produced by one simulated codemod document."""
 
-    base_sources_by_file_path: Mapping[str, str]
+    base_snapshot: CodemodSourceSnapshot
     source_overlay_by_file_path: Mapping[str, str]
 
     @cached_property
     def snapshot(self) -> CodemodSourceSnapshot:
-        sources_by_file_path = dict(self.base_sources_by_file_path)
-        sources_by_file_path.update(self.source_overlay_by_file_path)
-        return CodemodSourceSnapshot.from_source_mapping(sources_by_file_path)
+        return self.base_snapshot.with_virtual_sources(self.source_overlay_by_file_path)
 
 
 @dataclass(frozen=True)
@@ -20458,12 +20523,9 @@ class EnumSubsetSemanticMirrorRecipeBuilder(CodemodSelectorContext):
         authority: EnumSubsetAuthorityResolution,
     ) -> EnumSubsetProjectionResolution | None:
         seed = authority.seed
-        projection_statement = (
-            MappingSemanticMirrorRecipeStrategy.module_assignment_statement(
-                self,
-                seed.projection_location.file_path,
-                seed.mapping_name,
-            )
+        projection_statement = self.module_assignment_statement(
+            seed.projection_location.file_path,
+            seed.mapping_name,
         )
         if projection_statement is None or projection_statement.value is None:
             return None
@@ -23008,33 +23070,6 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
             )
         return "class-family collection derivation is available"
 
-    def module_assignment_statement(
-        self,
-        source_path: str,
-        assignment_name: str,
-    ) -> ast.Assign | ast.AnnAssign | None:
-        resolved_path = SourcePathResolutionAuthority.from_source_index(
-            source_path,
-            self.source_index,
-        ).optional_path()
-        if resolved_path is None:
-            return None
-        module = ast.parse(
-            self.sources_by_file_path[resolved_path],
-            filename=resolved_path,
-        )
-        matching_statements = tuple(
-            statement
-            for statement in module.body
-            if assignment_name in ModuleAssignmentNameProjection(statement).names
-        )
-        if len(matching_statements) != 1:
-            return None
-        statement = matching_statements[0]
-        if isinstance(statement, ast.Assign | ast.AnnAssign):
-            return statement
-        return None
-
     def assignment_matches_class_collection(
         self,
         statement: ast.Assign | ast.AnnAssign,
@@ -23299,26 +23334,10 @@ class AutoregisterInstanceViewRecipeBuilder(ContextualSemanticMirrorRecipeBuilde
         self,
         parts: AutoregisterInstanceViewRecipeParts,
     ) -> bool:
-        resolved_source_path = SourcePathResolutionAuthority.from_source_index(
+        statement = self.module_assignment_statement(
             parts.source_path,
-            self.source_index,
-        ).optional_path()
-        if resolved_source_path is None:
-            return False
-        if resolved_source_path not in self.sources_by_file_path:
-            return False
-        module = ast.parse(
-            self.sources_by_file_path[resolved_source_path],
-            filename=resolved_source_path,
+            parts.assignment_name,
         )
-        matching_statements = tuple(
-            statement
-            for statement in module.body
-            if parts.assignment_name in ModuleAssignmentNameProjection(statement).names
-        )
-        if len(matching_statements) != 1:
-            return False
-        statement = matching_statements[0]
         if not isinstance(statement, ast.Assign | ast.AnnAssign):
             return False
         value = DeriveAutoregisterInstanceViewOperation.assignment_value(statement)
@@ -23359,6 +23378,8 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                 source_index=selector_context.source_index,
                 sources_by_file_path=selector_context.sources_by_file_path,
                 class_family_index=selector_context.class_family_index,
+                module_node_cache=selector_context.module_nodes_by_file_path,
+                ast_target_node_cache=selector_context.ast_target_nodes_by_id,
                 finding=finding,
             ).parts(),
             lambda selector_context, parts: parts.recipe_for(finding),
@@ -23435,6 +23456,8 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                     source_index=selector_context.source_index,
                     sources_by_file_path=selector_context.sources_by_file_path,
                     class_family_index=selector_context.class_family_index,
+                    module_node_cache=selector_context.module_nodes_by_file_path,
+                    ast_target_node_cache=selector_context.ast_target_nodes_by_id,
                     finding=finding,
                 ).parts(),
                 lambda selector_context, parts: parts.recipe_for(finding),
@@ -23511,34 +23534,6 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         if not isinstance(node, ast.ClassDef):
             return None
         return ResolvedClassTarget(target=target, node=node)
-
-    @staticmethod
-    def module_assignment_statement(
-        context: CodemodSelectorContext,
-        source_path: str,
-        assignment_name: str,
-    ) -> ast.Assign | ast.AnnAssign | None:
-        resolved_path = SourcePathResolutionAuthority.from_source_index(
-            source_path,
-            context.source_index,
-        ).optional_path()
-        if resolved_path is None:
-            return None
-        module = ast.parse(
-            context.sources_by_file_path[resolved_path],
-            filename=resolved_path,
-        )
-        matching_statements = tuple(
-            statement
-            for statement in module.body
-            if assignment_name in ModuleAssignmentNameProjection(statement).names
-        )
-        if len(matching_statements) != 1:
-            return None
-        statement = matching_statements[0]
-        if isinstance(statement, ast.Assign | ast.AnnAssign):
-            return statement
-        return None
 
     @staticmethod
     def enum_value_tokens(value: ast.AST) -> frozenset[str]:

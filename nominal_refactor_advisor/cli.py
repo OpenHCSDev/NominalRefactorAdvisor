@@ -3046,6 +3046,7 @@ class CodemodProjectedFindingReporter(ABC):
     config: DetectorConfig
     roots: tuple[Path, ...]
     report_roots: tuple[Path, ...]
+    semantic_descent_source: SemanticDescentGraphAnalysisSource
 
     def optional_projected_finding_report(
         self,
@@ -3064,6 +3065,7 @@ class CodemodProjectedFindingReporter(ABC):
             config=self.config,
             roots=self.roots,
             report_roots=self.report_roots,
+            semantic_descent_source=self.semantic_descent_source,
             source_sequence=source_sequence,
             expected_removed_finding_ids=expected_removed_finding_ids,
         ).report()
@@ -4040,6 +4042,7 @@ class CodemodCliExecution(
     config: DetectorConfig
     roots: tuple[Path, ...]
     report_roots: tuple[Path, ...]
+    semantic_descent_source: SemanticDescentGraphAnalysisSource
 
     @property
     def requested(self) -> bool:
@@ -4615,6 +4618,7 @@ class CodemodScanQueryCliCommand(
     config: DetectorConfig
     roots: tuple[Path, ...]
     report_roots: tuple[Path, ...]
+    semantic_descent_source: SemanticDescentGraphAnalysisSource
 
     @classmethod
     def run_first(
@@ -4627,6 +4631,7 @@ class CodemodScanQueryCliCommand(
         config: DetectorConfig,
         roots: tuple[Path, ...],
         report_roots: tuple[Path, ...],
+        semantic_descent_source: SemanticDescentGraphAnalysisSource,
     ) -> int | None:
         for command_type in CliCommand.__registry__.values():
             if not issubclass(command_type, cls):
@@ -4640,6 +4645,7 @@ class CodemodScanQueryCliCommand(
                 config,
                 roots,
                 report_roots,
+                semantic_descent_source,
             )
             if command.requested:
                 return command.run()
@@ -5539,6 +5545,7 @@ def main() -> int:
             config=config,
             roots=roots,
             report_roots=path_scope.report_roots,
+            semantic_descent_source=semantic_descent_analysis_source,
         ).run()
         if fast_codemod_execution_result is not None:
             return fast_codemod_execution_result
@@ -5832,6 +5839,7 @@ def main() -> int:
         config,
         roots,
         path_scope.report_roots,
+        semantic_descent_analysis_source,
     )
     if scan_query_result is not None:
         return scan_query_result
@@ -5889,6 +5897,7 @@ def main() -> int:
         config=config,
         roots=roots,
         report_roots=path_scope.report_roots,
+        semantic_descent_source=semantic_descent_analysis_source,
     ).run()
     if codemod_execution_result is not None:
         return codemod_execution_result

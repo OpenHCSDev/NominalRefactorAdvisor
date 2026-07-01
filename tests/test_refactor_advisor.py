@@ -978,6 +978,109 @@ def test_projected_finding_report_uses_focused_partial_scan(
     )
 
 
+def test_projected_finding_report_uses_full_graph_source_for_graph_detectors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nominal_refactor_advisor import codemod_workflow
+    from nominal_refactor_advisor.codemod_workflow import (
+        CodemodSimulationFindingProjection,
+    )
+
+    changed_path = tmp_path / "pkg/changed.py"
+    other_path = tmp_path / "pkg/other.py"
+    _write_module(
+        tmp_path,
+        "pkg/changed.py",
+        "class Changed:\n"
+        "    def value(self):\n"
+        "        return 1\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/other.py",
+        "class Other:\n"
+        "    def value(self):\n"
+        "        return 2\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    simulation = (
+        RefactorRecipe(recipe_id="project-changed-source")
+        .replace_function_body(
+            "Changed.value",
+            "return 3",
+            source_path=changed_path.as_posix(),
+        )
+        .simulate_snapshot(snapshot)
+        .simulation
+    )
+    detector_id = SemanticMirrorWithoutDescentDetector.effective_detector_id()
+    assert detector_id is not None
+    before_finding = RefactorFinding(
+        detector_id=detector_id,
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Changed semantic mirror",
+        summary="changed file before finding",
+        why="changed file requires a graph rerun",
+        capability_gap="focused projected scan",
+        relation_context="changed file evidence",
+        evidence=(SourceLocation(changed_path.as_posix(), 2, "Changed.value"),),
+    )
+    changed_after_finding = replace(
+        before_finding,
+        summary="changed file after graph finding",
+    )
+    sentinel_graph = object()
+    graph_source_calls: list[tuple[str, ...]] = []
+    analyzed_module_paths: list[str] = []
+    passed_graph_sources: list[SemanticDescentGraphAnalysisSource] = []
+
+    class RecordingSemanticDescentSource:
+        def graph_for_modules(self, modules):
+            graph_source_calls.append(tuple(module.path.as_posix() for module in modules))
+            return sentinel_graph
+
+    def forbidden_full_analysis(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("focused projection should not run full analyze_modules")
+
+    def fake_analyze_detector_types(modules, config, *, detector_types, **kwargs):
+        del config
+        assert SemanticMirrorWithoutDescentDetector in detector_types
+        analyzed_module_paths.extend(module.path.as_posix() for module in modules)
+        passed_graph_sources.append(kwargs["semantic_descent_source"])
+        return [changed_after_finding]
+
+    monkeypatch.setattr(codemod_workflow, "analyze_modules", forbidden_full_analysis)
+    monkeypatch.setattr(
+        codemod_workflow,
+        "analyze_detector_types",
+        fake_analyze_detector_types,
+    )
+
+    report = CodemodSimulationFindingProjection(
+        modules=tuple(modules),
+        findings=(before_finding,),
+        simulation=simulation,
+        config=DetectorConfig(),
+        roots=(tmp_path,),
+        report_roots=(changed_path,),
+        semantic_descent_source=RecordingSemanticDescentSource(),
+    ).report()
+
+    assert report.scan_mode == "evidence_local_partial"
+    assert analyzed_module_paths == [changed_path.as_posix()]
+    assert {path for call in graph_source_calls for path in call} == {
+        changed_path.as_posix(),
+        other_path.as_posix(),
+    }
+    assert passed_graph_sources[0].cached_graph is sentinel_graph
+    assert tuple(finding.summary for finding in report.after_findings) == (
+        "changed file after graph finding",
+    )
+
+
 def test_replace_text_operation_allows_empty_json_replacement(
     tmp_path: Path,
 ) -> None:
@@ -12663,7 +12766,7 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
             module_path.as_posix()
         ]
     )
-    assert rebuild_count == 3
+    assert rebuild_count == 0
 
 
 def test_codemod_fixpoint_scan_reuses_source_snapshot(
