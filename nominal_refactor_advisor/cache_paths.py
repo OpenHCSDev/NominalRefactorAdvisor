@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,7 +32,9 @@ class ParseCacheDirectory(ParseCachePolicy):
 class AdvisorCacheLayout:
     """Nominal filesystem layout for persistent advisor cache state."""
 
-    directory_name: str = ".nra-cache"
+    application_cache_dir_name: str = "nominal-refactor-advisor"
+    environment_cache_home_name: str = "NRA_CACHE_HOME"
+    xdg_cache_home_name: str = "XDG_CACHE_HOME"
     ast_parse_entry_name: str = "ast"
     analysis_entry_name: str = "analysis"
     semantic_descent_entry_name: str = "semantic_descent"
@@ -40,26 +44,33 @@ class AdvisorCacheLayout:
             return root.parent
         return root
 
-    @property
-    def ast_parse_relative_path(self) -> Path:
-        return Path(self.directory_name) / self.ast_parse_entry_name
+    def persistent_cache_home(self) -> Path:
+        explicit_cache_home = os.environ.get(self.environment_cache_home_name)
+        if explicit_cache_home:
+            return Path(explicit_cache_home)
+        xdg_cache_home = os.environ.get(self.xdg_cache_home_name)
+        if xdg_cache_home:
+            return Path(xdg_cache_home) / self.application_cache_dir_name
+        return Path.home() / ".cache" / self.application_cache_dir_name
 
-    @property
-    def analysis_relative_path(self) -> Path:
-        return Path(self.directory_name) / self.analysis_entry_name
+    def root_identity_path(self, root: Path) -> Path:
+        base_path = self.base_for(root).resolve()
+        digest = hashlib.blake2s(
+            str(base_path).encode("utf-8"), digest_size=8
+        ).hexdigest()
+        return Path(f"{base_path.name}-{digest}")
 
-    @property
-    def semantic_descent_relative_path(self) -> Path:
-        return Path(self.directory_name) / self.semantic_descent_entry_name
+    def persistent_cache_base(self, root: Path) -> Path:
+        return self.persistent_cache_home() / self.root_identity_path(root)
 
     def parse_cache_dir(self, root: Path) -> Path:
-        return self.base_for(root) / self.ast_parse_relative_path
+        return self.persistent_cache_base(root) / self.ast_parse_entry_name
 
     def analysis_cache_dir(self, root: Path) -> Path:
-        return self.base_for(root) / self.analysis_relative_path
+        return self.persistent_cache_base(root) / self.analysis_entry_name
 
     def semantic_descent_cache_dir(self, root: Path) -> Path:
-        return self.base_for(root) / self.semantic_descent_relative_path
+        return self.persistent_cache_base(root) / self.semantic_descent_entry_name
 
     def analysis_sibling(self, parse_cache_dir: Path) -> Path:
         if parse_cache_dir.name == self.ast_parse_entry_name:
@@ -82,7 +93,7 @@ advisor_cache_layout = AdvisorCacheLayout()
 def default_cache_base(root: Path) -> Path:
     """Return the filesystem root that should own default advisor cache state."""
 
-    return advisor_cache_layout.base_for(root)
+    return advisor_cache_layout.persistent_cache_base(root)
 
 
 def default_parse_cache_dir(root: Path) -> Path:

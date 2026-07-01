@@ -30,6 +30,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.cache_paths import (
     analysis_cache_sibling,
+    default_parse_cache_dir,
     semantic_descent_cache_sibling,
 )
 from nominal_refactor_advisor.detectors import (
@@ -76,6 +77,22 @@ def test_custom_cache_dir_uses_non_colliding_sibling_paths(tmp_path: Path) -> No
     assert semantic_descent_cache_sibling(custom_parse_cache) == (
         tmp_path / "run-cache-semantic_descent"
     )
+
+
+def test_default_parse_cache_uses_cache_home_root_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    cache_home = tmp_path / "cache-home"
+
+    monkeypatch.setenv("NRA_CACHE_HOME", cache_home.as_posix())
+
+    cache_dir = default_parse_cache_dir(package_root)
+
+    assert cache_dir.parent.parent == cache_home
+    assert cache_dir.parent.name.startswith("pkg-")
+    assert cache_dir.name == "ast"
 
 
 def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(

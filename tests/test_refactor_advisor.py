@@ -70,6 +70,7 @@ from nominal_refactor_advisor.calibration import (
     format_calibration_markdown,
     run_calibration_manifest,
 )
+from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import build_class_family_index
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
@@ -6616,6 +6617,7 @@ def test_parse_python_modules_uses_default_ast_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
     parse_calls = 0
     real_parse = ast.parse
 
@@ -6632,7 +6634,7 @@ def test_parse_python_modules_uses_default_ast_cache(
     assert [module.module_name for module in first_modules] == ["mod"]
     assert [module.module_name for module in second_modules] == ["mod"]
     assert parse_calls == 1
-    assert (tmp_path / "pkg" / ".nra-cache" / "ast").is_dir()
+    assert default_parse_cache_dir(tmp_path / "pkg").is_dir()
 
 
 def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) -> None:
@@ -19586,9 +19588,12 @@ def test_json_payload_agent_reports_semantic_descent_graph_for_mirrors(
 
 def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     package_root = tmp_path / "pkg"
+    monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
+    cache_env = os.environ.copy()
     focused_path = package_root / "alpha.py"
     _write_module(
         tmp_path,
@@ -19620,6 +19625,7 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
             "full",
         ],
         cwd=repo_root,
+        env=cache_env,
         capture_output=True,
         text=True,
         check=False,
@@ -19644,14 +19650,17 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
     assert focused_path.as_posix() in evidence_paths
     assert (package_root / "beta.py").as_posix() in evidence_paths
     assert {target["qualname"] for target in ast_targets} >= {"Alpha", "Beta"}
-    assert any(((package_root / ".nra-cache" / "ast").glob("*.pickle")))
+    assert any(default_parse_cache_dir(package_root).glob("*.pickle"))
 
 
 def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     package_root = tmp_path / "pkg"
+    monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
+    cache_env = os.environ.copy()
     focused_path = package_root / "beta.py"
     _write_module(
         tmp_path,
@@ -19690,6 +19699,7 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     first_result = subprocess.run(
         command,
         cwd=repo_root,
+        env=cache_env,
         capture_output=True,
         text=True,
         check=False,
@@ -19697,6 +19707,7 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     second_result = subprocess.run(
         command,
         cwd=repo_root,
+        env=cache_env,
         capture_output=True,
         text=True,
         check=False,
@@ -19726,6 +19737,7 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     third_result = subprocess.run(
         command,
         cwd=repo_root,
+        env=cache_env,
         capture_output=True,
         text=True,
         check=False,
@@ -19747,9 +19759,12 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
 
 def test_module_cli_can_disable_auto_context_root_for_file_scope(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     package_root = tmp_path / "pkg"
+    monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
+    cache_env = os.environ.copy()
     focused_path = package_root / "alpha.py"
     _write_module(
         tmp_path,
@@ -19782,6 +19797,7 @@ def test_module_cli_can_disable_auto_context_root_for_file_scope(
             "full",
         ],
         cwd=repo_root,
+        env=cache_env,
         capture_output=True,
         text=True,
         check=False,
@@ -19799,7 +19815,7 @@ def test_module_cli_can_disable_auto_context_root_for_file_scope(
         finding["detector_id"] == "class_level_inheritance_optimization"
         for finding in findings
     )
-    assert any(((package_root / ".nra-cache" / "ast").glob("*.pickle")))
+    assert any(default_parse_cache_dir(focused_path).glob("*.pickle"))
 
 
 def test_source_index_caches_lookup_maps_and_finding_target_keys(

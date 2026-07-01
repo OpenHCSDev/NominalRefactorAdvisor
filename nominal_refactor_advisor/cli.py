@@ -301,8 +301,8 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--cache-dir",),
             value_type=Path,
             help=(
-                "AST parse cache directory. Defaults to .nra-cache/ast under "
-                "the analysis root."
+                "AST parse cache directory. Defaults to an NRA cache-home entry "
+                "keyed by the analysis root."
             ),
         ),
         CliArgumentSpec(
