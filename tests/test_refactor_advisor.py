@@ -544,6 +544,10 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
         == CodemodAutomationLevel.SAFE_MECHANICAL
     )
     assert mechanical_applicability.strategy.safe_to_apply is True
+    assert mechanical_applicability.to_dict()["strategy_id"] == (
+        mechanical_strategy.to_dict()["strategy_id"]
+    )
+    assert mechanical_applicability.to_dict()["safe_to_apply"] is True
     assert planned_candidate.has_planned_rewrites
     assert (
         planned_applicability.simulation_status

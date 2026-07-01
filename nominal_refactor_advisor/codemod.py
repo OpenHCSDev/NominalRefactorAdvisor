@@ -421,6 +421,11 @@ class CodemodStrategy:
     reason: str
     safe_to_apply: bool = False
 
+    def to_dict(self) -> JsonObject:
+        payload = JsonObject(asdict(self))
+        payload["automation_level"] = self.automation_level.value
+        return payload
+
 
 class CodemodStrategySpec(ABC, metaclass=AutoRegisterMeta):
     """Nominal declaration for codemod strategy metadata."""
@@ -641,14 +646,11 @@ class CodemodApplicability:
 
     def to_dict(self) -> JsonObject:
         return {
-            "strategy_id": self.strategy.strategy_id,
-            "automation_level": self.strategy.automation_level.value,
+            **self.strategy.to_dict(),
             "simulation_status": self.simulation_status.value,
-            "safe_to_apply": self.strategy.safe_to_apply,
             "actionability": self.actionability.value,
             "target_count": self.target_count,
             "planned_rewrite_count": self.planned_rewrite_count,
-            "reason": self.strategy.reason,
             "confidence_basis": self.confidence_basis,
             "agent_action": self.agent_action,
         }
