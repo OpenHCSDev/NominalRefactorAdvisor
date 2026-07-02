@@ -735,6 +735,7 @@ class HelperSupportProjectionAuthority:
                 and (
                     metaclass_name == "AutoRegisterMeta"
                     or metaclass_name.endswith("AutoRegisterMeta")
+                    or self.registration_authority_base_name(metaclass_name)
                     or (
                         "Registered" in metaclass_name
                         and metaclass_name.endswith("Meta")
@@ -757,6 +758,10 @@ class HelperSupportProjectionAuthority:
         )
         return bool(
             tokens & {"autoregister", "registered", "registry"}
+            or (
+                "registration" in tokens
+                and bool(tokens & {"authority", "base", "family", "meta", "root"})
+            )
             or ("stable" in tokens and bool(tokens & {"axis", "key"}))
             or ("key" in tokens and "family" in tokens)
             or (
@@ -780,6 +785,7 @@ class HelperSupportProjectionAuthority:
             "AutoRegister" in node.name
             or "Registered" in node.name
             or node.name.endswith("KeyFamily")
+            or self.registration_authority_base_name(node.name)
         )
 
     def declares_registry_protocol_authority(self, node: ast.ClassDef) -> bool:
