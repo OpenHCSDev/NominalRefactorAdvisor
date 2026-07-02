@@ -19006,6 +19006,22 @@ def test_autoregister_rent_counts_member_derived_stable_key_axis(
     )
 
 
+def test_autoregister_rent_counts_enum_value_stable_key_axis(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/cases.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import StrEnum\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass RegistryAxis(StrEnum):\n    case_key = "case_key"\n\n\nclass RuntimeCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = RegistryAxis.case_key.value\n    __skip_if_no_key__ = True\n    stable_key_axis: ClassVar[str] = RegistryAxis.case_key.value\n    case_key: ClassVar[str | None] = None\n\n    @classmethod\n    def for_key(cls, case_key):\n        return cls.__registry__[case_key]\n\n    @abstractmethod\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass AlphaRuntimeCase(RuntimeCase):\n    case_key = "alpha"\n\n    def run(self, value):\n        return value\n\n\nclass BetaRuntimeCase(RuntimeCase):\n    case_key = "beta"\n\n    def run(self, value):\n        return value\n',
+    )
+
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        and "RuntimeCase" in finding.summary
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_autoregister_rent_counts_imported_registry_key_constant(
     tmp_path: Path,
 ) -> None:

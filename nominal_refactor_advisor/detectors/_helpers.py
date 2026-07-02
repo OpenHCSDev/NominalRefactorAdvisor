@@ -4465,12 +4465,66 @@ def _module_string_constant_assignments(module: ParsedModule) -> dict[str, str]:
     return constants
 
 
+def _class_direct_string_member_assignments(node: ast.ClassDef) -> dict[str, str]:
+    members: dict[str, str] = {}
+    for statement in node.body:
+        value_node: ast.AST | None = None
+        target_name: str | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                target_name = target.id
+                value_node = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target,
+            ast.Name,
+        ):
+            target_name = statement.target.id
+            value_node = statement.value
+        if target_name is None:
+            continue
+        if (string_value := _constant_string(value_node)) is not None:
+            members[target_name] = string_value
+    return members
+
+
+def _module_string_enum_member_assignments(
+    module: ParsedModule,
+) -> dict[tuple[str, str], str]:
+    enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
+    members: dict[tuple[str, str], str] = {}
+    for statement in module.module.body:
+        if not isinstance(statement, ast.ClassDef):
+            continue
+        if not set(CLASS_NODE_AUTHORITY.declared_base_names(statement)) & enum_base_names:
+            continue
+        for member_name, string_value in _class_direct_string_member_assignments(
+            statement
+        ).items():
+            members[(statement.name, member_name)] = string_value
+    return members
+
+
+def _enum_member_value_reference(node: ast.AST | None) -> tuple[str, str] | None:
+    if not (
+        isinstance(node, ast.Attribute)
+        and node.attr == "value"
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ):
+        return None
+    return node.value.value.id, node.value.attr
+
+
 def _constant_string_or_module_constant(
     node: ast.AST | None,
+    module: ParsedModule,
     module_string_constants: dict[str, str],
 ) -> str | None:
     if (string_value := _constant_string(node)) is not None:
         return string_value
+    if (enum_ref := _enum_member_value_reference(node)) is not None:
+        return _module_string_enum_member_assignments(module).get(enum_ref)
     if isinstance(node, ast.Name):
         return module_string_constants.get(node.id) or node.id
     if isinstance(node, ast.Attribute) and node.attr == "__registry_key__":
@@ -4483,9 +4537,11 @@ def _autoregister_registry_key_attr_name(
     node: ast.ClassDef,
 ) -> str | None:
     assignments = CLASS_NODE_AUTHORITY.direct_assignments(node)
+    module_string_constants = _module_string_constant_assignments(module)
     explicit_key = _constant_string_or_module_constant(
         assignments.get("__registry_key__"),
-        _module_string_constant_assignments(module),
+        module,
+        module_string_constants,
     )
     if explicit_key is not None:
         return explicit_key
@@ -4497,7 +4553,8 @@ def _autoregister_registry_key_attr_name(
         return stable_key_axis.id
     stable_key_name = _constant_string_or_module_constant(
         stable_key_axis,
-        _module_string_constant_assignments(module),
+        module,
+        module_string_constants,
     )
     if stable_key_name is not None:
         return stable_key_name
