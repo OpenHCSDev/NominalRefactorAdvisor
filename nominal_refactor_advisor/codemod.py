@@ -23348,11 +23348,16 @@ class PartsBackedMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class ReturnDictFieldValue:
-    """One string-key return-dict field and the expression assigned to it."""
+class ReturnFieldValue:
+    """One named return-product field and the expression assigned to it."""
 
     field_name: str
     value_node: ast.expr
+
+
+@dataclass(frozen=True)
+class ReturnDictFieldValue(ReturnFieldValue):
+    """One string-key return-dict field and the expression assigned to it."""
 
 
 @dataclass(frozen=True)
@@ -23378,11 +23383,26 @@ class ReturnDictProjectionTarget(FunctionProjectionTarget):
 
 
 @dataclass(frozen=True)
-class TupleReturnFieldValue:
-    """One named tuple-return field and the expression returned for it."""
+class ReturnKeyValueSequenceFieldValue(ReturnFieldValue):
+    """One ``("field", value)`` return-sequence item and its source element."""
 
-    field_name: str
-    value_node: ast.expr
+    element_node: ast.Tuple | ast.List
+
+
+@dataclass(frozen=True)
+class ReturnKeyValueSequenceProjectionTarget(FunctionProjectionTarget):
+    """Source-index target for a returned sequence of string-key value pairs."""
+
+    target: AstTargetDigest
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    return_node: ast.Return
+    sequence_node: ast.Tuple | ast.List
+    field_values: tuple[ReturnKeyValueSequenceFieldValue, ...]
+
+
+@dataclass(frozen=True)
+class TupleReturnFieldValue(ReturnFieldValue):
+    """One named tuple-return field and the expression returned for it."""
 
 
 @dataclass(frozen=True)
@@ -23489,6 +23509,85 @@ class ReturnDictProjectionTargetAuthority:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         return None
+
+
+class ReturnKeyValueSequenceProjectionTargetAuthority:
+    """Resolve returned ``("field", value)`` sequence projections from source facts."""
+
+    @classmethod
+    def from_function_location(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        function_qualname: str,
+        line: int,
+        field_names: tuple[str, ...],
+    ) -> ReturnKeyValueSequenceProjectionTarget | None:
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path,
+            qualname=function_qualname,
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return_node = FunctionReturnNodeAuthority.return_node_at_line(
+            node,
+            line,
+        )
+        if return_node is None or not isinstance(return_node.value, ast.Tuple | ast.List):
+            return None
+        field_values = cls.field_values(return_node.value, field_names)
+        if frozenset(field.field_name for field in field_values) != frozenset(
+            field_names
+        ):
+            return None
+        return ReturnKeyValueSequenceProjectionTarget(
+            source_path=source_path,
+            function_qualname=function_qualname,
+            target=target,
+            node=node,
+            return_node=return_node,
+            sequence_node=return_node.value,
+            field_values=field_values,
+        )
+
+    @classmethod
+    def field_values(
+        cls,
+        sequence_node: ast.Tuple | ast.List,
+        field_names: tuple[str, ...],
+    ) -> tuple[ReturnKeyValueSequenceFieldValue, ...]:
+        selected_field_names = frozenset(field_names)
+        values: list[ReturnKeyValueSequenceFieldValue] = []
+        for element in sequence_node.elts:
+            field_value = cls.field_value(element)
+            if (
+                field_value is not None
+                and field_value.field_name in selected_field_names
+            ):
+                values.append(field_value)
+        return tuple(values)
+
+    @classmethod
+    def field_value(
+        cls,
+        element: ast.expr,
+    ) -> ReturnKeyValueSequenceFieldValue | None:
+        if not isinstance(element, ast.Tuple | ast.List) or len(element.elts) != 2:
+            return None
+        key_node, value_node = element.elts
+        field_name = ReturnDictProjectionTargetAuthority.string_key_value(key_node)
+        if field_name is None:
+            return None
+        return ReturnKeyValueSequenceFieldValue(
+            field_name=field_name,
+            value_node=value_node,
+            element_node=element,
+        )
 
 
 class TupleReturnProjectionTargetAuthority:
@@ -23724,16 +23823,19 @@ class DataclassAuthorityMappingRecipeBuilder(
 ):
     """Shared seed-to-authority workflow for dataclass projection recipes."""
 
-    def explains_rejection(self) -> bool:
-        if not isinstance(self.finding.metrics, MappingMetrics):
+    @classmethod
+    def matches_return_projection_finding_shape(cls, finding: RefactorFinding) -> bool:
+        if not isinstance(finding.metrics, MappingMetrics):
             return False
-        mapping_name = self.finding.metrics.plan_mapping_name
-        seed = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+        seed = FindingSemanticMirrorLocations(finding).optional_seed_locations()
         return (
-            mapping_name is not None
+            finding.metrics.plan_mapping_name is not None
             and seed is not None
             and seed.projection_is_kind(SemanticMirrorProjectionKind.RETURN)
         )
+
+    def explains_rejection(self) -> bool:
+        return self.matches_return_projection_finding_shape(self.finding)
 
     @cached_property
     def parts(self) -> RecipePartsT | None:
@@ -23844,6 +23946,35 @@ class DataclassAuthorityMappingRecipeBuilder(
             authority_name=authority.class_name,
         )
 
+    def authority_replacement_source_with_method(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        method_source: str,
+    ) -> str | None:
+        source = self.sources_by_file_path[authority.source_path]
+        geometry = SourceTextGeometry(source)
+        insertion_offset = RepeatedBuilderCallFindingRecipeSynthesizer.class_method_insertion_offset(
+            source,
+            authority.node,
+        )
+        target_start = geometry.line_offsets[authority.target.line - 1]
+        target_end = (
+            geometry.line_offsets[authority.target.end_line]
+            if authority.target.end_line < len(geometry.line_offsets)
+            else geometry.end_offset
+        )
+        return geometry.source_with_replacements_in_span(
+            target_start,
+            target_end,
+            (
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=insertion_offset,
+                    end_offset=insertion_offset,
+                    replacement_source=method_source,
+                ),
+            ),
+        )
+
     @staticmethod
     def is_dataclass_authority(node: ast.ClassDef) -> bool:
         return any(
@@ -23931,14 +24062,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
 
     @classmethod
     def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
-        if not isinstance(finding.metrics, MappingMetrics):
-            return False
-        seed = FindingSemanticMirrorLocations(finding).optional_seed_locations()
-        return (
-            finding.metrics.plan_mapping_name is not None
-            and seed is not None
-            and seed.projection_is_kind(SemanticMirrorProjectionKind.RETURN)
-        )
+        return cls.matches_return_projection_finding_shape(finding)
 
     def supports_finding(self) -> bool:
         return self.matches_finding_shape(self.finding) and self.parts is not None
@@ -24033,28 +24157,9 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
     ) -> str | None:
-        source = self.sources_by_file_path[authority.source_path]
-        geometry = SourceTextGeometry(source)
-        insertion_offset = RepeatedBuilderCallFindingRecipeSynthesizer.class_method_insertion_offset(
-            source,
-            authority.node,
-        )
-        target_start = geometry.line_offsets[authority.target.line - 1]
-        target_end = (
-            geometry.line_offsets[authority.target.end_line]
-            if authority.target.end_line < len(geometry.line_offsets)
-            else geometry.end_offset
-        )
-        return geometry.source_with_replacements_in_span(
-            target_start,
-            target_end,
-            (
-                SourceOffsetReplacement.from_offsets(
-                    start_offset=insertion_offset,
-                    end_offset=insertion_offset,
-                    replacement_source=self.payload_method_source(),
-                ),
-            ),
+        return self.authority_replacement_source_with_method(
+            authority,
+            self.payload_method_source(),
         )
 
     def replacement_dict(
@@ -24130,6 +24235,231 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             "            for field_name in cls.__dataclass_fields__\n"
             "            if field_name in values\n"
             "        }\n"
+        )
+
+
+@dataclass(frozen=True)
+class DataclassKeyValueSequenceProjectionRecipeParts(FindingRecipeParts):
+    """Executable rewrite facts for dataclass-owned key/value return items."""
+
+    projection: ReturnKeyValueSequenceProjectionTarget
+    authority: DataclassPayloadAuthorityTarget
+    method_name: str
+    projection_old_source: str
+    projection_new_source: str
+    import_source: str | None
+    authority_replacement_source: str | None
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-derive-dataclass-payload-items",
+            reason=(
+                "Derive mirrored key/value payload items from the dataclass authority."
+            ),
+            target_shape=RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
+        )
+        if self.import_source is not None:
+            recipe = recipe.ensure_import(
+                self.projection.source_path,
+                self.import_source,
+                rationale="Import the dataclass authority used by the projection.",
+            )
+        recipe = recipe.replace_text(
+            self.projection.function_qualname,
+            self.projection_old_source,
+            self.projection_new_source,
+            source_path=self.projection.source_path,
+            rationale=(
+                "Replace mirrored key/value return items with an "
+                "authority-owned projection."
+            ),
+        )
+        if self.authority_replacement_source is not None:
+            recipe = recipe.replace_target(
+                self.authority_replacement_source,
+                target_identifier=self.authority.target.target_id,
+                rationale="Add the authority-owned key/value item projection method.",
+            )
+        return recipe
+
+
+@dataclass(frozen=True, kw_only=True)
+class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
+    DataclassAuthorityMappingRecipeBuilder[
+        ReturnKeyValueSequenceProjectionTarget,
+        DataclassKeyValueSequenceProjectionRecipeParts,
+    ],
+):
+    """Derive returned ``("field", value)`` items from a dataclass authority."""
+
+    mapping_name: ClassVar[str] = "dataclass_key_value_sequence_projection"
+    target_shape = RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION
+    registration_order: ClassVar[int] = 1001
+    payload_method_name: ClassVar[str] = "payload_items_from_field_values"
+
+    finding: RefactorFinding
+
+    @classmethod
+    def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
+        return cls.matches_return_projection_finding_shape(finding)
+
+    def supports_finding(self) -> bool:
+        return self.matches_finding_shape(self.finding) and self.parts is not None
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return "dataclass key/value sequence projection requires mapping metrics"
+        if self.parts is not None:
+            return (
+                "dataclass key/value sequence projection has an executable "
+                "authority-item recipe"
+            )
+        return (
+            "dataclass key/value sequence projection requires a same-file function "
+            "return tuple/list of string-key pairs whose keys match annotated "
+            "dataclass authority fields"
+        )
+
+    def projection_target(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> ReturnKeyValueSequenceProjectionTarget | None:
+        return ReturnKeyValueSequenceProjectionTargetAuthority.from_function_location(
+            self,
+            source_path=source_path,
+            function_qualname=seed.projection_subject(),
+            line=seed.projection_line(),
+            field_names=self.finding.metrics.plan_field_names,
+        )
+
+    def recipe_parts(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: ReturnKeyValueSequenceProjectionTarget,
+    ) -> DataclassKeyValueSequenceProjectionRecipeParts | None:
+        projection_rewrite = self.projection_rewrite_parts(authority, projection)
+        if projection_rewrite is None:
+            return None
+        authority_replacement_source = None
+        if not MappingSemanticMirrorRecipeStrategy.class_defines_method(
+            authority.node,
+            self.payload_method_name,
+        ):
+            authority_replacement_source = self.authority_replacement_source_with_method(
+                authority,
+                self.payload_method_source(),
+            )
+            if authority_replacement_source is None:
+                return None
+        return DataclassKeyValueSequenceProjectionRecipeParts(
+            projection=projection,
+            authority=authority,
+            method_name=self.payload_method_name,
+            projection_old_source=projection_rewrite.old_source,
+            projection_new_source=projection_rewrite.new_source,
+            import_source=self.import_source(authority, projection),
+            authority_replacement_source=authority_replacement_source,
+        )
+
+    def projection_rewrite_parts(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: ReturnKeyValueSequenceProjectionTarget,
+    ) -> SourceTextReplacement | None:
+        source = self.sources_by_file_path[projection.source_path]
+        geometry = SourceTextGeometry(source)
+        return (
+            Maybe.of(geometry.node_offsets(projection.sequence_node))
+            .map(SourceTextSpan.from_offsets)
+            .combine(
+                lambda _span: ast.unparse(
+                    self.replacement_sequence(authority, projection)
+                ),
+                lambda span, replacement_source: span.replacement(
+                    source,
+                    replacement_source,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    def replacement_sequence(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: ReturnKeyValueSequenceProjectionTarget,
+    ) -> ast.Tuple | ast.List:
+        field_value_by_element = {
+            id(field.element_node): field for field in projection.field_values
+        }
+        replacement_elements: list[ast.expr] = []
+        matched_run: list[ReturnKeyValueSequenceFieldValue] = []
+        for element in projection.sequence_node.elts:
+            field_value = field_value_by_element.get(id(element))
+            if field_value is not None:
+                matched_run.append(field_value)
+                continue
+            self.append_matched_run(authority, replacement_elements, matched_run)
+            matched_run = []
+            replacement_elements.append(copy.deepcopy(element))
+        self.append_matched_run(authority, replacement_elements, matched_run)
+        sequence_type = (
+            ast.List if isinstance(projection.sequence_node, ast.List) else ast.Tuple
+        )
+        return ast.fix_missing_locations(
+            sequence_type(
+                elts=replacement_elements,
+                ctx=ast.Load(),
+            )
+        )
+
+    def append_matched_run(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        replacement_elements: list[ast.expr],
+        matched_run: list[ReturnKeyValueSequenceFieldValue],
+    ) -> None:
+        if not matched_run:
+            return
+        replacement_elements.append(
+            ast.Starred(
+                value=self.payload_method_call(authority, tuple(matched_run)),
+                ctx=ast.Load(),
+            )
+        )
+
+    def payload_method_call(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        field_values: tuple[ReturnKeyValueSequenceFieldValue, ...],
+    ) -> ast.Call:
+        return ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id=authority.class_name, ctx=ast.Load()),
+                attr=self.payload_method_name,
+                ctx=ast.Load(),
+            ),
+            args=[],
+            keywords=[
+                ast.keyword(
+                    arg=field_value.field_name,
+                    value=copy.deepcopy(field_value.value_node),
+                )
+                for field_value in field_values
+            ],
+        )
+
+    @classmethod
+    def payload_method_source(cls) -> str:
+        return (
+            "\n"
+            "    @classmethod\n"
+            f"    def {cls.payload_method_name}(cls, **values):\n"
+            "        return tuple(\n"
+            "            (field_name, values[field_name])\n"
+            "            for field_name in values\n"
+            "            if field_name in cls.__dataclass_fields__\n"
+            "        )\n"
         )
 
 

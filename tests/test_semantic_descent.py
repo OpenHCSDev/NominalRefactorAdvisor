@@ -2479,6 +2479,67 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert "'emitted': self.emitted" in rewritten_source
 
 
+def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class WorkflowModel:\n"
+        "    workflow_id: str\n"
+        "    command_action_ids: tuple[str, ...]\n"
+        "    default_next_action_id: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class WorkflowDefinition:\n"
+        "    workflow_id: str\n"
+        "    description: str\n"
+        "    command_action_ids: tuple[str, ...]\n"
+        "    default_next_action_id: str\n"
+        "\n"
+        "    def definition_items(self):\n"
+        "        return (\n"
+        "            ('workflow_id', self.workflow_id),\n"
+        "            ('description', self.description),\n"
+        "            ('command_action_ids', self.command_action_ids),\n"
+        "            ('default_next_action_id', self.default_next_action_id),\n"
+        "        )\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
+    )
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == "semantic_mirror_without_descent"
+        and item.metrics.plan_source_name == "WorkflowModel"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+
+    assert record.status.value == "planned"
+    assert plan.expected_removed_finding_count == 1
+    assert simulation.is_clean is True
+    assert record.recipe_target_shape == "dataclass_payload_projection"
+    assert "def payload_items_from_field_values(cls, **values)" in rewritten_source
+    assert "*WorkflowModel.payload_items_from_field_values(" in rewritten_source
+    assert "workflow_id=self.workflow_id" in rewritten_source
+    assert "command_action_ids=self.command_action_ids" in rewritten_source
+    assert "default_next_action_id=self.default_next_action_id" in rewritten_source
+    assert (
+        rewritten_source.index("workflow_id=self.workflow_id")
+        < rewritten_source.index("('description', self.description)")
+        < rewritten_source.index("command_action_ids=self.command_action_ids")
+    )
+
+
 def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_recipe(
     tmp_path: Path,
 ) -> None:
