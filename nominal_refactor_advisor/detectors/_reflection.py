@@ -29,6 +29,21 @@ _DIRECT_REFLECTION_ATTRIBUTE_HOOKS = frozenset(
         "__setattr__",
     )
 )
+_UPPERCASE_SEMANTIC_DECLARATION_TOKENS = frozenset(
+    (
+        "CACHE",
+        "REGISTRY",
+    )
+)
+_UPPERCASE_SEMANTIC_DECLARATION_CALLS = frozenset(
+    (
+        "ContextVar",
+        "RegistryConfig",
+        "dict",
+        "set",
+        "list",
+    )
+)
 
 
 def _direct_reflection_call_name(node: ast.Call) -> str | None:
@@ -50,10 +65,139 @@ def _direct_reflection_owner(
     return ".".join(owner_parts) if owner_parts else "module"
 
 
+def _uppercase_declaration_name(name: str) -> bool:
+    bare_name = name.removeprefix("_")
+    return bool(bare_name) and bare_name.upper() == bare_name
+
+
+def _semantic_declaration_name(name: str) -> bool:
+    tokens = frozenset(name.removeprefix("_").split("_"))
+    return bool(tokens & _UPPERCASE_SEMANTIC_DECLARATION_TOKENS)
+
+
+def _call_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _semantic_declaration_value_role(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Dict):
+        return "mutable dict"
+    if isinstance(node, (ast.List, ast.Set)):
+        return "mutable collection"
+    if isinstance(node, ast.Call):
+        call_name = _call_name(node)
+        if call_name in _UPPERCASE_SEMANTIC_DECLARATION_CALLS:
+            return f"{call_name} declaration"
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return "string protocol declaration"
+    if isinstance(node, ast.Name):
+        return "alias declaration"
+    return None
+
+
+def _assignment_target_names(node: ast.Assign | ast.AnnAssign) -> tuple[str, ...]:
+    if isinstance(node, ast.AnnAssign):
+        return (node.target.id,) if isinstance(node.target, ast.Name) else ()
+    return tuple(target.id for target in node.targets if isinstance(target, ast.Name))
+
+
 @dataclass(frozen=True)
 class DirectReflectiveSiteCandidate:
     owner: str
     evidence: tuple[SourceLocation, ...]
+
+
+@dataclass(frozen=True)
+class UppercaseSemanticDeclarationCandidate:
+    module_path: str
+    declaration_names: tuple[str, ...]
+    value_roles: tuple[str, ...]
+    evidence: tuple[SourceLocation, ...]
+
+
+def _uppercase_semantic_declaration_candidates(
+    module: ParsedModule,
+) -> tuple[UppercaseSemanticDeclarationCandidate, ...]:
+    declaration_rows: list[tuple[str, int, str]] = []
+    for statement in module.module.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = statement.value
+        if value is None:
+            continue
+        value_role = _semantic_declaration_value_role(value)
+        if value_role is None:
+            continue
+        for target_name in _assignment_target_names(statement):
+            if not _uppercase_declaration_name(target_name):
+                continue
+            if not _semantic_declaration_name(target_name):
+                continue
+            declaration_rows.append((target_name, statement.lineno, value_role))
+    if not declaration_rows:
+        return ()
+    return (
+        UppercaseSemanticDeclarationCandidate(
+            module_path=str(module.path),
+            declaration_names=tuple(name for name, _line, _role in declaration_rows),
+            value_roles=tuple(sorted({role for _name, _line, role in declaration_rows})),
+            evidence=tuple(
+                SourceLocation(str(module.path), line, name)
+                for name, line, _role in declaration_rows
+            ),
+        ),
+    )
+
+
+declare_candidate_rule_detector(
+    UppercaseSemanticDeclarationCandidate,
+    high_confidence_certified_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Uppercase semantic declarations should become nominal authorities",
+        "Module-level uppercase cache/registry declarations expose mutable or protocol identity as anonymous globals. Production code should route those through nominal cache catalogs, StrEnum field authorities, or AutoRegisterMeta-backed families so ownership is typed and centralized.",
+        "nominal cache catalogs and registry/field authorities own runtime semantic identity",
+        "runtime semantic cache or registry identity is declared as an uppercase module global",
+        (
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.module_path}` declares {len(candidate.declaration_names)} "
+        "uppercase semantic cache/registry global(s): "
+        f"{', '.join(candidate.declaration_names[:6])}"
+        + ("." if len(candidate.declaration_names) <= 6 else ", ...")
+    ),
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: (
+        "class RuntimeCacheCatalog:\n"
+        "    compiled_result: ClassVar[dict[CacheKey, CompiledResult]] = {}\n\n"
+        "class RuntimeRegistryAxis(StrEnum):\n"
+        "    case_key = 'case_key'\n\n"
+        "# Replace uppercase mutable/protocol globals with catalog fields, "
+        "nominal enum members, or AutoRegisterMeta-backed family roots."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Move uppercase semantic declarations in `{candidate.module_path}` "
+        "behind a nominal cache catalog, StrEnum authority, or "
+        "AutoRegisterMeta family root."
+    ),
+    metrics=lambda candidate: RegistrationMetrics(
+        registration_site_count=len(candidate.declaration_names),
+        registry_name="uppercase semantic declarations",
+        class_key_pairs=candidate.declaration_names,
+    ),
+    candidate_collector=_uppercase_semantic_declaration_candidates,
+)
 
 
 @dataclass(frozen=True)

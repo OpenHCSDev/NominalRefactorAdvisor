@@ -5890,6 +5890,38 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
+def test_detects_uppercase_semantic_declaration_globals(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        """
+from contextvars import ContextVar
+
+LEAN_RUNTIME_POLICY_RESULT_CACHE = {}
+CLASS_REGISTRY_KEY_FIELD = "__registry_key__"
+DEFAULT_RUNTIME_REGISTRY_CONFIG = dict()
+
+class RuntimePolicyCacheCatalog:
+    result = {}
+
+class RuntimeRegistryAxis(str):
+    registry_key = "registry_key"
+""",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == "uppercase_semantic_declaration"
+    )
+    assert "LEAN_RUNTIME_POLICY_RESULT_CACHE" in finding.summary
+    assert "CLASS_REGISTRY_KEY_FIELD" in finding.summary
+    assert all(
+        "RuntimePolicyCacheCatalog" not in evidence.symbol
+        for evidence in finding.evidence
+    )
+
+
 def test_detects_parallel_primitive_identity_carrier(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
