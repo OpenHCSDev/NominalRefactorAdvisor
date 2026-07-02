@@ -22785,6 +22785,38 @@ def test_semantic_tuple_return_record_rewrites_unpack_consumers(
     )
 
 
+def test_semantic_tuple_return_record_reports_specific_recipe_rejection(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build_pair(source):\n"
+        "    left = source.left\n"
+        "    right = source.right\n"
+        "    return left, right\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "semantic_tuple_return_record"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("semantic_tuple_return_record",),
+        selector_context=snapshot,
+    )
+
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert "semantic tuple-return extraction requires" in plan.records[0].reason
+    assert "no registered mapping-mirror recipe builder matched" not in (
+        plan.records[0].reason
+    )
+
+
 def test_detects_parameter_string_key_payload_contract(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

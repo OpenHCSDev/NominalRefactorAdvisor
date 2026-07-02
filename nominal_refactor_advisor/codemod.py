@@ -23213,6 +23213,9 @@ class PartsBackedMappingRecipeBuilder(
     def supports_finding(self) -> bool:
         return self.parts is not None
 
+    def explains_rejection(self) -> bool:
+        return MappingSemanticMirrorRecipeBuilder.supports_finding(self)
+
     def recipe(self) -> RefactorRecipe | None:
         if self.parts is None:
             return None
