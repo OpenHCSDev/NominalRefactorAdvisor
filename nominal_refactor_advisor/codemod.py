@@ -16571,12 +16571,25 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
     __skip_if_no_key__ = True
 
     detector_id: ClassVar[str]
+    target_shape: ClassVar[RefactorRecipeTargetShape | None] = None
 
     @classmethod
     def has_registered_detector(cls, detector_ids: Iterable[str]) -> bool:
         selected_detector_ids = tuple(detector_ids)
         return not selected_detector_ids or any(
             detector_id in cls.__registry__ for detector_id in selected_detector_ids
+        )
+
+    @classmethod
+    def detector_ids_for_target_shapes(
+        cls,
+        target_shapes: Iterable[RefactorRecipeTargetShape],
+    ) -> frozenset[str]:
+        shape_set = frozenset(target_shapes)
+        return frozenset(
+            detector_id
+            for detector_id, synthesizer_type in cls.__registry__.items()
+            if synthesizer_type.target_shape in shape_set
         )
 
     @abstractmethod
@@ -16647,6 +16660,7 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesize
     """Build product_record_to_dataclass recipes from product-record findings."""
 
     detector_id = "runtime_product_record_schema"
+    target_shape = RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
     dynamic_record_name: ClassVar[str] = "dynamic_product_record"
 
     @staticmethod
@@ -16790,6 +16804,7 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
     """Delete flattened compatibility properties after nested records are authoritative."""
 
     detector_id = "flattened_projection_property"
+    target_shape = RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE
 
     def recipe_for_finding(
         self,
@@ -16967,6 +16982,7 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(
     """Build executable carrier-collapse recipes for dataclass field families."""
 
     detector_id = "repeated_field_family"
+    target_shape = RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT
 
     def evaluate_recipe_for_finding(
         self,
@@ -17352,6 +17368,7 @@ class ExistingNominalAuthorityReuseFindingRecipeSynthesizer(
     """Reuse an existing same-file nominal carrier instead of generating another."""
 
     detector_id = "existing_nominal_authority_reuse"
+    target_shape = RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT
 
     def evaluate_recipe_for_finding(
         self,
@@ -17421,6 +17438,7 @@ class PrefixedRoleBundleFindingRecipeSynthesizer(
     """Synthesize nominal carrier extraction for role-prefixed fields."""
 
     detector_id = "prefixed_role_field_bundle"
+    target_shape = RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER
     rejection_type = PrefixedRoleBundleRecipeRejection
     metric_type = PrefixedRoleBundleMetrics
     missing_context_reason = (
@@ -17688,6 +17706,7 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
     """Collapse exact primitive role bundles into a nominal carrier."""
 
     detector_id = "parallel_primitive_carrier"
+    target_shape = RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER
     rejection_type = ParallelPrimitiveCarrierRejection
     metric_type = MappingMetrics
     missing_context_reason = (
@@ -23116,6 +23135,7 @@ class MappingSemanticMirrorRecipeBuilder(
     __registry_key__ = "mapping_name"
     __skip_if_no_key__ = True
     mapping_name: ClassVar[str]
+    target_shape: ClassVar[RefactorRecipeTargetShape | None] = None
     registration_order: ClassVar[int] = 100
 
     finding: RefactorFinding
@@ -23165,6 +23185,18 @@ class MappingSemanticMirrorRecipeBuilder(
         if exact_builder_type is None:
             return ordered_generic_types
         return (exact_builder_type, *ordered_generic_types)
+
+    @classmethod
+    def mapping_names_for_target_shapes(
+        cls,
+        target_shapes: Iterable[RefactorRecipeTargetShape],
+    ) -> frozenset[str]:
+        shape_set = frozenset(target_shapes)
+        return frozenset(
+            mapping_name
+            for mapping_name, builder_type in cls.__registry__.items()
+            if builder_type.target_shape in shape_set
+        )
 
     def supports_finding(self) -> bool:
         if not isinstance(self.finding.metrics, MappingMetrics):
@@ -24108,6 +24140,7 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
     """Nominalize formal source-scope return dictionaries as dataclass carriers."""
 
     mapping_name: ClassVar[str] = "formal_boundary_source_scope_return_dict"
+    target_shape = RefactorRecipeTargetShape.BOUNDARY_SOURCE_CONTEXT_AUTHORITY
     registration_order: ClassVar[int] = 80
     context_mapping_prefix: ClassVar[str] = "formal_boundary_source_scope_"
 
@@ -24353,6 +24386,7 @@ class SemanticDictBagReturnRecordMappingRecipeBuilder(
     """Nominalize ordinary semantic return dictionaries as dataclass records."""
 
     mapping_name: ClassVar[str] = "semantic_dict_bag_return_dict_record"
+    target_shape = RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
     registration_order: ClassVar[int] = 75
 
     finding: RefactorFinding
@@ -24617,6 +24651,7 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
     """Nominalize tuple returns and same-file unpack consumers."""
 
     mapping_name: ClassVar[str] = "semantic_tuple_return_record"
+    target_shape = RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
     registration_order: ClassVar[int] = 76
 
     finding: RefactorFinding
@@ -24904,6 +24939,7 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
     """Derive constructor keyword mirrors through an existing dataclass method."""
 
     mapping_name: ClassVar[str] = "dataclass_constructor_projection"
+    target_shape = RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION
     registration_order: ClassVar[int] = 1010
     metrics_rejection_reason: ClassVar[str] = (
         "dataclass constructor projection requires mapping metrics"
@@ -25169,6 +25205,7 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
     """Route loose call keyword mirrors through a dataclass context authority."""
 
     mapping_name: ClassVar[str] = "dataclass_context_call_projection"
+    target_shape = RefactorRecipeTargetShape.DATACLASS_CONTEXT_CALL_PROJECTION
     registration_order: ClassVar[int] = 1005
     metrics_rejection_reason: ClassVar[str] = (
         "dataclass context call projection requires mapping metrics"

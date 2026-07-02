@@ -17024,6 +17024,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
 
 
 def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -> None:
+    from nominal_refactor_advisor.codemod import RefactorRecipeTargetShape
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalKind
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalTargetPolicy
@@ -17096,6 +17097,16 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
         return_record,
         source_context,
         dead_compat,
+    )
+    constructor_policy = CodemodRefactorGoalTargetPolicy.policy_for(
+        CodemodRefactorGoalKind.CONSTRUCTOR_KWARG_COLLAPSE
+    )
+    assert constructor_policy.selectors[0].mapping_names == frozenset()
+    assert constructor_policy.selectors[0].target_shapes == frozenset(
+        {
+            RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
+            RefactorRecipeTargetShape.DATACLASS_CONTEXT_CALL_PROJECTION,
+        }
     )
     assert CodemodRefactorGoalTargetPolicy.policy_for(
         CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION

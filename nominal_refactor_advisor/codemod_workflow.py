@@ -40,11 +40,14 @@ from .codemod import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeClassSitePlan,
+    FindingRecipeSynthesizer,
     FindingRecipePlan,
     FindingRecipeSynthesisBoundary,
     FindingRecipeSynthesisReport,
     JsonObject,
     JsonValue,
+    MappingSemanticMirrorRecipeBuilder,
+    RefactorRecipeTargetShape,
     module_name_from_source_path,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
@@ -734,9 +737,14 @@ class CodemodRefactorGoalFindingSelector:
 
     detector_ids: frozenset[str] = frozenset()
     mapping_names: frozenset[str] = frozenset()
+    target_shapes: frozenset[RefactorRecipeTargetShape] = frozenset()
 
     def matches(self, finding: RefactorFinding) -> bool:
-        return self.matches_detector(finding) or self.matches_mapping_name(finding)
+        return (
+            self.matches_detector(finding)
+            or self.matches_mapping_name(finding)
+            or self.matches_target_shape(finding)
+        )
 
     def matches_detector(self, finding: RefactorFinding) -> bool:
         return finding.detector_id in self.detector_ids
@@ -746,6 +754,25 @@ class CodemodRefactorGoalFindingSelector:
             bool(self.mapping_names)
             and isinstance(finding.metrics, MappingMetrics)
             and finding.metrics.plan_mapping_name in self.mapping_names
+        )
+
+    def matches_target_shape(self, finding: RefactorFinding) -> bool:
+        if not self.target_shapes:
+            return False
+        return (
+            finding.detector_id
+            in FindingRecipeSynthesizer.detector_ids_for_target_shapes(
+                self.target_shapes,
+            )
+        ) or self.matches_mapping_target_shape(finding)
+
+    def matches_mapping_target_shape(self, finding: RefactorFinding) -> bool:
+        return (
+            isinstance(finding.metrics, MappingMetrics)
+            and finding.metrics.plan_mapping_name
+            in MappingSemanticMirrorRecipeBuilder.mapping_names_for_target_shapes(
+                self.target_shapes,
+            )
         )
 
 
@@ -803,12 +830,7 @@ class PrefixBundleExtractionGoalTargetPolicy(SelectorBackedRefactorGoalTargetPol
     goal_kind = CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION
     selectors = (
         CodemodRefactorGoalFindingSelector(
-            detector_ids=frozenset(
-                {
-                    "prefixed_role_field_bundle",
-                    "parallel_primitive_carrier",
-                }
-            )
+            target_shapes=frozenset({RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER})
         ),
     )
 
@@ -819,11 +841,8 @@ class DataclassInheritanceLiftGoalTargetPolicy(SelectorBackedRefactorGoalTargetP
     goal_kind = CodemodRefactorGoalKind.DATACLASS_INHERITANCE_LIFT
     selectors = (
         CodemodRefactorGoalFindingSelector(
-            detector_ids=frozenset(
-                {
-                    "repeated_field_family",
-                    "existing_nominal_authority_reuse",
-                }
+            target_shapes=frozenset(
+                {RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT}
             )
         ),
     )
@@ -835,10 +854,10 @@ class ConstructorKwargCollapseGoalTargetPolicy(SelectorBackedRefactorGoalTargetP
     goal_kind = CodemodRefactorGoalKind.CONSTRUCTOR_KWARG_COLLAPSE
     selectors = (
         CodemodRefactorGoalFindingSelector(
-            mapping_names=frozenset(
+            target_shapes=frozenset(
                 {
-                    "dataclass_constructor_projection",
-                    "dataclass_context_call_projection",
+                    RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
+                    RefactorRecipeTargetShape.DATACLASS_CONTEXT_CALL_PROJECTION,
                 }
             )
         ),
@@ -853,15 +872,7 @@ class TupleDictReturnNominalizationGoalTargetPolicy(
     goal_kind = CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION
     selectors = (
         CodemodRefactorGoalFindingSelector(
-            mapping_names=frozenset(
-                {
-                    "semantic_tuple_return_record",
-                    "semantic_dict_bag_return_dict_record",
-                }
-            )
-        ),
-        CodemodRefactorGoalFindingSelector(
-            detector_ids=frozenset({"runtime_product_record_schema"})
+            target_shapes=frozenset({RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD})
         ),
     )
 
@@ -874,7 +885,9 @@ class BoundarySourceContextRewriteGoalTargetPolicy(
     goal_kind = CodemodRefactorGoalKind.BOUNDARY_SOURCE_CONTEXT_REWRITE
     selectors = (
         CodemodRefactorGoalFindingSelector(
-            mapping_names=frozenset({"formal_boundary_source_scope_return_dict"})
+            target_shapes=frozenset(
+                {RefactorRecipeTargetShape.BOUNDARY_SOURCE_CONTEXT_AUTHORITY}
+            )
         ),
     )
 
@@ -885,7 +898,9 @@ class DeadCompatibilityEraserGoalTargetPolicy(SelectorBackedRefactorGoalTargetPo
     goal_kind = CodemodRefactorGoalKind.DEAD_COMPATIBILITY_ERASER
     selectors = (
         CodemodRefactorGoalFindingSelector(
-            detector_ids=frozenset({"flattened_projection_property"})
+            target_shapes=frozenset(
+                {RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE}
+            )
         ),
     )
 
