@@ -11699,6 +11699,56 @@ class SemanticDictBagDetector(PerModuleIssueDetector):
         return findings
 
 
+class SemanticTupleReturnRecordDetector(PerModuleIssueDetector):
+    finding_spec = finding_spec_template(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Semantic tuple return should become a nominal record",
+        "Multi-value tuple returns move named semantic fields through position. Once callers unpack those positions, the producer boundary should publish a nominal result record and callers should project named fields from it.",
+        "single authoritative nominal schema for tuple return fields",
+        "same semantic field family is returned positionally instead of as a nominal record",
+        _UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS,
+        _SEMANTIC_DICT_BAG_PARTIAL_VIEW_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for candidate in _semantic_tuple_return_record_candidates(module):
+            key_list = ", ".join(candidate.field_names)
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{candidate.function_name}` returns positional fields "
+                        f"{candidate.field_names} at {candidate.file_path}:{candidate.line}."
+                    ),
+                    (
+                        SourceLocation(
+                            candidate.file_path,
+                            candidate.line,
+                            candidate.function_name,
+                        ),
+                    ),
+                    relation_context=(
+                        "same semantic field family is returned positionally "
+                        "instead of as a nominal record"
+                    ),
+                    scaffold=(
+                        f"Create `{candidate.record_class_name}` with fields "
+                        f"{key_list}, return it from `{candidate.function_name}`, "
+                        "and rewrite unpack sites to named field projections."
+                    ),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=1,
+                        field_names=candidate.field_names,
+                        mapping_name="semantic_tuple_return_record",
+                        source_name=candidate.record_class_name,
+                    ),
+                )
+            )
+        return findings
+
+
 @dataclass(frozen=True)
 class BidirectionalRegistryCandidate:
     file_path: str

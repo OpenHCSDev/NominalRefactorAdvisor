@@ -218,6 +218,69 @@ def _semantic_dict_bag_candidates(
     return candidates
 
 
+def _semantic_tuple_return_record_candidates(
+    module: ParsedModule,
+) -> tuple[SemanticTupleReturnRecordCandidate, ...]:
+    candidates: list[SemanticTupleReturnRecordCandidate] = []
+    for qualname, function_node in _iter_named_functions(module):
+        if "." in qualname:
+            continue
+        candidate = _semantic_tuple_return_record_candidate(
+            module,
+            qualname,
+            function_node,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _semantic_tuple_return_record_candidate(
+    module: ParsedModule,
+    qualname: str,
+    function_node: NamedFunctionNode,
+) -> SemanticTupleReturnRecordCandidate | None:
+    return_nodes = tuple(
+        statement
+        for statement in _trim_docstring_body(function_node.body)
+        if isinstance(statement, ast.Return)
+    )
+    if len(return_nodes) != 1:
+        return None
+    return_node = return_nodes[0]
+    if not isinstance(return_node.value, ast.Tuple | ast.List):
+        return None
+    field_names = tuple(
+        _tuple_return_field_name(element) for element in return_node.value.elts
+    )
+    if len(field_names) < 2 or any(field_name is None for field_name in field_names):
+        return None
+    concrete_field_names = tuple(
+        field_name for field_name in field_names if field_name is not None
+    )
+    if len(set(concrete_field_names)) != len(concrete_field_names):
+        return None
+    owner_symbol = _owner_symbol((), (qualname,), "tuple_return")
+    return SemanticTupleReturnRecordCandidate(
+        file_path=str(module.path),
+        line=return_node.lineno,
+        function_name=qualname,
+        field_names=concrete_field_names,
+        record_class_name=HELPER_SYNTAX_PROJECTION_AUTHORITY.suggest_dataclass_name(
+            owner_symbol,
+            "Result",
+        ),
+    )
+
+
+def _tuple_return_field_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
 def _function_local_semantic_dict_bag_candidates(
     module: ParsedModule,
     function_node: ast.FunctionDef | ast.AsyncFunctionDef,

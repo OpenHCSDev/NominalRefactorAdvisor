@@ -22596,6 +22596,58 @@ def test_semantic_dict_bag_return_record_synthesizes_nominal_record(
     )
 
 
+def test_semantic_tuple_return_record_rewrites_unpack_consumers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build_pair(source):\n"
+        "    left = source.left\n"
+        "    right = source.right\n"
+        "    return left, right\n\n\n"
+        "def consume(source):\n"
+        "    alpha, beta = build_pair(source)\n"
+        "    return alpha + beta\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "semantic_tuple_return_record"
+    )
+    finding = findings[0]
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("semantic_tuple_return_record",),
+        selector_context=snapshot,
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    carrier_name = finding.metrics.plan_source_name
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.document.recipes[0].target_shape
+        == RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
+    )
+    assert carrier_name is not None
+    assert f"class {carrier_name}:" in rewritten
+    assert f"return {carrier_name}(left=left, right=right)" in rewritten
+    assert "build_pair_record = build_pair(source)" in rewritten
+    assert "alpha = build_pair_record.left" in rewritten
+    assert "beta = build_pair_record.right" in rewritten
+    assert simulation.is_clean is True
+    module_path.write_text(rewritten, encoding="utf-8")
+    assert not any(
+        finding.detector_id == "semantic_tuple_return_record"
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
 def test_detects_parameter_string_key_payload_contract(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

@@ -16914,6 +16914,14 @@ class SemanticDictBagFindingRecipeSynthesizer(MappingBuilderFindingRecipeSynthes
     detector_id = "semantic_dict_bag"
 
 
+class SemanticTupleReturnRecordFindingRecipeSynthesizer(
+    MappingBuilderFindingRecipeSynthesizer
+):
+    """Build nominal result-record recipes for executable tuple returns."""
+
+    detector_id = "semantic_tuple_return_record"
+
+
 class RepeatedFieldFamilyFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
     EvaluatedFindingRecipeSynthesizer,
@@ -23241,6 +23249,34 @@ class ReturnDictProjectionTarget(FunctionProjectionTarget):
     field_values: tuple[ReturnDictFieldValue, ...]
 
 
+@dataclass(frozen=True)
+class TupleReturnFieldValue:
+    """One named tuple-return field and the expression returned for it."""
+
+    field_name: str
+    value_node: ast.expr
+
+
+@dataclass(frozen=True)
+class TupleReturnProjectionTarget(FunctionProjectionTarget):
+    """Source-index target for a tuple/list return with named field values."""
+
+    target: AstTargetDigest
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    return_node: ast.Return
+    tuple_node: ast.Tuple | ast.List
+    field_values: tuple[TupleReturnFieldValue, ...]
+
+
+@dataclass(frozen=True)
+class TupleUnpackAssignmentTarget(FunctionProjectionTarget):
+    """One same-file assignment unpacking a tuple-return producer call."""
+
+    assign_node: ast.Assign
+    call_node: ast.Call
+    target_names: tuple[str, ...]
+
+
 class ReturnDictFieldValueExtractor:
     """Shared extraction of selected string-key fields from return dictionaries."""
 
@@ -23325,6 +23361,168 @@ class ReturnDictProjectionTargetAuthority:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         return None
+
+
+class TupleReturnProjectionTargetAuthority:
+    """Resolve tuple-return producers and same-file unpack consumers."""
+
+    @classmethod
+    def from_function_location(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        function_qualname: str,
+        line: int,
+        field_names: tuple[str, ...],
+    ) -> TupleReturnProjectionTarget | None:
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path,
+            qualname=function_qualname,
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return_node = FunctionReturnNodeAuthority.return_node_at_line(
+            node,
+            line,
+        )
+        if return_node is None or not isinstance(return_node.value, ast.Tuple | ast.List):
+            return None
+        field_values = cls.field_values(return_node.value)
+        if tuple(field.field_name for field in field_values) != field_names:
+            return None
+        return TupleReturnProjectionTarget(
+            source_path=source_path,
+            function_qualname=function_qualname,
+            target=target,
+            node=node,
+            return_node=return_node,
+            tuple_node=return_node.value,
+            field_values=field_values,
+        )
+
+    @classmethod
+    def field_values(
+        cls,
+        tuple_node: ast.Tuple | ast.List,
+    ) -> tuple[TupleReturnFieldValue, ...]:
+        values: list[TupleReturnFieldValue] = []
+        for element in tuple_node.elts:
+            field_name = cls.field_name(element)
+            if field_name is None:
+                return ()
+            values.append(TupleReturnFieldValue(field_name, element))
+        return tuple(values)
+
+    @staticmethod
+    def field_name(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+    @classmethod
+    def unpack_assignments(
+        cls,
+        context: CodemodSelectorContext,
+        projection: TupleReturnProjectionTarget,
+    ) -> tuple[TupleUnpackAssignmentTarget, ...]:
+        leaf_name = projection.function_qualname.rsplit(".", maxsplit=1)[-1]
+        targets: list[TupleUnpackAssignmentTarget] = []
+        for target in context.source_index.ast_targets:
+            if (
+                target.file_path != projection.source_path
+                or target.target_id == projection.target.target_id
+                or target.node_kind
+                not in {AstTargetNodeKind.FUNCTION.value, AstTargetNodeKind.METHOD.value}
+            ):
+                continue
+            node = context.ast_target_nodes_by_id.get(target.target_id)
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            targets.extend(
+                cls.unpack_assignments_for_function(
+                    projection,
+                    target.qualname,
+                    node,
+                    leaf_name,
+                )
+            )
+        return tuple(targets)
+
+    @classmethod
+    def unpack_assignments_for_function(
+        cls,
+        projection: TupleReturnProjectionTarget,
+        function_qualname: str,
+        function_node: ast.FunctionDef | ast.AsyncFunctionDef,
+        producer_leaf_name: str,
+    ) -> tuple[TupleUnpackAssignmentTarget, ...]:
+        assignments: list[TupleUnpackAssignmentTarget] = []
+        for statement in _walk_function_statements(function_node):
+            if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+                continue
+            target_names = cls.unpack_target_names(statement.targets[0])
+            if len(target_names) != len(projection.field_values):
+                continue
+            if cls.call_matches_producer(statement.value, producer_leaf_name):
+                assignments.append(
+                    TupleUnpackAssignmentTarget(
+                        source_path=projection.source_path,
+                        function_qualname=function_qualname,
+                        assign_node=statement,
+                        call_node=statement.value,
+                        target_names=target_names,
+                    )
+                )
+        return tuple(assignments)
+
+    @staticmethod
+    def unpack_target_names(target: ast.expr) -> tuple[str, ...]:
+        if not isinstance(target, ast.Tuple | ast.List):
+            return ()
+        names = tuple(item.id for item in target.elts if isinstance(item, ast.Name))
+        if len(names) != len(target.elts):
+            return ()
+        return names
+
+    @staticmethod
+    def call_matches_producer(value: ast.expr, producer_leaf_name: str) -> bool:
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == producer_leaf_name
+        )
+
+
+def _walk_function_statements(
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.stmt, ...]:
+    statements: list[ast.stmt] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is function_node:
+                for statement in node.body:
+                    self.visit(statement)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return None
+
+        def generic_visit(self, node: ast.AST) -> None:
+            if isinstance(node, ast.stmt):
+                statements.append(node)
+            super().generic_visit(node)
+
+    Visitor().visit(function_node)
+    return tuple(statements)
 
 
 class FunctionCarrierPlacementAuthority:
@@ -23783,11 +23981,12 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class BoundarySourceContextReturnDictRecipeParts(FindingRecipeParts):
+class BoundarySourceContextReturnDictRecipeParts(
+    FunctionProjectionTarget,
+    FindingRecipeParts,
+):
     """Executable facts for replacing a source-scope return dict with a carrier."""
 
-    source_path: str
-    function_qualname: str
     insertion_qualname: str
     carrier_name: str
     projection: ReturnDictProjectionTarget
@@ -24046,11 +24245,9 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class SemanticReturnDictRecordRecipeParts(FindingRecipeParts):
+class SemanticReturnDictRecordRecipeParts(FunctionProjectionTarget, FindingRecipeParts):
     """Executable facts for replacing an anonymous return dict with a record."""
 
-    source_path: str
-    function_qualname: str
     insertion_qualname: str
     carrier_name: str
     projection: ReturnDictProjectionTarget
@@ -24297,6 +24494,259 @@ class SemanticDictBagReturnRecordMappingRecipeBuilder(
                 parameter_annotations.get(value_node.id, "object"),
             )
         return "object"
+
+
+@dataclass(frozen=True)
+class TupleUnpackAssignmentRewrite:
+    """Exact replacement for one tuple unpack assignment."""
+
+    function_qualname: str
+    old_source: str
+    new_source: str
+
+
+@dataclass(frozen=True)
+class SemanticTupleReturnRecordRecipeParts(FunctionProjectionTarget, FindingRecipeParts):
+    """Executable facts for replacing a tuple return with a nominal record."""
+
+    insertion_qualname: str
+    carrier_name: str
+    projection: TupleReturnProjectionTarget
+    return_old_source: str
+    return_new_source: str
+    unpack_rewrites: tuple[TupleUnpackAssignmentRewrite, ...]
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        recipe = (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-tuple-return-record",
+                reason=(
+                    "Replace the positional tuple return with a nominal result "
+                    "record and rewrite unpack consumers to named projections."
+                ),
+                target_shape=RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
+            )
+            .ensure_import(
+                self.source_path,
+                "from dataclasses import dataclass\n",
+                rationale="Import the dataclass decorator for the tuple result record.",
+            )
+            .insert_before_target(
+                self.insertion_qualname,
+                self.carrier_source(),
+                source_path=self.source_path,
+                rationale="Declare the nominal tuple result record at the producer boundary.",
+            )
+            .replace_text(
+                self.function_qualname,
+                self.return_old_source,
+                self.return_new_source,
+                source_path=self.source_path,
+                rationale="Return the nominal record instead of positional values.",
+            )
+        )
+        for rewrite in self.unpack_rewrites:
+            recipe = recipe.replace_text(
+                rewrite.function_qualname,
+                rewrite.old_source,
+                rewrite.new_source,
+                source_path=self.source_path,
+                rationale="Project named fields from the tuple result record.",
+            )
+        return recipe
+
+    def carrier_source(self) -> str:
+        field_lines = tuple(
+            f"    {field.field_name}: object\n" for field in self.projection.field_values
+        )
+        return "".join(
+            (
+                "@dataclass(frozen=True)\n",
+                f"class {self.carrier_name}:\n",
+                *field_lines,
+                "\n",
+            )
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SemanticTupleReturnRecordMappingRecipeBuilder(
+    PartsBackedMappingRecipeBuilder[SemanticTupleReturnRecordRecipeParts],
+):
+    """Nominalize tuple returns and same-file unpack consumers."""
+
+    mapping_name: ClassVar[str] = "semantic_tuple_return_record"
+    registration_order: ClassVar[int] = 76
+
+    finding: RefactorFinding
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return "semantic tuple-return extraction requires mapping metrics"
+        if self.finding.metrics.plan_mapping_name != self.mapping_name:
+            return "semantic tuple-return extraction only handles tuple-return metrics"
+        if FindingPrimaryEvidence(self.finding).source_location is None:
+            return "semantic tuple-return extraction requires primary source evidence"
+        if self.parts is not None:
+            return "semantic tuple-return extraction has an executable recipe"
+        return (
+            "semantic tuple-return extraction requires a top-level tuple/list return, "
+            "a non-conflicting result record name, and at least one same-file direct "
+            "unpack assignment consumer"
+        )
+
+    @cached_property
+    def parts(self) -> SemanticTupleReturnRecordRecipeParts | None:
+        evidence = FindingPrimaryEvidence(self.finding).source_location
+        if evidence is None or not isinstance(self.finding.metrics, MappingMetrics):
+            return None
+        source_path = SourcePathResolutionAuthority.from_source_index(
+            evidence.file_path,
+            self.source_index,
+        ).optional_path()
+        if source_path is None:
+            return None
+        projection = TupleReturnProjectionTargetAuthority.from_function_location(
+            self,
+            source_path=source_path,
+            function_qualname=evidence.subject_symbol,
+            line=evidence.line,
+            field_names=self.finding.metrics.plan_field_names,
+        )
+        if projection is None:
+            return None
+        carrier_name = self.carrier_name(projection.source_path)
+        if carrier_name is None:
+            return None
+        insertion_qualname = FunctionCarrierPlacementAuthority.insertion_qualname(
+            self,
+            projection.function_qualname,
+        )
+        if insertion_qualname is None:
+            return None
+        return_rewrite = self.return_rewrite_parts(carrier_name, projection)
+        if return_rewrite is None:
+            return None
+        unpack_rewrites = self.unpack_rewrites(carrier_name, projection)
+        if not unpack_rewrites:
+            return None
+        return SemanticTupleReturnRecordRecipeParts(
+            source_path=projection.source_path,
+            function_qualname=projection.function_qualname,
+            insertion_qualname=insertion_qualname,
+            carrier_name=carrier_name,
+            projection=projection,
+            return_old_source=return_rewrite.old_source,
+            return_new_source=return_rewrite.new_source,
+            unpack_rewrites=unpack_rewrites,
+        )
+
+    def carrier_name(self, source_path: str) -> str | None:
+        carrier_name = self.finding.metrics.plan_source_name
+        if (
+            carrier_name is None
+            or not carrier_name.isidentifier()
+            or FunctionCarrierPlacementAuthority.class_name_conflicts(
+                self,
+                source_path=source_path,
+                class_name=carrier_name,
+            )
+        ):
+            return None
+        return carrier_name
+
+    def return_rewrite_parts(
+        self,
+        carrier_name: str,
+        projection: TupleReturnProjectionTarget,
+    ) -> SourceTextReplacement | None:
+        source = self.sources_by_file_path[projection.source_path]
+        geometry = SourceTextGeometry(source)
+        return (
+            Maybe.of(geometry.node_offsets(projection.tuple_node))
+            .map(SourceTextSpan.from_offsets)
+            .combine(
+                lambda _span: self.carrier_constructor_source(
+                    carrier_name,
+                    projection,
+                ),
+                lambda span, new_source: span.replacement(source, new_source),
+            )
+            .unwrap_or_none()
+        )
+
+    def carrier_constructor_source(
+        self,
+        carrier_name: str,
+        projection: TupleReturnProjectionTarget,
+    ) -> str | None:
+        values_by_field = {
+            field.field_name: field.value_node for field in projection.field_values
+        }
+        assignments: list[str] = []
+        for field_name in self.finding.metrics.plan_field_names:
+            value_node = values_by_field.get(field_name)
+            if value_node is None:
+                return None
+            assignments.append(f"{field_name}={ast.unparse(value_node)}")
+        return f"{carrier_name}({', '.join(assignments)})"
+
+    def unpack_rewrites(
+        self,
+        carrier_name: str,
+        projection: TupleReturnProjectionTarget,
+    ) -> tuple[TupleUnpackAssignmentRewrite, ...]:
+        rewrites = tuple(
+            self.unpack_rewrite(carrier_name, projection, unpack_target)
+            for unpack_target in TupleReturnProjectionTargetAuthority.unpack_assignments(
+                self,
+                projection,
+            )
+        )
+        if any(rewrite is None for rewrite in rewrites):
+            return ()
+        return tuple(rewrite for rewrite in rewrites if rewrite is not None)
+
+    def unpack_rewrite(
+        self,
+        carrier_name: str,
+        projection: TupleReturnProjectionTarget,
+        unpack_target: TupleUnpackAssignmentTarget,
+    ) -> TupleUnpackAssignmentRewrite | None:
+        source = self.sources_by_file_path[unpack_target.source_path]
+        geometry = SourceTextGeometry(source)
+        offsets = geometry.node_offsets(unpack_target.assign_node)
+        if offsets is None:
+            return None
+        span = SourceTextSpan.from_offsets(offsets)
+        record_variable_name = self.record_variable_name(projection)
+        call_source = ast.get_source_segment(source, unpack_target.call_node)
+        if call_source is None:
+            call_source = ast.unparse(unpack_target.call_node)
+        indent = geometry.line_indent(offsets[0])
+        projected_assignments = tuple(
+            f"{target_name} = {record_variable_name}.{field.field_name}"
+            for target_name, field in zip(
+                unpack_target.target_names,
+                projection.field_values,
+                strict=True,
+            )
+        )
+        new_lines = (
+            f"{record_variable_name} = {call_source}",
+            *(f"{indent}{line}" for line in projected_assignments),
+        )
+        replacement = span.replacement(source, "\n".join(new_lines))
+        return TupleUnpackAssignmentRewrite(
+            function_qualname=unpack_target.function_qualname,
+            old_source=replacement.old_source,
+            new_source=replacement.new_source,
+        )
+
+    @staticmethod
+    def record_variable_name(projection: TupleReturnProjectionTarget) -> str:
+        leaf_name = projection.function_qualname.rsplit(".", maxsplit=1)[-1]
+        return f"{leaf_name}_record"
 
 
 @dataclass(frozen=True)
