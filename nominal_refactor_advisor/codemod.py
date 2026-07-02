@@ -22779,6 +22779,40 @@ class SemanticMirrorEndpointRole(StrEnum):
     AUTHORITY = "authority"
 
 
+class SemanticMirrorProjectionKind(StrEnum):
+    """Projection site kind encoded in semantic mirror evidence symbols."""
+
+    RETURN = "return"
+
+
+@dataclass(frozen=True)
+class SemanticMirrorProjectionSymbol:
+    """Structured projection-site view of a semantic mirror evidence symbol."""
+
+    value: str
+
+    site_separator: ClassVar[str] = ":"
+    line_separator: ClassVar[str] = "@"
+
+    @property
+    def kind(self) -> SemanticMirrorProjectionKind | None:
+        role_token = self.role_token
+        if role_token is None:
+            return None
+        try:
+            return SemanticMirrorProjectionKind(role_token)
+        except ValueError:
+            return None
+
+    @cached_property
+    def role_token(self) -> str | None:
+        _subject, site_separator, site = self.value.partition(self.site_separator)
+        if not site_separator:
+            return None
+        role, _line_separator, _line = site.partition(self.line_separator)
+        return role or None
+
+
 @dataclass(frozen=True)
 class SemanticMirrorRecipeEndpoint:
     """One role-tagged source location in a semantic mirror recipe seed."""
@@ -22801,6 +22835,10 @@ class SemanticMirrorRecipeEndpoint:
     @property
     def subject(self) -> str:
         return EvidenceSymbol(self.location.symbol).subject
+
+    @property
+    def projection_kind(self) -> SemanticMirrorProjectionKind | None:
+        return SemanticMirrorProjectionSymbol(self.location.symbol).kind
 
 
 @dataclass(frozen=True)
@@ -22861,6 +22899,9 @@ class SemanticMirrorRecipeSeedLocations:
 
     def authority_symbol(self) -> str:
         return self.authority_endpoint().symbol
+
+    def projection_is_kind(self, kind: SemanticMirrorProjectionKind) -> bool:
+        return self.projection_endpoint().projection_kind is kind
 
 
 @dataclass(frozen=True)
@@ -23187,16 +23228,27 @@ class MappingSemanticMirrorRecipeBuilder(
         return (exact_builder_type, *ordered_generic_types)
 
     @classmethod
-    def mapping_names_for_target_shapes(
+    def target_shapes_for_finding(
         cls,
-        target_shapes: Iterable[RefactorRecipeTargetShape],
-    ) -> frozenset[str]:
-        shape_set = frozenset(target_shapes)
+        finding: RefactorFinding,
+    ) -> frozenset[RefactorRecipeTargetShape]:
+        if not isinstance(finding.metrics, MappingMetrics):
+            return frozenset()
+        mapping_name = finding.metrics.plan_mapping_name
+        if mapping_name is None:
+            return frozenset()
         return frozenset(
-            mapping_name
-            for mapping_name, builder_type in cls.__registry__.items()
-            if builder_type.target_shape in shape_set
+            builder_type.target_shape
+            for builder_type in cls.builder_types_for(mapping_name)
+            if builder_type.target_shape is not None
+            and builder_type.matches_finding_shape(finding)
         )
+
+    @classmethod
+    def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
+        if not isinstance(finding.metrics, MappingMetrics):
+            return False
+        return finding.metrics.plan_mapping_name == cls.mapping_name
 
     def supports_finding(self) -> bool:
         if not isinstance(self.finding.metrics, MappingMetrics):
@@ -23281,7 +23333,10 @@ class PartsBackedMappingRecipeBuilder(
         raise NotImplementedError
 
     def supports_finding(self) -> bool:
-        return self.parts is not None
+        return (
+            MappingSemanticMirrorRecipeBuilder.supports_finding(self)
+            and self.parts is not None
+        )
 
     def explains_rejection(self) -> bool:
         return MappingSemanticMirrorRecipeBuilder.supports_finding(self)
@@ -23673,7 +23728,12 @@ class DataclassAuthorityMappingRecipeBuilder(
         if not isinstance(self.finding.metrics, MappingMetrics):
             return False
         mapping_name = self.finding.metrics.plan_mapping_name
-        return mapping_name is not None and ":return@" in mapping_name
+        seed = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+        return (
+            mapping_name is not None
+            and seed is not None
+            and seed.projection_is_kind(SemanticMirrorProjectionKind.RETURN)
+        )
 
     @cached_property
     def parts(self) -> RecipePartsT | None:
@@ -23863,10 +23923,25 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     """Derive return-dict payload keys from the mirrored dataclass authority."""
 
     mapping_name: ClassVar[str] = "dataclass_payload_projection"
+    target_shape = RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION
     registration_order: ClassVar[int] = 1000
     payload_method_name: ClassVar[str] = "payload_from_field_values"
 
     finding: RefactorFinding
+
+    @classmethod
+    def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
+        if not isinstance(finding.metrics, MappingMetrics):
+            return False
+        seed = FindingSemanticMirrorLocations(finding).optional_seed_locations()
+        return (
+            finding.metrics.plan_mapping_name is not None
+            and seed is not None
+            and seed.projection_is_kind(SemanticMirrorProjectionKind.RETURN)
+        )
+
+    def supports_finding(self) -> bool:
+        return self.matches_finding_shape(self.finding) and self.parts is not None
 
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
@@ -23874,15 +23949,20 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         locations = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
         if locations is None:
             return "dataclass payload projection requires projection and authority locations"
-        projection_source_path = self.resolved_source_path(
-            locations.projection_file_path()
-        )
-        authority_source_path = self.resolved_source_path(
-            locations.authority_file_path()
-        )
+        projection_source_path = SourcePathResolutionAuthority.from_source_index(
+            locations.projection_file_path(),
+            self.source_index,
+        ).optional_path()
+        authority_source_path = SourcePathResolutionAuthority.from_source_index(
+            locations.authority_file_path(),
+            self.source_index,
+        ).optional_path()
         if projection_source_path is None or authority_source_path is None:
             return "dataclass payload projection requires source-index-resolved files"
-        if self.import_would_create_cycle(projection_source_path, authority_source_path):
+        if self.module_import_graph.import_would_create_cycle(
+            importing_file_path=projection_source_path,
+            imported_file_path=authority_source_path,
+        ):
             return (
                 "dataclass payload projection import would create a module cycle"
             )

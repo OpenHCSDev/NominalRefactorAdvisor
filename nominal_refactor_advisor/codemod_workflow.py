@@ -767,12 +767,9 @@ class CodemodRefactorGoalFindingSelector:
         ) or self.matches_mapping_target_shape(finding)
 
     def matches_mapping_target_shape(self, finding: RefactorFinding) -> bool:
-        return (
-            isinstance(finding.metrics, MappingMetrics)
-            and finding.metrics.plan_mapping_name
-            in MappingSemanticMirrorRecipeBuilder.mapping_names_for_target_shapes(
-                self.target_shapes,
-            )
+        return bool(
+            self.target_shapes
+            & MappingSemanticMirrorRecipeBuilder.target_shapes_for_finding(finding)
         )
 
 
@@ -872,7 +869,12 @@ class TupleDictReturnNominalizationGoalTargetPolicy(
     goal_kind = CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION
     selectors = (
         CodemodRefactorGoalFindingSelector(
-            target_shapes=frozenset({RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD})
+            target_shapes=frozenset(
+                {
+                    RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
+                    RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
+                }
+            )
         ),
     )
 

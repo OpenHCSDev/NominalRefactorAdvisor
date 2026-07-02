@@ -17034,6 +17034,7 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
         *,
         mapping_name: str | None = None,
         symbol: str,
+        authority_symbol: str | None = None,
     ) -> RefactorFinding:
         keyword_arguments = {}
         if mapping_name is not None:
@@ -17041,6 +17042,12 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
                 mapping_site_count=1,
                 field_names=("alpha", "beta"),
                 mapping_name=mapping_name,
+            )
+        evidence = (SourceLocation("pkg/mod.py", 1, symbol),)
+        if authority_symbol is not None:
+            evidence = (
+                SourceLocation("pkg/mod.py", 1, symbol),
+                SourceLocation("pkg/model.py", 10, authority_symbol),
             )
         return _finding_spec(
             PatternId.AUTHORITATIVE_SCHEMA,
@@ -17051,7 +17058,7 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
         ).build(
             detector_id,
             f"{symbol} mirrors a semantic carrier fact.",
-            (SourceLocation("pkg/mod.py", 1, symbol),),
+            evidence,
             **keyword_arguments,
         )
 
@@ -17067,6 +17074,12 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
         mapping_name="semantic_tuple_return_record",
         symbol="TupleReturn",
     )
+    payload_projection = finding(
+        "semantic_mirror_without_descent",
+        mapping_name="ActionReport.to_dict:return@15",
+        symbol="ActionReport.to_dict:return@15",
+        authority_symbol="RefactorAction",
+    )
     source_context = finding(
         "formal_boundary_stringly_source_scope",
         mapping_name="formal_boundary_source_scope_return_dict",
@@ -17079,6 +17092,7 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
         unrelated,
         source_context,
         return_record,
+        payload_projection,
         constructor,
         dataclass_lift,
         prefix,
@@ -17090,11 +17104,14 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
     )
     policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
 
-    assert policy.target_findings(goal, findings) == (
+    selected = policy.target_findings(goal, findings)
+    assert selected[:3] == (
         prefix,
         dataclass_lift,
         constructor,
-        return_record,
+    )
+    assert frozenset(selected[3:5]) == frozenset((payload_projection, return_record))
+    assert selected[5:] == (
         source_context,
         dead_compat,
     )
@@ -17107,6 +17124,30 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
             RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
             RefactorRecipeTargetShape.DATACLASS_CONTEXT_CALL_PROJECTION,
         }
+    )
+    tuple_dict_policy = CodemodRefactorGoalTargetPolicy.policy_for(
+        CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION
+    )
+    assert tuple_dict_policy.selectors[0].target_shapes == frozenset(
+        {
+            RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
+            RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
+        }
+    )
+    tuple_dict_goal = CodemodRefactorGoal(
+        goal_id="tuple-dict",
+        kind=CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION,
+    )
+    assert frozenset(
+        tuple_dict_policy.target_findings(
+            tuple_dict_goal,
+            findings,
+        )
+    ) == frozenset(
+        (
+            payload_projection,
+            return_record,
+        )
     )
     assert CodemodRefactorGoalTargetPolicy.policy_for(
         CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION
