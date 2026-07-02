@@ -16835,6 +16835,111 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     ) == (finding.stable_id,)
 
 
+def test_codemod_refactor_goal_runner_scopes_context_root_progress(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    detector_id = "goal_scope_test_detector"
+    report_path = tmp_path / "pkg/report.py"
+    context_path = tmp_path / "pkg/context.py"
+    _write_module(
+        tmp_path,
+        "pkg/report.py",
+        "\nclass Report:\n" "    def run(self):\n" "        return 'old'\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/context.py",
+        "\nclass Context:\n" "    def run(self):\n" "        return 'old'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+
+    finding_spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Semantic fact repeats outside nominal boundary",
+        "Duplicated encoding should move behind the named owner.",
+        "one nominal authority for the semantic fact",
+        "same source fact encoded in parallel branches",
+    )
+    report_finding = finding_spec.build(
+        detector_id,
+        "Report.run encodes the semantic fact outside its boundary.",
+        (SourceLocation(report_path.as_posix(), 3, "Report.run"),),
+    )
+    context_finding = finding_spec.build(
+        detector_id,
+        "Context.run encodes the semantic fact outside its boundary.",
+        (SourceLocation(context_path.as_posix(), 3, "Context.run"),),
+    )
+
+    class GoalScopeTestSynthesizer(FindingRecipeSynthesizer):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((report_path.as_posix(), "Report.run"),),
+            )
+
+        def recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ) -> RefactorRecipe | None:
+            del finding, context
+            return RefactorRecipe("extract-report-semantic-fact").replace_text(
+                "Report.run",
+                "return 'old'",
+                "return 'new'",
+                source_path=report_path.as_posix(),
+            )
+
+    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
+    FindingRecipeSynthesizer.__registry__[detector_id] = GoalScopeTestSynthesizer
+    try:
+        report = CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            report_roots=(report_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            goal=CodemodRefactorGoal(
+                goal_id="extract-report-semantic-fact",
+                detector_ids=(detector_id,),
+                max_stages=2,
+            ),
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodFixpointScan(
+                modules=modules,
+                findings=[report_finding, context_finding],
+            ),
+        ).run()
+    finally:
+        if previous_synthesizer is None:
+            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+        else:
+            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
+
+    assert report.completed is True
+    assert report.achieved is True
+    assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.final_target_finding_ids == ()
+    assert report.stages[0].progress.before_target_finding_ids == (
+        report_finding.stable_id,
+    )
+    assert context_finding.stable_id not in (
+        report.stages[0].progress.before_target_finding_ids
+    )
+    assert report.stages[0].progress.after_target_finding_ids == ()
+
+
 def test_codemod_workflow_plan_runs_goal_from_json(
     tmp_path: Path,
 ) -> None:
@@ -16842,6 +16947,7 @@ def test_codemod_workflow_plan_runs_goal_from_json(
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowPlanJsonParser
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowRunContext
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowPlanKind
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -16904,17 +17010,19 @@ def test_codemod_workflow_plan_runs_goal_from_json(
             }
         )
         report = workflow_plan.run(
-            resolved_dir=None,
-            enabled=False,
-            roots=(tmp_path,),
-            config=DetectorConfig(),
-            parse_workers=1,
-            dry_run=True,
-            guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodFixpointScan(
-                modules=modules,
-                findings=[finding],
-            ),
+            CodemodWorkflowRunContext(
+                resolved_dir=None,
+                enabled=False,
+                roots=(tmp_path,),
+                config=DetectorConfig(),
+                parse_workers=1,
+                dry_run=True,
+                guard_suite=ArchitectureGuardSuite(),
+                initial_scan=CodemodFixpointScan(
+                    modules=modules,
+                    findings=[finding],
+                ),
+            )
         )
     finally:
         if previous_synthesizer is None:
@@ -17975,6 +18083,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodWorkflowPlanJsonParser
     from nominal_refactor_advisor import CodemodWorkflowPlanKind
     from nominal_refactor_advisor import CodemodWorkflowScanRequest
+    from nominal_refactor_advisor import CodemodWorkflowRunContext
     from nominal_refactor_advisor import ParseCacheRequest
     from nominal_refactor_advisor import FindingRecipeClassPlan
     from nominal_refactor_advisor import FindingRecipeClassPlanReport
@@ -18140,6 +18249,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodWorkflowPlanManifest.__name__ == "CodemodWorkflowPlanManifest"
     assert CodemodWorkflowReport.__name__ == "CodemodWorkflowReport"
     assert CodemodWorkflowPlan.__name__ == "CodemodWorkflowPlan"
+    assert CodemodWorkflowRunContext.__name__ == "CodemodWorkflowRunContext"
     assert (
         CodemodFixpointWorkflowPlan(
             plan_id="finding-backed-fixpoint",

@@ -100,16 +100,15 @@ from .codemod import (
 from .codemod_source_cache import CodemodSourceContextCache
 from .codemod_workflow import (
     CodemodFixpointReport,
-    CodemodFixpointRunner,
     CodemodFixpointScan,
     CodemodProjectedFindingReport,
     CodemodRefactorGoal,
     CodemodRefactorGoalKind,
     CodemodRefactorGoalReport,
-    CodemodRefactorGoalRunner,
     CodemodSimulationFindingProjection,
     CodemodWorkflowPlan,
     CodemodWorkflowPlanJsonParser,
+    CodemodWorkflowRunContext,
     codemod_workflow_plan_example_payloads,
     codemod_workflow_plan_manifests,
 )
@@ -5862,20 +5861,22 @@ def main() -> int:
         modules,
         architecture_guard_rules,
     )
+    workflow_run_context = CodemodWorkflowRunContext(
+        resolved_dir=parse_cache_dir,
+        enabled=args.use_parse_cache,
+        roots=roots,
+        report_roots=path_scope.report_roots,
+        config=config,
+        parse_workers=args.parse_workers,
+        guard_suite=codemod_plan_sequence.guard_suite,
+        dry_run=not args.codemod_apply,
+        initial_scan=CodemodFixpointScan(
+            modules=modules,
+            findings=findings,
+        ),
+    )
     if codemod_workflow_plan is not None:
-        report = codemod_workflow_plan.run(
-            resolved_dir=parse_cache_dir,
-            enabled=args.use_parse_cache,
-            roots=roots,
-            config=config,
-            parse_workers=args.parse_workers,
-            guard_suite=codemod_plan_sequence.guard_suite,
-            dry_run=not args.codemod_apply,
-            initial_scan=CodemodFixpointScan(
-                modules=modules,
-                findings=findings,
-            ),
-        )
+        report = codemod_workflow_plan.run(workflow_run_context)
         write_cli_json_artifact(args.codemod_plan_out, report.replay_sequence.to_dict())
         if args.json:
             print(json.dumps(report.to_dict(), indent=2))
@@ -5883,19 +5884,8 @@ def main() -> int:
             print(report.to_markdown())
         return 0 if report.completed else 1
     if args.codemod_fixpoint:
-        report = CodemodFixpointRunner(
-            resolved_dir=parse_cache_dir,
-            enabled=args.use_parse_cache,
-            roots=roots,
-            config=config,
-            parse_workers=args.parse_workers,
+        report = workflow_run_context.fixpoint_runner(
             max_iterations=args.codemod_fixpoint_max_iterations,
-            guard_suite=codemod_plan_sequence.guard_suite,
-            dry_run=not args.codemod_apply,
-            initial_scan=CodemodFixpointScan(
-                modules=modules,
-                findings=findings,
-            ),
         ).run()
         replay_plan_payload = report.replay_plan.sequence.to_dict()
         write_cli_json_artifact(args.codemod_fixpoint_plan_out, replay_plan_payload)
@@ -5910,19 +5900,8 @@ def main() -> int:
             refactor_goal = codemod_refactor_goal_from_args(args)
         except ValueError as error:
             parser.error(str(error))
-        report = CodemodRefactorGoalRunner(
-            resolved_dir=parse_cache_dir,
-            enabled=args.use_parse_cache,
-            roots=roots,
-            config=config,
-            parse_workers=args.parse_workers,
+        report = workflow_run_context.refactor_goal_runner(
             goal=refactor_goal,
-            guard_suite=codemod_plan_sequence.guard_suite,
-            dry_run=not args.codemod_apply,
-            initial_scan=CodemodFixpointScan(
-                modules=modules,
-                findings=findings,
-            ),
         ).run()
         replay_plan_payload = report.replay_sequence.to_dict()
         write_cli_json_artifact(args.codemod_goal_plan_out, replay_plan_payload)

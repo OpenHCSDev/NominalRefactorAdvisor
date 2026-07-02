@@ -1013,15 +1013,7 @@ class CodemodWorkflowPlan(ABC, metaclass=AutoRegisterMeta):
     @abstractmethod
     def run(
         self,
-        *,
-        resolved_dir: Path | None,
-        enabled: bool,
-        roots: tuple[Path, ...],
-        config: DetectorConfig,
-        parse_workers: int,
-        dry_run: bool,
-        guard_suite: ArchitectureGuardSuite,
-        initial_scan: "CodemodFixpointScan | None" = None,
+        context: "CodemodWorkflowRunContext",
     ) -> "CodemodWorkflowReport":
         raise NotImplementedError
 
@@ -1078,27 +1070,9 @@ class CodemodFixpointWorkflowPlan(CodemodWorkflowPlan):
 
     def run(
         self,
-        *,
-        resolved_dir: Path | None,
-        enabled: bool,
-        roots: tuple[Path, ...],
-        config: DetectorConfig,
-        parse_workers: int,
-        dry_run: bool,
-        guard_suite: ArchitectureGuardSuite,
-        initial_scan: "CodemodFixpointScan | None" = None,
+        context: "CodemodWorkflowRunContext",
     ) -> "CodemodWorkflowReport":
-        return CodemodFixpointRunner(
-            resolved_dir=resolved_dir,
-            enabled=enabled,
-            roots=roots,
-            config=config,
-            parse_workers=parse_workers,
-            dry_run=dry_run,
-            initial_scan=initial_scan,
-            guard_suite=guard_suite,
-            max_iterations=self.max_iterations,
-        ).run()
+        return context.fixpoint_runner(max_iterations=self.max_iterations).run()
 
     def to_dict(self) -> JsonObject:
         return {
@@ -1160,27 +1134,9 @@ class CodemodRefactorGoalWorkflowPlan(CodemodWorkflowPlan):
 
     def run(
         self,
-        *,
-        resolved_dir: Path | None,
-        enabled: bool,
-        roots: tuple[Path, ...],
-        config: DetectorConfig,
-        parse_workers: int,
-        dry_run: bool,
-        guard_suite: ArchitectureGuardSuite,
-        initial_scan: "CodemodFixpointScan | None" = None,
+        context: "CodemodWorkflowRunContext",
     ) -> "CodemodWorkflowReport":
-        return CodemodRefactorGoalRunner(
-            resolved_dir=resolved_dir,
-            enabled=enabled,
-            roots=roots,
-            config=config,
-            parse_workers=parse_workers,
-            dry_run=dry_run,
-            initial_scan=initial_scan,
-            guard_suite=guard_suite,
-            goal=self.goal,
-        ).run()
+        return context.refactor_goal_runner(goal=self.goal).run()
 
     def to_dict(self) -> JsonObject:
         return {
@@ -1844,11 +1800,59 @@ class CodemodFixpointScan:
         return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
 
 
+@dataclass(frozen=True)
+class CodemodWorkflowRunContext:
+    """Nominal run context shared by codemod workflow entry points."""
+
+    resolved_dir: Path | None
+    enabled: bool
+    roots: tuple[Path, ...]
+    config: DetectorConfig
+    parse_workers: int
+    dry_run: bool
+    guard_suite: ArchitectureGuardSuite
+    report_roots: tuple[Path, ...] = ()
+    initial_scan: CodemodFixpointScan | None = None
+
+    def fixpoint_runner(self, *, max_iterations: int) -> "CodemodFixpointRunner":
+        return CodemodFixpointRunner(
+            resolved_dir=self.resolved_dir,
+            enabled=self.enabled,
+            roots=self.roots,
+            report_roots=self.report_roots,
+            config=self.config,
+            parse_workers=self.parse_workers,
+            dry_run=self.dry_run,
+            initial_scan=self.initial_scan,
+            guard_suite=self.guard_suite,
+            max_iterations=max_iterations,
+        )
+
+    def refactor_goal_runner(
+        self,
+        *,
+        goal: CodemodRefactorGoal,
+    ) -> "CodemodRefactorGoalRunner":
+        return CodemodRefactorGoalRunner(
+            resolved_dir=self.resolved_dir,
+            enabled=self.enabled,
+            roots=self.roots,
+            report_roots=self.report_roots,
+            config=self.config,
+            parse_workers=self.parse_workers,
+            dry_run=self.dry_run,
+            initial_scan=self.initial_scan,
+            guard_suite=self.guard_suite,
+            goal=goal,
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class CodemodWorkflowScanRequest(ParseCacheRequest):
     """Shared scan/projection substrate for staged codemod workflows."""
 
     roots: tuple[Path, ...]
+    report_roots: tuple[Path, ...] = ()
     config: DetectorConfig
     parse_workers: int
     dry_run: bool
@@ -1856,7 +1860,7 @@ class CodemodWorkflowScanRequest(ParseCacheRequest):
 
     def scan(self, stage_index: int) -> CodemodFixpointScan:
         if stage_index == 0 and self.initial_scan is not None:
-            return self.initial_scan
+            return self.report_scoped_scan(self.initial_scan)
         modules = parse_python_module_roots(
             self.roots,
             cache_dir=self.resolved_dir,
@@ -1865,7 +1869,7 @@ class CodemodWorkflowScanRequest(ParseCacheRequest):
         )
         return CodemodFixpointScan(
             modules=modules,
-            findings=analyze_modules(modules, self.config),
+            findings=self.report_scoped_findings(analyze_modules(modules, self.config)),
         )
 
     def projected_scan(
@@ -1873,6 +1877,15 @@ class CodemodWorkflowScanRequest(ParseCacheRequest):
         scan: CodemodFixpointScan,
         simulation: CodemodSimulationReport,
     ) -> CodemodFixpointScan:
+        if self.report_roots:
+            return CodemodSimulationFindingProjection(
+                modules=tuple(scan.modules),
+                findings=tuple(scan.findings),
+                simulation=simulation,
+                config=self.config,
+                roots=self.roots,
+                report_roots=self.report_roots,
+            ).scan()
         modules = ProjectedScanModuleSet(
             modules=tuple(scan.modules),
             simulation=simulation,
@@ -1882,6 +1895,20 @@ class CodemodWorkflowScanRequest(ParseCacheRequest):
             modules=list(modules),
             findings=analyze_modules(modules, self.config),
         )
+
+    def report_scoped_scan(self, scan: CodemodFixpointScan) -> CodemodFixpointScan:
+        if not self.report_roots:
+            return scan
+        return replace(scan, findings=self.report_scoped_findings(scan.findings))
+
+    def report_scoped_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+    ) -> list[RefactorFinding]:
+        return AnalysisPathScope(
+            analysis_roots=self.roots,
+            report_roots=self.report_roots,
+        ).filter_findings(list(findings))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2609,10 +2636,12 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             simulation=simulation,
             roots=self.roots,
         ).modules_after_projection()
-        target_findings = analyze_detector_types(
-            list(modules),
-            self.config,
-            detector_types=detector_types,
+        target_findings = self.report_scoped_findings(
+            analyze_detector_types(
+                list(modules),
+                self.config,
+                detector_types=detector_types,
+            )
         )
         preserved_findings = tuple(
             finding
