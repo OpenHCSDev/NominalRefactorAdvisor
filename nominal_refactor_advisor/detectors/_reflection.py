@@ -33,6 +33,7 @@ _UPPERCASE_SEMANTIC_DECLARATION_TOKENS = frozenset(
     (
         "CACHE",
         "REGISTRY",
+        "STRATEGY",
     )
 )
 _UPPERCASE_SEMANTIC_DECLARATION_CALLS = frozenset(
@@ -92,6 +93,8 @@ def _semantic_declaration_value_role(node: ast.AST) -> str | None:
         call_name = _call_name(node)
         if call_name in _UPPERCASE_SEMANTIC_DECLARATION_CALLS:
             return f"{call_name} declaration"
+        if call_name is not None and call_name[:1].isupper():
+            return "singleton instance declaration"
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return "string protocol declaration"
     if isinstance(node, ast.Name):

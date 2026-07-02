@@ -5922,6 +5922,37 @@ class RuntimeRegistryAxis(str):
     )
 
 
+def test_detects_uppercase_semantic_strategy_singleton_globals(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_strategy.py",
+        """
+class AvailableFieldStrategy:
+    pass
+
+class StrategyKey(str):
+    available = "available"
+
+POSITIVE_BUDGETED_REPAIR_SEED_SCAN_PROGRESS_AVAILABLE_FIELD_STRATEGY = (
+    AvailableFieldStrategy()
+)
+""",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == "uppercase_semantic_declaration"
+    )
+    assert (
+        "POSITIVE_BUDGETED_REPAIR_SEED_SCAN_PROGRESS_AVAILABLE_FIELD_STRATEGY"
+        in finding.summary
+    )
+    assert all("StrategyKey" not in evidence.symbol for evidence in finding.evidence)
+
+
 def test_detects_parallel_primitive_identity_carrier(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
