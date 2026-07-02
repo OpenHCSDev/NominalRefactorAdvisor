@@ -47,7 +47,7 @@ from .codemod import (
     module_name_from_source_path,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
-from .models import RefactorFinding
+from .models import MappingMetrics, RefactorFinding
 from .source_index import SourceIndex
 
 
@@ -69,6 +69,13 @@ class CodemodRefactorGoalKind(StrEnum):
     """Supported high-level DSL refactor goals."""
 
     NOMINAL_BOUNDARY_EXTRACTION = "nominal_boundary_extraction"
+    SEMANTIC_CARRIER_EXTRACTION = "semantic_carrier_extraction"
+    PREFIX_BUNDLE_EXTRACTION = "prefix_bundle_extraction"
+    DATACLASS_INHERITANCE_LIFT = "dataclass_inheritance_lift"
+    CONSTRUCTOR_KWARG_COLLAPSE = "constructor_kwarg_collapse"
+    TUPLE_DICT_RETURN_NOMINALIZATION = "tuple_dict_return_nominalization"
+    BOUNDARY_SOURCE_CONTEXT_REWRITE = "boundary_source_context_rewrite"
+    DEAD_COMPATIBILITY_ERASER = "dead_compatibility_eraser"
 
 
 class CodemodWorkflowPlanKind(StrEnum):
@@ -720,6 +727,60 @@ class CodemodRefactorGoalTargetPolicy(ABC, metaclass=AutoRegisterMeta):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class CodemodRefactorGoalFindingSelector:
+    """Detector and mapping-name evidence for one executable refactor family."""
+
+    detector_ids: frozenset[str] = frozenset()
+    mapping_names: frozenset[str] = frozenset()
+
+    def matches(self, finding: RefactorFinding) -> bool:
+        return self.matches_detector(finding) or self.matches_mapping_name(finding)
+
+    def matches_detector(self, finding: RefactorFinding) -> bool:
+        return finding.detector_id in self.detector_ids
+
+    def matches_mapping_name(self, finding: RefactorFinding) -> bool:
+        return (
+            bool(self.mapping_names)
+            and isinstance(finding.metrics, MappingMetrics)
+            and finding.metrics.plan_mapping_name in self.mapping_names
+        )
+
+
+class SelectorBackedRefactorGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
+    """Goal policy whose default target set is a nominal selector sequence."""
+
+    selectors: ClassVar[tuple[CodemodRefactorGoalFindingSelector, ...]] = ()
+
+    def target_findings(
+        self,
+        goal: CodemodRefactorGoal,
+        findings: Iterable[RefactorFinding],
+    ) -> tuple[RefactorFinding, ...]:
+        selected = super().target_findings(goal, findings)
+        if goal.has_explicit_targets:
+            return selected
+        return tuple(
+            sorted(
+                selected,
+                key=lambda finding: (
+                    self.selector_rank(finding),
+                    finding.stable_id,
+                ),
+            )
+        )
+
+    def default_target_matches_finding(self, finding: RefactorFinding) -> bool:
+        return any(selector.matches(finding) for selector in self.selectors)
+
+    def selector_rank(self, finding: RefactorFinding) -> int:
+        for index, selector in enumerate(self.selectors):
+            if selector.matches(finding):
+                return index
+        return len(self.selectors)
+
+
 class NominalBoundaryExtractionGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
     """Target SSOT authority-boundary findings for nominal-boundary goals."""
 
@@ -733,6 +794,113 @@ class NominalBoundaryExtractionGoalTargetPolicy(CodemodRefactorGoalTargetPolicy)
 
     def default_target_matches_finding(self, finding: RefactorFinding) -> bool:
         return finding.detector_id in self.default_detector_ids()
+
+
+class PrefixBundleExtractionGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+    """Target flattened prefix/role fields that can become nominal carriers."""
+
+    goal_kind = CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION
+    selectors = (
+        CodemodRefactorGoalFindingSelector(
+            detector_ids=frozenset(
+                {
+                    "prefixed_role_field_bundle",
+                    "parallel_primitive_carrier",
+                }
+            )
+        ),
+    )
+
+
+class DataclassInheritanceLiftGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+    """Target duplicated dataclass field sets and existing authority reuse."""
+
+    goal_kind = CodemodRefactorGoalKind.DATACLASS_INHERITANCE_LIFT
+    selectors = (
+        CodemodRefactorGoalFindingSelector(
+            detector_ids=frozenset(
+                {
+                    "repeated_field_family",
+                    "existing_nominal_authority_reuse",
+                }
+            )
+        ),
+    )
+
+
+class ConstructorKwargCollapseGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+    """Target constructor keyword mirrors that can route through carriers."""
+
+    goal_kind = CodemodRefactorGoalKind.CONSTRUCTOR_KWARG_COLLAPSE
+    selectors = (
+        CodemodRefactorGoalFindingSelector(
+            mapping_names=frozenset(
+                {
+                    "dataclass_constructor_projection",
+                    "dataclass_context_call_projection",
+                }
+            )
+        ),
+    )
+
+
+class TupleDictReturnNominalizationGoalTargetPolicy(
+    SelectorBackedRefactorGoalTargetPolicy
+):
+    """Target positional tuple returns, return dicts, and product records."""
+
+    goal_kind = CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION
+    selectors = (
+        CodemodRefactorGoalFindingSelector(
+            mapping_names=frozenset(
+                {
+                    "semantic_tuple_return_record",
+                    "semantic_dict_bag_return_dict_record",
+                }
+            )
+        ),
+        CodemodRefactorGoalFindingSelector(
+            detector_ids=frozenset({"runtime_product_record_schema"})
+        ),
+    )
+
+
+class BoundarySourceContextRewriteGoalTargetPolicy(
+    SelectorBackedRefactorGoalTargetPolicy
+):
+    """Target string-key formal source scopes for typed context authorities."""
+
+    goal_kind = CodemodRefactorGoalKind.BOUNDARY_SOURCE_CONTEXT_REWRITE
+    selectors = (
+        CodemodRefactorGoalFindingSelector(
+            mapping_names=frozenset({"formal_boundary_source_scope_return_dict"})
+        ),
+    )
+
+
+class DeadCompatibilityEraserGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+    """Target obsolete compatibility surfaces after structural replacement."""
+
+    goal_kind = CodemodRefactorGoalKind.DEAD_COMPATIBILITY_ERASER
+    selectors = (
+        CodemodRefactorGoalFindingSelector(
+            detector_ids=frozenset({"flattened_projection_property"})
+        ),
+    )
+
+
+class SemanticCarrierExtractionGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+    """Prioritize the carrier/authority refactor sequence used by the DSL."""
+
+    goal_kind = CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
+    selectors = (
+        *PrefixBundleExtractionGoalTargetPolicy.selectors,
+        *DataclassInheritanceLiftGoalTargetPolicy.selectors,
+        *ConstructorKwargCollapseGoalTargetPolicy.selectors,
+        *TupleDictReturnNominalizationGoalTargetPolicy.selectors,
+        *BoundarySourceContextRewriteGoalTargetPolicy.selectors,
+        *DeadCompatibilityEraserGoalTargetPolicy.selectors,
+    )
 
 
 @dataclass(frozen=True)
@@ -928,7 +1096,8 @@ class CodemodRefactorGoalWorkflowPlan(CodemodWorkflowPlan):
 
     workflow: ClassVar[CodemodWorkflowPlanKind] = CodemodWorkflowPlanKind.REFACTOR_GOAL
     example_goal: ClassVar[CodemodRefactorGoal] = CodemodRefactorGoal(
-        goal_id="nominal-boundary-goal"
+        goal_id="semantic-carrier-goal",
+        kind=CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION,
     )
     goal: CodemodRefactorGoal
 

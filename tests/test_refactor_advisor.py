@@ -12247,7 +12247,7 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
     assert workflow_plan_examples["fixpoint"]["max_iterations"] == 8
     assert (
         workflow_plan_examples["refactor_goal"]["goal"]["kind"]
-        == "nominal_boundary_extraction"
+        == "semantic_carrier_extraction"
     )
     assert workflow_plan_examples["refactor_goal"]["goal"]["detector_ids"] == []
     assert [
@@ -17007,6 +17007,104 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     }
 
 
+def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalKind
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalTargetPolicy
+
+    def finding(
+        detector_id: str,
+        *,
+        mapping_name: str | None = None,
+        symbol: str,
+    ) -> RefactorFinding:
+        keyword_arguments = {}
+        if mapping_name is not None:
+            keyword_arguments["metrics"] = MappingMetrics.from_field_names(
+                mapping_site_count=1,
+                field_names=("alpha", "beta"),
+                mapping_name=mapping_name,
+            )
+        return _finding_spec(
+            PatternId.AUTHORITATIVE_SCHEMA,
+            f"{symbol} structural carrier target",
+            "The same semantic fact is mirrored outside its nominal owner.",
+            "one nominal authority for the semantic fact",
+            "same source fact encoded in parallel projections",
+        ).build(
+            detector_id,
+            f"{symbol} mirrors a semantic carrier fact.",
+            (SourceLocation("pkg/mod.py", 1, symbol),),
+            **keyword_arguments,
+        )
+
+    prefix = finding("prefixed_role_field_bundle", symbol="PrefixBundle")
+    dataclass_lift = finding("repeated_field_family", symbol="DataclassLift")
+    constructor = finding(
+        "semantic_mirror_without_descent",
+        mapping_name="dataclass_constructor_projection",
+        symbol="ConstructorKwargs",
+    )
+    return_record = finding(
+        "semantic_mirror_without_descent",
+        mapping_name="semantic_tuple_return_record",
+        symbol="TupleReturn",
+    )
+    source_context = finding(
+        "formal_boundary_stringly_source_scope",
+        mapping_name="formal_boundary_source_scope_return_dict",
+        symbol="SourceContext",
+    )
+    dead_compat = finding("flattened_projection_property", symbol="DeadCompat")
+    unrelated = finding("random_detector", symbol="Unrelated")
+    findings = (
+        dead_compat,
+        unrelated,
+        source_context,
+        return_record,
+        constructor,
+        dataclass_lift,
+        prefix,
+    )
+
+    goal = CodemodRefactorGoal(
+        goal_id="semantic-carrier-priority",
+        kind=CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION,
+    )
+    policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
+
+    assert policy.target_findings(goal, findings) == (
+        prefix,
+        dataclass_lift,
+        constructor,
+        return_record,
+        source_context,
+        dead_compat,
+    )
+    assert CodemodRefactorGoalTargetPolicy.policy_for(
+        CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION
+    ).target_findings(
+        CodemodRefactorGoal(
+            goal_id="prefix",
+            kind=CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION,
+        ),
+        findings,
+    ) == (
+        prefix,
+    )
+    assert CodemodRefactorGoalTargetPolicy.policy_for(
+        CodemodRefactorGoalKind.DEAD_COMPATIBILITY_ERASER
+    ).target_findings(
+        CodemodRefactorGoal(
+            goal_id="dead-compat",
+            kind=CodemodRefactorGoalKind.DEAD_COMPATIBILITY_ERASER,
+        ),
+        findings,
+    ) == (
+        dead_compat,
+    )
+
+
 def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
     tmp_path: Path,
 ) -> None:
@@ -17791,6 +17889,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodPlanSequenceSimulation
     from nominal_refactor_advisor import CodemodProjectedFindingReport
     from nominal_refactor_advisor import CodemodRefactorGoal
+    from nominal_refactor_advisor import CodemodRefactorGoalFindingSelector
     from nominal_refactor_advisor import CodemodRefactorGoalKind
     from nominal_refactor_advisor import CodemodRefactorGoalProgress
     from nominal_refactor_advisor import CodemodRefactorGoalReport
@@ -17811,11 +17910,18 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import ParseCacheRequest
     from nominal_refactor_advisor import FindingRecipeClassPlan
     from nominal_refactor_advisor import FindingRecipeClassPlanReport
+    from nominal_refactor_advisor import BoundarySourceContextRewriteGoalTargetPolicy
+    from nominal_refactor_advisor import ConstructorKwargCollapseGoalTargetPolicy
+    from nominal_refactor_advisor import DataclassInheritanceLiftGoalTargetPolicy
+    from nominal_refactor_advisor import DeadCompatibilityEraserGoalTargetPolicy
     from nominal_refactor_advisor import NominalBoundaryExtractionGoalTargetPolicy
+    from nominal_refactor_advisor import PrefixBundleExtractionGoalTargetPolicy
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import RefactorRecipeTargetShape
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
+    from nominal_refactor_advisor import SemanticCarrierExtractionGoalTargetPolicy
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
+    from nominal_refactor_advisor import TupleDictReturnNominalizationGoalTargetPolicy
     from nominal_refactor_advisor import codemod_dsl_manifest
     from nominal_refactor_advisor import codemod_workflow_plan_example_payloads
     from nominal_refactor_advisor import codemod_workflow_plan_manifests
@@ -17914,9 +18020,16 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     )
     assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
     assert CodemodRefactorGoal.__name__ == "CodemodRefactorGoal"
+    assert CodemodRefactorGoalFindingSelector.__name__ == (
+        "CodemodRefactorGoalFindingSelector"
+    )
     assert (
         CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION.value
         == "nominal_boundary_extraction"
+    )
+    assert (
+        CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION.value
+        == "semantic_carrier_extraction"
     )
     assert CodemodRefactorGoalProgress.__name__ == "CodemodRefactorGoalProgress"
     assert CodemodRefactorGoalReport.__name__ == "CodemodRefactorGoalReport"
@@ -17927,6 +18040,30 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
             CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
         ).__class__
         is NominalBoundaryExtractionGoalTargetPolicy
+    )
+    assert (
+        CodemodRefactorGoalTargetPolicy.policy_for(
+            CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
+        ).__class__
+        is SemanticCarrierExtractionGoalTargetPolicy
+    )
+    assert PrefixBundleExtractionGoalTargetPolicy.__name__ == (
+        "PrefixBundleExtractionGoalTargetPolicy"
+    )
+    assert DataclassInheritanceLiftGoalTargetPolicy.__name__ == (
+        "DataclassInheritanceLiftGoalTargetPolicy"
+    )
+    assert ConstructorKwargCollapseGoalTargetPolicy.__name__ == (
+        "ConstructorKwargCollapseGoalTargetPolicy"
+    )
+    assert TupleDictReturnNominalizationGoalTargetPolicy.__name__ == (
+        "TupleDictReturnNominalizationGoalTargetPolicy"
+    )
+    assert BoundarySourceContextRewriteGoalTargetPolicy.__name__ == (
+        "BoundarySourceContextRewriteGoalTargetPolicy"
+    )
+    assert DeadCompatibilityEraserGoalTargetPolicy.__name__ == (
+        "DeadCompatibilityEraserGoalTargetPolicy"
     )
     assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
     assert CodemodWorkflowPlanFieldManifest.__name__ == (

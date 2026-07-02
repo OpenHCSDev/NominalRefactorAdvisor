@@ -787,8 +787,9 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--codemod-refactor-goal",),
             value_type=str,
             help=(
-                "Run a goal-directed staged DSL refactor. Currently supported: "
-                "nominal_boundary_extraction."
+                "Run a goal-directed staged DSL refactor. Supported goals: "
+                + ", ".join(kind.value for kind in CodemodRefactorGoalKind)
+                + "."
             ),
         ),
         CliArgumentSpec(
@@ -2708,7 +2709,7 @@ class RunGoalRefactorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
         return (
             *context.root_args,
             "--codemod-refactor-goal",
-            CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION.value,
+            CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION.value,
             "--codemod-goal-finding-id",
             context.finding_id,
             "--codemod-goal-plan-out",
