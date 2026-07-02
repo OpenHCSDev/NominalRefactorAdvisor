@@ -115,7 +115,12 @@ from .codemod_workflow import (
 from .codemod_authoring import (
     CodemodAuthoringBundleActionRunner,
     CodemodAuthoringBundleStatusReporter,
+    CodemodAuthoringArtifactRole,
+    CodemodAuthoringCommandActionId,
+    CodemodAuthoringWorkflowActionCommandSpec,
+    CodemodAuthoringWorkflowId,
     CodemodAuthoringWorkflowPlanner,
+    CodemodCliCommandSpec,
 )
 from .detectors import DetectorConfig, IssueDetector
 from .economics import (
@@ -2035,31 +2040,6 @@ def cli_artifact_slug(value: str) -> str:
     return cleaned
 
 
-class CodemodAuthoringCommandActionId(str, Enum):
-    """Stable action ids for replayable codemod authoring commands."""
-
-    RESOLVE_SELECTOR = "resolve_selector"
-    SCAFFOLD_REPLACEMENT_PLAN = "scaffold_replacement_plan"
-    VALIDATE_REPLACEMENT_PLAN = "validate_replacement_plan"
-    SIMULATE_REPLACEMENT_PLAN = "simulate_replacement_plan"
-    APPLY_REPLACEMENT_PLAN = "apply_replacement_plan"
-    SCAFFOLD_SELECTED_OPERATION_PLAN = "scaffold_selected_operation_plan"
-    PREFLIGHT_SELECTED_OPERATION_PLAN = "preflight_selected_operation_plan"
-    SIMULATE_SELECTED_OPERATION_PLAN = "simulate_selected_operation_plan"
-    APPLY_SELECTED_OPERATION_PLAN = "apply_selected_operation_plan"
-    RUN_GOAL_REFACTOR = "run_goal_refactor"
-    SIMULATE_GOAL_REPLAY_PLAN = "simulate_goal_replay_plan"
-    APPLY_GOAL_REPLAY_PLAN = "apply_goal_replay_plan"
-
-
-class CodemodAuthoringWorkflowId(str, Enum):
-    """Stable workflow ids for codemod authoring bundles."""
-
-    REPLACEMENT_PLAN = "replacement_plan"
-    SELECTED_OPERATION_TEMPLATE = "selected_operation_template"
-    GOAL_REFACTOR = "goal_refactor"
-
-
 class CodemodAuthoringBundleControlActionId(str, Enum):
     """Stable action ids for authoring bundle control commands."""
 
@@ -2067,81 +2047,9 @@ class CodemodAuthoringBundleControlActionId(str, Enum):
     AUTHORING_RUN_ACTION = "authoring_run_action"
 
 
-class CodemodAuthoringArtifactRole(str, Enum):
-    """Stable artifact roles used by codemod authoring workflows."""
-
-    EVIDENCE_SELECTOR_FILE = "evidence_selector"
-    REPLACEMENT_SCAFFOLD_FILE = "replacement_scaffold"
-    REPLACEMENT_PLAN_FILE = "replacement_plan"
-    SELECTED_OPERATION_TEMPLATE_FILE = "selected_operation_template"
-    SELECTED_OPERATION_SCAFFOLD_FILE = "selected_operation_scaffold"
-    SELECTED_OPERATION_PLAN_FILE = "selected_operation_plan"
-    GOAL_REPLAY_PLAN_FILE = "goal_replay_plan"
-
-
 AuthoringTemplateRegistryKey: TypeAlias = (
     CodemodAuthoringCommandActionId | CodemodAuthoringWorkflowId
 )
-
-
-@dataclass(frozen=True)
-class CodemodCliCommandSpec:
-    """Directly runnable CLI action emitted by codemod workflow artifacts."""
-
-    action_id: Enum
-    args: tuple[str, ...]
-    cwd: Path
-    module: str = "nominal_refactor_advisor"
-    python_executable: str = sys.executable
-    required_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
-    generated_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
-    required_artifacts: tuple[str, ...] = ()
-    generated_artifacts: tuple[str, ...] = ()
-
-    @property
-    def argv(self) -> tuple[str, ...]:
-        return (
-            self.python_executable,
-            "-m",
-            self.module,
-            *self.args,
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "action_id": str(self.action_id.value),
-            "cwd": self.cwd.as_posix(),
-            "python_executable": self.python_executable,
-            "module": self.module,
-            "args": self.args,
-            "argv": self.argv,
-            "required_artifact_roles": tuple(
-                role.value for role in self.required_artifact_roles
-            ),
-            "generated_artifact_roles": tuple(
-                role.value for role in self.generated_artifact_roles
-            ),
-            "required_artifacts": self.required_artifacts,
-            "generated_artifacts": self.generated_artifacts,
-        }
-
-
-@dataclass(frozen=True, kw_only=True)
-class CodemodAuthoringWorkflowActionCommandSpec(CodemodCliCommandSpec):
-    """Runnable bundle-control command for one workflow target action."""
-
-    workflow_id: CodemodAuthoringWorkflowId
-    target_action_id: CodemodAuthoringCommandActionId
-
-    def to_dict(self) -> JsonObject:
-        payload = super().to_dict()
-        payload.update(
-            {
-                "workflow_id": self.workflow_id.value,
-                "target_action_id": self.target_action_id.value,
-            }
-        )
-        return payload
 
 
 @dataclass(frozen=True)

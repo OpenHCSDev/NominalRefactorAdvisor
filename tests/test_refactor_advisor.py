@@ -18028,21 +18028,27 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodAuthoringActionRunRequest
     from nominal_refactor_advisor import CodemodAuthoringActionPlan
     from nominal_refactor_advisor import CodemodAuthoringArtifactInventory
+    from nominal_refactor_advisor import CodemodAuthoringArtifactRole
     from nominal_refactor_advisor import CodemodAuthoringBundleActionRunner
     from nominal_refactor_advisor import CodemodAuthoringBundleReadiness
     from nominal_refactor_advisor import CodemodAuthoringBundleRecordStatus
     from nominal_refactor_advisor import CodemodAuthoringBundleStatus
     from nominal_refactor_advisor import CodemodAuthoringBundleStatusReporter
+    from nominal_refactor_advisor import CodemodAuthoringCommandActionId
     from nominal_refactor_advisor import CodemodAuthoringCommandInvocation
     from nominal_refactor_advisor import CodemodAuthoringCommandModel
     from nominal_refactor_advisor import CodemodAuthoringCommandReadiness
     from nominal_refactor_advisor import CodemodAuthoringCommandRun
+    from nominal_refactor_advisor import CodemodAuthoringPayloadModel
     from nominal_refactor_advisor import CodemodAuthoringPayloadReader
     from nominal_refactor_advisor import CodemodAuthoringRecordReference
     from nominal_refactor_advisor import CodemodAuthoringTargetAction
+    from nominal_refactor_advisor import CodemodAuthoringWorkflowActionCommandSpec
+    from nominal_refactor_advisor import CodemodAuthoringWorkflowId
     from nominal_refactor_advisor import CodemodAuthoringWorkflowModel
     from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
     from nominal_refactor_advisor import CodemodAuthoringWorkflowReadiness
+    from nominal_refactor_advisor import CodemodCliCommandSpec
     from nominal_refactor_advisor import CodemodClassPlanProjectedDelta
     from nominal_refactor_advisor import CodemodClassPlanProjectedDeltaReport
     from nominal_refactor_advisor import CodemodClassPlanSiteProjectedDelta
@@ -18114,6 +18120,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         CodemodAuthoringArtifactInventory.__name__
         == "CodemodAuthoringArtifactInventory"
     )
+    assert CodemodAuthoringArtifactRole.__name__ == "CodemodAuthoringArtifactRole"
     assert (
         CodemodAuthoringBundleActionRunner.__name__
         == "CodemodAuthoringBundleActionRunner"
@@ -18128,6 +18135,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         CodemodAuthoringBundleStatusReporter.__name__
         == "CodemodAuthoringBundleStatusReporter"
     )
+    assert (
+        CodemodAuthoringCommandActionId.__name__
+        == "CodemodAuthoringCommandActionId"
+    )
     assert CodemodAuthoringCommandModel.__name__ == "CodemodAuthoringCommandModel"
     assert (
         CodemodAuthoringCommandInvocation.__name__
@@ -18137,9 +18148,15 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert (
         CodemodAuthoringCommandReadiness.__name__ == "CodemodAuthoringCommandReadiness"
     )
+    assert CodemodAuthoringPayloadModel.__name__ == "CodemodAuthoringPayloadModel"
     assert CodemodAuthoringPayloadReader.__name__ == "CodemodAuthoringPayloadReader"
     assert CodemodAuthoringRecordReference.__name__ == "CodemodAuthoringRecordReference"
     assert CodemodAuthoringTargetAction.__name__ == "CodemodAuthoringTargetAction"
+    assert (
+        CodemodAuthoringWorkflowActionCommandSpec.__name__
+        == "CodemodAuthoringWorkflowActionCommandSpec"
+    )
+    assert CodemodAuthoringWorkflowId.__name__ == "CodemodAuthoringWorkflowId"
     assert CodemodAuthoringWorkflowModel.__name__ == "CodemodAuthoringWorkflowModel"
     assert CodemodAuthoringWorkflowPlanner.__name__ == (
         "CodemodAuthoringWorkflowPlanner"
@@ -18148,6 +18165,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         CodemodAuthoringWorkflowReadiness.__name__
         == "CodemodAuthoringWorkflowReadiness"
     )
+    assert CodemodCliCommandSpec.__name__ == "CodemodCliCommandSpec"
 
     delta = CodemodFindingDelta(
         before_finding_ids=("a", "b"),

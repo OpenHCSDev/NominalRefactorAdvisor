@@ -4,14 +4,143 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TypeVar
 
 from .codemod import JsonObject, JsonValue
 
 PayloadItem = TypeVar("PayloadItem")
+
+
+class CodemodAuthoringCommandActionId(str, Enum):
+    """Stable command action identifiers emitted into authoring bundles."""
+
+    RESOLVE_SELECTOR = "resolve_selector"
+    SCAFFOLD_REPLACEMENT_PLAN = "scaffold_replacement_plan"
+    VALIDATE_REPLACEMENT_PLAN = "validate_replacement_plan"
+    SIMULATE_REPLACEMENT_PLAN = "simulate_replacement_plan"
+    APPLY_REPLACEMENT_PLAN = "apply_replacement_plan"
+    SCAFFOLD_SELECTED_OPERATION_PLAN = "scaffold_selected_operation_plan"
+    PREFLIGHT_SELECTED_OPERATION_PLAN = "preflight_selected_operation_plan"
+    SIMULATE_SELECTED_OPERATION_PLAN = "simulate_selected_operation_plan"
+    APPLY_SELECTED_OPERATION_PLAN = "apply_selected_operation_plan"
+    RUN_GOAL_REFACTOR = "run_goal_refactor"
+    SIMULATE_GOAL_REPLAY_PLAN = "simulate_goal_replay_plan"
+    APPLY_GOAL_REPLAY_PLAN = "apply_goal_replay_plan"
+
+
+class CodemodAuthoringWorkflowId(str, Enum):
+    """Stable authoring workflow identifiers emitted into bundle records."""
+
+    REPLACEMENT_PLAN = "replacement_plan"
+    SELECTED_OPERATION_TEMPLATE = "selected_operation_template"
+    GOAL_REFACTOR = "goal_refactor"
+
+
+class CodemodAuthoringArtifactRole(str, Enum):
+    """Stable artifact roles used by codemod authoring workflows."""
+
+    EVIDENCE_SELECTOR_FILE = "evidence_selector"
+    REPLACEMENT_SCAFFOLD_FILE = "replacement_scaffold"
+    REPLACEMENT_PLAN_FILE = "replacement_plan"
+    SELECTED_OPERATION_TEMPLATE_FILE = "selected_operation_template"
+    SELECTED_OPERATION_SCAFFOLD_FILE = "selected_operation_scaffold"
+    SELECTED_OPERATION_PLAN_FILE = "selected_operation_plan"
+    GOAL_REPLAY_PLAN_FILE = "goal_replay_plan"
+
+
+class CodemodAuthoringPayloadModel:
+    """Dataclass-backed authority for authoring JSON payload projections."""
+
+    @classmethod
+    def payload_from_field_values(cls, **values: JsonValue) -> JsonObject:
+        return JsonObject(
+            {
+                field_name: values[field_name]
+                for field_name in values
+                if field_name in cls.__dataclass_fields__
+            }
+        )
+
+    @classmethod
+    def payload_items_from_field_values(
+        cls,
+        **values: JsonValue,
+    ) -> tuple[tuple[str, JsonValue], ...]:
+        return tuple(
+            (field_name, values[field_name])
+            for field_name in values
+            if field_name in cls.__dataclass_fields__
+        )
+
+
+@dataclass(frozen=True)
+class CodemodCliCommandSpec(CodemodAuthoringPayloadModel):
+    """Directly runnable CLI action emitted by codemod workflow artifacts."""
+
+    action_id: Enum
+    args: tuple[str, ...]
+    cwd: Path
+    module: str = "nominal_refactor_advisor"
+    python_executable: str = sys.executable
+    required_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
+    generated_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
+    required_artifacts: tuple[str, ...] = ()
+    generated_artifacts: tuple[str, ...] = ()
+
+    @property
+    def argv(self) -> tuple[str, ...]:
+        return (
+            self.python_executable,
+            "-m",
+            self.module,
+            *self.args,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            **CodemodAuthoringCommandModel.payload_from_field_values(
+                action_id=str(self.action_id.value),
+                required_artifacts=self.required_artifacts,
+                generated_artifacts=self.generated_artifacts,
+            ),
+            **CodemodAuthoringCommandInvocation.payload_from_field_values(
+                action_id=str(self.action_id.value),
+                argv=self.argv,
+                cwd=self.cwd.as_posix(),
+            ),
+            "python_executable": self.python_executable,
+            "module": self.module,
+            "args": self.args,
+            "required_artifact_roles": tuple(
+                role.value for role in self.required_artifact_roles
+            ),
+            "generated_artifact_roles": tuple(
+                role.value for role in self.generated_artifact_roles
+            ),
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class CodemodAuthoringWorkflowActionCommandSpec(CodemodCliCommandSpec):
+    """Runnable bundle-control command for one workflow target action."""
+
+    workflow_id: CodemodAuthoringWorkflowId
+    target_action_id: CodemodAuthoringCommandActionId
+
+    def to_dict(self) -> JsonObject:
+        payload = super().to_dict()
+        payload.update(
+            self.payload_from_field_values(
+                workflow_id=self.workflow_id.value,
+                target_action_id=self.target_action_id.value,
+            )
+        )
+        return payload
 
 
 @dataclass(frozen=True)
@@ -71,7 +200,7 @@ class CodemodAuthoringPayloadReader:
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringCommandModel:
+class CodemodAuthoringCommandModel(CodemodAuthoringPayloadModel):
     """Executable command node in an authoring workflow artifact graph."""
 
     action_id: str
@@ -92,7 +221,7 @@ class CodemodAuthoringCommandModel:
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringWorkflowModel:
+class CodemodAuthoringWorkflowModel(CodemodAuthoringPayloadModel):
     """Ordered command set for one authoring workflow."""
 
     workflow_id: str
@@ -375,7 +504,7 @@ class CodemodAuthoringBundleStatusReporter(CodemodAuthoringBundleIndex):
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringCommandInvocation:
+class CodemodAuthoringCommandInvocation(CodemodAuthoringPayloadModel):
     """Executable argv/cwd pair for one authoring command."""
 
     action_id: str
@@ -478,8 +607,10 @@ class CodemodAuthoringActionRunReport(CodemodAuthoringActionRunRequest):
     def to_dict(self) -> JsonObject:
         return {
             "record_index": self.record_index,
-            "workflow_id": self.workflow.workflow_id,
-            "target_action_id": self.target_action_id,
+            **CodemodAuthoringWorkflowActionCommandSpec.payload_from_field_values(
+                workflow_id=self.workflow.workflow_id,
+                target_action_id=self.target_action_id,
+            ),
             "completed": self.completed,
             "action_plan": self.action_plan.to_dict(),
             "command_runs": tuple(
