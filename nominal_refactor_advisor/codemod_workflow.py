@@ -81,6 +81,10 @@ class CodemodRefactorGoalKind(StrEnum):
     BOUNDARY_SOURCE_CONTEXT_REWRITE = "boundary_source_context_rewrite"
     DEAD_COMPATIBILITY_ERASER = "dead_compatibility_eraser"
 
+    @classmethod
+    def default(cls) -> "CodemodRefactorGoalKind":
+        return cls.SEMANTIC_CARRIER_EXTRACTION
+
 
 class CodemodWorkflowPlanKind(StrEnum):
     """Top-level executable codemod workflow plans."""
@@ -616,7 +620,9 @@ class CodemodRefactorGoal:
     """Declarative target for staged semantic-fact extraction refactors."""
 
     goal_id: str
-    kind: CodemodRefactorGoalKind = CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
+    kind: CodemodRefactorGoalKind = field(
+        default_factory=CodemodRefactorGoalKind.default
+    )
     target_finding_ids: tuple[str, ...] = ()
     detector_ids: tuple[str, ...] = ()
     pattern_ids: tuple[int, ...] = ()
@@ -771,6 +777,146 @@ class CodemodRefactorGoalFindingSelector:
             self.target_shapes
             & MappingSemanticMirrorRecipeBuilder.target_shapes_for_finding(finding)
         )
+
+    def to_manifest_payload(self) -> JsonObject:
+        return {
+            "detector_ids": tuple(sorted(self.detector_ids)),
+            "mapping_names": tuple(sorted(self.mapping_names)),
+            "target_shapes": tuple(sorted(shape.value for shape in self.target_shapes)),
+        }
+
+    def executable_detector_ids(self) -> tuple[str, ...]:
+        detector_ids = (
+            self.detector_ids
+            | FindingRecipeSynthesizer.detector_ids_for_target_shapes(
+                self.target_shapes
+            )
+        )
+        registered_detector_ids = FindingRecipeSynthesizer.registered_detector_ids()
+        return tuple(sorted(detector_ids & registered_detector_ids))
+
+    def executable_mapping_names(self) -> tuple[str, ...]:
+        mapping_names = (
+            self.mapping_names
+            | MappingSemanticMirrorRecipeBuilder.mapping_names_for_target_shapes(
+                self.target_shapes
+            )
+        )
+        registered_mapping_names = (
+            MappingSemanticMirrorRecipeBuilder.registered_mapping_names()
+        )
+        return tuple(sorted(mapping_names & registered_mapping_names))
+
+    def advisory_detector_ids(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(self.detector_ids - frozenset(self.executable_detector_ids()))
+        )
+
+    def advisory_mapping_names(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(self.mapping_names - frozenset(self.executable_mapping_names()))
+        )
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGoalSelectorCoverage:
+    """Executable and advisory recipe coverage for one refactor-goal selector."""
+
+    executable_detector_ids: tuple[str, ...]
+    executable_mapping_names: tuple[str, ...]
+    advisory_detector_ids: tuple[str, ...]
+    advisory_mapping_names: tuple[str, ...]
+
+    @classmethod
+    def from_selector(
+        cls,
+        selector: CodemodRefactorGoalFindingSelector,
+    ) -> "CodemodRefactorGoalSelectorCoverage":
+        return cls(
+            executable_detector_ids=selector.executable_detector_ids(),
+            executable_mapping_names=selector.executable_mapping_names(),
+            advisory_detector_ids=selector.advisory_detector_ids(),
+            advisory_mapping_names=selector.advisory_mapping_names(),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "executable_detector_ids": self.executable_detector_ids,
+            "executable_mapping_names": self.executable_mapping_names,
+            "advisory_detector_ids": self.advisory_detector_ids,
+            "advisory_mapping_names": self.advisory_mapping_names,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGoalSelectorManifest:
+    """Selector identity plus executable/advisory coverage for one goal lane."""
+
+    selector_index: int
+    selector: CodemodRefactorGoalFindingSelector
+    coverage: CodemodRefactorGoalSelectorCoverage
+
+    @classmethod
+    def from_selector(
+        cls,
+        selector_index: int,
+        selector: CodemodRefactorGoalFindingSelector,
+    ) -> "CodemodRefactorGoalSelectorManifest":
+        return cls(
+            selector_index=selector_index,
+            selector=selector,
+            coverage=CodemodRefactorGoalSelectorCoverage.from_selector(selector),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "selector_index": self.selector_index,
+            **self.selector.to_manifest_payload(),
+            **self.coverage.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGoalPolicyManifest:
+    """Registry-derived policy row for one high-level refactor goal."""
+
+    goal_kind: CodemodRefactorGoalKind
+    class_name: str
+    description: str
+    default_goal: bool
+    selectors: tuple[CodemodRefactorGoalSelectorManifest, ...]
+
+    @classmethod
+    def from_policy_type(
+        cls,
+        goal_kind: CodemodRefactorGoalKind,
+        policy_type: type["CodemodRefactorGoalTargetPolicy"],
+    ) -> "CodemodRefactorGoalPolicyManifest":
+        policy = policy_type()
+        selectors = (
+            policy.selectors
+            if isinstance(policy, SelectorBackedRefactorGoalTargetPolicy)
+            else ()
+        )
+        return cls(
+            goal_kind=goal_kind,
+            class_name=policy_type.__name__,
+            description=codemod_refactor_goal_policy_description(policy_type),
+            default_goal=goal_kind is CodemodRefactorGoalKind.default(),
+            selectors=tuple(
+                CodemodRefactorGoalSelectorManifest.from_selector(index, selector)
+                for index, selector in enumerate(selectors)
+            ),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "goal_kind": self.goal_kind.value,
+            "class_name": self.class_name,
+            "description": self.description,
+            "default_goal": self.default_goal,
+            "selectors": tuple(selector.to_dict() for selector in self.selectors),
+        }
 
 
 class SelectorBackedRefactorGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
@@ -1245,6 +1391,31 @@ def codemod_workflow_entry_description(
     if description is None:
         raise ValueError(f"{entry_type.__name__} must define a workflow description")
     return description
+
+
+def codemod_refactor_goal_policy_description(
+    policy_type: type[CodemodRefactorGoalTargetPolicy],
+) -> str:
+    """Return a normalized semantic description for one refactor-goal policy."""
+
+    description = inspect.getdoc(policy_type)
+    if description is None:
+        raise ValueError(f"{policy_type.__name__} must define a goal description")
+    return description
+
+
+def codemod_refactor_goal_policy_manifests() -> (
+    tuple[CodemodRefactorGoalPolicyManifest, ...]
+):
+    """Return registry-derived manifest rows for goal-directed refactor policies."""
+
+    return tuple(
+        CodemodRefactorGoalPolicyManifest.from_policy_type(
+            goal_kind,
+            CodemodRefactorGoalTargetPolicy.__registry__[goal_kind],
+        )
+        for goal_kind in CodemodRefactorGoalKind
+    )
 
 
 def codemod_workflow_plan_manifests() -> tuple[CodemodWorkflowPlanManifest, ...]:

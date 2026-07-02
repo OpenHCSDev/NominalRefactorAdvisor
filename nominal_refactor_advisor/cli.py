@@ -109,6 +109,7 @@ from .codemod_workflow import (
     CodemodWorkflowPlan,
     CodemodWorkflowPlanJsonParser,
     CodemodWorkflowRunContext,
+    codemod_refactor_goal_policy_manifests,
     codemod_workflow_plan_example_payloads,
     codemod_workflow_plan_manifests,
 )
@@ -2955,6 +2956,9 @@ def codemod_cli_dsl_manifest_payload() -> JsonObject:
         manifest.to_dict() for manifest in codemod_workflow_plan_manifests()
     )
     payload["workflow_plan_examples"] = codemod_workflow_plan_example_payloads()
+    payload["refactor_goal_policies"] = tuple(
+        manifest.to_dict() for manifest in codemod_refactor_goal_policy_manifests()
+    )
     payload["authoring_artifact_roles"] = tuple(
         artifact_role.value for artifact_role in CodemodAuthoringArtifactRole
     )

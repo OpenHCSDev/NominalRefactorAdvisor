@@ -12233,10 +12233,37 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
         workflow_plan["workflow"]: workflow_plan
         for workflow_plan in payload["workflow_plan_examples"]
     }
+    refactor_goal_policies = {
+        policy["goal_kind"]: policy for policy in payload["refactor_goal_policies"]
+    }
     assert "replacement_plan" in payload["authoring_artifact_roles"]
     assert "goal_replay_plan" in payload["authoring_artifact_roles"]
     assert set(workflow_plans) == {"fixpoint", "refactor_goal"}
     assert set(workflow_plan_examples) == {"fixpoint", "refactor_goal"}
+    assert refactor_goal_policies["semantic_carrier_extraction"]["default_goal"] is True
+    assert [
+        selector["target_shapes"]
+        for selector in refactor_goal_policies["semantic_carrier_extraction"][
+            "selectors"
+        ]
+    ] == [
+        ["prefix_bundle_carrier"],
+        ["dataclass_inheritance_lift"],
+        ["constructor_kwarg_carrier_projection", "dataclass_context_call_projection"],
+        ["dataclass_payload_projection", "tuple_dict_return_record"],
+        ["boundary_source_context_authority"],
+        ["dead_compatibility_eraser"],
+    ]
+    assert "dataclass_constructor_projection" in (
+        refactor_goal_policies["semantic_carrier_extraction"]["selectors"][2][
+            "executable_mapping_names"
+        ]
+    )
+    assert "flattened_projection_property" in (
+        refactor_goal_policies["semantic_carrier_extraction"]["selectors"][5][
+            "executable_detector_ids"
+        ]
+    )
     assert [
         field["field_name"] for field in workflow_plans["fixpoint"]["payload_fields"]
     ] == ["workflow", "plan_id", "max_iterations"]
@@ -17059,6 +17086,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowPlanJsonParser
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowRunContext
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     detector_id = "unsupported_goal_test_detector"
@@ -17094,17 +17122,19 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     )
 
     report = workflow_plan.run(
-        resolved_dir=None,
-        enabled=False,
-        roots=(tmp_path,),
-        config=DetectorConfig(),
-        parse_workers=1,
-        dry_run=True,
-        guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodFixpointScan(
-            modules=modules,
-            findings=[finding],
-        ),
+        CodemodWorkflowRunContext(
+            resolved_dir=None,
+            enabled=False,
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodFixpointScan(
+                modules=modules,
+                findings=[finding],
+            ),
+        )
     )
 
     assert report.completed is False
@@ -18073,8 +18103,11 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodRefactorGoal
     from nominal_refactor_advisor import CodemodRefactorGoalFindingSelector
     from nominal_refactor_advisor import CodemodRefactorGoalKind
+    from nominal_refactor_advisor import CodemodRefactorGoalPolicyManifest
     from nominal_refactor_advisor import CodemodRefactorGoalProgress
     from nominal_refactor_advisor import CodemodRefactorGoalReport
+    from nominal_refactor_advisor import CodemodRefactorGoalSelectorCoverage
+    from nominal_refactor_advisor import CodemodRefactorGoalSelectorManifest
     from nominal_refactor_advisor import CodemodRefactorGoalRunner
     from nominal_refactor_advisor import CodemodRefactorGoalStage
     from nominal_refactor_advisor import CodemodRefactorGoalTargetPolicy
@@ -18106,6 +18139,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
     from nominal_refactor_advisor import TupleDictReturnNominalizationGoalTargetPolicy
     from nominal_refactor_advisor import codemod_dsl_manifest
+    from nominal_refactor_advisor import codemod_refactor_goal_policy_manifests
     from nominal_refactor_advisor import codemod_workflow_plan_example_payloads
     from nominal_refactor_advisor import codemod_workflow_plan_manifests
 
@@ -18218,6 +18252,15 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodRefactorGoalFindingSelector.__name__ == (
         "CodemodRefactorGoalFindingSelector"
     )
+    assert CodemodRefactorGoalPolicyManifest.__name__ == (
+        "CodemodRefactorGoalPolicyManifest"
+    )
+    assert CodemodRefactorGoalSelectorCoverage.__name__ == (
+        "CodemodRefactorGoalSelectorCoverage"
+    )
+    assert CodemodRefactorGoalSelectorManifest.__name__ == (
+        "CodemodRefactorGoalSelectorManifest"
+    )
     assert (
         CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION.value
         == "nominal_boundary_extraction"
@@ -18225,6 +18268,12 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert (
         CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION.value
         == "semantic_carrier_extraction"
+    )
+    assert CodemodRefactorGoalKind.default() is (
+        CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
+    )
+    assert CodemodRefactorGoal(goal_id="default-carrier").kind is (
+        CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
     )
     assert CodemodRefactorGoalProgress.__name__ == "CodemodRefactorGoalProgress"
     assert CodemodRefactorGoalReport.__name__ == "CodemodRefactorGoalReport"
@@ -18268,6 +18317,11 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodWorkflowReport.__name__ == "CodemodWorkflowReport"
     assert CodemodWorkflowPlan.__name__ == "CodemodWorkflowPlan"
     assert CodemodWorkflowRunContext.__name__ == "CodemodWorkflowRunContext"
+    assert any(
+        manifest.default_goal
+        and manifest.goal_kind is CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
+        for manifest in codemod_refactor_goal_policy_manifests()
+    )
     assert (
         CodemodFixpointWorkflowPlan(
             plan_id="finding-backed-fixpoint",

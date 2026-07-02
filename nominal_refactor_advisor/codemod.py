@@ -16581,6 +16581,10 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
         )
 
     @classmethod
+    def registered_detector_ids(cls) -> frozenset[str]:
+        return frozenset(cls.__registry__)
+
+    @classmethod
     def detector_ids_for_target_shapes(
         cls,
         target_shapes: Iterable[RefactorRecipeTargetShape],
@@ -23226,6 +23230,22 @@ class MappingSemanticMirrorRecipeBuilder(
         if exact_builder_type is None:
             return ordered_generic_types
         return (exact_builder_type, *ordered_generic_types)
+
+    @classmethod
+    def registered_mapping_names(cls) -> frozenset[str]:
+        return frozenset(cls.__registry__)
+
+    @classmethod
+    def mapping_names_for_target_shapes(
+        cls,
+        target_shapes: Iterable[RefactorRecipeTargetShape],
+    ) -> frozenset[str]:
+        shape_set = frozenset(target_shapes)
+        return frozenset(
+            mapping_name
+            for mapping_name, builder_type in cls.__registry__.items()
+            if builder_type.target_shape in shape_set
+        )
 
     @classmethod
     def target_shapes_for_finding(
