@@ -15898,7 +15898,23 @@ class FindingRecipeSynthesisReport(FindingRecipeSynthesisReportView):
 
 
 @dataclass(frozen=True, kw_only=True)
-class FindingRecipeSynthesisBoundary(CodemodJsonReport):
+class FindingRecipeClassPlanBoundary(CodemodJsonReport):
+    """Optional clustered class-plan payload owned by recipe synthesis views."""
+
+    class_plan_payload_key: ClassVar[str] = "class_plan_report"
+
+    class_plan_report: "FindingRecipeClassPlanReport | None" = None
+
+    def class_plan_payload(self) -> JsonObject:
+        if self.class_plan_report is None:
+            return {}
+        return {
+            self.class_plan_payload_key: self.class_plan_report.to_dict(),
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class FindingRecipeSynthesisBoundary(FindingRecipeClassPlanBoundary):
     """Single payload boundary for finding-backed synthesis projections."""
 
     payload_key: ClassVar[str] = "synthesis_report"
@@ -15925,7 +15941,10 @@ class FindingRecipeSynthesisBoundary(CodemodJsonReport):
         return self.report.unsupported_count
 
     def synthesis_payload(self) -> JsonObject:
-        return {self.payload_key: self.report.to_dict()}
+        return {
+            self.payload_key: self.report.to_dict(),
+            **self.class_plan_payload(),
+        }
 
     def to_dict(self) -> JsonObject:
         return self.synthesis_payload()
@@ -16402,6 +16421,25 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
             planning_findings,
             selector_context=context,
         )
+        return cls.from_finding_plan(
+            planning_findings,
+            root=root,
+            context=context,
+            finding_plan=finding_plan,
+        )
+
+    @classmethod
+    def from_finding_plan(
+        cls,
+        findings: Iterable[RefactorFinding],
+        *,
+        root: Path,
+        context: CodemodSourceSnapshot,
+        finding_plan: FindingRecipePlan,
+    ) -> "FindingRecipeClassPlanReport":
+        """Group a precomputed finding-backed recipe plan by execution class."""
+
+        planning_findings = tuple(findings)
         execution_plan = cls.execution_plan_for_findings(planning_findings, root)
         return cls(
             execution_plan=execution_plan,

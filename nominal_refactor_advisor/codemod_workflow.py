@@ -36,6 +36,7 @@ from .codemod import (
     CodemodPlanSequenceContinuationReport,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
+    FindingRecipeClassPlanBoundary,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeClassSitePlan,
@@ -1420,7 +1421,7 @@ class CodemodRefactorGoalStageAttempt(FindingRecipeSynthesisBoundary):
         }
         if self.stage is not None:
             payload["stage"] = self.stage.to_dict()
-        return payload
+        return {**payload, **self.class_plan_payload()}
 
 
 @dataclass(frozen=True)
@@ -1460,6 +1461,7 @@ class CodemodRefactorGoalReport(CodemodWorkflowReport):
     terminal_synthesis_report: FindingRecipeSynthesisReport = field(
         default_factory=FindingRecipeSynthesisReport
     )
+    terminal_class_plan_report: FindingRecipeClassPlanReport | None = None
 
     @property
     def stage_count(self) -> int:
@@ -1524,6 +1526,11 @@ class CodemodRefactorGoalReport(CodemodWorkflowReport):
             "final_finding_count": self.final_finding_count,
             "final_target_finding_ids": self.final_target_finding_ids,
             "terminal_synthesis_report": self.terminal_synthesis_report.to_dict(),
+            "terminal_class_plan_report": (
+                None
+                if self.terminal_class_plan_report is None
+                else self.terminal_class_plan_report.to_dict()
+            ),
             "replay_sequence": self.replay_sequence.to_dict(),
             "stages": tuple(stage.to_dict() for stage in self.stages),
         }
@@ -1765,12 +1772,17 @@ class CodemodClassPlanSiteProjectedDelta:
         }
 
 
-@dataclass(frozen=True)
-class CodemodClassPlanProjectedDeltaReport:
+@dataclass(frozen=True, kw_only=True)
+class CodemodClassPlanProjectedDeltaReport(FindingRecipeClassPlanBoundary):
     """Join simulated finding-class deltas back onto synthesized class plans."""
 
-    class_plan_report: FindingRecipeClassPlanReport
     projected_finding_report: CodemodProjectedFindingReport
+
+    @property
+    def required_class_plan_report(self) -> FindingRecipeClassPlanReport:
+        if self.class_plan_report is None:
+            raise ValueError("class plan projected delta requires a class plan report")
+        return self.class_plan_report
 
     @property
     def finding_class_delta(self) -> CodemodFindingClassDelta:
@@ -1783,7 +1795,7 @@ class CodemodClassPlanProjectedDeltaReport:
                 class_plan,
                 self.finding_class_delta,
             )
-            for class_plan in self.class_plan_report.classes
+            for class_plan in self.required_class_plan_report.classes
         )
 
     def to_dict(self) -> JsonObject:
@@ -2434,6 +2446,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
                     CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES,
                     False,
                     stage_attempt.report,
+                    stage_attempt.class_plan_report,
                 )
             stage = stage_attempt.stage
             if stage.rewrite_count == 0:
@@ -2500,11 +2513,18 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             target_findings,
             detector_ids=self.goal.detector_ids,
         )
+        class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
+            target_findings,
+            root=self.class_plan_root(),
+            context=snapshot,
+            finding_plan=plan,
+        )
         if not plan.document.has_recipes:
             return CodemodRefactorGoalStageAttempt(
                 stage_index=stage_index,
                 target_finding_count=len(target_findings),
                 report=plan.report,
+                class_plan_report=class_plan_report,
             )
         document = CodemodPlanDocument(
             recipes=plan.document.recipes,
@@ -2526,6 +2546,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
                 stage_index=stage_index,
                 document=document,
                 report=plan.report,
+                class_plan_report=class_plan_report,
                 simulation=simulation,
                 progress=progress,
                 finding_change=CodemodFindingChangeProjection(
@@ -2538,6 +2559,11 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
                 applied=False,
             ),
         )
+
+    def class_plan_root(self) -> Path:
+        if self.roots:
+            return self.roots[0]
+        return Path.cwd()
 
     def next_scan(
         self,
@@ -2603,6 +2629,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
         reason: CodemodWorkflowStopReason,
         completed: bool,
         terminal_synthesis_report: FindingRecipeSynthesisReport | None = None,
+        terminal_class_plan_report: FindingRecipeClassPlanReport | None = None,
     ) -> CodemodRefactorGoalReport:
         return self.report(
             stages=stages,
@@ -2610,6 +2637,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             reason=reason,
             completed=completed,
             terminal_synthesis_report=terminal_synthesis_report,
+            terminal_class_plan_report=terminal_class_plan_report,
         )
 
     def report(
@@ -2620,6 +2648,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
         reason: CodemodWorkflowStopReason,
         completed: bool,
         terminal_synthesis_report: FindingRecipeSynthesisReport | None = None,
+        terminal_class_plan_report: FindingRecipeClassPlanReport | None = None,
     ) -> CodemodRefactorGoalReport:
         return CodemodRefactorGoalReport(
             goal=self.goal,
@@ -2637,6 +2666,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             terminal_synthesis_report=(
                 terminal_synthesis_report or FindingRecipeSynthesisReport()
             ),
+            terminal_class_plan_report=terminal_class_plan_report,
         )
 
 

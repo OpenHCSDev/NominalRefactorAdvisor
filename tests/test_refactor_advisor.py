@@ -16927,6 +16927,8 @@ def test_codemod_workflow_plan_runs_goal_from_json(
     assert report.completed is True
     assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
     assert len(report.replay_sequence.documents) == 1
+    assert report.stages[0].class_plan_report is not None
+    assert report.stages[0].class_plan_report.class_count == 1
     assert (
         report.replay_sequence.documents[0]
         .recipes[0]
@@ -16934,6 +16936,9 @@ def test_codemod_workflow_plan_runs_goal_from_json(
         .to_dict()["operation"]
         == "replace_text"
     )
+    stage_payload = report.to_dict()["stages"][0]
+    assert stage_payload["class_plan_report"]["class_count"] == 1
+    assert stage_payload["class_plan_report"]["classes"][0]["site_count"] == 1
     replay_payload = report.replay_sequence.to_dict()
     assert len(replay_payload["stages"]) == 1
     assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
@@ -16998,6 +17003,9 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     assert report.terminal_reason is CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES
     assert report.terminal_synthesis_report.unsupported_count == 1
     assert report.terminal_synthesis_report.records[0].detector_id == detector_id
+    assert report.terminal_class_plan_report is not None
+    assert report.terminal_class_plan_report.class_count == 1
+    assert report.terminal_class_plan_report.classes[0].site_count == 1
     payload = report.to_dict()
     assert payload["terminal_synthesis_report"]["records"][0]["status"] == (
         "no_synthesizer"
@@ -17005,6 +17013,14 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     assert payload["terminal_synthesis_report"]["status_counts"] == {
         "no_synthesizer": 1
     }
+    terminal_class_plan = payload["terminal_class_plan_report"]
+    assert terminal_class_plan["class_count"] == 1
+    assert terminal_class_plan["classes"][0]["site_plans"][0]["synthesis_record"][
+        "status"
+    ] == "no_synthesizer"
+    assert terminal_class_plan["classes"][0]["site_plans"][0][
+        "replacement_scaffold"
+    ]["selected_count"] >= 1
 
 
 def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -> None:
