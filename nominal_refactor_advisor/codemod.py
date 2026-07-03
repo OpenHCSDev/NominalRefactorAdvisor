@@ -304,6 +304,7 @@ class RefactorRecipeOperationKind(StrEnum):
     DELETE_SELECTED_TARGETS = "delete_selected_targets"
     DELETE_TARGET = "delete_target"
     DERIVE_AUTOREGISTER_INSTANCE_VIEW = "derive_autoregister_instance_view"
+    DECLARE_AUTHORITY = "declare_authority"
     DISPATCH_TO_POLYMORPHISM = "dispatch_to_polymorphism"
     ENSURE_IMPORT = "ensure_import"
     EXPOSE_GLOBAL_CANDIDATE_CACHE_CONTEXT = "expose_global_candidate_cache_context"
@@ -429,6 +430,45 @@ class AuthorityClaimPayload:
     """Payload field ownership for recipe authority claims."""
 
     field_name: ClassVar[str] = "authority_claims"
+    claim_field_name: ClassVar[str] = "authority_claim"
+
+    @classmethod
+    def claim_from_mapping(cls, payload: Mapping[str, JsonValue]) -> AuthorityClaim:
+        return AuthorityClaim(
+            claimed_symbol=cls.required_string(payload, "claimed_symbol"),
+            authority_kind=cls.optional_string(payload, "authority_kind"),
+            file_path=cls.optional_string(payload, "file_path"),
+            qualname=cls.optional_string(payload, "qualname"),
+            authority_id=cls.optional_string(payload, "authority_id"),
+        )
+
+    @classmethod
+    def required_claim(
+        cls,
+        payload: "SourceRewritePlanPayload",
+        field_name: str,
+    ) -> AuthorityClaim:
+        return cls.claim_from_mapping(payload.required_object(field_name))
+
+    @classmethod
+    def claim_to_dict(cls, claim: AuthorityClaim) -> JsonObject:
+        return JsonObject(claim.to_dict())
+
+    @staticmethod
+    def required_string(payload: Mapping[str, JsonValue], field_name: str) -> str:
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field_name} is required")
+        return value
+
+    @staticmethod
+    def optional_string(payload: Mapping[str, JsonValue], field_name: str) -> str:
+        value = payload.get(field_name)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name} must be a string")
+        return value
 
 
 class AuthorityLanguageSurfacePolicy:
@@ -442,6 +482,124 @@ class AuthorityLanguageSurfacePolicy:
     @classmethod
     def matches(cls, surface: str) -> bool:
         return bool(cls.pattern.search(surface))
+
+
+class CodemodPlanEvidenceLocation:
+    """Synthetic source location owner for codemod-plan findings."""
+
+    file_path: ClassVar[str] = "<codemod-plan>"
+    line: ClassVar[int] = 0
+
+    @classmethod
+    def authority_claim(cls, recipe_id: str, claimed_symbol: str) -> SourceLocation:
+        return SourceLocation(
+            cls.file_path,
+            cls.line,
+            f"{recipe_id}:{claimed_symbol}",
+        )
+
+
+class AuthorityClaimPreflightFinding:
+    """Advisor finding projection for failed authority-claim preflight."""
+
+    detector_id: ClassVar[str] = "unresolved_authority_claim"
+
+    @classmethod
+    def unclaimed_authority_text(
+        cls,
+        recipe_id: str,
+        surfaces: tuple[str, ...],
+    ) -> RefactorFinding:
+        surfaces_summary = "; ".join(surfaces[:3])
+        return cls._finding(
+            recipe_id=recipe_id,
+            claimed_symbol="unknown",
+            summary=(
+                f"Recipe `{recipe_id}` uses authority-routing language but emits no "
+                "AuthorityClaim and no declare_authority operation."
+            ),
+            evidence_symbol="authority_text_without_claim",
+            codemod_patch=(
+                "# Add an authority_claim backed by an existing source-index target, or "
+                "add a declare_authority operation with authority_source.\n"
+                f"# Authority text surfaces: {surfaces_summary}"
+            ),
+        )
+
+    @classmethod
+    def unresolved_resolution(
+        cls,
+        recipe_id: str,
+        resolution: AuthorityClaimResolution,
+    ) -> RefactorFinding:
+        discovery = resolution.discovery_required
+        reason = (
+            discovery.reason
+            if discovery is not None
+            else "authority claim is not resolved or declared"
+        )
+        searched = (
+            discovery.searched_symbols
+            if discovery is not None
+            else (resolution.claim.claimed_symbol,)
+        )
+        return cls._finding(
+            recipe_id=recipe_id,
+            claimed_symbol=resolution.claim.claimed_symbol,
+            summary=(
+                f"Recipe `{recipe_id}` claims authority "
+                f"`{resolution.claim.claimed_symbol}` but preflight status is "
+                f"`{resolution.status.value}`: {reason}."
+            ),
+            evidence_symbol=resolution.claim.claimed_symbol,
+            codemod_patch=(
+                "# Resolve this authority claim against a real source-index target, "
+                "or introduce the boundary with declare_authority.\n"
+                f"# Searched symbols: {', '.join(searched)}"
+            ),
+        )
+
+    @classmethod
+    def _finding(
+        cls,
+        *,
+        recipe_id: str,
+        claimed_symbol: str,
+        summary: str,
+        evidence_symbol: str,
+        codemod_patch: str,
+    ) -> RefactorFinding:
+        return RefactorFinding(
+            pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+            title="Unresolved authority claim",
+            why=(
+                "Authority-routing refactor plans must prove the named authority "
+                "against the source graph or explicitly declare the new boundary."
+            ),
+            capability_gap=(
+                "proof-carrying authority claim resolved by source-index target or "
+                "declare_authority operation"
+            ),
+            relation_context=(
+                "codemod plan asserts an authority boundary without an actionable "
+                "source proof edge"
+            ),
+            confidence=ConfidenceLevel.HIGH,
+            certification=CertificationLevel.CERTIFIED,
+            detector_id=cls.detector_id,
+            summary=summary,
+            evidence=(
+                CodemodPlanEvidenceLocation.authority_claim(
+                    recipe_id,
+                    evidence_symbol,
+                ),
+            ),
+            scaffold=(
+                "AuthorityClaim(claimed_symbol='ExistingAuthority', file_path='pkg/mod.py', "
+                "qualname='ExistingAuthority')"
+            ),
+            codemod_patch=codemod_patch,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -666,7 +824,7 @@ class AuthorityClaimSourceIndexResolver:
     """Resolve codemod authority claims against current source-index targets."""
 
     source_index: SourceIndex
-    declaration_available: bool = False
+    declared_claims: tuple[AuthorityClaim, ...] = ()
 
     def resolve(self, claim: AuthorityClaim) -> AuthorityClaimResolution:
         candidates = self._candidate_targets(claim)
@@ -711,7 +869,10 @@ class AuthorityClaimSourceIndexResolver:
                     reason="multiple source-index targets match the authority claim",
                 ),
             )
-        if self.declaration_available:
+        if any(
+            self._claim_matches(declared_claim, claim)
+            for declared_claim in self.declared_claims
+        ):
             return AuthorityClaimResolution.declared(
                 claim,
                 detail="recipe includes an explicit authority declaration operation",
@@ -749,6 +910,27 @@ class AuthorityClaimSourceIndexResolver:
         if claim.file_path and target.file_path != claim.file_path:
             return False
         return not claim.qualname or target.qualname == claim.qualname
+
+    @staticmethod
+    def _claim_matches(declared_claim: AuthorityClaim, claim: AuthorityClaim) -> bool:
+        return (
+            declared_claim.claimed_symbol == claim.claimed_symbol
+            and (
+                not claim.authority_kind
+                or not declared_claim.authority_kind
+                or declared_claim.authority_kind == claim.authority_kind
+            )
+            and (
+                not claim.file_path
+                or not declared_claim.file_path
+                or declared_claim.file_path == claim.file_path
+            )
+            and (
+                not claim.qualname
+                or not declared_claim.qualname
+                or declared_claim.qualname == claim.qualname
+            )
+        )
 
     @staticmethod
     def _searched_symbols(claim: AuthorityClaim) -> tuple[str, ...]:
@@ -7957,21 +8139,23 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExtractAuthorityOperation(RefactorRecipeOperation):
+class AuthoritySourceOperation(StringPayloadOperation):
+    """Codemod operation carrying source for a declared authority boundary."""
+
+    payload_field_name = AUTHORITY_SOURCE_PAYLOAD_FIELD
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtractAuthorityOperation(AuthoritySourceOperation):
     """Replace a helper target with a nominal authority and route call sites."""
 
-    authority_source: str
     call_replacements: tuple[RecipeCallReplacement, ...] = ()
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return (
-            PayloadBinding(
-                field_name=AUTHORITY_SOURCE_PAYLOAD_FIELD,
-                constructor_argument_name="authority_source",
-                value_projector=ExtractAuthorityOperation.authority_source_from_operation,
-            ),
+            *AuthoritySourceOperation.payload_bindings(),
             PayloadBinding(
                 field_name=CALL_REPLACEMENTS_PAYLOAD_FIELD,
                 constructor_argument_name="call_replacements",
@@ -7979,16 +8163,6 @@ class ExtractAuthorityOperation(RefactorRecipeOperation):
                 constructor_value_reader=RecipeCallReplacement.tuple_from_payload,
             ),
         )
-
-    @staticmethod
-    def authority_source_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ExtractAuthorityOperation):
-            raise TypeError(
-                "authority_source binding requires ExtractAuthorityOperation"
-            )
-        return operation.authority_source
 
     @staticmethod
     def call_replacements_from_operation(
@@ -8025,7 +8199,7 @@ class ExtractAuthorityOperation(RefactorRecipeOperation):
                 start_line=target_digest.line,
                 end_line=target_digest.line - 1,
                 replacement_lines=SourceTargetEditor.source_lines(
-                    self.authority_source
+                    self.payload_value
                 ),
                 rationale=self.rationale
                 or f"Insert authority before {target_digest.qualname!r}.",
@@ -8042,6 +8216,58 @@ class ExtractAuthorityOperation(RefactorRecipeOperation):
                     rationale=self.rationale,
                 )
                 for replacement in self.call_replacements
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeclareAuthorityOperation(AuthoritySourceOperation):
+    """Insert a declared authority boundary and bind it to an AuthorityClaim."""
+
+    authority_claim: AuthorityClaim
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+        del cls
+        return (
+            PayloadBinding(
+                field_name=AuthorityClaimPayload.claim_field_name,
+                constructor_argument_name="authority_claim",
+                value_projector=DeclareAuthorityOperation.authority_claim_from_operation,
+                constructor_value_reader=AuthorityClaimPayload.required_claim,
+                dsl_value_kind=CodemodDslFieldKind.AUTHORITY_CLAIM,
+            ),
+            *AuthoritySourceOperation.payload_bindings(),
+        )
+
+    @staticmethod
+    def authority_claim_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, DeclareAuthorityOperation):
+            raise TypeError(
+                "authority_claim binding requires DeclareAuthorityOperation"
+            )
+        return AuthorityClaimPayload.claim_to_dict(operation.authority_claim)
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        source_path = self.required_source_path(source_index, "declare_authority")
+        source = source_by_path[source_path]
+        insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
+        return (
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=insertion_line,
+                end_line=insertion_line - 1,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    self.payload_value
+                ),
+                rationale=self.rationale
+                or f"Declare authority {self.authority_claim.claimed_symbol!r}.",
             ),
         )
 
@@ -11849,6 +12075,7 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
 class CodemodDslFieldKind(StrEnum):
     """Machine-readable JSON value kinds accepted by the codemod DSL."""
 
+    AUTHORITY_CLAIM = AuthorityClaimPayload.claim_field_name
     BOOLEAN = "boolean"
     CALL_REPLACEMENT_ARRAY = "call_replacement_array"
     CLASS_KEY_PAIR_ARRAY = "class_key_pair_array"
@@ -12246,6 +12473,22 @@ class ClassKeyPairArrayCodemodDslExampleValueProvider(
 
     value_kind = CodemodDslFieldKind.CLASS_KEY_PAIR_ARRAY
     constant_example_value = ("ExampleHandler='example'",)
+
+
+class AuthorityClaimCodemodDslExampleValueProvider(
+    ConstantCodemodDslExampleValueProvider
+):
+    """Example value for proof-carrying authority claim fields."""
+
+    value_kind = CodemodDslFieldKind.AUTHORITY_CLAIM
+    constant_example_value = AuthorityClaimPayload.claim_to_dict(
+        AuthorityClaim(
+            claimed_symbol="ExampleAuthority",
+            authority_kind="class_family",
+            file_path="pkg/example.py",
+            qualname="ExampleAuthority",
+        )
+    )
 
 
 class PythonLiteralArrayCodemodDslExampleValueProvider(
@@ -14258,8 +14501,24 @@ class RefactorRecipe:
                 qualname=helper_qualname,
                 file_path=source_path,
             ),
-            authority_source=authority_source,
+            payload_value=authority_source,
             call_replacements=tuple(call_replacements),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def declare_authority(
+        self,
+        source_path: str,
+        authority_claim: AuthorityClaim,
+        authority_source: str,
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = DeclareAuthorityOperation(
+            target=SourceRewriteTarget(file_path=source_path),
+            authority_claim=authority_claim,
+            payload_value=authority_source,
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
@@ -14741,8 +15000,9 @@ class RefactorRecipe:
         self,
         source_index: SourceIndex,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        if not self.authority_claims:
-            if self.uses_authority_language and not self.declares_authority:
+        claims = self.effective_authority_claims
+        if not claims:
+            if self.uses_authority_language:
                 return (
                     CodemodOperationPreflightReport(
                         operation=AuthorityClaimPayload.field_name,
@@ -14754,15 +15014,21 @@ class RefactorRecipe:
                         details={
                             "recipe_id": self.recipe_id,
                             "authority_text_surfaces": self.authority_text_surfaces,
+                            "findings": (
+                                AuthorityClaimPreflightFinding.unclaimed_authority_text(
+                                    self.recipe_id,
+                                    self.authority_text_surfaces,
+                                ).to_dict(),
+                            ),
                         },
                     ),
                 )
             return ()
         resolver = AuthorityClaimSourceIndexResolver(
             source_index,
-            declaration_available=self.declares_authority,
+            declared_claims=self.declared_authority_claims,
         )
-        resolutions = tuple(resolver.resolve(claim) for claim in self.authority_claims)
+        resolutions = tuple(resolver.resolve(claim) for claim in claims)
         failed_resolutions = tuple(
             resolution for resolution in resolutions if not resolution.is_actionable
         )
@@ -14784,15 +15050,29 @@ class RefactorRecipe:
                     "resolutions": tuple(
                         resolution.to_dict() for resolution in resolutions
                     ),
+                    "findings": tuple(
+                        AuthorityClaimPreflightFinding.unresolved_resolution(
+                            self.recipe_id,
+                            resolution,
+                        ).to_dict()
+                        for resolution in failed_resolutions
+                    ),
                 },
             ),
         )
 
     @property
-    def declares_authority(self) -> bool:
-        return any(
-            isinstance(operation, ExtractAuthorityOperation)
+    def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
+        return tuple(
+            operation.authority_claim
             for operation in self.operations
+            if isinstance(operation, DeclareAuthorityOperation)
+        )
+
+    @property
+    def effective_authority_claims(self) -> tuple[AuthorityClaim, ...]:
+        return tuple(
+            dict.fromkeys((*self.authority_claims, *self.declared_authority_claims))
         )
 
     @property
@@ -15340,13 +15620,7 @@ class CodemodPlanJsonParser:
 
     def authority_claim(self, row: JsonValue) -> AuthorityClaim:
         payload = self.object_row(row, "authority claim rows")
-        return AuthorityClaim(
-            claimed_symbol=self.required_string_field(payload, "claimed_symbol"),
-            authority_kind=self.optional_string_field(payload, "authority_kind"),
-            file_path=self.optional_string_field(payload, "file_path"),
-            qualname=self.optional_string_field(payload, "qualname"),
-            authority_id=self.optional_string_field(payload, "authority_id"),
-        )
+        return AuthorityClaimPayload.claim_from_mapping(payload)
 
     def refactor_recipe_rewrite(self, row: JsonValue) -> RefactorRecipeRewrite:
         rewrite_row = self.source_rewrite_plan_row(row, "refactor recipe rewrites")
@@ -26586,7 +26860,6 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
         ):
             return None
         return GenericRoleCaseTableRecipeParts(
-            authority_source=authority_source,
             target_rewrites=target_rewrites,
             file_rewrites=file_rewrites,
         )
@@ -26868,7 +27141,6 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
 class GenericRoleCaseTableRecipeParts:
     """Executable recipe facts for generic role-case table derivation."""
 
-    authority_source: GenericRoleCaseAuthoritySource
     target_rewrites: tuple[GenericRoleCaseTargetRewrite, ...]
     file_rewrites: tuple[GenericRoleCaseFileRewrite, ...]
 

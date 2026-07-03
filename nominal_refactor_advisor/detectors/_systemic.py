@@ -718,6 +718,16 @@ def _alias_only_authority_certificate(
     )
 
 
+def _empty_nominal_authority_shell_certificate(
+    candidate: EmptyNominalAuthorityShellCandidate,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=max(candidate.line_count, 1),
+        replacement_shape=ObjectFamilyShape(shared_objects=()),
+        semantic_axes=(candidate.class_name,),
+    )
+
+
 def _module_authority_reexport_certificate(
     candidate: ModuleAuthorityReexportCatalogCandidate,
 ) -> CompressionCertificate:
@@ -769,6 +779,45 @@ declare_candidate_rule_detector(
     ),
     candidate_collector=_alias_only_nominal_authority_candidates,
     detector_name="AliasOnlyNominalAuthorityDetector",
+)
+
+
+declare_candidate_rule_detector(
+    EmptyNominalAuthorityShellCandidate,
+    high_confidence_certified_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Nominal authority shell has no ownership proof edges",
+        "A class named like an authority, policy, registry, or resolver must own at least one concrete proof edge: inheritance boundary, abstract contract, dataclass field, class assignment, method behavior, registry contract, or declaration query. Empty shells are fabricated authority.",
+        "nominal authority boundary with source-backed ownership proof edge",
+        "authority-like class has no ownership edges",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` claims suffix `{candidate.suffix}` but has no "
+        f"ownership proof edges; missing {candidate.missing_edge_names}."
+    ),
+    scaffold=lambda candidate: (
+        f"class {candidate.class_name}:\n"
+        "    # Add a real ownership edge: abstractmethod contract, registry, "
+        "dataclass fields, class-owned policy state, or behavior.\n"
+        "    ..."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Delete empty nominal shell `{candidate.class_name}` or add a real "
+        "ownership proof edge. Do not keep a class whose only semantic fact is "
+        "its authority-like name."
+    ),
+    compression_certificate=_empty_nominal_authority_shell_certificate,
+    metrics=lambda candidate: OrchestrationMetrics(
+        function_line_count=candidate.line_count,
+        branch_site_count=0,
+        call_site_count=0,
+        parameter_count=len(candidate.missing_edge_kinds),
+        callee_family_count=0,
+    ),
+    candidate_collector=_empty_nominal_authority_shell_candidates,
+    detector_name="EmptyNominalAuthorityShellDetector",
 )
 
 

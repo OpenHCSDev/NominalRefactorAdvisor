@@ -806,6 +806,10 @@ def test_codemod_preflight_rejects_unclaimed_authority_rationale(
     assert preflight.preflight_failed is True
     assert preflight.reports[0].operation == "authority_claims"
     assert "resolved authority claim" in preflight.reports[0].message
+    finding = preflight.reports[0].details["findings"][0]
+    assert finding["detector_id"] == "unresolved_authority_claim"
+    assert "emits no AuthorityClaim" in finding["summary"]
+    assert finding["evidence"][0]["file_path"] == "<codemod-plan>"
 
 
 def test_codemod_preflight_accepts_source_backed_authority_claim(
@@ -841,6 +845,86 @@ def test_codemod_preflight_accepts_source_backed_authority_claim(
     resolution = preflight.reports[0].details["resolutions"][0]
     assert resolution["status"] == "resolved"
     assert resolution["proof_edges"][0]["edge_kind"] == "source_index_target"
+
+
+def test_codemod_preflight_emits_finding_for_unresolved_authority_claim(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    recipe = RefactorRecipe(
+        recipe_id="missing-authority-route",
+        reason="route through authority",
+        authority_claims=(
+            AuthorityClaim(
+                claimed_symbol="MissingAuthority",
+                file_path=module_path.as_posix(),
+                qualname="MissingAuthority",
+            ),
+        ),
+    )
+
+    preflight = CodemodPlanDocument(recipes=(recipe,)).preflight_snapshot(snapshot)
+
+    assert preflight.preflight_failed is True
+    assert preflight.reports[0].operation == "authority_claims"
+    resolution = preflight.reports[0].details["resolutions"][0]
+    finding = preflight.reports[0].details["findings"][0]
+    assert resolution["status"] == "unresolved"
+    assert resolution["discovery_required"]["claimed_symbol"] == "MissingAuthority"
+    assert finding["detector_id"] == "unresolved_authority_claim"
+    assert "MissingAuthority" in finding["summary"]
+    assert "declare_authority" in finding["codemod_patch"]
+
+
+def test_codemod_preflight_accepts_declared_authority_claim(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom abc import ABC\n\n\nclass Alpha:\n"
+        "    def run(self, value):\n"
+        "        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    claim = AuthorityClaim(
+        claimed_symbol="MissingAuthority",
+        authority_kind="class_family",
+        file_path=module_path.as_posix(),
+        qualname="MissingAuthority",
+    )
+    recipe = RefactorRecipe(
+        recipe_id="declared-authority-route",
+        reason="route through authority",
+    ).declare_authority(
+        module_path.as_posix(),
+        claim,
+        "class MissingAuthority(ABC):\n    pass\n\n",
+    )
+
+    preflight = CodemodPlanDocument(recipes=(recipe,)).preflight_snapshot(snapshot)
+    simulation = snapshot.simulate_document(
+        CodemodPlanDocument(recipes=(recipe,)),
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert preflight.preflight_failed is False
+    assert preflight.reports[0].operation == "authority_claims"
+    resolution = preflight.reports[0].details["resolutions"][0]
+    assert resolution["status"] == "declared"
+    assert resolution["proof_edges"][0]["edge_kind"] == "explicit_declaration"
+    assert "class MissingAuthority(ABC)" in simulation.unified_diff(
+        {module_path.as_posix(): module_path.read_text()}
+    )
 
 
 def test_refactor_recipe_dsl_operations_compile_to_rewrites(
@@ -12161,6 +12245,10 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         field["field_name"]: field
         for field in operations["dispatch_to_polymorphism"]["payload_fields"]
     }
+    declare_authority_fields = {
+        field["field_name"]: field
+        for field in operations["declare_authority"]["payload_fields"]
+    }
     source_index_fields = {
         field["field_name"]: field
         for field in selectors["source_index_target"]["payload_fields"]
@@ -12223,6 +12311,9 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         extract_authority_fields["call_replacements"]["value_kind"]
         == "call_replacement_array"
     )
+    assert declare_authority_fields["authority_claim"]["value_kind"] == (
+        "authority_claim"
+    )
     assert create_file_fields["source"]["value_kind"] == "string"
     assert move_symbol_fields["destination_path"]["value_kind"] == "string"
     assert move_symbols_fields["destination_path"]["value_kind"] == "string"
@@ -12242,6 +12333,15 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
     assert operations["extract_authority"]["description"] == (
         "Replace a helper target with a nominal authority and route call sites."
     )
+    assert operations["declare_authority"]["description"] == (
+        "Insert a declared authority boundary and bind it to an AuthorityClaim."
+    )
+    assert (
+        operations["declare_authority"]["example_payload"]["authority_claim"][
+            "claimed_symbol"
+        ]
+        == "ExampleAuthority"
+    )
     assert selectors["source_index_target"]["description"] == (
         "Select source-index AST targets by kind, path, qualname, or regex."
     )
@@ -12256,6 +12356,12 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
             operations["extract_authority"]["example_payload"]
         ).to_dict()["operation"]
         == "extract_authority"
+    )
+    assert (
+        RefactorRecipeOperation.from_dict(
+            operations["declare_authority"]["example_payload"]
+        ).to_dict()["authority_claim"]["claimed_symbol"]
+        == "ExampleAuthority"
     )
     assert (
         RefactorRecipeOperation.from_dict(
@@ -22575,6 +22681,83 @@ def test_detects_alias_only_nominal_authority(tmp_path: Path) -> None:
     assert finding.compression_certificate is not None
     assert not finding.compression_certificate.pays_rent
     assert "Do not re-export bound aliases" in (finding.codemod_patch or "")
+
+
+def test_detects_empty_nominal_authority_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass ComponentAxisAuthority:\n    pass\n\n\nclass PayloadResolver:\n    \"\"\"No ownership edge.\"\"\"\n\n    pass\n",
+    )
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "empty_nominal_authority_shell"
+    )
+
+    assert {finding.evidence[0].symbol for finding in findings} == {
+        "ComponentAxisAuthority",
+        "PayloadResolver",
+    }
+    finding = findings[0]
+    assert "ownership proof edges" in finding.summary
+    assert "inheritance_base" in finding.summary
+    assert "Delete empty nominal shell" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_potential_semantic_authority_graph_computes_outcomes_and_relations(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass ComponentAxisAuthority:\n"
+        "    pass\n\n\n"
+        "class ComponentAxisPolicy:\n"
+        "    axis_names = ('site', 'channel')\n\n"
+        "    def resolve(self, key):\n"
+        "        return self.axis_names[key]\n\n\n"
+        "class ComponentAxisResolver(ComponentAxisPolicy):\n"
+        "    pass\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+
+    graph = helper_detectors._potential_semantic_authority_graph(module)
+    authority = graph.nodes_by_class_name["ComponentAxisAuthority"]
+    policy = graph.nodes_by_class_name["ComponentAxisPolicy"]
+    resolver = graph.nodes_by_class_name["ComponentAxisResolver"]
+    relation_kinds = {
+        relation.relation_kind.value
+        for relation in graph.relations
+    }
+
+    assert authority.outcome.value == "empty_shell"
+    assert policy.outcome.value == "semantic_owner"
+    assert resolver.outcome.value == "declared_boundary"
+    assert "class_assignment" in policy.positive_edge_names
+    assert "method_behavior" in policy.positive_edge_names
+    assert "inheritance_base" in resolver.positive_edge_names
+    assert "owned_authority_shadows_shell" in relation_kinds
+    assert "derives_from" in relation_kinds
+    assert "shared_semantic_stem" in relation_kinds
+
+
+def test_ignores_nominal_authority_with_owned_policy_edges(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass ComponentAxisAuthority:\n"
+        "    axis_names = ('site', 'channel')\n\n"
+        "    def resolve(self, key):\n"
+        "        return self.axis_names[key]\n",
+    )
+
+    assert not any(
+        finding.detector_id == "empty_nominal_authority_shell"
+        for finding in analyze_path(tmp_path)
+    )
 
 
 def test_detects_module_authority_reexport_catalog(tmp_path: Path) -> None:

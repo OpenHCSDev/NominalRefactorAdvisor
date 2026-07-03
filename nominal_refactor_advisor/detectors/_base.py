@@ -19,7 +19,7 @@ from collections import Counter, defaultdict
 from collections.abc import Hashable, MutableMapping
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from itertools import combinations
 from operator import attrgetter
 from typing import (
@@ -12548,6 +12548,122 @@ class ModuleAuthorityReexportCatalogCandidate(
     AliasDelegateAuthorityLineSurface, LineWitnessCandidate
 ):
     authority_name: str
+
+
+class NominalOwnershipProofKind(StrEnum):
+    """Ownership edges that prove a nominal authority boundary pays rent."""
+
+    INHERITANCE_BASE = "inheritance_base"
+    ABSTRACT_CONTRACT = "abstract_contract"
+    DATACLASS_FIELD = "dataclass_field"
+    CLASS_ASSIGNMENT = "class_assignment"
+    METHOD_BEHAVIOR = "method_behavior"
+    REGISTRY_CONTRACT = "registry_contract"
+    DECLARATION_QUERY = "declaration_query"
+
+
+class PotentialSemanticAuthorityOutcome(StrEnum):
+    """Heuristic outcome for a potential semantic authority node."""
+
+    EMPTY_SHELL = "empty_shell"
+    DECLARED_BOUNDARY = "declared_boundary"
+    SEMANTIC_OWNER = "semantic_owner"
+
+
+class PotentialSemanticAuthorityRelationKind(StrEnum):
+    """Relation types between potential semantic authority nodes."""
+
+    DERIVES_FROM = "derives_from"
+    SHARED_SEMANTIC_STEM = "shared_semantic_stem"
+    OWNED_AUTHORITY_SHADOWS_SHELL = "owned_authority_shadows_shell"
+    PARALLEL_AUTHORITY_CLAIM = "parallel_authority_claim"
+
+
+@dataclass(frozen=True)
+class NominalOwnershipEdge:
+    proof_kind: NominalOwnershipProofKind
+    symbol: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class PotentialSemanticAuthorityNode(ClassLineWitnessCandidate):
+    suffix: str
+    positive_edges: tuple[NominalOwnershipEdge, ...]
+    missing_edge_kinds: tuple[NominalOwnershipProofKind, ...]
+    outcome: PotentialSemanticAuthorityOutcome
+    stem_tokens: tuple[str, ...]
+    line_count: int
+
+    @property
+    def missing_edge_names(self) -> tuple[str, ...]:
+        return tuple(edge_kind.value for edge_kind in self.missing_edge_kinds)
+
+    @property
+    def positive_edge_names(self) -> tuple[str, ...]:
+        return tuple(edge.proof_kind.value for edge in self.positive_edges)
+
+    @property
+    def is_empty_shell(self) -> bool:
+        return self.outcome is PotentialSemanticAuthorityOutcome.EMPTY_SHELL
+
+    @property
+    def owns_semantics(self) -> bool:
+        return self.outcome is PotentialSemanticAuthorityOutcome.SEMANTIC_OWNER
+
+
+@dataclass(frozen=True)
+class EmptyNominalAuthorityShellCandidate(PotentialSemanticAuthorityNode):
+    pass
+
+
+@dataclass(frozen=True)
+class PotentialSemanticAuthorityRelation:
+    left_class_name: str
+    right_class_name: str
+    relation_kind: PotentialSemanticAuthorityRelationKind
+    weight: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class PotentialSemanticAuthorityGraph:
+    """Potential authority nodes plus heuristic relation edges between them."""
+
+    nodes: tuple[PotentialSemanticAuthorityNode, ...]
+    relations: tuple[PotentialSemanticAuthorityRelation, ...]
+
+    @cached_property
+    def nodes_by_class_name(self) -> dict[str, PotentialSemanticAuthorityNode]:
+        return {node.class_name: node for node in self.nodes}
+
+    @cached_property
+    def empty_shells(self) -> tuple[EmptyNominalAuthorityShellCandidate, ...]:
+        return tuple(
+            EmptyNominalAuthorityShellCandidate(
+                file_path=node.file_path,
+                line=node.line,
+                class_name=node.class_name,
+                suffix=node.suffix,
+                positive_edges=node.positive_edges,
+                missing_edge_kinds=node.missing_edge_kinds,
+                outcome=node.outcome,
+                stem_tokens=node.stem_tokens,
+                line_count=node.line_count,
+            )
+            for node in self.nodes
+            if node.is_empty_shell
+        )
+
+    def relations_for(
+        self,
+        class_name: str,
+    ) -> tuple[PotentialSemanticAuthorityRelation, ...]:
+        return tuple(
+            relation
+            for relation in self.relations
+            if class_name in {relation.left_class_name, relation.right_class_name}
+        )
 
 
 @dataclass(frozen=True)
