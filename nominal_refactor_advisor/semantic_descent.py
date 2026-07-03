@@ -565,6 +565,13 @@ class AuthorityClaim(SemanticRecord):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class AuthorityClaimCarrier(SemanticRecord):
+    """Shared carrier for records that own one authority claim."""
+
+    authority_claim: AuthorityClaim
+
+
 @dataclass(frozen=True)
 class AuthorityProofEdge(SemanticRecord):
     """Concrete graph/source edge proving an authority claim."""

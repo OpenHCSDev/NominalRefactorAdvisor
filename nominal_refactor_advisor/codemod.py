@@ -96,6 +96,7 @@ from .registry_identity import (
 from .semantic_algebra import DispatchAxisExpression
 from .semantic_descent import (
     AuthorityClaim,
+    AuthorityClaimCarrier,
     AuthorityClaimResolution,
     AuthorityClaimStatus,
     AuthorityDiscoveryRequired,
@@ -8221,10 +8222,10 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeclareAuthorityOperation(AuthoritySourceOperation):
+class DeclareAuthorityOperation(AuthoritySourceOperation, AuthorityClaimCarrier):
     """Insert a declared authority boundary and bind it to an AuthorityClaim."""
 
-    authority_claim: AuthorityClaim
+    registry_key: ClassVar[str] = RefactorRecipeOperationKind.DECLARE_AUTHORITY.value
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
@@ -8267,7 +8268,10 @@ class DeclareAuthorityOperation(AuthoritySourceOperation):
                     self.payload_value
                 ),
                 rationale=self.rationale
-                or f"Declare authority {self.authority_claim.claimed_symbol!r}.",
+                or (
+                    "Declare authority "
+                    f"{self.authority_claim.claimed_symbol!r}."
+                ),
             ),
         )
 

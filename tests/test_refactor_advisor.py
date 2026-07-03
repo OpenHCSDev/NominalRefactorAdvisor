@@ -227,6 +227,13 @@ from nominal_refactor_advisor.semantic_descent import (
     SemanticDescentGraphCache,
     SemanticDescentGraphCacheIdentity,
 )
+from nominal_refactor_advisor.semantic_refactor_gate import (
+    AuthorityDiscoveryRequiredFindingProjection,
+    FindingRemovalPrediction,
+    SemanticRefactorAuthorityTarget,
+    SemanticRefactorGateReport,
+    SemanticRefactorGateWorkItem,
+)
 from nominal_refactor_advisor.semantic_shape_algebra import (
     ExhaustivePolicyCatalog,
     InjectiveTypeRegistryProof,
@@ -21231,6 +21238,61 @@ def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     )
     assert gate_queue[0] == work_queue[0]
     assert raw_payload["supporting_raw_findings"][0]["stable_id"] == critical.stable_id
+
+
+def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() -> None:
+    target = SemanticRefactorAuthorityTarget(
+        opportunity_kind="authority_boundary",
+        authority_claim=AuthorityClaim(claimed_symbol="ComponentAxisAuthority"),
+        priority_tier="ssot_authority_boundary",
+        detector_ids=("runtime_authority_branch_semantics",),
+        actionability="semantic_agent_refactor",
+        removal_prediction=FindingRemovalPrediction(target_count=1, removed_count=1),
+        strategy_id="semantic_agent_required",
+        agent_action="route through the authority",
+    )
+    work_item = SemanticRefactorGateWorkItem.from_authority_target(target)
+    discovery_findings = (
+        AuthorityDiscoveryRequiredFindingProjection.findings_for_work_queue(
+            (work_item,)
+        )
+    )
+    report = SemanticRefactorGateReport(
+        active=True,
+        policy="authority_boundary_first",
+        raw_findings_default="suppressed_when_active",
+        semantic_candidate_count=1,
+        semantic_agent_refactor_count=1,
+        semantic_uncertainty_review_count=0,
+        ssot_authority_finding_count=0,
+        cleanup_followup_finding_count=0,
+        first_trajectory=None,
+        authority_targets=(target,),
+        work_queue=(work_item,),
+        authority_discovery_findings=discovery_findings,
+    )
+
+    payload_findings = report.finding_payload()
+    report_payload = report.to_dict()
+    discovery_payloads = cast(
+        tuple[dict[str, object], ...],
+        report_payload["authority_discovery_findings"],
+    )
+
+    assert payload_findings[0]["detector_id"] == "semantic_mirror_without_descent"
+    assert payload_findings[0]["authority_discovery_required"] is True
+    discovery = payload_findings[1]
+    assert discovery == discovery_payloads[0]
+    assert discovery["detector_id"] == "unresolved_authority_claim"
+    assert discovery["title"] == "Authority discovery required"
+    assert "You claimed `ComponentAxisAuthority`" in str(discovery["summary"])
+    assert "found 0 candidate authority proof path" in str(discovery["summary"])
+    assert "Do not invent `ComponentAxisAuthority`" in str(
+        discovery["codemod_patch"]
+    )
+    evidence = cast(tuple[dict[str, object], ...], discovery["evidence"])
+    assert evidence[0]["file_path"] == "<semantic-refactor-gate>"
+    assert evidence[0]["symbol"] == "ComponentAxisAuthority"
 
 
 def test_no_impact_ranking_requires_raw_findings_acknowledgement() -> None:
