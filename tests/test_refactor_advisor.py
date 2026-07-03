@@ -23114,6 +23114,70 @@ def test_semantic_tuple_return_record_rewrites_unpack_consumers(
     )
 
 
+def test_semantic_tuple_return_record_rewrites_row_field_consumers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build_row(source):\n"
+        "    field_name = source.field_name\n"
+        "    helper_name = source.helper_name\n"
+        "    projected_argument_names = source.projected_argument_names\n"
+        "    line_count = source.line_count\n"
+        "    return field_name, helper_name, projected_argument_names, line_count\n\n\n"
+        "def collect_rows(sources):\n"
+        "    rows = tuple(\n"
+        "        row\n"
+        "        for source in sources\n"
+        "        for row in (build_row(source),)\n"
+        "        if row is not None\n"
+        "    )\n"
+        "    helper_names = tuple(row[1] for row in rows)\n"
+        "    argument_names = tuple(name for row in rows for name in row[2])\n"
+        "    line_count = sum(row[3] for row in rows)\n"
+        "    return len(helper_names) + len(argument_names) + line_count\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "semantic_tuple_return_record"
+    )
+    finding = findings[0]
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("semantic_tuple_return_record",),
+        selector_context=snapshot,
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    carrier_name = finding.metrics.plan_source_name
+
+    assert plan.records[0].status.value == "planned"
+    assert carrier_name is not None
+    assert f"class {carrier_name}:" in rewritten
+    assert (
+        f"return {carrier_name}(field_name=field_name, helper_name=helper_name, "
+        "projected_argument_names=projected_argument_names, line_count=line_count)"
+    ) in rewritten
+    assert "row.helper_name" in rewritten
+    assert "row.projected_argument_names" in rewritten
+    assert "row.line_count" in rewritten
+    assert "row[1]" not in rewritten
+    assert "row[2]" not in rewritten
+    assert "row[3]" not in rewritten
+    assert simulation.is_clean is True
+    module_path.write_text(rewritten, encoding="utf-8")
+    assert not any(
+        finding.detector_id == "semantic_tuple_return_record"
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
 def test_semantic_tuple_return_record_reports_specific_recipe_rejection(
     tmp_path: Path,
 ) -> None:

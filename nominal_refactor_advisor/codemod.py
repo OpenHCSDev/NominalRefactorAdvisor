@@ -23441,8 +23441,186 @@ class TupleUnpackAssignmentTarget(FunctionProjectionTarget):
     """One same-file assignment unpacking a tuple-return producer call."""
 
     assign_node: ast.Assign
-    call_node: ast.Call
+    value_node: ast.expr
     target_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TupleFieldSubscriptTarget(FunctionProjectionTarget):
+    """One indexed tuple field read from a tuple-return producer record."""
+
+    subscript_node: ast.Subscript
+    field_name: str
+
+
+@dataclass(frozen=True)
+class TupleReturnProducerLocalBindings:
+    """Local names that carry records produced by one tuple-return function."""
+
+    record_alias_names: frozenset[str]
+    record_collection_names: frozenset[str]
+
+    @classmethod
+    def from_function(
+        cls,
+        function_node: ast.FunctionDef | ast.AsyncFunctionDef,
+        producer_leaf_name: str,
+    ) -> "TupleReturnProducerLocalBindings":
+        alias_names: set[str] = set()
+        collection_names: set[str] = set()
+        for statement in _walk_function_statements(function_node):
+            assignment = cls.single_name_assignment_value(statement)
+            if assignment is None:
+                continue
+            target_name, value = assignment
+            if TupleReturnProjectionTargetAuthority.call_matches_producer(
+                value,
+                producer_leaf_name,
+            ):
+                alias_names.add(target_name)
+            elif cls.record_collection_expr_matches(value, producer_leaf_name):
+                collection_names.add(target_name)
+        return cls(
+            record_alias_names=frozenset(alias_names),
+            record_collection_names=frozenset(collection_names),
+        )
+
+    @staticmethod
+    def single_name_assignment_value(statement: ast.stmt) -> tuple[str, ast.expr] | None:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        ):
+            return statement.targets[0].id, statement.value
+        if (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.value is not None
+        ):
+            return statement.target.id, statement.value
+        return None
+
+    @classmethod
+    def record_collection_expr_matches(
+        cls,
+        value: ast.expr,
+        producer_leaf_name: str,
+    ) -> bool:
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            if (
+                value.func.id in BuiltinCallName.sequence_wrapper_names()
+                and len(value.args) == 1
+            ):
+                return cls.record_collection_expr_matches(
+                    value.args[0],
+                    producer_leaf_name,
+                )
+            return TupleReturnProjectionTargetAuthority.call_matches_producer(
+                value,
+                producer_leaf_name,
+            )
+        if isinstance(value, ast.List | ast.Tuple | ast.Set):
+            return any(
+                cls.record_collection_expr_matches(element, producer_leaf_name)
+                for element in value.elts
+            )
+        if isinstance(value, ast.ListComp | ast.SetComp | ast.GeneratorExp):
+            return any(
+                TupleReturnProjectionTargetAuthority.call_matches_producer(
+                    node,
+                    producer_leaf_name,
+                )
+                for node in ast.walk(value)
+                if isinstance(node, ast.Call)
+            )
+        return False
+
+
+@dataclass(frozen=True)
+class TupleReturnConsumerFunctionTarget(FunctionProjectionTarget):
+    """Same-file function that may consume tuple-return producer records."""
+
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    producer_leaf_name: str
+    bindings: TupleReturnProducerLocalBindings
+
+
+class TupleReturnUnpackValueMatcher(ABC, metaclass=AutoRegisterMeta):
+    """Registered semantic cases for unpack RHS expressions carrying records."""
+
+    __registry__: ClassVar[dict[str, type["TupleReturnUnpackValueMatcher"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    registry_key_suffix: ClassVar[str] = "Matcher"
+    registry_order: ClassVar[int] = 100
+
+    @classmethod
+    def ordered_matchers(cls) -> tuple[type["TupleReturnUnpackValueMatcher"], ...]:
+        return tuple(
+            sorted(
+                cls.__registry__.values(),
+                key=lambda matcher: (matcher.registry_order, matcher.__name__),
+            )
+        )
+
+    @classmethod
+    @abstractmethod
+    def matches(
+        cls,
+        value: ast.expr,
+        producer_leaf_name: str,
+        bindings: TupleReturnProducerLocalBindings,
+    ) -> bool:
+        """Return whether value carries a tuple-return producer record."""
+
+
+class DirectTupleReturnCallMatcher(TupleReturnUnpackValueMatcher):
+    registry_order = 10
+
+    @classmethod
+    def matches(
+        cls,
+        value: ast.expr,
+        producer_leaf_name: str,
+        bindings: TupleReturnProducerLocalBindings,
+    ) -> bool:
+        return TupleReturnProjectionTargetAuthority.call_matches_producer(
+            value,
+            producer_leaf_name,
+        )
+
+
+class TupleReturnAliasMatcher(TupleReturnUnpackValueMatcher):
+    registry_order = 20
+
+    @classmethod
+    def matches(
+        cls,
+        value: ast.expr,
+        producer_leaf_name: str,
+        bindings: TupleReturnProducerLocalBindings,
+    ) -> bool:
+        return isinstance(value, ast.Name) and value.id in bindings.record_alias_names
+
+
+class TupleReturnCollectionItemMatcher(TupleReturnUnpackValueMatcher):
+    registry_order = 30
+
+    @classmethod
+    def matches(
+        cls,
+        value: ast.expr,
+        producer_leaf_name: str,
+        bindings: TupleReturnProducerLocalBindings,
+    ) -> bool:
+        return (
+            isinstance(value, ast.Subscript)
+            and isinstance(value.value, ast.Name)
+            and value.value.id in bindings.record_collection_names
+            and isinstance(value.slice, ast.Constant)
+            and isinstance(value.slice.value, int)
+        )
 
 
 class ReturnDictFieldValueExtractor:
@@ -23679,8 +23857,24 @@ class TupleReturnProjectionTargetAuthority:
         context: CodemodSelectorContext,
         projection: TupleReturnProjectionTarget,
     ) -> tuple[TupleUnpackAssignmentTarget, ...]:
-        leaf_name = projection.function_qualname.rsplit(".", maxsplit=1)[-1]
         targets: list[TupleUnpackAssignmentTarget] = []
+        for consumer_target in cls.consumer_function_targets(context, projection):
+            targets.extend(
+                cls.unpack_assignments_for_function(
+                    projection,
+                    consumer_target,
+                )
+            )
+        return tuple(targets)
+
+    @classmethod
+    def consumer_function_targets(
+        cls,
+        context: CodemodSelectorContext,
+        projection: TupleReturnProjectionTarget,
+    ) -> tuple[TupleReturnConsumerFunctionTarget, ...]:
+        leaf_name = projection.function_qualname.rsplit(".", maxsplit=1)[-1]
+        targets: list[TupleReturnConsumerFunctionTarget] = []
         for target in context.source_index.ast_targets:
             if (
                 target.file_path != projection.source_path
@@ -23692,12 +23886,16 @@ class TupleReturnProjectionTargetAuthority:
             node = context.ast_target_nodes_by_id.get(target.target_id)
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
-            targets.extend(
-                cls.unpack_assignments_for_function(
-                    projection,
-                    target.qualname,
-                    node,
-                    leaf_name,
+            targets.append(
+                TupleReturnConsumerFunctionTarget(
+                    source_path=projection.source_path,
+                    function_qualname=target.qualname,
+                    node=node,
+                    producer_leaf_name=leaf_name,
+                    bindings=TupleReturnProducerLocalBindings.from_function(
+                        node,
+                        leaf_name,
+                    ),
                 )
             )
         return tuple(targets)
@@ -23706,24 +23904,26 @@ class TupleReturnProjectionTargetAuthority:
     def unpack_assignments_for_function(
         cls,
         projection: TupleReturnProjectionTarget,
-        function_qualname: str,
-        function_node: ast.FunctionDef | ast.AsyncFunctionDef,
-        producer_leaf_name: str,
+        consumer_target: TupleReturnConsumerFunctionTarget,
     ) -> tuple[TupleUnpackAssignmentTarget, ...]:
         assignments: list[TupleUnpackAssignmentTarget] = []
-        for statement in _walk_function_statements(function_node):
+        for statement in _walk_function_statements(consumer_target.node):
             if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
                 continue
             target_names = cls.unpack_target_names(statement.targets[0])
             if len(target_names) != len(projection.field_values):
                 continue
-            if cls.call_matches_producer(statement.value, producer_leaf_name):
+            if cls.unpack_value_matches_producer(
+                statement.value,
+                consumer_target.producer_leaf_name,
+                consumer_target.bindings,
+            ):
                 assignments.append(
                     TupleUnpackAssignmentTarget(
                         source_path=projection.source_path,
-                        function_qualname=function_qualname,
+                        function_qualname=consumer_target.function_qualname,
                         assign_node=statement,
-                        call_node=statement.value,
+                        value_node=statement.value,
                         target_names=target_names,
                     )
                 )
@@ -23744,6 +23944,190 @@ class TupleReturnProjectionTargetAuthority:
             isinstance(value, ast.Call)
             and isinstance(value.func, ast.Name)
             and value.func.id == producer_leaf_name
+        )
+
+    @classmethod
+    def unpack_value_matches_producer(
+        cls,
+        value: ast.expr,
+        producer_leaf_name: str,
+        bindings: TupleReturnProducerLocalBindings,
+    ) -> bool:
+        return any(
+            matcher.matches(value, producer_leaf_name, bindings)
+            for matcher in TupleReturnUnpackValueMatcher.ordered_matchers()
+        )
+
+    @classmethod
+    def field_subscript_targets(
+        cls,
+        context: CodemodSelectorContext,
+        projection: TupleReturnProjectionTarget,
+    ) -> tuple[TupleFieldSubscriptTarget, ...]:
+        targets: list[TupleFieldSubscriptTarget] = []
+        for consumer_target in cls.consumer_function_targets(context, projection):
+            targets.extend(
+                cls.field_subscript_targets_for_function(
+                    projection,
+                    consumer_target,
+                )
+            )
+        return tuple(targets)
+
+    @classmethod
+    def field_subscript_targets_for_function(
+        cls,
+        projection: TupleReturnProjectionTarget,
+        consumer_target: TupleReturnConsumerFunctionTarget,
+    ) -> tuple[TupleFieldSubscriptTarget, ...]:
+        collector = TupleFieldSubscriptTargetCollector(
+            source_path=projection.source_path,
+            function_qualname=consumer_target.function_qualname,
+            field_names_by_index=tuple(
+                field_value.field_name for field_value in projection.field_values
+            ),
+            bindings=consumer_target.bindings,
+        )
+        return collector.targets_for(consumer_target.node)
+
+
+@dataclass(frozen=True)
+class TupleFieldSubscriptTargetCollector:
+    """Collect indexed field reads proven to descend from tuple-return records."""
+
+    source_path: str
+    function_qualname: str
+    field_names_by_index: tuple[str, ...]
+    bindings: TupleReturnProducerLocalBindings
+
+    def targets_for(
+        self,
+        function_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[TupleFieldSubscriptTarget, ...]:
+        if (
+            not self.bindings.record_alias_names
+            and not self.bindings.record_collection_names
+        ):
+            return ()
+        targets: list[TupleFieldSubscriptTarget] = []
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self, authority: "TupleFieldSubscriptTargetCollector") -> None:
+                self.authority = authority
+                self.record_names: tuple[str, ...] = tuple(
+                    authority.bindings.record_alias_names
+                )
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                if node is function_node:
+                    for statement in node.body:
+                        self.visit(statement)
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return None
+
+            def visit_For(self, node: ast.For) -> None:
+                iterator_name = _name_id(node.target)
+                if (
+                    iterator_name is not None
+                    and self.authority.iterates_record_collection(node.iter)
+                ):
+                    self.with_record_name(
+                        iterator_name,
+                        lambda: self.visit_statements((*node.body, *node.orelse)),
+                    )
+                    return
+                self.generic_visit(node)
+
+            visit_AsyncFor = visit_For
+
+            def visit_ListComp(self, node: ast.ListComp) -> None:
+                self.visit_comprehension_result(node.elt, node.generators)
+
+            visit_SetComp = visit_ListComp
+            visit_GeneratorExp = visit_ListComp
+
+            def visit_DictComp(self, node: ast.DictComp) -> None:
+                self.visit_comprehension_result((node.key, node.value), node.generators)
+
+            def visit_Subscript(self, node: ast.Subscript) -> None:
+                target = self.authority.target_for_subscript(node, self.record_names)
+                if target is not None:
+                    targets.append(target)
+                    return
+                self.generic_visit(node)
+
+            def visit_comprehension_result(
+                self,
+                result_nodes: ast.AST | tuple[ast.AST, ...],
+                generators: list[ast.comprehension],
+            ) -> None:
+                original_record_names = self.record_names
+                try:
+                    for generator in generators:
+                        self.visit(generator.iter)
+                        for guard in generator.ifs:
+                            self.visit(guard)
+                        iterator_name = _name_id(generator.target)
+                        if (
+                            iterator_name is not None
+                            and self.authority.iterates_record_collection(generator.iter)
+                        ):
+                            self.record_names = (*self.record_names, iterator_name)
+                    for result_node in (
+                        result_nodes if isinstance(result_nodes, tuple) else (result_nodes,)
+                    ):
+                        self.visit(result_node)
+                finally:
+                    self.record_names = original_record_names
+
+            def visit_statements(self, statements: tuple[ast.stmt, ...]) -> None:
+                for statement in statements:
+                    self.visit(statement)
+
+            def with_record_name(
+                self,
+                record_name: str,
+                callback: Callable[[], None],
+            ) -> None:
+                original_record_names = self.record_names
+                self.record_names = (*self.record_names, record_name)
+                try:
+                    callback()
+                finally:
+                    self.record_names = original_record_names
+
+        Visitor(self).visit(function_node)
+        return tuple(targets)
+
+    def iterates_record_collection(self, node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Name)
+            and node.id in self.bindings.record_collection_names
+        )
+
+    def target_for_subscript(
+        self,
+        node: ast.Subscript,
+        record_names: tuple[str, ...],
+    ) -> TupleFieldSubscriptTarget | None:
+        if not isinstance(node.value, ast.Name) or node.value.id not in record_names:
+            return None
+        if not isinstance(node.slice, ast.Constant) or not isinstance(
+            node.slice.value,
+            int,
+        ):
+            return None
+        index = node.slice.value
+        if index < 0 or index >= len(self.field_names_by_index):
+            return None
+        return TupleFieldSubscriptTarget(
+            source_path=self.source_path,
+            function_qualname=self.function_qualname,
+            subscript_node=node,
+            field_name=self.field_names_by_index[index],
         )
 
 
@@ -25002,8 +25386,8 @@ class SemanticDictBagReturnRecordMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class TupleUnpackAssignmentRewrite:
-    """Exact replacement for one tuple unpack assignment."""
+class TupleReturnConsumerRewrite:
+    """Exact replacement for one tuple-return consumer."""
 
     function_qualname: str
     old_source: str
@@ -25019,7 +25403,7 @@ class SemanticTupleReturnRecordRecipeParts(FunctionProjectionTarget, FindingReci
     projection: TupleReturnProjectionTarget
     return_old_source: str
     return_new_source: str
-    unpack_rewrites: tuple[TupleUnpackAssignmentRewrite, ...]
+    consumer_rewrites: tuple[TupleReturnConsumerRewrite, ...]
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
         recipe = (
@@ -25050,7 +25434,7 @@ class SemanticTupleReturnRecordRecipeParts(FunctionProjectionTarget, FindingReci
                 rationale="Return the nominal record instead of positional values.",
             )
         )
-        for rewrite in self.unpack_rewrites:
+        for rewrite in self.consumer_rewrites:
             recipe = recipe.replace_text(
                 rewrite.function_qualname,
                 rewrite.old_source,
@@ -25097,8 +25481,8 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
             return "semantic tuple-return extraction has an executable recipe"
         return (
             "semantic tuple-return extraction requires a top-level tuple/list return, "
-            "a non-conflicting result record name, and at least one same-file direct "
-            "unpack assignment consumer"
+            "a non-conflicting result record name, and at least one same-file "
+            "consumer that can be rewritten to named record fields"
         )
 
     @cached_property
@@ -25133,8 +25517,8 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
         return_rewrite = self.return_rewrite_parts(carrier_name, projection)
         if return_rewrite is None:
             return None
-        unpack_rewrites = self.unpack_rewrites(carrier_name, projection)
-        if not unpack_rewrites:
+        consumer_rewrites = self.consumer_rewrites(carrier_name, projection)
+        if not consumer_rewrites:
             return None
         return SemanticTupleReturnRecordRecipeParts(
             source_path=projection.source_path,
@@ -25144,7 +25528,7 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
             projection=projection,
             return_old_source=return_rewrite.old_source,
             return_new_source=return_rewrite.new_source,
-            unpack_rewrites=unpack_rewrites,
+            consumer_rewrites=consumer_rewrites,
         )
 
     def carrier_name(self, source_path: str) -> str | None:
@@ -25197,16 +25581,25 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
             assignments.append(f"{field_name}={ast.unparse(value_node)}")
         return f"{carrier_name}({', '.join(assignments)})"
 
-    def unpack_rewrites(
+    def consumer_rewrites(
         self,
         carrier_name: str,
         projection: TupleReturnProjectionTarget,
-    ) -> tuple[TupleUnpackAssignmentRewrite, ...]:
-        rewrites = tuple(
-            self.unpack_rewrite(carrier_name, projection, unpack_target)
-            for unpack_target in TupleReturnProjectionTargetAuthority.unpack_assignments(
-                self,
-                projection,
+    ) -> tuple[TupleReturnConsumerRewrite, ...]:
+        rewrites = (
+            tuple(
+                self.unpack_rewrite(carrier_name, projection, unpack_target)
+                for unpack_target in TupleReturnProjectionTargetAuthority.unpack_assignments(
+                    self,
+                    projection,
+                )
+            )
+            + tuple(
+                self.field_subscript_rewrite(field_target)
+                for field_target in TupleReturnProjectionTargetAuthority.field_subscript_targets(
+                    self,
+                    projection,
+                )
             )
         )
         if any(rewrite is None for rewrite in rewrites):
@@ -25218,7 +25611,7 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
         carrier_name: str,
         projection: TupleReturnProjectionTarget,
         unpack_target: TupleUnpackAssignmentTarget,
-    ) -> TupleUnpackAssignmentRewrite | None:
+    ) -> TupleReturnConsumerRewrite | None:
         source = self.sources_by_file_path[unpack_target.source_path]
         geometry = SourceTextGeometry(source)
         offsets = geometry.node_offsets(unpack_target.assign_node)
@@ -25226,9 +25619,9 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
             return None
         span = SourceTextSpan.from_offsets(offsets)
         record_variable_name = self.record_variable_name(projection)
-        call_source = ast.get_source_segment(source, unpack_target.call_node)
-        if call_source is None:
-            call_source = ast.unparse(unpack_target.call_node)
+        value_source = ast.get_source_segment(source, unpack_target.value_node)
+        if value_source is None:
+            value_source = ast.unparse(unpack_target.value_node)
         indent = geometry.line_indent(offsets[0])
         projected_assignments = tuple(
             f"{target_name} = {record_variable_name}.{field.field_name}"
@@ -25239,12 +25632,35 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
             )
         )
         new_lines = (
-            f"{record_variable_name} = {call_source}",
+            f"{record_variable_name} = {value_source}",
             *(f"{indent}{line}" for line in projected_assignments),
         )
         replacement = span.replacement(source, "\n".join(new_lines))
-        return TupleUnpackAssignmentRewrite(
+        return TupleReturnConsumerRewrite(
             function_qualname=unpack_target.function_qualname,
+            old_source=replacement.old_source,
+            new_source=replacement.new_source,
+        )
+
+    def field_subscript_rewrite(
+        self,
+        field_target: TupleFieldSubscriptTarget,
+    ) -> TupleReturnConsumerRewrite | None:
+        source = self.sources_by_file_path[field_target.source_path]
+        geometry = SourceTextGeometry(source)
+        offsets = geometry.node_offsets(field_target.subscript_node)
+        if offsets is None:
+            return None
+        span = SourceTextSpan.from_offsets(offsets)
+        value_source = ast.get_source_segment(source, field_target.subscript_node.value)
+        if value_source is None:
+            value_source = ast.unparse(field_target.subscript_node.value)
+        replacement = span.replacement(
+            source,
+            f"{value_source}.{field_target.field_name}",
+        )
+        return TupleReturnConsumerRewrite(
+            function_qualname=field_target.function_qualname,
             old_source=replacement.old_source,
             new_source=replacement.new_source,
         )
