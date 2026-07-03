@@ -209,6 +209,28 @@ class SemanticFactKind(StrEnum):
     FINDING_EVIDENCE = "finding_evidence"
 
 
+class AuthorityClaimStatus(StrEnum):
+    """Resolution state for an agent- or detector-authored authority claim."""
+
+    RESOLVED = "resolved"
+    AMBIGUOUS = "ambiguous"
+    UNRESOLVED = "unresolved"
+    DECLARED = "declared"
+
+
+class AuthorityProofEdgeKind(StrEnum):
+    """Proof edge categories that make an authority claim non-prose."""
+
+    SOURCE_INDEX_TARGET = "source_index_target"
+    SEMANTIC_DESCENT_GRAPH = "semantic_descent_graph"
+    EXPLICIT_DECLARATION = "explicit_declaration"
+    INHERITS_FROM = "inherits_from"
+    REGISTERED_BY = "registered_by"
+    OWNS_FIELD_SET = "owns_field_set"
+    DECLARES_ENUM_MEMBERS = "declares_enum_members"
+    PROVIDES_QUERY_METHOD = "provides_query_method"
+
+
 class PresentationProjectionKind(StrEnum):
     """Raw presentation shapes that may mirror a semantic authority."""
 
@@ -520,6 +542,241 @@ class SemanticAuthority(SemanticAuthorityReference):
     name: str
     location: SourceLocation
     fact_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AuthorityClaim(SemanticRecord):
+    """Structured claim that a named authority exists or is being declared."""
+
+    claimed_symbol: str
+    authority_kind: str = ""
+    file_path: str = ""
+    qualname: str = ""
+    authority_id: str = ""
+
+    @classmethod
+    def from_authority(cls, authority: SemanticAuthority) -> "AuthorityClaim":
+        return cls(
+            claimed_symbol=authority.name,
+            authority_kind=authority.kind.value,
+            file_path=authority.location.file_path,
+            qualname=authority.location.symbol,
+            authority_id=authority.authority_id,
+        )
+
+
+@dataclass(frozen=True)
+class AuthorityProofEdge(SemanticRecord):
+    """Concrete graph/source edge proving an authority claim."""
+
+    edge_kind: str
+    authority_id: str
+    authority_kind: str
+    file_path: str
+    line: int
+    symbol: str
+    detail: str = ""
+
+    @classmethod
+    def from_authority(
+        cls,
+        authority: SemanticAuthority,
+        edge_kind: AuthorityProofEdgeKind,
+        *,
+        detail: str = "",
+    ) -> "AuthorityProofEdge":
+        return cls(
+            edge_kind=edge_kind.value,
+            authority_id=authority.authority_id,
+            authority_kind=authority.kind.value,
+            file_path=authority.location.file_path,
+            line=authority.location.line,
+            symbol=authority.location.symbol,
+            detail=detail,
+        )
+
+
+@dataclass(frozen=True)
+class AuthorityDiscoveryRequired(SemanticRecord):
+    """First-class unknown result when an authority claim cannot be proved."""
+
+    claimed_symbol: str
+    searched_symbols: tuple[str, ...]
+    candidate_count: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class AuthorityClaimResolution(SemanticRecord):
+    """Resolved, ambiguous, declared, or unresolved authority claim."""
+
+    claim: AuthorityClaim
+    status: AuthorityClaimStatus
+    proof_edges: tuple[AuthorityProofEdge, ...] = ()
+    discovery_required: AuthorityDiscoveryRequired | None = None
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.status is AuthorityClaimStatus.RESOLVED
+
+    @property
+    def is_declared(self) -> bool:
+        return self.status is AuthorityClaimStatus.DECLARED
+
+    @property
+    def is_actionable(self) -> bool:
+        return self.is_resolved or self.is_declared
+
+    @classmethod
+    def declared(
+        cls,
+        claim: AuthorityClaim,
+        *,
+        detail: str = "recipe declares this authority boundary",
+    ) -> "AuthorityClaimResolution":
+        proof = AuthorityProofEdge(
+            edge_kind=AuthorityProofEdgeKind.EXPLICIT_DECLARATION.value,
+            authority_id=claim.authority_id or claim.claimed_symbol,
+            authority_kind=claim.authority_kind,
+            file_path=claim.file_path,
+            line=0,
+            symbol=claim.qualname or claim.claimed_symbol,
+            detail=detail,
+        )
+        return cls(
+            claim=claim,
+            status=AuthorityClaimStatus.DECLARED,
+            proof_edges=(proof,),
+        )
+
+    @classmethod
+    def unresolved(
+        cls,
+        claim: AuthorityClaim,
+        *,
+        searched_symbols: tuple[str, ...],
+        candidate_count: int = 0,
+        reason: str = "no source-backed authority matched the claim",
+    ) -> "AuthorityClaimResolution":
+        return cls(
+            claim=claim,
+            status=AuthorityClaimStatus.UNRESOLVED,
+            discovery_required=AuthorityDiscoveryRequired(
+                claimed_symbol=claim.claimed_symbol,
+                searched_symbols=searched_symbols,
+                candidate_count=candidate_count,
+                reason=reason,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        payload = super().to_dict()
+        payload["status"] = self.status.value
+        return payload
+
+
+@dataclass(frozen=True)
+class AuthorityClaimResolver:
+    """Resolve authority claims against a semantic-descent graph catalog."""
+
+    graph: "SemanticDescentGraph"
+
+    def resolve(self, claim: AuthorityClaim) -> AuthorityClaimResolution:
+        candidates = self._candidate_authorities(claim)
+        searched_symbols = self._searched_symbols(claim)
+        if not candidates:
+            return AuthorityClaimResolution.unresolved(
+                claim,
+                searched_symbols=searched_symbols,
+            )
+        if len(candidates) > 1:
+            return AuthorityClaimResolution(
+                claim=claim,
+                status=AuthorityClaimStatus.AMBIGUOUS,
+                proof_edges=tuple(
+                    AuthorityProofEdge.from_authority(
+                        authority,
+                        AuthorityProofEdgeKind.SEMANTIC_DESCENT_GRAPH,
+                        detail="multiple graph authorities match this claim",
+                    )
+                    for authority in candidates
+                ),
+                discovery_required=AuthorityDiscoveryRequired(
+                    claimed_symbol=claim.claimed_symbol,
+                    searched_symbols=searched_symbols,
+                    candidate_count=len(candidates),
+                    reason="multiple source-backed authorities match the claim",
+                ),
+            )
+        authority = candidates[0]
+        return AuthorityClaimResolution(
+            claim=claim,
+            status=AuthorityClaimStatus.RESOLVED,
+            proof_edges=(
+                AuthorityProofEdge.from_authority(
+                    authority,
+                    AuthorityProofEdgeKind.SEMANTIC_DESCENT_GRAPH,
+                    detail="claim matched semantic-descent authority catalog",
+                ),
+            ),
+        )
+
+    def _candidate_authorities(
+        self,
+        claim: AuthorityClaim,
+    ) -> tuple[SemanticAuthority, ...]:
+        if claim.authority_id:
+            authority = self.graph.authority_catalog.by_id.get(claim.authority_id)
+            if authority is None:
+                return ()
+            return self._filter_authorities((authority,), claim)
+        authority_ids = tuple(
+            dict.fromkeys(
+                authority_id
+                for name in self._searched_symbols(claim)
+                for authority_id in self.graph.authority_name_index.by_name.get(name, ())
+            )
+        )
+        return self._filter_authorities(
+            tuple(self.graph.authority_catalog.authority(item) for item in authority_ids),
+            claim,
+        )
+
+    def _filter_authorities(
+        self,
+        authorities: tuple[SemanticAuthority, ...],
+        claim: AuthorityClaim,
+    ) -> tuple[SemanticAuthority, ...]:
+        return tuple(
+            authority
+            for authority in authorities
+            if self._matches_kind(authority, claim)
+            and self._matches_location(authority, claim)
+        )
+
+    @staticmethod
+    def _matches_kind(authority: SemanticAuthority, claim: AuthorityClaim) -> bool:
+        return not claim.authority_kind or authority.kind.value == claim.authority_kind
+
+    @staticmethod
+    def _matches_location(authority: SemanticAuthority, claim: AuthorityClaim) -> bool:
+        if claim.file_path and authority.location.file_path != claim.file_path:
+            return False
+        return not claim.qualname or authority.location.symbol == claim.qualname
+
+    @staticmethod
+    def _searched_symbols(claim: AuthorityClaim) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                symbol
+                for symbol in (
+                    claim.claimed_symbol,
+                    claim.qualname,
+                    claim.qualname.rsplit(".", maxsplit=1)[-1],
+                )
+                if symbol
+            )
+        )
 
 
 @dataclass(frozen=True)

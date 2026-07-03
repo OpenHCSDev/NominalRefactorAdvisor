@@ -220,6 +220,7 @@ from nominal_refactor_advisor.semantic_match import (
     effect_step_class_family_authority,
 )
 from nominal_refactor_advisor.semantic_descent import (
+    AuthorityClaim,
     SemanticAuthority,
     SemanticAuthorityKind,
     SemanticDescentGraph,
@@ -783,6 +784,63 @@ def test_codemod_source_snapshot_executes_recipe_document(
     assert "+        return AlphaAuthority.run(value)" in diff
     assert simulation.apply() == (module_path.as_posix(),)
     assert "return AlphaAuthority.run(value)" in module_path.read_text()
+
+
+def test_codemod_preflight_rejects_unclaimed_authority_rationale(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    recipe = RefactorRecipe(
+        recipe_id="fake-authority-route",
+        reason="route through authority",
+    )
+
+    preflight = CodemodPlanDocument(recipes=(recipe,)).preflight_snapshot(snapshot)
+
+    assert preflight.preflight_failed is True
+    assert preflight.reports[0].operation == "authority_claims"
+    assert "resolved authority claim" in preflight.reports[0].message
+
+
+def test_codemod_preflight_accepts_source_backed_authority_claim(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass AlphaAuthority:\n"
+        "    def run(self, value):\n"
+        "        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    recipe = RefactorRecipe(
+        recipe_id="claimed-authority-route",
+        reason="route through authority",
+        authority_claims=(
+            AuthorityClaim(
+                claimed_symbol="AlphaAuthority",
+                file_path=module_path.as_posix(),
+                qualname="AlphaAuthority",
+            ),
+        ),
+    )
+
+    preflight = CodemodPlanDocument(recipes=(recipe,)).preflight_snapshot(snapshot)
+
+    assert preflight.preflight_failed is False
+    assert preflight.reports[0].operation == "authority_claims"
+    assert preflight.reports[0].status.value == "passed"
+    resolution = preflight.reports[0].details["resolutions"][0]
+    assert resolution["status"] == "resolved"
+    assert resolution["proof_edges"][0]["edge_kind"] == "source_index_target"
 
 
 def test_refactor_recipe_dsl_operations_compile_to_rewrites(
@@ -12014,6 +12072,13 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
                 {
                     "recipe_id": "alpha-recipe",
                     "target_shape": "autoregister_strategy_family",
+                    "authority_claims": [
+                        {
+                            "claimed_symbol": "AlphaRunAuthority",
+                            "file_path": "pkg/mod.py",
+                            "qualname": "AlphaRunAuthority",
+                        }
+                    ],
                     "architecture_guards": [
                         {
                             "rule_id": "alpha-recipe-boundary",
@@ -12052,6 +12117,10 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
         document.recipes[0].target_shape
         is RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY
     )
+    assert document.recipes[0].authority_claims[0].claimed_symbol == (
+        "AlphaRunAuthority"
+    )
+    assert document.recipes[0].authority_claims[0].qualname == "AlphaRunAuthority"
     assert document.recipes[0].rewrites[0].target.file_path == "pkg/mod.py"
 
 
@@ -21047,6 +21116,13 @@ def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     assert work_queue[0]["matched_fact_count"] == 2
     assert work_queue[0]["authority_kinds"] == ("finding_declared_authority",)
     assert work_queue[0]["projection_kinds"] == ("detector_finding",)
+    authority_claim = work_queue[0]["authority_claims"][0]
+    assert authority_claim["status"] == "resolved"
+    assert authority_claim["claim"]["claimed_symbol"] == "Handler"
+    assert (
+        authority_claim["proof_edges"][0]["edge_kind"]
+        == "semantic_descent_graph"
+    )
     assert gate_queue[0] == work_queue[0]
     assert raw_payload["supporting_raw_findings"][0]["stable_id"] == critical.stable_id
 

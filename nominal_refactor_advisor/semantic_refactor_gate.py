@@ -17,6 +17,9 @@ from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
 from .impact_ranking import RefactorImpactRankingReport, RefactorImpactTrajectory
 from .models import RefactorFinding, SemanticRecord
 from .semantic_descent import (
+    AuthorityClaim,
+    AuthorityClaimResolution,
+    AuthorityClaimResolver,
     DescentCertificate,
     SemanticDescentGraph,
     build_finding_backed_semantic_descent_graph,
@@ -246,6 +249,47 @@ class DescentCertificateFindingAuthority:
             for certificate in certificates
         )
 
+    def authority_claim_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> AuthorityClaimResolution:
+        certificate = self.certificate_for_finding(finding)
+        if certificate is not None:
+            authority = self.graph.authority_catalog.authority_for_edge(
+                certificate.edge
+            )
+            return AuthorityClaimResolver(self.graph).resolve(
+                AuthorityClaim.from_authority(authority)
+            )
+        label = self.authority_label_for_finding(finding)
+        return AuthorityClaimResolution.unresolved(
+            AuthorityClaim(claimed_symbol=label),
+            searched_symbols=(label,),
+            reason="finding did not provide a graph-certified authority proof",
+        )
+
+    def authority_claims_for_findings(
+        self,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[AuthorityClaimResolution, ...]:
+        claims_by_key: dict[
+            tuple[str, str, str, str, str],
+            AuthorityClaimResolution,
+        ] = {}
+        for finding in findings:
+            resolution = self.authority_claim_for_finding(finding)
+            claim = resolution.claim
+            claims_by_key[
+                (
+                    claim.claimed_symbol,
+                    claim.authority_kind,
+                    claim.file_path,
+                    claim.qualname,
+                    claim.authority_id,
+                )
+            ] = resolution
+        return tuple(claims_by_key.values())
+
 
 @dataclass(frozen=True)
 class FindingRemovalPrediction:
@@ -372,6 +416,7 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
     matched_fact_count: int
     authority_kinds: tuple[str, ...]
     projection_kinds: tuple[str, ...]
+    authority_claims: tuple[AuthorityClaimResolution, ...]
     agent_action: str
     evidence_symbols: tuple[str, ...]
 
@@ -399,6 +444,13 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             matched_fact_count=0,
             authority_kinds=(),
             projection_kinds=(),
+            authority_claims=(
+                AuthorityClaimResolution.unresolved(
+                    AuthorityClaim(claimed_symbol=target.authority_target_label),
+                    searched_symbols=(target.authority_target_label,),
+                    reason="impact candidate did not provide a graph authority proof",
+                ),
+            ),
             agent_action=target.agent_action,
             evidence_symbols=(),
         )
@@ -461,6 +513,9 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             matched_fact_count=certificate_authority.matched_fact_count(certificates),
             authority_kinds=certificate_authority.authority_kinds(certificates),
             projection_kinds=certificate_authority.projection_kinds(certificates),
+            authority_claims=certificate_authority.authority_claims_for_findings(
+                findings
+            ),
             agent_action=(
                 "Design the nominal authority boundary named by this finding, "
                 "then derive the mirrored surface from that authority before "
@@ -491,6 +546,9 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
                 "matched_fact_count": self.matched_fact_count,
                 "authority_kinds": self.authority_kinds,
                 "projection_kinds": self.projection_kinds,
+                "authority_claims": tuple(
+                    claim.to_dict() for claim in self.authority_claims
+                ),
                 "agent_action": self.agent_action,
                 "evidence_symbols": self.evidence_symbols,
             }
