@@ -11,7 +11,6 @@ _DIRECT_REFLECTION_BUILTINS = frozenset(
         "delattr",
         "getattr",
         "hasattr",
-        "locals",
         "setattr",
     )
 )
@@ -282,6 +281,131 @@ declare_candidate_rule_detector(
         probe_site_count=len(candidate.evidence)
     ),
     candidate_collector=_direct_reflective_builtin_call_candidates,
+)
+
+
+def _scope_bound_names(nodes: Sequence[ast.AST]) -> frozenset[str]:
+    """Collect bindings belonging to one lexical scope, not nested scopes."""
+
+    bound: set[str] = set()
+
+    class ScopeBindingVisitor(ast.NodeVisitor):
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                bound.add(node.id)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            bound.add(node.name)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            bound.add(node.name)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+    visitor = ScopeBindingVisitor()
+    for node in nodes:
+        visitor.visit(node)
+    return frozenset(bound)
+
+
+def _argument_names(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> frozenset[str]:
+    arguments = node.args
+    return frozenset(
+        argument.arg
+        for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+    ) | frozenset(
+        argument.arg for argument in (arguments.vararg, arguments.kwarg) if argument
+    )
+
+
+@dataclass(frozen=True)
+class BuiltinLocalsCallCandidate(DirectReflectiveSiteCandidate):
+    pass
+
+
+def _builtin_locals_call_candidates(
+    module: ParsedModule,
+) -> tuple[BuiltinLocalsCallCandidate, ...]:
+    candidates: list[BuiltinLocalsCallCandidate] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.scope_bindings: list[frozenset[str]] = [
+                _scope_bound_names(module.module.body)
+            ]
+            self.scope_names: list[str] = ["module"]
+
+        def _visit_scope(
+            self,
+            node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+            name: str,
+        ) -> None:
+            body = node.body if not isinstance(node, ast.Lambda) else ()
+            self.scope_bindings.append(_scope_bound_names(body) | _argument_names(node))
+            self.scope_names.append(name)
+            self.generic_visit(node)
+            self.scope_names.pop()
+            self.scope_bindings.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_scope(node, node.name)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            self._visit_scope(node, "lambda")
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "locals"
+                and not any("locals" in bindings for bindings in self.scope_bindings)
+            ):
+                owner = ".".join(self.scope_names)
+                candidates.append(
+                    BuiltinLocalsCallCandidate(
+                        owner=owner,
+                        evidence=(
+                            SourceLocation(str(module.path), node.lineno, f"{owner}:locals"),
+                        ),
+                    )
+                )
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return tuple(candidates)
+
+
+declare_candidate_rule_detector(
+    BuiltinLocalsCallCandidate,
+    high_confidence_certified_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Builtin locals calls hide lexical dependencies",
+        "Calls to Python's built-in locals() convert lexical dependencies into a string-keyed, untyped registry and hide semantic coupling. Production code should use explicit typed fields or parameters.",
+        "no calls to Python's built-in locals() in production execution code",
+        "runtime code captures its lexical namespace through the built-in locals() mapping",
+        (
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (ObservationTag.PARTIAL_VIEW, ObservationTag.NORMALIZED_AST),
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.owner}` calls Python's built-in `locals()`, hiding lexical dependencies."
+    ),
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: (
+        "# Replace locals() with explicit typed parameters or a nominal runtime contract."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Remove built-in locals() capture in `{candidate.owner}` and pass the required values explicitly."
+    ),
+    metrics=lambda candidate: ProbeCountMetrics(probe_site_count=len(candidate.evidence)),
+    candidate_collector=_builtin_locals_call_candidates,
 )
 
 
