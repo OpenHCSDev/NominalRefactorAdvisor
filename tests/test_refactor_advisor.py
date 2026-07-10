@@ -19332,6 +19332,33 @@ def test_ignores_semantic_inheritance_family_with_autoregister_meta(
     )
 
 
+def test_ignores_semantic_inheritance_family_with_effective_inherited_meta(
+    tmp_path: Path,
+) -> None:
+    scan_root = tmp_path / "project/docking"
+    _write_module(
+        tmp_path,
+        "project/docking/registry.py",
+        '\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass RuntimeAutoRegisterMeta(AutoRegisterMeta):\n    pass\n\n\nclass RuntimeSemanticInheritanceFamily(ABC, metaclass=RuntimeAutoRegisterMeta):\n    pass\n',
+    )
+    _write_module(
+        tmp_path,
+        "project/docking/consumer.py",
+        '\nfrom project.docking.registry import RuntimeSemanticInheritanceFamily\n\n\nclass SelectedBoolPolicyAuthority(RuntimeSemanticInheritanceFamily):\n    def select(self, value):\n        raise NotImplementedError\n\n\nclass EnabledSelectedBoolPolicy(SelectedBoolPolicyAuthority):\n    def select(self, value):\n        return True\n\n\nclass DisabledSelectedBoolPolicy(SelectedBoolPolicyAuthority):\n    def select(self, value):\n        return False\n',
+    )
+    _write_module(
+        tmp_path,
+        "project/docking/shadow.py",
+        "class RuntimeSemanticInheritanceFamily:\n    pass\n",
+    )
+
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        and "SelectedBoolPolicyAuthority" in finding.summary
+        for finding in analyze_path(scan_root)
+    )
+
+
 def test_ignores_semantic_inheritance_family_with_inherited_registry_authority(
     tmp_path: Path,
 ) -> None:

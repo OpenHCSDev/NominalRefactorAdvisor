@@ -213,6 +213,20 @@ class ClassSymbolResolutionAuthority:
         candidate = ".".join((alias_target, *rest)) if rest else alias_target
         if candidate in self.known_symbols:
             return candidate
+        # A scan may start at a package subdirectory, making indexed symbols
+        # source-root-relative while imports retain their full package prefix.
+        # Resolve only a unique suffix match so unrelated same-named classes do
+        # not create a speculative inheritance edge.
+        candidate_parts = candidate.split(".")
+        for suffix_width in range(len(candidate_parts) - 1, 0, -1):
+            suffix = ".".join(candidate_parts[-suffix_width:])
+            matches = tuple(
+                symbol
+                for symbol in self.known_symbols
+                if symbol == suffix or symbol.endswith(f".{suffix}")
+            )
+            if len(matches) == 1:
+                return matches[0]
         return None
 
     def _module_local_symbol(self, parts: tuple[str, ...]) -> str | None:
