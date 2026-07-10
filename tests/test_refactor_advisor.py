@@ -6535,8 +6535,9 @@ def test_detects_direct_reflective_builtin_calls(tmp_path: Path) -> None:
         """
 class RuntimeAdapter:
     def value_for(self, source, field_name):
+        source_scope = locals()
         if hasattr(source, field_name):
-            return getattr(source, field_name)
+            return getattr(source, field_name), source_scope
         raise ValueError("missing declared field")
 """,
     )
@@ -6549,6 +6550,7 @@ class RuntimeAdapter:
         )
     )
     assert finding.pattern_id == PatternId.NOMINAL_BOUNDARY
+    assert "locals" in finding.summary
     assert "typed/nominal authority" in (finding.codemod_patch or "")
 
 

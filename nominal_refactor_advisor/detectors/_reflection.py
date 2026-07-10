@@ -11,6 +11,7 @@ _DIRECT_REFLECTION_BUILTINS = frozenset(
         "delattr",
         "getattr",
         "hasattr",
+        "locals",
         "setattr",
     )
 )
@@ -245,7 +246,7 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.NOMINAL_BOUNDARY,
         "Direct reflective builtin calls bypass nominal boundaries",
-        "Calls to getattr, hasattr, setattr, delattr, and reflective dunder methods recover behavior from partial structural views at runtime. Production code should expose a typed nominal contract, generated accessor, explicit protocol method, or fail-loud formal boundary instead.",
+        "Calls to getattr, hasattr, locals, setattr, delattr, and reflective dunder methods recover behavior from partial structural views at runtime. Production code should expose a typed nominal contract, generated accessor, explicit protocol method, or fail-loud formal boundary instead.",
         "no direct reflective builtin calls in production execution code",
         "runtime code probes or mutates attributes through Python reflection",
         (
@@ -269,7 +270,7 @@ declare_candidate_rule_detector(
         "    @abstractmethod\n"
         "    def required_value(self) -> TypedPayload:\n"
         "        raise NotImplementedError\n\n"
-        "# Replace reflection with typed fields, explicit ABC methods, "
+        "# Replace reflection and ambient frame capture with typed fields, explicit ABC methods, "
         "generated accessors, or formal-boundary fail-loud payload authorities."
     ),
     codemod_patch=lambda candidate: (

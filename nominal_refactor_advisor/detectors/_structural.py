@@ -2177,14 +2177,15 @@ def _excessive_blank_line_run_candidates(
         run_start = None
         run_length = 0
 
-    for line_number, line in enumerate(module.source.splitlines(), 1):
+    source_lines = module.source.splitlines()
+    for line_number, line in enumerate(source_lines, 1):
         if line_number in protected_lines or line.strip():
             flush(line_number - 1)
             continue
         if run_start is None:
             run_start = line_number
         run_length += 1
-    flush(line_number if "line_number" in locals() else 0)
+    flush(len(source_lines))
     return tuple(candidates)
 
 
