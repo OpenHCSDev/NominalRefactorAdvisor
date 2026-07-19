@@ -923,6 +923,15 @@ def _opaque_object_annotation_sites(
                 *tuple(node.args.args),
                 *tuple(node.args.kwonlyargs),
             ):
+                if (
+                    class_stack
+                    and node.name in {"__eq__", "__ne__"}
+                    and argument.arg == "other"
+                    and argument.annotation is not None
+                    and _opaque_object_annotation_names(argument.annotation)
+                    == ("object",)
+                ):
+                    continue
                 inspect_argument(function_owner_name, argument, "parameter")
             inspect_argument(function_owner_name, node.args.vararg, "vararg")
             inspect_argument(function_owner_name, node.args.kwarg, "kwarg")
