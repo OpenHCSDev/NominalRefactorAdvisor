@@ -9,6 +9,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from ..class_index import ModuleClassReferenceResolver, build_class_family_index
 from ..collection_algebra import sorted_tuple
 from ..constructor_algebra import ConstructorParameterField
 from ..models import MappingMetrics
@@ -17,12 +18,10 @@ from ..semantic_identity import SemanticRoleIdentityToken
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     DetectorConfig,
-    IssueDetector,
     ParsedModule,
     RefactorFinding,
     SourceLocation,
     high_confidence_spec,
-    CrossModuleCandidateDetector,
     CrossModuleCollectorCandidateDetector,
 )
 from ._helpers import (
@@ -478,19 +477,49 @@ def _is_dataclass_class(node: ast.ClassDef) -> bool:
     return False
 
 
-def _semantic_carrier_type_names(annotation_text: str) -> tuple[str, ...]:
-    if "[" in annotation_text:
-        return ()
-    return sorted_tuple(
-        name
-        for name in _annotation_type_names(annotation_text)
-        if name.endswith(_CARRIER_NAME_SUFFIXES)
-    )
+def _direct_annotation_reference(annotation_text: str) -> ast.AST | None:
+    try:
+        annotation = ast.parse(annotation_text, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(annotation, ast.Constant) or not isinstance(
+        annotation.value, str
+    ):
+        return annotation
+    try:
+        return ast.parse(annotation.value, mode="eval").body
+    except SyntaxError:
+        return None
+
+
+def _resolved_inheritable_carrier_type_name(
+    resolver: ModuleClassReferenceResolver,
+    annotation_text: str,
+) -> str | None:
+    annotation = _direct_annotation_reference(annotation_text)
+    if annotation is None:
+        return None
+    symbol = resolver.symbol_for_reference(annotation)
+    if symbol is None:
+        return None
+    indexed_class = resolver.class_index.class_for(symbol)
+    if (
+        indexed_class is None
+        or not _looks_like_reusable_carrier_name(indexed_class.simple_name)
+        or indexed_class.is_final
+    ):
+        return None
+    return ast.unparse(annotation)
 
 
 def _carrier_composition_retreat_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[CarrierCompositionRetreatCandidate, ...]:
+    class_index = build_class_family_index(list(modules))
+    resolver_by_module_name = {
+        module.module_name: ModuleClassReferenceResolver(module, class_index)
+        for module in modules
+    }
     base_lookup: dict[str, set[str]] = defaultdict(set)
     class_nodes: list[tuple[ParsedModule, ast.ClassDef]] = []
     for module in modules:
@@ -510,27 +539,26 @@ def _carrier_composition_retreat_candidates(
         base_names = tuple(sorted(base_lookup[node.name]))
         inherited_names = set(base_names) | set(ancestor_names_by_class[node.name])
         for field_name, annotation_text in _carrier_field_type_map(node):
-            carrier_type_names = _semantic_carrier_type_names(annotation_text)
-            if not carrier_type_names:
+            carrier_type_name = _resolved_inheritable_carrier_type_name(
+                resolver_by_module_name[module.module_name],
+                annotation_text,
+            )
+            if carrier_type_name is None:
                 continue
-            for carrier_type_name in carrier_type_names:
-                if (
-                    carrier_type_name == node.name
-                    or carrier_type_name in inherited_names
-                ):
-                    continue
-                candidates.append(
-                    CarrierCompositionRetreatCandidate(
-                        file_path=str(module.path),
-                        module_name=module.module_name,
-                        line=node.lineno,
-                        class_name=node.name,
-                        field_name=field_name,
-                        carrier_type_name=carrier_type_name,
-                        base_names=base_names,
-                        nominal_ancestor_names=(ancestor_names_by_class[node.name]),
-                    )
+            if carrier_type_name == node.name or carrier_type_name in inherited_names:
+                continue
+            candidates.append(
+                CarrierCompositionRetreatCandidate(
+                    file_path=str(module.path),
+                    module_name=module.module_name,
+                    line=node.lineno,
+                    class_name=node.name,
+                    field_name=field_name,
+                    carrier_type_name=carrier_type_name,
+                    base_names=base_names,
+                    nominal_ancestor_names=(ancestor_names_by_class[node.name]),
                 )
+            )
     return sorted_tuple(
         candidates,
         key=lambda candidate: (

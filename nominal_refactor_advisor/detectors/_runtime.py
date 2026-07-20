@@ -12,24 +12,41 @@ import hashlib
 import os
 import re
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 
-from ..ast_tools import BuiltinCallName
+from ..ast_tools import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    BuiltinCallName,
+    ParsedModule,
+)
+from ..class_index import (
+    IndexedClass,
+    ModuleClassReferenceResolver,
+    build_class_family_index,
+)
+from ..codemod import CancelableCompositionSignal, detect_cancelable_composition_signals
+from ..collection_algebra import sorted_tuple
 from ..factorization import (
     FactorizationEngine,
     FactorizationLattice,
     FactorizationPlan,
     ResidueHookNamesCarrier,
 )
-from ..semantic_algebra import ObjectFamilyShape, DispatchAxisExpression
+from ..models import HierarchyCandidateMetrics, RefactorFinding, SourceLocation
+from ..patterns import PatternId
+from ..semantic_algebra import DispatchAxisExpression, ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..semantic_identity import SemanticRoleIdentityToken
-from ..codemod import CancelableCompositionSignal, detect_cancelable_composition_signals
 from ..source_index import build_source_index
-
+from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import *
+from ._base import (
+    CrossModuleCollectorCandidateDetector,
+    high_confidence_certified_spec,
+)
 from ._helpers import *
 from ._helpers import (
     _accessor_wrapper_groups,
@@ -6100,6 +6117,320 @@ declare_typed_observation_detector(
     "{module_path} performs {evidence_count} class-level marker checks on instances.",
     minimum_evidence_count=2,
 )
+
+
+@dataclass(frozen=True)
+class ExactTypeGuardPredicate:
+    subject: ast.AST
+    type_reference: ast.AST
+    matches_exact_type_when_true: bool
+    expression: str
+
+    @property
+    def structural_membership_expression(self) -> str:
+        membership = (
+            f"isinstance({ast.unparse(self.subject)}, "
+            f"{ast.unparse(self.type_reference)})"
+        )
+        return membership if self.matches_exact_type_when_true else f"not {membership}"
+
+
+class ExactTypeComparisonAuthority:
+    """Normalize direct exact-type predicates without guessing through boolean logic."""
+
+    _EXACT_MATCH_OPERATORS = (ast.Is, ast.Eq)
+    _EXACT_MISMATCH_OPERATORS = (ast.IsNot, ast.NotEq)
+
+    @classmethod
+    def project(cls, node: ast.AST) -> ExactTypeGuardPredicate | None:
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            negated = True
+            comparison = node.operand
+        else:
+            negated = False
+            comparison = node
+        if (
+            not isinstance(comparison, ast.Compare)
+            or len(comparison.ops) != 1
+            or len(comparison.comparators) != 1
+        ):
+            return None
+        operator = comparison.ops[0]
+        if not isinstance(
+            operator,
+            cls._EXACT_MATCH_OPERATORS + cls._EXACT_MISMATCH_OPERATORS,
+        ):
+            return None
+        left = comparison.left
+        right = comparison.comparators[0]
+        subject = cls._type_call_subject(left)
+        type_reference = right
+        if subject is None:
+            subject = cls._type_call_subject(right)
+            type_reference = left
+        if subject is None:
+            return None
+        matches_exact_type = isinstance(operator, cls._EXACT_MATCH_OPERATORS)
+        return ExactTypeGuardPredicate(
+            subject=subject,
+            type_reference=type_reference,
+            matches_exact_type_when_true=(
+                not matches_exact_type if negated else matches_exact_type
+            ),
+            expression=ast.unparse(node),
+        )
+
+    @staticmethod
+    def _type_call_subject(node: ast.AST) -> ast.AST | None:
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "type"
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            return node.args[0]
+        return None
+
+
+EXACT_TYPE_COMPARISON_AUTHORITY = ExactTypeComparisonAuthority()
+
+
+@dataclass(frozen=True)
+class ExactTypeGuardInheritanceRetreatCandidate:
+    file_path: str
+    line: int
+    qualname: str
+    predicate: ExactTypeGuardPredicate
+    base_class: IndexedClass
+    descendant_classes: tuple[IndexedClass, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            SourceLocation(self.file_path, self.line, self.qualname),
+            SourceLocation(
+                self.base_class.file_path,
+                self.base_class.line,
+                self.base_class.simple_name,
+            ),
+            *(
+                SourceLocation(
+                    descendant.file_path,
+                    descendant.line,
+                    descendant.simple_name,
+                )
+                for descendant in self.descendant_classes[:4]
+            ),
+        )
+
+
+class ExactTypeGuardBoundaryCollector:
+    """Collect fail-loud guards that contradict a resolved inheritance family."""
+
+    @classmethod
+    def collect(
+        cls,
+        modules: Sequence[ParsedModule],
+    ) -> tuple[ExactTypeGuardInheritanceRetreatCandidate, ...]:
+        class_index = build_class_family_index(list(modules))
+        candidates: list[ExactTypeGuardInheritanceRetreatCandidate] = []
+        for module in modules:
+            resolver = ModuleClassReferenceResolver(module, class_index)
+
+            class Visitor(ast.NodeVisitor):
+                def __init__(self) -> None:
+                    self.scope: list[str] = []
+                    self.scope_bindings: list[frozenset[str]] = [
+                        LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.module.body)
+                    ]
+                    self.callable_depth = 0
+
+                @property
+                def qualname(self) -> str:
+                    return ".".join(self.scope) if self.scope else "<module>"
+
+                def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                    self.scope.append(node.name)
+                    self.generic_visit(node)
+                    self.scope.pop()
+
+                def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                    self._visit_callable(node)
+
+                def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                    self._visit_callable(node)
+
+                def _visit_callable(
+                    self,
+                    node: ast.FunctionDef | ast.AsyncFunctionDef,
+                ) -> None:
+                    self.scope.append(node.name)
+                    self.scope_bindings.append(
+                        LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+                        | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+                    )
+                    self.callable_depth += 1
+                    self.generic_visit(node)
+                    self.callable_depth -= 1
+                    self.scope_bindings.pop()
+                    self.scope.pop()
+
+                def visit_If(self, node: ast.If) -> None:
+                    predicate = EXACT_TYPE_COMPARISON_AUTHORITY.project(node.test)
+                    if predicate is not None and self.callable_depth:
+                        rejects_descendants = (
+                            not predicate.matches_exact_type_when_true
+                            and FAIL_LOUD_BLOCK_AUTHORITY.guarantees_failure(node.body)
+                        ) or (
+                            predicate.matches_exact_type_when_true
+                            and FAIL_LOUD_BLOCK_AUTHORITY.guarantees_failure(
+                                node.orelse
+                            )
+                        )
+                        if rejects_descendants:
+                            self._append_candidate(node, predicate)
+                    self.generic_visit(node)
+
+                def visit_Assert(self, node: ast.Assert) -> None:
+                    predicate = EXACT_TYPE_COMPARISON_AUTHORITY.project(node.test)
+                    if (
+                        predicate is not None
+                        and predicate.matches_exact_type_when_true
+                        and self.callable_depth
+                    ):
+                        self._append_candidate(node, predicate)
+                    self.generic_visit(node)
+
+                def _append_candidate(
+                    self,
+                    node: ast.If | ast.Assert,
+                    predicate: ExactTypeGuardPredicate,
+                ) -> None:
+                    if any(
+                        BuiltinCallName.TYPE in bindings
+                        for bindings in self.scope_bindings
+                    ):
+                        return
+                    base_symbol = resolver.symbol_for_reference(
+                        predicate.type_reference
+                    )
+                    if base_symbol is None:
+                        return
+                    base_class = class_index.class_for(base_symbol)
+                    if base_class is None or base_class.is_final:
+                        return
+                    descendants = tuple(
+                        descendant
+                        for descendant_symbol in class_index.descendant_symbols(
+                            base_symbol
+                        )
+                        if (descendant := class_index.class_for(descendant_symbol))
+                        is not None
+                    )
+                    if not descendants:
+                        return
+                    candidates.append(
+                        ExactTypeGuardInheritanceRetreatCandidate(
+                            file_path=str(module.path),
+                            line=node.lineno,
+                            qualname=self.qualname,
+                            predicate=predicate,
+                            base_class=base_class,
+                            descendant_classes=descendants,
+                        )
+                    )
+
+            Visitor().visit(module.module)
+        return sorted_tuple(
+            candidates,
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.qualname,
+                candidate.base_class.symbol,
+            ),
+        )
+
+
+class FailLoudBlockAuthority:
+    """Certify simple boundary blocks that unconditionally end in `raise`."""
+
+    _NON_TERMINATING_PREFIX_TYPES = (
+        ast.AnnAssign,
+        ast.Assign,
+        ast.AugAssign,
+        ast.Delete,
+        ast.Expr,
+        ast.Import,
+        ast.ImportFrom,
+        ast.Pass,
+    )
+
+    @classmethod
+    def guarantees_failure(cls, statements: Sequence[ast.stmt]) -> bool:
+        return (
+            bool(statements)
+            and isinstance(statements[-1], ast.Raise)
+            and all(
+                isinstance(statement, cls._NON_TERMINATING_PREFIX_TYPES)
+                for statement in statements[:-1]
+            )
+        )
+
+
+FAIL_LOUD_BLOCK_AUTHORITY = FailLoudBlockAuthority()
+
+
+class ExactTypeGuardInheritanceRetreatDetector(
+    CrossModuleCollectorCandidateDetector[ExactTypeGuardInheritanceRetreatCandidate]
+):
+    detector_priority = -21
+    candidate_collector = ExactTypeGuardBoundaryCollector.collect
+    finding_spec = high_confidence_certified_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Exact-type boundary guard retreats from nominal inheritance",
+        "A fail-loud boundary compares `type(value)` with a class that has resolved nominal descendants. The exact comparison rejects valid family members and weakens substitutability; membership belongs to the inheritance graph through `isinstance`.",
+        "inheritance-preserving runtime membership at the fail-loud boundary",
+        "exact concrete-type validation contradicts a resolved base-to-descendant class-family edge",
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _finding_for_candidate(
+        self,
+        candidate: ExactTypeGuardInheritanceRetreatCandidate,
+    ) -> RefactorFinding:
+        descendants = ", ".join(
+            descendant.simple_name for descendant in candidate.descendant_classes[:6]
+        )
+        return self.build_finding(
+            (
+                f"`{candidate.qualname}` enforces `{candidate.predicate.expression}` "
+                f"against base `{candidate.base_class.simple_name}`, but the resolved "
+                f"inheritance graph contains descendant(s) {descendants}."
+            ),
+            candidate.evidence,
+            scaffold=candidate.predicate.structural_membership_expression,
+            codemod_patch=(
+                f"# Replace `{candidate.predicate.expression}` with "
+                f"`{candidate.predicate.structural_membership_expression}` at this "
+                "boundary; preserve the existing fail-loud branch and let nominal "
+                "subclasses satisfy the base contract."
+            ),
+            metrics=HierarchyCandidateMetrics(
+                duplicate_group_count=1,
+                class_count=1 + len(candidate.descendant_classes),
+            ),
+        )
 
 
 @dataclass(frozen=True)

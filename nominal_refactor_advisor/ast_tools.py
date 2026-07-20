@@ -10,17 +10,18 @@ from __future__ import annotations
 
 import ast
 import copy
-import os
 import hashlib
+import os
 import pickle
+import sys
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from functools import lru_cache
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-import sys
 from types import EllipsisType
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
@@ -28,21 +29,6 @@ from metaclass_registry import AutoRegisterMeta
 
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .collection_algebra import sorted_tuple
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
-from .semantic_match import (
-    AstTypedEffectStep,
-    GuardedEffectStep,
-    Maybe,
-    RegisteredEffectStep,
-    SingleCompareEffectStep,
-    as_ast,
-    named_value_binding,
-    registered_effect_steps,
-    single_assign_target,
-    single_call_arg,
-    single_item,
-    single_return_call,
-)
 from .observation_graph import (
     NominalWitnessGroup,
     ObservationCohort,
@@ -77,6 +63,21 @@ from .observation_shapes import (
     ScopedShapeWrapperFunction,
     ScopedShapeWrapperSpec,
     SentinelTypeObservation,
+)
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from .semantic_match import (
+    AstTypedEffectStep,
+    GuardedEffectStep,
+    Maybe,
+    RegisteredEffectStep,
+    SingleCompareEffectStep,
+    as_ast,
+    named_value_binding,
+    registered_effect_steps,
+    single_assign_target,
+    single_call_arg,
+    single_item,
+    single_return_call,
 )
 
 _TYPE_BUILTIN = "type"
@@ -555,6 +556,98 @@ class BuiltinCallName(StrEnum):
                 cls.TUPLE,
             )
         )
+
+
+@dataclass(frozen=True)
+class ImportBoundNameProjection:
+    """Project Python import statements to names bound in their lexical scope."""
+
+    statement: ast.Import | ast.ImportFrom
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(name for name, _ in self.name_sources())
+
+    def name_sources(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (name, self.alias_import_source(alias))
+            for alias in self.statement.names
+            for name in (self.alias_bound_name(alias),)
+            if name
+        )
+
+    def alias_bound_name(self, alias: ast.alias) -> str:
+        if alias.name == "*":
+            return ""
+        if alias.asname:
+            return alias.asname
+        if isinstance(self.statement, ast.Import):
+            return alias.name.split(".", maxsplit=1)[0]
+        return alias.name
+
+    def alias_import_source(self, alias: ast.alias) -> str:
+        alias_source = alias.name
+        if alias.asname:
+            alias_source = f"{alias.name} as {alias.asname}"
+        if isinstance(self.statement, ast.Import):
+            return f"import {alias_source}\n"
+        module_name = self.statement.module or ""
+        module_path = f"{'.' * self.statement.level}{module_name}"
+        return f"from {module_path} import {alias_source}\n"
+
+
+class LexicalScopeBindingAuthority:
+    """Recover names bound by one lexical scope without entering child scopes."""
+
+    @staticmethod
+    def bound_names(nodes: Iterable[ast.AST]) -> frozenset[str]:
+        bound: set[str] = set()
+
+        class ScopeBindingVisitor(ast.NodeVisitor):
+            def visit_Name(self, node: ast.Name) -> None:
+                if isinstance(node.ctx, (ast.Store, ast.Del)):
+                    bound.add(node.id)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                bound.add(node.name)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                bound.add(node.name)
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                bound.add(node.name)
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:
+                return
+
+            def visit_Import(self, node: ast.Import) -> None:
+                bound.update(ImportBoundNameProjection(node).names())
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                bound.update(ImportBoundNameProjection(node).names())
+
+        visitor = ScopeBindingVisitor()
+        for node in nodes:
+            visitor.visit(node)
+        return frozenset(bound)
+
+    @staticmethod
+    def argument_names(
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    ) -> frozenset[str]:
+        arguments = node.args
+        return frozenset(
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            )
+        ) | frozenset(
+            argument.arg for argument in (arguments.vararg, arguments.kwarg) if argument
+        )
+
+
+LEXICAL_SCOPE_BINDING_AUTHORITY = LexicalScopeBindingAuthority()
 
 
 @dataclass(frozen=True)

@@ -30,6 +30,14 @@ class IndexedClass:
     declared_base_names: tuple[str, ...]
     resolved_base_symbols: tuple[str, ...]
 
+    @property
+    def is_final(self) -> bool:
+        return any(
+            (isinstance(decorator, ast.Name) and decorator.id == "final")
+            or (isinstance(decorator, ast.Attribute) and decorator.attr == "final")
+            for decorator in self.node.decorator_list
+        )
+
     @classmethod
     def from_parsed_class(
         cls,

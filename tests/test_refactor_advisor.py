@@ -183,6 +183,7 @@ from nominal_refactor_advisor.lean_export import (
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     FindingSpec,
+    HierarchyCandidateMetrics,
     MappingMetrics,
     RefactorFinding,
     RepeatedMethodMetrics,
@@ -6393,6 +6394,214 @@ class FrontierRequest:
     )
 
 
+def test_carrier_composition_retreat_ignores_union_type_alias(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "sample.py",
+        """
+from dataclasses import dataclass
+from typing import TypeAlias
+
+import jax.numpy as jnp
+import numpy as np
+
+
+LeanRuntimeArrayValue: TypeAlias = np.ndarray | jnp.ndarray
+
+
+@dataclass(frozen=True)
+class ModelApproximationScoreBatch:
+    scores: LeanRuntimeArrayValue
+    score_count: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
+        and "ModelApproximationScoreBatch.scores" in finding.summary
+        for finding in findings
+    )
+
+
+def test_carrier_composition_retreat_ignores_non_class_alias(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "sample.py",
+        """
+from dataclasses import dataclass
+from typing import TypeAlias
+
+
+OpaqueScoreValue: TypeAlias = float
+
+
+@dataclass(frozen=True)
+class ScoreRequest:
+    score: OpaqueScoreValue
+    pose_index: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
+        and "ScoreRequest.score" in finding.summary
+        for finding in findings
+    )
+
+
+def test_carrier_composition_retreat_ignores_final_class_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "sample.py",
+        """
+from dataclasses import dataclass
+from typing import final
+
+
+@final
+@dataclass(frozen=True)
+class ProgressEmitterCarrier:
+    emit_progress_payload: object
+
+
+@dataclass(frozen=True)
+class RepairRequest:
+    progress_emitter: ProgressEmitterCarrier
+    pose_index: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
+        and "RepairRequest.progress_emitter" in finding.summary
+        for finding in findings
+    )
+
+
+def test_carrier_composition_retreat_resolves_imported_class_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/carriers.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ProgressEmitterCarrier:
+    emit_progress_payload: object
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/requests.py",
+        """
+from dataclasses import dataclass
+
+from .carriers import ProgressEmitterCarrier
+
+
+@dataclass(frozen=True)
+class RepairRequest:
+    progress_emitter: ProgressEmitterCarrier
+    pose_index: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(
+        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
+        and "RepairRequest.progress_emitter" in finding.summary
+        for finding in findings
+    )
+
+
+def test_carrier_composition_retreat_preserves_aliased_inheritable_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/carriers.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ProgressEmitterCarrier:
+    emit_progress_payload: object
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/requests.py",
+        """
+from dataclasses import dataclass
+
+from .carriers import ProgressEmitterCarrier as Emitter
+
+
+@dataclass(frozen=True)
+class RepairRequest:
+    progress_emitter: Emitter
+    pose_index: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
+        and "RepairRequest.progress_emitter" in item.summary
+    )
+
+    assert "`Emitter`" in finding.summary
+    assert "class RepairRequest(Emitter, ...):" in (finding.scaffold or "")
+
+
+def test_carrier_composition_retreat_preserves_forward_referenced_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "sample.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RepairRequest:
+    progress_emitter: "ProgressEmitterCarrier"
+    pose_index: int
+
+
+@dataclass(frozen=True)
+class ProgressEmitterCarrier:
+    emit_progress_payload: object
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(
+        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
+        and "RepairRequest.progress_emitter" in finding.summary
+        and "ProgressEmitterCarrier" in finding.summary
+        for finding in findings
+    )
+
+
 def test_available_nominal_carrier_reuse_handles_slots_and_separate_roots(
     tmp_path: Path,
 ) -> None:
@@ -9802,6 +10011,233 @@ def test_detects_external_concrete_type_identity_table(tmp_path: Path) -> None:
     assert "numpy.ndarray" in finding.summary
     assert "pandas.core.frame.DataFrame" in finding.summary
     assert "RuntimeCapability" in (finding.scaffold or "")
+
+
+def test_detects_exact_type_guard_that_rejects_nominal_descendants(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        """
+class ShardExecutor:
+    pass
+
+
+class ExactScoreShardExecutor(ShardExecutor):
+    pass
+
+
+def require_shard_executor(value):
+    if type(value) is not ShardExecutor:
+        message = "value must satisfy ShardExecutor"
+        raise TypeError(message)
+    return value
+
+
+def require_secondary_executor(value):
+    if type(value) != ShardExecutor:
+        raise TypeError("secondary executor boundary mismatch")
+    return value
+""",
+    )
+
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "exact_type_guard_inheritance_retreat"
+    )
+    finding = next(
+        item for item in findings if "require_shard_executor" in item.summary
+    )
+
+    assert len(findings) == 2
+    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "require_shard_executor" in finding.summary
+    assert "ShardExecutor" in finding.summary
+    assert "ExactScoreShardExecutor" in finding.summary
+    assert finding.scaffold == "not isinstance(value, ShardExecutor)"
+    assert isinstance(finding.metrics, HierarchyCandidateMetrics)
+    assert finding.metrics.class_count == 2
+    assert finding.capability_tags == (
+        CapabilityTag.NOMINAL_IDENTITY,
+        CapabilityTag.FAIL_LOUD_CONTRACTS,
+        CapabilityTag.MRO_ORDERING,
+    )
+    assert finding.observation_tags == (
+        ObservationTag.CLASS_FAMILY,
+        ObservationTag.DATAFLOW_ROOT,
+        ObservationTag.PARTIAL_VIEW,
+    )
+    execution_plan = build_refactor_execution_plan(list(findings), tmp_path)
+    assert execution_plan.total_finding_count == 2
+    assert execution_plan.connected_component_count == 1
+    assert execution_plan.classes[0].finding_ids == tuple(
+        sorted(finding.stable_id for finding in findings)
+    )
+    assert execution_plan.classes[0].batch_priority > 0
+
+
+def test_detects_cross_module_reversed_exact_type_guard(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/executors.py",
+        """
+class ShardExecutor:
+    pass
+
+
+class ExactScoreShardExecutor(ShardExecutor):
+    pass
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/boundary.py",
+        """
+from .executors import ShardExecutor as ExecutorBoundary
+
+
+def require_executor(value):
+    if ExecutorBoundary is not type(value):
+        raise TypeError("executor boundary mismatch")
+    return value
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "exact_type_guard_inheritance_retreat"
+    )
+
+    assert "ExecutorBoundary is not type(value)" in finding.summary
+    assert finding.scaffold == "not isinstance(value, ExecutorBoundary)"
+    assert any(
+        evidence.symbol == "ExactScoreShardExecutor" for evidence in finding.evidence
+    )
+
+
+def test_detects_exact_type_assertion_and_positive_guard_failure_branch(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        """
+class RuntimeBoundary:
+    pass
+
+
+class SpecializedRuntimeBoundary(RuntimeBoundary):
+    pass
+
+
+def assert_boundary(value):
+    assert type(value) == RuntimeBoundary
+    return value
+
+
+def require_boundary(value):
+    if type(value) is RuntimeBoundary:
+        return value
+    else:
+        raise TypeError("runtime boundary mismatch")
+""",
+    )
+
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "exact_type_guard_inheritance_retreat"
+    )
+
+    assert len(findings) == 2
+    assert {finding.scaffold for finding in findings} == {
+        "isinstance(value, RuntimeBoundary)"
+    }
+    assert {finding.evidence[0].symbol for finding in findings} == {
+        "assert_boundary",
+        "require_boundary",
+    }
+
+
+def test_exact_type_guard_ignores_intentional_exact_discriminants(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        """
+from typing import final
+
+
+class RuntimeBoundary:
+    pass
+
+
+class SpecializedRuntimeBoundary(RuntimeBoundary):
+    pass
+
+
+@final
+class ClosedRuntimeBoundary:
+    pass
+
+
+def classify_boundary(value):
+    if type(value) is RuntimeBoundary:
+        return "base-constructor"
+    return "derived-constructor"
+
+
+def require_closed_boundary(value):
+    if type(value) is not ClosedRuntimeBoundary:
+        raise TypeError("closed boundary mismatch")
+    return value
+
+
+def classify_leaf(value):
+    if type(value) is SpecializedRuntimeBoundary:
+        return "specialized-constructor"
+    return "other-constructor"
+
+
+def shadowed_type_guard(type, value):
+    if type(value) is not RuntimeBoundary:
+        raise TypeError("custom type classifier rejected value")
+    return value
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/classifier.py",
+        """
+def classify(value):
+    return value
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/import_shadow.py",
+        """
+from .classifier import classify as type
+from .runtime import RuntimeBoundary
+
+
+def imported_shadow_guard(value):
+    if type(value) is not RuntimeBoundary:
+        raise TypeError("custom imported classifier rejected value")
+    return value
+""",
+    )
+
+    assert not any(
+        finding.detector_id == "exact_type_guard_inheritance_retreat"
+        for finding in analyze_path(tmp_path)
+    )
 
 
 def test_detects_repeated_result_assembly_pipeline(tmp_path: Path) -> None:

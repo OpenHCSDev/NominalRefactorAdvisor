@@ -27,7 +27,8 @@ import textwrap
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import asdict, dataclass, field, fields as dataclass_fields, replace
+from dataclasses import asdict, dataclass, field, replace
+from dataclasses import fields as dataclass_fields
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
@@ -35,12 +36,17 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .assignment_projection import (
     ModuleAssignmentNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
-from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
-from .ast_tools import BuiltinCallName, ParsedModule, ROOT_NAME_PROJECTION
+from .ast_tools import (
+    ROOT_NAME_PROJECTION,
+    BuiltinCallName,
+    ImportBoundNameProjection,
+    ParsedModule,
+)
 from .candidate_collection_semantics import (
     AstStreamLoopComponents,
     NamedFunctionLoopComponents,
@@ -48,6 +54,7 @@ from .candidate_collection_semantics import (
     named_function_loop_components,
 )
 from .class_index import ClassFamilyIndex, build_class_family_index
+from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import sorted_tuple
 from .detectors._base import (
     CandidateCollectorBaseShape,
@@ -89,8 +96,8 @@ from .product_record_schema import (
     ProductRecordSchemaCallKind,
 )
 from .registry_identity import (
-    AutoRegisterClassAuthority,
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+    AutoRegisterClassAuthority,
     class_name_registry_key,
 )
 from .semantic_algebra import DispatchAxisExpression
@@ -121,9 +128,7 @@ from .source_index import (
     build_source_index_artifacts,
     iter_statement_definition_nodes,
 )
-from .codemod_spacing import DestinationInsertionSpacing
-from .taxonomy import CertificationLevel
-from .taxonomy import ConfidenceLevel
+from .taxonomy import CertificationLevel, ConfidenceLevel
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 ExtractableMethodNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
@@ -9143,45 +9148,6 @@ def _store_name_targets(targets: Iterable[ast.AST]) -> tuple[str, ...]:
         elif isinstance(target, (ast.Tuple, ast.List)):
             names.extend(_store_name_targets(target.elts))
     return tuple(names)
-
-
-@dataclass(frozen=True)
-class ImportBoundNameProjection:
-    """Project Python import statements to names they bind in module scope."""
-
-    statement: ast.Import | ast.ImportFrom
-
-    def names(self) -> tuple[str, ...]:
-        return tuple(name for name, _ in self.name_sources())
-
-    def name_sources(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            (name, self.alias_import_source(alias))
-            for alias in self.statement.names
-            for name in (self.alias_bound_name(alias),)
-            if name
-        )
-
-    def alias_bound_name(self, alias: ast.alias) -> str:
-        if alias.name == "*":
-            return ""
-        if alias.asname:
-            return alias.asname
-        if isinstance(self.statement, ast.Import):
-            return alias.name.split(".", maxsplit=1)[0]
-        return alias.name
-
-    def alias_import_source(self, alias: ast.alias) -> str:
-        alias_source = alias.name
-        if alias.asname:
-            alias_source = f"{alias.name} as {alias.asname}"
-        if isinstance(self.statement, ast.Import):
-            return f"import {alias_source}\n"
-        module_name = self.statement.module
-        if module_name is None:
-            module_name = ""
-        module_path = f"{'.' * self.statement.level}{module_name}"
-        return f"from {module_path} import {alias_source}\n"
 
 
 def _statement_source(source: str, statement: ast.stmt) -> str:
