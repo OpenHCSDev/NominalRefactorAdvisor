@@ -9697,6 +9697,62 @@ def test_role_surface_drift_ignores_role_specific_channel_usage(
     assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
 
 
+def test_inherited_dataclass_field_forwarding_is_semantic_descent(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/inherited_field.py",
+        "\nfrom dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceCatalog:\n"
+        "    package_source_root: object\n\n\n"
+        "class SourceClosure(SourceCatalog):\n"
+        "    def discover(self):\n"
+        "        root = self.package_source_root\n"
+        "        return Target(package_source_root=root)\n\n"
+        "    def require_current(self):\n"
+        "        return Current(package_source_root=self.package_source_root)\n\n"
+        "    def forward(self):\n"
+        "        return self.package_source_root\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id in {
+            "role_surface_drift",
+            "semantic_mirror_without_descent",
+        }
+        and "package_source_root" in finding.summary
+        for finding in findings
+    )
+
+
+def test_nested_inherited_dataclass_field_forwarding_is_semantic_descent(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/nested_inherited_field.py",
+        "\nfrom dataclasses import dataclass\n\n\n"
+        "class Namespace:\n"
+        "    @dataclass(frozen=True)\n"
+        "    class SourceCatalog:\n"
+        "        package_source_root: object\n\n"
+        "    class SourceClosure(SourceCatalog):\n"
+        "        def discover(self):\n"
+        "            return self.package_source_root\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id in {
+            "role_surface_drift",
+            "semantic_mirror_without_descent",
+        }
+        and "package_source_root" in finding.summary
+        for finding in findings
+    )
+
+
 def test_role_surface_drift_ignores_explicit_semantics_carrier(
     tmp_path: Path,
 ) -> None:

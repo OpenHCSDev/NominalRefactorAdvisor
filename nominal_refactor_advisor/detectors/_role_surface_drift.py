@@ -1210,6 +1210,46 @@ def _role_surface_use_sites(
     return tuple(visitor.use_sites)
 
 
+def _role_surface_use_descends_from_declaration(
+    use_site: RoleSurfaceUseSite,
+    declarations: Sequence[RoleSurfaceDeclaration],
+    class_index: ClassFamilyIndex,
+) -> bool:
+    """Recognize inherited-field uses as descent through the declaring class.
+
+    A dataclass field is owned by the class that declares it, but Python exposes
+    that field on every subclass.  Treating a subclass's forwarding use as a new
+    surface loses the inheritance edge and creates a false mirror signal.
+    """
+    owner_qualname = use_site.symbol.split(":", 1)[0]
+    owner_candidates = tuple(
+        indexed_class
+        for indexed_class in class_index.classes_by_symbol.values()
+        if indexed_class.file_path == use_site.file_path
+        and (
+            owner_qualname == indexed_class.qualname
+            or owner_qualname.startswith(f"{indexed_class.qualname}.")
+        )
+    )
+    if not owner_candidates:
+        return False
+    owner_symbol = max(
+        owner_candidates,
+        key=lambda indexed_class: len(indexed_class.qualname.split(".")),
+    ).symbol
+    declaration_symbols = frozenset(
+        indexed_class.symbol
+        for declaration in declarations
+        for indexed_class in class_index.classes_by_symbol.values()
+        if indexed_class.file_path == declaration.file_path
+        and indexed_class.simple_name == declaration.class_name
+    )
+    return bool(
+        declaration_symbols
+        & frozenset(class_index.ancestor_symbols(owner_symbol))
+    )
+
+
 def _role_surface_drift_candidates(
     modules: Sequence[ParsedModule],
     config: DetectorConfig,
@@ -1222,6 +1262,7 @@ def _role_surface_drift_candidates(
         return ()
 
     field_names = frozenset(declarations_by_field)
+    class_index = build_class_family_index(list(modules))
     uses_by_field: dict[str, list[RoleSurfaceUseSite]] = defaultdict(list)
     for module in modules:
         for use_site in _role_surface_use_sites(module, field_names):
@@ -1230,7 +1271,15 @@ def _role_surface_drift_candidates(
     candidates: list[RoleSurfaceDriftCandidate] = []
     for field_name, declarations in sorted(declarations_by_field.items()):
         if field_name in uses_by_field:
-            field_use_sites: Sequence[RoleSurfaceUseSite] = uses_by_field[field_name]
+            field_use_sites = tuple(
+                use_site
+                for use_site in uses_by_field[field_name]
+                if not _role_surface_use_descends_from_declaration(
+                    use_site,
+                    tuple(declarations),
+                    class_index,
+                )
+            )
         else:
             field_use_sites = ()
         use_sites = tuple(
