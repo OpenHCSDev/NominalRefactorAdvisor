@@ -114,9 +114,11 @@ from nominal_refactor_advisor.codemod import (
     CodemodStrategyRegistry,
     CodemodTargetSelector,
     DEFAULT_CODEMOD_REWRITE_BUILDERS,
+    FindingRecipeAuthorityClaimGate,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingEvidenceTargetSelector,
+    FindingRecipeEvaluation,
     InheritanceEdgeTargetSelector,
     OperationTemplateTargetBindings,
     RefactorRecipe,
@@ -933,6 +935,31 @@ def test_codemod_preflight_accepts_declared_authority_claim(
     assert "class MissingAuthority(ABC)" in simulation.unified_diff(
         {module_path.as_posix(): module_path.read_text()}
     )
+
+
+def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() -> None:
+    recipe = RefactorRecipe(
+        recipe_id="unsafe-authority-plan",
+        reason="route through authority",
+    )
+
+    evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
+        FindingRecipeEvaluation(recipe=recipe),
+        None,
+        RefactorFinding(
+            detector_id="authority_gate_fixture",
+            pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+            title="Authority gate fixture",
+            summary="recipe uses authority language without a claim",
+            why="authority claims must be proof-carrying",
+            capability_gap="resolved authority claim",
+            relation_context="generated recipe text mentions authority",
+        ),
+    )
+
+    assert evaluation.recipe is None
+    assert "Authority Claim Gate" in evaluation.rejection_reason
+    assert "AuthorityClaim" in evaluation.rejection_reason
 
 
 def test_refactor_recipe_dsl_operations_compile_to_rewrites(
@@ -12362,6 +12389,11 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     assert plan.document.recipes[0].target_shape == (
         RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION
     )
+    preflight = plan.document.preflight_snapshot(snapshot)
+    assert preflight.preflight_failed is False
+    resolution = preflight.reports[0].details["resolutions"][0]
+    assert resolution["claim"]["claimed_symbol"] == "RuntimePlan"
+    assert resolution["status"] == "resolved"
     assert "def from_source(" in rewritten
     assert "source: object" in rewritten
     assert "theorem_handles=tuple(source.theorem_handles)" in rewritten
@@ -14779,7 +14811,7 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     assert commands["run_goal_refactor"]["args"][:3] == [
         tmp_path.as_posix(),
         "--codemod-refactor-goal",
-        "nominal_boundary_extraction",
+        "semantic_carrier_extraction",
     ]
     assert (
         commands["run_goal_refactor"]["args"][
@@ -15169,13 +15201,20 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     assert payload["applied"] is False
     assert payload["preflight_failed"] is False
     assert payload["is_clean"] is True
-    assert payload["report_count"] == 0
+    assert payload["report_count"] == 1
     assert payload["expected_removed_finding_count"] == 1
     assert payload["synthesis_report"]["planned_count"] == 1
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
     assert payload["preflight_report"]["is_clean"] is True
+    report = payload["preflight_report"]["reports"][0]
+    assert report["operation"] == "authority_claims"
+    assert report["status"] == "passed"
+    resolution = report["details"]["resolutions"][0]
+    assert resolution["claim"]["claimed_symbol"] == "RegisteredHandler"
+    assert resolution["claim"]["authority_kind"] == "autoregister_family"
+    assert resolution["status"] == "declared"
     assert module_path.read_text() == original_source
 
 
@@ -17350,9 +17389,14 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
     assert iteration["simulated_rewrite_count"] == 1
     assert iteration["recipe_count"] == 1
     assert iteration["synthesis_report"]["planned_count"] == 1
-    assert iteration["synthesis_report"]["records"][0]["status"] == "planned"
+    planned_record = next(
+        record
+        for record in iteration["synthesis_report"]["records"]
+        if record["detector_id"] == "manual_class_registration"
+    )
+    assert planned_record["status"] == "planned"
     assert (
-        iteration["synthesis_report"]["records"][0]["title"]
+        planned_record["title"]
         == "Manual class registration should become metaclass-registry AutoRegisterMeta"
     )
     assert len(iteration["document"]["recipes"]) == 1
@@ -23358,6 +23402,14 @@ def test_potential_semantic_authority_graph_computes_outcomes_and_relations(
         relation.relation_kind.value
         for relation in graph.relations
     }
+    authority_property_kinds = {
+        property_item.property_kind.value
+        for property_item in graph.properties_for("ComponentAxisAuthority")
+    }
+    policy_property_kinds = {
+        property_item.property_kind.value
+        for property_item in graph.properties_for("ComponentAxisPolicy")
+    }
 
     assert authority.outcome.value == "empty_shell"
     assert policy.outcome.value == "semantic_owner"
@@ -23368,6 +23420,14 @@ def test_potential_semantic_authority_graph_computes_outcomes_and_relations(
     assert "owned_authority_shadows_shell" in relation_kinds
     assert "derives_from" in relation_kinds
     assert "shared_semantic_stem" in relation_kinds
+    assert "unproven_authority_candidate" in authority_property_kinds
+    assert "trusted_authority_candidate" in policy_property_kinds
+    assert "ComponentAxisAuthority" in graph.unproven_class_names
+    assert "ComponentAxisPolicy" in graph.trusted_class_names
+    assert (
+        graph.property_scores_by_class_name["ComponentAxisPolicy"]
+        > graph.property_scores_by_class_name["ComponentAxisAuthority"]
+    )
 
 
 def test_ignores_nominal_authority_with_owned_policy_edges(tmp_path: Path) -> None:
@@ -23422,18 +23482,14 @@ def test_module_authority_reexport_catalog_findings_synthesize_recipe_plan(
         for finding in analyze_modules(modules)
         if finding.detector_id == "module_authority_reexport_catalog"
     )
-    source_index = build_source_index(modules, findings)
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = codemod_plan_from_findings(
         findings,
         detector_ids=("module_authority_reexport_catalog",),
+        selector_context=snapshot,
     )
-    simulation = plan.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
@@ -24178,11 +24234,12 @@ def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:
     plans = build_refactor_plans(findings, tmp_path)
     assert plans
     plan = plans[0]
-    assert plan.pattern_sequence.primary_pattern_id == 5
-    assert 6 in plan.pattern_sequence.secondary_pattern_ids
-    assert 14 in plan.pattern_sequence.secondary_pattern_ids
+    assert plan.pattern_sequence.primary_pattern_id is PatternId.NOMINAL_BOUNDARY
+    assert PatternId.ABC_TEMPLATE_METHOD in plan.pattern_sequence.secondary_pattern_ids
+    assert PatternId.AUTO_REGISTER_META in plan.pattern_sequence.secondary_pattern_ids
+    assert PatternId.AUTHORITATIVE_SCHEMA in plan.pattern_sequence.secondary_pattern_ids
     assert plan.outcome.loci_of_change_before > plan.outcome.loci_of_change_after
-    assert plan.outcome.registration_sites_removed == 2
+    assert plan.outcome.registration_sites_removed == 3
     assert plan.outcome.repeated_mappings_centralized >= 3
     assert any((action.kind == "create_abc_base" for action in plan.actions))
     assert any((action.kind == "create_metaclass" for action in plan.actions))

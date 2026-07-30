@@ -12579,6 +12579,19 @@ class PotentialSemanticAuthorityRelationKind(StrEnum):
     PARALLEL_AUTHORITY_CLAIM = "parallel_authority_claim"
 
 
+class PotentialSemanticAuthorityPropertyKind(StrEnum):
+    """Computed facts about whether a potential authority pays rent."""
+
+    OWNERSHIP_PROOF_EDGE = "ownership_proof_edge"
+    MISSING_OWNERSHIP_PROOF_EDGE = "missing_ownership_proof_edge"
+    EMPTY_SHELL_OUTCOME = "empty_shell_outcome"
+    DECLARED_BOUNDARY_OUTCOME = "declared_boundary_outcome"
+    SEMANTIC_OWNER_OUTCOME = "semantic_owner_outcome"
+    RELATION_EDGE = "relation_edge"
+    TRUSTED_AUTHORITY_CANDIDATE = "trusted_authority_candidate"
+    UNPROVEN_AUTHORITY_CANDIDATE = "unproven_authority_candidate"
+
+
 @dataclass(frozen=True)
 class NominalOwnershipEdge:
     proof_kind: NominalOwnershipProofKind
@@ -12627,6 +12640,19 @@ class PotentialSemanticAuthorityRelation:
 
 
 @dataclass(frozen=True)
+class PotentialSemanticAuthorityProperty:
+    class_name: str
+    property_kind: PotentialSemanticAuthorityPropertyKind
+    weight: int
+    reason: str
+    evidence: str = ""
+    related_class_name: str = ""
+    outcome: str = ""
+    proof_kind: str = ""
+    relation_kind: str = ""
+
+
+@dataclass(frozen=True)
 class PotentialSemanticAuthorityGraph:
     """Potential authority nodes plus heuristic relation edges between them."""
 
@@ -12636,6 +12662,76 @@ class PotentialSemanticAuthorityGraph:
     @cached_property
     def nodes_by_class_name(self) -> dict[str, PotentialSemanticAuthorityNode]:
         return {node.class_name: node for node in self.nodes}
+
+    @cached_property
+    def properties(self) -> tuple[PotentialSemanticAuthorityProperty, ...]:
+        return (
+            tuple(
+                property_item
+                for node in self.nodes
+                for property_item in self.node_properties(node)
+            )
+            + tuple(
+                property_item
+                for relation in self.relations
+                for property_item in self.relation_properties(relation)
+            )
+            + tuple(
+                property_item
+                for class_name, score in self.property_scores_by_class_name.items()
+                for property_item in self.score_properties(class_name, score)
+            )
+        )
+
+    @cached_property
+    def properties_by_class_name(
+        self,
+    ) -> dict[str, tuple[PotentialSemanticAuthorityProperty, ...]]:
+        grouped: dict[str, list[PotentialSemanticAuthorityProperty]] = defaultdict(list)
+        for property_item in self.properties:
+            grouped[property_item.class_name].append(property_item)
+        return {
+            class_name: tuple(properties) for class_name, properties in grouped.items()
+        }
+
+    @cached_property
+    def property_scores_by_class_name(self) -> dict[str, int]:
+        scores = {node.class_name: 0 for node in self.nodes}
+        for property_item in self.properties_without_score_labels:
+            scores[property_item.class_name] = (
+                scores.get(property_item.class_name, 0) + property_item.weight
+            )
+        return scores
+
+    @cached_property
+    def properties_without_score_labels(
+        self,
+    ) -> tuple[PotentialSemanticAuthorityProperty, ...]:
+        return tuple(
+            property_item
+            for node in self.nodes
+            for property_item in self.node_properties(node)
+        ) + tuple(
+            property_item
+            for relation in self.relations
+            for property_item in self.relation_properties(relation)
+        )
+
+    @cached_property
+    def trusted_class_names(self) -> frozenset[str]:
+        return frozenset(
+            class_name
+            for class_name, score in self.property_scores_by_class_name.items()
+            if score > 0 and not self.nodes_by_class_name[class_name].is_empty_shell
+        )
+
+    @cached_property
+    def unproven_class_names(self) -> frozenset[str]:
+        return frozenset(
+            class_name
+            for class_name, score in self.property_scores_by_class_name.items()
+            if score <= 0 or self.nodes_by_class_name[class_name].is_empty_shell
+        )
 
     @cached_property
     def empty_shells(self) -> tuple[EmptyNominalAuthorityShellCandidate, ...]:
@@ -12663,6 +12759,141 @@ class PotentialSemanticAuthorityGraph:
             relation
             for relation in self.relations
             if class_name in {relation.left_class_name, relation.right_class_name}
+        )
+
+    def properties_for(
+        self,
+        class_name: str,
+    ) -> tuple[PotentialSemanticAuthorityProperty, ...]:
+        return self.properties_by_class_name.get(class_name, ())
+
+    @staticmethod
+    def node_properties(
+        node: PotentialSemanticAuthorityNode,
+    ) -> tuple[PotentialSemanticAuthorityProperty, ...]:
+        outcome_property = PotentialSemanticAuthorityGraph.outcome_property(node)
+        proof_properties = tuple(
+            PotentialSemanticAuthorityProperty(
+                class_name=node.class_name,
+                property_kind=PotentialSemanticAuthorityPropertyKind.OWNERSHIP_PROOF_EDGE,
+                weight=2,
+                reason=edge.detail,
+                evidence=edge.symbol,
+                outcome=node.outcome.value,
+                proof_kind=edge.proof_kind.value,
+            )
+            for edge in node.positive_edges
+        )
+        missing_properties = (
+            tuple(
+                PotentialSemanticAuthorityProperty(
+                    class_name=node.class_name,
+                    property_kind=(
+                        PotentialSemanticAuthorityPropertyKind.MISSING_OWNERSHIP_PROOF_EDGE
+                    ),
+                    weight=-1,
+                    reason="empty authority candidate is missing this ownership edge",
+                    outcome=node.outcome.value,
+                    proof_kind=missing_edge.value,
+                )
+                for missing_edge in node.missing_edge_kinds
+            )
+            if node.is_empty_shell
+            else ()
+        )
+        return (outcome_property, *proof_properties, *missing_properties)
+
+    @staticmethod
+    def outcome_property(
+        node: PotentialSemanticAuthorityNode,
+    ) -> PotentialSemanticAuthorityProperty:
+        if node.outcome is PotentialSemanticAuthorityOutcome.EMPTY_SHELL:
+            return PotentialSemanticAuthorityProperty(
+                class_name=node.class_name,
+                property_kind=PotentialSemanticAuthorityPropertyKind.EMPTY_SHELL_OUTCOME,
+                weight=-4,
+                reason="no source-backed ownership proof edges were found",
+                outcome=node.outcome.value,
+            )
+        if node.outcome is PotentialSemanticAuthorityOutcome.SEMANTIC_OWNER:
+            return PotentialSemanticAuthorityProperty(
+                class_name=node.class_name,
+                property_kind=(
+                    PotentialSemanticAuthorityPropertyKind.SEMANTIC_OWNER_OUTCOME
+                ),
+                weight=4,
+                reason="ownership proof edges include semantic payload or behavior",
+                outcome=node.outcome.value,
+            )
+        return PotentialSemanticAuthorityProperty(
+            class_name=node.class_name,
+            property_kind=PotentialSemanticAuthorityPropertyKind.DECLARED_BOUNDARY_OUTCOME,
+            weight=1,
+            reason="class declares a nominal boundary but no semantic owner edge",
+            outcome=node.outcome.value,
+        )
+
+    @staticmethod
+    def relation_properties(
+        relation: PotentialSemanticAuthorityRelation,
+    ) -> tuple[PotentialSemanticAuthorityProperty, ...]:
+        left_weight = relation.weight
+        right_weight = relation.weight
+        if (
+            relation.relation_kind
+            is PotentialSemanticAuthorityRelationKind.OWNED_AUTHORITY_SHADOWS_SHELL
+        ):
+            left_weight = relation.weight
+            right_weight = -relation.weight
+        return (
+            PotentialSemanticAuthorityProperty(
+                class_name=relation.left_class_name,
+                property_kind=PotentialSemanticAuthorityPropertyKind.RELATION_EDGE,
+                weight=left_weight,
+                reason=relation.reason,
+                related_class_name=relation.right_class_name,
+                relation_kind=relation.relation_kind.value,
+            ),
+            PotentialSemanticAuthorityProperty(
+                class_name=relation.right_class_name,
+                property_kind=PotentialSemanticAuthorityPropertyKind.RELATION_EDGE,
+                weight=right_weight,
+                reason=relation.reason,
+                related_class_name=relation.left_class_name,
+                relation_kind=relation.relation_kind.value,
+            ),
+        )
+
+    def score_properties(
+        self,
+        class_name: str,
+        score: int,
+    ) -> tuple[PotentialSemanticAuthorityProperty, ...]:
+        node = self.nodes_by_class_name[class_name]
+        if score > 0 and not node.is_empty_shell:
+            return (
+                PotentialSemanticAuthorityProperty(
+                    class_name=class_name,
+                    property_kind=(
+                        PotentialSemanticAuthorityPropertyKind.TRUSTED_AUTHORITY_CANDIDATE
+                    ),
+                    weight=0,
+                    reason="authority candidate has a positive ownership/relation score",
+                    evidence=str(score),
+                    outcome=node.outcome.value,
+                ),
+            )
+        return (
+            PotentialSemanticAuthorityProperty(
+                class_name=class_name,
+                property_kind=(
+                    PotentialSemanticAuthorityPropertyKind.UNPROVEN_AUTHORITY_CANDIDATE
+                ),
+                weight=0,
+                reason="authority candidate does not have enough ownership proof",
+                evidence=str(score),
+                outcome=node.outcome.value,
+            ),
         )
 
 

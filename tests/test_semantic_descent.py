@@ -12,6 +12,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoal,
+    CodemodRefactorGoalKind,
     CodemodRefactorGoalTargetPolicy,
 )
 from nominal_refactor_advisor.detectors import (
@@ -510,7 +511,10 @@ def test_nominal_boundary_goal_targets_all_ssot_authority_findings_by_default() 
     non_mirror_ssot_finding = _goal_policy_finding("repeated_builder_calls")
     ordinary_finding = _goal_policy_finding("duplicate_visitor_method_body")
     findings = (mirror_finding, non_mirror_ssot_finding, ordinary_finding)
-    goal = CodemodRefactorGoal(goal_id="semantic-descent")
+    goal = CodemodRefactorGoal(
+        goal_id="semantic-descent",
+        kind=CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION,
+    )
     target_policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
 
     assert (

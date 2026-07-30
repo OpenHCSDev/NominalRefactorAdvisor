@@ -555,6 +555,16 @@ class AuthorityClaim(SemanticRecord):
     authority_id: str = ""
 
     @classmethod
+    def from_mapping(cls, payload: Mapping[str, object]) -> "AuthorityClaim":
+        return cls(
+            claimed_symbol=cls.required_string(payload, "claimed_symbol"),
+            authority_kind=cls.optional_string(payload, "authority_kind"),
+            file_path=cls.optional_string(payload, "file_path"),
+            qualname=cls.optional_string(payload, "qualname"),
+            authority_id=cls.optional_string(payload, "authority_id"),
+        )
+
+    @classmethod
     def from_authority(cls, authority: SemanticAuthority) -> "AuthorityClaim":
         return cls(
             claimed_symbol=authority.name,
@@ -563,6 +573,83 @@ class AuthorityClaim(SemanticRecord):
             qualname=authority.location.symbol,
             authority_id=authority.authority_id,
         )
+
+    @property
+    def searched_symbols(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                symbol
+                for symbol in (
+                    self.claimed_symbol,
+                    self.qualname,
+                    self.qualname.rsplit(".", maxsplit=1)[-1],
+                )
+                if symbol
+            )
+        )
+
+    def matches_declared_claim(self, declared_claim: "AuthorityClaim") -> bool:
+        return (
+            declared_claim.claimed_symbol == self.claimed_symbol
+            and self.compatible_authority_kind(declared_claim)
+            and self.compatible_location(declared_claim)
+        )
+
+    def matches_authority(self, authority: SemanticAuthority) -> bool:
+        return self.matches_authority_kind(authority) and self.matches_file_qualname(
+            authority.location.file_path,
+            authority.location.symbol,
+        )
+
+    def matches_authority_kind(self, authority: SemanticAuthority) -> bool:
+        return not self.authority_kind or authority.kind.value == self.authority_kind
+
+    def compatible_authority_kind(self, declared_claim: "AuthorityClaim") -> bool:
+        return (
+            not self.authority_kind
+            or not declared_claim.authority_kind
+            or declared_claim.authority_kind == self.authority_kind
+        )
+
+    def compatible_location(self, declared_claim: "AuthorityClaim") -> bool:
+        return self.matches_file_qualname(
+            declared_claim.file_path,
+            declared_claim.qualname,
+            allow_empty_candidate=True,
+        )
+
+    def matches_file_qualname(
+        self,
+        file_path: str,
+        qualname: str,
+        *,
+        allow_empty_candidate: bool = False,
+    ) -> bool:
+        return (
+            not self.file_path
+            or (allow_empty_candidate and not file_path)
+            or file_path == self.file_path
+        ) and (
+            not self.qualname
+            or (allow_empty_candidate and not qualname)
+            or qualname == self.qualname
+        )
+
+    @staticmethod
+    def required_string(payload: Mapping[str, object], field_name: str) -> str:
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field_name} is required")
+        return value
+
+    @staticmethod
+    def optional_string(payload: Mapping[str, object], field_name: str) -> str:
+        value = payload.get(field_name)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name} must be a string")
+        return value
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -690,7 +777,7 @@ class AuthorityClaimResolver:
 
     def resolve(self, claim: AuthorityClaim) -> AuthorityClaimResolution:
         candidates = self._candidate_authorities(claim)
-        searched_symbols = self._searched_symbols(claim)
+        searched_symbols = claim.searched_symbols
         if not candidates:
             return AuthorityClaimResolution.unresolved(
                 claim,
@@ -740,12 +827,16 @@ class AuthorityClaimResolver:
         authority_ids = tuple(
             dict.fromkeys(
                 authority_id
-                for name in self._searched_symbols(claim)
-                for authority_id in self.graph.authority_name_index.by_name.get(name, ())
+                for name in claim.searched_symbols
+                for authority_id in self.graph.authority_name_index.by_name.get(
+                    name, ()
+                )
             )
         )
         return self._filter_authorities(
-            tuple(self.graph.authority_catalog.authority(item) for item in authority_ids),
+            tuple(
+                self.graph.authority_catalog.authority(item) for item in authority_ids
+            ),
             claim,
         )
 
@@ -755,34 +846,7 @@ class AuthorityClaimResolver:
         claim: AuthorityClaim,
     ) -> tuple[SemanticAuthority, ...]:
         return tuple(
-            authority
-            for authority in authorities
-            if self._matches_kind(authority, claim)
-            and self._matches_location(authority, claim)
-        )
-
-    @staticmethod
-    def _matches_kind(authority: SemanticAuthority, claim: AuthorityClaim) -> bool:
-        return not claim.authority_kind or authority.kind.value == claim.authority_kind
-
-    @staticmethod
-    def _matches_location(authority: SemanticAuthority, claim: AuthorityClaim) -> bool:
-        if claim.file_path and authority.location.file_path != claim.file_path:
-            return False
-        return not claim.qualname or authority.location.symbol == claim.qualname
-
-    @staticmethod
-    def _searched_symbols(claim: AuthorityClaim) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                symbol
-                for symbol in (
-                    claim.claimed_symbol,
-                    claim.qualname,
-                    claim.qualname.rsplit(".", maxsplit=1)[-1],
-                )
-                if symbol
-            )
+            authority for authority in authorities if claim.matches_authority(authority)
         )
 
 

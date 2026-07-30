@@ -109,6 +109,7 @@ from .semantic_descent import (
     AuthorityDiscoveryRequired,
     AuthorityProofEdge,
     AuthorityProofEdgeKind,
+    SemanticAuthorityKind,
     build_finding_backed_semantic_descent_graph,
     semantic_descent_finding_projection_id,
 )
@@ -439,42 +440,12 @@ class AuthorityClaimPayload:
     claim_field_name: ClassVar[str] = "authority_claim"
 
     @classmethod
-    def claim_from_mapping(cls, payload: Mapping[str, JsonValue]) -> AuthorityClaim:
-        return AuthorityClaim(
-            claimed_symbol=cls.required_string(payload, "claimed_symbol"),
-            authority_kind=cls.optional_string(payload, "authority_kind"),
-            file_path=cls.optional_string(payload, "file_path"),
-            qualname=cls.optional_string(payload, "qualname"),
-            authority_id=cls.optional_string(payload, "authority_id"),
-        )
-
-    @classmethod
     def required_claim(
         cls,
         payload: "SourceRewritePlanPayload",
         field_name: str,
     ) -> AuthorityClaim:
-        return cls.claim_from_mapping(payload.required_object(field_name))
-
-    @classmethod
-    def claim_to_dict(cls, claim: AuthorityClaim) -> JsonObject:
-        return JsonObject(claim.to_dict())
-
-    @staticmethod
-    def required_string(payload: Mapping[str, JsonValue], field_name: str) -> str:
-        value = payload.get(field_name)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"{field_name} is required")
-        return value
-
-    @staticmethod
-    def optional_string(payload: Mapping[str, JsonValue], field_name: str) -> str:
-        value = payload.get(field_name)
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise ValueError(f"{field_name} must be a string")
-        return value
+        return AuthorityClaim.from_mapping(payload.required_object(field_name))
 
 
 class AuthorityLanguageSurfacePolicy:
@@ -605,6 +576,24 @@ class AuthorityClaimPreflightFinding:
                 "qualname='ExistingAuthority')"
             ),
             codemod_patch=codemod_patch,
+        )
+
+
+class AstTargetAuthorityClaim:
+    """Authority claim derived from a concrete source-index AST target."""
+
+    @staticmethod
+    def from_target(
+        target: AstTargetDigest,
+        *,
+        authority_kind: str = "",
+    ) -> AuthorityClaim:
+        return AuthorityClaim(
+            claimed_symbol=target.name,
+            authority_kind=authority_kind,
+            file_path=target.file_path,
+            qualname=target.qualname,
+            authority_id=target.target_id,
         )
 
 
@@ -834,7 +823,7 @@ class AuthorityClaimSourceIndexResolver:
 
     def resolve(self, claim: AuthorityClaim) -> AuthorityClaimResolution:
         candidates = self._candidate_targets(claim)
-        searched_symbols = self._searched_symbols(claim)
+        searched_symbols = claim.searched_symbols
         if len(candidates) == 1:
             target = candidates[0]
             return AuthorityClaimResolution(
@@ -876,7 +865,7 @@ class AuthorityClaimSourceIndexResolver:
                 ),
             )
         if any(
-            self._claim_matches(declared_claim, claim)
+            claim.matches_declared_claim(declared_claim)
             for declared_claim in self.declared_claims
         ):
             return AuthorityClaimResolution.declared(
@@ -894,61 +883,21 @@ class AuthorityClaimSourceIndexResolver:
             target = self.source_index.target_by_id.get(claim.authority_id)
             if target is None:
                 return ()
-            return (target,) if self._target_matches_location(target, claim) else ()
-        symbols = frozenset(self._searched_symbols(claim))
+            return (
+                (target,)
+                if claim.matches_file_qualname(target.file_path, target.qualname)
+                else ()
+            )
+        symbols = frozenset(claim.searched_symbols)
         return tuple(
             target
             for target in self.source_index.ast_targets
             if not target.is_module
-            and self._target_matches_location(target, claim)
+            and claim.matches_file_qualname(target.file_path, target.qualname)
             and (
                 target.qualname in symbols
                 or target.name in symbols
                 or target.qualname.rsplit(".", maxsplit=1)[-1] in symbols
-            )
-        )
-
-    @staticmethod
-    def _target_matches_location(
-        target: AstTargetDigest,
-        claim: AuthorityClaim,
-    ) -> bool:
-        if claim.file_path and target.file_path != claim.file_path:
-            return False
-        return not claim.qualname or target.qualname == claim.qualname
-
-    @staticmethod
-    def _claim_matches(declared_claim: AuthorityClaim, claim: AuthorityClaim) -> bool:
-        return (
-            declared_claim.claimed_symbol == claim.claimed_symbol
-            and (
-                not claim.authority_kind
-                or not declared_claim.authority_kind
-                or declared_claim.authority_kind == claim.authority_kind
-            )
-            and (
-                not claim.file_path
-                or not declared_claim.file_path
-                or declared_claim.file_path == claim.file_path
-            )
-            and (
-                not claim.qualname
-                or not declared_claim.qualname
-                or declared_claim.qualname == claim.qualname
-            )
-        )
-
-    @staticmethod
-    def _searched_symbols(claim: AuthorityClaim) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                symbol
-                for symbol in (
-                    claim.claimed_symbol,
-                    claim.qualname,
-                    claim.qualname.rsplit(".", maxsplit=1)[-1],
-                )
-                if symbol
             )
         )
 
@@ -5258,6 +5207,15 @@ class RefactorRecipeOperation(
         )
 
 
+class AuthorityDeclaringRecipeOperation(ABC):
+    """Recipe operation that makes an authority claim true after application."""
+
+    @property
+    @abstractmethod
+    def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
+        raise NotImplementedError
+
+
 class TargetNodeRecipeOperationMixin(ABC):
     """Operation family whose rewrites require the target AST node."""
 
@@ -8227,10 +8185,18 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeclareAuthorityOperation(AuthoritySourceOperation, AuthorityClaimCarrier):
+class DeclareAuthorityOperation(
+    AuthoritySourceOperation,
+    AuthorityClaimCarrier,
+    AuthorityDeclaringRecipeOperation,
+):
     """Insert a declared authority boundary and bind it to an AuthorityClaim."""
 
     registry_key: ClassVar[str] = RefactorRecipeOperationKind.DECLARE_AUTHORITY.value
+
+    @property
+    def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
+        return (self.authority_claim,)
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
@@ -8254,7 +8220,7 @@ class DeclareAuthorityOperation(AuthoritySourceOperation, AuthorityClaimCarrier)
             raise TypeError(
                 "authority_claim binding requires DeclareAuthorityOperation"
             )
-        return AuthorityClaimPayload.claim_to_dict(operation.authority_claim)
+        return JsonObject(operation.authority_claim.to_dict())
 
     def line_replacements(
         self,
@@ -10781,10 +10747,22 @@ class ConvertManualRegistryToAutoregisterOperation(
     BaseNamePayloadOperation,
     ManualRegistryConversionCarrier,
     ClassKeyPairsPayloadMixin,
+    AuthorityDeclaringRecipeOperation,
 ):
     """Convert manual class registry writes into an AutoRegisterMeta base."""
 
     registry_key_attribute: str
+
+    @property
+    def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
+        return (
+            AuthorityClaim(
+                claimed_symbol=self.base_name,
+                authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY.value,
+                file_path=self.target.file_path or "",
+                qualname=self.base_name,
+            ),
+        )
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
@@ -12451,13 +12429,13 @@ class AuthorityClaimCodemodDslExampleValueProvider(
     """Example value for proof-carrying authority claim fields."""
 
     value_kind = CodemodDslFieldKind.AUTHORITY_CLAIM
-    constant_example_value = AuthorityClaimPayload.claim_to_dict(
+    constant_example_value = JsonObject(
         AuthorityClaim(
             claimed_symbol="ExampleAuthority",
             authority_kind="class_family",
             file_path="pkg/example.py",
             qualname="ExampleAuthority",
-        )
+        ).to_dict()
     )
 
 
@@ -14232,6 +14210,16 @@ class RefactorRecipe:
             return target_shapes[0]
         return None
 
+    @staticmethod
+    def shared_authority_claims(
+        recipes: Iterable["RefactorRecipe"],
+    ) -> tuple[AuthorityClaim, ...]:
+        return tuple(
+            dict.fromkeys(
+                claim for recipe in recipes for claim in recipe.authority_claims
+            )
+        )
+
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return tuple(
             target
@@ -15034,9 +15022,10 @@ class RefactorRecipe:
     @property
     def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
         return tuple(
-            operation.authority_claim
+            claim
             for operation in self.operations
-            if isinstance(operation, DeclareAuthorityOperation)
+            if isinstance(operation, AuthorityDeclaringRecipeOperation)
+            for claim in operation.declared_authority_claims
         )
 
     @property
@@ -15590,7 +15579,7 @@ class CodemodPlanJsonParser:
 
     def authority_claim(self, row: JsonValue) -> AuthorityClaim:
         payload = self.object_row(row, "authority claim rows")
-        return AuthorityClaimPayload.claim_from_mapping(payload)
+        return AuthorityClaim.from_mapping(payload)
 
     def refactor_recipe_rewrite(self, row: JsonValue) -> RefactorRecipeRewrite:
         rewrite_row = self.source_rewrite_plan_row(row, "refactor recipe rewrites")
@@ -16472,6 +16461,171 @@ class FindingRecipeEvaluation:
 
 
 @dataclass(frozen=True)
+class FindingAuthorityClaimInference:
+    """Infer source-proved authority claims for generated finding recipes."""
+
+    finding: RefactorFinding
+    context: CodemodSelectorContext
+
+    def recipe_with_inferred_claims(self, recipe: RefactorRecipe) -> RefactorRecipe:
+        if recipe.effective_authority_claims or not recipe.uses_authority_language:
+            return recipe
+        claims = self.resolved_claims()
+        if not claims:
+            return recipe
+        return replace(recipe, authority_claims=(*recipe.authority_claims, *claims))
+
+    def resolved_claims(self) -> tuple[AuthorityClaim, ...]:
+        resolver = AuthorityClaimSourceIndexResolver(self.context.source_index)
+        claims: list[AuthorityClaim] = []
+        for candidate in self.candidate_symbols():
+            claim = AuthorityClaim(claimed_symbol=candidate)
+            resolution = resolver.resolve(claim)
+            if not resolution.is_resolved:
+                continue
+            proof_edge = resolution.proof_edges[0]
+            claims.append(
+                replace(
+                    claim,
+                    file_path=proof_edge.file_path,
+                    qualname=proof_edge.symbol,
+                    authority_id=proof_edge.authority_id,
+                )
+            )
+            break
+        return tuple(dict.fromkeys(claims))
+
+    def candidate_symbols(self) -> tuple[str, ...]:
+        raw_symbols = (
+            *self.metric_candidate_symbols(),
+            *(EvidenceSymbol(evidence.symbol).subject for evidence in self.finding.evidence),
+        )
+        return tuple(
+            dict.fromkeys(
+                candidate
+                for symbol in raw_symbols
+                for candidate in self.symbol_variants(symbol)
+            )
+        )
+
+    def metric_candidate_symbols(self) -> tuple[str, ...]:
+        metrics = self.finding.metrics
+        candidates: list[str] = []
+        for candidate in (
+            metrics.plan_source_name,
+            metrics.plan_registry_name,
+            metrics.plan_mapping_name,
+        ):
+            if candidate:
+                candidates.append(candidate)
+        candidates.extend(metrics.plan_class_names)
+        return tuple(candidates)
+
+    @staticmethod
+    def symbol_variants(symbol: str) -> tuple[str, ...]:
+        if not symbol:
+            return ()
+        variants = [symbol]
+        subject = EvidenceSymbol(symbol).subject
+        if subject and subject != symbol:
+            variants.append(subject)
+        terminal = subject.rsplit(".", maxsplit=1)[-1]
+        if terminal and terminal != subject:
+            variants.append(terminal)
+        pascal = _pascal_case_identifier(terminal.lower())
+        if pascal and pascal != terminal:
+            variants.append(pascal)
+        return tuple(variants)
+
+
+class FindingRecipeAuthorityClaimGate:
+    """Fail generated recipes that mention authorities without proof claims."""
+
+    @classmethod
+    def gated_evaluation(
+        cls,
+        evaluation: FindingRecipeEvaluation,
+        context: CodemodSelectorContext | None,
+        finding: RefactorFinding,
+    ) -> FindingRecipeEvaluation:
+        recipe = evaluation.recipe
+        if recipe is None:
+            return evaluation
+        if context is not None:
+            inferred_recipe = FindingAuthorityClaimInference(
+                finding=finding,
+                context=context,
+            ).recipe_with_inferred_claims(recipe)
+            if inferred_recipe is not recipe:
+                evaluation = replace(evaluation, recipe=inferred_recipe)
+                recipe = inferred_recipe
+        authority_report = cls.authority_report_for_recipe(recipe, context)
+        if authority_report is None:
+            return evaluation
+        if authority_report.status is CodemodPreflightStatus.PASSED:
+            return evaluation
+        return FindingRecipeEvaluation(
+            semantic_repair_plan=evaluation.semantic_repair_plan,
+            rejection_reason=cls.rejection_reason(authority_report),
+        )
+
+    @classmethod
+    def authority_report_for_recipe(
+        cls,
+        recipe: RefactorRecipe,
+        context: CodemodSelectorContext | None,
+    ) -> CodemodOperationPreflightReport | None:
+        if context is None:
+            return cls.context_free_authority_report(recipe)
+        reports = recipe.authority_claim_preflight_reports(context.source_index)
+        if not reports:
+            return None
+        return reports[0]
+
+    @staticmethod
+    def context_free_authority_report(
+        recipe: RefactorRecipe,
+    ) -> CodemodOperationPreflightReport | None:
+        if recipe.effective_authority_claims:
+            return CodemodOperationPreflightReport(
+                operation=AuthorityClaimPayload.field_name,
+                status=CodemodPreflightStatus.FAILED,
+                message=(
+                    "generated recipe authority claims require source-index "
+                    "preflight context"
+                ),
+                details={"recipe_id": recipe.recipe_id},
+            )
+        if not recipe.uses_authority_language:
+            return None
+        return CodemodOperationPreflightReport(
+            operation=AuthorityClaimPayload.field_name,
+            status=CodemodPreflightStatus.FAILED,
+            message=(
+                "generated recipe uses authority-routing text without an "
+                "AuthorityClaim"
+            ),
+            details={
+                "recipe_id": recipe.recipe_id,
+                "authority_text_surfaces": recipe.authority_text_surfaces,
+                "findings": (
+                    AuthorityClaimPreflightFinding.unclaimed_authority_text(
+                        recipe.recipe_id,
+                        recipe.authority_text_surfaces,
+                    ).to_dict(),
+                ),
+            },
+        )
+
+    @staticmethod
+    def rejection_reason(report: CodemodOperationPreflightReport) -> str:
+        return (
+            "generated recipe failed Authority Claim Gate: "
+            f"{report.message}"
+        )
+
+
+@dataclass(frozen=True)
 class FindingRecipeSynthesisAttempt:
     """Evaluate one finding against the registered executable DSL bridge."""
 
@@ -16505,6 +16659,11 @@ class FindingRecipeSynthesisAttempt:
                 evaluation = self.synthesizer.evaluate_recipe_for_finding(
                     self.finding,
                     self.selector_context,
+                )
+                evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
+                    evaluation,
+                    self.selector_context,
+                    self.finding,
                 )
                 result_action_keys = action_keys
                 if evaluation.recipe is None:
@@ -18616,15 +18775,21 @@ class IdentityKeywordForwardingCallRewrite(ReplacementSource):
 
 
 @dataclass(frozen=True)
-class IdentityKeywordForwardingShellRecipeParts:
+class IdentityKeywordForwardingShellRecipeParts(AuthorityClaimCarrier):
     """Executable facts for one identity keyword forwarding shell collapse."""
 
     call_rewrites: tuple[IdentityKeywordForwardingCallRewrite, ...]
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-collapse-identity-keyword-forwarding",
-            reason="Inline identity keyword forwarding shell calls into the callee authority.",
+        recipe = (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-collapse-identity-keyword-forwarding",
+                reason=(
+                    "Inline identity keyword forwarding shell calls into the "
+                    "callee authority."
+                ),
+            )
+            .with_authority_claim(self.authority_claim)
         )
         for call_rewrite in self.call_rewrites:
             recipe = recipe.replace_target(
@@ -19290,6 +19455,16 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
                 "identity keyword forwarding collapse requires a pure return call",
             )
         callee_source, parameter_names = call_shape
+        callee_authority = self.callee_authority_target(
+            context,
+            source_path,
+            callee_source,
+        )
+        if callee_authority is None:
+            return (
+                None,
+                "identity keyword forwarding collapse cannot resolve callee authority",
+            )
         call_rewrites = self.call_rewrites(
             context,
             source_path=source_path,
@@ -19305,6 +19480,7 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         return (
             IdentityKeywordForwardingShellRecipeParts(
                 call_rewrites=call_rewrites,
+                authority_claim=AstTargetAuthorityClaim.from_target(callee_authority),
             ),
             "",
         )
@@ -19354,6 +19530,25 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
             if keyword.value.id != keyword.arg:
                 return None
         return ast.unparse(call.func), parameter_names
+
+    @staticmethod
+    def callee_authority_target(
+        context: CodemodSelectorContext,
+        source_path: str,
+        callee_source: str,
+    ) -> AstTargetDigest | None:
+        target_ids = SourceIndexTargetSelector(
+            file_paths=(source_path,),
+            qualnames=(callee_source,),
+            node_kinds=(
+                AstTargetNodeKind.CLASS,
+                AstTargetNodeKind.FUNCTION,
+                AstTargetNodeKind.METHOD,
+            ),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        return context.source_index.target_by_id[target_ids[0]]
 
     @staticmethod
     def forwarded_parameter_names(
@@ -19698,17 +19893,20 @@ class RepeatedBuilderInvariantFieldPlan:
 
 
 @dataclass(frozen=True)
-class RepeatedAuthorityRecipeParts:
+class RepeatedAuthorityRecipeParts(AuthorityClaimCarrier):
     """Executable rewrite sequence for one repeated-call authority extraction."""
 
     rewrite_steps: tuple[RepeatedAuthorityTargetRewrite, ...]
     target_shape: RefactorRecipeTargetShape | None = None
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
-            reason=self.recipe_reason,
-            target_shape=self.target_shape,
+        recipe = (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
+                reason=self.recipe_reason,
+                target_shape=self.target_shape,
+            )
+            .with_authority_claim(self.authority_claim)
         )
         for rewrite_step in self.rewrite_steps:
             recipe = recipe.replace_target(
@@ -19918,6 +20116,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                     ),
                     *call_rewrites,
                 ),
+                authority_claim=AstTargetAuthorityClaim.from_target(constructor_target),
                 target_shape=method.target_shape,
             ),
             "",
@@ -20015,7 +20214,10 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                             "calls."
                         ),
                     ),
-                )
+                ),
+                authority_claim=AstTargetAuthorityClaim.from_target(
+                    extraction.class_target
+                ),
             ),
             "",
         )
@@ -26234,6 +26436,9 @@ class DataclassCallProjectionMappingRecipeBuilder(
     executable_rejection_reason: ClassVar[str]
     missing_rejection_reason: ClassVar[str]
 
+    def supports_finding(self) -> bool:
+        return self.explains_rejection() and self.parts is not None
+
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return self.metrics_rejection_reason
@@ -29997,6 +30202,7 @@ class ProjectedBatchRewriteSet:
         *,
         guard_suite: ArchitectureGuardSuite | None = None,
         target_shape: RefactorRecipeTargetShape | None = None,
+        authority_claims: Iterable[AuthorityClaim] = (),
     ) -> RefactorRecipe:
         return RefactorRecipe(
             recipe_id="finding-backed-merged-codemod-plan",
@@ -30014,6 +30220,7 @@ class ProjectedBatchRewriteSet:
             ),
             guard_suite=guard_suite or ArchitectureGuardSuite(),
             target_shape=target_shape,
+            authority_claims=tuple(authority_claims),
         )
 
 
@@ -30200,6 +30407,7 @@ class FindingRecipePlanBuilder:
                 operations=tuple(
                     operation for recipe in recipes for operation in recipe.operations
                 ),
+                authority_claims=RefactorRecipe.shared_authority_claims(recipes),
                 guard_suite=ArchitectureGuardSuite().merge(
                     *(recipe.guard_suite for recipe in recipes)
                 ),
@@ -30221,7 +30429,10 @@ class FindingRecipePlanBuilder:
                     guard_suite=ArchitectureGuardSuite().merge(
                         *(recipe.guard_suite for recipe in recipe_tuple)
                     ),
-                    target_shape=RefactorRecipe.shared_target_shape(recipe_tuple)
+                    target_shape=RefactorRecipe.shared_target_shape(recipe_tuple),
+                    authority_claims=RefactorRecipe.shared_authority_claims(
+                        recipe_tuple
+                    ),
                 )
             )
             .unwrap_or_none()
