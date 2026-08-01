@@ -57,8 +57,9 @@ class IndexedClass:
                 declared_base_name
                 for base in node.bases
                 if (
-                    declared_base_name
-                    := ClassSymbolResolutionAuthority.declared_base_name(base)
+                    declared_base_name := ClassSymbolResolutionAuthority.declared_base_name(
+                        base
+                    )
                 )
                 is not None
             ),
@@ -80,6 +81,22 @@ class ClassFamilyIndex:
     children_by_symbol: dict[str, tuple[str, ...]]
     ancestors_by_symbol: dict[str, tuple[str, ...]]
     descendants_by_symbol: dict[str, tuple[str, ...]]
+
+    @cached_property
+    def known_symbols(self) -> frozenset[str]:
+        """Repository class symbols shared by every module resolver."""
+
+        return frozenset(self.classes_by_symbol)
+
+    @cached_property
+    def unique_symbols_by_name(self) -> dict[str, str]:
+        """Unambiguous simple-name projection shared across module resolvers."""
+
+        return {
+            simple_name: symbols[0]
+            for simple_name, symbols in self.symbols_by_simple_name.items()
+            if len(symbols) == 1
+        }
 
     def class_for(self, symbol: str) -> IndexedClass | None:
         return self.classes_by_symbol.get(symbol)
@@ -137,6 +154,29 @@ class AttributeChainAuthority:
 
 
 ATTRIBUTE_CHAIN_AUTHORITY = AttributeChainAuthority()
+
+
+@lru_cache(maxsize=None)
+def _unique_known_symbol_by_suffix(
+    known_symbols: frozenset[str],
+) -> dict[str, str]:
+    """Index the suffix rule once instead of scanning every class per reference."""
+
+    unique: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for symbol in known_symbols:
+        parts = symbol.split(".")
+        for start in range(len(parts)):
+            suffix = ".".join(parts[start:])
+            if suffix in ambiguous:
+                continue
+            previous = unique.get(suffix)
+            if previous is None:
+                unique[suffix] = symbol
+            elif previous != symbol:
+                del unique[suffix]
+                ambiguous.add(suffix)
+    return unique
 
 
 def _resolve_relative_module(
@@ -226,15 +266,12 @@ class ClassSymbolResolutionAuthority:
         # Resolve only a unique suffix match so unrelated same-named classes do
         # not create a speculative inheritance edge.
         candidate_parts = candidate.split(".")
+        unique_symbol_by_suffix = _unique_known_symbol_by_suffix(self.known_symbols)
         for suffix_width in range(len(candidate_parts) - 1, 0, -1):
             suffix = ".".join(candidate_parts[-suffix_width:])
-            matches = tuple(
-                symbol
-                for symbol in self.known_symbols
-                if symbol == suffix or symbol.endswith(f".{suffix}")
-            )
-            if len(matches) == 1:
-                return matches[0]
+            match = unique_symbol_by_suffix.get(suffix)
+            if match is not None:
+                return match
         return None
 
     def _module_local_symbol(self, parts: tuple[str, ...]) -> str | None:
@@ -265,15 +302,11 @@ class ModuleClassReferenceResolver:
 
     @cached_property
     def known_symbols(self) -> frozenset[str]:
-        return frozenset(self.class_index.classes_by_symbol)
+        return self.class_index.known_symbols
 
     @cached_property
     def unique_symbols_by_name(self) -> dict[str, str]:
-        return {
-            simple_name: symbols[0]
-            for simple_name, symbols in self.class_index.symbols_by_simple_name.items()
-            if len(symbols) == 1
-        }
+        return self.class_index.unique_symbols_by_name
 
     @cached_property
     def import_aliases(self) -> dict[str, str]:
@@ -537,9 +570,7 @@ class ClassFamilyIndexBuilder:
         for symbol in sorted(classes_by_symbol):
             descendants: list[str] = []
             queue = (
-                list(children_by_symbol[symbol])
-                if symbol in children_by_symbol
-                else []
+                list(children_by_symbol[symbol]) if symbol in children_by_symbol else []
             )
             seen: set[str] = set()
             while queue:

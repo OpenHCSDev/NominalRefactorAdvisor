@@ -1212,7 +1212,7 @@ def _role_surface_use_sites(
 
 def _role_surface_use_descends_from_declaration(
     use_site: RoleSurfaceUseSite,
-    declarations: Sequence[RoleSurfaceDeclaration],
+    declaration_symbols: frozenset[str],
     class_index: ClassFamilyIndex,
 ) -> bool:
     """Recognize inherited-field uses as descent through the declaring class.
@@ -1222,31 +1222,35 @@ def _role_surface_use_descends_from_declaration(
     surface loses the inheritance edge and creates a false mirror signal.
     """
     owner_qualname = use_site.symbol.split(":", 1)[0]
-    owner_candidates = tuple(
-        indexed_class
-        for indexed_class in class_index.classes_by_symbol.values()
-        if indexed_class.file_path == use_site.file_path
-        and (
-            owner_qualname == indexed_class.qualname
-            or owner_qualname.startswith(f"{indexed_class.qualname}.")
+    owner_symbol = None
+    while owner_qualname:
+        owner_symbol = class_index.symbol_for(
+            file_path=use_site.file_path,
+            qualname=owner_qualname,
         )
-    )
-    if not owner_candidates:
+        if owner_symbol is not None or "." not in owner_qualname:
+            break
+        owner_qualname = owner_qualname.rsplit(".", 1)[0]
+    if owner_symbol is None:
         return False
-    owner_symbol = max(
-        owner_candidates,
-        key=lambda indexed_class: len(indexed_class.qualname.split(".")),
-    ).symbol
-    declaration_symbols = frozenset(
-        indexed_class.symbol
-        for declaration in declarations
-        for indexed_class in class_index.classes_by_symbol.values()
-        if indexed_class.file_path == declaration.file_path
-        and indexed_class.simple_name == declaration.class_name
-    )
     return bool(
-        declaration_symbols
-        & frozenset(class_index.ancestor_symbols(owner_symbol))
+        declaration_symbols & frozenset(class_index.ancestor_symbols(owner_symbol))
+    )
+
+
+def _role_surface_declaration_symbols(
+    declarations: Sequence[RoleSurfaceDeclaration],
+    class_index: ClassFamilyIndex,
+) -> frozenset[str]:
+    """Resolve each field owner once instead of rescanning all classes per use."""
+
+    declaration_keys = frozenset(
+        (declaration.file_path, declaration.class_name) for declaration in declarations
+    )
+    return frozenset(
+        indexed_class.symbol
+        for indexed_class in class_index.classes_by_symbol.values()
+        if (indexed_class.file_path, indexed_class.simple_name) in declaration_keys
     )
 
 
@@ -1270,13 +1274,17 @@ def _role_surface_drift_candidates(
 
     candidates: list[RoleSurfaceDriftCandidate] = []
     for field_name, declarations in sorted(declarations_by_field.items()):
+        declaration_symbols = _role_surface_declaration_symbols(
+            declarations,
+            class_index,
+        )
         if field_name in uses_by_field:
             field_use_sites = tuple(
                 use_site
                 for use_site in uses_by_field[field_name]
                 if not _role_surface_use_descends_from_declaration(
                     use_site,
-                    tuple(declarations),
+                    declaration_symbols,
                     class_index,
                 )
             )
@@ -1401,7 +1409,7 @@ class RoleSurfaceDriftDetector(
 
 class GenericRoleCaseTableDetector(
     SemanticMirrorIssueDetector,
-    ConfiguredCrossModuleCollectorCandidateDetector[GenericRoleCaseTableCandidate]
+    ConfiguredCrossModuleCollectorCandidateDetector[GenericRoleCaseTableCandidate],
 ):
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -1440,7 +1448,7 @@ class GenericRoleCaseTableDetector(
 
 class LocalRoleCaseLogicDetector(
     SemanticMirrorIssueDetector,
-    ConfiguredModuleCollectorCandidateDetector[LocalRoleCaseLogicCandidate]
+    ConfiguredModuleCollectorCandidateDetector[LocalRoleCaseLogicCandidate],
 ):
     finding_spec = high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,

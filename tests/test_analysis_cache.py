@@ -31,10 +31,16 @@ from nominal_refactor_advisor.ast_tools import (
     parse_python_module_roots,
     parse_python_modules,
 )
+from nominal_refactor_advisor import ast_tools as ast_tools_module
+from nominal_refactor_advisor import semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.cache_paths import (
     analysis_cache_sibling,
     default_parse_cache_dir,
     semantic_descent_cache_sibling,
+)
+from nominal_refactor_advisor.cache_checkout import (
+    CacheCheckoutPathError,
+    checkout_relative_path,
 )
 from nominal_refactor_advisor.detectors import (
     CrossModuleCandidateDetector,
@@ -53,6 +59,277 @@ from nominal_refactor_advisor.semantic_descent import (
     SemanticDescentGraphCacheIdentity,
     build_semantic_descent_graph,
 )
+
+
+def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGraph:
+    authorities = (
+        (
+            SemanticAuthority(
+                authority_id=f"authority:{authority_name}",
+                kind=SemanticAuthorityKind.CLASS_FAMILY,
+                name=authority_name,
+                location=SourceLocation("fixture.py", 1, authority_name),
+                fact_ids=(),
+            ),
+        )
+        if authority_name
+        else ()
+    )
+    return SemanticDescentGraph(
+        authorities=authorities,
+        facts=(),
+        projections=(),
+        mirror_edges=(),
+        certificates=(),
+    )
+
+
+def test_semantic_graph_cache_treats_truncated_payload_as_miss(
+    tmp_path: Path,
+) -> None:
+    cache = SemanticDescentGraphCache(tmp_path)
+    identity = SemanticDescentGraphCacheIdentity.from_roots((tmp_path,))
+    cache._entry_path(identity).write_bytes(b"\x80\x05")
+
+    assert cache.load(identity).graph is None
+
+
+def test_semantic_graph_cache_interrupted_store_preserves_published_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = SemanticDescentGraphCache(tmp_path)
+    identity = SemanticDescentGraphCacheIdentity.from_roots((tmp_path,))
+    published_graph = _empty_semantic_descent_graph("Published")
+    cache.store(identity, published_graph)
+    original_dump = semantic_descent_module.pickle.dump
+
+    def interrupted_dump(payload, handle, *, protocol):
+        handle.write(b"partial")
+        raise OSError("simulated interrupted cache publication")
+
+    monkeypatch.setattr(semantic_descent_module.pickle, "dump", interrupted_dump)
+    cache.store(identity, _empty_semantic_descent_graph("Interrupted"))
+    monkeypatch.setattr(semantic_descent_module.pickle, "dump", original_dump)
+
+    assert cache.load(identity).graph == published_graph
+    assert not tuple(tmp_path.glob(".*.tmp"))
+
+
+def test_semantic_graph_cache_concurrent_publications_remain_readable(
+    tmp_path: Path,
+) -> None:
+    cache = SemanticDescentGraphCache(tmp_path)
+    identity = SemanticDescentGraphCacheIdentity.from_roots((tmp_path,))
+    graphs = tuple(
+        _empty_semantic_descent_graph(f"Writer{index}") for index in range(8)
+    )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        tuple(executor.map(lambda graph: cache.store(identity, graph), graphs))
+
+    assert cache.load(identity).graph in graphs
+    assert not tuple(tmp_path.glob(".*.tmp"))
+
+
+def test_semantic_graph_latest_cache_is_lightweight_identity_pointer(
+    tmp_path: Path,
+) -> None:
+    cache = SemanticDescentGraphCache(tmp_path)
+    identity = SemanticDescentGraphCacheIdentity.from_roots((tmp_path,))
+    graph = _empty_semantic_descent_graph("Published")
+
+    cache.store(identity, graph)
+    family_identity = (
+        semantic_descent_module.SemanticDescentGraphCacheFamilyIdentity.from_identity(
+            identity
+        )
+    )
+    exact_path = cache._entry_path(identity)
+    latest_path = cache._latest_path(family_identity)
+
+    assert cache.load_latest(family_identity).graph == graph
+    assert latest_path.stat().st_size < exact_path.stat().st_size
+
+
+def test_semantic_graph_cache_context_reuses_latest_graph_for_exact_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = SemanticDescentGraphCache(tmp_path)
+    roots = (tmp_path,)
+    identity = SemanticDescentGraphCacheIdentity.from_roots(roots)
+    graph = _empty_semantic_descent_graph("Published")
+    cache.store(identity, graph)
+    context = SemanticDescentGraphCacheContext(
+        storage_root=tmp_path,
+        roots=roots,
+    )
+    load_calls = 0
+    original_load = semantic_descent_module.SemanticDescentGraphCache.load
+
+    def counted_load(self, requested_identity):
+        nonlocal load_calls
+        load_calls += 1
+        return original_load(self, requested_identity)
+
+    monkeypatch.setattr(
+        semantic_descent_module.SemanticDescentGraphCache,
+        "load",
+        counted_load,
+    )
+
+    latest_graph = context.latest_graph()
+    exact_graph = context.cached_graph()
+
+    assert latest_graph is graph or latest_graph == graph
+    assert exact_graph is latest_graph
+    assert load_calls == 1
+
+
+def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    checkout_a.mkdir()
+    checkout_b.mkdir()
+    source_text = "class StableAuthority:\n    pass\n"
+    source_a = checkout_a / "module.py"
+    source_b = checkout_b / "module.py"
+    source_a.write_text(source_text, encoding="utf-8")
+    source_b.write_text(source_text, encoding="utf-8")
+
+    graph_cache = SemanticDescentGraphCache(tmp_path / "shared-graph-cache")
+    graph_identity_a = SemanticDescentGraphCacheIdentity.from_roots((checkout_a,))
+    graph_identity_b = SemanticDescentGraphCacheIdentity.from_roots((checkout_b,))
+    analysis_identity_a = AnalysisCacheIdentity.from_roots(
+        (checkout_a,),
+        DetectorConfig(),
+    )
+    analysis_identity_b = AnalysisCacheIdentity.from_roots(
+        (checkout_b,),
+        DetectorConfig(),
+    )
+    graph = SemanticDescentGraph(
+        authorities=(
+            SemanticAuthority(
+                authority_id="stable-authority",
+                kind=SemanticAuthorityKind.CLASS_FAMILY,
+                name="StableAuthority",
+                location=SourceLocation(str(source_a), 1, "StableAuthority"),
+                fact_ids=(),
+            ),
+        ),
+        facts=(),
+        projections=(),
+        mirror_edges=(),
+        certificates=(),
+    )
+    graph_cache.store(graph_identity_a, graph)
+
+    assert graph_identity_a.cache_token == graph_identity_b.cache_token
+    assert analysis_identity_a.cache_token == analysis_identity_b.cache_token
+    assert str(checkout_a) not in repr(graph_identity_a)
+    assert str(checkout_a) not in repr(analysis_identity_a)
+    relocated_graph = graph_cache.load(graph_identity_b).graph
+    assert relocated_graph is not None
+    assert relocated_graph.authorities[0].location.file_path == str(source_b)
+
+    detector_calls = 0
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Relocatable cache",
+        why="relocatable cache",
+        capability_gap="relocatable cache",
+        relation_context="relocatable cache",
+    )
+
+    class RelocatableCacheDetector(IssueDetector):
+        detector_id = "relocatable_cache_detector"
+
+        def _collect_findings(
+            self,
+            modules: list,
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            nonlocal detector_calls
+            del config
+            detector_calls += 1
+            module = modules[0]
+            return [
+                finding_spec.build(
+                    self.detector_id,
+                    "relocatable finding",
+                    (SourceLocation(str(module.path), 1, "StableAuthority"),),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (RelocatableCacheDetector,),
+    )
+    analysis_cache_dir = tmp_path / "shared-analysis-cache"
+    try:
+        first = analyze_modules_with_cache(
+            (checkout_a,),
+            parse_python_module_roots((checkout_a,)),
+            DetectorConfig(),
+            analysis_cache_dir=analysis_cache_dir,
+        )
+        second = analyze_modules_with_cache(
+            (checkout_b,),
+            parse_python_module_roots((checkout_b,)),
+            DetectorConfig(),
+            analysis_cache_dir=analysis_cache_dir,
+        )
+    finally:
+        for registry_key, detector_type in tuple(IssueDetector.__registry__.items()):
+            if detector_type is RelocatableCacheDetector:
+                del IssueDetector.__registry__[registry_key]
+
+    assert first.cache_status is AnalysisCacheStatus.MISS
+    assert second.cache_status is AnalysisCacheStatus.HIT
+    assert detector_calls == 1
+    assert second.findings[0].evidence[0].file_path == str(source_b)
+
+    source_b.write_text("VALUE = 'foreign content'\n", encoding="utf-8")
+    foreign_identity = SemanticDescentGraphCacheIdentity.from_roots((checkout_b,))
+    assert foreign_identity.cache_token != graph_identity_a.cache_token
+    assert graph_cache.load(foreign_identity).graph is None
+
+
+def test_relocatable_caches_reject_path_escape_and_ambiguous_roots(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    nested_root = checkout / "nested"
+    nested_root.mkdir(parents=True)
+    source_path = nested_root / "module.py"
+    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+
+    with pytest.raises(CacheCheckoutPathError, match="unsafe"):
+        checkout_relative_path("../escape.py", (checkout,))
+    with pytest.raises(CacheCheckoutPathError, match="multiple roots"):
+        checkout_relative_path(source_path, (checkout, nested_root))
+
+    identity = AnalysisCacheIdentity.from_roots((checkout,), DetectorConfig())
+    cache = AnalysisFindingCache(tmp_path / "analysis-cache")
+    escaped_finding = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Escaped",
+        why="escaped",
+        capability_gap="escaped",
+        relation_context="escaped",
+    ).build(
+        "escaped_cache_detector",
+        "escaped finding",
+        (SourceLocation(str(tmp_path / "outside.py"), 1, "outside"),),
+    )
+    cache.store(identity, [escaped_finding])
+
+    assert cache.load(identity).status is AnalysisCacheStatus.MISS
 
 
 class CountingSemanticCacheDetector(IssueDetector):
@@ -317,7 +594,7 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
 
     assert first_result.cache_status is AnalysisCacheStatus.MISS
     assert second_result.cache_status is AnalysisCacheStatus.PARTIAL
-    assert candidate_calls == 3
+    assert candidate_calls == 2
     assert finding_calls == 2
 
 
@@ -715,7 +992,9 @@ def test_global_detector_shard_survives_detector_registry_expansion(
     assert [finding.summary for finding in second_result.findings] == ["stable global"]
 
 
-def test_collected_family_items_are_persisted_beside_parse_cache(tmp_path: Path) -> None:
+def test_collected_family_items_are_persisted_beside_parse_cache(
+    tmp_path: Path,
+) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     module_path = package_root / "mod.py"
@@ -744,6 +1023,35 @@ def test_collected_family_items_are_persisted_beside_parse_cache(tmp_path: Path)
     assert [item.key_names for item in second_items] == [
         item.key_names for item in first_items
     ]
+
+
+def test_parse_cache_persists_semantic_source_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    original_hash = ast_tools_module.semantic_python_source_hash
+    hash_calls = 0
+
+    def counted_hash(source: str) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return original_hash(source)
+
+    monkeypatch.setattr(
+        ast_tools_module,
+        "semantic_python_source_hash",
+        counted_hash,
+    )
+
+    first = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+    second = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+
+    assert first.semantic_hash == second.semantic_hash
+    assert hash_calls == 1
 
 
 def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(
@@ -963,7 +1271,9 @@ def test_partial_cache_uses_latest_repo_graph_for_changed_module_scan(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     members_path = package_root / "members.py"
-    (package_root / "authority.py").write_text("class Step:\n    pass\n", encoding="utf-8")
+    (package_root / "authority.py").write_text(
+        "class Step:\n    pass\n", encoding="utf-8"
+    )
     members_path.write_text(
         "class LoadStep(Step):\n" "    step_id = 'load'\n",
         encoding="utf-8",
@@ -1114,8 +1424,7 @@ def test_contextual_module_cache_invalidates_when_repo_context_changes(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "roles.py").write_text(
-        "class AvoidWidgetsWindow:\n"
-        "    pass\n",
+        "class AvoidWidgetsWindow:\n" "    pass\n",
         encoding="utf-8",
     )
     (package_root / "consumer.py").write_text(
@@ -1183,8 +1492,7 @@ def test_private_reference_contextual_cache_invalidates_when_reference_edge_chan
     )
     consumer_path = package_root / "consumer.py"
     consumer_path.write_text(
-        "def use(value):\n"
-        "    return value\n",
+        "def use(value):\n" "    return value\n",
         encoding="utf-8",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"

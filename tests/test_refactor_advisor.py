@@ -14,7 +14,9 @@ from typing import cast
 
 import pytest
 
+from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor.analysis import (
+    AnalysisPathScope,
     CachedPathAnalysisRequest,
     DetectorAnalysisWorkerPlan,
     FastCacheReusePolicy,
@@ -1075,16 +1077,12 @@ def test_projected_finding_report_uses_focused_partial_scan(
     _write_module(
         tmp_path,
         "pkg/changed.py",
-        "class Changed:\n"
-        "    def value(self):\n"
-        "        return 1\n",
+        "class Changed:\n" "    def value(self):\n" "        return 1\n",
     )
     _write_module(
         tmp_path,
         "pkg/other.py",
-        "class Other:\n"
-        "    def value(self):\n"
-        "        return 2\n",
+        "class Other:\n" "    def value(self):\n" "        return 2\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -1174,16 +1172,12 @@ def test_projected_finding_report_uses_full_graph_source_for_graph_detectors(
     _write_module(
         tmp_path,
         "pkg/changed.py",
-        "class Changed:\n"
-        "    def value(self):\n"
-        "        return 1\n",
+        "class Changed:\n" "    def value(self):\n" "        return 1\n",
     )
     _write_module(
         tmp_path,
         "pkg/other.py",
-        "class Other:\n"
-        "    def value(self):\n"
-        "        return 2\n",
+        "class Other:\n" "    def value(self):\n" "        return 2\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -1220,7 +1214,9 @@ def test_projected_finding_report_uses_full_graph_source_for_graph_detectors(
 
     class RecordingSemanticDescentSource:
         def graph_for_modules(self, modules):
-            graph_source_calls.append(tuple(module.path.as_posix() for module in modules))
+            graph_source_calls.append(
+                tuple(module.path.as_posix() for module in modules)
+            )
             return sentinel_graph
 
     def forbidden_full_analysis(*args, **kwargs):
@@ -6790,7 +6786,8 @@ class RuntimeAdapter:
     assert "typed/nominal authority" in (finding.codemod_patch or "")
 
     assert any(
-        finding.detector_id == "builtin_locals_call" for finding in analyze_path(tmp_path)
+        finding.detector_id == "builtin_locals_call"
+        for finding in analyze_path(tmp_path)
     )
 
 
@@ -6806,9 +6803,7 @@ def capture(value):
 
     findings = analyze_path(tmp_path)
     finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "builtin_locals_call"
+        finding for finding in findings if finding.detector_id == "builtin_locals_call"
     )
     assert "lexical dependencies" in finding.summary
     assert "explicitly" in (finding.codemod_patch or "")
@@ -6828,9 +6823,7 @@ def capture(locals):
     )
 
     findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "builtin_locals_call" for finding in findings
-    )
+    assert not any(finding.detector_id == "builtin_locals_call" for finding in findings)
 
 
 def test_detects_reflective_attribute_hooks(tmp_path: Path) -> None:
@@ -7076,7 +7069,14 @@ def test_parse_python_modules_can_skip_test_trees(tmp_path: Path) -> None:
     _write_module(tmp_path, "pkg/prod.py", "\nclass Production:\n    pass\n")
     _write_module(tmp_path, "tests/test_prod.py", "\nclass TestProduction:\n    pass\n")
     _write_module(tmp_path, "pkg/test_helper.py", "\nclass TestHelper:\n    pass\n")
-    _write_module(tmp_path, ".nra-cache/generated.py", "\nclass CachedArtifact:\n    pass\n")
+    _write_module(
+        tmp_path, ".nra-cache/generated.py", "\nclass CachedArtifact:\n    pass\n"
+    )
+    _write_module(
+        tmp_path,
+        ".source-history/snapshot.py",
+        "\nclass HistoricalSnapshot:\n    pass\n",
+    )
 
     production_modules = parse_python_modules(
         tmp_path,
@@ -7093,6 +7093,20 @@ def test_parse_python_modules_can_skip_test_trees(tmp_path: Path) -> None:
         "test_helper.py",
         "test_prod.py",
     ]
+
+
+def test_parse_python_modules_can_explicitly_scan_hidden_root(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        ".source-history/snapshot.py",
+        "\nclass HistoricalSnapshot:\n    pass\n",
+    )
+
+    modules = parse_python_modules(tmp_path / ".source-history")
+
+    assert [module.path.name for module in modules] == ["snapshot.py"]
 
 
 def test_parse_python_module_roots_can_skip_direct_test_files(
@@ -7235,6 +7249,26 @@ def test_analysis_cache_stores_count_summary_sidecar(tmp_path: Path) -> None:
         PatternId.NOMINAL_BOUNDARY.value
     )
     assert summary_lookup.summary.detector_counts[0].detector_id == ("summary_detector")
+
+
+def test_module_source_signature_reuses_parsed_semantic_hash_without_ast_walk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    module = parse_python_modules(tmp_path)[0]
+    monkeypatch.setattr(
+        analysis_cache_module,
+        "structural_ast_hash",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("parsed semantic hash re-walked the AST")
+        ),
+    )
+
+    first = analysis_cache_module.ModuleSourceSignature.from_module(module)
+    second = analysis_cache_module.ModuleSourceSignature.from_module(module)
+
+    assert first == second
 
 
 def test_analysis_cache_stores_execution_plan_sidecar(tmp_path: Path) -> None:
@@ -7410,6 +7444,152 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
     assert hit_result.cache_status is AnalysisCacheStatus.HIT
     assert local_calls == {"a.py": 1, "b.py": 2}
     assert global_calls == 2
+
+
+def test_focused_analysis_schedules_local_detectors_only_for_report_modules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/a.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg/b.py", "\nclass Beta:\n    pass\n")
+    root = tmp_path / "pkg"
+    modules = parse_python_module_roots((root,))
+    local_calls: list[str] = []
+    contextual_calls: list[tuple[str, tuple[str, ...]]] = []
+    global_calls: list[tuple[str, ...]] = []
+    finding_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Focused scheduling",
+        "focused scheduling",
+        "focused scheduling",
+        "focused scheduling",
+    )
+
+    def finding(
+        detector_id: str,
+        module: ParsedModule,
+    ) -> RefactorFinding:
+        return finding_spec.build(
+            detector_id,
+            f"{detector_id} {module.path.name}",
+            (SourceLocation(str(module.path), 1, module.path.name),),
+        )
+
+    class FocusedPerModuleDetector(base_detectors.PerModuleIssueDetector):
+        detector_id = "focused_per_module"
+
+        def _findings_for_module(
+            self,
+            module: ParsedModule,
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            local_calls.append(module.path.name)
+            return [finding(self.detector_id, module)]
+
+    class FocusedContextualModuleDetector(base_detectors.ContextualModuleIssueDetector):
+        detector_id = "focused_contextual_module"
+
+        @classmethod
+        def context_signature(
+            cls,
+            modules: tuple[ParsedModule, ...],
+            config: DetectorConfig,
+        ) -> str:
+            del cls, config
+            return "|".join(module.path.name for module in modules)
+
+        def _findings_for_module_context(
+            self,
+            module: ParsedModule,
+            modules: tuple[ParsedModule, ...],
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            contextual_calls.append(
+                (
+                    module.path.name,
+                    tuple(item.path.name for item in modules),
+                )
+            )
+            return [finding(self.detector_id, module)]
+
+    class FocusedGlobalDetector(base_detectors.IssueDetector):
+        detector_id = "focused_global"
+
+        def _collect_findings(
+            self,
+            modules: list[ParsedModule],
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            global_calls.append(tuple(module.path.name for module in modules))
+            return [finding(self.detector_id, module) for module in modules]
+
+    focused_detector_types = (
+        FocusedPerModuleDetector,
+        FocusedContextualModuleDetector,
+        FocusedGlobalDetector,
+    )
+    for registry_key, detector_type in tuple(
+        base_detectors.IssueDetector.__registry__.items()
+    ):
+        if detector_type in focused_detector_types:
+            del base_detectors.IssueDetector.__registry__[registry_key]
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: focused_detector_types,
+    )
+
+    result = analyze_modules_with_cache(
+        (root,),
+        modules,
+        DetectorConfig(),
+        report_scope=AnalysisPathScope(
+            analysis_roots=(root,),
+            report_roots=(root / "a.py",),
+        ),
+    )
+
+    assert local_calls == ["a.py"]
+    assert contextual_calls == [("a.py", ("a.py", "b.py"))]
+    assert global_calls == [("a.py", "b.py")]
+    assert {item.summary for item in result.findings} == {
+        "focused_contextual_module a.py",
+        "focused_global a.py",
+        "focused_per_module a.py",
+    }
+
+    cache_dir = tmp_path / ".nra-cache" / "analysis"
+    analyze_modules_with_cache(
+        (root,),
+        modules,
+        DetectorConfig(),
+        analysis_cache_dir=cache_dir,
+    )
+    local_calls.clear()
+    contextual_calls.clear()
+    global_calls.clear()
+    cached_result = analyze_modules_with_cache(
+        (root,),
+        modules,
+        DetectorConfig(),
+        analysis_cache_dir=cache_dir,
+        report_scope=AnalysisPathScope(
+            analysis_roots=(root,),
+            report_roots=(root / "a.py",),
+        ),
+    )
+
+    assert cached_result.cache_status is AnalysisCacheStatus.HIT
+    assert local_calls == []
+    assert contextual_calls == []
+    assert global_calls == []
+    assert {item.summary for item in cached_result.findings} == {
+        "focused_contextual_module a.py",
+        "focused_global a.py",
+        "focused_per_module a.py",
+    }
 
 
 def test_analyze_paths_partial_cache_parses_changed_file_only(
@@ -9745,7 +9925,8 @@ def test_inherited_dataclass_field_forwarding_is_semantic_descent(
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id in {
+        finding.detector_id
+        in {
             "role_surface_drift",
             "semantic_mirror_without_descent",
         }
@@ -9771,7 +9952,8 @@ def test_nested_inherited_dataclass_field_forwarding_is_semantic_descent(
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id in {
+        finding.detector_id
+        in {
             "role_surface_drift",
             "semantic_mirror_without_descent",
         }
@@ -16432,7 +16614,9 @@ def test_dead_compatibility_eraser_fails_on_remaining_attribute_callers(
     assert simulation.is_clean is False
     assert simulation.architecture_guard_report.violation_count == 1
     violation = simulation.architecture_guard_report.violations[0]
-    assert violation.violation_kind is ArchitectureGuardViolationKind.FORBIDDEN_ATTRIBUTE
+    assert (
+        violation.violation_kind is ArchitectureGuardViolationKind.FORBIDDEN_ATTRIBUTE
+    )
     assert "ligand_coords" in violation.detail
 
 
@@ -17122,7 +17306,7 @@ def test_module_cli_json_summary_uses_analysis_cache_before_parse(
     assert timing["parse_seconds"] == 0.0
 
 
-def test_loop_preparse_partial_uses_latest_repo_semantic_graph(
+def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -17176,8 +17360,10 @@ def test_loop_preparse_partial_uses_latest_repo_semantic_graph(
         cache_context=cache_context,
     ).context()
 
-    assert context.latest_graph == cached_graph
-    assert context.analysis_source.graph_for_modules([]) is context.latest_graph
+    assert context.latest_graph is None
+    lazy_source = context.analysis_source.with_latest_cached_graph()
+    assert lazy_source.cached_graph == cached_graph
+    assert lazy_source.graph_for_modules([]) is lazy_source.cached_graph
 
 
 def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
@@ -17979,19 +18165,25 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     }
     terminal_class_plan = payload["terminal_class_plan_report"]
     assert terminal_class_plan["class_count"] == 1
-    assert terminal_class_plan["classes"][0]["site_plans"][0]["synthesis_record"][
-        "status"
-    ] == "no_synthesizer"
-    assert terminal_class_plan["classes"][0]["site_plans"][0][
-        "replacement_scaffold"
-    ]["selected_count"] >= 1
+    assert (
+        terminal_class_plan["classes"][0]["site_plans"][0]["synthesis_record"]["status"]
+        == "no_synthesizer"
+    )
+    assert (
+        terminal_class_plan["classes"][0]["site_plans"][0]["replacement_scaffold"][
+            "selected_count"
+        ]
+        >= 1
+    )
 
 
 def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -> None:
     from nominal_refactor_advisor.codemod import RefactorRecipeTargetShape
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalKind
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalTargetPolicy
+    from nominal_refactor_advisor.codemod_workflow import (
+        CodemodRefactorGoalTargetPolicy,
+    )
 
     def finding(
         detector_id: str,
@@ -18995,10 +19187,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         CodemodAuthoringBundleStatusReporter.__name__
         == "CodemodAuthoringBundleStatusReporter"
     )
-    assert (
-        CodemodAuthoringCommandActionId.__name__
-        == "CodemodAuthoringCommandActionId"
-    )
+    assert CodemodAuthoringCommandActionId.__name__ == "CodemodAuthoringCommandActionId"
     assert CodemodAuthoringCommandModel.__name__ == "CodemodAuthoringCommandModel"
     assert (
         CodemodAuthoringCommandInvocation.__name__
@@ -19918,12 +20107,12 @@ def test_ignores_semantic_inheritance_family_with_effective_inherited_meta(
     _write_module(
         tmp_path,
         "project/docking/registry.py",
-        '\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass RuntimeAutoRegisterMeta(AutoRegisterMeta):\n    pass\n\n\nclass RuntimeSemanticInheritanceFamily(ABC, metaclass=RuntimeAutoRegisterMeta):\n    pass\n',
+        "\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass RuntimeAutoRegisterMeta(AutoRegisterMeta):\n    pass\n\n\nclass RuntimeSemanticInheritanceFamily(ABC, metaclass=RuntimeAutoRegisterMeta):\n    pass\n",
     )
     _write_module(
         tmp_path,
         "project/docking/consumer.py",
-        '\nfrom project.docking.registry import RuntimeSemanticInheritanceFamily\n\n\nclass SelectedBoolPolicyAuthority(RuntimeSemanticInheritanceFamily):\n    def select(self, value):\n        raise NotImplementedError\n\n\nclass EnabledSelectedBoolPolicy(SelectedBoolPolicyAuthority):\n    def select(self, value):\n        return True\n\n\nclass DisabledSelectedBoolPolicy(SelectedBoolPolicyAuthority):\n    def select(self, value):\n        return False\n',
+        "\nfrom project.docking.registry import RuntimeSemanticInheritanceFamily\n\n\nclass SelectedBoolPolicyAuthority(RuntimeSemanticInheritanceFamily):\n    def select(self, value):\n        raise NotImplementedError\n\n\nclass EnabledSelectedBoolPolicy(SelectedBoolPolicyAuthority):\n    def select(self, value):\n        return True\n\n\nclass DisabledSelectedBoolPolicy(SelectedBoolPolicyAuthority):\n    def select(self, value):\n        return False\n",
     )
     _write_module(
         tmp_path,
@@ -21840,10 +22029,7 @@ def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     authority_claim = work_queue[0]["authority_claims"][0]
     assert authority_claim["status"] == "resolved"
     assert authority_claim["claim"]["claimed_symbol"] == "Handler"
-    assert (
-        authority_claim["proof_edges"][0]["edge_kind"]
-        == "semantic_descent_graph"
-    )
+    assert authority_claim["proof_edges"][0]["edge_kind"] == "semantic_descent_graph"
     assert gate_queue[0] == work_queue[0]
     assert raw_payload["supporting_raw_findings"][0]["stable_id"] == critical.stable_id
 
@@ -21895,9 +22081,7 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
     assert discovery["title"] == "Authority discovery required"
     assert "You claimed `ComponentAxisAuthority`" in str(discovery["summary"])
     assert "found 0 candidate authority proof path" in str(discovery["summary"])
-    assert "Do not invent `ComponentAxisAuthority`" in str(
-        discovery["codemod_patch"]
-    )
+    assert "Do not invent `ComponentAxisAuthority`" in str(discovery["codemod_patch"])
     evidence = cast(tuple[dict[str, object], ...], discovery["evidence"])
     assert evidence[0]["file_path"] == "<semantic-refactor-gate>"
     assert evidence[0]["symbol"] == "ComponentAxisAuthority"
@@ -22447,6 +22631,46 @@ def test_private_reference_context_signatures_ignore_unconsumed_class_declaratio
             runtime_detectors.UnreferencedPrivateFunctionDetector,
         )
     }
+
+
+def test_private_reference_context_computes_each_signature_facet_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _render(value):\n"
+        "    return str(value)\n"
+        "\n"
+        "class Renderer:\n"
+        "    def render(self, value):\n"
+        "        return _render(value)\n",
+    )
+    context = runtime_detectors.PrivateReferenceDetectorContext(
+        tuple(parse_python_modules(tmp_path))
+    )
+    facet_type = runtime_detectors.SurfaceFunctionPrivateReferenceSignatureFacet
+    original_value = facet_type.value
+    value_calls = 0
+
+    def counted_value(self, context):
+        nonlocal value_calls
+        value_calls += 1
+        return original_value(self, context)
+
+    monkeypatch.setattr(facet_type, "value", counted_value)
+    first = runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(
+        context,
+        (facet_type,),
+    )
+    second = runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(
+        context,
+        (facet_type,),
+    )
+
+    assert first == second
+    assert value_calls == 1
 
 
 def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
@@ -23357,7 +23581,7 @@ def test_detects_empty_nominal_authority_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass ComponentAxisAuthority:\n    pass\n\n\nclass PayloadResolver:\n    \"\"\"No ownership edge.\"\"\"\n\n    pass\n",
+        '\nclass ComponentAxisAuthority:\n    pass\n\n\nclass PayloadResolver:\n    """No ownership edge."""\n\n    pass\n',
     )
     findings = tuple(
         finding
@@ -23398,10 +23622,7 @@ def test_potential_semantic_authority_graph_computes_outcomes_and_relations(
     authority = graph.nodes_by_class_name["ComponentAxisAuthority"]
     policy = graph.nodes_by_class_name["ComponentAxisPolicy"]
     resolver = graph.nodes_by_class_name["ComponentAxisResolver"]
-    relation_kinds = {
-        relation.relation_kind.value
-        for relation in graph.relations
-    }
+    relation_kinds = {relation.relation_kind.value for relation in graph.relations}
     authority_property_kinds = {
         property_item.property_kind.value
         for property_item in graph.properties_for("ComponentAxisAuthority")

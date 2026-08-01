@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import ast
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
 import hashlib
@@ -21,6 +20,15 @@ from .ast_tools import (
     ParsedModule,
     PythonSourcePathPolicy,
     python_source_paths_for_roots,
+    structural_ast_hash,
+)
+from .cache_checkout import (
+    CacheCheckoutPathError,
+    checkout_relative_path,
+    inferred_checkout_roots,
+    presentation_root_texts,
+    rebase_checkout_path,
+    semantic_root_labels,
 )
 from .detectors import DetectorConfig, IssueDetector
 from .finding_counts import FindingSummary
@@ -37,7 +45,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 15
+    version: int = 16
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -100,8 +108,7 @@ class CachedFindingPayloadShape:
             if not isinstance(item.evidence, tuple):
                 return None
             if any(
-                not isinstance(evidence, SourceLocation)
-                for evidence in item.evidence
+                not isinstance(evidence, SourceLocation) for evidence in item.evidence
             ):
                 return None
             findings.append(item)
@@ -229,6 +236,20 @@ class SourceFileSignature:
     def from_path(cls, path: Path) -> "SourceFileSignature":
         return cls(
             path=str(path.resolve()),
+            source_hash=hashlib.blake2s(
+                path.read_bytes(),
+                digest_size=16,
+            ).hexdigest(),
+        )
+
+    @classmethod
+    def from_path_in_roots(
+        cls,
+        path: Path,
+        roots: tuple[Path | str, ...],
+    ) -> "SourceFileSignature":
+        return cls(
+            path=checkout_relative_path(path, roots),
             source_hash=hashlib.blake2s(
                 path.read_bytes(),
                 digest_size=16,
@@ -380,9 +401,29 @@ def _module_source_signature_from_path(
         return SourceFileSignature(path_text, _text_hash(path_text))
 
 
+_SEMANTIC_MODULE_HASH_ATTRIBUTE = "_nominal_refactor_advisor_semantic_hash"
+
+
 def semantic_module_hash(module: ParsedModule) -> str:
-    payload = ast.dump(module.module, include_attributes=True)
-    return hashlib.blake2s(payload.encode("utf-8"), digest_size=16).hexdigest()
+    if module.semantic_hash is not None:
+        return module.semantic_hash
+    cached_hash = getattr(
+        module.module,
+        _SEMANTIC_MODULE_HASH_ATTRIBUTE,
+        None,
+    )
+    if isinstance(cached_hash, str):
+        return cached_hash
+    semantic_hash = structural_ast_hash(
+        module.module,
+        include_attributes=True,
+    )
+    setattr(
+        module.module,
+        _SEMANTIC_MODULE_HASH_ATTRIBUTE,
+        semantic_hash,
+    )
+    return semantic_hash
 
 
 @dataclass(frozen=True)
@@ -395,9 +436,16 @@ class ModuleSourceSignature:
     source_hash: str
 
     @classmethod
-    def from_module(cls, module: ParsedModule) -> "ModuleSourceSignature":
+    def from_module(
+        cls,
+        module: ParsedModule,
+        roots: tuple[Path | str, ...] | None = None,
+    ) -> "ModuleSourceSignature":
+        effective_roots = (
+            inferred_checkout_roots((module.path,)) if roots is None else roots
+        )
         return cls(
-            str(module.path.resolve()),
+            checkout_relative_path(module.path, effective_roots),
             module.module_name,
             module.is_package_init,
             semantic_module_hash(module),
@@ -414,9 +462,18 @@ class GlobalModuleContextSignature:
     def from_modules(
         cls,
         modules: tuple[ParsedModule, ...],
+        roots: tuple[Path | str, ...] | None = None,
     ) -> "GlobalModuleContextSignature":
+        effective_roots = (
+            inferred_checkout_roots(tuple(module.path for module in modules))
+            if roots is None
+            else roots
+        )
         return cls(
-            tuple(ModuleSourceSignature.from_module(module) for module in modules)
+            tuple(
+                ModuleSourceSignature.from_module(module, effective_roots)
+                for module in modules
+            )
         )
 
     @property
@@ -506,6 +563,11 @@ class AnalysisCacheEntryContext:
     config: DetectorConfigSignature
     detector_registry: DetectorRegistrySignature
     python_version: tuple[int, int]
+    presentation_roots: tuple[str, ...] = field(
+        default=(),
+        compare=False,
+        repr=False,
+    )
     engine: AnalysisEngineSignature = field(
         default_factory=AnalysisEngineSignature.current
     )
@@ -518,6 +580,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
 
     roots: tuple[str, ...]
     source_files: tuple[SourceFileSignature, ...]
+    report_filter_roots: tuple[str, ...] = field(default=(), repr=False)
 
     @classmethod
     def from_roots(
@@ -527,6 +590,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         *,
         source_policy: PythonSourcePathPolicy | None = None,
         source_signature_cache: "SourceFileSignatureCache | None" = None,
+        report_roots: tuple[Path, ...] = (),
     ) -> "AnalysisCacheIdentity":
         source_paths = python_source_paths_for_roots(
             roots,
@@ -537,6 +601,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             source_paths,
             config,
             source_signature_cache=source_signature_cache,
+            report_roots=report_roots,
         )
 
     @classmethod
@@ -547,20 +612,33 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         *,
         source_signature_cache: "SourceFileSignatureCache | None" = None,
+        report_roots: tuple[Path, ...] = (),
     ) -> "AnalysisCacheIdentity":
         """Build an exact cache identity from an already discovered source set."""
 
-        source_files = (
+        absolute_source_files = (
             source_signature_cache.source_file_signatures(source_paths)
             if source_signature_cache is not None
             else tuple(SourceFileSignature.from_path(path) for path in source_paths)
+        )
+        source_files = tuple(
+            SourceFileSignature(
+                path=checkout_relative_path(source_file.path, roots),
+                source_hash=source_file.source_hash,
+            )
+            for source_file in absolute_source_files
         )
         return cls(
             config=detector_config_signature(config),
             detector_registry=DetectorRegistrySignature.current(),
             python_version=(sys.version_info.major, sys.version_info.minor),
-            roots=tuple(str(root.resolve()) for root in roots),
+            roots=semantic_root_labels(roots),
             source_files=source_files,
+            report_filter_roots=tuple(
+                checkout_relative_path(report_root, roots)
+                for report_root in report_roots
+            ),
+            presentation_roots=presentation_root_texts(roots),
         )
 
     @classmethod
@@ -569,24 +647,33 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         roots: tuple[Path, ...],
         modules: tuple[ParsedModule, ...],
         config: DetectorConfig,
+        *,
+        report_roots: tuple[Path, ...] = (),
     ) -> "AnalysisCacheIdentity":
         return cls(
             config=detector_config_signature(config),
             detector_registry=DetectorRegistrySignature.current(),
             python_version=(sys.version_info.major, sys.version_info.minor),
-            roots=tuple(str(root.resolve()) for root in roots),
+            roots=semantic_root_labels(roots),
             source_files=tuple(
                 SourceFileSignature(
-                    path=str(module.path.resolve()),
+                    path=checkout_relative_path(module.path, roots),
                     source_hash=semantic_module_hash(module),
                 )
                 for module in modules
             ),
+            report_filter_roots=tuple(
+                checkout_relative_path(report_root, roots)
+                for report_root in report_roots
+            ),
+            presentation_roots=presentation_root_texts(roots),
         )
 
     @property
     def cache_token(self) -> str:
         payload = repr(self).encode("utf-8")
+        if self.report_filter_roots:
+            payload += repr(self.report_filter_roots).encode("utf-8")
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
@@ -596,6 +683,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
 
     roots: tuple[str, ...]
     source_file_paths: tuple[str, ...]
+    report_filter_roots: tuple[str, ...] = field(default=(), repr=False)
 
     @classmethod
     def from_roots(
@@ -604,6 +692,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         *,
         source_policy: PythonSourcePathPolicy | None = None,
+        report_roots: tuple[Path, ...] = (),
     ) -> "AnalysisCacheFamilyIdentity":
         source_paths = python_source_paths_for_roots(
             roots,
@@ -613,6 +702,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
             roots,
             source_paths,
             config,
+            report_roots=report_roots,
         )
 
     @classmethod
@@ -621,6 +711,8 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
         roots: tuple[Path, ...],
         source_paths: tuple[Path, ...],
         config: DetectorConfig,
+        *,
+        report_roots: tuple[Path, ...] = (),
     ) -> "AnalysisCacheFamilyIdentity":
         """Build the stable cache family from known source file paths."""
 
@@ -628,8 +720,15 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
             config=detector_config_signature(config),
             detector_registry=DetectorRegistrySignature.current(),
             python_version=(sys.version_info.major, sys.version_info.minor),
-            roots=tuple(str(root.resolve()) for root in roots),
-            source_file_paths=tuple(str(path.resolve()) for path in source_paths),
+            roots=semantic_root_labels(roots),
+            source_file_paths=tuple(
+                checkout_relative_path(path, roots) for path in source_paths
+            ),
+            report_filter_roots=tuple(
+                checkout_relative_path(report_root, roots)
+                for report_root in report_roots
+            ),
+            presentation_roots=presentation_root_texts(roots),
         )
 
     @classmethod
@@ -644,11 +743,15 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
             source_file_paths=tuple(
                 source_file.path for source_file in identity.source_files
             ),
+            report_filter_roots=identity.report_filter_roots,
+            presentation_roots=identity.presentation_roots,
         )
 
     @property
     def cache_token(self) -> str:
         payload = repr(self).encode("utf-8")
+        if self.report_filter_roots:
+            payload += repr(self.report_filter_roots).encode("utf-8")
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
@@ -664,14 +767,21 @@ class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
         module: ParsedModule,
         config: DetectorConfig,
         detector_types: tuple[type[IssueDetector], ...],
+        presentation_roots: tuple[Path | str, ...] = (),
     ) -> "PerModuleAnalysisCacheIdentity":
+        effective_roots = (
+            presentation_roots
+            if presentation_roots
+            else inferred_checkout_roots((module.path,))
+        )
         return cls(
             config=detector_config_signature(config),
             detector_registry=DetectorRegistrySignature.from_detector_types(
                 detector_types
             ),
             python_version=(sys.version_info.major, sys.version_info.minor),
-            source_file=ModuleSourceSignature.from_module(module),
+            source_file=ModuleSourceSignature.from_module(module, effective_roots),
+            presentation_roots=presentation_root_texts(effective_roots),
         )
 
     @property
@@ -694,15 +804,22 @@ class ContextualModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         detector_type: type[IssueDetector],
         context_signature: str,
+        presentation_roots: tuple[Path | str, ...] = (),
     ) -> "ContextualModuleAnalysisCacheIdentity":
+        effective_roots = (
+            presentation_roots
+            if presentation_roots
+            else inferred_checkout_roots((module.path,))
+        )
         return cls(
             config=detector_config_signature(config),
             detector_registry=DetectorRegistrySignature.from_detector_types(
                 (detector_type,)
             ),
             python_version=(sys.version_info.major, sys.version_info.minor),
-            source_file=ModuleSourceSignature.from_module(module),
+            source_file=ModuleSourceSignature.from_module(module, effective_roots),
             context_signature=context_signature,
+            presentation_roots=presentation_root_texts(effective_roots),
         )
 
     @property
@@ -723,6 +840,7 @@ class GlobalDetectorAnalysisCacheIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         detector_type: type[IssueDetector],
         context_signature: str,
+        presentation_roots: tuple[Path | str, ...] = (),
     ) -> "GlobalDetectorAnalysisCacheIdentity":
         return cls(
             config=detector_config_signature(config),
@@ -731,6 +849,7 @@ class GlobalDetectorAnalysisCacheIdentity(AnalysisCacheEntryContext):
             ),
             python_version=(sys.version_info.major, sys.version_info.minor),
             context_signature=context_signature,
+            presentation_roots=presentation_root_texts(presentation_roots),
         )
 
     @property
@@ -773,9 +892,40 @@ class FindingCachePayloadValidationMixin:
     @property
     def has_valid_findings(self) -> bool:
         return (
-            CachedFindingPayloadShape.findings_from_sequence(self.findings)
-            is not None
+            CachedFindingPayloadShape.findings_from_sequence(self.findings) is not None
         )
+
+
+def _rebase_findings(
+    findings: tuple[RefactorFinding, ...],
+    source_roots: tuple[str, ...],
+    target_roots: tuple[str, ...],
+) -> tuple[RefactorFinding, ...]:
+    """Validate and relocate every concrete evidence path in cached findings."""
+
+    rebased_findings: list[RefactorFinding] = []
+    for finding in findings:
+        rebased_evidence: list[SourceLocation] = []
+        for location in finding.evidence:
+            if not location.file_path:
+                rebased_evidence.append(location)
+                continue
+            if not source_roots or not target_roots:
+                raise CacheCheckoutPathError(
+                    "cached finding has source evidence but no admitted roots"
+                )
+            rebased_evidence.append(
+                replace(
+                    location,
+                    file_path=rebase_checkout_path(
+                        location.file_path,
+                        source_roots,
+                        target_roots,
+                    ),
+                )
+            )
+        rebased_findings.append(replace(finding, evidence=tuple(rebased_evidence)))
+    return tuple(rebased_findings)
 
 
 @dataclass(frozen=True)
@@ -799,8 +949,18 @@ class AnalysisFindingCacheEntryPayload(FindingCachePayloadValidationMixin):
             ),
         )
 
-    def lookup(self) -> AnalysisCacheLookup:
-        return analysis_cache_lookup(AnalysisCacheStatus.HIT, self.findings)
+    def lookup(
+        self,
+        requested_identity: AnalysisCacheEntryIdentity,
+    ) -> AnalysisCacheLookup:
+        return analysis_cache_lookup(
+            AnalysisCacheStatus.HIT,
+            _rebase_findings(
+                self.findings,
+                self.identity.presentation_roots,
+                requested_identity.presentation_roots,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -827,8 +987,18 @@ class AnalysisPartialFindingCachePayload(FindingCachePayloadValidationMixin):
             ),
         )
 
-    def lookup(self) -> AnalysisCacheLookup:
-        return analysis_cache_lookup(AnalysisCacheStatus.PARTIAL, self.findings)
+    def lookup(
+        self,
+        requested_identity: AnalysisCacheIdentity,
+    ) -> AnalysisCacheLookup:
+        return analysis_cache_lookup(
+            AnalysisCacheStatus.PARTIAL,
+            _rebase_findings(
+                self.findings,
+                self.identity.presentation_roots,
+                requested_identity.presentation_roots,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -850,13 +1020,26 @@ class AnalysisLatestFindingCachePayload(FindingCachePayloadValidationMixin):
             cache_surface=cls.__name__,
         )
         return cls(
-            family_identity=AnalysisCacheFamilyIdentity.from_analysis_identity(identity),
+            family_identity=AnalysisCacheFamilyIdentity.from_analysis_identity(
+                identity
+            ),
             identity=identity,
             findings=finding_tuple,
         )
 
-    def lookup(self) -> AnalysisLatestFindingLookup:
-        return self.identity, self.findings
+    def lookup(
+        self,
+        requested_family_identity: AnalysisCacheFamilyIdentity,
+    ) -> AnalysisLatestFindingLookup:
+        target_identity = replace(
+            self.identity,
+            presentation_roots=requested_family_identity.presentation_roots,
+        )
+        return target_identity, _rebase_findings(
+            self.findings,
+            self.identity.presentation_roots,
+            requested_family_identity.presentation_roots,
+        )
 
 
 SerializableAnalysisCachePayload: TypeAlias = (
@@ -1006,7 +1189,12 @@ class AnalysisCacheStorage:
         family_identity: AnalysisCacheFamilyIdentity,
     ) -> AnalysisLatestFindingLookup | None:
         payload = self.load_latest_finding_payload(cache_path, family_identity)
-        return None if payload is None else payload.lookup()
+        if payload is None:
+            return None
+        try:
+            return payload.lookup(family_identity)
+        except CacheCheckoutPathError:
+            return None
 
     def store_serializable_payload_atomic(
         self,
@@ -1205,7 +1393,10 @@ class AnalysisFindingCache:
         payload = storage.load_finding_payload(storage.entry_path(identity), identity)
         if payload is None:
             return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        return payload.lookup()
+        try:
+            return payload.lookup(identity)
+        except CacheCheckoutPathError:
+            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
 
     def store(
         self,
@@ -1219,11 +1410,21 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return
-        payload = AnalysisFindingCacheEntryPayload.from_findings(
-            identity,
-            findings,
-        )
         try:
+            validated_findings = CachedFindingPayloadShape.require_findings(
+                findings,
+                cache_surface=AnalysisFindingCacheEntryPayload.__name__,
+            )
+            payload = AnalysisFindingCacheEntryPayload.from_findings(
+                identity,
+                list(
+                    _rebase_findings(
+                        validated_findings,
+                        identity.presentation_roots,
+                        identity.presentation_roots,
+                    )
+                ),
+            )
             storage.store_finding_payload_atomic(storage.entry_path(identity), payload)
             if isinstance(identity, AnalysisCacheIdentity):
                 self._store_summary(
@@ -1233,7 +1434,7 @@ class AnalysisFindingCache:
                 )
                 if latest_pointer_policy is AnalysisLatestPointerPolicy.UPDATE:
                     self._store_latest(identity, findings, storage)
-        except OSError:
+        except (OSError, CacheCheckoutPathError):
             return
 
     def load_summary(
@@ -1310,7 +1511,10 @@ class AnalysisFindingCache:
         )
         if payload is None:
             return analysis_cache_lookup(AnalysisCacheStatus.MISS)
-        return payload.lookup()
+        try:
+            return payload.lookup(identity)
+        except CacheCheckoutPathError:
+            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
 
     def store_partial(
         self,
@@ -1321,17 +1525,23 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return
-        payload = AnalysisPartialFindingCachePayload.from_findings(
-            identity,
-            previous_identity,
-            findings,
-        )
         try:
+            payload = AnalysisPartialFindingCachePayload.from_findings(
+                identity,
+                previous_identity,
+                list(
+                    _rebase_findings(
+                        tuple(findings),
+                        identity.presentation_roots,
+                        identity.presentation_roots,
+                    )
+                ),
+            )
             storage.store_partial_finding_payload_atomic(
                 storage.partial_path(identity),
                 payload,
             )
-        except OSError:
+        except (OSError, CacheCheckoutPathError):
             return
 
     def load_latest(

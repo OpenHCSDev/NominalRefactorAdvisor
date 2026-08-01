@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 import os
@@ -39,6 +39,7 @@ from .cache_paths import (
     default_analysis_cache_dir,
     semantic_descent_cache_sibling,
 )
+from .cache_checkout import absolute_checkout_path
 from .detectors import (
     ContextualGlobalCacheContract,
     ContextualModuleIssueDetector,
@@ -48,6 +49,7 @@ from .detectors import (
     SemanticDescentGraphIssueDetector,
     default_detectors,
 )
+from .deadline import scan_deadline_checkpoint
 from .finding_counts import FindingSummary
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
@@ -57,6 +59,8 @@ from .semantic_descent import (
     SemanticDescentGraphCache,
     SemanticDescentGraphCacheFamilyIdentity,
     SemanticDescentGraphCacheIdentity,
+    SemanticDescentGraphCacheLookup,
+    SemanticDescentModuleSignature,
     build_semantic_descent_graph,
 )
 
@@ -136,6 +140,14 @@ class AnalysisPathScope:
         return any(
             self._root_contains_path(root, candidate)
             for root in self.resolved_report_roots
+        )
+
+    def focused_context_signature(self, context_signature: str) -> str:
+        """Namespace contextual cache entries by their exact report boundary."""
+
+        return (
+            f"{context_signature}:report_roots="
+            f"{tuple(str(root) for root in self.resolved_report_roots)!r}"
         )
 
     @staticmethod
@@ -523,7 +535,10 @@ class ChangedSourcePathAuthority:
         }
         all_paths = previous_hashes.keys() | current_hashes.keys()
         return frozenset(
-            path
+            absolute_checkout_path(
+                path,
+                current_identity.presentation_roots,
+            )
             for path in all_paths
             if previous_hashes.get(path) != current_hashes.get(path)
         )
@@ -660,6 +675,12 @@ class SemanticDescentGraphCacheContext:
     roots: tuple[Path, ...] = ()
     source_policy: PythonSourcePathPolicy | None = None
     use_cache: bool = True
+    _loaded_graphs_by_token: dict[str, SemanticDescentGraph] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @classmethod
     def from_parse_cache(
@@ -684,8 +705,14 @@ class SemanticDescentGraphCacheContext:
         cache = self.graph_cache()
         if cache is None or not self.roots:
             return None
-        cached_graph = cache.load(self.root_identity()).graph
+        identity = self.root_identity()
+        cached_graph = self._loaded_graphs_by_token.get(identity.cache_token)
         if cached_graph is not None:
+            return cached_graph
+        lookup = cache.load(identity)
+        cached_graph = lookup.graph
+        if cached_graph is not None:
+            self._loaded_graphs_by_token[identity.cache_token] = cached_graph
             return cached_graph
         return None
 
@@ -693,9 +720,14 @@ class SemanticDescentGraphCacheContext:
         cache = self.graph_cache()
         if cache is None or not self.roots:
             return None
-        return cache.load_latest(
-            SemanticDescentGraphCacheFamilyIdentity.from_identity(self.root_identity())
-        ).graph
+        lookup = self._latest_compatible_lookup(cache, self.root_identity())
+        graph = lookup.graph
+        identity = getattr(lookup, "identity", None)
+        if graph is not None and isinstance(
+            identity, SemanticDescentGraphCacheIdentity
+        ):
+            self._loaded_graphs_by_token[identity.cache_token] = graph
+        return graph
 
     def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
         cached_graph = self.cached_graph()
@@ -704,13 +736,95 @@ class SemanticDescentGraphCacheContext:
         cache = self.graph_cache()
         if cache is None:
             return build_semantic_descent_graph(modules, use_cache=False)
-        identity = SemanticDescentGraphCacheIdentity.from_modules(tuple(modules))
+        identity = SemanticDescentGraphCacheIdentity.from_modules(
+            tuple(modules),
+            roots=self.roots,
+        )
         module_cache_graph = cache.load(identity).graph
         if module_cache_graph is not None:
             return module_cache_graph
+        latest_lookup = self._latest_compatible_lookup(cache, identity)
+        latest_graph = latest_lookup.graph
+        latest_identity = getattr(latest_lookup, "identity", None)
+        if latest_graph is not None and isinstance(
+            latest_identity, SemanticDescentGraphCacheIdentity
+        ):
+            previous_signatures_by_path = {
+                signature.path: signature for signature in latest_identity.modules
+            }
+            current_signatures_by_path = {
+                signature.path: signature for signature in identity.modules
+            }
+            if previous_signatures_by_path.keys() <= current_signatures_by_path.keys():
+                module_signatures = tuple(
+                    SemanticDescentModuleSignature.from_module(module, self.roots)
+                    for module in modules
+                )
+                changed_modules = tuple(
+                    module
+                    for module, module_signature in zip(
+                        modules,
+                        module_signatures,
+                        strict=True,
+                    )
+                    if previous_signatures_by_path.get(module_signature.path)
+                    != current_signatures_by_path[module_signature.path]
+                )
+                graph = latest_graph.overlay_modules(changed_modules)
+                cache.store(identity, graph)
+                self._loaded_graphs_by_token[identity.cache_token] = graph
+                return graph
         graph = build_semantic_descent_graph(modules, use_cache=False)
         cache.store(identity, graph)
+        self._loaded_graphs_by_token[identity.cache_token] = graph
         return graph
+
+    def _latest_compatible_lookup(
+        self,
+        cache: SemanticDescentGraphCache,
+        identity: SemanticDescentGraphCacheIdentity,
+    ) -> SemanticDescentGraphCacheLookup:
+        """Load the nearest cached source-set predecessor for this exact root.
+
+        Module-family latest pointers intentionally distinguish source-set
+        membership.  A newly added module therefore needs one bounded fallback
+        within this root-specific cache directory so the graph overlay can add
+        that module instead of rebuilding the entire repository graph.
+        """
+
+        exact_family_lookup = cache.load_latest(
+            SemanticDescentGraphCacheFamilyIdentity.from_identity(identity)
+        )
+        if exact_family_lookup.graph is not None or cache.storage_root is None:
+            return exact_family_lookup
+        current_paths = frozenset(module.path for module in identity.modules)
+        compatible_identities: list[SemanticDescentGraphCacheIdentity] = []
+        for latest_path in cache.storage_root.glob("latest-*.pickle"):
+            payload = cache._load_payload(latest_path)
+            if payload is None:
+                continue
+            candidate = payload.get("identity")
+            if not isinstance(candidate, SemanticDescentGraphCacheIdentity):
+                continue
+            if (
+                candidate.schema != identity.schema
+                or candidate.implementation != identity.implementation
+                or candidate.python_version != identity.python_version
+            ):
+                continue
+            candidate_paths = frozenset(module.path for module in candidate.modules)
+            if candidate_paths <= current_paths:
+                compatible_identities.append(candidate)
+        if not compatible_identities:
+            return exact_family_lookup
+        nearest_identity = max(
+            compatible_identities,
+            key=lambda candidate: (
+                len(candidate.modules),
+                candidate.cache_token,
+            ),
+        )
+        return cache.load(nearest_identity.relocated_to(identity.presentation_roots))
 
     def graph_cache(self) -> SemanticDescentGraphCache | None:
         if not self.use_cache or self.storage_root is None:
@@ -770,6 +884,7 @@ class AnalysisCacheIdentityAuthority:
     source_policy: PythonSourcePathPolicy | None = None
     source_signature_cache: SourceFileSignatureCache | None = None
     source_paths: tuple[Path, ...] | None = None
+    report_roots: tuple[Path, ...] = ()
 
     def cache_identity(self) -> AnalysisCacheIdentity:
         if self.source_paths is not None:
@@ -778,12 +893,14 @@ class AnalysisCacheIdentityAuthority:
                 self.source_paths,
                 self.config,
                 source_signature_cache=self.source_signature_cache,
+                report_roots=self.report_roots,
             )
         return AnalysisCacheIdentity.from_roots(
             self.roots,
             self.config,
             source_policy=self.source_policy,
             source_signature_cache=self.source_signature_cache,
+            report_roots=self.report_roots,
         )
 
     def family_identity(
@@ -808,6 +925,7 @@ class AnalysisCacheResolutionAuthority:
         source_policy: PythonSourcePathPolicy | None,
         source_paths: tuple[Path, ...] | None,
         semantic_descent_source: SemanticDescentGraphAnalysisSource,
+        report_scope: AnalysisPathScope | None,
     ) -> None:
         self._roots = roots
         self._modules = modules
@@ -818,14 +936,38 @@ class AnalysisCacheResolutionAuthority:
         self._source_policy = source_policy
         self._source_paths = source_paths
         self._semantic_descent_source = semantic_descent_source
+        self._report_scope = report_scope
 
     @property
     def cache_result(self) -> CachedAnalysisResult:
+        if self._report_scope is not None and self._report_scope.has_report_filter:
+            return replace(
+                self._cache_result,
+                findings=self._report_scope.filter_findings(
+                    self._cache_result.findings
+                ),
+            )
         return self._cache_result
 
     def analyze_uncached(
         self, cache_status: AnalysisCacheStatus
     ) -> CachedAnalysisResult:
+        if self._report_scope is not None and self._report_scope.has_report_filter:
+            result = IncrementalAnalysisCacheResolver(
+                cache_identity=AnalysisCacheIdentity.from_modules(
+                    self._roots,
+                    tuple(self._modules),
+                    self._config,
+                    report_roots=self._report_scope.report_roots,
+                ),
+                modules=self._modules,
+                config=self._config,
+                analysis_cache=AnalysisFindingCache(None),
+                analysis_workers=self._analysis_workers,
+                semantic_descent_source=self._semantic_descent_source,
+                report_scope=self._report_scope,
+            ).result()
+            return CachedAnalysisResult(result.findings, cache_status)
         return CachedAnalysisResult(
             analyze_modules(
                 self._modules,
@@ -837,14 +979,67 @@ class AnalysisCacheResolutionAuthority:
         )
 
     def analyze_and_store_miss(self) -> CachedAnalysisResult:
+        analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
+        report_roots = (
+            () if self._report_scope is None else self._report_scope.report_roots
+        )
+        semantic_cache_identity = AnalysisCacheIdentity.from_modules(
+            self._roots,
+            tuple(self._modules),
+            self._config,
+            report_roots=report_roots,
+        )
         cache_identity = AnalysisCacheIdentityAuthority(
             self._roots,
             self._config,
             self._source_policy,
-            AnalysisFindingCache(self._analysis_cache_dir).source_signature_cache(),
+            analysis_cache.source_signature_cache(),
             self._source_paths,
+            report_roots,
         ).cache_identity()
-        analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
+        if self._report_scope is not None and self._report_scope.has_report_filter:
+            unscoped_semantic_identity = AnalysisCacheIdentity.from_modules(
+                self._roots,
+                tuple(self._modules),
+                self._config,
+            )
+            unscoped_cache_lookup = analysis_cache.load(unscoped_semantic_identity)
+            if unscoped_cache_lookup.status is AnalysisCacheStatus.HIT:
+                findings = self._report_scope.filter_findings(
+                    unscoped_cache_lookup.findings
+                )
+                self._store_aggregate_findings(
+                    analysis_cache,
+                    cache_identity,
+                    semantic_cache_identity,
+                    findings,
+                )
+                return CachedAnalysisResult(
+                    findings,
+                    AnalysisCacheStatus.HIT,
+                    cache_identity=cache_identity,
+                )
+            incremental_result = IncrementalAnalysisCacheResolver(
+                cache_identity=semantic_cache_identity,
+                modules=self._modules,
+                config=self._config,
+                analysis_cache=analysis_cache,
+                analysis_workers=self._analysis_workers,
+                semantic_descent_source=self._semantic_descent_source,
+                report_scope=self._report_scope,
+            ).result()
+            findings = incremental_result.findings
+            self._store_aggregate_findings(
+                analysis_cache,
+                cache_identity,
+                semantic_cache_identity,
+                findings,
+            )
+            return CachedAnalysisResult(
+                findings,
+                incremental_result.cache_status,
+                cache_identity=cache_identity,
+            )
         with analysis_cache.rebuild_lease(cache_identity) as rebuild_lease:
             if rebuild_lease.cached_lookup is not None:
                 return CachedAnalysisResult(
@@ -852,11 +1047,6 @@ class AnalysisCacheResolutionAuthority:
                     AnalysisCacheStatus.HIT,
                     cache_identity=cache_identity,
                 )
-            semantic_cache_identity = AnalysisCacheIdentity.from_modules(
-                self._roots,
-                tuple(self._modules),
-                self._config,
-            )
             semantic_cache_lookup = analysis_cache.load(semantic_cache_identity)
             if semantic_cache_lookup.status is AnalysisCacheStatus.HIT:
                 findings = list(semantic_cache_lookup.findings)
@@ -876,17 +1066,33 @@ class AnalysisCacheResolutionAuthority:
                 semantic_descent_source=self._semantic_descent_source,
             ).result()
             findings = incremental_result.findings
-            analysis_cache.store(cache_identity, findings)
-            if semantic_cache_identity != cache_identity:
-                analysis_cache.store(
-                    semantic_cache_identity,
-                    findings,
-                    latest_pointer_policy=AnalysisLatestPointerPolicy.PRESERVE,
-                )
+            self._store_aggregate_findings(
+                analysis_cache,
+                cache_identity,
+                semantic_cache_identity,
+                findings,
+            )
             return CachedAnalysisResult(
                 findings,
                 incremental_result.cache_status,
                 cache_identity=cache_identity,
+            )
+
+    @staticmethod
+    def _store_aggregate_findings(
+        analysis_cache: AnalysisFindingCache,
+        cache_identity: AnalysisCacheIdentity,
+        semantic_cache_identity: AnalysisCacheIdentity,
+        findings: list[RefactorFinding],
+    ) -> None:
+        """Publish raw/latest and semantic aggregate identities consistently."""
+
+        analysis_cache.store(cache_identity, findings)
+        if semantic_cache_identity != cache_identity:
+            analysis_cache.store(
+                semantic_cache_identity,
+                findings,
+                latest_pointer_policy=AnalysisLatestPointerPolicy.PRESERVE,
             )
 
 
@@ -910,6 +1116,7 @@ class IncrementalAnalysisCacheResolver:
         analysis_cache: AnalysisFindingCache,
         analysis_workers: int,
         semantic_descent_source: SemanticDescentGraphAnalysisSource,
+        report_scope: AnalysisPathScope | None = None,
     ) -> None:
         self._cache_identity = cache_identity
         self._modules = modules
@@ -917,6 +1124,7 @@ class IncrementalAnalysisCacheResolver:
         self._analysis_cache = analysis_cache
         self._analysis_workers = analysis_workers
         self._semantic_descent_source = semantic_descent_source
+        self._report_scope = report_scope
         self._detector_types = default_detector_types_for_analysis()
         self._detector_partition = DetectorTypePartition.from_detector_types(
             self._detector_types
@@ -939,7 +1147,11 @@ class IncrementalAnalysisCacheResolver:
             detector_types=self._detector_types,
         )
         return IncrementalAnalysisResult(
-            findings=findings,
+            findings=(
+                findings
+                if self._report_scope is None
+                else self._report_scope.filter_findings(findings)
+            ),
             cache_status=self._combined_cache_status(
                 per_module_findings.cache_status,
                 contextual_module_findings.cache_status,
@@ -964,11 +1176,12 @@ class IncrementalAnalysisCacheResolver:
         hit_count = 0
         missing_modules: list[ParsedModule] = []
         missing_identities: list[PerModuleAnalysisCacheIdentity] = []
-        for module in self._modules:
+        for module in self._local_detector_modules():
             identity = PerModuleAnalysisCacheIdentity.from_module(
                 module,
                 self._config,
                 self._detector_partition.per_module_detector_types,
+                self._cache_identity.presentation_roots,
             )
             cache_lookup = self._analysis_cache.load(identity)
             if cache_lookup.status is AnalysisCacheStatus.HIT:
@@ -1038,21 +1251,28 @@ class IncrementalAnalysisCacheResolver:
         hit_count = 0
         module_context = tuple(self._modules)
         for detector_type in self._detector_partition.contextual_module_detector_types:
+            scan_deadline_checkpoint("contextual_module_signature")
             if not issubclass(detector_type, ContextualModuleIssueDetector):
                 raise TypeError(
                     f"{detector_type.__name__} declares contextual-module caching "
                     "without inheriting ContextualModuleIssueDetector"
                 )
             detector = detector_type()
-            context_signature = detector_type.context_signature(
-                module_context, self._config
-            )
-            for module in self._modules:
+            # The repository semantic-source token is a conservative context
+            # identity for every contextual-module detector.  Detector and
+            # config identity remain separate fields in the shard key.  This
+            # lets cache lookup happen before constructing detector-specific
+            # whole-repository projections; those projections are now built
+            # only on an actual local shard miss.
+            context_signature = self._global_detector_context_signature()
+            for module in self._local_detector_modules():
+                scan_deadline_checkpoint("contextual_module_detection")
                 identity = ContextualModuleAnalysisCacheIdentity.from_module_context(
                     module,
                     self._config,
                     detector_type,
                     context_signature,
+                    self._cache_identity.presentation_roots,
                 )
                 cache_lookup = self._analysis_cache.load(identity)
                 if cache_lookup.status is AnalysisCacheStatus.HIT:
@@ -1072,6 +1292,16 @@ class IncrementalAnalysisCacheResolver:
         )
         return IncrementalAnalysisResult(findings, cache_status)
 
+    def _local_detector_modules(self) -> list[ParsedModule]:
+        scope = self._report_scope
+        if scope is None or not scope.has_report_filter:
+            return self._modules
+        return [
+            module
+            for module in self._modules
+            if scope.includes_report_path(module.path)
+        ]
+
     def _global_findings(self) -> IncrementalAnalysisResult:
         if not self._detector_partition.has_global_detectors:
             return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
@@ -1086,6 +1316,7 @@ class IncrementalAnalysisCacheResolver:
                 self._config,
                 detector_type,
                 context_signature,
+                self._cache_identity.presentation_roots,
             )
             cache_lookup = self._analysis_cache.load(identity)
             if cache_lookup.status is AnalysisCacheStatus.HIT:
@@ -1127,34 +1358,109 @@ class IncrementalAnalysisCacheResolver:
         hit_count = 0
         module_context = tuple(self._modules)
         for detector_type in self._detector_partition.contextual_global_detector_types:
+            detector_label = (
+                detector_type.effective_detector_id() or detector_type.__qualname__
+            )
+            scan_deadline_checkpoint(f"contextual_global_cache_lookup:{detector_label}")
             if not issubclass(detector_type, ContextualGlobalCacheContract):
                 raise TypeError(
                     f"{detector_type.__name__} declares contextual-global caching "
                     "without inheriting ContextualGlobalCacheContract"
                 )
-            context_signature = detector_type.context_signature(
-                module_context, self._config
+            detector = detector_type()
+            semantic_detector = isinstance(
+                detector,
+                SemanticDescentGraphIssueDetector,
             )
+            # A repository semantic-source token is an exact, conservative
+            # identity for every contextual-global detector.  Resolve the cache
+            # with it before constructing a detector-specific whole-repository
+            # projection: those projections can take seconds each and are only
+            # useful when the detector shard is actually missing.
+            context_signature = self._global_detector_context_signature()
+            focused_semantic_detector = (
+                self._report_scope is not None
+                and self._report_scope.has_report_filter
+                and semantic_detector
+            )
+            if focused_semantic_detector:
+                context_signature = self._report_scope.focused_context_signature(
+                    context_signature
+                )
             identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
                 self._config,
                 detector_type,
                 context_signature,
+                self._cache_identity.presentation_roots,
             )
             cache_lookup = self._analysis_cache.load(identity)
             if cache_lookup.status is AnalysisCacheStatus.HIT:
                 hit_count += 1
                 findings.extend(cache_lookup.findings)
                 continue
-            detector = detector_type()
-            if isinstance(detector, SemanticDescentGraphIssueDetector):
-                detector_findings = detector._collect_findings_from_graph(
-                    self._semantic_descent_context_graph(),
-                    self._modules,
-                    self._config,
+            scan_deadline_checkpoint(f"contextual_global_prepare:{detector_label}")
+            prepared_analysis = (
+                None
+                if semantic_detector
+                else detector.prepare_analysis(module_context, self._config)
+            )
+            detector_context_signature = (
+                detector_type.context_signature(module_context, self._config)
+                if prepared_analysis is None
+                else prepared_analysis.context_signature
+            )
+            if focused_semantic_detector:
+                detector_context_signature = (
+                    self._report_scope.focused_context_signature(
+                        detector_context_signature
+                    )
                 )
+            detector_identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
+                self._config,
+                detector_type,
+                detector_context_signature,
+                self._cache_identity.presentation_roots,
+            )
+            if detector_identity != identity:
+                detector_cache_lookup = self._analysis_cache.load(detector_identity)
+                if detector_cache_lookup.status is AnalysisCacheStatus.HIT:
+                    hit_count += 1
+                    detector_findings = list(detector_cache_lookup.findings)
+                    self._analysis_cache.store(identity, detector_findings)
+                    findings.extend(detector_findings)
+                    continue
+            if semantic_detector:
+                scan_deadline_checkpoint(
+                    f"contextual_global_detection:{detector_label}"
+                )
+                if focused_semantic_detector:
+                    detector_findings = detector._collect_focused_findings_from_graph(
+                        self._semantic_descent_context_graph(),
+                        self._modules,
+                        self._config,
+                        includes_path=(self._report_scope.includes_report_path),
+                    )
+                else:
+                    detector_findings = detector._collect_findings_from_graph(
+                        self._semantic_descent_context_graph(),
+                        self._modules,
+                        self._config,
+                    )
             else:
-                detector_findings = detector.detect(self._modules, self._config)
+                scan_deadline_checkpoint(
+                    f"contextual_global_detection:{detector_label}"
+                )
+                if prepared_analysis is None:
+                    raise RuntimeError(
+                        "contextual-global detector preparation disappeared"
+                    )
+                detector_findings = prepared_analysis.findings()
             self._analysis_cache.store(identity, detector_findings)
+            if detector_identity != identity:
+                self._analysis_cache.store(
+                    detector_identity,
+                    detector_findings,
+                )
             findings.extend(detector_findings)
 
         cache_status = (
@@ -1163,6 +1469,7 @@ class IncrementalAnalysisCacheResolver:
         return IncrementalAnalysisResult(findings, cache_status)
 
     def _semantic_descent_context_graph(self) -> SemanticDescentGraph:
+        scan_deadline_checkpoint("semantic_descent_context_graph")
         if self._semantic_descent_graph is None:
             self._semantic_descent_graph = (
                 self._semantic_descent_source.graph_for_modules(self._modules)
@@ -1173,7 +1480,8 @@ class IncrementalAnalysisCacheResolver:
         if self._global_module_context_signature is None:
             self._global_module_context_signature = (
                 GlobalModuleContextSignature.from_modules(
-                    tuple(self._modules)
+                    tuple(self._modules),
+                    self._cache_identity.presentation_roots,
                 ).cache_token
             )
         return self._global_module_context_signature
@@ -1250,18 +1558,35 @@ def analyze_modules_with_cache(
     analysis_workers: int = 1,
     source_policy: PythonSourcePathPolicy | None = None,
     semantic_descent_source: SemanticDescentGraphAnalysisSource | None = None,
+    report_scope: AnalysisPathScope | None = None,
 ) -> CachedAnalysisResult:
     """Run detector analysis with a persistent finding cache when configured."""
 
     config = config or DetectorConfig()
     source_paths = tuple(module.path for module in modules)
-    cache_result = load_analysis_cache_for_roots(
-        roots,
-        config,
-        analysis_cache_dir=analysis_cache_dir,
-        source_policy=source_policy,
-        source_paths=source_paths,
-    )
+    if report_scope is not None and report_scope.has_report_filter:
+        focused_cache_identity = AnalysisCacheIdentity.from_modules(
+            roots,
+            tuple(modules),
+            config,
+            report_roots=report_scope.report_roots,
+        )
+        focused_cache_lookup = AnalysisFindingCache(analysis_cache_dir).load(
+            focused_cache_identity
+        )
+        cache_result = CachedAnalysisResult(
+            list(focused_cache_lookup.findings),
+            focused_cache_lookup.status,
+            cache_identity=focused_cache_identity,
+        )
+    else:
+        cache_result = load_analysis_cache_for_roots(
+            roots,
+            config,
+            analysis_cache_dir=analysis_cache_dir,
+            source_policy=source_policy,
+            source_paths=source_paths,
+        )
     authority = AnalysisCacheResolutionAuthority(
         roots=roots,
         modules=modules,
@@ -1274,6 +1599,7 @@ def analyze_modules_with_cache(
         semantic_descent_source=(
             semantic_descent_source or SemanticDescentGraphAnalysisSource()
         ),
+        report_scope=report_scope,
     )
     return AnalysisCacheStatusStrategy.for_status(cache_result.cache_status).result(
         authority
@@ -1287,6 +1613,7 @@ def load_analysis_cache_for_roots(
     analysis_cache_dir: Path | None = None,
     source_policy: PythonSourcePathPolicy | None = None,
     source_paths: tuple[Path, ...] | None = None,
+    report_roots: tuple[Path, ...] = (),
 ) -> CachedAnalysisResult:
     """Load detector findings from persistent cache without parsed modules."""
 
@@ -1299,6 +1626,7 @@ def load_analysis_cache_for_roots(
         source_policy,
         AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
         source_paths,
+        report_roots,
     )
     cache_identity = identity_authority.cache_identity()
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
@@ -1333,6 +1661,7 @@ def load_analysis_summary_for_roots(
     *,
     analysis_cache_dir: Path | None = None,
     source_policy: PythonSourcePathPolicy | None = None,
+    report_roots: tuple[Path, ...] = (),
 ) -> FindingSummary | None:
     """Load count-only detector findings from persistent cache."""
 
@@ -1344,6 +1673,7 @@ def load_analysis_summary_for_roots(
         config,
         source_policy,
         AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
+        report_roots=report_roots,
     )
     cache_identity = identity_authority.cache_identity()
     summary_lookup = AnalysisFindingCache(analysis_cache_dir).load_summary(
@@ -1401,6 +1731,7 @@ class CachedPathAnalysisRequest(ParseCacheDirectory):
     parse_workers: int
     analysis_workers: int
     source_policy: PythonSourcePathPolicy | None
+    report_roots: tuple[Path, ...] = ()
     reuse_policy: FastCacheReusePolicy = FastCacheReusePolicy.EXACT_ONLY
     semantic_descent_source: SemanticDescentGraphAnalysisSource = field(
         default_factory=SemanticDescentGraphAnalysisSource
@@ -1439,6 +1770,7 @@ class FastCachedPathAnalysisAuthority:
             self._request.config,
             analysis_cache_dir=self._request.analysis_cache_dir,
             source_policy=self._request.source_policy,
+            report_roots=self._request.report_roots,
         )
 
     def _load_cache_result(self) -> CachedAnalysisResult:
@@ -1447,6 +1779,7 @@ class FastCachedPathAnalysisAuthority:
             self._request.config,
             analysis_cache_dir=self._request.analysis_cache_dir,
             source_policy=self._request.source_policy,
+            report_roots=self._request.report_roots,
         )
 
     def _can_reuse_previous(self, cache_result: CachedAnalysisResult) -> bool:
@@ -1481,8 +1814,10 @@ class FastCachedPathAnalysisAuthority:
             cache_result.cache_identity,
             cache_result.previous_cache_identity,
         )
-        partial_detector_selection = EvidenceLocalPartialDetectorSelection.from_detector_types(
-            default_detector_types_for_analysis()
+        partial_detector_selection = (
+            EvidenceLocalPartialDetectorSelection.from_detector_types(
+                default_detector_types_for_analysis()
+            )
         )
         rerun_detector_types = partial_detector_selection.rerun_detector_family
         reuse_authority = EvidenceLocalFindingReuseAuthority(rerun_detector_types)
@@ -1534,7 +1869,7 @@ class FastCachedPathAnalysisAuthority:
         changed_modules = self._changed_modules(changed_paths)
         if not changed_modules:
             return []
-        return analyze_detector_types(
+        findings = analyze_detector_types(
             changed_modules,
             self._request.config,
             detector_types=detector_types,
@@ -1544,6 +1879,12 @@ class FastCachedPathAnalysisAuthority:
             ),
             detector_type_minimum_auto_work_items=4,
         )
+        if not self._request.report_roots:
+            return findings
+        return AnalysisPathScope(
+            analysis_roots=self._request.roots,
+            report_roots=self._request.report_roots,
+        ).filter_findings(findings)
 
     def _changed_modules(self, changed_paths: frozenset[str]) -> list[ParsedModule]:
         modules: list[ParsedModule] = []

@@ -13,7 +13,7 @@ import os
 import re
 import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property, lru_cache
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 
@@ -29,6 +29,7 @@ from ..class_index import (
 )
 from ..codemod import CancelableCompositionSignal, detect_cancelable_composition_signals
 from ..collection_algebra import sorted_tuple
+from ..deadline import scan_deadline_checkpoint
 from ..factorization import (
     FactorizationEngine,
     FactorizationLattice,
@@ -2597,9 +2598,7 @@ class GeneratedBoundarySemanticConstantAuthority:
         detector: IssueDetector,
         modules: list[ParsedModule],
     ) -> list[RefactorFinding]:
-        sites = tuple(
-            site for module in modules for site in cls.module_sites(module)
-        )
+        sites = tuple(site for module in modules for site in cls.module_sites(module))
         keys = tuple(sorted({site.key for site in sites}))
         return [
             finding
@@ -2675,7 +2674,9 @@ class GeneratedBoundarySemanticConstantAuthority:
         sites: tuple[GeneratedBoundarySemanticConstantSite, ...],
     ) -> RefactorFinding | None:
         matching_sites = tuple(site for site in sites if site.key == key)
-        generated_sites = tuple(site for site in matching_sites if site.generated_boundary)
+        generated_sites = tuple(
+            site for site in matching_sites if site.generated_boundary
+        )
         runtime_sites = tuple(
             site for site in matching_sites if not site.generated_boundary
         )
@@ -3376,14 +3377,13 @@ def _role_surface_members_by_type_name(
 ) -> dict[str, tuple[str, ...]]:
     surfaces: dict[str, set[str]] = defaultdict(set)
     for module in modules:
-        for node in ast.walk(module.module):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            members = _declared_class_surface_members(node)
-            if len(members) == 0:
-                continue
-            surfaces[node.name].update(members)
-            surfaces[f"{module.module_name}.{node.name}"].update(members)
+        scan_deadline_checkpoint("contextual_role_surface_index")
+        module_index = PrivateReferenceModuleIndex.from_module(module)
+        for (
+            type_name,
+            members,
+        ) in module_index.class_surface_members_by_type_name.items():
+            surfaces[type_name].update(members)
     return {
         type_name: tuple(sorted(members))
         for type_name, members in sorted(surfaces.items())
@@ -4604,17 +4604,12 @@ class RepeatedBuilderCallDetector(
         lambda item: (item.file_path, item.lineno, item.symbol)
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[BuilderCallShape],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        builders = sorted_tuple(
-            (
-                builder
-                for module in modules
-                for builder in _module_builder_call_shapes(module)
-            ),
-            key=lambda item: (item.file_path, item.lineno, item.symbol),
-        )
+        builders = tuple(candidates)
         findings: list[RefactorFinding] = []
         findings.extend(self._exact_mapping_findings(builders, config))
         findings.extend(self._single_owner_family_findings(builders, config))
@@ -4841,17 +4836,12 @@ class DeclaredFieldExtractionFanoutDetector(
         lambda item: (item.file_path, item.lineno, item.owner_symbol)
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[DeclaredFieldExtractionSite],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        sites = sorted_tuple(
-            (
-                site
-                for module in modules
-                for site in _declared_field_extraction_sites(module)
-            ),
-            key=lambda item: (item.file_path, item.lineno, item.owner_symbol),
-        )
+        sites = tuple(candidates)
         if len(sites) < config.min_declared_field_extraction_sites:
             return []
         site_by_object_name = {site.object_name: site for site in sites}
@@ -7294,6 +7284,9 @@ def _static_payload_sink_kinds(
 class ReferenceCountIndex:
     total_counts: Counter[str]
     function_counts_by_id: dict[int, Counter[str]]
+    projected_function_counts_by_id: dict[int, Counter[str]] = field(
+        default_factory=dict
+    )
 
     @staticmethod
     def symbol_counts(
@@ -7329,12 +7322,24 @@ class ReferenceCountIndex:
 
     @classmethod
     def from_modules(cls, modules: Sequence[ParsedModule]) -> "ReferenceCountIndex":
+        return cls.from_private_reference_module_indexes(
+            tuple(PrivateReferenceModuleIndex.from_module(module) for module in modules)
+        )
+
+    @classmethod
+    def from_private_reference_module_indexes(
+        cls,
+        module_indexes: Sequence["PrivateReferenceModuleIndex"],
+    ) -> "ReferenceCountIndex":
         total_counts: Counter[str] = Counter()
-        for module in modules:
-            total_counts.update(cls.symbol_counts(module.module))
+        projected_function_counts_by_id: dict[int, Counter[str]] = {}
+        for module_index in module_indexes:
+            total_counts.update(module_index.total_counts)
+            projected_function_counts_by_id.update(module_index.function_counts_by_id)
         return cls(
             total_counts=total_counts,
             function_counts_by_id={},
+            projected_function_counts_by_id=projected_function_counts_by_id,
         )
 
     def reference_count_outside_function(
@@ -7345,8 +7350,178 @@ class ReferenceCountIndex:
             self.function_counts_by_id[function_key] = Counter()
         function_counts = self.function_counts_by_id[function_key]
         if symbol_name not in function_counts:
-            function_counts[symbol_name] = self.symbol_count(function, symbol_name)
+            projected_counts = self.projected_function_counts_by_id.get(function_key)
+            function_counts[symbol_name] = (
+                projected_counts[symbol_name]
+                if projected_counts is not None
+                else self.symbol_count(function, symbol_name)
+            )
         return self.total_counts[symbol_name] - function_counts[symbol_name]
+
+
+@dataclass(frozen=True)
+class PrivateReferenceIndexedFunction:
+    """One surface function projected once for every private-reference facet."""
+
+    module_name: str
+    qualname: str
+    function: _RuntimeFunctionNode
+    symbol_references: frozenset[str]
+    body_digest: str
+
+
+@dataclass(frozen=True)
+class PrivateReferenceModuleIndex:
+    """Single-traversal module index shared by private-reference detectors."""
+
+    total_counts: Counter[str]
+    function_counts_by_id: dict[int, Counter[str]]
+    functions: tuple[PrivateReferenceIndexedFunction, ...]
+    class_surface_members_by_type_name: dict[str, tuple[str, ...]]
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> "PrivateReferenceModuleIndex":
+        return _private_reference_module_index(
+            module.module,
+            module.module_name,
+            module.semantic_hash,
+        )
+
+
+@lru_cache(maxsize=None)
+def _private_reference_module_index(
+    module_node: ast.Module,
+    module_name: str,
+    semantic_hash: str | None,
+) -> PrivateReferenceModuleIndex:
+    surface_functions = SurfaceFunctionIndex.from_module(module_node).functions
+    surface_qualnames_by_id = {
+        id(function): qualname for qualname, function in surface_functions
+    }
+    total_counts: Counter[str] = Counter()
+    function_counts_by_id = {
+        id(function): Counter() for _, function in surface_functions
+    }
+    symbol_references_by_function_id = {
+        id(function): set() for _, function in surface_functions
+    }
+    class_surface_members_by_type_name: dict[str, set[str]] = defaultdict(set)
+    visited_node_count = 0
+
+    def symbol_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    def visit(
+        node: ast.AST,
+        *,
+        counted_function_ids: tuple[int, ...] = (),
+        reference_function_id: int | None = None,
+    ) -> None:
+        nonlocal visited_node_count
+        visited_node_count += 1
+        if visited_node_count % 2048 == 0:
+            scan_deadline_checkpoint("contextual_private_reference_index")
+        name = symbol_name(node)
+        if name is not None:
+            total_counts[name] += 1
+            for function_id in counted_function_ids:
+                function_counts_by_id[function_id][name] += 1
+            if reference_function_id is not None:
+                symbol_references_by_function_id[reference_function_id].add(name)
+
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_id = id(node)
+            is_surface_function = function_id in surface_qualnames_by_id
+            nested_counted_ids = (
+                (*counted_function_ids, function_id)
+                if is_surface_function
+                else counted_function_ids
+            )
+            for field_name, value in ast.iter_fields(node):
+                if field_name == "body":
+                    body = _trim_docstring_body(value)
+                    omitted_prefix_count = len(value) - len(body)
+                    for statement in value[:omitted_prefix_count]:
+                        visit(
+                            statement,
+                            counted_function_ids=nested_counted_ids,
+                        )
+                    for statement in body:
+                        visit(
+                            statement,
+                            counted_function_ids=nested_counted_ids,
+                            reference_function_id=(
+                                function_id if is_surface_function else None
+                            ),
+                        )
+                    continue
+                if isinstance(value, ast.AST):
+                    visit(
+                        value,
+                        counted_function_ids=nested_counted_ids,
+                    )
+                elif isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            visit(
+                                item,
+                                counted_function_ids=nested_counted_ids,
+                            )
+            return
+
+        if isinstance(node, ast.ClassDef):
+            declared_members = _declared_class_surface_members(node)
+            if declared_members:
+                class_surface_members_by_type_name[node.name].update(declared_members)
+                class_surface_members_by_type_name[f"{module_name}.{node.name}"].update(
+                    declared_members
+                )
+            for child in ast.iter_child_nodes(node):
+                visit(
+                    child,
+                    counted_function_ids=counted_function_ids,
+                )
+            return
+
+        for child in ast.iter_child_nodes(node):
+            visit(
+                child,
+                counted_function_ids=counted_function_ids,
+                reference_function_id=reference_function_id,
+            )
+
+    visit(module_node)
+    module_semantic_digest = semantic_hash or _stable_text_digest(
+        ast.dump(module_node, include_attributes=False)
+    )
+    return PrivateReferenceModuleIndex(
+        total_counts=total_counts,
+        function_counts_by_id=function_counts_by_id,
+        functions=tuple(
+            PrivateReferenceIndexedFunction(
+                module_name=module_name,
+                qualname=qualname,
+                function=function,
+                symbol_references=frozenset(
+                    symbol_references_by_function_id[id(function)]
+                ),
+                body_digest=_stable_text_digest(
+                    f"{module_semantic_digest}\0{qualname}"
+                ),
+            )
+            for qualname, function in surface_functions
+        ),
+        class_surface_members_by_type_name={
+            type_name: tuple(sorted(members))
+            for type_name, members in class_surface_members_by_type_name.items()
+        },
+    )
 
 
 def _embedded_static_payload_candidates(
@@ -7618,10 +7793,10 @@ def _unreferenced_private_function_candidates(
     reference_index = reference_index or ReferenceCountIndex.from_modules(
         contract_modules
     )
-    derived_candidate_collector_contract_names = (
-        derived_candidate_collector_contract_names
-        or DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(contract_modules)
-    )
+    if derived_candidate_collector_contract_names is None:
+        derived_candidate_collector_contract_names = (
+            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(contract_modules)
+        )
     for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         if "." in qualname:
             continue
@@ -7810,15 +7985,26 @@ class PrivateHelperCallGraph:
 
     @classmethod
     def from_modules(cls, modules: Sequence[ParsedModule]) -> "PrivateHelperCallGraph":
+        return cls.from_private_reference_module_indexes(
+            tuple(PrivateReferenceModuleIndex.from_module(module) for module in modules)
+        )
+
+    @classmethod
+    def from_private_reference_module_indexes(
+        cls,
+        module_indexes: Sequence[PrivateReferenceModuleIndex],
+    ) -> "PrivateHelperCallGraph":
         callers_by_symbol: dict[str, set[str]] = {}
         functions_by_qualname: _RuntimeFunctionsByQualname = {}
-        for module in modules:
-            for qualname, function in SurfaceFunctionIndex.from_module(
-                module.module
-            ).functions:
-                functions_by_qualname[qualname] = function
-                for symbol_name in _function_symbol_references(function):
-                    callers_by_symbol.setdefault(symbol_name, set()).add(qualname)
+        for module_index in module_indexes:
+            for indexed_function in module_index.functions:
+                functions_by_qualname[indexed_function.qualname] = (
+                    indexed_function.function
+                )
+                for symbol_name in indexed_function.symbol_references:
+                    callers_by_symbol.setdefault(symbol_name, set()).add(
+                        indexed_function.qualname
+                    )
         return cls(
             caller_symbols_by_name={
                 symbol_name: sorted_tuple(caller_symbols)
@@ -7856,8 +8042,16 @@ class PrivateReferenceDetectorContext:
     modules: tuple[ParsedModule, ...]
 
     @cached_property
+    def module_indexes(self) -> tuple[PrivateReferenceModuleIndex, ...]:
+        return tuple(
+            PrivateReferenceModuleIndex.from_module(module) for module in self.modules
+        )
+
+    @cached_property
     def reference_index(self) -> ReferenceCountIndex:
-        return ReferenceCountIndex.from_modules(self.modules)
+        return ReferenceCountIndex.from_private_reference_module_indexes(
+            self.module_indexes
+        )
 
     @cached_property
     def derived_candidate_collector_contract_names(self) -> frozenset[str]:
@@ -7865,7 +8059,33 @@ class PrivateReferenceDetectorContext:
 
     @cached_property
     def private_helper_call_graph(self) -> PrivateHelperCallGraph:
-        return PrivateHelperCallGraph.from_modules(self.modules)
+        return PrivateHelperCallGraph.from_private_reference_module_indexes(
+            self.module_indexes
+        )
+
+    @cached_property
+    def surface_function_signature_rows(
+        self,
+    ) -> tuple["PrivateReferenceFunctionSignatureRow", ...]:
+        return tuple(
+            sorted(
+                (
+                    PrivateReferenceFunctionSignatureRow(
+                        qualified_function_name=(
+                            f"{indexed_function.module_name}."
+                            f"{indexed_function.qualname}"
+                        ),
+                        body_digest=indexed_function.body_digest,
+                    )
+                    for module_index in self.module_indexes
+                    for indexed_function in module_index.functions
+                ),
+                key=lambda row: (
+                    row.qualified_function_name,
+                    row.body_digest,
+                ),
+            )
+        )
 
     @cached_property
     def class_index(self) -> ClassFamilyIndex:
@@ -7874,6 +8094,24 @@ class PrivateReferenceDetectorContext:
     @cached_property
     def signature(self) -> "PrivateReferenceDetectorContextSignature":
         return PrivateReferenceDetectorContextSignature.from_context(self)
+
+    @cached_property
+    def signature_facet_rows_by_type(
+        self,
+    ) -> dict[
+        type["PrivateReferenceContextSignatureFacet"],
+        "PrivateReferenceContextSignatureFacetRow",
+    ]:
+        return {}
+
+    def signature_facet_row(
+        self,
+        facet_type: type["PrivateReferenceContextSignatureFacet"],
+    ) -> "PrivateReferenceContextSignatureFacetRow":
+        rows = self.signature_facet_rows_by_type
+        if facet_type not in rows:
+            rows[facet_type] = facet_type().row(self)
+        return rows[facet_type]
 
 
 @dataclass(frozen=True)
@@ -7910,6 +8148,42 @@ class PrivateReferenceContextSignatureFacetRow:
 
 
 PrivateReferenceContextSignatureFacetValue: TypeAlias = Hashable
+PrivateReferenceStableDigestValue: TypeAlias = (
+    str | int | tuple["PrivateReferenceStableDigestValue", ...]
+)
+
+
+def _stable_framed_rows_digest(
+    domain: str,
+    rows: Iterable[tuple[PrivateReferenceStableDigestValue, ...]],
+) -> str:
+    """Digest ordered structural rows without materializing their repr."""
+
+    digest = hashlib.blake2s(digest_size=16)
+
+    def update_bytes(marker: bytes, payload: bytes) -> None:
+        digest.update(marker)
+        digest.update(len(payload).to_bytes(8, byteorder="big"))
+        digest.update(payload)
+
+    def update_value(value: PrivateReferenceStableDigestValue) -> None:
+        if isinstance(value, str):
+            update_bytes(b"s", value.encode("utf-8"))
+            return
+        if isinstance(value, int):
+            update_bytes(b"i", str(value).encode("ascii"))
+            return
+        digest.update(b"t")
+        digest.update(len(value).to_bytes(8, byteorder="big"))
+        for item in value:
+            update_value(item)
+
+    update_bytes(b"d", domain.encode("utf-8"))
+    for row in rows:
+        digest.update(b"r")
+        update_value(row)
+    digest.update(b"e")
+    return digest.hexdigest()
 
 
 class PrivateReferenceContextSignatureFacet(ABC, metaclass=AutoRegisterMeta):
@@ -7953,8 +8227,11 @@ class PrivateReferenceContextSignatureFacet(ABC, metaclass=AutoRegisterMeta):
             raise TypeError(f"{type(self).__name__} has no facet_name")
         return PrivateReferenceContextSignatureFacetRow(
             facet_name=facet_name,
-            value_digest=_stable_text_digest(repr(self.value(context))),
+            value_digest=self.value_digest(context),
         )
+
+    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
+        return _stable_text_digest(repr(self.value(context)))
 
     @abstractmethod
     def value(
@@ -7981,6 +8258,24 @@ class ReferenceCountPrivateReferenceSignatureFacet(
                 context.reference_index.total_counts.items()
             )
         )
+
+    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
+        if type(self).value is not _REFERENCE_COUNT_PRIVATE_REFERENCE_VALUE:
+            return super().value_digest(context)
+        return _stable_framed_rows_digest(
+            self.facet_name or type(self).__qualname__,
+            (
+                (_stable_text_digest(symbol_name), count)
+                for symbol_name, count in sorted(
+                    context.reference_index.total_counts.items()
+                )
+            ),
+        )
+
+
+_REFERENCE_COUNT_PRIVATE_REFERENCE_VALUE = (
+    ReferenceCountPrivateReferenceSignatureFacet.value
+)
 
 
 class DerivedCollectorContractPrivateReferenceSignatureFacet(
@@ -8012,45 +8307,79 @@ class PrivateHelperCallEdgePrivateReferenceSignatureFacet(
             )
         )
 
+    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
+        if type(self).value is not _PRIVATE_HELPER_CALL_EDGE_PRIVATE_REFERENCE_VALUE:
+            return super().value_digest(context)
+        return _stable_framed_rows_digest(
+            self.facet_name or type(self).__qualname__,
+            (
+                (function_name, caller_symbols)
+                for function_name, caller_symbols in sorted(
+                    context.private_helper_call_graph.caller_symbols_by_name.items()
+                )
+            ),
+        )
+
+
+_PRIVATE_HELPER_CALL_EDGE_PRIVATE_REFERENCE_VALUE = (
+    PrivateHelperCallEdgePrivateReferenceSignatureFacet.value
+)
+
 
 class SurfaceFunctionPrivateReferenceSignatureFacet(
     PrivateReferenceContextSignatureFacet
 ):
     facet_name = "surface_functions"
-    context_property_names = ("private_helper_call_graph",)
+    context_property_names = ("surface_function_signature_rows",)
 
     def value(
         self, context: PrivateReferenceDetectorContext
     ) -> tuple[PrivateReferenceFunctionSignatureRow, ...]:
-        return tuple(
-            PrivateReferenceFunctionSignatureRow(
-                qualified_function_name=qualified_function_name,
-                body_digest=body_digest,
-            )
-            for qualified_function_name, body_digest in sorted(
-                (
+        return context.surface_function_signature_rows
+
+    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
+        if type(self).value is not _SURFACE_FUNCTION_PRIVATE_REFERENCE_VALUE:
+            return super().value_digest(context)
+        return _stable_framed_rows_digest(
+            self.facet_name or type(self).__qualname__,
+            (
+                (qualified_function_name, body_digest)
+                for qualified_function_name, body_digest in sorted(
                     (
-                        f"{module.module_name}.{qualname}",
-                        _stable_text_digest(
-                            ast.dump(function, include_attributes=False)
-                        ),
+                        (
+                            f"{indexed_function.module_name}."
+                            f"{indexed_function.qualname}",
+                            indexed_function.body_digest,
+                        )
+                        for module_index in context.module_indexes
+                        for indexed_function in module_index.functions
                     )
-                    for module in context.modules
-                    for qualname, function in SurfaceFunctionIndex.from_module(
-                        module.module
-                    ).functions
                 )
-            )
+            ),
         )
+
+
+_SURFACE_FUNCTION_PRIVATE_REFERENCE_VALUE = (
+    SurfaceFunctionPrivateReferenceSignatureFacet.value
+)
 
 
 class ClassFamilyPrivateReferenceSignatureFacet(PrivateReferenceContextSignatureFacet):
     facet_name = "class_family"
     context_property_names = ("class_index",)
 
-    def value(
-        self, context: PrivateReferenceDetectorContext
-    ) -> tuple[PrivateReferenceClassFamilySignatureRow, ...]:
+    @staticmethod
+    def _structural_rows(
+        context: PrivateReferenceDetectorContext,
+    ) -> Iterable[
+        tuple[
+            str,
+            str,
+            tuple[str, ...],
+            tuple[str, ...],
+            tuple[str, ...],
+        ]
+    ]:
         caller_owner_names = sorted_tuple(
             {
                 owner_name
@@ -8080,19 +8409,50 @@ class ClassFamilyPrivateReferenceSignatureFacet(PrivateReferenceContextSignature
                 )
             )
         )
-        return tuple(
-            PrivateReferenceClassFamilySignatureRow(
-                symbol=symbol,
-                simple_name=indexed_class.simple_name,
-                declared_base_names=indexed_class.declared_base_names,
-                resolved_base_symbols=indexed_class.resolved_base_symbols,
-                ancestor_symbols=context.class_index.ancestor_symbols(symbol),
+        return (
+            (
+                symbol,
+                indexed_class.simple_name,
+                indexed_class.declared_base_names,
+                indexed_class.resolved_base_symbols,
+                context.class_index.ancestor_symbols(symbol),
             )
             for symbol, indexed_class in sorted(
                 context.class_index.classes_by_symbol.items()
             )
             if symbol in relevant_symbols
         )
+
+    def value(
+        self, context: PrivateReferenceDetectorContext
+    ) -> tuple[PrivateReferenceClassFamilySignatureRow, ...]:
+        return tuple(
+            PrivateReferenceClassFamilySignatureRow(
+                symbol=symbol,
+                simple_name=simple_name,
+                declared_base_names=declared_base_names,
+                resolved_base_symbols=resolved_base_symbols,
+                ancestor_symbols=ancestor_symbols,
+            )
+            for (
+                symbol,
+                simple_name,
+                declared_base_names,
+                resolved_base_symbols,
+                ancestor_symbols,
+            ) in self._structural_rows(context)
+        )
+
+    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
+        if type(self).value is not _CLASS_FAMILY_PRIVATE_REFERENCE_VALUE:
+            return super().value_digest(context)
+        return _stable_framed_rows_digest(
+            self.facet_name or type(self).__qualname__,
+            self._structural_rows(context),
+        )
+
+
+_CLASS_FAMILY_PRIVATE_REFERENCE_VALUE = ClassFamilyPrivateReferenceSignatureFacet.value
 
 
 PrivateReferenceContextSignatureFacets: TypeAlias = tuple[
@@ -8116,7 +8476,9 @@ class PrivateReferenceDetectorContextSignature:
         facet_types = (
             facets or PrivateReferenceContextSignatureFacet.registered_facet_types()
         )
-        return cls(tuple(facet_type().row(context) for facet_type in facet_types))
+        return cls(
+            tuple(context.signature_facet_row(facet_type) for facet_type in facet_types)
+        )
 
     @property
     def token(self) -> str:
@@ -8251,11 +8613,9 @@ def _private_helper_caller_owner_names(
 def _private_helper_unique_class_symbol(
     class_index: ClassFamilyIndex, owner_name: str
 ) -> str | None:
-    symbols = tuple(
-        symbol
-        for symbol, indexed_class in class_index.classes_by_symbol.items()
-        if indexed_class.qualname == owner_name
-        or indexed_class.simple_name == owner_name.rsplit(".", 1)[-1]
+    symbols = class_index.symbols_by_simple_name.get(
+        owner_name.rsplit(".", 1)[-1],
+        (),
     )
     if len(symbols) == 1:
         return symbols[0]
@@ -8973,10 +9333,10 @@ def _private_helper_semantic_cluster_candidates(
     private_helper_call_graph: PrivateHelperCallGraph | None = None,
 ) -> tuple[PrivateHelperSemanticClusterCandidate, ...]:
     modules = reference_modules or (module,)
-    derived_candidate_collector_contract_names = (
-        derived_candidate_collector_contract_names
-        or DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
-    )
+    if derived_candidate_collector_contract_names is None:
+        derived_candidate_collector_contract_names = (
+            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
+        )
     private_helper_call_graph = (
         private_helper_call_graph or PrivateHelperCallGraph.from_modules(modules)
     )
@@ -9088,10 +9448,10 @@ def _non_nominal_private_helper_candidates(
     class_index: ClassFamilyIndex | None = None,
 ) -> tuple[NonNominalPrivateHelperCandidate, ...]:
     modules = reference_modules or (module,)
-    derived_candidate_collector_contract_names = (
-        derived_candidate_collector_contract_names
-        or DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
-    )
+    if derived_candidate_collector_contract_names is None:
+        derived_candidate_collector_contract_names = (
+            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
+        )
     private_helper_call_graph = (
         private_helper_call_graph or PrivateHelperCallGraph.from_modules(modules)
     )
@@ -11918,13 +12278,13 @@ class PublicApiPrivateDelegateFamilyDetector(
 
     candidate_collector = staticmethod(_public_api_private_delegate_family_candidates)
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[PublicApiPrivateDelegateFamilyCandidate],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for candidate in _public_api_private_delegate_family_candidates(
-            modules, config
-        ):
+        for candidate in candidates:
             wrapper_summary = ", ".join(candidate.wrapper_names[:4])
             external_module_summary = ", ".join(candidate.external_module_names[:3])
             findings.append(

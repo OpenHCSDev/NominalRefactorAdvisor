@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+import pytest
+
+from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.analysis_cache import GlobalModuleContextSignature
+from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.deadline import (
+    ScanDeadline,
+    ScanDeadlineExceeded,
+    enforce_scan_deadline,
+)
+
+
+def _write_module(root: Path, relative_path: str, source: str) -> None:
+    path = root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+
+
+def test_cross_module_preparation_reuses_exact_candidate_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate_calls = 0
+    finding_calls = 0
+    candidates = ("first", "second")
+
+    def counted_candidates(self, modules, config):
+        nonlocal candidate_calls
+        del self, modules, config
+        candidate_calls += 1
+        return candidates
+
+    def counted_findings(self, prepared_candidates, config):
+        nonlocal finding_calls
+        del self, config
+        finding_calls += 1
+        assert tuple(prepared_candidates) == candidates
+        return []
+
+    detector_type = runtime_detectors.RepeatedBuilderCallDetector
+    monkeypatch.setattr(detector_type, "_candidate_items", counted_candidates)
+    monkeypatch.setattr(detector_type, "_findings_for_candidates", counted_findings)
+
+    prepared = detector_type().prepare_analysis((), DetectorConfig())
+    assert candidate_calls == 1
+    assert prepared.findings() == []
+    assert candidate_calls == 1
+    assert finding_calls == 1
+
+
+def test_grouped_shape_preparation_reuses_exact_shape_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection_calls = 0
+    finding_calls = 0
+    shapes = ("alpha", "beta")
+
+    def counted_shapes(self, modules, config):
+        nonlocal collection_calls
+        del self, modules, config
+        collection_calls += 1
+        return list(shapes)
+
+    def group_key(self, shape):
+        del self
+        return shape
+
+    def counted_findings(self, prepared_shapes, config):
+        nonlocal finding_calls
+        del self, config
+        finding_calls += 1
+        assert tuple(prepared_shapes) == shapes
+        return []
+
+    detector_type = runtime_detectors.RepeatedExportDictDetector
+    monkeypatch.setattr(detector_type, "_collect_shapes", counted_shapes)
+    monkeypatch.setattr(detector_type, "_group_key", group_key)
+    monkeypatch.setattr(detector_type, "_findings_for_shapes", counted_findings)
+
+    prepared = detector_type().prepare_analysis((), DetectorConfig())
+    assert collection_calls == 1
+    assert prepared.findings() == []
+    assert collection_calls == 1
+    assert finding_calls == 1
+
+
+def test_private_reference_module_index_matches_independent_ast_projections(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/sample.py",
+        '''
+"""module docs"""
+
+DECORATOR_NAME = "decorator-literal"
+
+
+def decorate(function):
+    return function
+
+
+@decorate
+def _outer(value: "argument-literal") -> "return-literal":
+    """function docs"""
+    local = value.member
+
+    def nested():
+        return "nested-literal", local
+
+    class Nested:
+        field = "class-literal"
+
+    return nested(), Nested
+
+
+class Owner:
+    @decorate
+    def _method(self, row):
+        return row.member, "_method"
+''',
+    )
+    module = tuple(parse_python_modules(tmp_path))[0]
+    runtime_detectors._private_reference_module_index.cache_clear()
+
+    index = runtime_detectors.PrivateReferenceModuleIndex.from_module(module)
+    assert index.total_counts == runtime_detectors.ReferenceCountIndex.symbol_counts(
+        module.module
+    )
+
+    indexed_functions = {
+        id(indexed_function.function): indexed_function
+        for indexed_function in index.functions
+    }
+    for _, function in runtime_detectors.SurfaceFunctionIndex.from_module(
+        module.module
+    ).functions:
+        indexed_function = indexed_functions[id(function)]
+        assert index.function_counts_by_id[
+            id(function)
+        ] == runtime_detectors.ReferenceCountIndex.symbol_counts(function)
+        assert (
+            indexed_function.symbol_references
+            == runtime_detectors._function_symbol_references(function)
+        )
+        assert indexed_function.body_digest == runtime_detectors._stable_text_digest(
+            f"{module.semantic_hash}\0{indexed_function.qualname}"
+        )
+
+    assert index.class_surface_members_by_type_name == {
+        "Nested": ("field",),
+        "Owner": ("_method",),
+        "pkg.sample.Nested": ("field",),
+        "pkg.sample.Owner": ("_method",),
+    }
+
+
+def test_private_reference_facets_share_one_module_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/sample.py",
+        "\ndef _render(value):\n"
+        "    return str(value)\n"
+        "\n"
+        "class Renderer:\n"
+        "    def render(self, value):\n"
+        "        return _render(value)\n",
+    )
+    modules = tuple(parse_python_modules(tmp_path))
+    runtime_detectors._private_reference_module_index.cache_clear()
+    original_projection = runtime_detectors._private_reference_module_index
+    projection_calls = 0
+
+    def counted_projection(module, module_name, semantic_hash):
+        nonlocal projection_calls
+        projection_calls += 1
+        return original_projection(module, module_name, semantic_hash)
+
+    monkeypatch.setattr(
+        runtime_detectors,
+        "_private_reference_module_index",
+        counted_projection,
+    )
+    context = runtime_detectors.PrivateReferenceDetectorContext(modules)
+
+    runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(context)
+    runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(context)
+
+    assert projection_calls == len(modules)
+
+
+def test_role_surfaces_reuse_private_reference_module_projection(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/sample.py",
+        "\nclass Renderer:\n"
+        "    field: str\n"
+        "\n"
+        "    def render(self, value):\n"
+        "        return str(value)\n",
+    )
+    modules = tuple(parse_python_modules(tmp_path))
+    runtime_detectors._private_reference_module_index.cache_clear()
+    runtime_detectors._role_surface_members_by_type_name.cache_clear()
+
+    role_surfaces = runtime_detectors._role_surface_members_by_type_name(modules)
+    first_cache_state = runtime_detectors._private_reference_module_index.cache_info()
+    context = runtime_detectors.PrivateReferenceDetectorContext(modules)
+    runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(context)
+    second_cache_state = runtime_detectors._private_reference_module_index.cache_info()
+
+    assert role_surfaces == {
+        "Renderer": ("field", "render"),
+        "pkg.sample.Renderer": ("field", "render"),
+    }
+    assert first_cache_state.misses == len(modules)
+    assert second_cache_state.misses == first_cache_state.misses
+
+
+def test_contextual_projection_honors_expired_absolute_deadline(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/sample.py",
+        "\nclass Renderer:\n"
+        "    def render(self, value):\n"
+        "        return str(value)\n",
+    )
+    modules = tuple(parse_python_modules(tmp_path))
+    runtime_detectors._role_surface_members_by_type_name.cache_clear()
+
+    deadline = ScanDeadline.start(0.0)
+    with pytest.raises(
+        ScanDeadlineExceeded,
+        match="contextual_role_surface_index",
+    ):
+        with enforce_scan_deadline(deadline):
+            runtime_detectors._role_surface_members_by_type_name(modules)
+
+
+def test_repository_semantic_signature_changes_for_contextual_source_edit(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/sample.py", "\nVALUE = 'before'\n")
+    before_modules = tuple(parse_python_modules(tmp_path))
+    before = GlobalModuleContextSignature.from_modules(before_modules).cache_token
+
+    _write_module(tmp_path, "pkg/sample.py", "\nVALUE = 'after'\n")
+    after_modules = tuple(parse_python_modules(tmp_path))
+    after = GlobalModuleContextSignature.from_modules(after_modules).cache_token
+
+    assert after != before
+
+
+def test_empty_derived_contract_projection_is_not_recomputed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/sample.py",
+        "\ndef _helper(value):\n"
+        "    return str(value)\n"
+        "\ndef render(value):\n"
+        "    return _helper(value)\n",
+    )
+    modules = tuple(parse_python_modules(tmp_path))
+    context = runtime_detectors.PrivateReferenceDetectorContext(modules)
+    empty_contracts = context.derived_candidate_collector_contract_names
+    assert empty_contracts == frozenset()
+
+    monkeypatch.setattr(
+        runtime_detectors.DERIVED_CANDIDATE_COLLECTOR_CONTRACTS,
+        "names",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("empty cached contract projection was recomputed")
+        ),
+    )
+
+    runtime_detectors._unreferenced_private_function_candidates(
+        modules[0],
+        DetectorConfig(),
+        reference_modules=modules,
+        reference_index=context.reference_index,
+        derived_candidate_collector_contract_names=empty_contracts,
+    )
+    runtime_detectors._non_nominal_private_helper_candidates(
+        modules[0],
+        DetectorConfig(),
+        reference_modules=modules,
+        derived_candidate_collector_contract_names=empty_contracts,
+        private_helper_call_graph=context.private_helper_call_graph,
+        class_index=context.class_index,
+    )
+    runtime_detectors._private_helper_semantic_cluster_candidates(
+        modules[0],
+        DetectorConfig(),
+        reference_modules=modules,
+        derived_candidate_collector_contract_names=empty_contracts,
+        private_helper_call_graph=context.private_helper_call_graph,
+    )

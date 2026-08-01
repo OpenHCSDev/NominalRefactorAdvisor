@@ -11,9 +11,11 @@ from __future__ import annotations
 import ast
 import copy
 import hashlib
+import io
 import os
 import pickle
 import sys
+import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +31,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .collection_algebra import sorted_tuple
+from .deadline import scan_deadline_checkpoint
 from .observation_graph import (
     NominalWitnessGroup,
     ObservationCohort,
@@ -131,6 +134,7 @@ class AstParseCachePayload:
     source_signature: str
     python_version: tuple[int, int]
     module: ast.Module
+    semantic_hash: str | None = None
 
     def matches(
         self,
@@ -221,6 +225,100 @@ def _source_signature(source: str) -> str:
     return hashlib.blake2s(source.encode("utf-8"), digest_size=16).hexdigest()
 
 
+def semantic_python_source_hash(source: str) -> str:
+    """Hash significant lexical structure and source positions, not comments."""
+
+    digest = hashlib.blake2s(digest_size=16)
+    ignored_types = {tokenize.COMMENT, tokenize.NL, tokenize.ENDMARKER}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type in ignored_types:
+            continue
+        payload = (
+            f"{token.type}:{token.start[0]}:{token.start[1]}:"
+            f"{token.end[0]}:{token.end[1]}:{len(token.string)}:"
+            f"{token.string}"
+        ).encode("utf-8")
+        digest.update(len(payload).to_bytes(8, byteorder="big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def structural_ast_hash(
+    node: ast.AST,
+    *,
+    include_attributes: bool = True,
+) -> str:
+    """Hash an AST without constructing the aggregate ``ast.dump`` string."""
+
+    digest = hashlib.blake2s(digest_size=16)
+
+    def update_bytes(marker: bytes, payload: bytes) -> None:
+        digest.update(marker)
+        digest.update(len(payload).to_bytes(8, byteorder="big"))
+        digest.update(payload)
+
+    def update_value(value: object) -> None:
+        if isinstance(value, ast.AST):
+            update_bytes(b"n", type(value).__qualname__.encode("utf-8"))
+            for field_name in value._fields:
+                update_bytes(b"f", field_name.encode("utf-8"))
+                update_value(getattr(value, field_name, None))
+            if include_attributes:
+                for attribute_name in value._attributes:
+                    update_bytes(b"a", attribute_name.encode("utf-8"))
+                    update_value(getattr(value, attribute_name, None))
+            digest.update(b"e")
+            return
+        if isinstance(value, list):
+            digest.update(b"l")
+            digest.update(len(value).to_bytes(8, byteorder="big"))
+            for item in value:
+                update_value(item)
+            digest.update(b"e")
+            return
+        if isinstance(value, tuple):
+            digest.update(b"t")
+            digest.update(len(value).to_bytes(8, byteorder="big"))
+            for item in value:
+                update_value(item)
+            digest.update(b"e")
+            return
+        if value is None:
+            digest.update(b"0")
+            return
+        if value is Ellipsis:
+            digest.update(b".")
+            return
+        if isinstance(value, bool):
+            digest.update(b"b1" if value else b"b0")
+            return
+        if isinstance(value, int):
+            update_bytes(b"i", str(value).encode("ascii"))
+            return
+        if isinstance(value, float):
+            update_bytes(b"r", value.hex().encode("ascii"))
+            return
+        if isinstance(value, complex):
+            update_bytes(
+                b"c",
+                f"{value.real.hex()}:{value.imag.hex()}".encode("ascii"),
+            )
+            return
+        if isinstance(value, str):
+            update_bytes(b"s", value.encode("utf-8"))
+            return
+        if isinstance(value, bytes):
+            update_bytes(b"y", value)
+            return
+        raise TypeError(
+            "AST structural hashing encountered unsupported value "
+            f"{type(value).__qualname__}"
+        )
+
+    update_value(node)
+    return digest.hexdigest()
+
+
 def _cache_entry_path(cache_dir: Path, path: Path) -> Path:
     token = hashlib.blake2s(
         str(path.resolve()).encode("utf-8"), digest_size=16
@@ -233,7 +331,7 @@ def _load_cached_ast(
     source_signature: str,
     *,
     cache_dir: Path | None = None,
-) -> ast.Module | None:
+) -> AstParseCachePayload | None:
     if cache_dir is None:
         return None
     try:
@@ -259,13 +357,14 @@ def _load_cached_ast(
         return None
     if not payload.matches(path, path_stat, source_signature):
         return None
-    return payload.module
+    return payload
 
 
 def _write_cached_ast(
     path: Path,
     module: ast.Module,
     source_signature: str,
+    semantic_hash: str,
     *,
     cache_dir: Path | None = None,
 ) -> None:
@@ -284,6 +383,7 @@ def _write_cached_ast(
         source_signature=source_signature,
         python_version=(sys.version_info.major, sys.version_info.minor),
         module=module,
+        semantic_hash=semantic_hash,
     )
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -300,18 +400,28 @@ def _parse_source_module(
 ) -> ParsedModule:
     source = path.read_text(encoding="utf-8")
     source_signature = _source_signature(source)
-    module = (
+    cached_payload = (
         _load_cached_ast(path, source_signature, cache_dir=context.parse_cache_dir)
         if context.use_parse_cache
         else None
     )
-    if module is None:
+    semantic_hash = (
+        getattr(cached_payload, "semantic_hash", None)
+        if cached_payload is not None
+        else None
+    )
+    if cached_payload is None:
         module = ast.parse(source, filename=str(path))
+    else:
+        module = cached_payload.module
+    if semantic_hash is None:
+        semantic_hash = semantic_python_source_hash(source)
         if context.use_parse_cache:
             _write_cached_ast(
                 path,
                 module,
                 source_signature,
+                semantic_hash,
                 cache_dir=context.parse_cache_dir,
             )
     module_identity = PythonModulePathIdentity.from_path(
@@ -324,6 +434,7 @@ def _parse_source_module(
         is_package_init=module_identity.is_package_init,
         module=module,
         source=source,
+        semantic_hash=semantic_hash,
         family_cache_dir=context.collected_family_cache_dir,
     )
 
@@ -346,6 +457,7 @@ class ParsedModule:
     is_package_init: bool
     module: ast.Module
     source: str
+    semantic_hash: str | None = None
     family_cache_dir: Path | None = None
 
 
@@ -1308,7 +1420,11 @@ class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
 def _parse_module_roots(
     root_parser: "PythonModuleRootParser", paths: tuple[Path, ...]
 ) -> list[ParsedModule]:
-    return [_parse_source_module(path, context=root_parser) for path in paths]
+    modules: list[ParsedModule] = []
+    for path in paths:
+        scan_deadline_checkpoint("parse_python_module")
+        modules.append(_parse_source_module(path, context=root_parser))
+    return modules
 
 
 def _parse_module_roots_concurrently(
@@ -1331,6 +1447,12 @@ class PythonSourcePathPolicy:
     include_tests: bool = True
 
     def allows_directory_name(self, directory_name: str) -> bool:
+        # Hidden descendants are repository metadata, caches, or source-history
+        # snapshots rather than members of the active Python import surface.
+        # A hidden directory can still be scanned when it is itself passed as
+        # the root; this boundary only prunes it from a broader tree walk.
+        if directory_name.startswith("."):
+            return False
         if directory_name in _IGNORED_PYTHON_TREE_DIRS:
             return False
         if directory_name.endswith((".egg-info", ".dist-info")):

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import nominal_refactor_advisor.semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -39,9 +40,12 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
+    ConstructionAuthorityResolver,
+    PresentationAuthorityConstruction,
     PresentationProjectionIdOverlay,
     PresentationTokenRole,
     SemanticAuthorityKind,
+    SemanticMirrorResolver,
     PresentationProjectionKind,
     SemanticAuthorityMirrorPolicy,
     SemanticDescentGraphModuleOverlay,
@@ -84,6 +88,149 @@ def test_semantic_authority_mirror_policy_registry_covers_authority_kinds() -> N
     assert SemanticAuthorityMirrorPolicy.registered_authority_kinds() == frozenset(
         SemanticAuthorityKind
     )
+
+
+def test_construction_authority_materialization_indexes_each_method_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class AlphaState:\n"
+        "    value: int\n"
+        "    count: int\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class BetaState:\n"
+        "    value: int\n"
+        "    count: int\n"
+        "\n"
+        "class StateFactory:\n"
+        "    def state_build(self):\n"
+        "        return AlphaState(1, 2)\n"
+        "\n"
+        "class NoiseFactory:\n"
+        "    def noise_build(self):\n"
+        "        return BetaState(1, 2)\n",
+    )
+    graph = build_semantic_descent_graph(
+        parse_python_modules(tmp_path),
+        use_cache=False,
+    )
+    assert graph.class_index is not None
+    alpha_authority = next(
+        authority for authority in graph.authorities if authority.name == "AlphaState"
+    )
+    beta_authority = next(
+        authority for authority in graph.authorities if authority.name == "BetaState"
+    )
+    walked_method_names: list[str] = []
+    original_walk = semantic_descent_module.ast.walk
+
+    def counted_walk(node):
+        if isinstance(node, semantic_descent_module.ast.FunctionDef):
+            walked_method_names.append(node.name)
+        return original_walk(node)
+
+    monkeypatch.setattr(semantic_descent_module.ast, "walk", counted_walk)
+    resolver = ConstructionAuthorityResolver(
+        class_index=graph.class_index,
+        authorities=graph.authorities,
+        projection_construction_type_names=frozenset({"StateFactory"}),
+    )
+    construction = PresentationAuthorityConstruction("StateFactory", ())
+
+    for _ in range(5):
+        assert resolver.construction_type_materializes_authority(
+            construction,
+            alpha_authority,
+        )
+        assert not resolver.construction_type_materializes_authority(
+            construction,
+            beta_authority,
+        )
+
+    assert walked_method_names == ["state_build"]
+
+
+def test_constructed_dataclass_inverse_index_matches_pairwise_resolution(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class AlphaState:\n"
+        "    value: int\n"
+        "    count: int\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class BetaState:\n"
+        "    name: str\n"
+        "    enabled: bool\n"
+        "\n"
+        "class AlphaFactory:\n"
+        "    def build(self):\n"
+        "        return AlphaState(value=1, count=2)\n"
+        "\n"
+        "ROWS = (\n"
+        "    AlphaState(value=1, count=2),\n"
+        "    AlphaFactory(value=1, count=2),\n"
+        "    BetaState(name='beta', enabled=True),\n"
+        ")\n",
+    )
+    graph = build_semantic_descent_graph(
+        parse_python_modules(tmp_path),
+        use_cache=False,
+    )
+    assert graph.class_index is not None
+    resolver = SemanticMirrorResolver(
+        authorities=graph.authorities,
+        facts=graph.facts,
+        projections=graph.projections,
+        class_index=graph.class_index,
+    )
+
+    for projection in resolver.projections:
+        for construction in projection.owner_constructions:
+            pairwise_ids = frozenset(
+                authority.authority_id
+                for authority in resolver.authorities
+                if (
+                    resolver.construction_resolver.construction_type_is_authority_class(
+                        construction, authority
+                    )
+                    or resolver.construction_resolver.construction_type_materializes_authority(
+                        construction, authority
+                    )
+                )
+            )
+            assert (
+                resolver.construction_resolver.descended_authority_ids_for_construction_type(
+                    construction.type_name
+                )
+                == pairwise_ids
+            )
+
+        pairwise_constructed_ids = frozenset(
+            authority.authority_id
+            for authority in resolver.dataclass_descent.dataclass_authorities
+            if resolver.dataclass_descent.projection_owner_constructs_dataclass_authority(
+                projection,
+                authority,
+                resolver.fact_authority_index.facts_for_authority(
+                    authority.authority_id
+                ),
+            )
+        )
+        assert (
+            resolver.dataclass_descent.constructed_dataclass_authority_ids(projection)
+            == pairwise_constructed_ids
+        )
 
 
 def test_semantic_descent_graph_flags_manual_class_family_projection(
@@ -269,6 +416,77 @@ def test_semantic_mirror_detector_reports_authority_and_projection(
         "LoadStep='load'",
         "SaveStep='save'",
     )
+
+
+def test_semantic_mirror_focused_collection_filters_before_rendering(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "alpha.py"
+    target_path.write_text(
+        "class AlphaStep:\n"
+        "    pass\n"
+        "\n"
+        "class LoadAlphaStep(AlphaStep):\n"
+        "    step_id = 'load'\n"
+        "\n"
+        "class SaveAlphaStep(AlphaStep):\n"
+        "    step_id = 'save'\n"
+        "\n"
+        "ALPHA_STEPS = {'load': LoadAlphaStep, 'save': SaveAlphaStep}\n",
+        encoding="utf-8",
+    )
+    (package_root / "beta.py").write_text(
+        "class BetaStep:\n"
+        "    pass\n"
+        "\n"
+        "class LoadBetaStep(BetaStep):\n"
+        "    step_id = 'load'\n"
+        "\n"
+        "class SaveBetaStep(BetaStep):\n"
+        "    step_id = 'save'\n"
+        "\n"
+        "BETA_STEPS = {'load': LoadBetaStep, 'save': SaveBetaStep}\n",
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    graph = build_semantic_descent_graph(modules, use_cache=False)
+    detector = SemanticMirrorWithoutDescentDetector()
+    full_findings = detector._collect_findings_from_graph(
+        graph,
+        modules,
+        DetectorConfig(),
+    )
+    expected_findings = [
+        finding
+        for finding in full_findings
+        if any(
+            Path(evidence.file_path).resolve() == target_path.resolve()
+            for evidence in finding.evidence
+        )
+    ]
+    rendered_certificates = []
+    original_renderer = detector._finding_for_certificate
+
+    def counted_renderer(graph, certificate):
+        rendered_certificates.append(certificate)
+        return original_renderer(graph, certificate)
+
+    monkeypatch.setattr(detector, "_finding_for_certificate", counted_renderer)
+    focused_findings = detector._collect_focused_findings_from_graph(
+        graph,
+        modules,
+        DetectorConfig(),
+        includes_path=lambda path: path.resolve() == target_path.resolve(),
+    )
+
+    assert [item.stable_id for item in focused_findings] == [
+        item.stable_id for item in expected_findings
+    ]
+    assert len(rendered_certificates) == len(focused_findings)
+    assert len(rendered_certificates) < len(graph.certificates)
 
 
 def test_semantic_mirror_detector_uses_semantic_descent_context_signature(
@@ -2472,9 +2690,9 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert record.recipe_target_shape == "dataclass_payload_projection"
     assert record.semantic_repair_plan is not None
     assert record.semantic_repair_plan.repair_kind == "mapping"
-    assert tuple(operation.operation_kind().value for operation in recipe.operations) == (
-        "replace_text",
-    )
+    assert tuple(
+        operation.operation_kind().value for operation in recipe.operations
+    ) == ("replace_text",)
     assert "def payload_from_field_values(cls, **values)" in rewritten_source
     assert "**RefactorAction.payload_from_field_values(" in rewritten_source
     assert "kind=self.action.kind" in rewritten_source
@@ -2603,7 +2821,9 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert record.status.value == "planned"
     assert record.recipe_target_shape == "dataclass_payload_projection"
     assert simulation.is_clean is True
-    assert tuple(operation.operation_kind().value for operation in recipe.operations) == (
+    assert tuple(
+        operation.operation_kind().value for operation in recipe.operations
+    ) == (
         "ensure_import",
         "replace_text",
     )
@@ -2741,9 +2961,9 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     assert record.recipe_target_shape == "constructor_kwarg_carrier_projection"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert tuple(operation.operation_kind().value for operation in recipe.operations) == (
-        "replace_text",
-    )
+    assert tuple(
+        operation.operation_kind().value for operation in recipe.operations
+    ) == ("replace_text",)
     assert "SourceLineSpan(" in rewritten_source
     assert ".line_replacement(" in rewritten_source
     assert "start_line=insertion_line" in rewritten_source

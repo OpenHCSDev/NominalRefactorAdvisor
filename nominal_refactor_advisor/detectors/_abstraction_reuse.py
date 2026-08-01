@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -405,6 +406,7 @@ def _carrier_authority_surfaces(
     )
 
 
+@lru_cache(maxsize=None)
 def _package_root_name_for_path(file_path: str) -> str | None:
     path = Path(file_path)
     package_dirs: list[Path] = []
@@ -1247,12 +1249,14 @@ class AvailableAbstractionReuseDetector(
 
     candidate_collector = staticmethod(_available_abstraction_reuse_candidates)
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[AvailableAbstractionReuseCandidate],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _available_abstraction_reuse_candidates(modules):
+        for candidate in candidates:
             overlap_preview = ", ".join(candidate.overlap_atoms[:8])
             findings.append(
                 self.build_finding(
@@ -1307,12 +1311,14 @@ class AvailableCarrierReuseDetector(
 
     candidate_collector = staticmethod(_available_carrier_reuse_candidates)
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[AvailableCarrierReuseCandidate],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _available_carrier_reuse_candidates(modules):
+        for candidate in candidates:
             role_summary = ", ".join(candidate.shared_roles)
             findings.append(
                 self.build_finding(
@@ -1381,12 +1387,14 @@ class CarrierCompositionRetreatDetector(
 
     candidate_collector = staticmethod(_carrier_composition_retreat_candidates)
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[CarrierCompositionRetreatCandidate],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _carrier_composition_retreat_candidates(modules):
+        for candidate in candidates:
             findings.append(
                 self.build_finding(
                     (
@@ -1449,12 +1457,14 @@ class ParallelPrimitiveCarrierDetector(
 
     candidate_collector = staticmethod(_parallel_primitive_carrier_candidates)
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[ParallelPrimitiveCarrierCandidate],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _parallel_primitive_carrier_candidates(modules):
+        for candidate in candidates:
             bundles = candidate.bundles
             role_summary = ", ".join(candidate.semantic_roles)
             class_summary = ", ".join(bundle.class_name for bundle in bundles[:5])

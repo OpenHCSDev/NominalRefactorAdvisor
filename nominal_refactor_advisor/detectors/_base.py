@@ -143,6 +143,7 @@ from ..ast_tools import (
     NumericLiteralDispatchObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
     collect_family_items,
+    structural_ast_hash,
     _walk_nodes,
     _builder_call_shape,
     _module_class_names,
@@ -855,6 +856,29 @@ class ContextualModuleIssueDetector(IssueDetector):
         raise NotImplementedError
 
 
+class PreparedContextualGlobalAnalysis(ABC):
+    """One immutable context projection shared by cache lookup and detection."""
+
+    context_signature: str
+
+    @abstractmethod
+    def findings(self) -> list[RefactorFinding]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class DeferredContextualGlobalAnalysis(PreparedContextualGlobalAnalysis):
+    """Default preparation for detectors without a reusable semantic projection."""
+
+    detector: IssueDetector
+    modules: tuple[ParsedModule, ...]
+    config: DetectorConfig
+    context_signature: str
+
+    def findings(self) -> list[RefactorFinding]:
+        return self.detector.detect(list(self.modules), self.config)
+
+
 class ContextualGlobalCacheContract(ABC):
     """Nominal cache contract for global detectors keyed by semantic context."""
 
@@ -869,6 +893,20 @@ class ContextualGlobalCacheContract(ABC):
     ) -> str:
         raise NotImplementedError
 
+    def prepare_analysis(
+        self,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> PreparedContextualGlobalAnalysis:
+        """Project cache identity once and retain any reusable detector state."""
+
+        return DeferredContextualGlobalAnalysis(
+            detector=cast(IssueDetector, self),
+            modules=modules,
+            config=config,
+            context_signature=type(self).context_signature(modules, config),
+        )
+
 
 class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
     """Detector contract for findings derived from the cached descent graph."""
@@ -881,6 +919,28 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
+
+    def _collect_focused_findings_from_graph(
+        self,
+        graph: "SemanticDescentGraph",
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+        *,
+        includes_path: Callable[[Path], bool],
+    ) -> list[RefactorFinding]:
+        """Return exact focused findings; subclasses may prune before rendering."""
+
+        return [
+            finding
+            for finding in self._collect_findings_from_graph(
+                graph,
+                modules,
+                config,
+            )
+            if any(
+                includes_path(Path(evidence.file_path)) for evidence in finding.evidence
+            )
+        ]
 
 
 CandidateItemT = TypeVar("CandidateItemT")
@@ -1120,13 +1180,41 @@ def _contextual_global_digest(value: str) -> str:
     return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
 
+def _contextual_global_rows_digest(
+    detector_type: type[IssueDetector],
+    rows: Iterable[tuple[str, ...]],
+) -> str:
+    """Hash ordered semantic rows without retaining one aggregate repr."""
+
+    digest = hashlib.blake2s(digest_size=16)
+
+    def update_text(marker: bytes, value: str) -> None:
+        payload = value.encode("utf-8")
+        digest.update(marker)
+        digest.update(len(payload).to_bytes(8, byteorder="big"))
+        digest.update(payload)
+
+    update_text(b"m", detector_type.__module__)
+    update_text(b"q", detector_type.__qualname__)
+    for row in rows:
+        digest.update(b"r")
+        digest.update(len(row).to_bytes(8, byteorder="big"))
+        for value in row:
+            update_text(b"v", value)
+    digest.update(b"e")
+    return digest.hexdigest()
+
+
 def _stable_context_signature_text(value) -> str:
     return repr(_stable_context_signature_payload(value))
 
 
 def _stable_context_signature_payload(value):
     if isinstance(value, ast.AST):
-        return (type(value).__qualname__, ast.dump(value, include_attributes=True))
+        return (
+            type(value).__qualname__,
+            structural_ast_hash(value, include_attributes=True),
+        )
     if is_dataclass(value) and not isinstance(value, type):
         return (
             type(value).__module__,
@@ -1162,17 +1250,9 @@ def _contextual_global_candidate_signature(
     detector_type: type[IssueDetector],
     candidates: Iterable,
 ) -> str:
-    return _contextual_global_digest(
-        repr(
-            (
-                detector_type.__module__,
-                detector_type.__qualname__,
-                tuple(
-                    _stable_context_signature_text(candidate)
-                    for candidate in candidates
-                ),
-            )
-        )
+    return _contextual_global_rows_digest(
+        detector_type,
+        ((_stable_context_signature_text(candidate),) for candidate in candidates),
     )
 
 
@@ -1352,16 +1432,64 @@ class CrossModuleCandidateDetector(
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in self._candidate_items(modules, config)
-        ]
+        return self._findings_for_candidates(
+            self._candidate_items(modules, config),
+            config,
+        )
+
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[CandidateItemT],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        return [self._finding_for_candidate(candidate) for candidate in candidates]
+
+    def prepare_analysis(
+        self,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> PreparedContextualGlobalAnalysis:
+        if (
+            type(self)._collect_findings
+            is not CrossModuleCandidateDetector._collect_findings
+        ):
+            return super().prepare_analysis(modules, config)
+        candidates = tuple(self._candidate_items(list(modules), config))
+        return PreparedCrossModuleCandidateAnalysis(
+            detector=self,
+            candidates=candidates,
+            config=config,
+            context_signature=_contextual_global_candidate_signature(
+                type(self),
+                candidates,
+            ),
+        )
 
     @abstractmethod
     def _candidate_items(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class PreparedCrossModuleCandidateAnalysis(
+    PreparedContextualGlobalAnalysis,
+    Generic[CandidateItemT],
+):
+    """Exact candidate snapshot reused after a contextual cache miss."""
+
+    detector: CrossModuleCandidateDetector[CandidateItemT]
+    candidates: tuple[CandidateItemT, ...]
+    config: DetectorConfig
+    context_signature: str
+
+    def findings(self) -> list[RefactorFinding]:
+        return self.detector._findings_for_candidates(
+            self.candidates,
+            self.config,
+        )
 
 
 class CrossModuleCollectorCandidateDetector(
@@ -1836,31 +1964,46 @@ class GroupedShapeIssueDetector(
         cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
     ) -> str:
         detector = cls()
-        return _contextual_global_digest(
-            repr(
-                (
-                    cls.__module__,
-                    cls.__qualname__,
-                    tuple(
-                        sorted(
-                            (
-                                _stable_context_signature_text(
-                                    detector._group_key(shape)
-                                ),
-                                _stable_context_signature_text(shape),
-                            )
-                            for shape in detector._collect_shapes(list(modules), config)
-                        )
-                    ),
+        return cls._context_signature_for_shapes(
+            detector,
+            detector._collect_shapes(list(modules), config),
+        )
+
+    @classmethod
+    def _context_signature_for_shapes(
+        cls,
+        detector: "GroupedShapeIssueDetector[ShapeT, GroupKeyT]",
+        shapes: Sequence[ShapeT],
+    ) -> str:
+        return _contextual_global_rows_digest(
+            cls,
+            (
+                (group_key, shape)
+                for group_key, shape in sorted(
+                    (
+                        _stable_context_signature_text(detector._group_key(shape)),
+                        _stable_context_signature_text(shape),
+                    )
+                    for shape in shapes
                 )
-            )
+            ),
         )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
+        return self._findings_for_shapes(
+            self._collect_shapes(modules, config),
+            config,
+        )
+
+    def _findings_for_shapes(
+        self,
+        shapes: Sequence[ShapeT],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
         groups: dict[GroupKeyT, list[ShapeT]] = defaultdict(list)
-        for shape in self._collect_shapes(modules, config):
+        for shape in shapes:
             groups[self._group_key(shape)].append(shape)
 
         findings: list[RefactorFinding] = []
@@ -1869,6 +2012,27 @@ class GroupedShapeIssueDetector(
             if finding is not None:
                 findings.append(finding)
         return findings
+
+    def prepare_analysis(
+        self,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> PreparedContextualGlobalAnalysis:
+        if (
+            type(self).context_signature.__func__
+            is not GroupedShapeIssueDetector.context_signature.__func__
+        ):
+            return super().prepare_analysis(modules, config)
+        shapes = tuple(self._collect_shapes(list(modules), config))
+        return PreparedGroupedShapeAnalysis(
+            detector=self,
+            shapes=shapes,
+            config=config,
+            context_signature=type(self)._context_signature_for_shapes(
+                self,
+                shapes,
+            ),
+        )
 
     @abstractmethod
     def _collect_shapes(
@@ -1885,6 +2049,22 @@ class GroupedShapeIssueDetector(
         self, shapes: tuple[ShapeT, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
         raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class PreparedGroupedShapeAnalysis(
+    PreparedContextualGlobalAnalysis,
+    Generic[ShapeT, GroupKeyT],
+):
+    """Exact shape snapshot shared by grouped signature and finding projection."""
+
+    detector: GroupedShapeIssueDetector[ShapeT, GroupKeyT]
+    shapes: tuple[ShapeT, ...]
+    config: DetectorConfig
+    context_signature: str
+
+    def findings(self) -> list[RefactorFinding]:
+        return self.detector._findings_for_shapes(self.shapes, self.config)
 
 
 class FiberCollectedShapeIssueDetector(

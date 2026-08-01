@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from pathlib import Path
+from typing import Callable, ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -170,6 +171,24 @@ class SemanticMirrorWithoutDescentDetector(
             for certificate in graph.certificates
         ]
 
+    def _collect_focused_findings_from_graph(
+        self,
+        graph: SemanticDescentGraph,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+        *,
+        includes_path: Callable[[Path], bool],
+    ) -> list[RefactorFinding]:
+        del modules, config
+        return [
+            self._finding_for_certificate(graph, certificate)
+            for certificate in graph.certificates
+            if any(
+                includes_path(Path(evidence.file_path))
+                for evidence in self._certificate_evidence(graph, certificate)
+            )
+        ]
+
     def _finding_for_certificate(
         self,
         graph: SemanticDescentGraph,
@@ -186,11 +205,7 @@ class SemanticMirrorWithoutDescentDetector(
         )
         return self.build_finding(
             summary,
-            self._evidence(
-                authority,
-                projection_location=projection.location,
-                matched_facts=matched_facts,
-            ),
+            self._certificate_evidence(graph, certificate),
             title=f"`{projection.label}` mirrors `{authority.name}`",
             why=(
                 f"The {projection.kind.value.replace('_', ' ')} at "
@@ -210,6 +225,21 @@ class SemanticMirrorWithoutDescentDetector(
             metrics=self._metrics(
                 authority, projection, matched_facts, edge.match.tokens
             ),
+        )
+
+    @classmethod
+    def _certificate_evidence(
+        cls,
+        graph: SemanticDescentGraph,
+        certificate: DescentCertificate,
+    ) -> tuple[SourceLocation, ...]:
+        edge = certificate.edge
+        authority = graph.authority_catalog.authority_for_edge(edge)
+        projection = graph.projection_catalog.projection_for_edge(edge)
+        return cls._evidence(
+            authority,
+            projection_location=projection.location,
+            matched_facts=graph.fact_authority_index.facts_for_edge(edge),
         )
 
     @staticmethod

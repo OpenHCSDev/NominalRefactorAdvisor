@@ -16,10 +16,11 @@ from pathlib import Path
 import pickle
 import re
 import sys
+import tempfile
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from itertools import groupby
@@ -37,6 +38,13 @@ from .ast_tools import (
 )
 from . import class_index as class_index_module
 from .cache_paths import default_semantic_descent_cache_dir
+from .cache_checkout import (
+    CacheCheckoutPathError,
+    checkout_relative_path,
+    inferred_checkout_roots,
+    presentation_root_texts,
+    rebase_checkout_path,
+)
 from .class_index import (
     ClassFamilyIndex,
     IndexedClass,
@@ -45,6 +53,7 @@ from .class_index import (
     overlay_class_family_index,
 )
 from .collection_algebra import sorted_tuple
+from .deadline import scan_deadline_checkpoint
 from .models import (
     FindingMetrics,
     MappingMetrics,
@@ -294,7 +303,7 @@ class SemanticDescentGraphCacheReadError(RuntimeError):
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 7
+    version: int = 8
     digest_size: int = 16
 
 
@@ -332,9 +341,13 @@ class SemanticDescentModuleSignature:
     source_hash: str
 
     @classmethod
-    def from_module(cls, module: ParsedModule) -> "SemanticDescentModuleSignature":
+    def from_module(
+        cls,
+        module: ParsedModule,
+        roots: tuple[Path | str, ...],
+    ) -> "SemanticDescentModuleSignature":
         return cls(
-            path=str(module.path.resolve()),
+            path=checkout_relative_path(module.path, roots),
             parsed_import_name=module.module_name,
             is_package_init=module.is_package_init,
             source_hash=_text_hash(module.source),
@@ -344,9 +357,10 @@ class SemanticDescentModuleSignature:
     def from_path_identity(
         cls,
         identity: PythonModulePathIdentity,
+        roots: tuple[Path | str, ...],
     ) -> "SemanticDescentModuleSignature":
         return cls(
-            path=str(identity.path.resolve()),
+            path=checkout_relative_path(identity.path, roots),
             parsed_import_name=identity.import_name,
             is_package_init=identity.is_package_init,
             source_hash=_source_file_hash(identity.path),
@@ -381,12 +395,24 @@ class SemanticDescentGraphCacheIdentity:
     implementation: SemanticDescentImplementationSignature
     python_version: tuple[int, int]
     modules: tuple[SemanticDescentModuleSignature, ...]
+    presentation_roots: tuple[str, ...] = field(
+        default=(),
+        compare=False,
+        repr=False,
+    )
 
     @classmethod
     def from_modules(
         cls,
         modules: tuple[ParsedModule, ...],
+        *,
+        roots: tuple[Path | str, ...] | None = None,
     ) -> "SemanticDescentGraphCacheIdentity":
+        effective_roots = (
+            inferred_checkout_roots(tuple(module.path for module in modules))
+            if roots is None
+            else roots
+        )
         return cls(
             schema=semantic_descent_graph_cache_schema,
             implementation=SemanticDescentImplementationSignature.current(),
@@ -394,19 +420,30 @@ class SemanticDescentGraphCacheIdentity:
             modules=tuple(
                 sorted(
                     (
-                        SemanticDescentModuleSignature.from_module(module)
+                        SemanticDescentModuleSignature.from_module(
+                            module,
+                            effective_roots,
+                        )
                         for module in modules
                     ),
                     key=lambda item: item.path,
                 )
             ),
+            presentation_roots=presentation_root_texts(effective_roots),
         )
 
     @classmethod
     def from_path_identities(
         cls,
         identities: tuple[PythonModulePathIdentity, ...],
+        *,
+        roots: tuple[Path | str, ...] | None = None,
     ) -> "SemanticDescentGraphCacheIdentity":
+        effective_roots = (
+            inferred_checkout_roots(tuple(identity.path for identity in identities))
+            if roots is None
+            else roots
+        )
         return cls(
             schema=semantic_descent_graph_cache_schema,
             implementation=SemanticDescentImplementationSignature.current(),
@@ -414,12 +451,16 @@ class SemanticDescentGraphCacheIdentity:
             modules=tuple(
                 sorted(
                     (
-                        SemanticDescentModuleSignature.from_path_identity(identity)
+                        SemanticDescentModuleSignature.from_path_identity(
+                            identity,
+                            effective_roots,
+                        )
                         for identity in identities
                     ),
                     key=lambda item: item.path,
                 )
             ),
+            presentation_roots=presentation_root_texts(effective_roots),
         )
 
     @classmethod
@@ -433,8 +474,17 @@ class SemanticDescentGraphCacheIdentity:
             python_module_path_identities_for_roots(
                 roots,
                 source_policy=source_policy,
-            )
+            ),
+            roots=roots,
         )
+
+    def relocated_to(
+        self,
+        roots: tuple[Path | str, ...],
+    ) -> "SemanticDescentGraphCacheIdentity":
+        """Bind checkout-independent semantics to a current presentation root."""
+
+        return replace(self, presentation_roots=presentation_root_texts(roots))
 
     @property
     def cache_token(self) -> str:
@@ -452,6 +502,11 @@ class SemanticDescentGraphCacheFamilyIdentity:
     implementation: SemanticDescentImplementationSignature
     python_version: tuple[int, int]
     modules: tuple[SemanticDescentModuleFamilySignature, ...]
+    presentation_roots: tuple[str, ...] = field(
+        default=(),
+        compare=False,
+        repr=False,
+    )
 
     @classmethod
     def from_identity(
@@ -466,15 +521,21 @@ class SemanticDescentGraphCacheFamilyIdentity:
                 SemanticDescentModuleFamilySignature.from_module_signature(module)
                 for module in identity.modules
             ),
+            presentation_roots=identity.presentation_roots,
         )
 
     @classmethod
     def from_path_identities(
         cls,
         identities: tuple[PythonModulePathIdentity, ...],
+        *,
+        roots: tuple[Path | str, ...] | None = None,
     ) -> "SemanticDescentGraphCacheFamilyIdentity":
         return cls.from_identity(
-            SemanticDescentGraphCacheIdentity.from_path_identities(identities)
+            SemanticDescentGraphCacheIdentity.from_path_identities(
+                identities,
+                roots=roots,
+            )
         )
 
     @property
@@ -1642,7 +1703,11 @@ class SemanticDescentCertificateBuilder:
         candidate = SemanticMirrorEdgeCandidate(
             projection=projection,
             authority=authority,
-            facts=self.graph_space.fact_authority_index.facts_for_edge(edge),
+            # Certificate wording depends only on the resolved endpoints.  The
+            # matched fact references remain carried by ``edge.match``; resolving
+            # every reference back into a full fact tuple here duplicated work
+            # already completed by the mirror resolver.
+            facts=(),
             match=edge.match,
         )
         return DescentCertificate.from_mirror_candidate(edge, candidate)
@@ -1795,8 +1860,7 @@ class PresentationProjectionIdOverlay:
     @cached_property
     def base_by_id(self) -> dict[str, PresentationProjection]:
         return {
-            projection.projection_id: projection
-            for projection in self.base_projections
+            projection.projection_id: projection for projection in self.base_projections
         }
 
     @cached_property
@@ -1973,8 +2037,8 @@ class SemanticDescentGraphModuleOverlay:
                 or edge.authority_id in changed_authority_ids
             ):
                 continue
-            current_projection_id = projection_overlay.current_projection_id_for_base_id(
-                edge.projection_id
+            current_projection_id = (
+                projection_overlay.current_projection_id_for_base_id(edge.projection_id)
             )
             if current_projection_id is None:
                 continue
@@ -2036,9 +2100,7 @@ class SemanticDescentGraphModuleOverlay:
 
     @staticmethod
     def _deduplicate_edges(edges: tuple[MirrorEdge, ...]) -> tuple[MirrorEdge, ...]:
-        by_reference = {
-            (edge.authority_id, edge.projection_id): edge for edge in edges
-        }
+        by_reference = {(edge.authority_id, edge.projection_id): edge for edge in edges}
         return sorted_tuple(
             by_reference.values(),
             key=lambda item: (
@@ -2746,6 +2808,115 @@ class SemanticDescentGraphCacheHit(SemanticDescentGraphCacheLookup):
     """Graph cache lookup result with a valid graph payload."""
 
     graph: SemanticDescentGraph
+    identity: SemanticDescentGraphCacheIdentity | None = None
+
+
+def _rebase_source_location(
+    location: SourceLocation,
+    source_roots: tuple[str, ...],
+    target_roots: tuple[str, ...],
+) -> SourceLocation:
+    if not location.file_path:
+        return location
+    return replace(
+        location,
+        file_path=rebase_checkout_path(
+            location.file_path,
+            source_roots,
+            target_roots,
+        ),
+    )
+
+
+def _rebase_class_family_index(
+    class_index: ClassFamilyIndex | None,
+    source_roots: tuple[str, ...],
+    target_roots: tuple[str, ...],
+) -> ClassFamilyIndex | None:
+    if class_index is None:
+        return None
+    classes_by_symbol = {
+        symbol: replace(
+            indexed_class,
+            file_path=rebase_checkout_path(
+                indexed_class.file_path,
+                source_roots,
+                target_roots,
+            ),
+        )
+        for symbol, indexed_class in class_index.classes_by_symbol.items()
+    }
+    return replace(
+        class_index,
+        classes_by_symbol=classes_by_symbol,
+        symbols_by_file_and_qualname={
+            (
+                rebase_checkout_path(
+                    file_path,
+                    source_roots,
+                    target_roots,
+                ),
+                qualname,
+            ): symbol
+            for (file_path, qualname), symbol in (
+                class_index.symbols_by_file_and_qualname.items()
+            )
+        },
+    )
+
+
+def rebase_semantic_descent_graph(
+    graph: SemanticDescentGraph,
+    source_roots: tuple[str, ...],
+    target_roots: tuple[str, ...],
+) -> SemanticDescentGraph:
+    """Validate and rebase every source-bearing graph record to target roots."""
+
+    if not source_roots or not target_roots:
+        raise CacheCheckoutPathError(
+            "semantic graph cache has no admitted presentation roots"
+        )
+    return replace(
+        graph,
+        authorities=tuple(
+            replace(
+                authority,
+                location=_rebase_source_location(
+                    authority.location,
+                    source_roots,
+                    target_roots,
+                ),
+            )
+            for authority in graph.authorities
+        ),
+        facts=tuple(
+            replace(
+                fact,
+                location=_rebase_source_location(
+                    fact.location,
+                    source_roots,
+                    target_roots,
+                ),
+            )
+            for fact in graph.facts
+        ),
+        projections=tuple(
+            replace(
+                projection,
+                location=_rebase_source_location(
+                    projection.location,
+                    source_roots,
+                    target_roots,
+                ),
+            )
+            for projection in graph.projections
+        ),
+        class_index=_rebase_class_family_index(
+            graph.class_index,
+            source_roots,
+            target_roots,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -2766,19 +2937,31 @@ class SemanticDescentGraphCache:
         ]
         | None
     ):
+        scan_deadline_checkpoint("semantic_descent_cache_load")
         try:
             with cache_path.open("rb") as handle:
                 payload = pickle.load(handle)
         except FileNotFoundError:
             return None
-        except (OSError, pickle.PickleError, EOFError) as exc:
-            raise SemanticDescentGraphCacheReadError(
-                f"Could not read semantic-descent graph cache entry {cache_path.name}"
-            ) from exc
+        except (
+            OSError,
+            pickle.PickleError,
+            EOFError,
+            AttributeError,
+            ImportError,
+            TypeError,
+            ValueError,
+        ):
+            # Cache entries are derived artifacts.  A process may have been
+            # interrupted while publishing an entry created by an older,
+            # non-atomic writer, or a Python/schema upgrade may make the
+            # pickle unreadable.  Neither condition is a source-analysis
+            # failure: verify it as a miss and rebuild from authoritative
+            # source instead.
+            return None
         if not isinstance(payload, dict):
-            raise SemanticDescentGraphCacheReadError(
-                f"Semantic-descent graph cache entry {cache_path.name} is not a mapping"
-            )
+            return None
+        scan_deadline_checkpoint("semantic_descent_cache_validation")
         return payload
 
     def load(
@@ -2790,14 +2973,23 @@ class SemanticDescentGraphCache:
         payload = self._load_payload(self._entry_path(identity))
         if payload is None:
             return SemanticDescentGraphCacheMiss()
-        if payload.get("identity") != identity:
+        stored_identity = payload.get("identity")
+        if not isinstance(stored_identity, SemanticDescentGraphCacheIdentity):
+            return SemanticDescentGraphCacheMiss()
+        if stored_identity != identity:
             return SemanticDescentGraphCacheMiss()
         graph = payload.get("graph")
         if not isinstance(graph, SemanticDescentGraph):
-            raise SemanticDescentGraphCacheReadError(
-                f"Semantic-descent graph cache entry {identity.cache_token} has invalid graph payload"
+            return SemanticDescentGraphCacheMiss()
+        try:
+            graph = rebase_semantic_descent_graph(
+                graph,
+                stored_identity.presentation_roots,
+                identity.presentation_roots,
             )
-        return SemanticDescentGraphCacheHit(graph)
+        except CacheCheckoutPathError:
+            return SemanticDescentGraphCacheMiss()
+        return SemanticDescentGraphCacheHit(graph, identity)
 
     def load_latest(
         self,
@@ -2810,12 +3002,65 @@ class SemanticDescentGraphCache:
             return SemanticDescentGraphCacheMiss()
         if payload.get("family_identity") != family_identity:
             return SemanticDescentGraphCacheMiss()
+        identity = payload.get("identity")
+        if not isinstance(identity, SemanticDescentGraphCacheIdentity):
+            return SemanticDescentGraphCacheMiss()
+        if (
+            SemanticDescentGraphCacheFamilyIdentity.from_identity(identity)
+            != family_identity
+        ):
+            return SemanticDescentGraphCacheMiss()
+        target_identity = identity.relocated_to(family_identity.presentation_roots)
+        identity_lookup = self.load(target_identity)
+        if identity_lookup.graph is not None:
+            return identity_lookup
+        # Read compatibility for graph-bearing latest entries produced before
+        # latest pointers became lightweight.  New stores always publish the
+        # exact entry first and the latest identity pointer second.
         graph = payload.get("graph")
         if not isinstance(graph, SemanticDescentGraph):
-            raise SemanticDescentGraphCacheReadError(
-                f"Semantic-descent graph latest cache entry {family_identity.cache_token} has invalid graph payload"
+            return SemanticDescentGraphCacheMiss()
+        try:
+            graph = rebase_semantic_descent_graph(
+                graph,
+                identity.presentation_roots,
+                target_identity.presentation_roots,
             )
-        return SemanticDescentGraphCacheHit(graph)
+        except CacheCheckoutPathError:
+            return SemanticDescentGraphCacheMiss()
+        return SemanticDescentGraphCacheHit(graph, target_identity)
+
+    @staticmethod
+    def _store_payload_atomic(cache_path: Path, payload: object) -> None:
+        """Publish one pickle only after its complete bytes are durable."""
+
+        file_descriptor, temporary_path_text = tempfile.mkstemp(
+            dir=cache_path.parent,
+            prefix=f".{cache_path.name}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_path_text)
+        try:
+            with os.fdopen(file_descriptor, "wb") as handle:
+                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, cache_path)
+            directory_descriptor = os.open(cache_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except BaseException:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                pass
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
 
     def store(
         self,
@@ -2825,27 +3070,27 @@ class SemanticDescentGraphCache:
         if self.storage_root is None:
             return
         try:
+            validated_graph = rebase_semantic_descent_graph(
+                graph,
+                identity.presentation_roots,
+                identity.presentation_roots,
+            )
             self.storage_root.mkdir(parents=True, exist_ok=True)
-            with self._entry_path(identity).open("wb") as handle:
-                pickle.dump(
-                    {"identity": identity, "graph": graph},
-                    handle,
-                    protocol=pickle.HIGHEST_PROTOCOL,
-                )
+            self._store_payload_atomic(
+                self._entry_path(identity),
+                {"identity": identity, "graph": validated_graph},
+            )
             family_identity = SemanticDescentGraphCacheFamilyIdentity.from_identity(
                 identity
             )
-            with self._latest_path(family_identity).open("wb") as handle:
-                pickle.dump(
-                    {
-                        "family_identity": family_identity,
-                        "identity": identity,
-                        "graph": graph,
-                    },
-                    handle,
-                    protocol=pickle.HIGHEST_PROTOCOL,
-                )
-        except OSError:
+            self._store_payload_atomic(
+                self._latest_path(family_identity),
+                {
+                    "family_identity": family_identity,
+                    "identity": identity,
+                },
+            )
+        except (OSError, CacheCheckoutPathError):
             return
 
     def _entry_path(self, identity: SemanticDescentGraphCacheIdentity) -> Path:
@@ -2900,7 +3145,10 @@ def load_cached_semantic_descent_graph_for_roots(
         roots,
         source_policy=source_policy,
     )
-    identity = SemanticDescentGraphCacheIdentity.from_path_identities(identities)
+    identity = SemanticDescentGraphCacheIdentity.from_path_identities(
+        identities,
+        roots=roots,
+    )
     return SemanticDescentGraphCache(cache_dir).load(identity).graph
 
 
@@ -2917,7 +3165,8 @@ def load_latest_semantic_descent_graph_for_roots(
         source_policy=source_policy,
     )
     family_identity = SemanticDescentGraphCacheFamilyIdentity.from_path_identities(
-        identities
+        identities,
+        roots=roots,
     )
     return SemanticDescentGraphCache(cache_dir).load_latest(family_identity).graph
 
@@ -2943,10 +3192,14 @@ class SemanticDescentGraphCacheDirAuthority:
 def _build_semantic_descent_graph_cached(
     modules: tuple[ParsedModule, ...],
 ) -> SemanticDescentGraph:
+    scan_deadline_checkpoint("semantic_descent_class_index")
     class_index = build_class_family_index(list(modules))
+    scan_deadline_checkpoint("semantic_descent_authorities")
     authority_builder = SemanticAuthorityBuilder(tuple(modules), class_index)
     authorities, facts = authority_builder.build()
+    scan_deadline_checkpoint("semantic_descent_projections")
     projections = SemanticProjectionCollector(tuple(modules), class_index).collect()
+    scan_deadline_checkpoint("semantic_descent_mirror_edges")
     mirror_edges = SemanticMirrorResolver(
         authorities,
         facts,
@@ -2958,6 +3211,7 @@ def _build_semantic_descent_graph_cached(
         facts,
         projections,
     )
+    scan_deadline_checkpoint("semantic_descent_certificates")
     certificate_builder = SemanticDescentCertificateBuilder(graph_space)
     certificates = certificate_builder.certificates_for_edges(mirror_edges)
     return SemanticDescentGraph(
@@ -3260,6 +3514,14 @@ class SemanticProjectionCollector:
         )
 
 
+@dataclass
+class ProjectionOwnerConstructionFrame:
+    """Single-pass function construction state for direct owner projections."""
+
+    constructions: set[PresentationAuthorityConstruction]
+    projection_indices: list[int]
+
+
 class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
     def __init__(
         self,
@@ -3273,28 +3535,47 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             class_index,
         )
         self.projections: list[PresentationProjection] = []
-        self.owner_construction_stack: list[
-            tuple[PresentationAuthorityConstruction, ...]
-        ] = []
-
-    @property
-    def current_owner_constructions(
-        self,
-    ) -> tuple[PresentationAuthorityConstruction, ...]:
-        if not self.owner_construction_stack:
-            return ()
-        return self.owner_construction_stack[-1]
+        self.owner_construction_stack: list[ProjectionOwnerConstructionFrame] = []
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.owner_construction_stack.append(
-            PresentationAuthorityConstructionCollector.constructions_for_function(node)
+        frame = ProjectionOwnerConstructionFrame(
+            constructions=set(),
+            projection_indices=[],
         )
+        self.owner_construction_stack.append(frame)
         try:
             super().visit_FunctionDef(node)
         finally:
             self.owner_construction_stack.pop()
+            owner_constructions = frozenset(frame.constructions)
+            for projection_index in frame.projection_indices:
+                projection = self.projections[projection_index]
+                self.projections[projection_index] = replace(
+                    projection,
+                    owner_constructions=sorted_tuple(
+                        frozenset(
+                            (*projection.owner_constructions, *owner_constructions)
+                        ),
+                        key=lambda item: (item.type_name, item.field_tokens),
+                    ),
+                )
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self._record_owner_constructions(
+            PresentationAuthorityConstructionCollector.constructions_for_call(node)
+        )
+        self.generic_visit(node)
+
+    def _record_owner_constructions(
+        self,
+        constructions: tuple[PresentationAuthorityConstruction, ...],
+    ) -> None:
+        if not constructions:
+            return
+        for frame in self.owner_construction_stack:
+            frame.constructions.update(constructions)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         if self._collect_assignment_projection(node, node.value):
@@ -3385,6 +3666,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             else ()
         )
         projection_constructions = self._projection_constructions(value)
+        self._record_owner_constructions(projection_constructions)
         class_symbols = self.class_reference_resolver.symbols_for_node(value)
         tokens = tuple(
             PresentationTokenProjection.tokens_for_node(
@@ -3482,15 +3764,17 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 ),
                 source_text="",
                 owner_constructions=sorted_tuple(
-                    frozenset(
-                        (*self.current_owner_constructions, *projection_constructions)
-                    ),
+                    frozenset(projection_constructions),
                     key=lambda item: (item.type_name, item.field_tokens),
                 ),
                 key_value_pairs=key_value_pairs,
                 class_symbols=class_symbols,
             )
         )
+        if self.owner_construction_stack:
+            self.owner_construction_stack[-1].projection_indices.append(
+                len(self.projections) - 1
+            )
 
 
 @dataclass(frozen=True)
@@ -3658,15 +3942,11 @@ class ConstructionAuthorityResolver:
     """Resolve owner construction sites that descend to semantic authorities."""
 
     class_index: ClassFamilyIndex
+    authorities: tuple[SemanticAuthority, ...]
+    projection_construction_type_names: frozenset[str] = frozenset()
 
     @cached_property
     def construction_authority_class_cache(
-        self,
-    ) -> dict[ConstructionAuthorityCacheKey, bool]:
-        return {}
-
-    @cached_property
-    def construction_materializes_authority_cache(
         self,
     ) -> dict[ConstructionAuthorityCacheKey, bool]:
         return {}
@@ -3676,9 +3956,37 @@ class ConstructionAuthorityResolver:
         construction: PresentationAuthorityConstruction,
         authority: SemanticAuthority,
     ) -> bool:
-        if self.construction_type_is_authority_class(construction, authority):
-            return True
-        return self.construction_type_materializes_authority(construction, authority)
+        return authority.authority_id in (
+            self.descended_authority_ids_for_construction_type(construction.type_name)
+        )
+
+    @cached_property
+    def descended_authority_ids_by_construction_type(
+        self,
+    ) -> dict[str, frozenset[str]]:
+        """Memoize the complete descent target set for each constructed type.
+
+        A construction's type relationship is independent of the projection and
+        of the candidate edge.  Keeping the relationship as an authority-id set
+        turns later projection resolution into set membership instead of one
+        class-lineage/materializer query per projection-authority pair.
+        """
+
+        return {}
+
+    def descended_authority_ids_for_construction_type(
+        self,
+        construction_type: str,
+    ) -> frozenset[str]:
+        descended = self.descended_authority_ids_by_construction_type
+        if construction_type not in descended:
+            descended[construction_type] = frozenset(
+                self.authority_ids_for_constructed_type_name(construction_type)
+                | self.materialized_authority_ids_for_construction_type(
+                    construction_type
+                )
+            )
+        return descended[construction_type]
 
     def construction_type_is_authority_class(
         self,
@@ -3697,12 +4005,24 @@ class ConstructionAuthorityResolver:
         construction: PresentationAuthorityConstruction,
         authority: SemanticAuthority,
     ) -> bool:
-        return self._construction_authority_cache_result(
-            self.construction_materializes_authority_cache,
-            construction,
-            authority,
-            self._construction_type_materializes_authority_uncached,
+        return authority.authority_id in (
+            self.materialized_authority_ids_for_construction_type(
+                construction.type_name
+            )
         )
+
+    def materialized_authority_ids_for_construction_type(
+        self,
+        construction_type: str,
+    ) -> frozenset[str]:
+        materialized = self.materialized_authority_ids_by_construction_type
+        if construction_type not in materialized:
+            materialized[construction_type] = (
+                self._materialized_authority_ids_for_construction_type(
+                    construction_type
+                )
+            )
+        return materialized[construction_type]
 
     def _construction_authority_cache_result(
         self,
@@ -3732,68 +4052,117 @@ class ConstructionAuthorityResolver:
                 return True
         return False
 
-    def _construction_type_materializes_authority_uncached(
-        self,
-        construction: PresentationAuthorityConstruction,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return any(
-            (indexed_class := self.class_index.class_for(class_symbol)) is not None
-            and self._class_materializes_authority(indexed_class, authority)
-            for class_symbol in self.class_index.symbols_by_simple_name.get(
-                construction.type_name, ()
-            )
-        )
+    @cached_property
+    def authority_ids_by_name(self) -> dict[str, frozenset[str]]:
+        authority_ids: dict[str, set[str]] = {}
+        for authority in self.authorities:
+            authority_ids.setdefault(authority.name, set()).add(authority.authority_id)
+        return {name: frozenset(ids) for name, ids in authority_ids.items()}
 
-    def _class_materializes_authority(
+    @cached_property
+    def known_authority_ids(self) -> frozenset[str]:
+        return frozenset(authority.authority_id for authority in self.authorities)
+
+    @cached_property
+    def authority_ids_by_constructed_type_name(
+        self,
+    ) -> dict[str, frozenset[str]]:
+        """Memoize only constructed types reached from relevant materializers."""
+
+        return dict(self.authority_ids_by_name)
+
+    @cached_property
+    def resolved_constructed_type_names(self) -> set[str]:
+        return set()
+
+    def authority_ids_for_constructed_type_name(
+        self,
+        type_name: str,
+    ) -> frozenset[str]:
+        authority_ids_by_type = self.authority_ids_by_constructed_type_name
+        if type_name in self.resolved_constructed_type_names:
+            return authority_ids_by_type[type_name]
+        authority_ids = set(authority_ids_by_type.get(type_name, frozenset()))
+        for class_symbol in self.class_index.symbols_by_simple_name.get(
+            type_name,
+            (),
+        ):
+            if class_symbol in self.known_authority_ids:
+                authority_ids.add(class_symbol)
+            authority_ids.update(
+                self.known_authority_ids.intersection(
+                    self.class_index.ancestor_symbols(class_symbol)
+                )
+            )
+        resolved_ids = frozenset(authority_ids)
+        authority_ids_by_type[type_name] = resolved_ids
+        self.resolved_constructed_type_names.add(type_name)
+        return resolved_ids
+
+    def _class_materialization_inputs(
         self,
         indexed_class: IndexedClass,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return self._class_declares_materialized_authority(
-            indexed_class,
-            authority,
-        ) or any(
-            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
-            and self._function_materializes_authority(statement, authority)
-            for statement in indexed_class.node.body
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        declared_type_names = frozenset(
+            terminal_name
+            for _, value in AutoRegisterClassAuthority(
+                indexed_class.node
+            ).assignment_pairs
+            if (terminal_name := AttributeChainAuthority.terminal_name(value))
+            is not None
         )
+        constructed_type_names: set[str] = set()
+        for statement in indexed_class.node.body:
+            if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for child in ast.walk(statement):
+                if isinstance(child, ast.Call):
+                    constructed_type_names.update(
+                        PresentationAuthorityConstructionCollector.construction_type_names(
+                            child
+                        )
+                    )
+        return declared_type_names, frozenset(constructed_type_names)
 
-    @staticmethod
-    def _class_declares_materialized_authority(
-        indexed_class: IndexedClass,
-        authority: SemanticAuthority,
-    ) -> bool:
-        for _, value in AutoRegisterClassAuthority(indexed_class.node).assignment_pairs:
-            if AttributeChainAuthority.terminal_name(value) == authority.name:
-                return True
-        return False
-
-    def _function_materializes_authority(
+    @cached_property
+    def materialized_authority_ids_by_construction_type(
         self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return any(
-            self._call_constructs_authority(child, authority)
-            for child in ast.walk(node)
-            if isinstance(child, ast.Call)
-        )
+    ) -> dict[str, frozenset[str]]:
+        """Preindex only materializers named by projection construction evidence."""
 
-    def _call_constructs_authority(
+        return {
+            construction_type: (
+                self._materialized_authority_ids_for_construction_type(
+                    construction_type
+                )
+            )
+            for construction_type in self.projection_construction_type_names
+        }
+
+    def _materialized_authority_ids_for_construction_type(
         self,
-        node: ast.Call,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return any(
-            self.construction_type_is_authority_class(
-                PresentationAuthorityConstruction(type_name, ()),
-                authority,
+        construction_type: str,
+    ) -> frozenset[str]:
+        authority_ids: set[str] = set()
+        for class_symbol in self.class_index.symbols_by_simple_name.get(
+            construction_type,
+            (),
+        ):
+            indexed_class = self.class_index.class_for(class_symbol)
+            if indexed_class is None:
+                continue
+            declared_type_names, constructed_type_names = (
+                self._class_materialization_inputs(indexed_class)
             )
-            for type_name in PresentationAuthorityConstructionCollector.construction_type_names(
-                node
-            )
-        )
+            for type_name in declared_type_names:
+                authority_ids.update(
+                    self.authority_ids_by_name.get(type_name, frozenset())
+                )
+            for type_name in constructed_type_names:
+                authority_ids.update(
+                    self.authority_ids_for_constructed_type_name(type_name)
+                )
+        return frozenset(authority_ids)
 
 
 @dataclass(frozen=True)
@@ -3824,6 +4193,28 @@ class DataclassProjectionDescentAuthority:
         )
 
     @cached_property
+    def dataclass_authorities_by_id(self) -> dict[str, SemanticAuthority]:
+        return {
+            authority.authority_id: authority
+            for authority in self.dataclass_authorities
+        }
+
+    @cached_property
+    def dataclass_fact_tokens_by_authority_id(
+        self,
+    ) -> dict[str, frozenset[str]]:
+        return {
+            authority.authority_id: frozenset(
+                variant
+                for fact in self.fact_authority_index.facts_for_authority(
+                    authority.authority_id
+                )
+                for variant in normalized_name_variants(fact.name)
+            )
+            for authority in self.dataclass_authorities
+        }
+
+    @cached_property
     def projection_descent_authority_ids(self) -> dict[str, frozenset[str]]:
         return {
             projection.projection_id: self._projection_descent_authority_ids(projection)
@@ -3840,6 +4231,12 @@ class DataclassProjectionDescentAuthority:
     ) -> dict[str, tuple[SemanticAuthority, ...]]:
         return {}
 
+    @cached_property
+    def constructed_dataclass_authority_ids_by_projection_id(
+        self,
+    ) -> dict[str, frozenset[str]]:
+        return {}
+
     def projection_descends_to_authority(
         self,
         projection: PresentationProjection,
@@ -3854,10 +4251,7 @@ class DataclassProjectionDescentAuthority:
         self,
         projection: PresentationProjection,
     ) -> bool:
-        return any(
-            self.projection_descends_to_authority(projection, authority)
-            for authority in self.dataclass_authorities
-        )
+        return bool(self.projection_descent_authority_ids[projection.projection_id])
 
     def projection_materializes_any_dataclass_authority(
         self,
@@ -3901,15 +4295,66 @@ class DataclassProjectionDescentAuthority:
         cache = self.constructed_dataclass_authorities_by_projection_id
         if projection.projection_id not in cache:
             cache[projection.projection_id] = tuple(
-                authority
-                for authority in self.dataclass_authorities
-                if self.projection_owner_constructs_dataclass_authority(
-                    projection,
-                    authority,
-                    self.fact_authority_index.facts_for_authority(authority.authority_id),
+                self.dataclass_authorities_by_id[authority_id]
+                for authority_id in sorted(
+                    self.constructed_dataclass_authority_ids(projection)
                 )
             )
         return cache[projection.projection_id]
+
+    def constructed_dataclass_authority_ids(
+        self,
+        projection: PresentationProjection,
+    ) -> frozenset[str]:
+        cache = self.constructed_dataclass_authority_ids_by_projection_id
+        if projection.projection_id not in cache:
+            cache[projection.projection_id] = (
+                self._constructed_dataclass_authority_ids_uncached(projection)
+            )
+        return cache[projection.projection_id]
+
+    def _constructed_dataclass_authority_ids_uncached(
+        self,
+        projection: PresentationProjection,
+    ) -> frozenset[str]:
+        """Resolve construction descent without scanning every dataclass.
+
+        The previous formulation asked every dataclass authority whether every
+        owner construction descended to it.  The construction resolver already
+        owns the inverse relation, so accumulate field evidence only for the
+        authority ids reached by each construction and then apply the identical
+        per-construction-or-union token coverage rule.
+        """
+
+        accumulated_field_tokens: dict[str, set[str]] = {}
+        directly_covered_authority_ids: set[str] = set()
+        for construction in projection.owner_constructions:
+            construction_field_tokens = frozenset(construction.field_tokens)
+            descended_dataclass_authority_ids = (
+                self.construction_resolver.descended_authority_ids_for_construction_type(
+                    construction.type_name
+                )
+                & self.dataclass_authority_ids
+            )
+            for authority_id in descended_dataclass_authority_ids:
+                matched_tokens = self.dataclass_fact_tokens_by_authority_id[
+                    authority_id
+                ]
+                if not matched_tokens:
+                    continue
+                accumulated_field_tokens.setdefault(authority_id, set()).update(
+                    construction_field_tokens
+                )
+                if matched_tokens <= construction_field_tokens:
+                    directly_covered_authority_ids.add(authority_id)
+
+        return frozenset(
+            authority_id
+            for authority_id, descended_field_tokens in accumulated_field_tokens.items()
+            if authority_id in directly_covered_authority_ids
+            or self.dataclass_fact_tokens_by_authority_id[authority_id]
+            <= frozenset(descended_field_tokens)
+        )
 
     def projection_owner_constructs_dataclass_authority(
         self,
@@ -3973,23 +4418,34 @@ class DataclassProjectionDescentAuthority:
             ]
         )
         return frozenset(
-            authority_id
-            for authority_id in self.dataclass_authority_ids
-            if projection_class_symbol == authority_id
-            or authority_id in projection_ancestor_symbols
+            {
+                projection_class_symbol,
+                *projection_ancestor_symbols,
+            }.intersection(self.dataclass_authority_ids)
         )
 
     def _projection_materializes_any_dataclass_authority_uncached(
         self,
         projection: PresentationProjection,
     ) -> bool:
-        return any(
-            self.projection_owner_materializes_dataclass_authority(
-                projection,
-                authority,
-                self.fact_authority_index.facts_for_authority(authority.authority_id),
+        candidate_authority_ids = frozenset(
+            authority_id
+            for construction in projection.owner_constructions
+            for authority_id in (
+                self.construction_resolver.materialized_authority_ids_for_construction_type(
+                    construction.type_name
+                )
             )
-            for authority in self.dataclass_authorities
+            if authority_id in self.dataclass_authority_ids
+        )
+        return any(
+            self._projection_owner_derives_dataclass_authority_from_tokens(
+                projection,
+                self.dataclass_authorities_by_id[authority_id],
+                self.dataclass_fact_tokens_by_authority_id[authority_id],
+                self.construction_resolver.construction_type_materializes_authority,
+            )
+            for authority_id in candidate_authority_ids
         )
 
     def _projection_owner_derives_dataclass_authority(
@@ -4006,6 +4462,20 @@ class DataclassProjectionDescentAuthority:
             for fact in matched_facts
             for variant in normalized_name_variants(fact.name)
         )
+        return self._projection_owner_derives_dataclass_authority_from_tokens(
+            projection,
+            authority,
+            matched_tokens,
+            accepts_construction,
+        )
+
+    @staticmethod
+    def _projection_owner_derives_dataclass_authority_from_tokens(
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_tokens: frozenset[str],
+        accepts_construction: ConstructionAuthorityPredicate,
+    ) -> bool:
         if not matched_tokens:
             return False
         descended_field_tokens: set[str] = set()
@@ -4047,7 +4517,15 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
 
     @cached_property
     def construction_resolver(self) -> ConstructionAuthorityResolver:
-        return ConstructionAuthorityResolver(self.class_index)
+        return ConstructionAuthorityResolver(
+            class_index=self.class_index,
+            authorities=self.authorities,
+            projection_construction_type_names=frozenset(
+                construction.type_name
+                for projection in self.projections
+                for construction in projection.owner_constructions
+            ),
+        )
 
     @cached_property
     def dataclass_descent(self) -> DataclassProjectionDescentAuthority:
@@ -4127,26 +4605,67 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         self,
         projection: PresentationProjection,
     ) -> FactMatchesByAuthority:
-        matches = [
-            SemanticFactTokenMatch(
-                authority_id=ref.authority_id,
-                fact_id=ref.fact_id,
-                token_value=token.value,
+        matches_by_authority: FactMatchesByAuthority = {}
+        for token in projection.tokens:
+            for ref in self._candidate_refs_for_token(token):
+                matches_by_authority.setdefault(ref.authority_id, {}).setdefault(
+                    ref.fact_id,
+                    set(),
+                ).add(token.value)
+        for match in ProjectionClassSymbolFactMatcher(
+            projection,
+            self.class_index,
+            self.authority_catalog,
+            self.fact_authority_index,
+        ).matches():
+            matches_by_authority.setdefault(match.authority_id, {}).setdefault(
+                match.fact_id,
+                set(),
+            ).add(match.token_value)
+        return {
+            authority_id: matches_by_fact_id
+            for authority_id, matches_by_fact_id in matches_by_authority.items()
+            if self._matches_can_form_mirror(
+                authority_id,
+                matches_by_fact_id,
             )
-            for token in projection.tokens
-            for ref in self._candidate_refs_for_token(token)
-        ]
-        matches.extend(
-            ProjectionClassSymbolFactMatcher(
-                projection,
-                self.class_index,
-                self.authority_catalog,
-                self.fact_authority_index,
-            ).matches()
+        }
+
+    def _matches_can_form_mirror(
+        self,
+        authority_id: str,
+        matches_by_fact_id: dict[str, set[str]],
+    ) -> bool:
+        matched_fact_count = len(matches_by_fact_id)
+        if matched_fact_count < 2:
+            return False
+        authority_fact_count = len(
+            self.fact_authority_index.facts_for_authority(authority_id)
         )
-        return SemanticFactMatchIndex(matches).by_authority
+        return matched_fact_count >= 3 or (
+            matched_fact_count / authority_fact_count >= 0.5
+        )
+
+    @cached_property
+    def candidate_refs_by_token_signature(
+        self,
+    ) -> dict[
+        tuple[str, PresentationTokenKind, str | None],
+        tuple[_FactTokenReference, ...],
+    ]:
+        return {}
 
     def _candidate_refs_for_token(
+        self,
+        token: PresentationToken,
+    ) -> tuple[_FactTokenReference, ...]:
+        signature = (token.value, token.kind, token.qualifier)
+        cache = self.candidate_refs_by_token_signature
+        if signature not in cache:
+            cache[signature] = self._candidate_refs_for_token_uncached(token)
+        return cache[signature]
+
+    def _candidate_refs_for_token_uncached(
         self,
         token: PresentationToken,
     ) -> tuple[_FactTokenReference, ...]:
@@ -4209,6 +4728,7 @@ class NormalizeNameProjection:
     """Normalize source names and literal keys into semantic comparison tokens."""
 
     @classmethod
+    @lru_cache(maxsize=None)
     def variants(cls, raw_name: str) -> tuple[str, ...]:
         normalized = cls.normalize(raw_name)
         variants = {normalized} if normalized else set()
@@ -4220,6 +4740,7 @@ class NormalizeNameProjection:
         return sorted_tuple(variants)
 
     @classmethod
+    @lru_cache(maxsize=None)
     def token_set(cls, raw_name: str) -> frozenset[str]:
         return frozenset(
             token
@@ -4281,8 +4802,16 @@ class PresentationTokenNodeProjector(ABC, metaclass=AutoRegisterMeta):
         cls,
         node: ast.AST,
     ) -> type["PresentationTokenNodeProjector"] | None:
+        return cls.projector_for_node_type(type(node))
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def projector_for_node_type(
+        cls,
+        node_type: type[ast.AST],
+    ) -> type["PresentationTokenNodeProjector"] | None:
         for projector_type in cls.registered_projector_types():
-            if isinstance(node, projector_type.node_type):
+            if issubclass(node_type, projector_type.node_type):
                 return projector_type
         return None
 

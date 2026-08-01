@@ -124,6 +124,7 @@ from .codemod_authoring import (
     CodemodCliCommandSpec,
 )
 from .detectors import DetectorConfig, IssueDetector
+from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
 from .economics import (
     EconomicsProofReport,
     LineChangeBudget,
@@ -1188,7 +1189,15 @@ class FastPreparseSemanticDescentSourceAuthority:
         )
 
     def latest_graph(self) -> SemanticDescentGraph | None:
-        if not self.preparse_cache_policy.uses_evidence_local_partial_reuse:
+        # Loop-summary lookup needs the graph only when an actual evidence-local
+        # partial result is computed; ``FastCachedPathAnalysisAuthority`` loads
+        # it lazily in that branch.  Eagerly unpickling the repository graph here
+        # made every ordinary cache miss pay the full graph-load cost before AST
+        # parsing, even when no previous analysis result could be reused.
+        if (
+            not self.preparse_cache_policy.uses_evidence_local_partial_reuse
+            or not self.preparse_cache_policy.mode.requires_semantic_descent_cache
+        ):
             return None
         return self.cache_context.latest_graph()
 
@@ -5268,7 +5277,7 @@ class CodemodSelectedOperationPlanCliCommand(CodemodScanQueryCliCommand):
         return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
 
 
-def main() -> int:
+def _main_without_deadline() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
         description="AST-driven refactoring advisor for nominal architecture."
@@ -5339,7 +5348,9 @@ def main() -> int:
             "--codemod-continuation-plan-out requires --codemod-project-findings"
         )
     if args.codemod_project_source_index and not args.codemod_project_findings:
-        parser.error("--codemod-project-source-index requires --codemod-project-findings")
+        parser.error(
+            "--codemod-project-source-index requires --codemod-project-findings"
+        )
     if args.codemod_workflow_plan is not None and (
         args.codemod_fixpoint or args.codemod_refactor_goal is not None
     ):
@@ -5582,10 +5593,7 @@ def main() -> int:
         cache_lookup_enabled = (
             preparse_cache_policy.cache_lookup_enabled and preparse_cache_mode.enabled
         ) or source_context_cache_lookup_enabled
-        if (
-            codemod_scan_query_mode.needs_analysis
-            and cache_lookup_enabled
-        ):
+        if codemod_scan_query_mode.needs_analysis and cache_lookup_enabled:
             started = perf_counter()
             fast_semantic_descent_context = FastPreparseSemanticDescentSourceAuthority(
                 preparse_cache_policy=preparse_cache_policy,
@@ -5604,6 +5612,7 @@ def main() -> int:
                 parse_workers=args.parse_workers,
                 analysis_workers=args.analysis_workers,
                 source_policy=source_policy,
+                report_roots=path_scope.report_roots,
                 reuse_policy=(
                     preparse_cache_mode.reuse_policy(
                         focused_report_filter=path_scope.has_report_filter
@@ -5694,6 +5703,7 @@ def main() -> int:
                     analysis_workers=args.analysis_workers,
                     source_policy=source_policy,
                     semantic_descent_source=semantic_descent_analysis_source,
+                    report_scope=path_scope,
                 )
                 unfiltered_findings = analysis_result.findings
                 analysis_cache_status = analysis_result.cache_status
@@ -6005,6 +6015,84 @@ def main() -> int:
                 )
             )
     return 0
+
+
+@dataclass(frozen=True)
+class CliScanDeadlineRequest:
+    """Project standard-scan deadline intent before full CLI dispatch."""
+
+    budget_seconds: float
+    json_enabled: bool
+
+    @classmethod
+    def from_argv(cls, argv: tuple[str, ...]) -> "CliScanDeadlineRequest | None":
+        if any(
+            option in argv
+            for option in (
+                "--help",
+                "-h",
+                "--prove-economics",
+                "--predict-scan",
+                "--calibrate",
+            )
+        ):
+            return None
+        budget_seconds = 20.0
+        for index, argument in enumerate(argv):
+            if argument.startswith("--scan-budget-seconds="):
+                raw_budget = argument.split("=", 1)[1]
+            elif argument == "--scan-budget-seconds" and index + 1 < len(argv):
+                raw_budget = argv[index + 1]
+            else:
+                continue
+            try:
+                budget_seconds = float(raw_budget)
+            except ValueError:
+                return None
+            break
+        if budget_seconds <= 0.0:
+            return None
+        return cls(
+            budget_seconds=budget_seconds,
+            json_enabled="--json" in argv,
+        )
+
+    def timeout_payload(self, error: ScanDeadlineExceeded) -> JsonObject:
+        return {
+            "findings": [],
+            "plans": [],
+            "finding_payload_mode": "deadline_incomplete",
+            "finding_count": None,
+            "finding_counts": None,
+            "scan_status": {
+                "complete": False,
+                "deadline_exceeded": True,
+                "stage": error.stage,
+                "budget_seconds": round(error.budget_seconds, 3),
+                "elapsed_seconds": round(error.elapsed_seconds, 3),
+            },
+        }
+
+    def emit_timeout(self, error: ScanDeadlineExceeded) -> None:
+        if self.json_enabled:
+            print(json.dumps(self.timeout_payload(error), indent=2))
+            return
+        print(str(error), file=sys.stderr)
+
+
+def main() -> int:
+    """Run the CLI under the declared absolute scan wall-clock budget."""
+
+    request = CliScanDeadlineRequest.from_argv(tuple(sys.argv[1:]))
+    if request is None:
+        return _main_without_deadline()
+    deadline = ScanDeadline.start(request.budget_seconds)
+    try:
+        with enforce_scan_deadline(deadline):
+            return _main_without_deadline()
+    except ScanDeadlineExceeded as error:
+        request.emit_timeout(error)
+        return 124
 
 
 if __name__ == "__main__":

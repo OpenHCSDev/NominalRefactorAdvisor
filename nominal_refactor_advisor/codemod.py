@@ -1393,9 +1393,7 @@ class ExactSourcePathResolutionStrategy(SourcePathResolutionStrategy):
         projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
         return tuple(
-            candidate
-            for candidate in projection.paths
-            if candidate == requested_path
+            candidate for candidate in projection.paths if candidate == requested_path
         )
 
 
@@ -1450,8 +1448,7 @@ class RelativeSuffixSourcePathResolutionStrategy(SourcePathResolutionStrategy):
         return tuple(
             candidate
             for candidate, candidate_posix in projection.normalized_rows
-            if not requested.is_absolute()
-            and candidate_posix.endswith(suffix)
+            if not requested.is_absolute() and candidate_posix.endswith(suffix)
         )
 
 
@@ -1472,8 +1469,7 @@ class SourcePathCandidateSet:
     @cached_property
     def normalized_rows(self) -> tuple[tuple[str, str], ...]:
         return tuple(
-            (candidate, Path(candidate).as_posix())
-            for candidate in self.paths
+            (candidate, Path(candidate).as_posix()) for candidate in self.paths
         )
 
     @cached_property
@@ -1614,11 +1610,16 @@ class SourceModuleImportGraph:
 
     @cached_property
     def source_file_by_path(self) -> dict[str, SourceFileDigest]:
-        return {source_file.file_path: source_file for source_file in self.source_index.files}
+        return {
+            source_file.file_path: source_file
+            for source_file in self.source_index.files
+        }
 
     @cached_property
     def known_module_names(self) -> frozenset[str]:
-        return frozenset(source_file.module_name for source_file in self.source_index.files)
+        return frozenset(
+            source_file.module_name for source_file in self.source_index.files
+        )
 
     @cached_property
     def import_edges_by_module(self) -> dict[str, frozenset[str]]:
@@ -1664,7 +1665,9 @@ class SourceModuleImportGraph:
             for alias in statement.names:
                 if alias.name == "*":
                     continue
-                edges.update(self.known_import_targets(f"{resolved_module}.{alias.name}"))
+                edges.update(
+                    self.known_import_targets(f"{resolved_module}.{alias.name}")
+                )
             return frozenset(edges)
         return frozenset()
 
@@ -1948,9 +1951,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
             target_id
             for target_id in sorted(eligible_target_ids)
             for target in (source_index.target_by_id.get(target_id),)
-            if target is not None
-            and target.is_module
-            and target.file_path == file_path
+            if target is not None and target.is_module and target.file_path == file_path
         ]
         if len(matching_target_ids) != 1:
             return None
@@ -4594,7 +4595,9 @@ class SourceLineDiffAuthority:
                     start_line=target.line + source_start,
                     end_line=target.line + source_end - 1,
                     replacement_lines=candidate_lines[
-                        prefix_count + replacement_start : prefix_count + replacement_end
+                        prefix_count
+                        + replacement_start : prefix_count
+                        + replacement_end
                     ],
                     rationale=rationale,
                 )
@@ -7139,14 +7142,14 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         return (
             *CarrierProjectionOperationBase.carrier_projection_payload_bindings(),
             *operation_payload_bindings(
-            (
                 (
-                    "carrier_field_declaration",
-                    "carrier_field_declaration",
-                    ReplaceFieldsWithCarrierOperation.carrier_field_declaration_from_operation,
-                    OperationPayloadReader.required_string,
-                ),
-            )
+                    (
+                        "carrier_field_declaration",
+                        "carrier_field_declaration",
+                        ReplaceFieldsWithCarrierOperation.carrier_field_declaration_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                )
             ),
         )
 
@@ -7518,38 +7521,38 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         return (
             *CarrierProjectionOperationBase.carrier_projection_payload_bindings(),
             *operation_payload_bindings(
-            (
                 (
-                    CARRIER_SOURCE_PAYLOAD_FIELD,
-                    CARRIER_SOURCE_PAYLOAD_FIELD,
-                    ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_source_from_operation,
-                    OperationPayloadReader.required_string,
-                ),
-                (
-                    CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
-                    CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
-                    ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_field_declarations_from_operation,
-                    OperationPayloadReader.required_string_tuple,
-                ),
-                (
-                    FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
-                    FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
-                    ReplaceRolePrefixedFieldsWithCarriersOperation.field_projection_pairs_from_operation,
-                    OperationPayloadReader.required_string_tuple,
-                ),
-                (
-                    CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
-                    CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
-                    ReplaceRolePrefixedFieldsWithCarriersOperation.constructor_names_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
-                ),
-                (
-                    ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
-                    ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
-                    ReplaceRolePrefixedFieldsWithCarriersOperation.attribute_owner_expressions_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
-                ),
-            )
+                    (
+                        CARRIER_SOURCE_PAYLOAD_FIELD,
+                        CARRIER_SOURCE_PAYLOAD_FIELD,
+                        ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_source_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                    (
+                        CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
+                        CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
+                        ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_field_declarations_from_operation,
+                        OperationPayloadReader.required_string_tuple,
+                    ),
+                    (
+                        FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
+                        FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
+                        ReplaceRolePrefixedFieldsWithCarriersOperation.field_projection_pairs_from_operation,
+                        OperationPayloadReader.required_string_tuple,
+                    ),
+                    (
+                        CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
+                        CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
+                        ReplaceRolePrefixedFieldsWithCarriersOperation.constructor_names_from_operation,
+                        OperationPayloadReader.string_tuple_or_empty,
+                    ),
+                    (
+                        ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
+                        ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
+                        ReplaceRolePrefixedFieldsWithCarriersOperation.attribute_owner_expressions_from_operation,
+                        OperationPayloadReader.string_tuple_or_empty,
+                    ),
+                )
             ),
         )
 
@@ -7568,7 +7571,7 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         if not isinstance(operation, ReplaceRolePrefixedFieldsWithCarriersOperation):
             raise TypeError(
                 "carrier_field_declarations binding requires role field carrier replacement"
-        )
+            )
         return operation.carrier_field_declarations
 
     @property
@@ -7588,8 +7591,12 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
             projection.source_field_name: projection for projection in projections
         }
         if len(projection_by_field) != len(projections):
-            raise ValueError("Role field projection pairs contain duplicate source fields")
-        carrier_field_names = frozenset(field.field_name for field in self.carrier_fields)
+            raise ValueError(
+                "Role field projection pairs contain duplicate source fields"
+            )
+        carrier_field_names = frozenset(
+            field.field_name for field in self.carrier_fields
+        )
         unknown_carriers = tuple(
             projection.carrier_field_name
             for projection in projections
@@ -7894,10 +7901,14 @@ class DeleteTargetOperation(RefactorRecipeOperation):
     ) -> tuple[SourceLineReplacement, ...]:
         target_identifier = self.target.required_target_id(source_index)
         target_digest = source_index.target_by_id[target_identifier]
-        target_node = AstTargetNodeIndex(
-            source_index,
-            source_by_path,
-        ).nodes_by_target_identifier().get(target_identifier)
+        target_node = (
+            AstTargetNodeIndex(
+                source_index,
+                source_by_path,
+            )
+            .nodes_by_target_identifier()
+            .get(target_identifier)
+        )
         if isinstance(target_node, ast.stmt):
             target_span = SourceNodeSpan(
                 target_node,
@@ -8162,9 +8173,7 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
                 file_path=target_digest.file_path,
                 start_line=target_digest.line,
                 end_line=target_digest.line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(
-                    self.payload_value
-                ),
+                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
                 rationale=self.rationale
                 or f"Insert authority before {target_digest.qualname!r}.",
             ),
@@ -8235,14 +8244,9 @@ class DeclareAuthorityOperation(
                 file_path=source_path,
                 start_line=insertion_line,
                 end_line=insertion_line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(
-                    self.payload_value
-                ),
+                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
                 rationale=self.rationale
-                or (
-                    "Declare authority "
-                    f"{self.authority_claim.claimed_symbol!r}."
-                ),
+                or ("Declare authority " f"{self.authority_claim.claimed_symbol!r}."),
             ),
         )
 
@@ -8520,9 +8524,13 @@ class RequestedImportSet:
         requested = self.statements[0].statement
         if not isinstance(requested, ast.ImportFrom):
             return ()
-        module = module_node if module_node is not None else ast.parse(
-            source,
-            filename=source_path,
+        module = (
+            module_node
+            if module_node is not None
+            else ast.parse(
+                source,
+                filename=source_path,
+            )
         )
         for statement in module.body:
             if not isinstance(statement, ast.ImportFrom):
@@ -9768,7 +9776,9 @@ class CandidateCollectorBaseNameSet:
     configured: str
 
     @classmethod
-    def from_scope(cls, scope: CandidateCollectorScope) -> "CandidateCollectorBaseNameSet":
+    def from_scope(
+        cls, scope: CandidateCollectorScope
+    ) -> "CandidateCollectorBaseNameSet":
         return cls(
             unconfigured=DerivedCandidateCollectorMixin.collector_base_name_for_shape(
                 CandidateCollectorBaseShape(scope=scope, uses_config=False)
@@ -12221,9 +12231,7 @@ def codemod_dsl_payload_reader_profile_rules() -> tuple[
 class CodemodDslRegistryEntryFieldManifest(ABC, metaclass=AutoRegisterMeta):
     """One field row inside a registry-entry manifest projection."""
 
-    __registry__: ClassVar[
-        dict[str, type["CodemodDslRegistryEntryFieldManifest"]]
-    ] = {}
+    __registry__: ClassVar[dict[str, type["CodemodDslRegistryEntryFieldManifest"]]] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
@@ -16498,7 +16506,10 @@ class FindingAuthorityClaimInference:
     def candidate_symbols(self) -> tuple[str, ...]:
         raw_symbols = (
             *self.metric_candidate_symbols(),
-            *(EvidenceSymbol(evidence.symbol).subject for evidence in self.finding.evidence),
+            *(
+                EvidenceSymbol(evidence.symbol).subject
+                for evidence in self.finding.evidence
+            ),
         )
         return tuple(
             dict.fromkeys(
@@ -16619,10 +16630,7 @@ class FindingRecipeAuthorityClaimGate:
 
     @staticmethod
     def rejection_reason(report: CodemodOperationPreflightReport) -> str:
-        return (
-            "generated recipe failed Authority Claim Gate: "
-            f"{report.message}"
-        )
+        return "generated recipe failed Authority Claim Gate: " f"{report.message}"
 
 
 @dataclass(frozen=True)
@@ -17512,7 +17520,9 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
             )
         )
         class_names = tuple(
-            dict.fromkeys(symbol.rsplit(".", maxsplit=1)[0] for symbol in evidence_symbols)
+            dict.fromkeys(
+                symbol.rsplit(".", maxsplit=1)[0] for symbol in evidence_symbols
+            )
         )
         if len(class_names) == 1 and finding.metrics.plan_field_names:
             class_name = class_names[0]
@@ -18322,6 +18332,7 @@ class PrefixedRoleBundleFindingRecipeSynthesizer(
         )
         return "\n\n".join((base_source, *role_sources))
 
+
 @dataclass(frozen=True)
 class ParallelPrimitiveCarrierRecipeParts:
     """Executable carrier-collapse facts for one exact primitive bundle."""
@@ -18350,7 +18361,9 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
     missing_context_reason = (
         "parallel primitive carrier collapse requires a source selector context"
     )
-    missing_metric_reason = "parallel primitive carrier collapse requires mapping metrics"
+    missing_metric_reason = (
+        "parallel primitive carrier collapse requires mapping metrics"
+    )
     missing_source_path_reason = (
         "parallel primitive carrier collapse requires one source file"
     )
@@ -18781,16 +18794,13 @@ class IdentityKeywordForwardingShellRecipeParts(AuthorityClaimCarrier):
     call_rewrites: tuple[IdentityKeywordForwardingCallRewrite, ...]
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-collapse-identity-keyword-forwarding",
-                reason=(
-                    "Inline identity keyword forwarding shell calls into the "
-                    "callee authority."
-                ),
-            )
-            .with_authority_claim(self.authority_claim)
-        )
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-collapse-identity-keyword-forwarding",
+            reason=(
+                "Inline identity keyword forwarding shell calls into the "
+                "callee authority."
+            ),
+        ).with_authority_claim(self.authority_claim)
         for call_rewrite in self.call_rewrites:
             recipe = recipe.replace_target(
                 call_rewrite.replacement_source,
@@ -19900,14 +19910,11 @@ class RepeatedAuthorityRecipeParts(AuthorityClaimCarrier):
     target_shape: RefactorRecipeTargetShape | None = None
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
-                reason=self.recipe_reason,
-                target_shape=self.target_shape,
-            )
-            .with_authority_claim(self.authority_claim)
-        )
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
+            reason=self.recipe_reason,
+            target_shape=self.target_shape,
+        ).with_authority_claim(self.authority_claim)
         for rewrite_step in self.rewrite_steps:
             recipe = recipe.replace_target(
                 rewrite_step.replacement_source,
@@ -20469,9 +20476,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         )
         arguments_source = "\n".join(argument_lines)
         return (
-            f"self.{spec.method_name}(\n"
-            f"{arguments_source}\n"
-            f"{closing_indent})"
+            f"self.{spec.method_name}(\n" f"{arguments_source}\n" f"{closing_indent})"
         )
 
     @staticmethod
@@ -20653,17 +20658,21 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         field_annotations: tuple[tuple[str, str], ...],
         matching_calls: tuple[ast.Call, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
-        return cls.source_projection_authority_method_or_none(
-            metrics,
-            field_annotations,
-            matching_calls,
-        ) or cls.role_authority_method_or_none(
-            metrics,
-            field_annotations,
-        ) or cls.invariant_selector_authority_method_or_none(
-            metrics,
-            field_annotations,
-            matching_calls,
+        return (
+            cls.source_projection_authority_method_or_none(
+                metrics,
+                field_annotations,
+                matching_calls,
+            )
+            or cls.role_authority_method_or_none(
+                metrics,
+                field_annotations,
+            )
+            or cls.invariant_selector_authority_method_or_none(
+                metrics,
+                field_annotations,
+                matching_calls,
+            )
         )
 
     @classmethod
@@ -20825,7 +20834,8 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         field_names: tuple[str, ...],
     ) -> str | None:
         values_by_call = tuple(
-            cls.call_keyword_values_by_field(call, field_names) for call in matching_calls
+            cls.call_keyword_values_by_field(call, field_names)
+            for call in matching_calls
         )
         if any(values_by_field is None for values_by_field in values_by_call):
             return None
@@ -20835,7 +20845,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                 for values_by_field in values_by_call
                 if values_by_field is not None
             )
-            if all(len(ROOT_NAME_PROJECTION.root_names(value)) == 1 for value in values):
+            if all(
+                len(ROOT_NAME_PROJECTION.root_names(value)) == 1 for value in values
+            ):
                 return field_name
         return None
 
@@ -20964,7 +20976,11 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         return (
             Maybe.of(values)
             .filter(lambda field_values: len(field_values) == call_count)
-            .project(lambda field_values: cls.constant_invariant_field_plan(field_name, field_values))
+            .project(
+                lambda field_values: cls.constant_invariant_field_plan(
+                    field_name, field_values
+                )
+            )
             .unwrap_or_none()
         ) or (
             Maybe.of(values)
@@ -23552,7 +23568,9 @@ class SemanticMirrorRecipeSeedLocations:
         self,
         role: SemanticMirrorEndpointRole,
     ) -> SemanticMirrorRecipeEndpoint:
-        matches = tuple(endpoint for endpoint in self.endpoints if endpoint.role is role)
+        matches = tuple(
+            endpoint for endpoint in self.endpoints if endpoint.role is role
+        )
         if len(matches) != 1:
             raise ValueError(f"Semantic mirror seed lacks one {role.value} endpoint")
         return matches[0]
@@ -24163,7 +24181,9 @@ class TupleReturnProducerLocalBindings:
         )
 
     @staticmethod
-    def single_name_assignment_value(statement: ast.stmt) -> tuple[str, ast.expr] | None:
+    def single_name_assignment_value(
+        statement: ast.stmt,
+    ) -> tuple[str, ast.expr] | None:
         if (
             isinstance(statement, ast.Assign)
             and len(statement.targets) == 1
@@ -24413,7 +24433,9 @@ class ReturnKeyValueSequenceProjectionTargetAuthority:
             node,
             line,
         )
-        if return_node is None or not isinstance(return_node.value, ast.Tuple | ast.List):
+        if return_node is None or not isinstance(
+            return_node.value, ast.Tuple | ast.List
+        ):
             return None
         field_values = cls.field_values(return_node.value, field_names)
         if frozenset(field.field_name for field in field_values) != frozenset(
@@ -24492,7 +24514,9 @@ class TupleReturnProjectionTargetAuthority:
             node,
             line,
         )
-        if return_node is None or not isinstance(return_node.value, ast.Tuple | ast.List):
+        if return_node is None or not isinstance(
+            return_node.value, ast.Tuple | ast.List
+        ):
             return None
         field_values = cls.field_values(return_node.value)
         if tuple(field.field_name for field in field_values) != field_names:
@@ -24557,7 +24581,10 @@ class TupleReturnProjectionTargetAuthority:
                 target.file_path != projection.source_path
                 or target.target_id == projection.target.target_id
                 or target.node_kind
-                not in {AstTargetNodeKind.FUNCTION.value, AstTargetNodeKind.METHOD.value}
+                not in {
+                    AstTargetNodeKind.FUNCTION.value,
+                    AstTargetNodeKind.METHOD.value,
+                }
             ):
                 continue
             node = context.ast_target_nodes_by_id.get(target.target_id)
@@ -24750,11 +24777,15 @@ class TupleFieldSubscriptTargetCollector:
                         iterator_name = _name_id(generator.target)
                         if (
                             iterator_name is not None
-                            and self.authority.iterates_record_collection(generator.iter)
+                            and self.authority.iterates_record_collection(
+                                generator.iter
+                            )
                         ):
                             self.record_names = (*self.record_names, iterator_name)
                     for result_node in (
-                        result_nodes if isinstance(result_nodes, tuple) else (result_nodes,)
+                        result_nodes
+                        if isinstance(result_nodes, tuple)
+                        else (result_nodes,)
                     ):
                         self.visit(result_node)
                 finally:
@@ -24921,7 +24952,9 @@ class DataclassAuthorityMappingRecipeBuilder(
     @cached_property
     def parts(self) -> RecipePartsT | None:
         return (
-            Maybe.of(FindingSemanticMirrorLocations(self.finding).optional_seed_locations())
+            Maybe.of(
+                FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+            )
             .project(self.parts_from_seed)
             .unwrap_or_none()
         )
@@ -25034,9 +25067,11 @@ class DataclassAuthorityMappingRecipeBuilder(
     ) -> str | None:
         source = self.sources_by_file_path[authority.source_path]
         geometry = SourceTextGeometry(source)
-        insertion_offset = RepeatedBuilderCallFindingRecipeSynthesizer.class_method_insertion_offset(
-            source,
-            authority.node,
+        insertion_offset = (
+            RepeatedBuilderCallFindingRecipeSynthesizer.class_method_insertion_offset(
+                source,
+                authority.node,
+            )
         )
         target_start = geometry.line_offsets[authority.target.line - 1]
         target_end = (
@@ -25151,7 +25186,9 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return "dataclass payload projection requires mapping metrics"
-        locations = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+        locations = FindingSemanticMirrorLocations(
+            self.finding
+        ).optional_seed_locations()
         if locations is None:
             return "dataclass payload projection requires projection and authority locations"
         projection_source_path = SourcePathResolutionAuthority.from_source_index(
@@ -25168,9 +25205,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             importing_file_path=projection_source_path,
             imported_file_path=authority_source_path,
         ):
-            return (
-                "dataclass payload projection import would create a module cycle"
-            )
+            return "dataclass payload projection import would create a module cycle"
         if self.parts is not None:
             return "dataclass payload projection has an executable authority-key recipe"
         return (
@@ -25427,9 +25462,11 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
             authority.node,
             self.payload_method_name,
         ):
-            authority_replacement_source = self.authority_replacement_source_with_method(
-                authority,
-                self.payload_method_source(),
+            authority_replacement_source = (
+                self.authority_replacement_source_with_method(
+                    authority,
+                    self.payload_method_source(),
+                )
             )
             if authority_replacement_source is None:
                 return None
@@ -25589,8 +25626,7 @@ class BoundarySourceContextReturnDictRecipeParts(
 
     def carrier_source(self) -> str:
         field_lines = tuple(
-            f"    {field_name}: object\n"
-            for field_name in self.field_names()
+            f"    {field_name}: object\n" for field_name in self.field_names()
         )
         return "".join(
             (
@@ -25626,7 +25662,7 @@ class BoundarySourceContextCarrierSelection:
 @dataclass(frozen=True, kw_only=True)
 class BoundarySourceContextReturnDictMappingRecipeBuilder(
     ReturnDictFieldValueExtractor,
-    PartsBackedMappingRecipeBuilder[BoundarySourceContextReturnDictRecipeParts]
+    PartsBackedMappingRecipeBuilder[BoundarySourceContextReturnDictRecipeParts],
 ):
     """Nominalize formal source-scope return dictionaries as dataclass carriers."""
 
@@ -25657,7 +25693,9 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
         if evidence is None:
             return "source-context carrier extraction requires primary source evidence"
         if self.parts is not None:
-            return "source-context carrier extraction has an executable return-dict recipe"
+            return (
+                "source-context carrier extraction has an executable return-dict recipe"
+            )
         return (
             "source-context carrier extraction requires one source-index-resolved "
             "function or top-level method return dict whose string keys match the finding"
@@ -26072,7 +26110,9 @@ class TupleReturnConsumerRewrite:
 
 
 @dataclass(frozen=True)
-class SemanticTupleReturnRecordRecipeParts(FunctionProjectionTarget, FindingRecipeParts):
+class SemanticTupleReturnRecordRecipeParts(
+    FunctionProjectionTarget, FindingRecipeParts
+):
     """Executable facts for replacing a tuple return with a nominal record."""
 
     insertion_qualname: str
@@ -26123,7 +26163,8 @@ class SemanticTupleReturnRecordRecipeParts(FunctionProjectionTarget, FindingReci
 
     def carrier_source(self) -> str:
         field_lines = tuple(
-            f"    {field.field_name}: object\n" for field in self.projection.field_values
+            f"    {field.field_name}: object\n"
+            for field in self.projection.field_values
         )
         return "".join(
             (
@@ -26263,20 +26304,17 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
         carrier_name: str,
         projection: TupleReturnProjectionTarget,
     ) -> tuple[TupleReturnConsumerRewrite, ...]:
-        rewrites = (
-            tuple(
-                self.unpack_rewrite(carrier_name, projection, unpack_target)
-                for unpack_target in TupleReturnProjectionTargetAuthority.unpack_assignments(
-                    self,
-                    projection,
-                )
+        rewrites = tuple(
+            self.unpack_rewrite(carrier_name, projection, unpack_target)
+            for unpack_target in TupleReturnProjectionTargetAuthority.unpack_assignments(
+                self,
+                projection,
             )
-            + tuple(
-                self.field_subscript_rewrite(field_target)
-                for field_target in TupleReturnProjectionTargetAuthority.field_subscript_targets(
-                    self,
-                    projection,
-                )
+        ) + tuple(
+            self.field_subscript_rewrite(field_target)
+            for field_target in TupleReturnProjectionTargetAuthority.field_subscript_targets(
+                self,
+                projection,
             )
         )
         if any(rewrite is None for rewrite in rewrites):
@@ -26436,6 +26474,14 @@ class DataclassCallProjectionMappingRecipeBuilder(
     executable_rejection_reason: ClassVar[str]
     missing_rejection_reason: ClassVar[str]
 
+    @classmethod
+    def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
+        # Goal-policy manifests must classify a finding by its declared mapping
+        # family.  The generic return-projection fallback below is intentionally
+        # broader, but using that fallback here makes every return projection
+        # appear to be a constructor projection and destroys selector priority.
+        return super().matches_finding_shape(finding)
+
     def supports_finding(self) -> bool:
         return self.explains_rejection() and self.parts is not None
 
@@ -26506,8 +26552,7 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         matching_calls = tuple(
             call
             for call in ast.walk(return_node.value)
-            if isinstance(call, ast.Call)
-            and self.call_projects_dataclass_fields(call)
+            if isinstance(call, ast.Call) and self.call_projects_dataclass_fields(call)
         )
         if len(matching_calls) != 1:
             return None
@@ -26617,7 +26662,9 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
     ) -> SourceTextReplacement | None:
         source = self.sources_by_file_path[projection.source_path]
         geometry = SourceTextGeometry(source)
-        replacement_call = self.replacement_call(authority, authority_method, projection)
+        replacement_call = self.replacement_call(
+            authority, authority_method, projection
+        )
         return (
             Maybe.of(geometry.node_offsets(projection.call_node))
             .map(SourceTextSpan.from_offsets)
@@ -26762,11 +26809,9 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
         node = self.ast_target_nodes_by_id.get(target.target_id)
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             return None
-        return_node = (
-            FunctionReturnNodeAuthority.return_node_at_line(
-                node,
-                seed.projection_line(),
-            )
+        return_node = FunctionReturnNodeAuthority.return_node_at_line(
+            node,
+            seed.projection_line(),
         )
         if return_node is None:
             return None
@@ -26859,6 +26904,7 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
             for keyword in call_node.keywords
             if keyword.arg in field_names
         }
+
 
 @dataclass(frozen=True)
 class GenericRoleCaseLiteralAuthority:
@@ -30706,9 +30752,8 @@ class FindingRecipePlanBuilder:
 
     @staticmethod
     def finding_has_dispatch_recipe_shape(finding: RefactorFinding) -> bool:
-        return (
-            finding.metrics.plan_dispatch_axis is not None
-            and bool(finding.metrics.plan_literal_cases)
+        return finding.metrics.plan_dispatch_axis is not None and bool(
+            finding.metrics.plan_literal_cases
         )
 
     @staticmethod

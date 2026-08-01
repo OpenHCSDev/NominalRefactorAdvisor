@@ -300,12 +300,14 @@ class ExistingNominalAuthorityReuseDetector(
 
     candidate_collector = staticmethod(_existing_nominal_authority_reuse_candidates)
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[ExistingNominalAuthorityReuseCandidate],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _existing_nominal_authority_reuse_candidates(modules):
+        for candidate in candidates:
             evidence = (
                 SourceLocation(
                     candidate.file_path, candidate.line, candidate.class_name
@@ -369,12 +371,14 @@ class NominalAuthorityImplementationRetreatDetector(
         _nominal_authority_implementation_retreat_candidates
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[NominalAuthorityImplementationRetreatCandidate],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _nominal_authority_implementation_retreat_candidates(modules):
+        for candidate in candidates:
             retreat_site, authority_site = candidate.retreat_authority_sites
             evidence = (
                 SourceLocation(
