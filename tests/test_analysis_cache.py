@@ -61,6 +61,7 @@ from nominal_refactor_advisor.detectors import (
     SemanticDescentGraphIssueDetector,
 )
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
+from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
@@ -1325,6 +1326,46 @@ def test_generated_boundary_global_projection_reuses_compact_module_cache(
     assert second_sites[0].file_path == str(package_root / "generated_catalog.py")
 
 
+def test_warm_compact_projection_stream_skips_ast_deserialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "generated_catalog.py").write_text(
+        "# generated file\nSEMANTIC_MODE = 'canonical'\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    detector_types = (
+        runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector,
+    )
+    first = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        cache_dir=cache_dir,
+    )
+    assert first.projection_count == 1
+    release_module_analysis_memory()
+
+    def unexpected_ast_load(self, paths):
+        del self, paths
+        raise AssertionError("warm compact projection stream deserialized an AST")
+
+    monkeypatch.setattr(
+        ast_tools_module.PythonModuleRootParser,
+        "parsed_source_paths",
+        unexpected_ast_load,
+    )
+    second = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        cache_dir=cache_dir,
+    )
+
+    assert second.projection_count == first.projection_count
+
+
 def test_compact_global_projection_accumulator_matches_full_ast_detection(
     tmp_path: Path,
 ) -> None:
@@ -1358,6 +1399,103 @@ def test_compact_global_projection_accumulator_matches_full_ast_detection(
     ]
 
 
+def test_compact_hierarchy_projection_matches_full_ast_detection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "alpha.py").write_text(
+        "class Alpha:\n"
+        "    def prepare(self, value):\n"
+        "        ready = self.normalize(value)\n"
+        "        return self.finish(ready)\n"
+        "\n"
+        "    def score(self, value):\n"
+        "        scored = self.compute(value)\n"
+        "        return self.finish(scored)\n",
+        encoding="utf-8",
+    )
+    (package_root / "beta.py").write_text(
+        "class Beta:\n"
+        "    def build(self, value):\n"
+        "        ready = self.normalize(value)\n"
+        "        return self.finish(ready)\n"
+        "\n"
+        "    def evaluate(self, value):\n"
+        "        scored = self.compute(value)\n"
+        "        return self.finish(scored)\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        systemic_detectors.InheritanceHierarchyCandidateDetector,
+        systemic_detectors.RepeatedPrivateMethodDetector,
+    )
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        use_parse_cache=False,
+    )
+    projected_findings = accumulator.findings_by_detector(DetectorConfig())
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+
+    for detector_type in detector_types:
+        full_ast_findings = detector_type().detect(modules, DetectorConfig())
+        assert [finding.to_dict() for finding in projected_findings[detector_type]] == [
+            finding.to_dict() for finding in full_ast_findings
+        ]
+
+
+def test_compact_flattened_candidate_projections_match_full_ast_detection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "builders.py").write_text(
+        "def build_left(source):\n"
+        "    return Target(alpha=source.alpha, beta=source.beta)\n"
+        "\n"
+        "def build_right(source):\n"
+        "    return Target(alpha=source.alpha, beta=source.beta)\n"
+        "\n"
+        "def build_pose(source):\n"
+        "    return Target(**declared_values_by_type(PoseCarrier, source))\n"
+        "\n"
+        "def build_repair(source):\n"
+        "    return Target(**declared_values_by_type(RepairCarrier, source))\n"
+        "\n"
+        "def export_left(source):\n"
+        "    return {'alpha': source.alpha, 'beta': source.beta, 'gamma': source.gamma}\n"
+        "\n"
+        "def export_right(source):\n"
+        "    return {'alpha': source.alpha, 'beta': source.beta, 'gamma': source.gamma}\n"
+        "\n"
+        "REGISTRY = {}\n"
+        "REGISTRY['alpha'] = Alpha\n"
+        "REGISTRY['beta'] = Beta\n"
+        "REGISTRY['gamma'] = Gamma\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        runtime_detectors.RepeatedBuilderCallDetector,
+        runtime_detectors.DeclaredFieldExtractionFanoutDetector,
+        runtime_detectors.RepeatedExportDictDetector,
+        runtime_detectors.ManualClassRegistrationDetector,
+    )
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        use_parse_cache=False,
+    )
+    projected_findings = accumulator.findings_by_detector(DetectorConfig())
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+
+    for detector_type in detector_types:
+        full_ast_findings = detector_type().detect(modules, DetectorConfig())
+        assert [finding.to_dict() for finding in projected_findings[detector_type]] == [
+            finding.to_dict() for finding in full_ast_findings
+        ]
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -1367,8 +1505,27 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
         in partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 4
-    assert len(partition.ast_retaining_context_detector_types) == 65
+    assert (
+        systemic_detectors.InheritanceHierarchyCandidateDetector
+        in partition.compact_global_detector_types
+    )
+    assert runtime_detectors.RepeatedBuilderCallDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.DeclaredFieldExtractionFanoutDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.RepeatedExportDictDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.ManualClassRegistrationDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.RepeatedPrivateMethodDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 10
+    assert len(partition.ast_retaining_context_detector_types) == 59
     assert len(partition.per_module_detector_types) == 183
 
 

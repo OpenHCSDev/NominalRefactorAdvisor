@@ -87,6 +87,17 @@ def _inheritance_method_shapes(
     return tuple(shapes)
 
 
+class InheritanceMethodShapeFamily(CollectedFamily[MethodShape]):
+    """Persist AST-free method shapes used by hierarchy-wide grouping."""
+
+    item_type = MethodShape
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[MethodShape]:
+        del cls
+        return list(_inheritance_method_shapes(parsed_module, 0))
+
+
 def _option_record_quotient_compression_certificate(
     candidate: OptionRecordQuotientCandidate,
 ) -> CompressionCertificate:
@@ -239,8 +250,12 @@ class TypingProtocolContractDetector(PerModuleIssueDetector):
 
 
 class RepeatedPrivateMethodDetector(
-    FiberCollectedShapeIssueDetector[MethodShape, tuple[bool, int, str]]
+    CompactFiberCollectedShapeIssueDetector[
+        MethodShape,
+        tuple[bool, int, str],
+    ]
 ):
+    module_projection_family = InheritanceMethodShapeFamily
     detector_id = "repeated_private_methods"
     observation_kind = ObservationKind.METHOD_SHAPE
     finding_spec = high_confidence_certified_spec(
@@ -310,7 +325,11 @@ class RepeatedPrivateMethodDetector(
         )
 
 
-class InheritanceHierarchyCandidateDetector(IssueDetector):
+class InheritanceHierarchyCandidateDetector(
+    CompactModuleProjectionDetectorMixin[MethodShape],
+    IssueDetector,
+):
+    module_projection_family = InheritanceMethodShapeFamily
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Classes cluster into an ABC hierarchy candidate",
@@ -321,18 +340,15 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
         _REPEATED_METHOD_ROLES_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[MethodShape, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         repeated_methods = tuple(
-            (
-                method
-                for module in modules
-                for method in _inheritance_method_shapes(
-                    module,
-                    config.min_duplicate_statements,
-                )
-            )
+            method
+            for method in projections
+            if method.statement_count >= config.min_duplicate_statements
         )
         graph = ObservationGraph(
             tuple((method.structural_observation for method in repeated_methods))
@@ -2202,9 +2218,7 @@ class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
                         f"`{assignment}` maps `{axis_name}` member names to callable operations "
                         f"{operations}; this is a hardcoded strategy family."
                     ),
-                    (
-                        SourceLocation(str(module.path), statement.lineno, assignment),
-                    ),
+                    (SourceLocation(str(module.path), statement.lineno, assignment),),
                     scaffold=(
                         "from abc import ABC, abstractmethod\n"
                         "from typing import ClassVar\n"

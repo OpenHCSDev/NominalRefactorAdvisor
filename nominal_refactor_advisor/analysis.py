@@ -30,10 +30,14 @@ from .analysis_cache import (
     SourceFileSignatureCache,
 )
 from .ast_tools import (
+    CollectedFamily,
     ParsedModule,
+    PythonModulePathIdentity,
     PythonModuleRootParser,
     PythonSourcePathDiscovery,
     PythonSourcePathPolicy,
+    collect_family_items,
+    load_cached_collected_family_items_for_source,
     parse_python_module_roots,
     parse_python_modules,
 )
@@ -497,7 +501,7 @@ class CompactGlobalProjectionAccumulator:
     """Collect persisted module facts without retaining their repository ASTs."""
 
     detector_types: tuple[type[IssueDetector], ...]
-    _projections_by_detector_type: dict[type[IssueDetector], list[object]] = field(
+    _projections_by_family: dict[type[CollectedFamily], list[object]] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -522,20 +526,44 @@ class CompactGlobalProjectionAccumulator:
     def add_module(self, module: ParsedModule) -> None:
         """Project one module, after which its AST may be safely released."""
 
+        for family in self.projection_families:
+            projections = tuple(collect_family_items(module, family))
+            self.add_family_projections(family, projections)
+
+    @property
+    def detector_types_by_family(
+        self,
+    ) -> dict[type[CollectedFamily], tuple[type[IssueDetector], ...]]:
+        grouped: dict[type[CollectedFamily], list[type[IssueDetector]]] = {}
         for detector_type in self.detector_types:
-            projected_detector_type = cast(
-                type[CompactModuleProjectionDetectorMixin],
-                detector_type,
-            )
-            projections = projected_detector_type.compact_module_projections((module,))
-            for projection in projections:
-                if self._retains_ast(projection):
-                    raise TypeError(
-                        f"{detector_type.__name__} compact projection retains an AST"
-                    )
-            self._projections_by_detector_type.setdefault(detector_type, []).extend(
-                projections
-            )
+            family = cast(
+                type[CompactModuleProjectionDetectorMixin], detector_type
+            ).module_projection_family
+            grouped.setdefault(family, []).append(detector_type)
+        return {family: tuple(types) for family, types in grouped.items()}
+
+    @property
+    def projection_families(self) -> tuple[type[CollectedFamily], ...]:
+        return tuple(self.detector_types_by_family)
+
+    def add_family_projections(
+        self,
+        family: type[CollectedFamily],
+        projections: tuple[object, ...],
+    ) -> None:
+        """Retain validated facts loaded either from source or persistent cache."""
+
+        for projection in projections:
+            if self._retains_ast(projection):
+                detector_names = ", ".join(
+                    detector_type.__name__
+                    for detector_type in self.detector_types_by_family[family]
+                )
+                raise TypeError(
+                    f"{family.__name__} compact projection for {detector_names} "
+                    "retains an AST"
+                )
+        self._projections_by_family.setdefault(family, []).extend(projections)
 
     def findings_by_detector(
         self,
@@ -544,11 +572,22 @@ class CompactGlobalProjectionAccumulator:
         findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
         for detector_type in self.detector_types:
             detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
+            family = cast(
+                type[CompactModuleProjectionDetectorMixin], detector_type
+            ).module_projection_family
             findings[detector_type] = detector._findings_from_compact_projections(
-                tuple(self._projections_by_detector_type.get(detector_type, ())),
+                tuple(self._projections_by_family.get(family, ())),
                 config,
             )
         return findings
+
+    @property
+    def projection_count(self) -> int:
+        """Return unique retained facts across shared projection families."""
+
+        return sum(
+            len(projections) for projections in self._projections_by_family.values()
+        )
 
     @classmethod
     def _retains_ast(
@@ -605,8 +644,42 @@ def accumulate_compact_global_projections_for_roots(
             if normalized_path in seen_paths:
                 continue
             seen_paths.add(normalized_path)
+            missing_families = list(accumulator.projection_families)
+            family_cache_dir = parser.collected_family_cache_dir
+            if family_cache_dir is not None:
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except OSError:
+                    source = ""
+                if source:
+                    module_identity = PythonModulePathIdentity.from_path(
+                        path,
+                        parser.analysis_root,
+                    )
+                    missing_families = []
+                    for family in accumulator.projection_families:
+                        projections = load_cached_collected_family_items_for_source(
+                            path=path,
+                            module_name=module_identity.import_name,
+                            source=source,
+                            family_cache_dir=family_cache_dir,
+                            family=family,
+                        )
+                        if projections is None:
+                            missing_families.append(family)
+                            continue
+                        accumulator.add_family_projections(
+                            family,
+                            cast(tuple[object, ...], projections),
+                        )
+            if not missing_families:
+                continue
             for module in parser.parsed_source_paths((path,)):
-                accumulator.add_module(module)
+                for family in missing_families:
+                    accumulator.add_family_projections(
+                        family,
+                        tuple(collect_family_items(module, family)),
+                    )
                 del module
             release_module_analysis_memory(collect_cycles=False)
     gc.collect()

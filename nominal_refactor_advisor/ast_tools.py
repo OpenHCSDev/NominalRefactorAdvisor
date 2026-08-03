@@ -1199,6 +1199,14 @@ def _load_cached_collected_family_items(
     if cache_dir is None:
         return None
     identity = _collected_family_cache_identity(parsed_module, family)
+    return _load_collected_family_cache_payload(cache_dir, identity, family)
+
+
+def _load_collected_family_cache_payload(
+    cache_dir: Path,
+    identity: CollectedFamilyCacheIdentity,
+    family: type[CollectedFamily[ShapeItemT]],
+) -> tuple[ShapeItemT, ...] | None:
     try:
         with _collected_family_cache_path(cache_dir, identity).open("rb") as handle:
             payload = pickle.load(handle)
@@ -1220,6 +1228,36 @@ def _load_cached_collected_family_items(
     if not all(isinstance(item, family.item_type) for item in payload.items):
         return None
     return cast(tuple[ShapeItemT, ...], payload.items)
+
+
+def load_cached_collected_family_items_for_source(
+    *,
+    path: Path,
+    module_name: str,
+    source: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+) -> tuple[ShapeItemT, ...] | None:
+    """Load source-validated compact facts without deserializing its AST."""
+
+    if family_cache_dir is None:
+        return None
+    identity = CollectedFamilyCacheIdentity(
+        path=str(path.resolve()),
+        module_name=module_name,
+        source_signature=_source_signature(source),
+        family_module=family.__module__,
+        family_qualname=family.__qualname__,
+        item_type_module=family.item_type.__module__,
+        item_type_qualname=family.item_type.__qualname__,
+        python_version=(sys.version_info.major, sys.version_info.minor),
+        schema=collected_family_cache_schema,
+    )
+    return _load_collected_family_cache_payload(
+        family_cache_dir,
+        identity,
+        family,
+    )
 
 
 def _store_cached_collected_family_items(

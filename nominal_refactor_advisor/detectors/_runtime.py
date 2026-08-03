@@ -4677,9 +4677,22 @@ class MirroredConstructorValidationDetector(PerModuleIssueDetector):
         return findings
 
 
+class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]):
+    """Persist normalized builder calls for repository-wide grouping."""
+
+    item_type = BuilderCallShape
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[BuilderCallShape]:
+        del cls
+        return list(_module_builder_call_shapes(parsed_module))
+
+
 class RepeatedBuilderCallDetector(
+    CompactModuleProjectionDetectorMixin[BuilderCallShape],
     FlattenedModuleCollectorCandidateDetector[BuilderCallShape],
 ):
+    module_projection_family = RepeatedBuilderCallShapeProjectionFamily
     detector_id = "repeated_builder_calls"
     ssot_authority_boundary = True
     finding_spec = certified_spec(
@@ -4696,6 +4709,16 @@ class RepeatedBuilderCallDetector(
     candidate_sort_key = staticmethod(
         lambda item: (item.file_path, item.lineno, item.symbol)
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[BuilderCallShape, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            type(self)._sorted_candidate_items(projections),
+            config,
+        )
 
     def _findings_for_candidates(
         self,
@@ -4906,9 +4929,22 @@ def _declared_field_extraction_sites(
     return tuple(sites)
 
 
+class DeclaredFieldExtractionSiteFamily(CollectedFamily[DeclaredFieldExtractionSite]):
+    """Persist declared-field extraction facts for global factorization."""
+
+    item_type = DeclaredFieldExtractionSite
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[DeclaredFieldExtractionSite]:
+        del cls
+        return list(_declared_field_extraction_sites(parsed_module))
+
+
 class DeclaredFieldExtractionFanoutDetector(
+    CompactModuleProjectionDetectorMixin[DeclaredFieldExtractionSite],
     FlattenedModuleCollectorCandidateDetector[DeclaredFieldExtractionSite],
 ):
+    module_projection_family = DeclaredFieldExtractionSiteFamily
     ssot_authority_boundary = True
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -4928,6 +4964,16 @@ class DeclaredFieldExtractionFanoutDetector(
     candidate_sort_key = staticmethod(
         lambda item: (item.file_path, item.lineno, item.owner_symbol)
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[DeclaredFieldExtractionSite, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            type(self)._sorted_candidate_items(projections),
+            config,
+        )
 
     def _findings_for_candidates(
         self,
@@ -5134,8 +5180,12 @@ def _is_external_declarative_builder_call(builder: BuilderCallShape) -> bool:
 
 
 class RepeatedExportDictDetector(
-    FiberCollectedShapeIssueDetector[ExportDictShape, tuple[tuple[str, ...], str]]
+    CompactFiberCollectedShapeIssueDetector[
+        ExportDictShape,
+        tuple[tuple[str, ...], str],
+    ]
 ):
+    module_projection_family = ExportDictShapeFamily
     detector_id = "repeated_export_dicts"
     ssot_authority_boundary = True
     observation_kind = ObservationKind.EXPORT_DICT
@@ -5195,8 +5245,9 @@ class RepeatedExportDictDetector(
 
 
 class ManualClassRegistrationDetector(
-    GroupedShapeIssueDetector[RegistrationShape, str]
+    CompactGroupedShapeIssueDetector[RegistrationShape, str]
 ):
+    module_projection_family = RegistrationShapeFamily
     finding_spec = certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual class registration should become metaclass-registry AutoRegisterMeta",

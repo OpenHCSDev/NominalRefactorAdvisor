@@ -911,7 +911,7 @@ class ContextualGlobalCacheContract(ABC):
 CompactProjectionItemT = TypeVar("CompactProjectionItemT")
 
 
-class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT], ABC):
+class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     """Global detector whose cross-module input is a compact cached fact family."""
 
     module_projection_family: ClassVar[type[CollectedFamily]]
@@ -2108,6 +2108,20 @@ class PreparedGroupedShapeAnalysis(
         return self.detector._findings_for_shapes(self.shapes, self.config)
 
 
+class CompactGroupedShapeIssueDetector(
+    CompactModuleProjectionDetectorMixin[ShapeT],
+    GroupedShapeIssueDetector[ShapeT, GroupKeyT],
+):
+    """Grouped detector whose complete input is one compact fact family."""
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[ShapeT, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_shapes(projections, config)
+
+
 class FiberCollectedShapeIssueDetector(
     GroupedShapeIssueDetector[ShapeT, GroupKeyT], ABC
 ):
@@ -2137,6 +2151,32 @@ class FiberCollectedShapeIssueDetector(
     @abstractmethod
     def _include_shape(self, shape: ShapeT, config: DetectorConfig) -> bool:
         raise NotImplementedError
+
+
+class CompactFiberCollectedShapeIssueDetector(
+    CompactModuleProjectionDetectorMixin[ShapeT],
+    FiberCollectedShapeIssueDetector[ShapeT, GroupKeyT],
+):
+    """Fiber-grouped detector backed entirely by compact module projections."""
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[ShapeT, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        included_shapes = tuple(
+            shape for shape in projections if self._include_shape(shape, config)
+        )
+        grouped_shapes = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
+            [],
+            cast(tuple[object, ...], included_shapes),
+            self.observation_kind,
+            self.execution_level,
+        )
+        return self._findings_for_shapes(
+            [cast(ShapeT, shape) for group in grouped_shapes for shape in group],
+            config,
+        )
 
 
 @dataclass(frozen=True)

@@ -71,6 +71,31 @@ unchanged local-role semantic-descent detector; that test passed immediately in
 isolation, after the complete analysis-cache file, and after its 15 preceding
 semantic-descent tests.
 
+## 2026-08-03 shared compact-family checkpoint
+
+The compact path now covers ten context-dependent detector families.  In
+addition to the first four, it streams normalized method hierarchies, repeated
+private methods, repeated builder calls, declared-field extraction sites,
+repeated export dictionaries, and manual class-registration shapes.  Shared
+families are retained once even when several detectors consume them.  The
+remaining partition is 183 per-module detectors, ten compact-global detectors,
+and 59 context-dependent detectors that still retain repository ASTs.
+
+Persistent compact facts can now be loaded from an exact source signature,
+module identity, family type, Python version, and schema without first
+deserializing the module AST.  A regression test makes AST loading fail on the
+second pass and proves that a complete warm family-cache hit bypasses it.  Any
+missing or oversized family payload falls back to parsing that module, so the
+optimization does not weaken cache invalidation or correctness.
+
+On the same 919-module DQDock production inventory, an isolated persistent-cache
+run across all ten migrated families took 55.19 seconds cold and 18.19 seconds
+warm, reconstructed 311 findings from 63,067 unique compact facts, and reached a
+combined-process high-water mark of 340,968 KB.  The migrated set now performs
+substantially more detector work than the four-family checkpoint, so timings
+are not directly comparable.  Peak memory remains 61.7% below the controlled
+889,100-KB all-at-once parse peak.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
