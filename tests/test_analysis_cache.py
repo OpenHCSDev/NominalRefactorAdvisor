@@ -19,6 +19,7 @@ from nominal_refactor_advisor.analysis import (
     analyze_modules,
     analyze_modules_with_cache,
     analyze_path,
+    release_module_analysis_memory,
 )
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
@@ -167,6 +168,16 @@ def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
 
     assert report.skipped
     assert late_root.is_dir()
+
+
+def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
+    module = ast_tools_module.ast.parse("value = source + 1\n")
+    ast_tools_module._walk_nodes(module)
+
+    cleared_cache_count = release_module_analysis_memory()
+
+    assert cleared_cache_count > 0
+    assert ast_tools_module._walk_nodes.cache_info().currsize == 0
 
 
 def test_semantic_graph_cache_treats_truncated_payload_as_miss(

@@ -8,8 +8,10 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
+import gc
 import os
 from pathlib import Path
+import sys
 from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
@@ -373,6 +375,35 @@ def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
     """Return registered detector classes in the default analysis order."""
 
     return tuple(type(detector) for detector in default_detectors())
+
+
+def release_module_analysis_memory() -> int:
+    """Clear AST-bound scan caches after a module-isolated analysis shard."""
+
+    cleared_cache_count = 0
+    seen_cache_ids: set[int] = set()
+    for module_name, module in tuple(sys.modules.items()):
+        if not module_name.startswith("nominal_refactor_advisor") or module is None:
+            continue
+        for candidate in vars(module).values():
+            candidate_id = id(candidate)
+            if candidate_id in seen_cache_ids:
+                continue
+            seen_cache_ids.add(candidate_id)
+            cache_clear = getattr(candidate, "cache_clear", None)
+            cache_info = getattr(candidate, "cache_info", None)
+            if cache_clear is None or cache_info is None:
+                continue
+            try:
+                cache_state = cache_info()
+            except (AttributeError, TypeError):
+                continue
+            if cache_state.maxsize == 1 or cache_state.currsize == 0:
+                continue
+            cache_clear()
+            cleared_cache_count += 1
+    gc.collect()
+    return cleared_cache_count
 
 
 @dataclass(frozen=True)

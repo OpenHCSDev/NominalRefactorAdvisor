@@ -40,6 +40,8 @@ from .analysis import (
     default_detector_types_for_analysis,
     plan_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     plan_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
+    release_module_analysis_memory,
+    SortedFindingsAuthority,
 )
 from .analysis_cache import (
     AnalysisCacheStatus,
@@ -5767,28 +5769,48 @@ def _main_without_deadline() -> int:
                     reason="changed_files_reuse_evidence_local_detectors",
                 )
         elif focused_loop_cold_policy.enabled:
-            started = perf_counter()
-            modules = parse_python_module_roots(
-                path_scope.report_roots,
-                cache_dir=parse_cache_dir,
-                use_parse_cache=args.use_parse_cache,
-                parse_workers=args.parse_workers,
-                source_policy=source_policy,
-            )
-            parse_seconds = round(perf_counter() - started, 3)
             detector_types = default_detector_types_for_analysis()
             detector_partition = DetectorTypePartition.from_detector_types(
                 detector_types
             )
             local_detector_types = detector_partition.per_module_detector_types
-            started = perf_counter()
-            findings = analyze_detector_types(
-                modules,
-                config,
+            parse_elapsed = 0.0
+            analysis_elapsed = 0.0
+            findings = []
+            seen_report_paths: set[Path] = set()
+            for report_root in path_scope.report_roots:
+                normalized_report_path = report_root.resolve()
+                if normalized_report_path in seen_report_paths:
+                    continue
+                seen_report_paths.add(normalized_report_path)
+                started = perf_counter()
+                local_modules = parse_python_module_roots(
+                    (report_root,),
+                    cache_dir=parse_cache_dir,
+                    use_parse_cache=args.use_parse_cache,
+                    parse_workers=args.parse_workers,
+                    source_policy=source_policy,
+                )
+                parse_elapsed += perf_counter() - started
+                started = perf_counter()
+                findings.extend(
+                    analyze_detector_types(
+                        local_modules,
+                        config,
+                        detector_types=local_detector_types,
+                        analysis_workers=args.analysis_workers,
+                    )
+                )
+                release_module_analysis_memory()
+                analysis_elapsed += perf_counter() - started
+                del local_modules
+            modules = []
+            findings = SortedFindingsAuthority.sort(
+                findings,
                 detector_types=local_detector_types,
-                analysis_workers=args.analysis_workers,
             )
-            analysis_seconds = round(perf_counter() - started, 3)
+            parse_seconds = round(parse_elapsed, 3)
+            analysis_seconds = round(analysis_elapsed, 3)
             analysis_cache_status = None
             scan_status = JsonScanStatus(
                 complete=False,
