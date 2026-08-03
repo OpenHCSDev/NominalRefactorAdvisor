@@ -7192,20 +7192,20 @@ def _registry_attribute_names(
 def _registry_traversal_group(
     modules: Sequence[ParsedModule],
 ) -> SubclassTraversalGroup | None:
-    sites = sorted_tuple(
-        (
+    return _registry_traversal_group_from_sites(
+        tuple(
             site
             for module in modules
-            for qualname, function in _iter_named_functions(module)
-            if (
-                site := SUBCLASS_TRAVERSAL_PROFILE.site(
-                    module,
-                    qualname,
-                    cast(ast.FunctionDef | ast.AsyncFunctionDef, function),
-                )
-            )
-            is not None
-        ),
+            for site in collect_family_items(module, SubclassTraversalSiteFamily)
+        )
+    )
+
+
+def _registry_traversal_group_from_sites(
+    projected_sites: Sequence[SubclassTraversalSite],
+) -> SubclassTraversalGroup | None:
+    sites = sorted_tuple(
+        projected_sites,
         key=lambda item: (item.file_path, item.line, item.symbol),
     )
     if len(sites) < 2:
@@ -7227,6 +7227,28 @@ def _registry_traversal_group(
             {filter_name for site in sites for filter_name in site.filter_names}
         ),
     )
+
+
+class SubclassTraversalSiteFamily(CollectedFamily[SubclassTraversalSite]):
+    """Persist compact subclass-walker facts for repository-wide grouping."""
+
+    item_type = SubclassTraversalSite
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[SubclassTraversalSite]:
+        del cls
+        return [
+            site
+            for qualname, function in _iter_named_functions(parsed_module)
+            if (
+                site := SUBCLASS_TRAVERSAL_PROFILE.site(
+                    parsed_module,
+                    qualname,
+                    cast(ast.FunctionDef | ast.AsyncFunctionDef, function),
+                )
+            )
+            is not None
+        ]
 
 
 def _declarative_family_boilerplate_groups(

@@ -25,6 +25,52 @@ recommended interactive command until that exact projection path is complete.
 
 Verification for this checkpoint passed all 944 tests in 332.97 seconds.
 
+## 2026-08-03 compact-global projection checkpoint
+
+The exact/global path now has an explicit bounded representation contract.
+Context-dependent detectors can declare a persisted, per-module compact fact
+family; a streaming accumulator parses one source module, validates that the
+facts retain neither ``ParsedModule`` nor ``ast.AST``, and releases the module
+before advancing.  Findings are then reconstructed from the complete
+repository fact set, so this remains cross-module reasoning rather than a
+focused/local approximation.
+
+Four detector families have been migrated to this contract:
+
+- formal-boundary external string-registry mirrors;
+- generated-boundary semantic-constant mirrors;
+- export-policy predicates; and
+- registry-traversal substrates.
+
+One detector incorrectly classified as global, the callable-method-axis
+registry detector, was also proved module-local and moved to the per-module
+lane.  The default partition is now 183 per-module detectors, four compact
+global detectors, and 65 context-dependent detectors that still require the
+all-at-once AST representation.
+
+A cold, cache-disabled stream across the current 919-module DQDock production
+inventory completed projection and finding reconstruction for the four
+migrated families in 21.96 seconds, found 61 issues, and peaked at 151,772 KB.
+That is 82.9% below the 889,100-KB peak of the controlled all-at-once parse
+checkpoint, although the measurements cover different amounts of detector
+work and therefore are a representation-memory comparison rather than an
+end-to-end speedup claim.  An isolated persistent-cache run took 26.07 seconds
+cold and 14.13 seconds warm, with a combined-process high-water mark of
+162,644 KB and the same 61 findings.
+
+The streaming authority is not wired into the normal exact CLI yet.  Doing so
+before the remaining 65 detector families are migrated would still require
+materializing the repository AST for those families and would not reduce the
+exact command's memory floor.  The next stage is to migrate shared contextual
+indexes and the remaining detector families, with full-AST equivalence tests,
+then switch exact orchestration once no context-dependent family retains ASTs.
+
+Checkpoint verification passed all eight focused detector/projection tests.
+The full run passed 946 tests and had one order-sensitive failure in the
+unchanged local-role semantic-descent detector; that test passed immediately in
+isolation, after the complete analysis-cache file, and after its 15 preceding
+semantic-descent tests.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

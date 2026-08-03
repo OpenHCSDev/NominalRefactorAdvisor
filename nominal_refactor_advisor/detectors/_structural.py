@@ -1827,7 +1827,28 @@ declare_candidate_rule_detector(
 )
 
 
-class ExportPolicyPredicateDetector(IssueDetector):
+class ExportPolicyPredicateCandidateFamily(
+    CollectedFamily[ExportPolicyPredicateCandidate]
+):
+    """Persist one compact derived-export policy projection per module."""
+
+    item_type = ExportPolicyPredicateCandidate
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[ExportPolicyPredicateCandidate]:
+        del cls
+        candidate = _module_export_policy_predicate_candidate(parsed_module)
+        return [] if candidate is None else [candidate]
+
+
+class ExportPolicyPredicateDetector(
+    CompactModuleProjectionDetectorMixin[ExportPolicyPredicateCandidate],
+    IssueDetector,
+):
+    module_projection_family = ExportPolicyPredicateCandidateFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated derived-surface policy predicates should collapse into one declarative policy",
@@ -1837,18 +1858,13 @@ class ExportPolicyPredicateDetector(IssueDetector):
         _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[ExportPolicyPredicateCandidate, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        candidates = tuple(
-            (
-                candidate
-                for module in modules
-                if (candidate := _module_export_policy_predicate_candidate(module))
-                is not None
-            )
-        )
+        candidates = projections
         if len(candidates) < 2:
             return []
         evidence = tuple(
@@ -2034,7 +2050,11 @@ declare_candidate_rule_detector(
 )
 
 
-class RegistryTraversalSubstrateDetector(IssueDetector):
+class RegistryTraversalSubstrateDetector(
+    CompactModuleProjectionDetectorMixin[SubclassTraversalSite],
+    IssueDetector,
+):
+    module_projection_family = SubclassTraversalSiteFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Repeated subclass-family traversal should collapse into one discovery substrate",
@@ -2044,11 +2064,13 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
         _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[SubclassTraversalSite, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        group = _registry_traversal_group(modules)
+        group = _registry_traversal_group_from_sites(projections)
         if group is None:
             return []
         evidence = tuple(

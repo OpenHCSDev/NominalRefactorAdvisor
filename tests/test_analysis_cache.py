@@ -12,6 +12,7 @@ import pytest
 from nominal_refactor_advisor.analysis import (
     CachedPathAnalysisRequest,
     ChangedPathRootAssignment,
+    DetectorTypePartition,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
     SemanticDescentGraphCacheContext,
@@ -20,6 +21,8 @@ from nominal_refactor_advisor.analysis import (
     analyze_modules_with_cache,
     analyze_module_detector_types_with_cache,
     analyze_path,
+    accumulate_compact_global_projections_for_roots,
+    default_detector_types_for_analysis,
     release_module_analysis_memory,
 )
 from nominal_refactor_advisor.analysis_cache import (
@@ -57,6 +60,7 @@ from nominal_refactor_advisor.detectors import (
     PerModuleIssueDetector,
     SemanticDescentGraphIssueDetector,
 )
+from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
@@ -1279,6 +1283,93 @@ def test_collected_family_items_are_persisted_beside_parse_cache(
     assert [item.key_names for item in second_items] == [
         item.key_names for item in first_items
     ]
+
+
+def test_generated_boundary_global_projection_reuses_compact_module_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "generated_catalog.py").write_text(
+        "# generated file\nSEMANTIC_MODE = 'canonical'\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    first_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+    first_sites = collect_family_items(
+        first_module,
+        runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily,
+    )
+    release_module_analysis_memory()
+
+    def unexpected_collection(
+        cls: type,
+        module,
+    ) -> tuple:
+        del cls, module
+        raise AssertionError("compact global projection cache was not reused")
+
+    monkeypatch.setattr(
+        runtime_detectors.GeneratedBoundarySemanticConstantAuthority,
+        "module_sites",
+        classmethod(unexpected_collection),
+    )
+    second_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+    second_sites = collect_family_items(
+        second_module,
+        runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily,
+    )
+
+    assert second_sites == first_sites
+    assert second_sites[0].file_path == str(package_root / "generated_catalog.py")
+
+
+def test_compact_global_projection_accumulator_matches_full_ast_detection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    generated_path = package_root / "generated_policy.py"
+    runtime_path = package_root / "runtime.py"
+    generated_path.write_text(
+        "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    runtime_path.write_text(
+        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    detector_type = runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        (detector_type,),
+        use_parse_cache=False,
+    )
+
+    projected_findings = accumulator.findings_by_detector(DetectorConfig())[
+        detector_type
+    ]
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+    full_ast_findings = detector_type().detect(modules, DetectorConfig())
+
+    assert [finding.to_dict() for finding in projected_findings] == [
+        finding.to_dict() for finding in full_ast_findings
+    ]
+
+
+def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
+    partition = DetectorTypePartition.from_detector_types(
+        default_detector_types_for_analysis()
+    )
+
+    assert (
+        runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
+        in partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 4
+    assert len(partition.ast_retaining_context_detector_types) == 65
+    assert len(partition.per_module_detector_types) == 183
 
 
 def test_parse_cache_persists_semantic_source_hash(

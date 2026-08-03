@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import ast
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 import gc
 import os
 from pathlib import Path
 import sys
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -31,6 +32,7 @@ from .analysis_cache import (
 from .ast_tools import (
     ParsedModule,
     PythonModuleRootParser,
+    PythonSourcePathDiscovery,
     PythonSourcePathPolicy,
     parse_python_module_roots,
     parse_python_modules,
@@ -43,6 +45,7 @@ from .cache_paths import (
 )
 from .cache_checkout import absolute_checkout_path
 from .detectors import (
+    CompactModuleProjectionDetectorMixin,
     ContextualGlobalCacheContract,
     ContextualModuleIssueDetector,
     DetectorCacheGranularity,
@@ -462,6 +465,152 @@ class DetectorTypePartition:
     @property
     def has_global_detectors(self) -> bool:
         return bool(self.global_detector_types)
+
+    @property
+    def context_dependent_detector_types(self) -> tuple[type[IssueDetector], ...]:
+        return (
+            *self.contextual_module_detector_types,
+            *self.contextual_global_detector_types,
+            *self.global_detector_types,
+        )
+
+    @property
+    def compact_global_detector_types(self) -> tuple[type[IssueDetector], ...]:
+        return tuple(
+            detector_type
+            for detector_type in self.context_dependent_detector_types
+            if issubclass(detector_type, CompactModuleProjectionDetectorMixin)
+        )
+
+    @property
+    def ast_retaining_context_detector_types(self) -> tuple[type[IssueDetector], ...]:
+        compact_detector_types = frozenset(self.compact_global_detector_types)
+        return tuple(
+            detector_type
+            for detector_type in self.context_dependent_detector_types
+            if detector_type not in compact_detector_types
+        )
+
+
+@dataclass
+class CompactGlobalProjectionAccumulator:
+    """Collect persisted module facts without retaining their repository ASTs."""
+
+    detector_types: tuple[type[IssueDetector], ...]
+    _projections_by_detector_type: dict[type[IssueDetector], list[object]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+
+    @classmethod
+    def from_detector_types(
+        cls,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> "CompactGlobalProjectionAccumulator":
+        return cls(
+            tuple(
+                detector_type
+                for detector_type in detector_types
+                if issubclass(
+                    detector_type,
+                    CompactModuleProjectionDetectorMixin,
+                )
+            )
+        )
+
+    def add_module(self, module: ParsedModule) -> None:
+        """Project one module, after which its AST may be safely released."""
+
+        for detector_type in self.detector_types:
+            projected_detector_type = cast(
+                type[CompactModuleProjectionDetectorMixin],
+                detector_type,
+            )
+            projections = projected_detector_type.compact_module_projections((module,))
+            for projection in projections:
+                if self._retains_ast(projection):
+                    raise TypeError(
+                        f"{detector_type.__name__} compact projection retains an AST"
+                    )
+            self._projections_by_detector_type.setdefault(detector_type, []).extend(
+                projections
+            )
+
+    def findings_by_detector(
+        self,
+        config: DetectorConfig,
+    ) -> dict[type[IssueDetector], list[RefactorFinding]]:
+        findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
+        for detector_type in self.detector_types:
+            detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
+            findings[detector_type] = detector._findings_from_compact_projections(
+                tuple(self._projections_by_detector_type.get(detector_type, ())),
+                config,
+            )
+        return findings
+
+    @classmethod
+    def _retains_ast(
+        cls,
+        value: object,
+        seen_ids: set[int] | None = None,
+    ) -> bool:
+        if isinstance(value, (ast.AST, ParsedModule)):
+            return True
+        if isinstance(value, (str, bytes, int, float, complex, bool, type(None))):
+            return False
+        seen = set() if seen_ids is None else seen_ids
+        value_id = id(value)
+        if value_id in seen:
+            return False
+        seen.add(value_id)
+        if is_dataclass(value) and not isinstance(value, type):
+            return any(
+                cls._retains_ast(getattr(value, item.name), seen)
+                for item in fields(value)
+            )
+        if isinstance(value, dict):
+            return any(
+                cls._retains_ast(item, seen) for pair in value.items() for item in pair
+            )
+        if isinstance(value, (tuple, list, set, frozenset)):
+            return any(cls._retains_ast(item, seen) for item in value)
+        return False
+
+
+def accumulate_compact_global_projections_for_roots(
+    roots: tuple[Path, ...],
+    detector_types: tuple[type[IssueDetector], ...],
+    *,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    source_policy: PythonSourcePathPolicy | None = None,
+) -> CompactGlobalProjectionAccumulator:
+    """Stream repository modules into compact facts with bounded AST retention."""
+
+    active_source_policy = source_policy or PythonSourcePathPolicy()
+    accumulator = CompactGlobalProjectionAccumulator.from_detector_types(detector_types)
+    seen_paths: set[Path] = set()
+    for root in roots:
+        parser = PythonModuleRootParser.for_root(
+            root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=1,
+            source_policy=active_source_policy,
+        )
+        for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
+            normalized_path = path.resolve()
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            for module in parser.parsed_source_paths((path,)):
+                accumulator.add_module(module)
+                del module
+            release_module_analysis_memory(collect_cycles=False)
+    gc.collect()
+    return accumulator
 
 
 @dataclass(frozen=True)

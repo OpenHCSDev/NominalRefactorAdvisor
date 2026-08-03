@@ -20,7 +20,9 @@ from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 from ..ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     BuiltinCallName,
+    CollectedFamily,
     ParsedModule,
+    collect_family_items,
 )
 from ..class_index import (
     IndexedClass,
@@ -2305,10 +2307,41 @@ class FormalBoundaryExternalStringSite(FormalBoundaryStringRegistryConstant):
     path: Path
 
 
-FormalBoundaryStringConstantRecord: TypeAlias = tuple[
-    ParsedModule,
-    FormalBoundaryStringRegistryConstant,
-]
+@dataclass(frozen=True)
+class FormalBoundaryPythonStringConstant:
+    file_path: str
+    target_name: str
+    value: str
+    line: int
+
+
+class FormalBoundaryPythonStringConstantFamily(
+    CollectedFamily[FormalBoundaryPythonStringConstant]
+):
+    """Persist compact Python-side formal-boundary constant facts."""
+
+    item_type = FormalBoundaryPythonStringConstant
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[FormalBoundaryPythonStringConstant]:
+        del cls
+        return [
+            FormalBoundaryPythonStringConstant(
+                file_path=str(parsed_module.path),
+                target_name=constant.target_name,
+                value=constant.value,
+                line=constant.line,
+            )
+            for constant in FormalBoundaryStringRegistryAuthority.module_constants(
+                parsed_module
+            )
+        ]
+
+
+FormalBoundaryStringConstantRecord: TypeAlias = FormalBoundaryPythonStringConstant
 FormalBoundaryStringConstantRecords: TypeAlias = tuple[
     FormalBoundaryStringConstantRecord,
     ...,
@@ -2326,23 +2359,22 @@ FormalBoundaryExternalSitesByValue: TypeAlias = dict[
 def _module_formal_boundary_string_constants(
     modules: list[ParsedModule],
 ) -> FormalBoundaryStringConstantRecords:
-    constants: list[FormalBoundaryStringConstantRecord] = []
-    for module in modules:
-        constants.extend(
-            (module, constant)
-            for constant in FormalBoundaryStringRegistryAuthority.module_constants(
-                module
-            )
+    return tuple(
+        constant
+        for module in modules
+        for constant in collect_family_items(
+            module,
+            FormalBoundaryPythonStringConstantFamily,
         )
-    return tuple(constants)
+    )
 
 
 def _formal_boundary_python_constants_by_value(
     constants: FormalBoundaryStringConstantRecords,
 ) -> FormalBoundaryStringConstantsByValue:
     grouped: FormalBoundaryStringConstantsByValue = defaultdict(list)
-    for module, constant in constants:
-        grouped[constant.value].append((module, constant))
+    for constant in constants:
+        grouped[constant.value].append(constant)
     return grouped
 
 
@@ -2358,10 +2390,10 @@ def _formal_boundary_nearest_repository_root(path: Path) -> Path:
     return fallback_root
 
 
-def _formal_boundary_scan_root(modules: list[ParsedModule]) -> Path | None:
-    if not modules:
+def _formal_boundary_scan_root_for_paths(file_paths: Sequence[str]) -> Path | None:
+    if not file_paths:
         return None
-    resolved_paths = tuple(str(module.path.resolve()) for module in modules)
+    resolved_paths = tuple(str(Path(path).resolve()) for path in file_paths)
     common_path = Path(os.path.commonpath(resolved_paths))
     if common_path.is_file():
         common_path = common_path.parent
@@ -2450,9 +2482,9 @@ def _formal_boundary_python_evidence_for_values(
 ) -> tuple[SourceLocation, ...]:
     evidence: list[SourceLocation] = []
     for value in values:
-        module, constant = constants_by_value[value][0]
+        constant = constants_by_value[value][0]
         evidence.append(
-            SourceLocation(str(module.path), constant.line, constant.target_name)
+            SourceLocation(constant.file_path, constant.line, constant.target_name)
         )
     return tuple(evidence)
 
@@ -2476,11 +2508,21 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         modules: list[ParsedModule],
     ) -> list[RefactorFinding]:
         constants = _module_formal_boundary_string_constants(modules)
+        return cls.findings_from_constants(detector, constants)
+
+    @classmethod
+    def findings_from_constants(
+        cls,
+        detector: IssueDetector,
+        constants: FormalBoundaryStringConstantRecords,
+    ) -> list[RefactorFinding]:
         if len(constants) < _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
             return []
         constants_by_value = _formal_boundary_python_constants_by_value(constants)
         values = tuple(sorted(constants_by_value))
-        root = _formal_boundary_scan_root(modules)
+        root = _formal_boundary_scan_root_for_paths(
+            tuple(constant.file_path for constant in constants)
+        )
         if root is None:
             return []
         return [
@@ -2552,7 +2594,11 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         )
 
 
-class FormalBoundaryExternalStringRegistryMirrorDetector(SemanticMirrorIssueDetector):
+class FormalBoundaryExternalStringRegistryMirrorDetector(
+    CompactModuleProjectionDetectorMixin[FormalBoundaryPythonStringConstant],
+    SemanticMirrorIssueDetector,
+):
+    module_projection_family = FormalBoundaryPythonStringConstantFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Formal-boundary string registries should not be mirrored across sources",
@@ -2563,12 +2609,17 @@ class FormalBoundaryExternalStringRegistryMirrorDetector(SemanticMirrorIssueDete
         _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[FormalBoundaryPythonStringConstant, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        return FormalBoundaryExternalStringRegistryMirrorAuthority.findings(
-            self, modules
+        return (
+            FormalBoundaryExternalStringRegistryMirrorAuthority.findings_from_constants(
+                self,
+                projections,
+            )
         )
 
 
@@ -2577,7 +2628,7 @@ _GENERATED_BOUNDARY_TOKENS = frozenset({"autogen", "autogenerated", "generated"}
 
 @dataclass(frozen=True)
 class GeneratedBoundarySemanticConstantSite:
-    module: ParsedModule
+    file_path: str
     target_name: str
     value: str
     line: int
@@ -2588,7 +2639,7 @@ class GeneratedBoundarySemanticConstantSite:
         return self.target_name, self.value
 
     def source_location(self) -> SourceLocation:
-        return SourceLocation(str(self.module.path), self.line, self.target_name)
+        return SourceLocation(self.file_path, self.line, self.target_name)
 
 
 class GeneratedBoundarySemanticConstantAuthority:
@@ -2598,7 +2649,22 @@ class GeneratedBoundarySemanticConstantAuthority:
         detector: IssueDetector,
         modules: list[ParsedModule],
     ) -> list[RefactorFinding]:
-        sites = tuple(site for module in modules for site in cls.module_sites(module))
+        sites = tuple(
+            site
+            for module in modules
+            for site in collect_family_items(
+                module,
+                GeneratedBoundarySemanticConstantSiteFamily,
+            )
+        )
+        return cls.findings_from_sites(detector, sites)
+
+    @classmethod
+    def findings_from_sites(
+        cls,
+        detector: IssueDetector,
+        sites: tuple[GeneratedBoundarySemanticConstantSite, ...],
+    ) -> list[RefactorFinding]:
         keys = tuple(sorted({site.key for site in sites}))
         return [
             finding
@@ -2636,7 +2702,7 @@ class GeneratedBoundarySemanticConstantAuthority:
                     continue
                 sites.append(
                     GeneratedBoundarySemanticConstantSite(
-                        module=module,
+                        file_path=str(module.path),
                         target_name=target.id,
                         value=value,
                         line=statement.lineno,
@@ -2714,7 +2780,29 @@ class GeneratedBoundarySemanticConstantAuthority:
         )
 
 
-class GeneratedBoundarySemanticConstantMirrorDetector(SemanticMirrorIssueDetector):
+class GeneratedBoundarySemanticConstantSiteFamily(
+    CollectedFamily[GeneratedBoundarySemanticConstantSite]
+):
+    """Persist compact module facts used by the generated-boundary detector."""
+
+    item_type = GeneratedBoundarySemanticConstantSite
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[GeneratedBoundarySemanticConstantSite]:
+        del cls
+        return list(
+            GeneratedBoundarySemanticConstantAuthority.module_sites(parsed_module)
+        )
+
+
+class GeneratedBoundarySemanticConstantMirrorDetector(
+    CompactModuleProjectionDetectorMixin[GeneratedBoundarySemanticConstantSite],
+    SemanticMirrorIssueDetector,
+):
+    module_projection_family = GeneratedBoundarySemanticConstantSiteFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Generated semantic constants should not be mirrored in runtime code",
@@ -2725,11 +2813,16 @@ class GeneratedBoundarySemanticConstantMirrorDetector(SemanticMirrorIssueDetecto
         _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[GeneratedBoundarySemanticConstantSite, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        return GeneratedBoundarySemanticConstantAuthority.findings(self, modules)
+        return GeneratedBoundarySemanticConstantAuthority.findings_from_sites(
+            self,
+            projections,
+        )
 
 
 class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):

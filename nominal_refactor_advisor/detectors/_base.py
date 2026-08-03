@@ -908,6 +908,47 @@ class ContextualGlobalCacheContract(ABC):
         )
 
 
+CompactProjectionItemT = TypeVar("CompactProjectionItemT")
+
+
+class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT], ABC):
+    """Global detector whose cross-module input is a compact cached fact family."""
+
+    module_projection_family: ClassVar[type[CollectedFamily]]
+
+    @classmethod
+    def compact_module_projections(
+        cls,
+        modules: Sequence[ParsedModule],
+    ) -> tuple[CompactProjectionItemT, ...]:
+        return tuple(
+            cast(CompactProjectionItemT, projection)
+            for module in modules
+            for projection in collect_family_items(
+                module,
+                cls.module_projection_family,
+            )
+        )
+
+    def _collect_findings(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_from_compact_projections(
+            type(self).compact_module_projections(modules),
+            config,
+        )
+
+    @abstractmethod
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactProjectionItemT, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        raise NotImplementedError
+
+
 class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
     """Detector contract for findings derived from the cached descent graph."""
 

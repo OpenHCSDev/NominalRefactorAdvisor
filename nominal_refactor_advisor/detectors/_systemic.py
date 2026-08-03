@@ -2163,7 +2163,7 @@ class ParallelKeyedTableAndFamilyDetector(
         )
 
 
-class CallableMethodAxisRegistryDetector(IssueDetector):
+class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
         "Callable method-axis registry should become an auto-registered strategy family",
@@ -2174,63 +2174,60 @@ class CallableMethodAxisRegistryDetector(IssueDetector):
         _BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for module in modules:
-            for statement in module.module.body:
-                assignment = self._assignment_target_name(statement)
-                value = self._assignment_value(statement)
-                if assignment is None or not isinstance(value, ast.Call):
-                    continue
-                if not self._is_method_axis_registry_call(value):
-                    continue
-                axis_name = ast.unparse(value.args[0]) if value.args else "Axis"
-                operation_names = tuple(
-                    keyword.arg
-                    for keyword in value.keywords
-                    if keyword.arg is not None
-                    and isinstance(keyword.value, (ast.Name, ast.Attribute))
+        for statement in module.module.body:
+            assignment = self._assignment_target_name(statement)
+            value = self._assignment_value(statement)
+            if assignment is None or not isinstance(value, ast.Call):
+                continue
+            if not self._is_method_axis_registry_call(value):
+                continue
+            axis_name = ast.unparse(value.args[0]) if value.args else "Axis"
+            operation_names = tuple(
+                keyword.arg
+                for keyword in value.keywords
+                if keyword.arg is not None
+                and isinstance(keyword.value, (ast.Name, ast.Attribute))
+            )
+            if len(operation_names) < 2:
+                continue
+            operations = ", ".join(operation_names[:4])
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{assignment}` maps `{axis_name}` member names to callable operations "
+                        f"{operations}; this is a hardcoded strategy family."
+                    ),
+                    (
+                        SourceLocation(str(module.path), statement.lineno, assignment),
+                    ),
+                    scaffold=(
+                        "from abc import ABC, abstractmethod\n"
+                        "from typing import ClassVar\n"
+                        "from metaclass_registry import AutoRegisterMeta\n\n"
+                        "class MethodStrategy(ABC, metaclass=AutoRegisterMeta):\n"
+                        '    __registry_key__ = "method"\n'
+                        "    __skip_if_no_key__ = True\n"
+                        "    method: ClassVar[object | None] = None\n\n"
+                        "    @abstractmethod\n"
+                        "    def run(self, request): ...\n\n"
+                        "def run_method(method, request):\n"
+                        "    return MethodStrategy.__registry__[method].run(request)\n"
+                    ),
+                    codemod_patch=(
+                        f"# Replace callable registry `{assignment}` with an AutoRegisterMeta-backed strategy family.\n"
+                        "# Move each callable into a registered subclass and dispatch with `Family.__registry__[method].run(...)`."
+                    ),
+                    metrics=DispatchCountMetrics.from_literal_family(
+                        dispatch_axis=axis_name,
+                        literal_cases=operation_names,
+                    ),
                 )
-                if len(operation_names) < 2:
-                    continue
-                operations = ", ".join(operation_names[:4])
-                findings.append(
-                    self.build_finding(
-                        (
-                            f"`{assignment}` maps `{axis_name}` member names to callable operations "
-                            f"{operations}; this is a hardcoded strategy family."
-                        ),
-                        (
-                            SourceLocation(
-                                str(module.path), statement.lineno, assignment
-                            ),
-                        ),
-                        scaffold=(
-                            "from abc import ABC, abstractmethod\n"
-                            "from typing import ClassVar\n"
-                            "from metaclass_registry import AutoRegisterMeta\n\n"
-                            "class MethodStrategy(ABC, metaclass=AutoRegisterMeta):\n"
-                            '    __registry_key__ = "method"\n'
-                            "    __skip_if_no_key__ = True\n"
-                            "    method: ClassVar[object | None] = None\n\n"
-                            "    @abstractmethod\n"
-                            "    def run(self, request): ...\n\n"
-                            "def run_method(method, request):\n"
-                            "    return MethodStrategy.__registry__[method].run(request)\n"
-                        ),
-                        codemod_patch=(
-                            f"# Replace callable registry `{assignment}` with an AutoRegisterMeta-backed strategy family.\n"
-                            "# Move each callable into a registered subclass and dispatch with `Family.__registry__[method].run(...)`."
-                        ),
-                        metrics=DispatchCountMetrics.from_literal_family(
-                            dispatch_axis=axis_name,
-                            literal_cases=operation_names,
-                        ),
-                    )
-                )
+            )
         return findings
 
     @staticmethod
