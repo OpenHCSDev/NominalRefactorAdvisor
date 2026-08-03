@@ -160,6 +160,12 @@ global matching rather than reducing the detector to module-local behavior.
 The current partition is 183 per-module, 17 compact global, and 52
 AST-retaining context-dependent detectors.
 
+Public bare support-function analysis now also uses compact eligible-definition
+and filtered reference-site facts.  Its candidate output is regression-checked
+against the legacy repository reference index.  The current partition is 183
+per-module, 18 compact global, and 51 AST-retaining context-dependent
+detectors.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

@@ -1511,6 +1511,45 @@ def test_compact_private_reference_detectors_match_legacy_ast_candidates(
         ]
 
 
+def test_compact_public_support_projection_matches_legacy_reference_index(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "_helpers.py").write_text(
+        "def parameter_names(function):\n"
+        "    return tuple(function.args)\n"
+        "\n"
+        "def enum_member_ref(node):\n"
+        "    return node.name, node.value\n",
+        encoding="utf-8",
+    )
+    (package_root / "runtime.py").write_text(
+        "from pkg._helpers import parameter_names\n"
+        "\n"
+        "def consume(function):\n"
+        "    return parameter_names(function)\n",
+        encoding="utf-8",
+    )
+    detector_type = systemic_detectors.PublicBareSupportFunctionDetector
+    config = DetectorConfig()
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+    detector = detector_type()
+    legacy_findings = detector._findings_for_candidates(
+        systemic_detectors._public_bare_support_function_candidates(modules),
+        config,
+    )
+    projected_findings = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        (detector_type,),
+        use_parse_cache=False,
+    ).findings_by_detector(config)[detector_type]
+
+    assert [finding.to_dict() for finding in projected_findings] == [
+        finding.to_dict() for finding in legacy_findings
+    ]
+
+
 def test_compact_flattened_candidate_projections_match_full_ast_detection(
     tmp_path: Path,
 ) -> None:
@@ -1656,8 +1695,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert environment_detectors.EnvironmentBooleanAuthorityDriftDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 17
-    assert len(partition.ast_retaining_context_detector_types) == 52
+    assert systemic_detectors.PublicBareSupportFunctionDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 18
+    assert len(partition.ast_retaining_context_detector_types) == 51
     assert len(partition.per_module_detector_types) == 183
 
 

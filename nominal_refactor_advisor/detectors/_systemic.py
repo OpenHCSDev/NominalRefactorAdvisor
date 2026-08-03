@@ -3856,9 +3856,151 @@ class UnderAmortizedInfrastructureDetector(
         )
 
 
-class PublicBareSupportFunctionDetector(
-    CrossModuleCollectorCandidateDetector[PublicBareSupportFunctionCandidate]
+@dataclass(frozen=True)
+class PublicBareSupportFunctionDefinitionFact:
+    function_name: str
+    line: int
+
+
+@dataclass(frozen=True)
+class PublicBareSupportFunctionReferenceFact:
+    function_name: str
+    site: SourceLocation
+
+
+@dataclass(frozen=True)
+class PublicBareSupportModuleProjection:
+    file_path: str
+    module_role: str | None
+    definitions: tuple[PublicBareSupportFunctionDefinitionFact, ...]
+    references: tuple[PublicBareSupportFunctionReferenceFact, ...]
+
+
+class PublicBareSupportModuleProjectionFamily(
+    CollectedFamily[PublicBareSupportModuleProjection]
 ):
+    item_type = PublicBareSupportModuleProjection
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[PublicBareSupportModuleProjection]:
+        del cls
+        file_path = str(parsed_module.path)
+        definitions = tuple(
+            PublicBareSupportFunctionDefinitionFact(statement.name, statement.lineno)
+            for statement in parsed_module.module.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and _is_public_bare_support_function_name(statement.name)
+        )
+        reference_sites: set[tuple[str, SourceLocation]] = set()
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.stack: list[str] = []
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self.stack.append(node.name)
+                self.generic_visit(node)
+                self.stack.pop()
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+            visit_ClassDef = visit_FunctionDef
+
+            def visit_Name(self, node: ast.Name) -> None:
+                self._record(node.id, node.lineno)
+
+            def visit_Attribute(self, node: ast.Attribute) -> None:
+                self._record(node.attr, node.lineno)
+                self.generic_visit(node)
+
+            def _record(self, name: str, line: int) -> None:
+                if not _is_public_bare_support_function_name(name):
+                    return
+                reference_sites.add(
+                    (
+                        name,
+                        SourceLocation(
+                            file_path,
+                            line,
+                            ".".join(self.stack) if self.stack else "<module>",
+                        ),
+                    )
+                )
+
+        Visitor().visit(parsed_module.module)
+        return [
+            PublicBareSupportModuleProjection(
+                file_path=file_path,
+                module_role=_private_module_role(file_path),
+                definitions=definitions,
+                references=tuple(
+                    PublicBareSupportFunctionReferenceFact(name, site)
+                    for name, site in sorted(
+                        reference_sites,
+                        key=lambda item: (
+                            item[0],
+                            item[1].file_path,
+                            item[1].line,
+                            item[1].symbol,
+                        ),
+                    )
+                ),
+            )
+        ]
+
+
+def _public_bare_support_function_candidates_from_projections(
+    projections: tuple[PublicBareSupportModuleProjection, ...],
+) -> tuple[PublicBareSupportFunctionCandidate, ...]:
+    reference_sites: dict[str, set[SourceLocation]] = defaultdict(set)
+    for projection in projections:
+        for reference in projection.references:
+            reference_sites[reference.function_name].add(reference.site)
+    candidates: list[PublicBareSupportFunctionCandidate] = []
+    for projection in projections:
+        if projection.module_role is None or not projection.definitions:
+            continue
+        definitions_by_family: dict[
+            tuple[str, str], list[PublicBareSupportFunctionDefinitionFact]
+        ] = defaultdict(list)
+        for definition in projection.definitions:
+            definitions_by_family[
+                PUBLIC_BARE_SUPPORT_FUNCTION_FAMILY_AUTHORITY.family(
+                    definition.function_name
+                )
+            ].append(definition)
+        for (semantic_family, recommended_owner), definitions in sorted(
+            definitions_by_family.items()
+        ):
+            function_names = sorted_tuple(
+                definition.function_name for definition in definitions
+            )
+            candidates.append(
+                PublicBareSupportFunctionCandidate(
+                    file_path=projection.file_path,
+                    line=min(definition.line for definition in definitions),
+                    function_names=function_names,
+                    module_role=projection.module_role,
+                    semantic_family=semantic_family,
+                    recommended_owner=recommended_owner,
+                    external_reference_count=sum(
+                        1
+                        for name in function_names
+                        for site in reference_sites.get(name, set())
+                        if site.file_path != projection.file_path
+                    ),
+                )
+            )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line))
+
+
+class PublicBareSupportFunctionDetector(
+    CompactModuleProjectionDetectorMixin[PublicBareSupportModuleProjection],
+    CrossModuleCollectorCandidateDetector[PublicBareSupportFunctionCandidate],
+):
+    module_projection_family = PublicBareSupportModuleProjectionFamily
     finding_spec = finding_spec_template(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Public bare support function in private module should become nominal",
@@ -3898,6 +4040,16 @@ class PublicBareSupportFunctionDetector(
                 parameter_count=len(support_candidate.function_names),
                 callee_family_count=1,
             ),
+        )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[PublicBareSupportModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _public_bare_support_function_candidates_from_projections(projections),
+            config,
         )
 
 
