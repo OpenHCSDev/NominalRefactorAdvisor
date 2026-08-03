@@ -5986,11 +5986,16 @@ def _dataclass_field_signature_map(node: ast.ClassDef) -> dict[str, str]:
     return dict(_dataclass_field_signature_items(node))
 
 
+@lru_cache(maxsize=4096)
+def _dataclass_name_tokens(class_name: str) -> frozenset[str]:
+    return frozenset(CLASS_NAME_ALGEBRA.ordered_tokens(class_name))
+
+
 def _dataclass_companion_surface_role(
     authority_name: str, companion_name: str
 ) -> str | None:
-    authority_tokens = frozenset(CLASS_NAME_ALGEBRA.ordered_tokens(authority_name))
-    companion_tokens = frozenset(CLASS_NAME_ALGEBRA.ordered_tokens(companion_name))
+    authority_tokens = _dataclass_name_tokens(authority_name)
+    companion_tokens = _dataclass_name_tokens(companion_name)
     return (
         Maybe.of((authority_tokens, companion_tokens))
         .filter(lambda token_sets: bool(token_sets[0]) and bool(token_sets[1]))
@@ -6082,10 +6087,12 @@ def _companion_dataclass_surface_projection(
     surface_role_name = _companion_surface_role_unless_inherited(
         authority_node, companion_node
     )
+    if surface_role_name is None:
+        return None
     field_projection = _companion_dataclass_field_projection(
         authority_node, companion_node
     )
-    if surface_role_name is None or field_projection is None:
+    if field_projection is None:
         return None
     authority_fields, companion_fields, shared_field_names = field_projection
     if not _is_generated_companion_surface_role(surface_role_name, companion_fields):

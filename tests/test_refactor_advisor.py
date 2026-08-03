@@ -9050,6 +9050,38 @@ def test_dataclass_signature_projection_reuses_cached_items(
     assert unparse_calls == 7
 
 
+def test_companion_dataclass_surface_skips_field_projection_for_unrelated_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass\n"
+        "class AlphaRecord:\n"
+        "    value: int\n\n\n"
+        "@dataclass\n"
+        "class BetaReceipt:\n"
+        "    value: int\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+    classes = tuple(
+        node for node in module.module.body if isinstance(node, ast.ClassDef)
+    )
+
+    def fail_field_projection(*args: object) -> object:
+        raise AssertionError("unrelated class names should reject before field work")
+
+    monkeypatch.setattr(
+        base_detectors,
+        "_companion_dataclass_field_projection",
+        fail_field_projection,
+    )
+
+    assert base_detectors._companion_dataclass_surface_projection(*classes) is None
+
+
 def test_companion_dataclass_surface_requires_matching_defaults(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
