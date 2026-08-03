@@ -1,5 +1,44 @@
 # NRA scan-performance handoff
 
+## 2026-08-03 large-repository update
+
+The normal file-focused edit loop is now bounded and explicitly partial on a
+cold auto-context scan.  For ``--json --json-payload loop`` with inferred
+package context, NRA parses requested files one at a time, runs the 182
+per-module detectors, releases AST-bound caches at each module boundary, and
+reports the 70 omitted context-dependent detectors in ``scan_status``.  Full,
+agent, and explicit ``--context-root`` scans retain exact contextual behavior.
+
+The surviving five-file DQDock reproduction now completes with the same 158
+local findings:
+
+| State | Wall time | Peak RSS | Result |
+|---|---:|---:|---|
+| Cold focused loop before bounded lane | >20 s | about 1.1 GB | Deadline |
+| First bounded local lane | 12.88 s | 158 MB | Complete partial payload |
+| Module streaming + detector short-circuit | 10.48 s | 134 MB | Complete partial payload |
+
+The remaining exact-mode floor is representation-level: parsing DQDock's 842
+production modules without running any detector takes 14.48 seconds and peaks
+at about 955 MB.  Reducing that path further requires compact contextual
+projections or streamed indexes rather than another cache lookup optimization.
+
+Persistent cache retention is also bounded to 128 recent roots, 4 GiB total,
+2 GiB per active root, and four recent exact semantic-graph generations.  The
+first live maintenance pass removed 8,112 abandoned derived-cache roots and
+7.02 GB of payloads, reducing the default cache home from 12 GB to 3.4 GB.
+
+Relevant pushed commits are ``0b867fa`` (symlink identities and deadline
+process exit), ``acbaa44`` (bounded focused loop), ``591f4f8`` (cache
+retention), ``3822abb`` (companion detector short-circuit), and ``d90a165``
+(module-boundary AST cache release).
+
+Verification collected 936 tests.  The broad run reported 934 passes and two
+fixture-root failures because its pytest base directory was intentionally
+nested inside the checkout; both failures passed when rerun from an external
+temporary root, which restores the repository-root assumption those detectors
+exercise.
+
 ## Publication update
 
 This document preserves the original slow-scan reproduction and measurements.
