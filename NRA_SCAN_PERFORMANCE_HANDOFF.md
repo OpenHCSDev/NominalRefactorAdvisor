@@ -213,6 +213,20 @@ shared class projection carries 20,965 aggregated top-level definition rows;
 DQDock contributed no manual-selector-axis rows and only one sparse
 dataclass/CLI module projection.
 
+Exact-type fail-loud boundary analysis now also reconstructs from the shared
+class projection.  Per-module guard facts retain normalized subject/type text,
+reference parts, polarity, lexical ``type``-shadowing decisions, and certified
+failure-branch shape; imported and aliased type references are resolved later
+against the complete compact inheritance graph.  The current partition is 183
+per-module detectors, 26 compact-global detectors, and 43 AST-retaining
+context-dependent detectors.
+
+The stable-snapshot 26-family run retained the same 68,466 top-level items plus
+2,253 nested exact-type guard facts.  It produced 398 identical cold/warm
+findings in 104.86 seconds cold and 30.01 seconds warm, with a 380,992-KB peak.
+This remains 57.1% below the controlled 889,100-KB all-at-once parse baseline
+while adding 49 exact global inheritance-boundary findings.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

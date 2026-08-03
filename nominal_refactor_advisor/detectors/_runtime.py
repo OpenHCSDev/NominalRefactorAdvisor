@@ -25,9 +25,14 @@ from ..ast_tools import (
     collect_family_items,
 )
 from ..class_index import (
+    CompactClassReferenceResolver,
+    CompactIndexedClass,
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
+    build_compact_class_family_index,
 )
 from ..codemod import CancelableCompositionSignal, detect_cancelable_composition_signals
 from ..collection_algebra import sorted_tuple
@@ -6255,18 +6260,22 @@ declare_typed_observation_detector(
 
 @dataclass(frozen=True)
 class ExactTypeGuardPredicate:
-    subject: ast.AST
-    type_reference: ast.AST
+    subject: ast.AST | str
+    type_reference: ast.AST | str
     matches_exact_type_when_true: bool
     expression: str
 
     @property
     def structural_membership_expression(self) -> str:
         membership = (
-            f"isinstance({ast.unparse(self.subject)}, "
-            f"{ast.unparse(self.type_reference)})"
+            f"isinstance({_ast_or_text(self.subject)}, "
+            f"{_ast_or_text(self.type_reference)})"
         )
         return membership if self.matches_exact_type_when_true else f"not {membership}"
+
+
+def _ast_or_text(value: ast.AST | str) -> str:
+    return value if isinstance(value, str) else ast.unparse(value)
 
 
 class ExactTypeComparisonAuthority:
@@ -6336,8 +6345,8 @@ class ExactTypeGuardInheritanceRetreatCandidate:
     line: int
     qualname: str
     predicate: ExactTypeGuardPredicate
-    base_class: IndexedClass
-    descendant_classes: tuple[IndexedClass, ...]
+    base_class: IndexedClass | CompactIndexedClass
+    descendant_classes: tuple[IndexedClass | CompactIndexedClass, ...]
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -6516,9 +6525,61 @@ class FailLoudBlockAuthority:
 FAIL_LOUD_BLOCK_AUTHORITY = FailLoudBlockAuthority()
 
 
+def _exact_type_guard_candidates_from_compact_projections(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[ExactTypeGuardInheritanceRetreatCandidate, ...]:
+    class_index = build_compact_class_family_index(projections)
+    resolver = CompactClassReferenceResolver.from_index(projections, class_index)
+    candidates: list[ExactTypeGuardInheritanceRetreatCandidate] = []
+    for projection in projections:
+        for guard in projection.exact_type_guards:
+            base_symbol = resolver.symbol_for(
+                module_name=projection.module_name,
+                reference_parts=guard.type_reference_parts,
+            )
+            if base_symbol is None:
+                continue
+            base_class = class_index.class_for(base_symbol)
+            if base_class is None or base_class.is_final:
+                continue
+            descendants = tuple(
+                descendant
+                for descendant_symbol in class_index.descendant_symbols(base_symbol)
+                if (descendant := class_index.class_for(descendant_symbol)) is not None
+            )
+            if not descendants:
+                continue
+            candidates.append(
+                ExactTypeGuardInheritanceRetreatCandidate(
+                    file_path=guard.file_path,
+                    line=guard.line,
+                    qualname=guard.qualname,
+                    predicate=ExactTypeGuardPredicate(
+                        subject=guard.subject_expression,
+                        type_reference=guard.type_reference_expression,
+                        matches_exact_type_when_true=guard.matches_exact_type_when_true,
+                        expression=guard.expression,
+                    ),
+                    base_class=base_class,
+                    descendant_classes=descendants,
+                )
+            )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.qualname,
+            candidate.base_class.symbol,
+        ),
+    )
+
+
 class ExactTypeGuardInheritanceRetreatDetector(
-    CrossModuleCollectorCandidateDetector[ExactTypeGuardInheritanceRetreatCandidate]
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CrossModuleCollectorCandidateDetector[ExactTypeGuardInheritanceRetreatCandidate],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
     detector_priority = -21
     candidate_collector = ExactTypeGuardBoundaryCollector.collect
     finding_spec = high_confidence_certified_spec(
@@ -6538,6 +6599,16 @@ class ExactTypeGuardInheritanceRetreatDetector(
             ObservationTag.PARTIAL_VIEW,
         ),
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _exact_type_guard_candidates_from_compact_projections(projections),
+            config,
+        )
 
     def _finding_for_candidate(
         self,

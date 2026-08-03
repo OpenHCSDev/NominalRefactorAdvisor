@@ -14,7 +14,11 @@ from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
 from pathlib import Path
 
-from .ast_tools import CollectedFamily, ParsedModule
+from .ast_tools import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    CollectedFamily,
+    ParsedModule,
+)
 from .collection_algebra import sorted_tuple
 
 
@@ -89,6 +93,7 @@ class CompactIndexedClass:
     direct_assignment_lines: tuple[tuple[str, int], ...] = ()
     metaclass_names: tuple[str, ...] = ()
     keyed_family_key_type_name: str | None = None
+    is_final: bool = False
     resolved_base_symbols: tuple[str, ...] = ()
 
     @property
@@ -122,6 +127,7 @@ class CompactModuleClassProjection:
     closed_axis_branch_functions: tuple["CompactClosedAxisBranchFunction", ...] = ()
     manual_selector_axes: tuple["CompactManualSelectorAxis", ...] = ()
     top_level_definitions: tuple[tuple[str, int], ...] = ()
+    exact_type_guards: tuple["CompactExactTypeGuard", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -165,6 +171,18 @@ class CompactManualSelectorAxis:
     selector_method_name: str
     key_type_name: str
     case_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactExactTypeGuard:
+    file_path: str
+    line: int
+    qualname: str
+    subject_expression: str
+    type_reference_expression: str
+    type_reference_parts: tuple[str, ...]
+    matches_exact_type_when_true: bool
+    expression: str
 
 
 @dataclass(frozen=True)
@@ -390,6 +408,14 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     is not None
                 ),
                 keyed_family_key_type_name=_keyed_family_key_type_name(node),
+                is_final=any(
+                    (isinstance(decorator, ast.Name) and decorator.id == "final")
+                    or (
+                        isinstance(decorator, ast.Attribute)
+                        and decorator.attr == "final"
+                    )
+                    for decorator in node.decorator_list
+                ),
             )
             for qualname, node in _iter_class_defs(list(parsed_module.module.body))
         )
@@ -416,6 +442,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
                     )
                 ),
+                exact_type_guards=_compact_exact_type_guards(parsed_module),
             )
         ]
 
@@ -641,6 +668,166 @@ def _compact_manual_selector_axes(
                 )
             )
     return tuple(axes)
+
+
+def _compact_exact_type_guards(
+    parsed_module: ParsedModule,
+) -> tuple[CompactExactTypeGuard, ...]:
+    guards: list[CompactExactTypeGuard] = []
+    module_bindings = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        parsed_module.module.body
+    )
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.scope: list[str] = []
+            self.scope_bindings: list[frozenset[str]] = [module_bindings]
+            self.callable_depth = 0
+
+        @property
+        def qualname(self) -> str:
+            return ".".join(self.scope) if self.scope else "<module>"
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.scope.append(node.name)
+            self.generic_visit(node)
+            self.scope.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_callable(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_callable(node)
+
+        def _visit_callable(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            self.scope.append(node.name)
+            self.scope_bindings.append(
+                LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+                | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+            )
+            self.callable_depth += 1
+            self.generic_visit(node)
+            self.callable_depth -= 1
+            self.scope_bindings.pop()
+            self.scope.pop()
+
+        def visit_If(self, node: ast.If) -> None:
+            predicate = _exact_type_predicate(node.test)
+            if predicate is not None and self.callable_depth:
+                _, _, matches_exact_type_when_true, _ = predicate
+                rejects_descendants = (
+                    not matches_exact_type_when_true and _fail_loud_block(node.body)
+                ) or (matches_exact_type_when_true and _fail_loud_block(node.orelse))
+                if rejects_descendants:
+                    self._append_guard(node, predicate)
+            self.generic_visit(node)
+
+        def visit_Assert(self, node: ast.Assert) -> None:
+            predicate = _exact_type_predicate(node.test)
+            if predicate is not None and predicate[2] and self.callable_depth:
+                self._append_guard(node, predicate)
+            self.generic_visit(node)
+
+        def _append_guard(
+            self,
+            node: ast.If | ast.Assert,
+            predicate: tuple[ast.AST, ast.AST, bool, str],
+        ) -> None:
+            if any("type" in bindings for bindings in self.scope_bindings):
+                return
+            subject, type_reference, matches_exact_type_when_true, expression = (
+                predicate
+            )
+            reference_node = ClassSymbolResolutionAuthority.reference_node(
+                type_reference
+            )
+            parts = ATTRIBUTE_CHAIN_AUTHORITY.project(reference_node)
+            if parts is None:
+                return
+            guards.append(
+                CompactExactTypeGuard(
+                    file_path=str(parsed_module.path),
+                    line=node.lineno,
+                    qualname=self.qualname,
+                    subject_expression=ast.unparse(subject),
+                    type_reference_expression=ast.unparse(type_reference),
+                    type_reference_parts=parts,
+                    matches_exact_type_when_true=matches_exact_type_when_true,
+                    expression=expression,
+                )
+            )
+
+    Visitor().visit(parsed_module.module)
+    return tuple(guards)
+
+
+def _exact_type_predicate(
+    node: ast.AST,
+) -> tuple[ast.AST, ast.AST, bool, str] | None:
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        negated = True
+        comparison = node.operand
+    else:
+        negated = False
+        comparison = node
+    if not (
+        isinstance(comparison, ast.Compare)
+        and len(comparison.ops) == 1
+        and len(comparison.comparators) == 1
+    ):
+        return None
+    operator = comparison.ops[0]
+    if not isinstance(operator, (ast.Is, ast.Eq, ast.IsNot, ast.NotEq)):
+        return None
+    left = comparison.left
+    right = comparison.comparators[0]
+    subject = _type_call_subject(left)
+    type_reference = right
+    if subject is None:
+        subject = _type_call_subject(right)
+        type_reference = left
+    if subject is None:
+        return None
+    matches_exact_type = isinstance(operator, (ast.Is, ast.Eq))
+    return (
+        subject,
+        type_reference,
+        not matches_exact_type if negated else matches_exact_type,
+        ast.unparse(node),
+    )
+
+
+def _type_call_subject(node: ast.AST) -> ast.AST | None:
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "type"
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        return None
+    return node.args[0]
+
+
+def _fail_loud_block(statements: list[ast.stmt]) -> bool:
+    non_terminating_prefix_types = (
+        ast.AnnAssign,
+        ast.Assign,
+        ast.AugAssign,
+        ast.Delete,
+        ast.Expr,
+        ast.Import,
+        ast.ImportFrom,
+        ast.Pass,
+    )
+    return (
+        bool(statements)
+        and isinstance(statements[-1], ast.Raise)
+        and all(
+            isinstance(statement, non_terminating_prefix_types)
+            for statement in statements[:-1]
+        )
+    )
 
 
 def _named_functions(
@@ -941,6 +1128,45 @@ def build_compact_class_family_index(
     """Build an exact inheritance graph from AST-free per-module facts."""
 
     return CompactClassFamilyIndexBuilder(projections).build()
+
+
+@dataclass(frozen=True)
+class CompactClassReferenceResolver:
+    projections_by_module_name: dict[str, CompactModuleClassProjection]
+    known_symbols: frozenset[str]
+    unique_symbols_by_name: dict[str, str]
+
+    @classmethod
+    def from_index(
+        cls,
+        projections: tuple[CompactModuleClassProjection, ...],
+        class_index: CompactClassFamilyIndex,
+    ) -> "CompactClassReferenceResolver":
+        return cls(
+            projections_by_module_name={
+                projection.module_name: projection for projection in projections
+            },
+            known_symbols=frozenset(class_index.classes_by_symbol),
+            unique_symbols_by_name={
+                name: symbols[0]
+                for name, symbols in class_index.symbols_by_simple_name.items()
+                if len(symbols) == 1
+            },
+        )
+
+    def symbol_for(
+        self,
+        *,
+        module_name: str,
+        reference_parts: tuple[str, ...],
+    ) -> str | None:
+        return CompactClassFamilyIndexBuilder._resolved_symbol(
+            reference_parts,
+            module_name,
+            self.projections_by_module_name,
+            self.known_symbols,
+            self.unique_symbols_by_name,
+        )
 
 
 @dataclass(frozen=True)

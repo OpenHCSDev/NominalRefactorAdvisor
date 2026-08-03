@@ -1844,6 +1844,52 @@ def test_compact_dataclass_cli_projection_matches_legacy_ast_candidates(
     )
 
 
+def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "family.py").write_text(
+        "class Boundary:\n"
+        "    pass\n"
+        "\n"
+        "class ConcreteBoundary(Boundary):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (package_root / "consumer.py").write_text(
+        "from .family import Boundary as ImportedBoundary\n"
+        "\n"
+        "def require_boundary(value):\n"
+        "    if type(value) is not ImportedBoundary:\n"
+        "        raise TypeError('boundary required')\n"
+        "\n"
+        "def assert_boundary(value):\n"
+        "    assert type(value) is ImportedBoundary\n"
+        "\n"
+        "def shadowed_type(type, value):\n"
+        "    assert type(value) is ImportedBoundary\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    detector = runtime_detectors.ExactTypeGuardInheritanceRetreatDetector()
+    legacy_findings = detector._findings_for_candidates(
+        runtime_detectors.ExactTypeGuardBoundaryCollector.collect(modules),
+        DetectorConfig(),
+    )
+    projections = detector.compact_module_projections(modules)
+    compact_findings = detector._findings_for_candidates(
+        runtime_detectors._exact_type_guard_candidates_from_compact_projections(
+            projections
+        ),
+        DetectorConfig(),
+    )
+
+    assert [finding.to_dict() for finding in compact_findings] == [
+        finding.to_dict() for finding in legacy_findings
+    ]
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -1917,8 +1963,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.DataclassNamespaceCliMirrorDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 25
-    assert len(partition.ast_retaining_context_detector_types) == 44
+    assert runtime_detectors.ExactTypeGuardInheritanceRetreatDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 26
+    assert len(partition.ast_retaining_context_detector_types) == 43
     assert len(partition.per_module_detector_types) == 183
 
 
