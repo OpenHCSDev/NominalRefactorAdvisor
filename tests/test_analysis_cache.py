@@ -1646,6 +1646,97 @@ def test_compact_class_index_detectors_match_full_ast_detection(
         ]
 
 
+def test_compact_keyed_axis_projection_matches_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "specs.py").write_text(
+        "class ModeConfig:\n"
+        "    pass\n"
+        "\n"
+        "class ModeSpecPolicy(KeyedNominalFamily[Mode]):\n"
+        "    registry_key_attr = 'mode'\n"
+        "    family_label = 'mode case'\n"
+        "\n"
+        "class AlphaModeSpec(ModeSpecPolicy):\n"
+        "    mode = Mode.ALPHA\n"
+        "\n"
+        "class BetaModeSpec(ModeSpecPolicy):\n"
+        "    mode = Mode.BETA\n"
+        "\n"
+        "MODE_CONFIGS = {\n"
+        "    Mode.ALPHA: ModeConfig(),\n"
+        "    Mode.BETA: ModeConfig(),\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (package_root / "runtime.py").write_text(
+        "from .specs import Mode, KeyedNominalFamily\n"
+        "\n"
+        "class ModeRuntimePolicy(KeyedNominalFamily[Mode]):\n"
+        "    registry_key_attr = 'mode'\n"
+        "    family_label = 'mode case'\n"
+        "\n"
+        "class AlphaModeRuntime(ModeRuntimePolicy):\n"
+        "    mode = Mode.ALPHA\n"
+        "\n"
+        "class BetaModeRuntime(ModeRuntimePolicy):\n"
+        "    mode = Mode.BETA\n",
+        encoding="utf-8",
+    )
+    (package_root / "consumer.py").write_text(
+        "from .specs import Mode\n"
+        "\n"
+        "def resolve(mode):\n"
+        "    if mode == Mode.ALPHA:\n"
+        "        return 'alpha'\n"
+        "    return 'beta'\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    projections = (
+        systemic_detectors.ParallelKeyedAxisFamilyDetector.compact_module_projections(
+            modules
+        )
+    )
+
+    legacy_family_specs = (
+        systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules)
+    )
+    compact_family_specs = systemic_detectors._compact_keyed_family_axis_specs(
+        projections
+    )
+    legacy_table_specs = tuple(
+        table_spec
+        for module in modules
+        for table_spec in systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(
+            module
+        )
+    )
+    compact_table_specs = systemic_detectors._compact_keyed_table_axis_specs(
+        projections
+    )
+
+    assert compact_family_specs == legacy_family_specs
+    assert compact_table_specs == legacy_table_specs
+    assert systemic_detectors._parallel_keyed_axis_family_candidates_from_specs(
+        compact_family_specs
+    ) == systemic_detectors._parallel_keyed_axis_family_candidates(modules)
+    assert systemic_detectors._parallel_keyed_table_and_family_candidates_from_specs(
+        compact_family_specs,
+        compact_table_specs,
+    ) == systemic_detectors._parallel_keyed_table_and_family_candidates(modules)
+    assert systemic_detectors._parallel_keyed_table_axis_candidates_from_specs(
+        compact_table_specs
+    ) == systemic_detectors._parallel_keyed_table_axis_candidates(modules)
+    assert systemic_detectors._residual_closed_axis_branching_candidates_from_compact_projections(
+        projections
+    ) == systemic_detectors._residual_closed_axis_branching_candidates(
+        modules
+    )
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -1698,8 +1789,20 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.PublicBareSupportFunctionDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 18
-    assert len(partition.ast_retaining_context_detector_types) == 51
+    assert systemic_detectors.ParallelKeyedAxisFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.ParallelKeyedTableAndFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.ParallelKeyedTableAxisDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.ResidualClosedAxisBranchingDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 22
+    assert len(partition.ast_retaining_context_detector_types) == 47
     assert len(partition.per_module_detector_types) == 183
 
 

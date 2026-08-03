@@ -174,6 +174,27 @@ reference representation peaked at 461,952 KB; aggregating the 70,923 eligible
 per-module symbol/site groups into exact counts removed 91 MB without changing
 findings and is the accepted checkpoint representation.
 
+The shared compact class projection now also carries exact keyed-family type
+arguments, enum-keyed module-table summaries, and per-function closed-axis
+branch aggregates.  Four additional global detectors consume those facts:
+parallel keyed families, parallel keyed tables, keyed table/family overlap, and
+residual downstream branching over an already-owned closed axis.  Their
+family/table/branch candidates are checked directly against the legacy AST
+collectors.  The current partition is 183 per-module detectors, 22 compact
+global detectors, and 47 AST-retaining context-dependent detectors.
+
+DQDock was being edited during the first measurement, so a production-source
+snapshot was taken under ``/tmp`` for the accepted cold/warm comparison.  It
+contains the same 919 production Python modules and the same 116 small external
+authority files used by the formal-boundary detector.  The isolated 22-family
+run took 98.71 seconds cold and 25.64 seconds warm, retained 68,465 top-level
+projection items, produced 340 identical findings, and reached a 369,568-KB
+combined-process high-water mark.  The shared class facts include 16,911 class
+records, two keyed tables, 8,606 branch-bearing functions, and 19,718
+aggregated function/axis rows.  Peak memory is 58.4% below the controlled
+889,100-KB all-at-once parse baseline and slightly below the 18-family
+checkpoint despite the added global work.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

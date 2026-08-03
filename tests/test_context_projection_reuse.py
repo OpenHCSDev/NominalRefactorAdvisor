@@ -45,7 +45,10 @@ def test_cross_module_preparation_reuses_exact_candidate_snapshot(
         assert tuple(prepared_candidates) == candidates
         return []
 
-    detector_type = runtime_detectors.RepeatedBuilderCallDetector
+    # Exercise the legacy full-AST candidate snapshot contract. Compact
+    # projection detectors intentionally prepare from their persisted family
+    # instead of retaining this candidate tuple.
+    detector_type = runtime_detectors.ExactTypeGuardInheritanceRetreatDetector
     monkeypatch.setattr(detector_type, "_candidate_items", counted_candidates)
     monkeypatch.setattr(detector_type, "_findings_for_candidates", counted_findings)
 

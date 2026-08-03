@@ -88,6 +88,7 @@ class CompactIndexedClass:
     direct_assignment_expressions: tuple[tuple[str, str | None], ...] = ()
     direct_assignment_lines: tuple[tuple[str, int], ...] = ()
     metaclass_names: tuple[str, ...] = ()
+    keyed_family_key_type_name: str | None = None
     resolved_base_symbols: tuple[str, ...] = ()
 
     @property
@@ -117,12 +118,41 @@ class CompactModuleClassProjection:
     import_aliases: tuple[tuple[str, str], ...]
     classes: tuple[CompactIndexedClass, ...]
     registry_order_calls: tuple["CompactRegistryOrderCall", ...] = ()
+    keyed_table_axes: tuple["CompactKeyedTableAxis", ...] = ()
+    closed_axis_branch_functions: tuple["CompactClosedAxisBranchFunction", ...] = ()
 
 
 @dataclass(frozen=True)
 class CompactRegistryOrderCall:
     registry_owner_names: tuple[str, ...]
     key_attribute_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactKeyedTableAxis:
+    """AST-free module-level dictionary keyed by one enum-like axis."""
+
+    file_path: str
+    line: int
+    table_name: str
+    key_type_name: str
+    case_names: tuple[str, ...]
+    value_shape_name: str | None
+
+
+@dataclass(frozen=True)
+class CompactClosedAxisBranchFact:
+    key_type_name: str
+    branch_site_count: int
+    case_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactClosedAxisBranchFunction:
+    file_path: str
+    line: int
+    qualname: str
+    axes: tuple[CompactClosedAxisBranchFact, ...]
 
 
 @dataclass(frozen=True)
@@ -347,6 +377,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     if (terminal_name := _terminal_reference_name(keyword.value))
                     is not None
                 ),
+                keyed_family_key_type_name=_keyed_family_key_type_name(node),
             )
             for qualname, node in _iter_class_defs(list(parsed_module.module.body))
         )
@@ -361,8 +392,210 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 registry_order_calls=_compact_registry_order_calls(
                     parsed_module.module
                 ),
+                keyed_table_axes=_compact_keyed_table_axes(parsed_module),
+                closed_axis_branch_functions=_compact_closed_axis_branch_functions(
+                    parsed_module
+                ),
             )
         ]
+
+
+def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
+    if node is None:
+        return ()
+    if isinstance(node, ast.Constant) and node.value is None:
+        return ()
+    if isinstance(node, ast.Name):
+        return () if node.id == "None" else (node.id,)
+    if isinstance(node, ast.Attribute):
+        return (node.attr,)
+    if isinstance(node, ast.Tuple):
+        return sorted_tuple(
+            {name for element in node.elts for name in _annotation_type_names(element)}
+        )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return sorted_tuple(
+            {*_annotation_type_names(node.left), *_annotation_type_names(node.right)}
+        )
+    if isinstance(node, ast.Subscript):
+        base_name = _terminal_reference_name(node.value)
+        if base_name in {"Optional", "Required", "NotRequired", "Type", "type"}:
+            return _annotation_type_names(node.slice)
+        if base_name == "Annotated":
+            if isinstance(node.slice, ast.Tuple) and node.slice.elts:
+                return _annotation_type_names(node.slice.elts[0])
+            return _annotation_type_names(node.slice)
+    return ()
+
+
+def _keyed_family_key_type_name(node: ast.ClassDef) -> str | None:
+    for base in node.bases:
+        if not isinstance(base, ast.Subscript):
+            continue
+        if _terminal_reference_name(base.value) != "KeyedNominalFamily":
+            continue
+        type_names = _annotation_type_names(base.slice)
+        if type_names:
+            return type_names[0]
+    return None
+
+
+def _compact_keyed_table_axes(
+    parsed_module: ParsedModule,
+) -> tuple[CompactKeyedTableAxis, ...]:
+    axes: list[CompactKeyedTableAxis] = []
+    for statement in parsed_module.module.body:
+        table_name: str | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                table_name = target.id
+                value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            table_name = statement.target.id
+            value = statement.value
+        if table_name is None or not isinstance(value, ast.Dict):
+            continue
+        if len(value.keys) < 2 or any(key is None for key in value.keys):
+            continue
+        case_names = tuple(ast.unparse(key) for key in value.keys if key is not None)
+        key_type_names = {
+            case_name.split(".", 1)[0] for case_name in case_names if "." in case_name
+        }
+        if len(key_type_names) != 1:
+            continue
+        value_shape_name: str | None = None
+        value_constructor_names = {
+            ast.unparse(item.func)
+            for item in value.values
+            if isinstance(item, ast.Call)
+        }
+        if (
+            all(isinstance(item, ast.Call) for item in value.values)
+            and len(value_constructor_names) == 1
+        ):
+            value_shape_name = next(iter(value_constructor_names))
+        axes.append(
+            CompactKeyedTableAxis(
+                file_path=str(parsed_module.path),
+                line=statement.lineno,
+                table_name=table_name,
+                key_type_name=next(iter(key_type_names)),
+                case_names=sorted_tuple(case_names),
+                value_shape_name=value_shape_name,
+            )
+        )
+    return tuple(axes)
+
+
+def _compact_closed_axis_branch_functions(
+    parsed_module: ParsedModule,
+) -> tuple[CompactClosedAxisBranchFunction, ...]:
+    facts: list[CompactClosedAxisBranchFunction] = []
+    for qualname, function in _named_functions(parsed_module.module):
+        branch_site_counts: dict[str, int] = defaultdict(int)
+        case_names_by_key: dict[str, set[str]] = defaultdict(set)
+        for subnode in _non_nested_function_subnodes(function):
+            if isinstance(subnode, ast.If):
+                refs = _enum_member_refs_by_key_type(subnode.test)
+                for key_type_name, case_names in refs.items():
+                    branch_site_counts[key_type_name] += 1
+                    case_names_by_key[key_type_name].update(case_names)
+            elif isinstance(subnode, ast.Match):
+                refs_by_key: dict[str, set[str]] = defaultdict(set)
+                for case in subnode.cases:
+                    for key_type_name, case_names in _enum_member_refs_by_key_type(
+                        case.pattern
+                    ).items():
+                        refs_by_key[key_type_name].update(case_names)
+                    if case.guard is not None:
+                        for key_type_name, case_names in _enum_member_refs_by_key_type(
+                            case.guard
+                        ).items():
+                            refs_by_key[key_type_name].update(case_names)
+                for key_type_name, case_names in refs_by_key.items():
+                    branch_site_counts[key_type_name] += 1
+                    case_names_by_key[key_type_name].update(case_names)
+        axes = tuple(
+            CompactClosedAxisBranchFact(
+                key_type_name=key_type_name,
+                branch_site_count=branch_site_count,
+                case_names=sorted_tuple(case_names_by_key[key_type_name]),
+            )
+            for key_type_name, branch_site_count in sorted(branch_site_counts.items())
+        )
+        if axes:
+            facts.append(
+                CompactClosedAxisBranchFunction(
+                    file_path=str(parsed_module.path),
+                    line=function.lineno,
+                    qualname=qualname,
+                    axes=axes,
+                )
+            )
+    return tuple(facts)
+
+
+def _named_functions(
+    module: ast.Module,
+) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
+    functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            functions.append((".".join((*self.class_stack, node.name)), node))
+            self.generic_visit(node)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+    Visitor().visit(module)
+    return tuple(functions)
+
+
+def _non_nested_function_subnodes(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.AST, ...]:
+    nodes: list[ast.AST] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def generic_visit(self, node: ast.AST) -> None:
+            nodes.append(node)
+            super().generic_visit(node)
+
+    visitor = Visitor()
+    for statement in function.body:
+        visitor.visit(statement)
+    return tuple(nodes)
+
+
+def _enum_member_refs_by_key_type(node: ast.AST) -> dict[str, tuple[str, ...]]:
+    refs: dict[str, set[str]] = defaultdict(set)
+    for subnode in ast.walk(node):
+        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(subnode)
+        if parts is None or len(parts) < 2:
+            continue
+        key_type_name = parts[-2]
+        refs[key_type_name].add(f"{key_type_name}.{parts[-1]}")
+    return {
+        key_type_name: sorted_tuple(case_names)
+        for key_type_name, case_names in refs.items()
+    }
 
 
 def _direct_class_assignments(node: ast.ClassDef) -> dict[str, ast.AST | None]:

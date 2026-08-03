@@ -1982,8 +1982,10 @@ declare_candidate_rule_detector(
 
 
 class ResidualClosedAxisBranchingDetector(
-    CrossModuleCollectorCandidateDetector[ResidualClosedAxisBranchingCandidate]
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CrossModuleCollectorCandidateDetector[ResidualClosedAxisBranchingCandidate],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Manual closed-axis branching should derive from existing keyed authority",
@@ -1993,6 +1995,18 @@ class ResidualClosedAxisBranchingDetector(
         _AUTHORITATIVE_DISPATCH_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _BRANCH_DISPATCH_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _residual_closed_axis_branching_candidates_from_compact_projections(
+                projections
+            ),
+            config,
+        )
 
     def _finding_for_candidate(
         self, residual_candidate: ResidualClosedAxisBranchingCandidate
@@ -2027,8 +2041,10 @@ class ResidualClosedAxisBranchingDetector(
 
 
 class ParallelKeyedAxisFamilyDetector(
-    CrossModuleCollectorCandidateDetector[ParallelKeyedAxisFamilyCandidate]
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CrossModuleCollectorCandidateDetector[ParallelKeyedAxisFamilyCandidate],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
     registry_normal_form_policy = RegistryNormalFormPolicy(
         stage_order=50,
         normal_form="auto_registered_abc",
@@ -2047,6 +2063,18 @@ class ParallelKeyedAxisFamilyDetector(
         _AUTHORITATIVE_DISPATCH_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         _CLASS_FAMILY_FACTORY_DISPATCH_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _parallel_keyed_axis_family_candidates_from_specs(
+                _compact_keyed_family_axis_specs(projections)
+            ),
+            config,
+        )
 
     def _finding_for_candidate(
         self, family_candidate: ParallelKeyedAxisFamilyCandidate
@@ -2086,6 +2114,25 @@ class ParallelKeyedAxisFamilyDetector(
         )
 
 
+class CompactParallelKeyedTableAxisCandidateBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CrossModuleCollectorCandidateDetector[ParallelKeyedTableAxisCandidate],
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _parallel_keyed_table_axis_candidates_from_specs(
+                _compact_keyed_table_axis_specs(projections)
+            ),
+            config,
+        )
+
+
 declare_candidate_rule_detector(
     ParallelKeyedTableAxisCandidate,
     high_confidence_spec(
@@ -2112,7 +2159,7 @@ declare_candidate_rule_detector(
         source_name=table_candidate.key_type_name,
         identity_field_names=("key",),
     ),
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=CompactParallelKeyedTableAxisCandidateBase,
     candidate_collector=_parallel_keyed_table_axis_candidates,
     registry_normal_form_policy=RegistryNormalFormPolicy(
         stage_order=40,
@@ -2127,8 +2174,10 @@ declare_candidate_rule_detector(
 
 
 class ParallelKeyedTableAndFamilyDetector(
-    CrossModuleCollectorCandidateDetector[ParallelKeyedTableAndFamilyCandidate]
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CrossModuleCollectorCandidateDetector[ParallelKeyedTableAndFamilyCandidate],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
     registry_normal_form_policy = RegistryNormalFormPolicy(
         stage_order=30,
         normal_form="generated_projection_surface",
@@ -2148,6 +2197,19 @@ class ParallelKeyedTableAndFamilyDetector(
         _AUTHORITATIVE_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         _CLASS_FAMILY_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _parallel_keyed_table_and_family_candidates_from_specs(
+                _compact_keyed_family_axis_specs(projections),
+                _compact_keyed_table_axis_specs(projections),
+            ),
+            config,
+        )
 
     def _finding_for_candidate(
         self, table_candidate: ParallelKeyedTableAndFamilyCandidate

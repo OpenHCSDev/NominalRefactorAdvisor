@@ -6806,6 +6806,87 @@ class _ClassAssignedEnumAxisSpec:
 KeyedFamilyAxisSpecsByKey: TypeAlias = dict[str, list[_KeyedFamilyAxisSpec]]
 
 
+def _compact_constant_string(expression: str | None) -> str | None:
+    if expression is None:
+        return None
+    try:
+        value = ast.literal_eval(expression)
+    except (SyntaxError, ValueError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _compact_keyed_family_axis_specs(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[_KeyedFamilyAxisSpec, ...]:
+    class_index = build_compact_class_family_index(projections)
+    specs: list[_KeyedFamilyAxisSpec] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        key_type_name = indexed_class.keyed_family_key_type_name
+        if key_type_name is None:
+            continue
+        assignments = indexed_class.assignments_by_name
+        registry_key_attr_name = _compact_constant_string(
+            assignments.get("registry_key_attr")
+        )
+        if registry_key_attr_name is None:
+            continue
+        case_names = sorted_tuple(
+            {
+                assignment
+                for descendant_symbol in class_index.descendant_symbols(
+                    indexed_class.symbol
+                )
+                if (descendant := class_index.class_for(descendant_symbol)) is not None
+                if (
+                    assignment := descendant.assignments_by_name.get(
+                        registry_key_attr_name
+                    )
+                )
+                is not None
+            }
+        )
+        if len(case_names) < 2:
+            continue
+        simple_name = indexed_class.simple_name
+        family_name = (
+            simple_name
+            if len(class_index.symbols_by_simple_name.get(simple_name, ())) <= 1
+            else indexed_class.symbol
+        )
+        specs.append(
+            _KeyedFamilyAxisSpec(
+                file_path=indexed_class.file_path,
+                line=indexed_class.line,
+                family_name=family_name,
+                key_type_name=key_type_name,
+                family_label=_compact_constant_string(assignments.get("family_label")),
+                registry_key_attr_name=registry_key_attr_name,
+                case_names=case_names,
+            )
+        )
+    return tuple(specs)
+
+
+def _compact_keyed_table_axis_specs(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[_KeyedTableAxisSpec, ...]:
+    return tuple(
+        _KeyedTableAxisSpec(
+            file_path=axis.file_path,
+            line=axis.line,
+            table_name=axis.table_name,
+            key_type_name=axis.key_type_name,
+            case_names=axis.case_names,
+            value_shape_name=axis.value_shape_name,
+        )
+        for projection in projections
+        for axis in projection.keyed_table_axes
+    )
+
+
 def _parallel_keyed_family_name_overlap(
     left_family_name: str,
     right_family_name: str,
@@ -6939,56 +7020,70 @@ def _enum_keyed_table_class_axis_shadow_candidates(
 def _parallel_keyed_table_and_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
+    return _parallel_keyed_table_and_family_candidates_from_specs(
+        DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules),
+        tuple(
+            table_spec
+            for module in modules
+            for table_spec in DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(
+                module
+            )
+        ),
+    )
+
+
+def _parallel_keyed_table_and_family_candidates_from_specs(
+    family_specs: Sequence[_KeyedFamilyAxisSpec],
+    table_specs: Sequence[_KeyedTableAxisSpec],
+) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
     family_specs_by_file: KeyedFamilyAxisSpecsByKey = {}
-    for family_spec in DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules):
+    for family_spec in family_specs:
         family_specs_by_file.setdefault(family_spec.file_path, []).append(family_spec)
     candidates: list[ParallelKeyedTableAndFamilyCandidate] = []
     seen: set[tuple[str, str, str]] = set()
-    for module in modules:
-        table_specs = DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(module)
-        family_specs = family_specs_by_file.get(str(module.path), ())
-        for table_spec in table_specs:
-            for family_spec in family_specs:
-                if table_spec.key_type_name != family_spec.key_type_name:
-                    continue
-                shared_case_names = sorted_tuple(
-                    set(table_spec.case_names) & set(family_spec.case_names)
+    for table_spec in table_specs:
+        local_family_specs = family_specs_by_file.get(table_spec.file_path, ())
+        for family_spec in local_family_specs:
+            if table_spec.key_type_name != family_spec.key_type_name:
+                continue
+            shared_case_names = sorted_tuple(
+                set(table_spec.case_names) & set(family_spec.case_names)
+            )
+            if len(shared_case_names) < 2:
+                continue
+            case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
+                table_spec.case_names, family_spec.case_names
+            )
+            if case_overlap_score < 0.8:
+                continue
+            table_overlap = SUPPORT_PROJECTION_AUTHORITY.identifier_name_overlap(
+                table_spec.table_name, family_spec.family_name
+            )
+            value_overlap = (
+                0.0
+                if table_spec.value_shape_name is None
+                else SUPPORT_PROJECTION_AUTHORITY.identifier_name_overlap(
+                    table_spec.value_shape_name, family_spec.family_name
                 )
-                if len(shared_case_names) < 2:
-                    continue
-                case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
-                    table_spec.case_names, family_spec.case_names
+            )
+            if max(table_overlap, value_overlap) < 0.5:
+                continue
+            key = (
+                table_spec.file_path,
+                table_spec.table_name,
+                family_spec.family_name,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                ParallelKeyedTableAndFamilyCandidate(
+                    table=table_spec,
+                    family_name=family_spec.family_name,
+                    family_line=family_spec.line,
+                    shared_case_names=shared_case_names,
                 )
-                if case_overlap_score < 0.8:
-                    continue
-                table_overlap = SUPPORT_PROJECTION_AUTHORITY.identifier_name_overlap(
-                    table_spec.table_name, family_spec.family_name
-                )
-                value_overlap = (
-                    0.0
-                    if table_spec.value_shape_name is None
-                    else SUPPORT_PROJECTION_AUTHORITY.identifier_name_overlap(
-                        table_spec.value_shape_name, family_spec.family_name
-                    )
-                )
-                if max(table_overlap, value_overlap) < 0.5:
-                    continue
-                key = (
-                    table_spec.file_path,
-                    table_spec.table_name,
-                    family_spec.family_name,
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                candidates.append(
-                    ParallelKeyedTableAndFamilyCandidate(
-                        table=table_spec,
-                        family_name=family_spec.family_name,
-                        family_line=family_spec.line,
-                        shared_case_names=shared_case_names,
-                    )
-                )
+            )
     return sorted_tuple(
         candidates,
         key=lambda item: (
@@ -7003,14 +7098,22 @@ def _parallel_keyed_table_and_family_candidates(
 def _parallel_keyed_table_axis_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedTableAxisCandidate, ...]:
-    specs = sorted_tuple(
-        (
+    return _parallel_keyed_table_axis_candidates_from_specs(
+        tuple(
             table_spec
             for module in modules
             for table_spec in DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(
                 module
             )
-        ),
+        )
+    )
+
+
+def _parallel_keyed_table_axis_candidates_from_specs(
+    table_specs: Sequence[_KeyedTableAxisSpec],
+) -> tuple[ParallelKeyedTableAxisCandidate, ...]:
+    specs = sorted_tuple(
+        table_specs,
         key=lambda item: (item.file_path, item.line, item.table_name),
     )
     candidates: list[ParallelKeyedTableAxisCandidate] = []
@@ -7076,7 +7179,14 @@ def _parallel_keyed_table_axis_candidates(
 def _parallel_keyed_axis_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedAxisFamilyCandidate, ...]:
-    specs = DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules)
+    return _parallel_keyed_axis_family_candidates_from_specs(
+        DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules)
+    )
+
+
+def _parallel_keyed_axis_family_candidates_from_specs(
+    specs: Sequence[_KeyedFamilyAxisSpec],
+) -> tuple[ParallelKeyedAxisFamilyCandidate, ...]:
     candidates: list[ParallelKeyedAxisFamilyCandidate] = []
     seen: set[tuple[str, str, str]] = set()
     for index, left_spec in enumerate(specs):
@@ -7340,6 +7450,64 @@ def _residual_closed_axis_branching_candidates(
                 seen,
             )
         )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.key_type_name, item.file_path, item.line, item.qualname),
+    )
+
+
+def _residual_closed_axis_branching_candidates_from_compact_projections(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
+    authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey = defaultdict(list)
+    for spec in _compact_keyed_family_axis_specs(projections):
+        authoritative_specs_by_key[spec.key_type_name].append(spec)
+    if not authoritative_specs_by_key:
+        return ()
+    candidates: list[ResidualClosedAxisBranchingCandidate] = []
+    seen: set[ResidualClosedAxisBranchingIdentity] = set()
+    for projection in projections:
+        for function in projection.closed_axis_branch_functions:
+            if "/tests/" in function.file_path:
+                continue
+            for axis in function.axes:
+                specs = authoritative_specs_by_key.get(axis.key_type_name, ())
+                if not specs or any(
+                    spec.file_path == function.file_path for spec in specs
+                ):
+                    continue
+                authoritative_case_names = {
+                    case_name for spec in specs for case_name in spec.case_names
+                }
+                shared_case_names = sorted_tuple(
+                    set(axis.case_names) & authoritative_case_names
+                )
+                if not shared_case_names:
+                    continue
+                identity = ResidualClosedAxisBranchingIdentity(
+                    file_path=function.file_path,
+                    qualname=function.qualname,
+                    key_type_name=axis.key_type_name,
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                candidates.append(
+                    ResidualClosedAxisBranchingCandidate(
+                        key_type_name=axis.key_type_name,
+                        file_path=function.file_path,
+                        line=function.line,
+                        qualname=function.qualname,
+                        branch_site_count=axis.branch_site_count,
+                        case_names=shared_case_names,
+                        authoritative_families=sorted_tuple(
+                            (
+                                (spec.family_name, spec.file_path, spec.line)
+                                for spec in specs
+                            )
+                        ),
+                    )
+                )
     return sorted_tuple(
         candidates,
         key=lambda item: (item.key_type_name, item.file_path, item.line, item.qualname),
