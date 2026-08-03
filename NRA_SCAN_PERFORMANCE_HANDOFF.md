@@ -42,11 +42,10 @@ process exit), ``acbaa44`` (bounded focused loop), ``591f4f8`` (cache
 retention), ``3822abb`` (companion detector short-circuit), and ``d90a165``
 (module-boundary AST cache release).
 
-Verification collected 936 tests.  The broad run reported 934 passes and two
-fixture-root failures because its pytest base directory was intentionally
-nested inside the checkout; both failures passed when rerun from an external
-temporary root, which restores the repository-root assumption those detectors
-exercise.
+Final verification collected 942 tests in one external-root run: all 942
+passed in 314.56 seconds.  Keeping the pytest base outside the checkout
+preserves the repository-root assumption exercised by formal-boundary source
+discovery while avoiding the shared ``/tmp`` quota.
 
 ## Publication update
 
