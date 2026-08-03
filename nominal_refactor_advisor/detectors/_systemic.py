@@ -3863,17 +3863,11 @@ class PublicBareSupportFunctionDefinitionFact:
 
 
 @dataclass(frozen=True)
-class PublicBareSupportFunctionReferenceFact:
-    function_name: str
-    site: SourceLocation
-
-
-@dataclass(frozen=True)
 class PublicBareSupportModuleProjection:
     file_path: str
     module_role: str | None
     definitions: tuple[PublicBareSupportFunctionDefinitionFact, ...]
-    references: tuple[PublicBareSupportFunctionReferenceFact, ...]
+    reference_counts: tuple[tuple[str, int], ...]
 
 
 class PublicBareSupportModuleProjectionFamily(
@@ -3894,7 +3888,7 @@ class PublicBareSupportModuleProjectionFamily(
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
             and _is_public_bare_support_function_name(statement.name)
         )
-        reference_sites: set[tuple[str, SourceLocation]] = set()
+        reference_sites: dict[str, set[tuple[int, str]]] = defaultdict(set)
 
         class Visitor(ast.NodeVisitor):
             def __init__(self) -> None:
@@ -3918,15 +3912,8 @@ class PublicBareSupportModuleProjectionFamily(
             def _record(self, name: str, line: int) -> None:
                 if not _is_public_bare_support_function_name(name):
                     return
-                reference_sites.add(
-                    (
-                        name,
-                        SourceLocation(
-                            file_path,
-                            line,
-                            ".".join(self.stack) if self.stack else "<module>",
-                        ),
-                    )
+                reference_sites[name].add(
+                    (line, ".".join(self.stack) if self.stack else "<module>")
                 )
 
         Visitor().visit(parsed_module.module)
@@ -3935,17 +3922,9 @@ class PublicBareSupportModuleProjectionFamily(
                 file_path=file_path,
                 module_role=_private_module_role(file_path),
                 definitions=definitions,
-                references=tuple(
-                    PublicBareSupportFunctionReferenceFact(name, site)
-                    for name, site in sorted(
-                        reference_sites,
-                        key=lambda item: (
-                            item[0],
-                            item[1].file_path,
-                            item[1].line,
-                            item[1].symbol,
-                        ),
-                    )
+                reference_counts=tuple(
+                    (name, len(sites))
+                    for name, sites in sorted(reference_sites.items())
                 ),
             )
         ]
@@ -3954,10 +3933,12 @@ class PublicBareSupportModuleProjectionFamily(
 def _public_bare_support_function_candidates_from_projections(
     projections: tuple[PublicBareSupportModuleProjection, ...],
 ) -> tuple[PublicBareSupportFunctionCandidate, ...]:
-    reference_sites: dict[str, set[SourceLocation]] = defaultdict(set)
+    reference_counts_by_name_and_file: dict[str, dict[str, int]] = defaultdict(dict)
     for projection in projections:
-        for reference in projection.references:
-            reference_sites[reference.function_name].add(reference.site)
+        for function_name, count in projection.reference_counts:
+            reference_counts_by_name_and_file[function_name][
+                projection.file_path
+            ] = count
     candidates: list[PublicBareSupportFunctionCandidate] = []
     for projection in projections:
         if projection.module_role is None or not projection.definitions:
@@ -3986,10 +3967,12 @@ def _public_bare_support_function_candidates_from_projections(
                     semantic_family=semantic_family,
                     recommended_owner=recommended_owner,
                     external_reference_count=sum(
-                        1
+                        count
                         for name in function_names
-                        for site in reference_sites.get(name, set())
-                        if site.file_path != projection.file_path
+                        for file_path, count in reference_counts_by_name_and_file.get(
+                            name, {}
+                        ).items()
+                        if file_path != projection.file_path
                     ),
                 )
             )

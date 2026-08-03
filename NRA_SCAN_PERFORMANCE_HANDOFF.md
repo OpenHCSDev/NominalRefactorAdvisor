@@ -166,6 +166,14 @@ against the legacy repository reference index.  The current partition is 183
 per-module, 18 compact global, and 51 AST-retaining context-dependent
 detectors.
 
+The 18-family isolated persistent-cache DQDock benchmark took 89.13 seconds
+cold and 22.78 seconds warm, with 339 identical findings from 68,328 top-level
+projection items and a 370,776-KB process high-water mark.  This is 58.3% below
+the controlled 889,100-KB all-at-once parse peak.  An initial per-site support
+reference representation peaked at 461,952 KB; aggregating the 70,923 eligible
+per-module symbol/site groups into exact counts removed 91 MB without changing
+findings and is the accepted checkpoint representation.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
