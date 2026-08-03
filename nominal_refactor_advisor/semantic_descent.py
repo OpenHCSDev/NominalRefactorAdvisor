@@ -2924,6 +2924,7 @@ class SemanticDescentGraphCache:
     """Persistent graph cache for repo-wide semantic descent context."""
 
     storage_root: Path | None
+    max_exact_entry_count: int = 4
 
     def _load_payload(
         self,
@@ -3090,8 +3091,30 @@ class SemanticDescentGraphCache:
                     "identity": identity,
                 },
             )
+            self._prune_exact_entries(self._entry_path(identity))
         except (OSError, CacheCheckoutPathError):
             return
+
+    def _prune_exact_entries(self, protected_path: Path) -> None:
+        if self.storage_root is None:
+            return
+        exact_paths = [
+            path
+            for path in self.storage_root.glob("*.pickle")
+            if not path.name.startswith("latest-")
+        ]
+        exact_paths.sort(
+            key=lambda path: (
+                path == protected_path,
+                path.stat().st_mtime,
+            ),
+            reverse=True,
+        )
+        for stale_path in exact_paths[max(1, self.max_exact_entry_count) :]:
+            try:
+                stale_path.unlink()
+            except OSError:
+                continue
 
     def _entry_path(self, identity: SemanticDescentGraphCacheIdentity) -> Path:
         if self.storage_root is None:

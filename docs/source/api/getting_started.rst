@@ -50,6 +50,12 @@ scan is required:
    nominal-refactor-advisor changed_module.py --context-root path/to/package \
      --json --json-payload full
 
+The default persistent cache is maintained at most once per hour.  Retention
+keeps at most 128 recently used analysis roots, 4 GiB across those roots, 2 GiB
+within one active root, and four recent exact semantic-graph generations.
+Explicit ``--cache-dir`` locations are caller-managed and are not pruned by
+this policy.
+
 What Stays Stable
 -----------------
 

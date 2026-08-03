@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
+import os
 from pathlib import Path
 import sys
 from time import sleep
@@ -34,6 +35,8 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor import ast_tools as ast_tools_module
 from nominal_refactor_advisor import semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.cache_paths import (
+    AdvisorCacheRetention,
+    AdvisorCacheRetentionPolicy,
     analysis_cache_sibling,
     default_parse_cache_dir,
     semantic_descent_cache_sibling,
@@ -84,6 +87,86 @@ def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGr
         mirror_edges=(),
         certificates=(),
     )
+
+
+def test_cache_retention_evicts_old_roots_and_protects_active_root(
+    tmp_path: Path,
+) -> None:
+    cache_home = tmp_path / "cache-home"
+    active_root = cache_home / "active"
+    recent_root = cache_home / "recent"
+    old_root = cache_home / "old"
+    for index, root in enumerate((old_root, recent_root, active_root), start=1):
+        root.mkdir(parents=True)
+        (root / "entry.pickle").write_bytes(b"cache")
+        os.utime(root, (index, index))
+    retention = AdvisorCacheRetention(
+        cache_home,
+        AdvisorCacheRetentionPolicy(
+            max_root_count=2,
+            max_total_bytes=1024,
+            max_root_bytes=1024,
+            maintenance_interval_seconds=0.0,
+        ),
+    )
+
+    report = retention.maintain(active_root)
+
+    assert active_root.is_dir()
+    assert recent_root.is_dir()
+    assert not old_root.exists()
+    assert report.removed_root_count == 1
+    assert report.removed_file_count == 1
+    assert report.removed_bytes == len(b"cache")
+
+
+def test_cache_retention_prunes_oldest_files_to_per_root_byte_bound(
+    tmp_path: Path,
+) -> None:
+    cache_home = tmp_path / "cache-home"
+    active_root = cache_home / "active"
+    active_root.mkdir(parents=True)
+    cache_files = tuple(active_root / f"entry-{index}.pickle" for index in range(3))
+    for index, cache_file in enumerate(cache_files, start=1):
+        cache_file.write_bytes(b"0123456789")
+        os.utime(cache_file, (index, index))
+    retention = AdvisorCacheRetention(
+        cache_home,
+        AdvisorCacheRetentionPolicy(
+            max_root_count=2,
+            max_total_bytes=1024,
+            max_root_bytes=15,
+            maintenance_interval_seconds=0.0,
+        ),
+    )
+
+    report = retention.maintain(active_root)
+
+    assert not cache_files[0].exists()
+    assert not cache_files[1].exists()
+    assert cache_files[2].is_file()
+    assert report.removed_file_count == 2
+    assert report.removed_bytes == 20
+
+
+def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
+    cache_home = tmp_path / "cache-home"
+    active_root = cache_home / "active"
+    retention = AdvisorCacheRetention(
+        cache_home,
+        AdvisorCacheRetentionPolicy(
+            max_root_count=1,
+            maintenance_interval_seconds=3600.0,
+        ),
+    )
+    retention.maintain(active_root)
+    late_root = cache_home / "late"
+    late_root.mkdir()
+
+    report = retention.maintain(active_root)
+
+    assert report.skipped
+    assert late_root.is_dir()
 
 
 def test_semantic_graph_cache_treats_truncated_payload_as_miss(
@@ -152,6 +235,39 @@ def test_semantic_graph_latest_cache_is_lightweight_identity_pointer(
 
     assert cache.load_latest(family_identity).graph == graph
     assert latest_path.stat().st_size < exact_path.stat().st_size
+
+
+def test_semantic_graph_cache_retains_only_recent_exact_generations(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_path = source_root / "module.py"
+    cache_root = tmp_path / "cache"
+    cache = SemanticDescentGraphCache(cache_root, max_exact_entry_count=2)
+    identities = []
+    for index in range(4):
+        source_path.write_text(f"VALUE = {index}\n", encoding="utf-8")
+        identity = SemanticDescentGraphCacheIdentity.from_roots((source_root,))
+        identities.append(identity)
+        cache.store(identity, _empty_semantic_descent_graph(f"Graph{index}"))
+
+    exact_paths = tuple(
+        path
+        for path in cache_root.glob("*.pickle")
+        if not path.name.startswith("latest-")
+    )
+    family_identity = (
+        semantic_descent_module.SemanticDescentGraphCacheFamilyIdentity.from_identity(
+            identities[-1]
+        )
+    )
+
+    assert len(exact_paths) == 2
+    assert cache._entry_path(identities[-1]).is_file()
+    assert cache.load_latest(family_identity).graph == _empty_semantic_descent_graph(
+        "Graph3"
+    )
 
 
 def test_semantic_graph_cache_context_reuses_latest_graph_for_exact_lookup(

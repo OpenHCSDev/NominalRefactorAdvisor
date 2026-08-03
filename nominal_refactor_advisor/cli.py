@@ -50,6 +50,7 @@ from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module
 from .cache_paths import (
     ParseCachePolicy,
     default_parse_cache_dir,
+    maintain_default_cache,
 )
 from .calibration import (
     CalibrationReport,
@@ -5493,6 +5494,8 @@ def _main_without_deadline() -> int:
         requested_parse_cache_dir=args.cache_dir,
         use_parse_cache=args.use_parse_cache,
     ).parse_cache_dir()
+    if args.use_parse_cache and args.cache_dir is None:
+        maintain_default_cache(root)
     analysis_cache_dir = analysis_cache_dir_for_root(
         root,
         parse_cache_dir,
