@@ -77,6 +77,7 @@ from nominal_refactor_advisor.class_index import build_class_family_index
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
 from nominal_refactor_advisor.cli import FastPreparseSemanticDescentSourceAuthority
+from nominal_refactor_advisor.cli import FocusedLoopColdAnalysisPolicy
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import JsonPayloadBuilder
 from nominal_refactor_advisor.cli import JsonPayloadProfile
@@ -21132,6 +21133,22 @@ def test_json_payload_loop_uses_counts_only_finding_projection(
     )
 
 
+def test_focused_loop_cold_analysis_requires_implicit_lightweight_context() -> None:
+    base_policy = FocusedLoopColdAnalysisPolicy(
+        json_enabled=True,
+        payload_profile=JsonPayloadProfile.loop,
+        has_report_filter=True,
+        auto_context_enabled=True,
+        explicit_context_roots=False,
+        requires_full_analysis=False,
+    )
+
+    assert base_policy.enabled
+    assert not replace(base_policy, payload_profile=JsonPayloadProfile.full).enabled
+    assert not replace(base_policy, explicit_context_roots=True).enabled
+    assert not replace(base_policy, requires_full_analysis=True).enabled
+
+
 def test_json_payload_loop_compacts_execution_plan_edges(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
@@ -21210,6 +21227,63 @@ def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
     assert "semantic_descent_graph" not in payload
     assert "semantic_refactor_gate" not in payload
     assert "finding_recipe_plan" not in payload
+
+
+def test_module_cli_cold_focused_loop_reports_partial_local_analysis(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cache_home = tmp_path / "cache-home"
+    focused_path = tmp_path / "pkg/alpha.py"
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        "class Alpha:\n" "    FLAG = 'enabled'\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/broken.py",
+        "this is not valid Python !!!\n",
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "nominal_refactor_advisor",
+        "--json",
+        "--json-payload",
+        "loop",
+        "--no-impact-ranking",
+        focused_path.as_posix(),
+    ]
+    environment = os.environ.copy()
+    environment["NRA_CACHE_HOME"] = cache_home.as_posix()
+
+    result = subprocess.run(
+        command,
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    scan_status = cast(dict[str, object], payload["scan_status"])
+    timing = cast(dict[str, object], payload["timing"])
+    analyzed_detector_count = cast(int, scan_status["analyzed_detector_count"])
+    omitted_detector_count = cast(int, scan_status["omitted_detector_count"])
+
+    assert result.returncode == 0, result.stderr
+    assert scan_status["complete"] is False
+    assert scan_status["mode"] == "focused_local_partial"
+    assert scan_status["reason"] == (
+        "cold_auto_context_omits_context_dependent_detectors"
+    )
+    assert analyzed_detector_count > 0
+    assert omitted_detector_count > 0
+    assert analyzed_detector_count + omitted_detector_count == len(
+        default_detector_types_for_analysis()
+    )
+    assert timing["analysis_cache_status"] is None
 
 
 def test_module_cli_loop_execution_plan_survives_summary_cache_hit(

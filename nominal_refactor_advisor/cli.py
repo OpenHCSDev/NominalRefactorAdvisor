@@ -25,15 +25,19 @@ from metaclass_registry import AutoRegisterMeta
 from .analysis import (
     AnalysisPathScope,
     CachedPathAnalysisRequest,
+    DetectorTypePartition,
+    EvidenceLocalPartialDetectorSelection,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     analysis_cache_dir_for_root,
+    analyze_detector_types,
     analyze_lean_export,
     analyze_modules_with_cache,
     analyze_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     analyze_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
+    default_detector_types_for_analysis,
     plan_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     plan_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
 )
@@ -1045,6 +1049,29 @@ class JsonPayloadProfile(Enum):
 
 
 @dataclass(frozen=True)
+class FocusedLoopColdAnalysisPolicy:
+    """Choose a bounded, explicitly partial analysis for cold edit-loop scans."""
+
+    json_enabled: bool
+    payload_profile: JsonPayloadProfile
+    has_report_filter: bool
+    auto_context_enabled: bool
+    explicit_context_roots: bool
+    requires_full_analysis: bool
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            self.json_enabled
+            and self.payload_profile is JsonPayloadProfile.loop
+            and self.has_report_filter
+            and self.auto_context_enabled
+            and not self.explicit_context_roots
+            and not self.requires_full_analysis
+        )
+
+
+@dataclass(frozen=True)
 class JsonPayloadImpactRankingPolicy:
     """Resolved impact-ranking policy for one CLI JSON payload profile."""
 
@@ -1310,6 +1337,26 @@ class JsonFindingPayloadEnvelope:
 
 
 @dataclass(frozen=True)
+class JsonScanStatus:
+    """Machine-readable completeness contract for a scan result."""
+
+    complete: bool
+    mode: str
+    analyzed_detector_count: int
+    omitted_detector_count: int
+    reason: str
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "complete": self.complete,
+            "mode": self.mode,
+            "analyzed_detector_count": self.analyzed_detector_count,
+            "omitted_detector_count": self.omitted_detector_count,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
 class JsonLoopCachePayloadBuilder:
     """Build loop JSON directly from an exact cache-summary hit."""
 
@@ -1370,6 +1417,7 @@ class JsonPayloadBuilder:
     semantic_descent_source: JsonSemanticDescentPayloadSource | None = None
     payload_sections: JsonPayloadSections = JsonPayloadProfile.full.sections
     raw_findings: bool = False
+    scan_status: JsonScanStatus | None = None
 
     def to_dict(self) -> JsonObject:
         payload_started = perf_counter()
@@ -1384,6 +1432,8 @@ class JsonPayloadBuilder:
             ),
             plan_payload=tuple(plan.to_dict() for plan in self.plans),
         ).to_dict()
+        if self.scan_status is not None:
+            payload["scan_status"] = self.scan_status.to_dict()
         snapshot_demand = JsonPayloadSourceSnapshotDemand(
             sections=sections,
             impact_ranking_report=self.impact_ranking,
@@ -5584,7 +5634,24 @@ def _main_without_deadline() -> int:
         fast_cache_result = None
         cached_semantic_descent_graph = None
         analysis_cache_identity = None
+        scan_status = None
         preparse_cache_mode = preparse_cache_policy.mode
+        focused_loop_cold_policy = FocusedLoopColdAnalysisPolicy(
+            json_enabled=args.json,
+            payload_profile=json_payload_profile,
+            has_report_filter=path_scope.has_report_filter,
+            auto_context_enabled=args.auto_context_root,
+            explicit_context_roots=bool(args.context_roots),
+            requires_full_analysis=(
+                args.include_impact_ranking
+                or preparse_cache_policy.parsed_modules_required
+                or args.include_execution_plan
+                or args.include_plans
+                or args.plans_only
+                or codemod_requested
+                or codemod_scan_query_mode.requested
+            ),
+        )
         source_context_cache_lookup_enabled = (
             source_snapshot_cache_eligibility.can_use_cached_source_context
             and analysis_cache_dir is not None
@@ -5680,6 +5747,55 @@ def _main_without_deadline() -> int:
             analysis_cache_identity = fast_cache_result.cache_identity
             findings = path_scope.filter_findings(fast_cache_result.findings)
             analysis_seconds = fast_cache_seconds
+            if analysis_cache_status is AnalysisCacheStatus.PARTIAL:
+                detector_types = default_detector_types_for_analysis()
+                analyzed_detector_count = len(
+                    EvidenceLocalPartialDetectorSelection.from_detector_types(
+                        detector_types
+                    ).rerun_detector_family
+                )
+                scan_status = JsonScanStatus(
+                    complete=False,
+                    mode="focused_cache_partial",
+                    analyzed_detector_count=analyzed_detector_count,
+                    omitted_detector_count=(
+                        len(detector_types) - analyzed_detector_count
+                    ),
+                    reason="changed_files_reuse_evidence_local_detectors",
+                )
+        elif focused_loop_cold_policy.enabled:
+            started = perf_counter()
+            modules = parse_python_module_roots(
+                path_scope.report_roots,
+                cache_dir=parse_cache_dir,
+                use_parse_cache=args.use_parse_cache,
+                parse_workers=args.parse_workers,
+                source_policy=source_policy,
+            )
+            parse_seconds = round(perf_counter() - started, 3)
+            detector_types = default_detector_types_for_analysis()
+            detector_partition = DetectorTypePartition.from_detector_types(
+                detector_types
+            )
+            local_detector_types = detector_partition.per_module_detector_types
+            started = perf_counter()
+            findings = analyze_detector_types(
+                modules,
+                config,
+                detector_types=local_detector_types,
+                analysis_workers=args.analysis_workers,
+            )
+            analysis_seconds = round(perf_counter() - started, 3)
+            analysis_cache_status = None
+            scan_status = JsonScanStatus(
+                complete=False,
+                mode="focused_local_partial",
+                analyzed_detector_count=len(local_detector_types),
+                omitted_detector_count=(
+                    len(detector_types) - len(local_detector_types)
+                ),
+                reason="cold_auto_context_omits_context_dependent_detectors",
+            )
         else:
             started = perf_counter()
             modules = parse_python_module_roots(
@@ -5719,6 +5835,7 @@ def _main_without_deadline() -> int:
         analysis_cache_status = None
         cached_semantic_descent_graph = None
         analysis_cache_identity = None
+        scan_status = None
     plans = None
     execution_plan = None
     planning_seconds = 0.0
@@ -5964,6 +6081,7 @@ def _main_without_deadline() -> int:
                     ),
                     payload_sections=json_payload_profile.sections,
                     raw_findings=args.raw_findings,
+                    scan_status=scan_status,
                 ).to_dict(),
                 indent=2,
             )

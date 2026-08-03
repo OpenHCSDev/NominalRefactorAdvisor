@@ -26,6 +26,30 @@ Include composed subsystem plans:
 
    nominal-refactor-advisor path/to/python/package --include-plans
 
+Focused Edit Loops
+------------------
+
+For a bounded file-focused check during development, use the compact loop
+payload:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor changed_module.py --json --json-payload loop
+
+When this command infers a larger package context and no reusable context cache
+exists, it analyzes the requested files with per-module detectors only.  The
+JSON ``scan_status`` then reports ``focused_local_partial`` together with the
+analyzed and omitted detector counts.  This is an intentionally incomplete
+edit-loop result, not proof that context-dependent findings are absent.
+
+Use the full payload or provide ``--context-root`` when an exact contextual
+scan is required:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor changed_module.py --context-root path/to/package \
+     --json --json-payload full
+
 What Stays Stable
 -----------------
 
