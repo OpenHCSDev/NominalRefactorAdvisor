@@ -22,6 +22,124 @@ from ._helpers import *
 from ._helpers import _facade_only_nominal_authority_candidates
 
 
+@dataclass(frozen=True)
+class _DataclassNamespaceProjection:
+    file_path: str
+    line: int
+    class_name: str
+    field_names: tuple[str, ...]
+    namespace_field_names: tuple[str, ...]
+    from_namespace_line: int
+
+
+@dataclass(frozen=True)
+class _CliArgumentSpecProjection:
+    file_path: str
+    name: str
+    line: int
+    field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _DataclassNamespaceCliModuleProjection:
+    dataclasses: tuple[_DataclassNamespaceProjection, ...]
+    cli_specs: tuple[_CliArgumentSpecProjection, ...]
+
+
+class _DataclassNamespaceCliModuleProjectionFamily(
+    CollectedFamily[_DataclassNamespaceCliModuleProjection]
+):
+    item_type = _DataclassNamespaceCliModuleProjection
+
+    @classmethod
+    def collect(
+        cls, parsed_module: ParsedModule
+    ) -> list[_DataclassNamespaceCliModuleProjection]:
+        del cls
+        file_path = str(parsed_module.path)
+        dataclasses: list[_DataclassNamespaceProjection] = []
+        for node in parsed_module.module.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            field_names = _dataclass_config_field_names(node)
+            if not field_names:
+                continue
+            namespace_assignment = _from_namespace_keyword_names(node)
+            if namespace_assignment is None:
+                continue
+            from_namespace_line, namespace_field_names = namespace_assignment
+            dataclasses.append(
+                _DataclassNamespaceProjection(
+                    file_path=file_path,
+                    line=node.lineno,
+                    class_name=node.name,
+                    field_names=field_names,
+                    namespace_field_names=namespace_field_names,
+                    from_namespace_line=from_namespace_line,
+                )
+            )
+        cli_specs = tuple(
+            _CliArgumentSpecProjection(
+                file_path=file_path,
+                name=name,
+                line=line,
+                field_names=field_names,
+            )
+            for name, line, field_names in _cli_argument_spec_fields(parsed_module)
+        )
+        if not dataclasses and not cli_specs:
+            return []
+        return [
+            _DataclassNamespaceCliModuleProjection(
+                dataclasses=tuple(dataclasses),
+                cli_specs=cli_specs,
+            )
+        ]
+
+
+def _dataclass_namespace_cli_mirror_candidates_from_projections(
+    projections: tuple[_DataclassNamespaceCliModuleProjection, ...],
+) -> tuple[DataclassNamespaceCliMirrorCandidate, ...]:
+    cli_specs = tuple(
+        cli_spec for projection in projections for cli_spec in projection.cli_specs
+    )
+    candidates: list[DataclassNamespaceCliMirrorCandidate] = []
+    for projection in projections:
+        for dataclass_projection in projection.dataclasses:
+            mirrored_fields = tuple(
+                name
+                for name in dataclass_projection.namespace_field_names
+                if name in dataclass_projection.field_names
+            )
+            if len(mirrored_fields) < 4:
+                continue
+            for cli_spec in cli_specs:
+                mirrored_cli_fields = tuple(
+                    name
+                    for name in cli_spec.field_names
+                    if name in dataclass_projection.field_names
+                )
+                shared_fields = tuple(
+                    name for name in mirrored_fields if name in mirrored_cli_fields
+                )
+                if len(shared_fields) < 4:
+                    continue
+                candidates.append(
+                    DataclassNamespaceCliMirrorCandidate(
+                        file_path=dataclass_projection.file_path,
+                        line=dataclass_projection.line,
+                        class_name=dataclass_projection.class_name,
+                        argument_spec_name=cli_spec.name,
+                        field_names=mirrored_fields,
+                        cli_field_names=mirrored_cli_fields,
+                        from_namespace_line=dataclass_projection.from_namespace_line,
+                        argument_spec_file_path=cli_spec.file_path,
+                        argument_spec_line=cli_spec.line,
+                    )
+                )
+    return tuple(candidates)
+
+
 def _closed_axis_conversion_matrix_compression_certificate(
     candidate: ClosedAxisConversionMatrixCandidate,
 ) -> CompressionCertificate:
@@ -1957,6 +2075,26 @@ declare_candidate_rule_detector(
 )
 
 
+class CompactCrossModuleAxisShadowFamilyCandidateBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CrossModuleCollectorCandidateDetector[CrossModuleAxisShadowFamilyCandidate],
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _cross_module_axis_shadow_family_candidates_from_specs(
+                _compact_keyed_family_axis_specs(projections),
+                _compact_manual_selector_axis_specs(projections),
+            ),
+            config,
+        )
+
+
 declare_candidate_rule_detector(
     CrossModuleAxisShadowFamilyCandidate,
     high_confidence_spec(
@@ -1976,7 +2114,7 @@ declare_candidate_rule_detector(
     metrics=lambda shadow_candidate: DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
         shadow_candidate.shared_case_names, shadow_candidate.key_type_name
     ),
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=CompactCrossModuleAxisShadowFamilyCandidateBase,
     candidate_collector=_cross_module_axis_shadow_family_candidates,
 )
 
@@ -5051,6 +5189,28 @@ declare_candidate_rule_detector(
 )
 
 
+class CompactPrivateHelperShadowCandidateBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CrossModuleCollectorCandidateDetector[PrivateHelperShadowCandidate],
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _private_helper_shadow_candidates_from_definition_facts(
+                tuple(
+                    (projection.file_path, projection.top_level_definitions)
+                    for projection in projections
+                )
+            ),
+            config,
+        )
+
+
 declare_candidate_rule_detector(
     PrivateHelperShadowCandidate,
     high_confidence_spec(
@@ -5072,7 +5232,7 @@ declare_candidate_rule_detector(
         field_names=(candidate.public_name,),
         source_name=candidate.public_file_path,
     ),
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=CompactPrivateHelperShadowCandidateBase,
     detector_name="PrivateHelperShadowDetector",
     candidate_collector=_private_helper_shadow_candidates,
 )
@@ -5458,6 +5618,23 @@ class DerivedMetricCountBoilerplateDetector(
         )
 
 
+class CompactDataclassNamespaceCliMirrorCandidateBase(
+    CompactModuleProjectionDetectorMixin[_DataclassNamespaceCliModuleProjection],
+    CrossModuleCollectorCandidateDetector[DataclassNamespaceCliMirrorCandidate],
+):
+    module_projection_family = _DataclassNamespaceCliModuleProjectionFamily
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[_DataclassNamespaceCliModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _dataclass_namespace_cli_mirror_candidates_from_projections(projections),
+            config,
+        )
+
+
 declare_candidate_rule_detector(
     DataclassNamespaceCliMirrorCandidate,
     high_confidence_certified_spec(
@@ -5491,7 +5668,7 @@ declare_candidate_rule_detector(
         field_names=candidate.field_names,
         source_name=candidate.argument_spec_name,
     ),
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=CompactDataclassNamespaceCliMirrorCandidateBase,
     candidate_collector=_dataclass_namespace_cli_mirror_candidates,
 )
 

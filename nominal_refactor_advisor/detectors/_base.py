@@ -6887,6 +6887,23 @@ def _compact_keyed_table_axis_specs(
     )
 
 
+def _compact_manual_selector_axis_specs(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[_ManualSelectorAxisSpec, ...]:
+    return tuple(
+        _ManualSelectorAxisSpec(
+            file_path=axis.file_path,
+            line=axis.line,
+            family_name=axis.family_name,
+            selector_method_name=axis.selector_method_name,
+            key_type_name=axis.key_type_name,
+            case_names=axis.case_names,
+        )
+        for projection in projections
+        for axis in projection.manual_selector_axes
+    )
+
+
 def _parallel_keyed_family_name_overlap(
     left_family_name: str,
     right_family_name: str,
@@ -7281,8 +7298,16 @@ def _manual_selector_axis_specs(
 def _cross_module_axis_shadow_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[CrossModuleAxisShadowFamilyCandidate, ...]:
-    authoritative_specs = DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules)
-    shadow_specs = _manual_selector_axis_specs(modules)
+    return _cross_module_axis_shadow_family_candidates_from_specs(
+        DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules),
+        _manual_selector_axis_specs(modules),
+    )
+
+
+def _cross_module_axis_shadow_family_candidates_from_specs(
+    authoritative_specs: Sequence[_KeyedFamilyAxisSpec],
+    shadow_specs: Sequence[_ManualSelectorAxisSpec],
+) -> tuple[CrossModuleAxisShadowFamilyCandidate, ...]:
     candidates: list[CrossModuleAxisShadowFamilyCandidate] = []
     seen: set[tuple[str, str, str]] = set()
     for authoritative_spec in authoritative_specs:

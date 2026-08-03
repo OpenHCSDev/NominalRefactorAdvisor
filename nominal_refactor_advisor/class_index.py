@@ -120,6 +120,8 @@ class CompactModuleClassProjection:
     registry_order_calls: tuple["CompactRegistryOrderCall", ...] = ()
     keyed_table_axes: tuple["CompactKeyedTableAxis", ...] = ()
     closed_axis_branch_functions: tuple["CompactClosedAxisBranchFunction", ...] = ()
+    manual_selector_axes: tuple["CompactManualSelectorAxis", ...] = ()
+    top_level_definitions: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +155,16 @@ class CompactClosedAxisBranchFunction:
     line: int
     qualname: str
     axes: tuple[CompactClosedAxisBranchFact, ...]
+
+
+@dataclass(frozen=True)
+class CompactManualSelectorAxis:
+    file_path: str
+    line: int
+    family_name: str
+    selector_method_name: str
+    key_type_name: str
+    case_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -396,6 +408,14 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 closed_axis_branch_functions=_compact_closed_axis_branch_functions(
                     parsed_module
                 ),
+                manual_selector_axes=_compact_manual_selector_axes(parsed_module),
+                top_level_definitions=tuple(
+                    (node.name, node.lineno)
+                    for node in parsed_module.module.body
+                    if isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    )
+                ),
             )
         ]
 
@@ -537,6 +557,90 @@ def _compact_closed_axis_branch_functions(
                 )
             )
     return tuple(facts)
+
+
+def _compact_manual_selector_axes(
+    parsed_module: ParsedModule,
+) -> tuple[CompactManualSelectorAxis, ...]:
+    dict_literals: dict[str, ast.Dict] = {}
+    for statement in parsed_module.module.body:
+        name: str | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            if isinstance(statement.targets[0], ast.Name):
+                name = statement.targets[0].id
+                value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            name = statement.target.id
+            value = statement.value
+        if name is not None and isinstance(value, ast.Dict):
+            dict_literals[name] = value
+    case_names_by_mapping = {
+        name: tuple(ast.unparse(key) for key in mapping.keys if key is not None)
+        for name, mapping in dict_literals.items()
+    }
+    known_mapping_names = frozenset(
+        name
+        for name, case_names in case_names_by_mapping.items()
+        if len(case_names) >= 2
+    )
+    axes: list[CompactManualSelectorAxis] = []
+    for node in ast.walk(parsed_module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for method in node.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not method.name.startswith("for_") or not any(
+                _terminal_reference_name(decorator) == "classmethod"
+                for decorator in method.decorator_list
+            ):
+                continue
+            parameter_names = {
+                item.arg
+                for item in (
+                    *method.args.posonlyargs,
+                    *method.args.args,
+                    *method.args.kwonlyargs,
+                )
+                if item.arg not in {"self", "cls"}
+            }
+            if not parameter_names:
+                continue
+            mapping_name: str | None = None
+            for subnode in ast.walk(method):
+                if not (
+                    isinstance(subnode, ast.Subscript)
+                    and isinstance(subnode.value, ast.Name)
+                    and subnode.value.id in known_mapping_names
+                    and ast.unparse(subnode.slice) in parameter_names
+                ):
+                    continue
+                mapping_name = subnode.value.id
+                break
+            if mapping_name is None:
+                continue
+            case_names = case_names_by_mapping[mapping_name]
+            key_type_names = {
+                case_name.split(".", 1)[0]
+                for case_name in case_names
+                if "." in case_name
+            }
+            if len(key_type_names) != 1:
+                continue
+            axes.append(
+                CompactManualSelectorAxis(
+                    file_path=str(parsed_module.path),
+                    line=method.lineno,
+                    family_name=node.name,
+                    selector_method_name=method.name,
+                    key_type_name=next(iter(key_type_names)),
+                    case_names=case_names,
+                )
+            )
+    return tuple(axes)
 
 
 def _named_functions(

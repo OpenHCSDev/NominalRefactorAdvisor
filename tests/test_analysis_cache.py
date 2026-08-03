@@ -1688,6 +1688,13 @@ def test_compact_keyed_axis_projection_matches_legacy_ast_candidates(
     (package_root / "consumer.py").write_text(
         "from .specs import Mode\n"
         "\n"
+        "MODE_HANDLERS = {Mode.ALPHA: alpha, Mode.BETA: beta}\n"
+        "\n"
+        "class ModeResolver:\n"
+        "    @classmethod\n"
+        "    def for_mode(cls, mode):\n"
+        "        return MODE_HANDLERS[mode]\n"
+        "\n"
         "def resolve(mode):\n"
         "    if mode == Mode.ALPHA:\n"
         "        return 'alpha'\n"
@@ -1717,9 +1724,16 @@ def test_compact_keyed_axis_projection_matches_legacy_ast_candidates(
     compact_table_specs = systemic_detectors._compact_keyed_table_axis_specs(
         projections
     )
+    legacy_manual_selector_specs = systemic_detectors._manual_selector_axis_specs(
+        modules
+    )
+    compact_manual_selector_specs = (
+        systemic_detectors._compact_manual_selector_axis_specs(projections)
+    )
 
     assert compact_family_specs == legacy_family_specs
     assert compact_table_specs == legacy_table_specs
+    assert compact_manual_selector_specs == legacy_manual_selector_specs
     assert systemic_detectors._parallel_keyed_axis_family_candidates_from_specs(
         compact_family_specs
     ) == systemic_detectors._parallel_keyed_axis_family_candidates(modules)
@@ -1734,6 +1748,99 @@ def test_compact_keyed_axis_projection_matches_legacy_ast_candidates(
         projections
     ) == systemic_detectors._residual_closed_axis_branching_candidates(
         modules
+    )
+    assert systemic_detectors._cross_module_axis_shadow_family_candidates_from_specs(
+        compact_family_specs,
+        compact_manual_selector_specs,
+    ) == systemic_detectors._cross_module_axis_shadow_family_candidates(modules)
+
+
+def test_compact_top_level_definitions_match_private_helper_legacy_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "authority.py").write_text(
+        "def normalize(value):\n"
+        "    return value\n"
+        "\n"
+        "class Catalog:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (package_root / "consumer.py").write_text(
+        "def _normalize(value):\n"
+        "    return value\n"
+        "\n"
+        "class _Catalog:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    projections = (
+        systemic_detectors.PrivateHelperShadowDetector.compact_module_projections(
+            modules
+        )
+    )
+
+    compact_candidates = (
+        systemic_detectors._private_helper_shadow_candidates_from_definition_facts(
+            tuple(
+                (projection.file_path, projection.top_level_definitions)
+                for projection in projections
+            )
+        )
+    )
+
+    assert compact_candidates == systemic_detectors._private_helper_shadow_candidates(
+        modules
+    )
+
+
+def test_compact_dataclass_cli_projection_matches_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "config.py").write_text(
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass\n"
+        "class RunConfig:\n"
+        "    alpha: str\n"
+        "    beta: int\n"
+        "    gamma: bool\n"
+        "    delta: float\n"
+        "\n"
+        "    @classmethod\n"
+        "    def from_namespace(cls, namespace):\n"
+        "        return cls(\n"
+        "            alpha=namespace.alpha,\n"
+        "            beta=namespace.beta,\n"
+        "            gamma=namespace.gamma,\n"
+        "            delta=namespace.delta,\n"
+        "        )\n",
+        encoding="utf-8",
+    )
+    (package_root / "cli.py").write_text(
+        "RUN_ARGUMENTS = (\n"
+        "    ArgumentSpec(flags=('--alpha',)),\n"
+        "    ArgumentSpec(flags=('--beta',)),\n"
+        "    ArgumentSpec(flags=('--gamma',)),\n"
+        "    ArgumentSpec(flags=('--delta',)),\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    projections = systemic_detectors.DataclassNamespaceCliMirrorDetector.compact_module_projections(
+        modules
+    )
+
+    assert (
+        systemic_detectors._dataclass_namespace_cli_mirror_candidates_from_projections(
+            projections
+        )
+        == systemic_detectors._dataclass_namespace_cli_mirror_candidates(modules)
     )
 
 
@@ -1801,8 +1908,17 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.ResidualClosedAxisBranchingDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 22
-    assert len(partition.ast_retaining_context_detector_types) == 47
+    assert systemic_detectors.CrossModuleAxisShadowFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.PrivateHelperShadowDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.DataclassNamespaceCliMirrorDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 25
+    assert len(partition.ast_retaining_context_detector_types) == 44
     assert len(partition.per_module_detector_types) == 183
 
 

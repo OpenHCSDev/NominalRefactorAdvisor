@@ -4504,7 +4504,10 @@ def _module_string_enum_member_assignments(
     for statement in module.module.body:
         if not isinstance(statement, ast.ClassDef):
             continue
-        if not set(CLASS_NODE_AUTHORITY.declared_base_names(statement)) & enum_base_names:
+        if (
+            not set(CLASS_NODE_AUTHORITY.declared_base_names(statement))
+            & enum_base_names
+        ):
             continue
         for member_name, string_value in _class_direct_string_member_assignments(
             statement
@@ -8044,8 +8047,7 @@ def _abc_optimizer_class_declaration_is_inheritable_metadata(
         (name.startswith("__") and name.endswith("__") and len(name) > 4)
         or name.isupper()
         or (
-            annotation is not None
-            and CLASSVAR_ANNOTATION_AUTHORITY.matches(annotation)
+            annotation is not None and CLASSVAR_ANNOTATION_AUTHORITY.matches(annotation)
         )
     )
 
@@ -11684,14 +11686,12 @@ class NominalOwnershipEdgeExtractor:
             "registered_types",
         }
     )
-    registry_method_tokens: ClassVar[frozenset[NominalOwnershipNameToken]] = (
-        frozenset(
-            {
-                NominalOwnershipNameToken.REGISTER,
-                NominalOwnershipNameToken.REGISTERED,
-                NominalOwnershipNameToken.REGISTRY,
-            }
-        )
+    registry_method_tokens: ClassVar[frozenset[NominalOwnershipNameToken]] = frozenset(
+        {
+            NominalOwnershipNameToken.REGISTER,
+            NominalOwnershipNameToken.REGISTERED,
+            NominalOwnershipNameToken.REGISTRY,
+        }
     )
     declaration_query_names: ClassVar[frozenset[str]] = frozenset(
         {
@@ -11872,7 +11872,10 @@ class NominalOwnershipEdgeExtractor:
         if isinstance(statement, ast.Pass):
             return True
         if isinstance(statement, ast.Expr):
-            return isinstance(statement.value, ast.Constant) and statement.value.value is Ellipsis
+            return (
+                isinstance(statement.value, ast.Constant)
+                and statement.value.value is Ellipsis
+            )
         if isinstance(statement, ast.Raise):
             call_name = (
                 _call_name(statement.exc.func)
@@ -11906,8 +11909,7 @@ class PotentialSemanticAuthorityOutcomePolicy:
         if not positive_edges:
             return PotentialSemanticAuthorityOutcome.EMPTY_SHELL
         if any(
-            edge.proof_kind in cls.semantic_owner_edge_kinds
-            for edge in positive_edges
+            edge.proof_kind in cls.semantic_owner_edge_kinds for edge in positive_edges
         ):
             return PotentialSemanticAuthorityOutcome.SEMANTIC_OWNER
         return PotentialSemanticAuthorityOutcome.DECLARED_BOUNDARY
@@ -12012,8 +12014,7 @@ class PotentialSemanticAuthorityGraphBuilder:
                         PotentialSemanticAuthorityRelationKind.SHARED_SEMANTIC_STEM
                     ),
                     weight=len(shared_tokens),
-                    reason="shared authority stem tokens: "
-                    + ", ".join(shared_tokens),
+                    reason="shared authority stem tokens: " + ", ".join(shared_tokens),
                 )
             )
         if left.stem_tokens and left.stem_tokens == right.stem_tokens:
@@ -14312,6 +14313,7 @@ class SharedProjectMixin:
     ) -> ast.Return | None:
         return as_ast(single_item(_trim_docstring_body(value.body)), ast.Return)
 
+
 class _EvidencePropertyReturnStep(
     SharedProjectMixin,
     _SourceLocationEvidenceShapeStep,
@@ -14327,7 +14329,6 @@ class _EvidencePropertyReturnStep(
                 for decorator in value.decorator_list
             )
         )
-
 
 
 class _SourceLocationReturnCallStep(
@@ -14443,7 +14444,6 @@ class _ZippedEvidencePropertyReturnStep(
                 for decorator in value.decorator_list
             )
         )
-
 
 
 class _ZippedTupleGeneratorReturnStep(
@@ -14638,44 +14638,51 @@ def _top_level_helper_definitions(
 def _private_helper_shadow_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[PrivateHelperShadowCandidate, ...]:
-    public_definitions: dict[str, list[tuple[ParsedModule, int]]] = defaultdict(list)
-    private_definitions: list[tuple[ParsedModule, str, int]] = []
-    for module in modules:
-        for name, line in _top_level_helper_definitions(module):
+    return _private_helper_shadow_candidates_from_definition_facts(
+        tuple(
+            (str(module.path), _top_level_helper_definitions(module))
+            for module in modules
+        )
+    )
+
+
+def _private_helper_shadow_candidates_from_definition_facts(
+    definitions_by_file: Sequence[tuple[str, tuple[tuple[str, int], ...]]],
+) -> tuple[PrivateHelperShadowCandidate, ...]:
+    public_definitions: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    private_definitions: list[tuple[str, str, int]] = []
+    for file_path, definitions in definitions_by_file:
+        for name, line in definitions:
             if name.startswith("__"):
                 continue
             if name.startswith("_"):
-                private_definitions.append((module, name, line))
+                private_definitions.append((file_path, name, line))
             else:
-                public_definitions[name].append((module, line))
+                public_definitions[name].append((file_path, line))
 
     candidates: list[PrivateHelperShadowCandidate] = []
-    for private_module, private_name, private_line in private_definitions:
+    for private_file_path, private_name, private_line in private_definitions:
         public_name = private_name.lstrip("_")
         public_sites = tuple(
-            (
-                (module, line)
-                for module, line in public_definitions.get(public_name, ())
-                if module.path != private_module.path
-            )
+            (file_path, line)
+            for file_path, line in public_definitions.get(public_name, ())
+            if file_path != private_file_path
         )
         public_site = single_item(public_sites)
         if public_site is None:
             continue
-        public_module, public_line = public_site
+        public_file_path, public_line = public_site
         candidates.append(
             PrivateHelperShadowCandidate(
-                file_path=str(private_module.path),
+                file_path=private_file_path,
                 line=private_line,
                 private_name=private_name,
                 public_name=public_name,
-                public_file_path=str(public_module.path),
+                public_file_path=public_file_path,
                 public_line=public_line,
                 evidence_locations=(
-                    SourceLocation(
-                        str(private_module.path), private_line, private_name
-                    ),
-                    SourceLocation(str(public_module.path), public_line, public_name),
+                    SourceLocation(private_file_path, private_line, private_name),
+                    SourceLocation(public_file_path, public_line, public_name),
                 ),
             )
         )
@@ -15751,7 +15758,7 @@ def _cli_argument_spec_fields(
             )
         )
         if field_names:
-            specs.append((binding.target_name, binding.line, field_names))
+            specs.append((binding.name, binding.line, field_names))
     return tuple(specs)
 
 
@@ -15868,7 +15875,9 @@ def _semantic_tag_tuple_boilerplate_candidates(
 
 
 _SEMANTIC_TAG_CONSTANT_SUFFIXES = tuple(_SEMANTIC_TAG_CONSTANT_SUFFIX.values())
-_SEMANTIC_TAG_ASSIGNMENT_OWNER_NAMES = frozenset(member_type.__name__ for member_type in LabeledStrEnum.__subclasses__())
+_SEMANTIC_TAG_ASSIGNMENT_OWNER_NAMES = frozenset(
+    member_type.__name__ for member_type in LabeledStrEnum.__subclasses__()
+)
 
 
 def _semantic_tag_constant_member_names(target_name: str | None) -> tuple[str, ...]:

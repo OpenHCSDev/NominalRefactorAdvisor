@@ -195,6 +195,24 @@ aggregated function/axis rows.  Peak memory is 58.4% below the controlled
 889,100-KB all-at-once parse baseline and slightly below the 18-family
 checkpoint despite the added global work.
 
+The keyed-axis projection now also covers cross-module manual-selector shadow
+families, completing that related detector cluster.  Compact top-level
+definition facts migrate private-helper shadow analysis, and a sparse
+dataclass/namespace/CLI projection migrates the configuration-surface mirror
+detector.  The latter retains no module record at all when a module contributes
+neither a relevant dataclass nor a CLI tuple.  This also exposed and fixed a
+latent ``NamedValueBinding.name`` mismatch in the legacy CLI collector.  The
+current partition is 183 per-module detectors, 25 compact-global detectors,
+and 44 AST-retaining context-dependent detectors.
+
+The stable-snapshot 25-family run retained 68,466 top-level projection items,
+produced 349 identical cold/warm findings, and took 99.35 seconds cold and
+28.16 seconds warm.  Peak RSS was 370,264 KB, still 58.4% below the controlled
+all-at-once parse baseline and only 696 KB above the 22-family checkpoint.  The
+shared class projection carries 20,965 aggregated top-level definition rows;
+DQDock contributed no manual-selector-axis rows and only one sparse
+dataclass/CLI module projection.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
