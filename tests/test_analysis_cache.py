@@ -1496,6 +1496,51 @@ def test_compact_flattened_candidate_projections_match_full_ast_detection(
         ]
 
 
+def test_compact_class_index_detectors_match_full_ast_detection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "base.py").write_text(
+        "class RegisteredStrategy:\n"
+        "    __registry_key__ = 'method'\n"
+        "    __skip_if_no_key__ = True\n",
+        encoding="utf-8",
+    )
+    (package_root / "implementation.py").write_text(
+        "from .base import RegisteredStrategy\n"
+        "\n"
+        "class ConcreteStrategy(RegisteredStrategy, metaclass=AutoRegisterMeta):\n"
+        "    __registry_key__ = 'method'\n"
+        "    __skip_if_no_key__ = True\n"
+        "    priority = 10\n"
+        "\n"
+        "def ordered():\n"
+        "    return sorted(\n"
+        "        ConcreteStrategy.__registry__.values(),\n"
+        "        key=lambda strategy: strategy.priority,\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        systemic_detectors.InheritedAutoRegisterConfigBoilerplateDetector,
+        systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector,
+    )
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        use_parse_cache=False,
+    )
+    projected_findings = accumulator.findings_by_detector(DetectorConfig())
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+
+    for detector_type in detector_types:
+        full_ast_findings = detector_type().detect(modules, DetectorConfig())
+        assert [finding.to_dict() for finding in projected_findings[detector_type]] == [
+            finding.to_dict() for finding in full_ast_findings
+        ]
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -1524,8 +1569,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.RepeatedPrivateMethodDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 10
-    assert len(partition.ast_retaining_context_detector_types) == 59
+    assert systemic_detectors.InheritedAutoRegisterConfigBoilerplateDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 12
+    assert len(partition.ast_retaining_context_detector_types) == 57
     assert len(partition.per_module_detector_types) == 183
 
 

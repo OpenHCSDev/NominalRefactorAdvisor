@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
 from pathlib import Path
 
-from .ast_tools import ParsedModule
+from .ast_tools import CollectedFamily, ParsedModule
 from .collection_algebra import sorted_tuple
 
 
@@ -71,6 +71,78 @@ class IndexedClass:
         resolved_base_symbols: tuple[str, ...],
     ) -> "IndexedClass":
         return replace(self, resolved_base_symbols=resolved_base_symbols)
+
+
+@dataclass(frozen=True)
+class CompactIndexedClass:
+    """AST-free class declaration used to reconstruct inheritance globally."""
+
+    symbol: str
+    module_name: str
+    qualname: str
+    simple_name: str
+    file_path: str
+    line: int
+    declared_base_names: tuple[str, ...]
+    base_reference_parts: tuple[tuple[str, ...], ...]
+    direct_assignment_expressions: tuple[tuple[str, str | None], ...] = ()
+    direct_assignment_lines: tuple[tuple[str, int], ...] = ()
+    metaclass_names: tuple[str, ...] = ()
+    resolved_base_symbols: tuple[str, ...] = ()
+
+    @property
+    def assignments_by_name(self) -> dict[str, str | None]:
+        return dict(self.direct_assignment_expressions)
+
+    @property
+    def assignment_lines_by_name(self) -> dict[str, int]:
+        lines: dict[str, int] = {}
+        for name, line in self.direct_assignment_lines:
+            lines.setdefault(name, line)
+        return lines
+
+    def with_resolved_base_symbols(
+        self,
+        resolved_base_symbols: tuple[str, ...],
+    ) -> "CompactIndexedClass":
+        return replace(self, resolved_base_symbols=resolved_base_symbols)
+
+
+@dataclass(frozen=True)
+class CompactModuleClassProjection:
+    """One module's class declarations and import aliases, without its AST."""
+
+    module_name: str
+    file_path: str
+    import_aliases: tuple[tuple[str, str], ...]
+    classes: tuple[CompactIndexedClass, ...]
+    registry_order_calls: tuple["CompactRegistryOrderCall", ...] = ()
+
+
+@dataclass(frozen=True)
+class CompactRegistryOrderCall:
+    registry_owner_names: tuple[str, ...]
+    key_attribute_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactClassFamilyIndex:
+    """Repository inheritance graph reconstructed from compact declarations."""
+
+    classes_by_symbol: dict[str, CompactIndexedClass]
+    symbols_by_simple_name: dict[str, tuple[str, ...]]
+    children_by_symbol: dict[str, tuple[str, ...]]
+    ancestors_by_symbol: dict[str, tuple[str, ...]]
+    descendants_by_symbol: dict[str, tuple[str, ...]]
+
+    def class_for(self, symbol: str) -> CompactIndexedClass | None:
+        return self.classes_by_symbol.get(symbol)
+
+    def descendant_symbols(self, base_symbol: str) -> tuple[str, ...]:
+        return self.descendants_by_symbol.get(base_symbol, ())
+
+    def ancestor_symbols(self, class_symbol: str) -> tuple[str, ...]:
+        return self.ancestors_by_symbol.get(class_symbol, ())
 
 
 @dataclass(frozen=True)
@@ -221,6 +293,317 @@ def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
                 local_name = alias.asname or alias.name
                 aliases[local_name] = f"{resolved_module}.{alias.name}"
     return aliases
+
+
+class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
+    """Persist class/import facts needed by the global inheritance graph."""
+
+    item_type = CompactModuleClassProjection
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[CompactModuleClassProjection]:
+        del cls
+        file_path = str(parsed_module.path)
+        classes = tuple(
+            CompactIndexedClass(
+                symbol=f"{parsed_module.module_name}.{qualname}",
+                module_name=parsed_module.module_name,
+                qualname=qualname,
+                simple_name=qualname.rsplit(".", 1)[-1],
+                file_path=file_path,
+                line=node.lineno,
+                declared_base_names=tuple(
+                    declared_name
+                    for base in node.bases
+                    if (
+                        declared_name := ClassSymbolResolutionAuthority.declared_base_name(
+                            base
+                        )
+                    )
+                    is not None
+                ),
+                base_reference_parts=tuple(
+                    parts
+                    for base in node.bases
+                    if (
+                        parts := ATTRIBUTE_CHAIN_AUTHORITY.project(
+                            ClassSymbolResolutionAuthority.reference_node(base)
+                        )
+                    )
+                    is not None
+                ),
+                direct_assignment_expressions=tuple(
+                    (target_name, ast.unparse(value) if value is not None else None)
+                    for target_name, value in _direct_class_assignments(node).items()
+                ),
+                direct_assignment_lines=tuple(_direct_class_assignment_lines(node)),
+                metaclass_names=tuple(
+                    terminal_name
+                    for keyword in node.keywords
+                    if keyword.arg == "metaclass"
+                    if (terminal_name := _terminal_reference_name(keyword.value))
+                    is not None
+                ),
+            )
+            for qualname, node in _iter_class_defs(list(parsed_module.module.body))
+        )
+        return [
+            CompactModuleClassProjection(
+                module_name=parsed_module.module_name,
+                file_path=file_path,
+                import_aliases=tuple(
+                    sorted(_module_import_aliases(parsed_module).items())
+                ),
+                classes=classes,
+                registry_order_calls=_compact_registry_order_calls(
+                    parsed_module.module
+                ),
+            )
+        ]
+
+
+def _direct_class_assignments(node: ast.ClassDef) -> dict[str, ast.AST | None]:
+    assignments: dict[str, ast.AST | None] = {}
+    for statement in node.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                assignments[target.id] = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target,
+            ast.Name,
+        ):
+            assignments[statement.target.id] = statement.value
+    return assignments
+
+
+def _direct_class_assignment_lines(node: ast.ClassDef) -> list[tuple[str, int]]:
+    lines: list[tuple[str, int]] = []
+    for statement in node.body:
+        if isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target,
+            ast.Name,
+        ):
+            lines.append((statement.target.id, statement.lineno))
+        elif isinstance(statement, ast.Assign):
+            lines.extend(
+                (target.id, statement.lineno)
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            )
+    return lines
+
+
+def _compact_registry_order_calls(
+    module: ast.Module,
+) -> tuple[CompactRegistryOrderCall, ...]:
+    calls: list[CompactRegistryOrderCall] = []
+    for node in ast.walk(module):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "sorted"
+        ):
+            continue
+        registry_owner_names = sorted_tuple(
+            {
+                child.value.id
+                for argument in node.args
+                for child in ast.walk(argument)
+                if isinstance(child, ast.Attribute)
+                and child.attr == "__registry__"
+                and isinstance(child.value, ast.Name)
+            }
+        )
+        if not registry_owner_names:
+            continue
+        key_attribute_names: set[str] = set()
+        for keyword in node.keywords:
+            if keyword.arg != "key" or keyword.value is None:
+                continue
+            key_attribute_names.update(
+                child.attr
+                for child in ast.walk(keyword.value)
+                if isinstance(child, ast.Attribute)
+            )
+            for child in ast.walk(keyword.value):
+                if not (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Name)
+                    and child.func.id == "attrgetter"
+                ):
+                    continue
+                key_attribute_names.update(
+                    argument.value
+                    for argument in child.args
+                    if isinstance(argument, ast.Constant)
+                    and isinstance(argument.value, str)
+                )
+        if key_attribute_names:
+            calls.append(
+                CompactRegistryOrderCall(
+                    registry_owner_names=registry_owner_names,
+                    key_attribute_names=sorted_tuple(key_attribute_names),
+                )
+            )
+    return tuple(calls)
+
+
+def _terminal_reference_name(node: ast.AST) -> str | None:
+    parts = ATTRIBUTE_CHAIN_AUTHORITY.project(
+        ClassSymbolResolutionAuthority.reference_node(node)
+    )
+    return None if parts is None else parts[-1]
+
+
+@dataclass(frozen=True)
+class CompactClassFamilyIndexBuilder:
+    projections: tuple[CompactModuleClassProjection, ...]
+
+    def build(self) -> CompactClassFamilyIndex:
+        records = tuple(
+            record for projection in self.projections for record in projection.classes
+        )
+        known_symbols = frozenset(record.symbol for record in records)
+        symbols_by_simple_name_lists: dict[str, list[str]] = defaultdict(list)
+        for record in records:
+            symbols_by_simple_name_lists[record.simple_name].append(record.symbol)
+        unique_symbols_by_name = {
+            name: symbols[0]
+            for name, symbols in symbols_by_simple_name_lists.items()
+            if len(symbols) == 1
+        }
+        projections_by_module_name = {
+            projection.module_name: projection for projection in self.projections
+        }
+        classes_by_symbol = {
+            record.symbol: record.with_resolved_base_symbols(
+                tuple(
+                    resolved
+                    for parts in record.base_reference_parts
+                    if (
+                        resolved := self._resolved_symbol(
+                            parts,
+                            record.module_name,
+                            projections_by_module_name,
+                            known_symbols,
+                            unique_symbols_by_name,
+                        )
+                    )
+                    is not None
+                )
+            )
+            for record in records
+        }
+        children_by_symbol = self._children_by_symbol(classes_by_symbol)
+        return CompactClassFamilyIndex(
+            classes_by_symbol=classes_by_symbol,
+            symbols_by_simple_name={
+                name: sorted_tuple(symbols)
+                for name, symbols in symbols_by_simple_name_lists.items()
+            },
+            children_by_symbol=children_by_symbol,
+            ancestors_by_symbol=self._ancestors_by_symbol(classes_by_symbol),
+            descendants_by_symbol=self._descendants_by_symbol(
+                classes_by_symbol,
+                children_by_symbol,
+            ),
+        )
+
+    @staticmethod
+    def _resolved_symbol(
+        parts: tuple[str, ...],
+        module_name: str,
+        projections_by_module_name: dict[str, CompactModuleClassProjection],
+        known_symbols: frozenset[str],
+        unique_symbols_by_name: dict[str, str],
+    ) -> str | None:
+        projection = projections_by_module_name.get(module_name)
+        import_aliases = {} if projection is None else dict(projection.import_aliases)
+        first, *rest = parts
+        alias_target = import_aliases.get(first)
+        if alias_target is not None:
+            candidate = ".".join((alias_target, *rest)) if rest else alias_target
+            if candidate in known_symbols:
+                return candidate
+            candidate_parts = candidate.split(".")
+            unique_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
+            for suffix_width in range(len(candidate_parts) - 1, 0, -1):
+                suffix = ".".join(candidate_parts[-suffix_width:])
+                if suffix in unique_by_suffix:
+                    return unique_by_suffix[suffix]
+        module_local = ".".join((module_name, *parts))
+        if module_local in known_symbols:
+            return module_local
+        if len(parts) == 1:
+            return unique_symbols_by_name.get(parts[0])
+        return None
+
+    @staticmethod
+    def _children_by_symbol(
+        classes_by_symbol: dict[str, CompactIndexedClass],
+    ) -> dict[str, tuple[str, ...]]:
+        children: dict[str, list[str]] = defaultdict(list)
+        for record in classes_by_symbol.values():
+            for base_symbol in record.resolved_base_symbols:
+                children[base_symbol].append(record.symbol)
+        return {
+            symbol: sorted_tuple(child_symbols)
+            for symbol, child_symbols in children.items()
+        }
+
+    @staticmethod
+    def _ancestors_by_symbol(
+        classes_by_symbol: dict[str, CompactIndexedClass],
+    ) -> dict[str, tuple[str, ...]]:
+        result: dict[str, tuple[str, ...]] = {}
+        for symbol in sorted(classes_by_symbol):
+            ancestors: list[str] = []
+            queue = list(classes_by_symbol[symbol].resolved_base_symbols)
+            seen: set[str] = set()
+            while queue:
+                current = queue.pop(0)
+                if current in seen:
+                    continue
+                seen.add(current)
+                ancestors.append(current)
+                if current in classes_by_symbol:
+                    queue.extend(classes_by_symbol[current].resolved_base_symbols)
+            if ancestors:
+                result[symbol] = tuple(ancestors)
+        return result
+
+    @staticmethod
+    def _descendants_by_symbol(
+        classes_by_symbol: dict[str, CompactIndexedClass],
+        children_by_symbol: dict[str, tuple[str, ...]],
+    ) -> dict[str, tuple[str, ...]]:
+        result: dict[str, tuple[str, ...]] = {}
+        for symbol in sorted(classes_by_symbol):
+            descendants: list[str] = []
+            queue = list(children_by_symbol.get(symbol, ()))
+            seen: set[str] = set()
+            while queue:
+                current = queue.pop(0)
+                if current in seen:
+                    continue
+                seen.add(current)
+                descendants.append(current)
+                queue.extend(children_by_symbol.get(current, ()))
+            if descendants:
+                result[symbol] = tuple(descendants)
+        return result
+
+
+def build_compact_class_family_index(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> CompactClassFamilyIndex:
+    """Build an exact inheritance graph from AST-free per-module facts."""
+
+    return CompactClassFamilyIndexBuilder(projections).build()
 
 
 @dataclass(frozen=True)

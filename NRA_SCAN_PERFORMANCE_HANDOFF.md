@@ -96,6 +96,30 @@ substantially more detector work than the four-family checkpoint, so timings
 are not directly comparable.  Peak memory remains 61.7% below the controlled
 889,100-KB all-at-once parse peak.
 
+## 2026-08-03 compact class-index checkpoint
+
+The compact path now reconstructs the repository inheritance graph from
+AST-free class declarations, import aliases, base-reference parts, direct
+class assignments, metaclass names, and selected registry-ordering calls.  Its
+resolved bases, children, ancestors, and descendants match the full AST index
+across local inheritance, aliased and qualified imports, generic/subscripted
+bases, unique unqualified names, and the existing unique-suffix rule.
+
+Two AutoRegister detector families consume the shared index: inherited
+registry-configuration boilerplate and explicit priority-like registry
+ordering.  The default partition is now 183 per-module detectors, 12 compact
+global detectors, and 57 context-dependent detectors that still retain the
+repository AST.
+
+On the same 919-module DQDock production inventory, an isolated persistent-cache
+run across the 12 migrated families took 64.67 seconds cold and 21.54 seconds
+warm.  Both passes reconstructed 326 findings from 65,571 unique compact facts,
+and the combined process reached a 363,280-KB high-water mark.  This is 59.1%
+below the controlled 889,100-KB all-at-once parse peak while covering two more
+global detector families than the previous benchmark.  Projection/cache,
+class-graph equivalence, and direct detector verification passed 48 plus four
+focused tests.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

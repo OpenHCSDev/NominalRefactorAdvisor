@@ -2278,7 +2278,11 @@ class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
         return None
 
 
-class InheritedAutoRegisterConfigBoilerplateDetector(IssueDetector):
+class InheritedAutoRegisterConfigBoilerplateDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    IssueDetector,
+):
+    module_projection_family = CompactModuleClassProjectionFamily
     detector_id = "inherited_autoregister_config_boilerplate"
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
@@ -2290,17 +2294,18 @@ class InheritedAutoRegisterConfigBoilerplateDetector(IssueDetector):
         _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        class_index = build_class_family_index(modules)
+        class_index = build_compact_class_family_index(projections)
         findings: list[RefactorFinding] = []
         for indexed_class in sorted(
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
-            node = indexed_class.node
-            if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(node):
+            if not self._declares_autoregister_meta(indexed_class):
                 continue
             repeated_fields = self._repeated_inherited_fields(
                 class_index, indexed_class
@@ -2344,40 +2349,53 @@ class InheritedAutoRegisterConfigBoilerplateDetector(IssueDetector):
 
     @staticmethod
     def _repeated_inherited_fields(
-        class_index: ClassFamilyIndex,
-        indexed_class: IndexedClass,
+        class_index: CompactClassFamilyIndex,
+        indexed_class: CompactIndexedClass,
     ) -> tuple[str, ...]:
         protocol_fields = (
             "__key_extractor__",
             "__registry_key__",
             "__skip_if_no_key__",
         )
-        direct_assignments = CLASS_NODE_AUTHORITY.direct_assignments(indexed_class.node)
+        direct_assignments = indexed_class.assignments_by_name
         repeated: list[str] = []
         for field_name in protocol_fields:
-            current_value = direct_assignments.get(field_name)
-            if current_value is None:
+            current_text = direct_assignments.get(field_name)
+            if current_text is None:
                 continue
-            current_text = ast.unparse(current_value)
             for ancestor_symbol in class_index.ancestor_symbols(indexed_class.symbol):
                 ancestor = class_index.class_for(ancestor_symbol)
                 if ancestor is None:
                     continue
-                ancestor_value = CLASS_NODE_AUTHORITY.direct_assignments(
-                    ancestor.node
-                ).get(field_name)
-                if ancestor_value is None:
+                ancestor_text = ancestor.assignments_by_name.get(field_name)
+                if ancestor_text is None:
                     continue
-                if ast.unparse(ancestor_value) == current_text:
+                if ancestor_text == current_text:
                     repeated.append(field_name)
                     break
         return tuple(repeated)
+
+    @staticmethod
+    def _declares_autoregister_meta(indexed_class: CompactIndexedClass) -> bool:
+        return any(
+            metaclass_name == "AutoRegisterMeta"
+            or metaclass_name.endswith("AutoRegisterMeta")
+            or HELPER_SUPPORT_PROJECTION_AUTHORITY.registration_authority_base_name(
+                metaclass_name
+            )
+            or ("Registered" in metaclass_name and metaclass_name.endswith("Meta"))
+            for metaclass_name in indexed_class.metaclass_names
+        )
 
 
 _EXPLICIT_CLASS_ORDER_AXIS_NAMES = ("priority", "precedence", "rank", "order")
 
 
-class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
+class AutoRegisterExplicitPriorityOrderingDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    IssueDetector,
+):
+    module_projection_family = CompactModuleClassProjectionFamily
     detector_id = "autoregister_explicit_priority_ordering"
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
@@ -2389,17 +2407,20 @@ class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
         _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        class_index = build_class_family_index(modules)
+        class_index = build_compact_class_family_index(projections)
         findings: list[RefactorFinding] = []
         for indexed_class in sorted(
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
-            node = indexed_class.node
-            if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(node):
+            if not InheritedAutoRegisterConfigBoilerplateDetector._declares_autoregister_meta(
+                indexed_class
+            ):
                 continue
             order_axis_sites = self._order_axis_sites(class_index, indexed_class)
             order_axis_names = tuple(
@@ -2411,8 +2432,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
                 continue
             if not self._sorts_registry_by_order_axis(
                 indexed_class.simple_name,
-                node,
-                modules,
+                projections,
                 order_axis_names,
             ):
                 continue
@@ -2459,8 +2479,8 @@ class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
 
     def _order_axis_sites(
         self,
-        class_index: ClassFamilyIndex,
-        indexed_class: IndexedClass,
+        class_index: CompactClassFamilyIndex,
+        indexed_class: CompactIndexedClass,
     ) -> dict[str, tuple[SourceLocation, ...]]:
         symbols = (
             indexed_class.symbol,
@@ -2473,8 +2493,9 @@ class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
             candidate = class_index.class_for(symbol)
             if candidate is None:
                 continue
+            assignment_lines = candidate.assignment_lines_by_name
             for axis_name in _EXPLICIT_CLASS_ORDER_AXIS_NAMES:
-                line = _class_level_assignment_line(candidate.node, axis_name)
+                line = assignment_lines.get(axis_name)
                 if line is None:
                     continue
                 sites_by_axis[axis_name].append(
@@ -2489,85 +2510,22 @@ class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
     @staticmethod
     def _sorts_registry_by_order_axis(
         root_name: str,
-        node: ast.ClassDef,
-        modules: list[ParsedModule],
+        projections: tuple[CompactModuleClassProjection, ...],
         axis_names: tuple[str, ...],
     ) -> bool:
+        axis_name_set = frozenset(axis_names)
         return any(
-            _call_sorts_registry_by_order_axis(child, root_name, axis_names)
-            for child in _walk_nodes(node)
-            if isinstance(child, ast.Call)
-        ) or any(
-            _call_sorts_registry_by_order_axis(child, root_name, axis_names)
-            for module in modules
-            for child in _walk_nodes(module.module)
-            if isinstance(child, ast.Call)
+            ({"cls", root_name} & frozenset(call.registry_owner_names))
+            and (axis_name_set & frozenset(call.key_attribute_names))
+            for projection in projections
+            for call in projection.registry_order_calls
         )
-
-
-def _class_level_assignment_line(node: ast.ClassDef, name: str) -> int | None:
-    for statement in node.body:
-        if isinstance(statement, ast.AnnAssign) and name_id(statement.target) == name:
-            return statement.lineno
-        if isinstance(statement, ast.Assign) and any(
-            name_id(target) == name for target in statement.targets
-        ):
-            return statement.lineno
-    return None
 
 
 def _class_order_axis_label(axis_names: tuple[str, ...]) -> str:
     if len(axis_names) == 1:
         return f"`{axis_names[0]}`"
     return " / ".join(f"`{axis_name}`" for axis_name in axis_names)
-
-
-def _call_sorts_registry_by_order_axis(
-    call: ast.Call,
-    root_name: str,
-    axis_names: tuple[str, ...],
-) -> bool:
-    if name_id(call.func) != "sorted":
-        return False
-    if not any(_node_mentions_registry(node, root_name) for node in call.args):
-        return False
-    return any(
-        keyword.arg == "key"
-        and keyword.value is not None
-        and _node_mentions_order_axis_attribute(keyword.value, axis_names)
-        for keyword in call.keywords
-    )
-
-
-def _node_mentions_registry(node: ast.AST, root_name: str) -> bool:
-    for child in _walk_nodes(node):
-        if not isinstance(child, ast.Attribute) or child.attr != "__registry__":
-            continue
-        if isinstance(child.value, ast.Name) and child.value.id in {"cls", root_name}:
-            return True
-    return False
-
-
-def _node_mentions_order_axis_attribute(
-    node: ast.AST,
-    axis_names: tuple[str, ...],
-) -> bool:
-    axis_name_set = frozenset(axis_names)
-    for child in _walk_nodes(node):
-        if isinstance(child, ast.Attribute) and child.attr in axis_name_set:
-            return True
-        if not isinstance(child, ast.Call):
-            continue
-        if name_id(child.func) != "attrgetter":
-            continue
-        if any(
-            isinstance(argument, ast.Constant)
-            and isinstance(argument.value, str)
-            and argument.value in axis_name_set
-            for argument in child.args
-        ):
-            return True
-    return False
 
 
 class EnumKeyedTableClassAxisShadowDetector(

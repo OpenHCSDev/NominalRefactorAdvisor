@@ -150,9 +150,14 @@ from ..ast_tools import (
 )
 from ..class_index import (
     ClassFamilyIndex,
+    CompactClassFamilyIndex,
+    CompactIndexedClass,
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
     IndexedClass,
     _module_import_aliases,
     build_class_family_index,
+    build_compact_class_family_index,
 )
 from ..collection_algebra import sorted_tuple
 from ..models import (
