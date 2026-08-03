@@ -147,6 +147,12 @@ all-at-once parse peak.  The default partition is now 183 per-module detectors,
 15 compact global detectors, and 54 context-dependent detectors that still
 retain repository ASTs.
 
+After that measured checkpoint, support-prelude module-family detection moved
+onto a compact per-module import/class fact.  The current partition is 183
+per-module detectors, 16 compact global detectors, and 53 AST-retaining
+context-dependent detectors; the 15-family numbers above remain the latest
+like-for-like DQDock benchmark rather than being relabeled after the change.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

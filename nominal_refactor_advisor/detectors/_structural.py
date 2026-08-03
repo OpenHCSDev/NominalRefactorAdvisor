@@ -1488,9 +1488,7 @@ class DynamicClassMaterializationDetector(EvidenceOnlyPerModuleDetector):
         for node in _walk_nodes(module.module):
             if _materializes_class_with_type(node):
                 evidence.append(
-                    SourceLocation(
-                        str(module.path), node.lineno, node.name
-                    )
+                    SourceLocation(str(module.path), node.lineno, node.name)
                 )
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 if _assignment_targets_public_classes(
@@ -2142,6 +2140,15 @@ class SupportPreludeModuleFamilyCandidate(MultiFileClassLineNumbersGroup):
 
 
 @dataclass(frozen=True)
+class SupportPreludeModuleFact:
+    parent_path: str
+    support_module_name: str
+    file_path: str
+    class_name: str
+    line: int
+
+
+@dataclass(frozen=True)
 class ModuleConstructorPolicyFamilyCandidate:
     file_path: str
     constructor_name: str
@@ -2429,9 +2436,7 @@ def _support_module_path(module: ParsedModule, import_name: str) -> Path | None:
 def _support_prelude_module_family_candidates(
     modules: list[ParsedModule],
 ) -> tuple[SupportPreludeModuleFamilyCandidate, ...]:
-    grouped: dict[tuple[str, str], list[tuple[ParsedModule, ast.ClassDef]]] = (
-        defaultdict(list)
-    )
+    facts: list[SupportPreludeModuleFact] = []
     for module in modules:
         top_level_classes = [
             node for node in module.module.body if isinstance(node, ast.ClassDef)
@@ -2449,23 +2454,72 @@ def _support_prelude_module_family_candidates(
         support_path = _support_module_path(module, support_import)
         if support_path is not None and _module_has_family_catalog(support_path):
             continue
-        grouped[str(module.path.parent), support_import].append(
-            (module, top_level_classes[0])
+        class_node = top_level_classes[0]
+        facts.append(
+            SupportPreludeModuleFact(
+                parent_path=str(module.path.parent),
+                support_module_name=support_import,
+                file_path=str(module.path),
+                class_name=class_node.name,
+                line=class_node.lineno,
+            )
         )
+    return _support_prelude_module_family_candidates_from_facts(tuple(facts))
+
+
+def _support_prelude_module_family_candidates_from_facts(
+    facts: tuple[SupportPreludeModuleFact, ...],
+) -> tuple[SupportPreludeModuleFamilyCandidate, ...]:
+    grouped: dict[tuple[str, str], list[SupportPreludeModuleFact]] = defaultdict(list)
+    for fact in facts:
+        grouped[fact.parent_path, fact.support_module_name].append(fact)
     candidates: list[SupportPreludeModuleFamilyCandidate] = []
     for (_, support_import), items in grouped.items():
         if len(items) < 3:
             continue
-        ordered = sorted_tuple(items, key=lambda item: str(item[0].path))
+        ordered = sorted_tuple(items, key=lambda item: item.file_path)
         candidates.append(
             SupportPreludeModuleFamilyCandidate(
                 support_module_name=support_import,
-                file_paths=tuple((str(item[0].path) for item in ordered)),
-                class_names=tuple((item[1].name for item in ordered)),
-                line_numbers=tuple((item[1].lineno for item in ordered)),
+                file_paths=tuple(item.file_path for item in ordered),
+                class_names=tuple(item.class_name for item in ordered),
+                line_numbers=tuple(item.line for item in ordered),
             )
         )
     return tuple(candidates)
+
+
+class SupportPreludeModuleFactFamily(CollectedFamily[SupportPreludeModuleFact]):
+    item_type = SupportPreludeModuleFact
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[SupportPreludeModuleFact]:
+        del cls
+        module_node = parsed_module.module
+        top_level_classes = [
+            node for node in module_node.body if isinstance(node, ast.ClassDef)
+        ]
+        if len(top_level_classes) != 1 or any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for node in module_node.body
+        ):
+            return []
+        support_import = _support_prelude_import_name(module_node)
+        if support_import is None:
+            return []
+        support_path = _support_module_path(parsed_module, support_import)
+        if support_path is not None and _module_has_family_catalog(support_path):
+            return []
+        class_node = top_level_classes[0]
+        return [
+            SupportPreludeModuleFact(
+                parent_path=str(parsed_module.path.parent),
+                support_module_name=support_import,
+                file_path=str(parsed_module.path),
+                class_name=class_node.name,
+                line=class_node.lineno,
+            )
+        ]
 
 
 def _is_module_policy_row_name(name: str) -> bool:
@@ -2731,7 +2785,11 @@ declare_candidate_rule_detector(
 )
 
 
-class SupportPreludeModuleFamilyDetector(IssueDetector):
+class SupportPreludeModuleFamilyDetector(
+    CompactModuleProjectionDetectorMixin[SupportPreludeModuleFact],
+    IssueDetector,
+):
+    module_projection_family = SupportPreludeModuleFactFamily
     finding_spec = finding_spec_template(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Support-prelude module families should have a manifest authority",
@@ -2742,12 +2800,16 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
         _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[SupportPreludeModuleFact, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _support_prelude_module_family_candidates(modules):
+        for candidate in _support_prelude_module_family_candidates_from_facts(
+            projections
+        ):
             findings.append(
                 self.build_finding(
                     (

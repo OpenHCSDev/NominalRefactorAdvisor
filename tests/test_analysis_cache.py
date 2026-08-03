@@ -61,6 +61,7 @@ from nominal_refactor_advisor.detectors import (
     SemanticDescentGraphIssueDetector,
 )
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
+from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
@@ -1648,8 +1649,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.DanglingPrivateMethodDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 15
-    assert len(partition.ast_retaining_context_detector_types) == 54
+    assert structural_detectors.SupportPreludeModuleFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 16
+    assert len(partition.ast_retaining_context_detector_types) == 53
     assert len(partition.per_module_detector_types) == 183
 
 
