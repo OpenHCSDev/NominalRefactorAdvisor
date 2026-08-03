@@ -27,8 +27,8 @@ def inferred_checkout_roots(paths: tuple[Path, ...]) -> tuple[Path, ...]:
 
     if not paths:
         return ()
-    resolved_parents = tuple(str(path.resolve().parent) for path in paths)
-    common_parent = Path(os.path.commonpath(resolved_parents))
+    lexical_parents = tuple(str(_lexical_absolute_path(path).parent) for path in paths)
+    common_parent = Path(os.path.commonpath(lexical_parents))
     return (common_parent,)
 
 
@@ -45,30 +45,30 @@ def checkout_relative_path(
             raise CacheCheckoutPathError(
                 f"relative path {candidate_path} is ambiguous across {len(roots)} roots"
             )
-        resolved_root = Path(roots[0]).resolve()
-        resolved_path = (
-            resolved_root
-            if resolved_root.is_file() and candidate_path == Path(resolved_root.name)
-            else (resolved_root / candidate_path).resolve()
+        lexical_root = _lexical_absolute_path(roots[0])
+        lexical_path = (
+            lexical_root
+            if lexical_root.is_file() and candidate_path == Path(lexical_root.name)
+            else _lexical_absolute_path(lexical_root / candidate_path)
         )
     else:
-        resolved_path = candidate_path.resolve()
+        lexical_path = _lexical_absolute_path(candidate_path)
     matches: list[tuple[int, Path]] = []
     for root_index, root_value in enumerate(roots):
-        resolved_root = Path(root_value).resolve()
-        if resolved_root.is_file():
-            if resolved_path == resolved_root:
+        lexical_root = _lexical_absolute_path(root_value)
+        if lexical_root.is_file():
+            if lexical_path == lexical_root:
                 matches.append((root_index, Path(".")))
             continue
         try:
-            matches.append((root_index, resolved_path.relative_to(resolved_root)))
+            matches.append((root_index, lexical_path.relative_to(lexical_root)))
         except ValueError:
             continue
     if len(matches) != 1:
         reason = (
             "outside every admitted root" if not matches else "matches multiple roots"
         )
-        raise CacheCheckoutPathError(f"{resolved_path} {reason}")
+        raise CacheCheckoutPathError(f"{lexical_path} {reason}")
     root_index, relative_path = matches[0]
     relative_text = relative_path.as_posix()
     _validate_relative_text(relative_text)
@@ -86,21 +86,21 @@ def absolute_checkout_path(
         raise CacheCheckoutPathError(
             f"logical root {root_index} is absent from {len(roots)} admitted roots"
         )
-    resolved_root = Path(roots[root_index]).resolve()
-    if resolved_root.is_file():
+    lexical_root = _lexical_absolute_path(roots[root_index])
+    if lexical_root.is_file():
         if relative_text != ".":
             raise CacheCheckoutPathError(
-                f"file root {resolved_root} cannot admit {relative_text!r}"
+                f"file root {lexical_root} cannot admit {relative_text!r}"
             )
-        return str(resolved_root)
-    resolved_path = (resolved_root / relative_text).resolve()
+        return str(lexical_root)
+    lexical_path = _lexical_absolute_path(lexical_root / relative_text)
     try:
-        resolved_path.relative_to(resolved_root)
+        lexical_path.relative_to(lexical_root)
     except ValueError as error:
         raise CacheCheckoutPathError(
-            f"logical path {logical_path!r} escapes {resolved_root}"
+            f"logical path {logical_path!r} escapes {lexical_root}"
         ) from error
-    return str(resolved_path)
+    return str(lexical_path)
 
 
 def rebase_checkout_path(
@@ -138,3 +138,9 @@ def _validate_relative_text(relative_text: str) -> None:
         raise CacheCheckoutPathError(
             f"non-canonical checkout-relative path {relative_text!r}"
         )
+
+
+def _lexical_absolute_path(path: Path | str) -> Path:
+    """Canonicalize spelling without dereferencing an admitted source symlink."""
+
+    return Path(os.path.abspath(os.fspath(path)))

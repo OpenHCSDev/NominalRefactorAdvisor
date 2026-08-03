@@ -40,7 +40,9 @@ from nominal_refactor_advisor.cache_paths import (
 )
 from nominal_refactor_advisor.cache_checkout import (
     CacheCheckoutPathError,
+    absolute_checkout_path,
     checkout_relative_path,
+    rebase_checkout_path,
 )
 from nominal_refactor_advisor.detectors import (
     CrossModuleCandidateDetector,
@@ -330,6 +332,47 @@ def test_relocatable_caches_reject_path_escape_and_ambiguous_roots(
     cache.store(identity, [escaped_finding])
 
     assert cache.load(identity).status is AnalysisCacheStatus.MISS
+
+
+def test_checkout_cache_identity_preserves_in_root_source_symlink(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    generated = checkout / "pkg" / "generated"
+    generated.mkdir(parents=True)
+    provenance = tmp_path / ".provenance" / "generated.py"
+    provenance.parent.mkdir()
+    provenance.write_text("VALUE = 1\n")
+    source_link = generated / "generated.py"
+    source_link.symlink_to(provenance)
+
+    logical_path = checkout_relative_path(source_link, (checkout,))
+
+    assert logical_path == "0:pkg/generated/generated.py"
+    assert absolute_checkout_path(logical_path, (checkout,)) == str(source_link)
+
+
+def test_relocated_cache_identity_rebases_in_root_source_symlink_logically(
+    tmp_path: Path,
+) -> None:
+    source_checkout = tmp_path / "source"
+    target_checkout = tmp_path / "target"
+    source_link = source_checkout / "pkg" / "generated.py"
+    target_link = target_checkout / "pkg" / "generated.py"
+    for checkout, source_path in (
+        (source_checkout, source_link),
+        (target_checkout, target_link),
+    ):
+        (checkout / "pkg").mkdir(parents=True)
+        provenance = tmp_path / f".{checkout.name}-provenance.py"
+        provenance.write_text("VALUE = 1\n")
+        source_path.symlink_to(provenance)
+
+    assert rebase_checkout_path(
+        source_link,
+        (source_checkout,),
+        (target_checkout,),
+    ) == str(target_link)
 
 
 class CountingSemanticCacheDetector(IssueDetector):

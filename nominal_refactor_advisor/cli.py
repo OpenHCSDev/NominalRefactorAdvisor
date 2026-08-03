@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
@@ -6080,7 +6081,7 @@ class CliScanDeadlineRequest:
         print(str(error), file=sys.stderr)
 
 
-def main() -> int:
+def main(*, hard_exit_on_deadline: bool = False) -> int:
     """Run the CLI under the declared absolute scan wall-clock budget."""
 
     request = CliScanDeadlineRequest.from_argv(tuple(sys.argv[1:]))
@@ -6092,8 +6093,24 @@ def main() -> int:
             return _main_without_deadline()
     except ScanDeadlineExceeded as error:
         request.emit_timeout(error)
+        if hard_exit_on_deadline:
+            # Large scans can retain millions of AST objects.  Returning through
+            # normal interpreter teardown after a deadline may spend many more
+            # seconds recursively releasing that graph, leaving callers with a
+            # live CPU-bound PID after the incomplete result was already emitted.
+            # The process entrypoint has no recoverable state at this boundary;
+            # flush the declared result and terminate without teardown latency.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(124)
         return 124
 
 
+def process_main() -> int:
+    """Run the installed command with prompt deadline termination semantics."""
+
+    return main(hard_exit_on_deadline=True)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(process_main())

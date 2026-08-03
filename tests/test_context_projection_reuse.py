@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
+import sys
 
 import pytest
 
+from nominal_refactor_advisor import cli as cli_module
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.analysis_cache import GlobalModuleContextSignature
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
@@ -247,6 +250,43 @@ def test_contextual_projection_honors_expired_absolute_deadline(
     ):
         with enforce_scan_deadline(deadline):
             runtime_detectors._role_surface_members_by_type_name(modules)
+
+
+def test_process_cli_hard_exits_after_publishing_deadline_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    deadline = ScanDeadline.start(1.0)
+    deadline.stage = "test_projection"
+    error = ScanDeadlineExceeded(deadline)
+    exit_codes: list[int] = []
+
+    def raise_deadline() -> int:
+        raise error
+
+    def hard_exit(exit_code: int) -> None:
+        exit_codes.append(exit_code)
+        raise SystemExit(exit_code)
+
+    monkeypatch.setattr(cli_module, "_main_without_deadline", raise_deadline)
+    monkeypatch.setattr(cli_module.os, "_exit", hard_exit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["nominal-refactor-advisor", "--json", "sample.py"],
+    )
+
+    with pytest.raises(SystemExit, match="124"):
+        cli_module.process_main()
+
+    assert exit_codes == [124]
+    assert json.loads(capsys.readouterr().out)["scan_status"] == {
+        "complete": False,
+        "deadline_exceeded": True,
+        "stage": "test_projection",
+        "budget_seconds": 1.0,
+        "elapsed_seconds": pytest.approx(error.elapsed_seconds, abs=0.001),
+    }
 
 
 def test_repository_semantic_signature_changes_for_contextual_source_edit(
