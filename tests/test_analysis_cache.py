@@ -180,11 +180,13 @@ def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
 def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     module = ast_tools_module.ast.parse("value = source + 1\n")
     ast_tools_module._walk_nodes(module)
+    runtime_detectors.SurfaceFunctionIndex.from_module(module)
 
     cleared_cache_count = release_module_analysis_memory()
 
     assert cleared_cache_count > 0
     assert ast_tools_module._walk_nodes.cache_info().currsize == 0
+    assert runtime_detectors.SurfaceFunctionIndex.from_module.cache_info().currsize == 0
 
 
 def test_module_detector_shard_cache_reuses_exact_focused_findings(
@@ -1445,6 +1447,68 @@ def test_compact_hierarchy_projection_matches_full_ast_detection(
         ]
 
 
+def test_compact_private_reference_detectors_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text(
+        "def _stale_export(rows):\n"
+        "    normalized = [str(row).strip() for row in rows]\n"
+        "    if not normalized:\n"
+        "        return []\n"
+        "    return [value.upper() for value in normalized if value]\n"
+        "\n"
+        "class Publisher:\n"
+        "    def _stale_method(self, rows):\n"
+        "        normalized = [str(row).strip() for row in rows]\n"
+        "        if not normalized:\n"
+        "            return []\n"
+        "        return [value.upper() for value in normalized if value]\n"
+        "\n"
+        "    def _write_static_shell(self, dest):\n"
+        "        payload = '''<section class=\"report\">\n"
+        "<header><h1>Release</h1></header>\n"
+        "<main><article>Generated view</article></main>\n"
+        "</section>'''\n"
+        "        (dest / 'index.html').write_text(payload, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        runtime_detectors.DeadEmbeddedStaticPayloadDetector,
+        runtime_detectors.UnreferencedPrivateFunctionDetector,
+        runtime_detectors.DanglingPrivateMethodDetector,
+    )
+    config = DetectorConfig(
+        min_unreferenced_private_function_lines=4,
+        min_static_payload_function_lines=4,
+        min_static_payload_literal_lines=4,
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    legacy_context = runtime_detectors.PrivateReferenceDetectorContext(modules)
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        use_parse_cache=False,
+    )
+    projected_findings = accumulator.findings_by_detector(config)
+
+    for detector_type in detector_types:
+        detector = detector_type()
+        legacy_findings = [
+            detector._finding_for_candidate(candidate)
+            for module in modules
+            for candidate in detector._candidate_items_for_private_reference_context(
+                module,
+                legacy_context,
+                config,
+            )
+        ]
+        assert [finding.to_dict() for finding in projected_findings[detector_type]] == [
+            finding.to_dict() for finding in legacy_findings
+        ]
+
+
 def test_compact_flattened_candidate_projections_match_full_ast_detection(
     tmp_path: Path,
 ) -> None:
@@ -1575,8 +1639,17 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 12
-    assert len(partition.ast_retaining_context_detector_types) == 57
+    assert runtime_detectors.DeadEmbeddedStaticPayloadDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.UnreferencedPrivateFunctionDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.DanglingPrivateMethodDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 15
+    assert len(partition.ast_retaining_context_detector_types) == 54
     assert len(partition.per_module_detector_types) == 183
 
 

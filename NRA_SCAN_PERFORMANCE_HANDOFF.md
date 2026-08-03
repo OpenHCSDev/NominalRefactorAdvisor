@@ -120,6 +120,33 @@ global detector families than the previous benchmark.  Projection/cache,
 class-graph equivalence, and direct detector verification passed 48 plus four
 focused tests.
 
+## 2026-08-03 compact private-reference checkpoint
+
+The compact path now covers 15 detector families.  A shared private-reference
+projection retains only valid private-identifier counts and AST-free function
+facts, then reconstructs dead embedded-payload, unreferenced private-function,
+and dangling private-method findings from the repository-wide aggregate.  It
+does not retain embedded payload strings or function ASTs.  Compact findings
+are checked directly against the preserved legacy AST candidate algorithms,
+including cross-module call witnesses.
+
+The first DQDock measurement exposed a classmethod-level ``lru_cache`` that the
+module-boundary cleanup did not discover.  It retained every streamed surface
+function AST and drove the private-reference-only stream to an 882,332-KB peak.
+Cache cleanup now discovers cached class/static methods once, reuses that
+clearer registry at later module boundaries, and leaves the surface-function
+cache empty.  The same private-reference-only 919-module stream then peaked at
+121,872 KB.  Caching the clearer discovery avoids rescanning all class
+descriptors at every boundary.
+
+The combined isolated persistent-cache benchmark across all 15 migrated
+families took 71.45 seconds cold and 23.16 seconds warm.  Both passes produced
+335 findings from 66,490 retained top-level projection items, and the process
+peaked at 386,916 KB.  This remains 56.5% below the controlled 889,100-KB
+all-at-once parse peak.  The default partition is now 183 per-module detectors,
+15 compact global detectors, and 54 context-dependent detectors that still
+retain repository ASTs.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

@@ -384,31 +384,63 @@ def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
     return tuple(type(detector) for detector in default_detectors())
 
 
+_MODULE_ANALYSIS_SCANNED_CLASS_IDS: set[int] = set()
+_MODULE_ANALYSIS_CLASS_CACHE_CALLABLES: dict[int, object] = {}
+
+
 def release_module_analysis_memory(*, collect_cycles: bool = True) -> int:
     """Clear AST-bound scan caches after a module-isolated analysis shard."""
 
     cleared_cache_count = 0
     seen_cache_ids: set[int] = set()
+
+    def clear_cached_callable(candidate: object) -> None:
+        nonlocal cleared_cache_count
+        candidate_id = id(candidate)
+        if candidate_id in seen_cache_ids:
+            return
+        seen_cache_ids.add(candidate_id)
+        cache_clear = getattr(candidate, "cache_clear", None)
+        cache_info = getattr(candidate, "cache_info", None)
+        if cache_clear is None or cache_info is None:
+            return
+        try:
+            cache_state = cache_info()
+        except (AttributeError, TypeError):
+            return
+        if cache_state.maxsize == 1 or cache_state.currsize == 0:
+            return
+        cache_clear()
+        cleared_cache_count += 1
+
+    for cached_callable in _MODULE_ANALYSIS_CLASS_CACHE_CALLABLES.values():
+        clear_cached_callable(cached_callable)
+
     for module_name, module in tuple(sys.modules.items()):
         if not module_name.startswith("nominal_refactor_advisor") or module is None:
             continue
         for candidate in vars(module).values():
+            clear_cached_callable(candidate)
+            if not isinstance(candidate, type):
+                continue
             candidate_id = id(candidate)
-            if candidate_id in seen_cache_ids:
+            if candidate_id in _MODULE_ANALYSIS_SCANNED_CLASS_IDS:
                 continue
-            seen_cache_ids.add(candidate_id)
-            cache_clear = getattr(candidate, "cache_clear", None)
-            cache_info = getattr(candidate, "cache_info", None)
-            if cache_clear is None or cache_info is None:
-                continue
-            try:
-                cache_state = cache_info()
-            except (AttributeError, TypeError):
-                continue
-            if cache_state.maxsize == 1 or cache_state.currsize == 0:
-                continue
-            cache_clear()
-            cleared_cache_count += 1
+            _MODULE_ANALYSIS_SCANNED_CLASS_IDS.add(candidate_id)
+            for class_attribute in vars(candidate).values():
+                cached_callable = (
+                    class_attribute.__func__
+                    if isinstance(class_attribute, (classmethod, staticmethod))
+                    else class_attribute
+                )
+                if (
+                    getattr(cached_callable, "cache_clear", None) is not None
+                    and getattr(cached_callable, "cache_info", None) is not None
+                ):
+                    _MODULE_ANALYSIS_CLASS_CACHE_CALLABLES[id(cached_callable)] = (
+                        cached_callable
+                    )
+                clear_cached_callable(cached_callable)
     if collect_cycles:
         gc.collect()
     return cleared_cache_count

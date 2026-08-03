@@ -8083,6 +8083,119 @@ def _dangling_private_method_candidates(
     )
 
 
+@dataclass(frozen=True)
+class CompactPrivateFunctionFact:
+    """AST-free surface-function facts used by private-reference detectors."""
+
+    file_path: str
+    qualname: str
+    function_name: str
+    line: int
+    line_count: int
+    call_site_count: int
+    own_name_reference_count: int
+    owner_name: str | None
+    has_external_protocol_shape: bool
+    is_detector_override_hook: bool
+    static_payload_stats: StaticPayloadStats
+    sink_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactPrivateReferenceModuleProjection:
+    """One module's reference counts and private function candidates."""
+
+    total_counts: tuple[tuple[str, int], ...]
+    derived_candidate_collector_contract_names: tuple[str, ...]
+    functions: tuple[CompactPrivateFunctionFact, ...]
+
+
+class CompactPrivateReferenceModuleProjectionFamily(
+    CollectedFamily[CompactPrivateReferenceModuleProjection]
+):
+    item_type = CompactPrivateReferenceModuleProjection
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[CompactPrivateReferenceModuleProjection]:
+        del cls
+        module_index = PrivateReferenceModuleIndex.from_module(parsed_module)
+        functions: list[CompactPrivateFunctionFact] = []
+        for indexed_function in module_index.functions:
+            function = indexed_function.function
+            if not _is_private_symbol_name(function.name):
+                continue
+            owner_name = (
+                indexed_function.qualname.rsplit(".", 1)[0]
+                if "." in indexed_function.qualname
+                else None
+            )
+            body_nodes = _walk_function_body_nodes(function)
+            functions.append(
+                CompactPrivateFunctionFact(
+                    file_path=str(parsed_module.path),
+                    qualname=indexed_function.qualname,
+                    function_name=function.name,
+                    line=function.lineno,
+                    line_count=_function_line_count(function),
+                    call_site_count=sum(
+                        isinstance(node, ast.Call) for node in body_nodes
+                    ),
+                    own_name_reference_count=module_index.function_counts_by_id[
+                        id(function)
+                    ][function.name],
+                    owner_name=owner_name,
+                    has_external_protocol_shape=_has_external_protocol_shape(function),
+                    is_detector_override_hook=(
+                        owner_name is not None
+                        and _is_detector_override_hook(
+                            parsed_module,
+                            owner_name,
+                            function.name,
+                        )
+                    ),
+                    static_payload_stats=_static_payload_stats(function),
+                    sink_kinds=_static_payload_sink_kinds(function),
+                )
+            )
+        return [
+            CompactPrivateReferenceModuleProjection(
+                total_counts=tuple(
+                    sorted(
+                        (symbol_name, count)
+                        for symbol_name, count in module_index.total_counts.items()
+                        if symbol_name.isidentifier()
+                        and _is_private_symbol_name(symbol_name)
+                    )
+                ),
+                derived_candidate_collector_contract_names=tuple(
+                    sorted(
+                        DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names((parsed_module,))
+                    )
+                ),
+                functions=tuple(functions),
+            )
+        ]
+
+
+def _compact_private_reference_total_counts(
+    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+) -> Counter[str]:
+    total_counts: Counter[str] = Counter()
+    for projection in projections:
+        total_counts.update(dict(projection.total_counts))
+    return total_counts
+
+
+def _compact_private_function_is_unreferenced(
+    function: CompactPrivateFunctionFact,
+    total_counts: Counter[str],
+) -> bool:
+    return total_counts[function.function_name] - function.own_name_reference_count <= 0
+
+
 class FunctionParameterNameProjection:
     def names(
         self, function: ast.FunctionDef | ast.AsyncFunctionDef
@@ -8689,8 +8802,10 @@ class PrivateReferenceContextualDetector(
 
 
 class DeadEmbeddedStaticPayloadDetector(
+    CompactModuleProjectionDetectorMixin[CompactPrivateReferenceModuleProjection],
     PrivateReferenceContextualDetector[EmbeddedStaticPayloadCandidate],
 ):
+    module_projection_family = CompactPrivateReferenceModuleProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Unreferenced embedded static-payload emitter should collapse",
@@ -8712,6 +8827,36 @@ class DeadEmbeddedStaticPayloadDetector(
             config,
             reference_index=private_reference_context.reference_index,
         )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        total_counts = _compact_private_reference_total_counts(projections)
+        candidates = tuple(
+            EmbeddedStaticPayloadCandidate(
+                file_path=function.file_path,
+                line=function.line,
+                qualname=function.qualname,
+                function_name=function.function_name,
+                line_count=function.line_count,
+                static_payload_stats=function.static_payload_stats,
+                sink_kinds=function.sink_kinds,
+                call_site_count=function.call_site_count,
+            )
+            for projection in projections
+            for function in projection.functions
+            if function.line_count >= config.min_static_payload_function_lines
+            if (
+                function.static_payload_stats.payload_line_count
+                >= config.min_static_payload_literal_lines
+            )
+            if function.static_payload_stats.marker_kinds
+            if function.sink_kinds
+            if _compact_private_function_is_unreferenced(function, total_counts)
+        )
+        return [self._finding_for_candidate(candidate) for candidate in candidates]
 
     def _finding_for_candidate(
         self, payload_candidate: EmbeddedStaticPayloadCandidate
@@ -9659,8 +9804,10 @@ def _non_nominal_private_helper_candidates(
 
 
 class UnreferencedPrivateFunctionDetector(
+    CompactModuleProjectionDetectorMixin[CompactPrivateReferenceModuleProjection],
     PrivateReferenceContextualDetector[UnreferencedPrivateFunctionCandidate],
 ):
+    module_projection_family = CompactPrivateReferenceModuleProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Unreferenced private function should be deleted or made explicit",
@@ -9686,6 +9833,36 @@ class UnreferencedPrivateFunctionDetector(
                 private_reference_context.derived_candidate_collector_contract_names
             ),
         )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        total_counts = _compact_private_reference_total_counts(projections)
+        contract_names = frozenset(
+            name
+            for projection in projections
+            for name in projection.derived_candidate_collector_contract_names
+        )
+        candidates = tuple(
+            UnreferencedPrivateFunctionCandidate(
+                file_path=function.file_path,
+                line=function.line,
+                qualname=function.qualname,
+                function_name=function.function_name,
+                line_count=function.line_count,
+                call_site_count=function.call_site_count,
+            )
+            for projection in projections
+            for function in projection.functions
+            if function.owner_name is None
+            if not function.has_external_protocol_shape
+            if function.function_name not in contract_names
+            if function.line_count >= config.min_unreferenced_private_function_lines
+            if _compact_private_function_is_unreferenced(function, total_counts)
+        )
+        return [self._finding_for_candidate(candidate) for candidate in candidates]
 
     finding_renderer = CandidateFindingRenderer[UnreferencedPrivateFunctionCandidate](
         summary=lambda function_candidate: f"`{function_candidate.qualname}` spans {function_candidate.line_count} lines and has no in-module references.",
@@ -9844,8 +10021,10 @@ class PrivateHelperSemanticClusterDetector(
 
 
 class DanglingPrivateMethodDetector(
+    CompactModuleProjectionDetectorMixin[CompactPrivateReferenceModuleProjection],
     PrivateReferenceContextualDetector[DanglingPrivateMethodCandidate],
 ):
+    module_projection_family = CompactPrivateReferenceModuleProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Dangling private method should be deleted or made nominal",
@@ -9868,6 +10047,32 @@ class DanglingPrivateMethodDetector(
             reference_modules=private_reference_context.modules,
             reference_index=private_reference_context.reference_index,
         )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        total_counts = _compact_private_reference_total_counts(projections)
+        candidates = tuple(
+            DanglingPrivateMethodCandidate(
+                file_path=function.file_path,
+                line=function.line,
+                qualname=function.qualname,
+                owner_name=function.owner_name,
+                method_name=function.function_name,
+                line_count=function.line_count,
+                call_site_count=function.call_site_count,
+            )
+            for projection in projections
+            for function in projection.functions
+            if function.owner_name is not None
+            if not function.is_detector_override_hook
+            if not function.has_external_protocol_shape
+            if function.line_count >= config.min_unreferenced_private_function_lines
+            if _compact_private_function_is_unreferenced(function, total_counts)
+        )
+        return [self._finding_for_candidate(candidate) for candidate in candidates]
 
     finding_renderer = CandidateFindingRenderer[DanglingPrivateMethodCandidate](
         summary=lambda method_candidate: (
