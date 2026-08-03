@@ -67,7 +67,7 @@ measurements.  Optional ceilings turn it into a regression gate:
 
    nominal-refactor-benchmark \
      --max-cold-seconds 15 --max-cold-rss-mb 180 \
-     --max-warm-seconds 15 --max-warm-rss-mb 180 \
+     --max-warm-seconds 5 --max-warm-rss-mb 180 \
      changed_module.py another_changed_module.py
 
 The command fails when either subprocess times out, leaks a nonzero exit,

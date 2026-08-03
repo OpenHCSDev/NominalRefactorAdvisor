@@ -32,8 +32,8 @@ from .analysis import (
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     analysis_cache_dir_for_root,
-    analyze_detector_types,
     analyze_lean_export,
+    analyze_module_detector_types_with_cache,
     analyze_modules_with_cache,
     analyze_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     analyze_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
@@ -5777,6 +5777,7 @@ def _main_without_deadline() -> int:
             parse_elapsed = 0.0
             analysis_elapsed = 0.0
             findings = []
+            module_cache_statuses: list[AnalysisCacheStatus] = []
             seen_report_paths: set[Path] = set()
             for report_root in path_scope.report_roots:
                 normalized_report_path = report_root.resolve()
@@ -5793,14 +5794,16 @@ def _main_without_deadline() -> int:
                 )
                 parse_elapsed += perf_counter() - started
                 started = perf_counter()
-                findings.extend(
-                    analyze_detector_types(
-                        local_modules,
+                for local_module in local_modules:
+                    module_result = analyze_module_detector_types_with_cache(
+                        local_module,
                         config,
                         detector_types=local_detector_types,
-                        analysis_workers=args.analysis_workers,
+                        presentation_roots=roots,
+                        analysis_cache_dir=analysis_cache_dir,
                     )
-                )
+                    findings.extend(module_result.findings)
+                    module_cache_statuses.append(module_result.cache_status)
                 release_module_analysis_memory()
                 analysis_elapsed += perf_counter() - started
                 del local_modules
@@ -5811,7 +5814,27 @@ def _main_without_deadline() -> int:
             )
             parse_seconds = round(parse_elapsed, 3)
             analysis_seconds = round(analysis_elapsed, 3)
-            analysis_cache_status = None
+            analysis_cache_status = (
+                AnalysisCacheStatus.HIT
+                if module_cache_statuses
+                and all(
+                    status is AnalysisCacheStatus.HIT
+                    for status in module_cache_statuses
+                )
+                else (
+                    AnalysisCacheStatus.PARTIAL
+                    if AnalysisCacheStatus.HIT in module_cache_statuses
+                    else (
+                        AnalysisCacheStatus.DISABLED
+                        if module_cache_statuses
+                        and all(
+                            status is AnalysisCacheStatus.DISABLED
+                            for status in module_cache_statuses
+                        )
+                        else AnalysisCacheStatus.MISS
+                    )
+                )
+            )
             scan_status = JsonScanStatus(
                 complete=False,
                 mode="focused_local_partial",

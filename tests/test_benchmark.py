@@ -47,6 +47,8 @@ def test_focused_scan_benchmark_records_cold_and_warm_payloads(
     assert report.cold.scan_mode == "focused_local_partial"
     assert report.warm.scan_mode == "focused_local_partial"
     assert report.cold.finding_count == report.warm.finding_count
+    assert report.cold.analysis_cache_status == "miss"
+    assert report.warm.analysis_cache_status == "hit"
     assert report.cold.peak_rss_mb is None or report.cold.peak_rss_mb > 0
 
 

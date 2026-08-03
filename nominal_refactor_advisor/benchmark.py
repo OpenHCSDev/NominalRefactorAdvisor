@@ -29,6 +29,7 @@ class FocusedScanBenchmarkRun:
     scan_complete: bool | None
     parse_seconds: float | None
     analysis_seconds: float | None
+    analysis_cache_status: str | None
     payload_error: str | None = None
 
 
@@ -174,6 +175,10 @@ class FocusedScanBenchmark:
             scan_complete=self._optional_bool(scan_status, "complete"),
             parse_seconds=self._optional_float(timing, "parse_seconds"),
             analysis_seconds=self._optional_float(timing, "analysis_seconds"),
+            analysis_cache_status=self._optional_str(
+                timing,
+                "analysis_cache_status",
+            ),
             payload_error=payload_error,
         )
 

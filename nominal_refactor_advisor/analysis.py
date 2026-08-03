@@ -1135,6 +1135,39 @@ class IncrementalAnalysisResult:
     cache_status: AnalysisCacheStatus
 
 
+def analyze_module_detector_types_with_cache(
+    module: ParsedModule,
+    config: DetectorConfig,
+    *,
+    detector_types: tuple[type[IssueDetector], ...],
+    presentation_roots: tuple[Path, ...],
+    analysis_cache_dir: Path | None,
+) -> IncrementalAnalysisResult:
+    """Analyze one per-module shard through its exact persistent identity."""
+
+    analysis_cache = AnalysisFindingCache(analysis_cache_dir)
+    identity = PerModuleAnalysisCacheIdentity.from_module(
+        module,
+        config,
+        detector_types,
+        presentation_roots,
+    )
+    cache_lookup = analysis_cache.load(identity)
+    if cache_lookup.status is AnalysisCacheStatus.HIT:
+        return IncrementalAnalysisResult(
+            list(cache_lookup.findings),
+            AnalysisCacheStatus.HIT,
+        )
+    findings = analyze_detector_types(
+        [module],
+        config,
+        detector_types=detector_types,
+        analysis_workers=1,
+    )
+    analysis_cache.store(identity, findings)
+    return IncrementalAnalysisResult(findings, cache_lookup.status)
+
+
 class IncrementalAnalysisCacheResolver:
     """Reuse per-module detector shards while rerunning global detectors exactly."""
 

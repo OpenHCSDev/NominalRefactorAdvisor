@@ -18,6 +18,7 @@ from nominal_refactor_advisor.analysis import (
     SemanticDescentGraphAnalysisSource,
     analyze_modules,
     analyze_modules_with_cache,
+    analyze_module_detector_types_with_cache,
     analyze_path,
     release_module_analysis_memory,
 )
@@ -179,6 +180,50 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
 
     assert cleared_cache_count > 0
     assert ast_tools_module._walk_nodes.cache_info().currsize == 0
+
+
+def test_module_detector_shard_cache_reuses_exact_focused_findings(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    source_path = package_root / "module.py"
+    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    module = parse_python_modules(package_root)[0]
+
+    class FocusedShardDetector(PerModuleIssueDetector):
+        call_count = 0
+
+        def _findings_for_module(self, module, config):
+            del module, config
+            type(self).call_count += 1
+            return []
+
+    arguments = {
+        "detector_types": (FocusedShardDetector,),
+        "presentation_roots": (package_root,),
+        "analysis_cache_dir": tmp_path / "analysis-cache",
+    }
+
+    try:
+        cold = analyze_module_detector_types_with_cache(
+            module,
+            DetectorConfig(),
+            **arguments,
+        )
+        warm = analyze_module_detector_types_with_cache(
+            module,
+            DetectorConfig(),
+            **arguments,
+        )
+    finally:
+        for registry_key, detector_type in tuple(IssueDetector.__registry__.items()):
+            if detector_type is FocusedShardDetector:
+                del IssueDetector.__registry__[registry_key]
+
+    assert cold.cache_status is AnalysisCacheStatus.MISS
+    assert warm.cache_status is AnalysisCacheStatus.HIT
+    assert FocusedShardDetector.call_count == 1
 
 
 def test_semantic_graph_cache_treats_truncated_payload_as_miss(

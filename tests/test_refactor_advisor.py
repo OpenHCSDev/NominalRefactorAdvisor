@@ -21303,6 +21303,16 @@ def test_module_cli_cold_focused_loop_reports_partial_local_analysis(
     timing = cast(dict[str, object], payload["timing"])
     analyzed_detector_count = cast(int, scan_status["analyzed_detector_count"])
     omitted_detector_count = cast(int, scan_status["omitted_detector_count"])
+    warm_result = subprocess.run(
+        command,
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    warm_payload = json.loads(warm_result.stdout)
+    warm_timing = cast(dict[str, object], warm_payload["timing"])
 
     assert result.returncode == 0, result.stderr
     assert scan_status["complete"] is False
@@ -21315,7 +21325,10 @@ def test_module_cli_cold_focused_loop_reports_partial_local_analysis(
     assert analyzed_detector_count + omitted_detector_count == len(
         default_detector_types_for_analysis()
     )
-    assert timing["analysis_cache_status"] is None
+    assert timing["analysis_cache_status"] == "miss"
+    assert warm_result.returncode == 0, warm_result.stderr
+    assert warm_payload["finding_count"] == payload["finding_count"]
+    assert warm_timing["analysis_cache_status"] == "hit"
 
 
 def test_module_cli_loop_execution_plan_survives_summary_cache_hit(

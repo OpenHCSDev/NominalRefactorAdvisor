@@ -18,9 +18,11 @@ local findings:
 | First bounded local lane | 12.88 s | 158 MB | Complete partial payload |
 | Module streaming + detector short-circuit | 10.48 s | 134 MB | Complete partial payload |
 
-The checked benchmark command is now ``nominal-refactor-benchmark``.  With
-15-second and 180-MB cold/warm ceilings, an isolated-cache DQDock run measured
-11.32 seconds / 133.7 MB cold and 10.28 seconds / 137.1 MB warm.  Both passes
+The checked benchmark command is now ``nominal-refactor-benchmark``.  With a
+15-second cold, 5-second warm, and 180-MB ceiling, an isolated-cache DQDock run
+measured 12.46 seconds / 135.1 MB cold and 1.65 seconds / 120.4 MB warm.  Warm
+detector analysis itself fell from 8.67 seconds to 0.38 seconds after the
+bounded lane began reusing canonical per-module finding shards.  Both passes
 reported 158 findings, ``focused_local_partial`` status, and clean process
 exit.  The same isolated-cache command caught and now covers the remaining
 source-signature symlink canonicalization path.
