@@ -26,6 +26,7 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheStatus,
     AnalysisFindingCache,
     DetectorRegistrySignature,
+    SourceFileSignatureCache,
 )
 from nominal_refactor_advisor.ast_tools import (
     ExportDictShapeFamily,
@@ -477,6 +478,46 @@ def test_checkout_cache_identity_preserves_in_root_source_symlink(
 
     assert logical_path == "0:pkg/generated/generated.py"
     assert absolute_checkout_path(logical_path, (checkout,)) == str(source_link)
+
+
+def test_analysis_identity_preserves_in_root_source_symlink(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    generated = checkout / "pkg" / "generated"
+    generated.mkdir(parents=True)
+    provenance = tmp_path / ".provenance" / "generated.py"
+    provenance.parent.mkdir()
+    provenance.write_text("VALUE = 1\n")
+    source_link = generated / "generated.py"
+    source_link.symlink_to(provenance)
+
+    identity = AnalysisCacheIdentity.from_roots((checkout,), DetectorConfig())
+
+    assert tuple(source_file.path for source_file in identity.source_files) == (
+        "0:pkg/generated/generated.py",
+    )
+
+
+def test_source_signature_cache_keys_in_root_symlink_lexically(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    provenance = tmp_path / ".provenance" / "generated.py"
+    provenance.parent.mkdir()
+    provenance.write_text("VALUE = 1\n")
+    source_link = checkout / "generated.py"
+    source_link.symlink_to(provenance)
+    storage = AnalysisFindingCache(tmp_path / "cache").storage()
+    assert storage is not None
+    signature_cache = SourceFileSignatureCache(storage)
+
+    first = signature_cache.source_file_signatures((source_link,))[0]
+    second = SourceFileSignatureCache(storage).source_file_signatures((source_link,))[0]
+
+    assert first == second
+    assert first.path == str(source_link)
 
 
 def test_relocated_cache_identity_rebases_in_root_source_symlink_logically(

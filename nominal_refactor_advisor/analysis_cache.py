@@ -26,6 +26,7 @@ from .cache_checkout import (
     CacheCheckoutPathError,
     checkout_relative_path,
     inferred_checkout_roots,
+    lexical_absolute_path,
     presentation_root_texts,
     rebase_checkout_path,
     semantic_root_labels,
@@ -55,7 +56,7 @@ analysis_cache_schema = AnalysisCacheSchema()
 class SourceFileSignatureCacheSchema:
     """Nominal schema identity for persisted source-content signature entries."""
 
-    version: int = 1
+    version: int = 2
 
 
 source_file_signature_cache_schema = SourceFileSignatureCacheSchema()
@@ -235,7 +236,7 @@ class SourceFileSignature:
     @classmethod
     def from_path(cls, path: Path) -> "SourceFileSignature":
         return cls(
-            path=str(path.resolve()),
+            path=str(lexical_absolute_path(path)),
             source_hash=hashlib.blake2s(
                 path.read_bytes(),
                 digest_size=16,
@@ -305,7 +306,7 @@ class CachedSourceFileSignature:
         source_hash: str,
     ) -> "CachedSourceFileSignature":
         return cls(
-            path=str(path.resolve()),
+            path=str(lexical_absolute_path(path)),
             mtime_ns=path_stat.st_mtime_ns,
             size=path_stat.st_size,
             source_hash=source_hash,
@@ -313,7 +314,7 @@ class CachedSourceFileSignature:
 
     def matches(self, path: Path, path_stat: os.stat_result) -> bool:
         return (
-            self.path == str(path.resolve())
+            self.path == str(lexical_absolute_path(path))
             and self.mtime_ns == path_stat.st_mtime_ns
             and self.size == path_stat.st_size
         )
@@ -1260,7 +1261,7 @@ class SourceFileSignatureCache:
 
     def source_file_signature(self, path: Path) -> SourceFileSignature:
         path_stat = path.stat()
-        cache_key = str(path.resolve())
+        cache_key = str(lexical_absolute_path(path))
         cached_signature = self.entries_by_path.get(cache_key)
         if cached_signature is not None and cached_signature.matches(path, path_stat):
             return cached_signature.source_file_signature()

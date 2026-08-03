@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 nominal-refactor-advisor = "nominal_refactor_advisor.cli:process_main"
+nominal-refactor-benchmark = "nominal_refactor_advisor.benchmark:process_main"
 
 [project.optional-dependencies]
 dev = [

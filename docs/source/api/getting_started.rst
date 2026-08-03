@@ -56,6 +56,24 @@ within one active root, and four recent exact semantic-graph generations.
 Explicit ``--cache-dir`` locations are caller-managed and are not pruned by
 this policy.
 
+Reproducible Performance Gate
+-----------------------------
+
+``nominal-refactor-benchmark`` runs the compact focused scan twice against one
+isolated cache, samples the complete process-tree RSS, and emits cold/warm JSON
+measurements.  Optional ceilings turn it into a regression gate:
+
+.. code-block:: bash
+
+   nominal-refactor-benchmark \
+     --max-cold-seconds 15 --max-cold-rss-mb 180 \
+     --max-warm-seconds 15 --max-warm-rss-mb 180 \
+     changed_module.py another_changed_module.py
+
+The command fails when either subprocess times out, leaks a nonzero exit,
+emits invalid JSON, changes finding counts between cold and warm runs, omits
+the partial-scan contract, or exceeds a supplied time/RSS ceiling.
+
 What Stays Stable
 -----------------
 

@@ -18,6 +18,13 @@ local findings:
 | First bounded local lane | 12.88 s | 158 MB | Complete partial payload |
 | Module streaming + detector short-circuit | 10.48 s | 134 MB | Complete partial payload |
 
+The checked benchmark command is now ``nominal-refactor-benchmark``.  With
+15-second and 180-MB cold/warm ceilings, an isolated-cache DQDock run measured
+11.32 seconds / 133.7 MB cold and 10.28 seconds / 137.1 MB warm.  Both passes
+reported 158 findings, ``focused_local_partial`` status, and clean process
+exit.  The same isolated-cache command caught and now covers the remaining
+source-signature symlink canonicalization path.
+
 The remaining exact-mode floor is representation-level: parsing DQDock's 842
 production modules without running any detector takes 14.48 seconds and peaks
 at about 955 MB.  Reducing that path further requires compact contextual

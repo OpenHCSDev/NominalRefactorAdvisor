@@ -27,7 +27,7 @@ def inferred_checkout_roots(paths: tuple[Path, ...]) -> tuple[Path, ...]:
 
     if not paths:
         return ()
-    lexical_parents = tuple(str(_lexical_absolute_path(path).parent) for path in paths)
+    lexical_parents = tuple(str(lexical_absolute_path(path).parent) for path in paths)
     common_parent = Path(os.path.commonpath(lexical_parents))
     return (common_parent,)
 
@@ -45,17 +45,17 @@ def checkout_relative_path(
             raise CacheCheckoutPathError(
                 f"relative path {candidate_path} is ambiguous across {len(roots)} roots"
             )
-        lexical_root = _lexical_absolute_path(roots[0])
+        lexical_root = lexical_absolute_path(roots[0])
         lexical_path = (
             lexical_root
             if lexical_root.is_file() and candidate_path == Path(lexical_root.name)
-            else _lexical_absolute_path(lexical_root / candidate_path)
+            else lexical_absolute_path(lexical_root / candidate_path)
         )
     else:
-        lexical_path = _lexical_absolute_path(candidate_path)
+        lexical_path = lexical_absolute_path(candidate_path)
     matches: list[tuple[int, Path]] = []
     for root_index, root_value in enumerate(roots):
-        lexical_root = _lexical_absolute_path(root_value)
+        lexical_root = lexical_absolute_path(root_value)
         if lexical_root.is_file():
             if lexical_path == lexical_root:
                 matches.append((root_index, Path(".")))
@@ -86,14 +86,14 @@ def absolute_checkout_path(
         raise CacheCheckoutPathError(
             f"logical root {root_index} is absent from {len(roots)} admitted roots"
         )
-    lexical_root = _lexical_absolute_path(roots[root_index])
+    lexical_root = lexical_absolute_path(roots[root_index])
     if lexical_root.is_file():
         if relative_text != ".":
             raise CacheCheckoutPathError(
                 f"file root {lexical_root} cannot admit {relative_text!r}"
             )
         return str(lexical_root)
-    lexical_path = _lexical_absolute_path(lexical_root / relative_text)
+    lexical_path = lexical_absolute_path(lexical_root / relative_text)
     try:
         lexical_path.relative_to(lexical_root)
     except ValueError as error:
@@ -140,7 +140,7 @@ def _validate_relative_text(relative_text: str) -> None:
         )
 
 
-def _lexical_absolute_path(path: Path | str) -> Path:
+def lexical_absolute_path(path: Path | str) -> Path:
     """Canonicalize spelling without dereferencing an admitted source symlink."""
 
     return Path(os.path.abspath(os.fspath(path)))
