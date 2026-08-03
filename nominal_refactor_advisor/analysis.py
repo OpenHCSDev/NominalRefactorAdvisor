@@ -377,7 +377,7 @@ def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
     return tuple(type(detector) for detector in default_detectors())
 
 
-def release_module_analysis_memory() -> int:
+def release_module_analysis_memory(*, collect_cycles: bool = True) -> int:
     """Clear AST-bound scan caches after a module-isolated analysis shard."""
 
     cleared_cache_count = 0
@@ -402,7 +402,8 @@ def release_module_analysis_memory() -> int:
                 continue
             cache_clear()
             cleared_cache_count += 1
-    gc.collect()
+    if collect_cycles:
+        gc.collect()
     return cleared_cache_count
 
 
@@ -1197,6 +1198,20 @@ class IncrementalAnalysisCacheResolver:
         self._semantic_descent_graph: SemanticDescentGraph | None = None
 
     def result(self) -> IncrementalAnalysisResult:
+        cyclic_gc_was_enabled = gc.isenabled()
+        if cyclic_gc_was_enabled:
+            gc.disable()
+        try:
+            return self._result_without_cyclic_gc()
+        finally:
+            # Detector caches may retain repository AST projections after their
+            # findings have been materialized. They are not part of the result.
+            release_module_analysis_memory(collect_cycles=False)
+            if cyclic_gc_was_enabled:
+                gc.enable()
+                gc.collect()
+
+    def _result_without_cyclic_gc(self) -> IncrementalAnalysisResult:
         per_module_findings = self._per_module_findings()
         contextual_module_findings = self._contextual_module_findings()
         contextual_global_findings = self._contextual_global_findings()
@@ -1296,16 +1311,22 @@ class IncrementalAnalysisCacheResolver:
                         chunksize=worker_plan.process_map_chunksize,
                     )
                 )
-        return [
-            analyze_detector_types(
-                [module],
-                self._config,
-                detector_types=self._detector_partition.per_module_detector_types,
-                analysis_workers=1,
-                semantic_descent_source=self._semantic_descent_source,
+        findings_by_module: list[list[RefactorFinding]] = []
+        for module in missing_modules:
+            findings_by_module.append(
+                analyze_detector_types(
+                    [module],
+                    self._config,
+                    detector_types=self._detector_partition.per_module_detector_types,
+                    analysis_workers=1,
+                    semantic_descent_source=self._semantic_descent_source,
+                )
             )
-            for module in missing_modules
-        ]
+            # Module-local detector helpers use LRU caches keyed by ParsedModule
+            # and AST nodes. None of those entries can contribute to the next
+            # module's local shard, so retaining them only duplicates live ASTs.
+            release_module_analysis_memory(collect_cycles=False)
+        return findings_by_module
 
     def _contextual_module_findings(self) -> IncrementalAnalysisResult:
         if not self._detector_partition.has_contextual_module_detectors:
@@ -1350,6 +1371,10 @@ class IncrementalAnalysisCacheResolver:
                 )
                 self._analysis_cache.store(identity, module_findings)
                 findings.extend(module_findings)
+        # These six detectors share several repository reference projections.
+        # Keep those reusable within the family, then release them before the
+        # contextual-global phase constructs its separate candidate indexes.
+        release_module_analysis_memory(collect_cycles=False)
 
         cache_status = (
             AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL

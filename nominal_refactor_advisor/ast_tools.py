@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import ast
 import copy
+from contextlib import contextmanager
 import hashlib
 import io
+import gc
 import os
 import pickle
 import sys
@@ -192,6 +194,12 @@ class PythonModuleParseContext(ParseCacheDirectory):
     """Parse-time context shared by sequential and concurrent module loading."""
 
     analysis_root: Path
+    _line_numbers_by_value: dict[int, int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -424,6 +432,7 @@ def _parse_source_module(
                 semantic_hash,
                 cache_dir=context.parse_cache_dir,
             )
+    _canonicalize_ast_line_numbers(module, context._line_numbers_by_value)
     module_identity = PythonModulePathIdentity.from_path(
         path,
         analysis_root=context.analysis_root,
@@ -437,6 +446,32 @@ def _parse_source_module(
         semantic_hash=semantic_hash,
         family_cache_dir=context.collected_family_cache_dir,
     )
+
+
+def _canonicalize_ast_line_numbers(
+    module: ast.Module,
+    line_numbers_by_value: dict[int, int],
+) -> None:
+    """Share equal line-number integers instead of retaining one per AST node."""
+
+    for node in ast.walk(module):
+        attributes = node.__dict__
+        line_number = attributes.get("lineno")
+        if line_number is not None:
+            canonical_line_number = line_numbers_by_value.setdefault(
+                line_number,
+                line_number,
+            )
+            if line_number is not canonical_line_number:
+                attributes["lineno"] = canonical_line_number
+        end_line_number = attributes.get("end_lineno")
+        if end_line_number is not None:
+            canonical_end_line_number = line_numbers_by_value.setdefault(
+                end_line_number,
+                end_line_number,
+            )
+            if end_line_number is not canonical_end_line_number:
+                attributes["end_lineno"] = canonical_end_line_number
 
 
 def _effective_parse_workers(parse_workers: int) -> int:
@@ -1421,9 +1456,10 @@ def _parse_module_roots(
     root_parser: "PythonModuleRootParser", paths: tuple[Path, ...]
 ) -> list[ParsedModule]:
     modules: list[ParsedModule] = []
-    for path in paths:
-        scan_deadline_checkpoint("parse_python_module")
-        modules.append(_parse_source_module(path, context=root_parser))
+    with _suspend_cyclic_gc():
+        for path in paths:
+            scan_deadline_checkpoint("parse_python_module")
+            modules.append(_parse_source_module(path, context=root_parser))
     return modules
 
 
@@ -1435,9 +1471,24 @@ def _parse_module_roots_concurrently(
     def parse_path(path: Path) -> ParsedModule:
         return _parse_source_module(path, context=root_parser)
 
-    with ThreadPoolExecutor(max_workers=parse_workers) as executor:
-        modules = list(executor.map(parse_path, paths))
+    with _suspend_cyclic_gc():
+        with ThreadPoolExecutor(max_workers=parse_workers) as executor:
+            modules = list(executor.map(parse_path, paths))
     return modules
+
+
+@contextmanager
+def _suspend_cyclic_gc():
+    """Avoid repeated full-heap collections while materializing acyclic ASTs."""
+
+    was_enabled = gc.isenabled()
+    if was_enabled:
+        gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 @dataclass(frozen=True)

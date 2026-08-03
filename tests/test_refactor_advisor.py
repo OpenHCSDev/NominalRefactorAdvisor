@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import gc
 import inspect
 import json
 import os
@@ -8164,6 +8165,54 @@ def test_parse_python_modules_parallel_order_is_deterministic(tmp_path: Path) ->
         "pkg.middle",
         "pkg.zeta",
     ]
+
+
+def test_parse_python_modules_suspends_and_restores_cyclic_gc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/alpha.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg/beta.py", "\nclass Beta:\n    pass\n")
+    gc_states_during_parse: list[bool] = []
+    real_parse = ast.parse
+
+    def observed_parse(*args: object, **kwargs: object) -> ast.Module:
+        gc_states_during_parse.append(gc.isenabled())
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", observed_parse)
+
+    assert gc.isenabled()
+    modules = parse_python_module_roots(
+        (tmp_path / "pkg",),
+        use_parse_cache=False,
+    )
+
+    assert [module.module_name for module in modules] == ["alpha", "beta"]
+    assert gc_states_during_parse == [False, False]
+    assert gc.isenabled()
+
+
+def test_parse_python_modules_canonicalizes_equal_large_line_numbers(
+    tmp_path: Path,
+) -> None:
+    source = "\n" * 300 + "left = source\nright = source\n"
+    _write_module(tmp_path, "pkg/alpha.py", source)
+    _write_module(tmp_path, "pkg/beta.py", source)
+
+    modules = parse_python_module_roots(
+        (tmp_path / "pkg",),
+        use_parse_cache=False,
+    )
+    line_numbers = [
+        node.lineno
+        for module in modules
+        for node in ast.walk(module.module)
+        if isinstance(node, ast.Name) and node.id == "left"
+    ]
+
+    assert line_numbers == [301, 301]
+    assert line_numbers[0] is line_numbers[1]
 
 
 def test_analyze_paths_combines_cross_file_detector_evidence(tmp_path: Path) -> None:

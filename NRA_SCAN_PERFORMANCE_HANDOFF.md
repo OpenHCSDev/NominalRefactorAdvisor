@@ -1,5 +1,30 @@
 # NRA scan-performance handoff
 
+## 2026-08-03 exact-global checkpoint
+
+Exact/global optimization is now a separate active workstream from the bounded
+focused loop.  The first checkpoint preserves every detector family while
+removing two avoidable costs: cyclic garbage collection is suspended while
+acyclic repository ASTs are materialized, equal AST line-number integers are
+shared across modules, and completed module-local/contextual detector caches
+are released at their correctness boundary.
+
+On the current DQDock checkout (919 production modules), a controlled cold
+parse without detector execution changed from 22.44 seconds / 986.2 MB to
+16.59 seconds / 889.1 MB.  This is a same-checkout comparison; it supersedes
+neither the earlier 842-module observation nor its different inventory.  A
+45-second exact focused-context probe reached a 1,170,584-KB high-water mark
+before its enforced deadline, below the historical terminal observation near
+1.9 GB but still too large for the intended workflow.
+
+The remaining work is representation-level.  Exact global scans still retain
+the full repository AST, so the next stage is to persist compact per-module
+context projections and migrate context-dependent detectors onto those
+projections without changing findings.  The focused partial lane remains the
+recommended interactive command until that exact projection path is complete.
+
+Verification for this checkpoint passed all 944 tests in 332.97 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
