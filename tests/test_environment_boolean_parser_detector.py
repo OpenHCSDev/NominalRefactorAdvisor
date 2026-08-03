@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from nominal_refactor_advisor.analysis import (
+    accumulate_compact_global_projections_for_roots,
+)
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.calibration import run_calibration_manifest
 from nominal_refactor_advisor.detectors import (
@@ -129,6 +132,19 @@ class FeatureEnvironmentAuthority:
     )
 
     findings = _focused_findings(tmp_path / "pkg")
+    detector_type = EnvironmentBooleanAuthorityDriftDetector
+    projected_findings = accumulate_compact_global_projections_for_roots(
+        (tmp_path / "pkg",),
+        (detector_type,),
+        use_parse_cache=False,
+    ).findings_by_detector(DetectorConfig())[detector_type]
+    assert sorted(
+        (finding.to_dict() for finding in projected_findings),
+        key=lambda item: item["summary"],
+    ) == sorted(
+        (finding.to_dict() for finding in findings),
+        key=lambda item: item["summary"],
+    )
     summaries_by_symbol = {
         finding.evidence[0].symbol.split(":", 1)[0]: finding for finding in findings
     }

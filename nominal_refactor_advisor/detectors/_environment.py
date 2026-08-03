@@ -11,7 +11,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from ..ast_tools import ParsedModule
+from ..ast_tools import CollectedFamily, ParsedModule
 from ..class_index import ATTRIBUTE_CHAIN_AUTHORITY
 from ..models import RefactorFinding, SourceLocation
 from ..name_algebra import CLASS_NAME_ALGEBRA
@@ -19,6 +19,7 @@ from ..patterns import PatternId
 from ..semantic_match import single_item
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
+    CompactModuleProjectionDetectorMixin,
     DetectorConfig,
     SemanticMirrorIssueDetector,
     high_confidence_spec,
@@ -1095,13 +1096,10 @@ def _returned_call(scope: _FunctionScope) -> ast.Call | None:
     return body[0].value if isinstance(body[0].value, ast.Call) else None
 
 
-def _authority_for_call(
-    call: ast.Call,
+def _authority_for_selector_chain(
+    chain: tuple[str, ...],
     authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
 ) -> _DeclaredEnvironmentFlagAuthority | None:
-    chain = ATTRIBUTE_CHAIN_AUTHORITY.project(call.func)
-    if chain is None:
-        return None
     qualified_selector = ".".join(chain[-2:])
     qualified_matches = tuple(
         authority
@@ -1133,24 +1131,24 @@ class _FixedKeyAuthorityWrapperSite(SourceLocation):
     authority: _DeclaredEnvironmentFlagAuthority
 
 
-def _fixed_key_authority_wrapper_sites(
+@dataclass(frozen=True)
+class _FixedKeyAuthorityWrapperFact(SourceLocation):
+    environment_key: str
+    selector_chain: tuple[str, ...]
+
+
+def _fixed_key_authority_wrapper_facts(
     scopes: Iterable[_FunctionScope],
-    authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
-) -> tuple[_FixedKeyAuthorityWrapperSite, ...]:
-    sites: list[_FixedKeyAuthorityWrapperSite] = []
-    authority_symbols = {authority.symbol for authority in authorities}
+) -> tuple[_FixedKeyAuthorityWrapperFact, ...]:
+    facts: list[_FixedKeyAuthorityWrapperFact] = []
     for scope in scopes:
-        if (
-            scope.class_name is None
-            or scope.class_method_count > 2
-            or scope.symbol in authority_symbols
-        ):
+        if scope.class_name is None or scope.class_method_count > 2:
             continue
         call = _returned_call(scope)
         if call is None:
             continue
-        authority = _authority_for_call(call, authorities)
-        if authority is None:
+        selector_chain = ATTRIBUTE_CHAIN_AUTHORITY.project(call.func)
+        if selector_chain is None:
             continue
         key_expression = next(
             (
@@ -1169,16 +1167,39 @@ def _fixed_key_authority_wrapper_sites(
         dynamic_parameters = scope.parameter_names - _INSTANCE_PARAMETER_NAMES
         if _expression_uses_parameters(key_expression, dynamic_parameters):
             continue
-        resolver = _LiteralResolver.for_scope(scope)
-        environment_key = resolver.string(key_expression)
+        environment_key = _LiteralResolver.for_scope(scope).string(key_expression)
         if environment_key is None:
             continue
-        sites.append(
-            _FixedKeyAuthorityWrapperSite(
+        facts.append(
+            _FixedKeyAuthorityWrapperFact(
                 file_path=str(scope.module.path),
                 line=scope.node.lineno,
                 symbol=scope.symbol,
                 environment_key=environment_key,
+                selector_chain=selector_chain,
+            )
+        )
+    return tuple(facts)
+
+
+def _fixed_key_authority_wrapper_sites(
+    scopes: Iterable[_FunctionScope],
+    authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
+) -> tuple[_FixedKeyAuthorityWrapperSite, ...]:
+    sites: list[_FixedKeyAuthorityWrapperSite] = []
+    authority_symbols = {authority.symbol for authority in authorities}
+    for fact in _fixed_key_authority_wrapper_facts(scopes):
+        if fact.symbol in authority_symbols:
+            continue
+        authority = _authority_for_selector_chain(fact.selector_chain, authorities)
+        if authority is None:
+            continue
+        sites.append(
+            _FixedKeyAuthorityWrapperSite(
+                file_path=fact.file_path,
+                line=fact.line,
+                symbol=fact.symbol,
+                environment_key=fact.environment_key,
                 authority=authority,
             )
         )
@@ -1253,8 +1274,70 @@ def _wrapper_candidate(
     )
 
 
-class EnvironmentBooleanAuthorityDriftDetector(SemanticMirrorIssueDetector):
+@dataclass(frozen=True)
+class _EnvironmentBooleanModuleProjection:
+    parser_sites: tuple[_EnvironmentBooleanParserSite, ...]
+    authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...]
+    wrapper_facts: tuple[_FixedKeyAuthorityWrapperFact, ...]
+
+
+class _EnvironmentBooleanModuleProjectionFamily(
+    CollectedFamily[_EnvironmentBooleanModuleProjection]
+):
+    item_type = _EnvironmentBooleanModuleProjection
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[_EnvironmentBooleanModuleProjection]:
+        del cls
+        scopes = _function_scopes(parsed_module)
+        aliases = _EnvironmentImportAliases.from_module(parsed_module.module)
+        return [
+            _EnvironmentBooleanModuleProjection(
+                parser_sites=tuple(
+                    site
+                    for scope in scopes
+                    for site in _environment_boolean_parser_sites(scope, aliases)
+                ),
+                authorities=_declared_environment_flag_authorities(scopes),
+                wrapper_facts=_fixed_key_authority_wrapper_facts(scopes),
+            )
+        ]
+
+
+def _fixed_key_authority_wrapper_sites_from_facts(
+    facts: Iterable[_FixedKeyAuthorityWrapperFact],
+    authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
+) -> tuple[_FixedKeyAuthorityWrapperSite, ...]:
+    authority_symbols = {authority.symbol for authority in authorities}
+    sites: list[_FixedKeyAuthorityWrapperSite] = []
+    for fact in facts:
+        if fact.symbol in authority_symbols:
+            continue
+        authority = _authority_for_selector_chain(fact.selector_chain, authorities)
+        if authority is None:
+            continue
+        sites.append(
+            _FixedKeyAuthorityWrapperSite(
+                file_path=fact.file_path,
+                line=fact.line,
+                symbol=fact.symbol,
+                environment_key=fact.environment_key,
+                authority=authority,
+            )
+        )
+    return tuple(sites)
+
+
+class EnvironmentBooleanAuthorityDriftDetector(
+    CompactModuleProjectionDetectorMixin[_EnvironmentBooleanModuleProjection],
+    SemanticMirrorIssueDetector,
+):
     """Detect local environment flag semantics outside a declared authority."""
+
+    module_projection_family = _EnvironmentBooleanModuleProjectionFamily
 
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_CONTEXT,
@@ -1277,30 +1360,32 @@ class EnvironmentBooleanAuthorityDriftDetector(SemanticMirrorIssueDetector):
     )
     detector_priority = -2
 
-    def _collect_findings(
+    def _findings_from_compact_projections(
         self,
-        modules: list[ParsedModule],
+        projections: tuple[_EnvironmentBooleanModuleProjection, ...],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        scopes = tuple(
-            scope for module in modules for scope in _function_scopes(module)
+        authorities = tuple(
+            authority
+            for projection in projections
+            for authority in projection.authorities
         )
-        authorities = _declared_environment_flag_authorities(scopes)
-        candidates: list[_EnvironmentBooleanDriftCandidate] = []
-        aliases_by_path = {
-            str(module.path): _EnvironmentImportAliases.from_module(module.module)
-            for module in modules
-        }
-        for scope in scopes:
-            aliases = aliases_by_path[str(scope.module.path)]
-            for site in _environment_boolean_parser_sites(scope, aliases):
-                candidates.append(
-                    _parser_candidate(site, _authority_for_parser(site, authorities))
-                )
+        candidates = [
+            _parser_candidate(site, _authority_for_parser(site, authorities))
+            for projection in projections
+            for site in projection.parser_sites
+        ]
         candidates.extend(
             _wrapper_candidate(site)
-            for site in _fixed_key_authority_wrapper_sites(scopes, authorities)
+            for site in _fixed_key_authority_wrapper_sites_from_facts(
+                (
+                    fact
+                    for projection in projections
+                    for fact in projection.wrapper_facts
+                ),
+                authorities,
+            )
         )
         return [
             self.build_finding(

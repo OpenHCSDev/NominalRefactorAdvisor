@@ -60,6 +60,7 @@ from nominal_refactor_advisor.detectors import (
     PerModuleIssueDetector,
     SemanticDescentGraphIssueDetector,
 )
+from nominal_refactor_advisor.detectors import _environment as environment_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
@@ -1652,8 +1653,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert structural_detectors.SupportPreludeModuleFamilyDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 16
-    assert len(partition.ast_retaining_context_detector_types) == 53
+    assert environment_detectors.EnvironmentBooleanAuthorityDriftDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 17
+    assert len(partition.ast_retaining_context_detector_types) == 52
     assert len(partition.per_module_detector_types) == 183
 
 

@@ -153,6 +153,13 @@ per-module detectors, 16 compact global detectors, and 53 AST-retaining
 context-dependent detectors; the 15-family numbers above remain the latest
 like-for-like DQDock benchmark rather than being relabeled after the change.
 
+Environment-boolean authority drift subsequently moved to compact parser-site,
+declared-authority, and fixed-key wrapper selector-chain facts.  Wrapper calls
+still resolve against the complete repository authority set, so this preserves
+global matching rather than reducing the detector to module-local behavior.
+The current partition is 183 per-module, 17 compact global, and 52
+AST-retaining context-dependent detectors.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
