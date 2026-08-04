@@ -16,7 +16,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Hashable, MutableMapping
+from collections.abc import Hashable, Iterator, MutableMapping
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
@@ -1128,6 +1128,31 @@ class CompactMultiModuleProjectionDetectorMixin(
             projections_by_family,
             config,
         )
+
+    def _stream_findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> "CompactFindingStream | None":
+        del projections_by_family, context, config
+        return None
+
+
+@dataclass(frozen=True)
+class CompactFindingStream:
+    """Counted one-pass findings emitted by a bounded compact global join."""
+
+    finding_count: int
+    chunks: Iterator[tuple[RefactorFinding, ...]]
+
+    def __post_init__(self) -> None:
+        if self.finding_count < 0:
+            raise ValueError("compact finding stream count must be non-negative")
+
+    def __iter__(self) -> Iterator[RefactorFinding]:
+        for chunk in self.chunks:
+            yield from chunk
 
 
 class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):

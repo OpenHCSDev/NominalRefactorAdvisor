@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, ClassVar, cast
+from typing import Callable, ClassVar, Iterator, cast
 
 from metaclass_registry import AutoRegisterMeta
 
 from ._base import (
+    CompactFindingStream,
     CompactMultiModuleProjectionDetectorMixin,
     ContextualGlobalCacheContract,
     DetectorConfig,
@@ -135,6 +136,7 @@ class SemanticMirrorWithoutDescentDetector(
     """Report presentation projections that mirror a nominal semantic authority."""
 
     detector_priority = -100
+    compact_finding_chunk_size = 64
     semantic_mirror_authority_evidence_index = 1
     module_projection_families = (
         CompactSemanticModuleProjectionFamily,
@@ -213,6 +215,27 @@ class SemanticMirrorWithoutDescentDetector(
             class_index=context,
         )
 
+    def _stream_findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> CompactFindingStream:
+        del config
+        if not isinstance(context, CompactClassFamilyIndex):
+            raise TypeError("shared compact class index is unavailable")
+        return self._finding_stream_from_compact_resolver(
+            cast(
+                tuple[CompactSemanticModuleProjection, ...],
+                projections_by_family[CompactSemanticModuleProjectionFamily],
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+            class_index=context,
+        )
+
     def _findings_from_compact_resolver(
         self,
         semantic_projections: tuple[CompactSemanticModuleProjection, ...],
@@ -220,6 +243,21 @@ class SemanticMirrorWithoutDescentDetector(
         *,
         class_index: CompactClassFamilyIndex | None = None,
     ) -> list[RefactorFinding]:
+        return list(
+            self._finding_stream_from_compact_resolver(
+                semantic_projections,
+                class_projections,
+                class_index=class_index,
+            )
+        )
+
+    def _finding_stream_from_compact_resolver(
+        self,
+        semantic_projections: tuple[CompactSemanticModuleProjection, ...],
+        class_projections: tuple[CompactModuleClassProjection, ...],
+        *,
+        class_index: CompactClassFamilyIndex | None = None,
+    ) -> CompactFindingStream:
         graph_space, mirror_edges = build_compact_semantic_mirror_resolution(
             semantic_projections,
             class_projections,
@@ -228,19 +266,27 @@ class SemanticMirrorWithoutDescentDetector(
         certificate_builder = SemanticDescentCertificateBuilder(graph_space)
         edge_queue: list[MirrorEdge | None] = list(mirror_edges)
         del mirror_edges
-        findings: list[RefactorFinding] = []
-        for index in range(len(edge_queue)):
-            edge = edge_queue[index]
-            if edge is None:
-                raise TypeError("semantic mirror edge queue contains a non-edge")
-            findings.append(
-                self._finding_for_certificate(
-                    graph_space,
-                    certificate_builder.certificate_for_edge(edge),
+
+        def finding_chunks() -> Iterator[tuple[RefactorFinding, ...]]:
+            chunk: list[RefactorFinding] = []
+            for index in range(len(edge_queue)):
+                edge = edge_queue[index]
+                if edge is None:
+                    raise TypeError("semantic mirror edge queue contains a non-edge")
+                chunk.append(
+                    self._finding_for_certificate(
+                        graph_space,
+                        certificate_builder.certificate_for_edge(edge),
+                    )
                 )
-            )
-            edge_queue[index] = None
-        return findings
+                edge_queue[index] = None
+                if len(chunk) == self.compact_finding_chunk_size:
+                    yield tuple(chunk)
+                    chunk = []
+            if chunk:
+                yield tuple(chunk)
+
+        return CompactFindingStream(len(edge_queue), finding_chunks())
 
     def _collect_findings_from_graph(
         self,

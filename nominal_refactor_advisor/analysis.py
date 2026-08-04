@@ -56,6 +56,7 @@ from .cache_paths import (
 from .cache_checkout import absolute_checkout_path
 from .detectors import (
     CompactClassRepositoryContext,
+    CompactFindingStream,
     CompactMultiModuleProjectionDetectorMixin,
     CompactModuleProjectionDetectorMixin,
     ContextualGlobalCacheContract,
@@ -645,10 +646,9 @@ def _compact_findings_by_detector(
     config: DetectorConfig,
     *,
     shared_contexts: dict[Hashable, object] | None = None,
-    finding_consumer: Callable[
-        [type[IssueDetector], list[RefactorFinding]], None
-    ]
-    | None = None,
+    finding_consumer: (
+        Callable[[type[IssueDetector], Iterable[RefactorFinding]], None] | None
+    ) = None,
     retain_findings: bool = True,
 ) -> dict[type[IssueDetector], list[RefactorFinding]]:
     """Join one live compact-family group with shared-context reuse."""
@@ -657,12 +657,12 @@ def _compact_findings_by_detector(
 
     def accept_findings(
         detector_type: type[IssueDetector],
-        detector_findings: list[RefactorFinding],
+        detector_findings: Iterable[RefactorFinding],
     ) -> None:
         if finding_consumer is not None:
             finding_consumer(detector_type, detector_findings)
         if retain_findings:
-            findings[detector_type] = detector_findings
+            findings[detector_type] = list(detector_findings)
 
     active_shared_contexts = {} if shared_contexts is None else shared_contexts
     for detector_type in detector_types:
@@ -685,9 +685,9 @@ def _compact_findings_by_detector(
                 CompactMultiModuleProjectionDetectorMixin,
                 detector,
             )
-            group_context_builder = (
-                type(multi_detector).compact_shared_group_context_builder
-            )
+            group_context_builder = type(
+                multi_detector
+            ).compact_shared_group_context_builder
             group_context: object | None = None
             if group_context_builder is not None:
                 group_context_key = ("compact-group", group_context_builder)
@@ -697,6 +697,16 @@ def _compact_findings_by_detector(
                         config,
                     )
                 group_context = active_shared_contexts[group_context_key]
+            if finding_consumer is not None and not retain_findings:
+                finding_stream = multi_detector._stream_findings_from_compact_projection_groups_context(
+                    grouped_projections,
+                    group_context,
+                    config,
+                )
+                if finding_stream is not None:
+                    accept_findings(detector_type, finding_stream)
+                    del finding_stream
+                    continue
             detector_findings = (
                 multi_detector._findings_from_compact_projection_groups_context(
                     grouped_projections,
@@ -945,10 +955,9 @@ class BoundedCompactProjectionManifest:
         self,
         config: DetectorConfig,
         *,
-        finding_consumer: Callable[
-            [type[IssueDetector], list[RefactorFinding]], None
-        ]
-        | None = None,
+        finding_consumer: (
+            Callable[[type[IssueDetector], Iterable[RefactorFinding]], None] | None
+        ) = None,
         retain_findings: bool = True,
     ) -> dict[type[IssueDetector], list[RefactorFinding]]:
         """Join bounded families, optionally consuming detector shards eagerly."""
@@ -967,12 +976,12 @@ class BoundedCompactProjectionManifest:
 
         def accept_detector_findings(
             detector_type: type[IssueDetector],
-            detector_findings: list[RefactorFinding],
+            detector_findings: Iterable[RefactorFinding],
         ) -> None:
             if finding_consumer is not None:
                 finding_consumer(detector_type, detector_findings)
             if retain_findings:
-                findings[detector_type] = detector_findings
+                findings[detector_type] = list(detector_findings)
 
         shared_contexts: dict[Hashable, object] = {}
 
@@ -1161,19 +1170,23 @@ def analyze_compact_roots_with_cache(
         type[IssueDetector], GlobalDetectorAnalysisCacheIdentity
     ] = {}
 
-    def extend_report_findings(
-        detector_findings: Iterable[RefactorFinding],
-    ) -> None:
-        if report_scope is None or not report_scope.has_report_filter:
-            global_findings.extend(detector_findings)
-            return
-        global_findings.extend(
-            finding
-            for finding in detector_findings
-            if any(
+    def finding_is_in_report_scope(finding: RefactorFinding) -> bool:
+        return (
+            report_scope is None
+            or not report_scope.has_report_filter
+            or any(
                 report_scope.includes_report_file_path(item.file_path)
                 for item in finding.evidence
             )
+        )
+
+    def extend_report_findings(
+        detector_findings: Iterable[RefactorFinding],
+    ) -> None:
+        global_findings.extend(
+            finding
+            for finding in detector_findings
+            if finding_is_in_report_scope(finding)
         )
 
     for detector_type in partition.compact_global_detector_types:
@@ -1317,15 +1330,32 @@ def analyze_compact_roots_with_cache(
 
     join_started = perf_counter()
     if missing_global_detector_types:
+
         def consume_global_detector_findings(
             detector_type: type[IssueDetector],
-            detector_findings: list[RefactorFinding],
+            detector_findings: Iterable[RefactorFinding],
         ) -> None:
-            analysis_cache.store(
-                global_identity_by_detector[detector_type],
-                detector_findings,
-            )
-            extend_report_findings(detector_findings)
+            detector_identity = global_identity_by_detector[detector_type]
+            if isinstance(detector_findings, CompactFindingStream):
+
+                def observed_chunks() -> Iterable[tuple[RefactorFinding, ...]]:
+                    for chunk in detector_findings.chunks:
+                        global_findings.extend(
+                            finding
+                            for finding in chunk
+                            if finding_is_in_report_scope(finding)
+                        )
+                        yield chunk
+
+                analysis_cache.store_chunks(
+                    detector_identity,
+                    detector_findings.finding_count,
+                    observed_chunks(),
+                )
+                return
+            retained_findings = list(detector_findings)
+            analysis_cache.store(detector_identity, retained_findings)
+            extend_report_findings(retained_findings)
 
         projection_manifest.findings_by_detector(
             config,
@@ -1348,8 +1378,7 @@ def analyze_compact_roots_with_cache(
         if aggregate_lookup.status is AnalysisCacheStatus.DISABLED
         else (
             AnalysisCacheStatus.PARTIAL
-            if local_cache_hit_count
-            or global_cache_hit_count
+            if local_cache_hit_count or global_cache_hit_count
             else AnalysisCacheStatus.MISS
         )
     )

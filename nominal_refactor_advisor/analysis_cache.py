@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
@@ -1383,6 +1383,54 @@ class AnalysisCacheStorage:
             os.fsync(handle.fileno())
         os.replace(temp_path, cache_path)
 
+    def store_finding_chunks_atomic(
+        self,
+        cache_path: Path,
+        identity: AnalysisCacheEntryIdentity,
+        finding_count: int,
+        chunks: Iterable[tuple[RefactorFinding, ...]],
+    ) -> None:
+        """Persist a counted finding stream with one bounded memo per chunk."""
+
+        if self.finding_chunk_size < 1:
+            raise ValueError("finding cache chunk size must be positive")
+        if finding_count < 0:
+            raise ValueError("finding cache stream count must be non-negative")
+        self.ensure_directory()
+        started = monotonic()
+        temp_path = cache_path.with_name(
+            f".{cache_path.name}.{os.getpid()}.{started:.9f}.tmp"
+        )
+        stored_count = 0
+        try:
+            with temp_path.open("wb") as handle:
+                pickle.dump(
+                    AnalysisFindingCacheChunkStreamHeader(
+                        identity=identity,
+                        finding_count=finding_count,
+                        chunk_size=self.finding_chunk_size,
+                    ),
+                    handle,
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+                for chunk in chunks:
+                    if not chunk or len(chunk) > self.finding_chunk_size:
+                        raise ValueError(
+                            "finding cache stream emitted an invalid chunk"
+                        )
+                    stored_count += len(chunk)
+                    if stored_count > finding_count:
+                        raise ValueError("finding cache stream exceeded its count")
+                    pickle.dump(chunk, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                if stored_count != finding_count:
+                    raise ValueError("finding cache stream did not reach its count")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, cache_path)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
+
     def store_partial_finding_payload_atomic(
         self,
         cache_path: Path,
@@ -1554,6 +1602,55 @@ class AnalysisFindingCache:
             return payload.lookup(identity)
         except CacheCheckoutPathError:
             return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+
+    def store_chunks(
+        self,
+        identity: AnalysisCacheEntryIdentity,
+        finding_count: int,
+        chunks: Iterable[tuple[RefactorFinding, ...]],
+    ) -> None:
+        """Consume and persist counted finding chunks with bounded retention."""
+
+        storage = self.storage()
+        chunk_iterator = iter(chunks)
+        if storage is None:
+            for _chunk in chunk_iterator:
+                pass
+            return
+
+        def validated_chunks() -> Iterator[tuple[RefactorFinding, ...]]:
+            for chunk in chunk_iterator:
+                for offset in range(0, len(chunk), storage.finding_chunk_size):
+                    yield self._validated_rebased_chunk(
+                        identity,
+                        list(chunk[offset : offset + storage.finding_chunk_size]),
+                    )
+
+        try:
+            storage.store_finding_chunks_atomic(
+                storage.entry_path(identity),
+                identity,
+                finding_count,
+                validated_chunks(),
+            )
+        except (OSError, CacheCheckoutPathError):
+            for _chunk in chunk_iterator:
+                pass
+
+    @staticmethod
+    def _validated_rebased_chunk(
+        identity: AnalysisCacheEntryIdentity,
+        findings: list[RefactorFinding],
+    ) -> tuple[RefactorFinding, ...]:
+        validated_findings = CachedFindingPayloadShape.require_findings(
+            findings,
+            cache_surface=AnalysisFindingCacheEntryPayload.__name__,
+        )
+        return _rebase_findings(
+            validated_findings,
+            identity.presentation_roots,
+            identity.presentation_roots,
+        )
 
     def store(
         self,

@@ -1268,6 +1268,39 @@ projections, returning the same 333 findings with ``partial`` cache status in
 lower in peak memory.  Full verification passes all 998 tests in 344.23
 seconds; the 11 warnings remain the existing concurrent pytest cleanup race.
 
+### Counted semantic finding-stream follow-up
+
+The exact eager consumer no longer retains the semantic detector's complete
+5,246-finding list before writing its cache shard.  The detector now exposes a
+counted, one-pass stream of at most 64 findings per chunk, clears each processed
+semantic edge before yielding that chunk, and feeds the same chunks directly to
+report filtering and atomic cache publication.  Ordinary detector APIs still
+materialize and return their existing finding lists; the stream is selected
+only for the non-retaining exact publication path.
+
+The cache header records the expected finding count before the first chunk is
+written.  Publication rejects empty or oversized chunks and both under- and
+over-counted streams, removes the temporary file on failure, and preserves the
+existing framed payload format for readers.  Regressions cover compact/full-AST
+finding parity, the 64-finding bound, progressive edge reclamation, exact-path
+stream selection, successful counted publication, and atomic rejection of a
+truncated stream.
+
+On the frozen 919-module DQDock snapshot, the contemporaneous five-run exact
+median is 320,956 KB and 15.686 seconds of internal scan time, compared with
+323,864 KB and 15.623 seconds at the pushed 64-finding checkpoint.  The change
+therefore removes another 2,908 KB (0.9%) from median peak RSS for 0.063 seconds
+(0.4%) of runtime variance.  Every run completed all 252 detectors and returned
+the same 12 focused findings.  The external wall-time median is 16.917 seconds;
+relative to the 27.97-second / 430,908-KB pre-validation run, exact publication
+is 39.5% faster and 25.5% lower in peak memory.
+
+A second report target reused the streamed global shards without rebuilding
+projections, returned the same 333 findings with complete exact scan status,
+and reported 7.371 internal seconds with ``partial`` cache status.  Full
+verification passes all 998 tests in 375.49 seconds; the 11 warnings remain the
+existing concurrent pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

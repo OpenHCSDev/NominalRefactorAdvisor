@@ -577,6 +577,25 @@ def test_exact_finding_cache_chunks_pickles_and_loads_legacy_payloads(
     assert tuple(len(chunk) for chunk in chunks) == (2, 2, 1)
     assert storage.load_finding_payload(cache_path, identity) == payload
 
+    streamed_path = storage.cache_file_path("streamed.pickle")
+    storage.store_finding_chunks_atomic(
+        streamed_path,
+        identity,
+        len(findings),
+        (tuple(findings[:2]), tuple(findings[2:4]), tuple(findings[4:])),
+    )
+    assert storage.load_finding_payload(streamed_path, identity) == payload
+
+    incomplete_path = storage.cache_file_path("incomplete-stream.pickle")
+    with pytest.raises(ValueError, match="did not reach"):
+        storage.store_finding_chunks_atomic(
+            incomplete_path,
+            identity,
+            len(findings) + 1,
+            (tuple(findings[:2]), tuple(findings[2:4]), tuple(findings[4:])),
+        )
+    assert not incomplete_path.exists()
+
     legacy_path = storage.cache_file_path("legacy.pickle")
     with legacy_path.open("wb") as handle:
         pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -4386,20 +4405,68 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         "build_compact_semantic_mirror_resolution",
         tracked_resolution,
     )
-    assert detector._findings_from_compact_projection_groups(groups, config) == (
-        detector._collect_findings_from_graph(legacy_graph, list(modules), config)
+    expected_findings = detector._collect_findings_from_graph(
+        legacy_graph,
+        list(modules),
+        config,
+    )
+    assert (
+        detector._findings_from_compact_projection_groups(
+            groups,
+            config,
+        )
+        == expected_findings
     )
     assert released_edge_refs
     assert all(edge_ref() is None for edge_ref in released_edge_refs)
+
+    class_index = base_detectors.compact_class_index_from_projection_groups(
+        groups,
+        config,
+    )
+    finding_stream = detector._stream_findings_from_compact_projection_groups_context(
+        groups,
+        class_index,
+        config,
+    )
+    chunks = tuple(finding_stream.chunks)
+    assert finding_stream.finding_count == len(expected_findings)
+    assert all(
+        0 < len(chunk) <= detector.compact_finding_chunk_size for chunk in chunks
+    )
+    assert [finding for chunk in chunks for finding in chunk] == expected_findings
+    assert all(edge_ref() is None for edge_ref in released_edge_refs)
+
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
         (type(detector),),
         use_parse_cache=False,
     )
     assert accumulator.projection_count == 2
-    assert accumulator.findings_by_detector(config)[type(detector)] == (
-        detector._collect_findings_from_graph(legacy_graph, list(modules), config)
+    assert accumulator.findings_by_detector(config)[type(detector)] == expected_findings
+
+    def unexpected_retained_findings(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("eager exact consumption must use the finding stream")
+
+    monkeypatch.setattr(
+        semantic_descent_detectors.SemanticMirrorWithoutDescentDetector,
+        "_findings_from_compact_projection_groups_context",
+        unexpected_retained_findings,
     )
+    consumed_streams: list[object] = []
+    analysis_module._compact_findings_by_detector(
+        (type(detector),),
+        groups,
+        config,
+        finding_consumer=lambda _detector_type, findings: consumed_streams.append(
+            findings
+        ),
+        retain_findings=False,
+    )
+    assert len(consumed_streams) == 1
+    assert isinstance(consumed_streams[0], base_detectors.CompactFindingStream)
+    assert list(consumed_streams[0]) == expected_findings
 
 
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
