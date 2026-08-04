@@ -3308,8 +3308,9 @@ class CompactClassFamilyIndexBuilder:
             for name, symbols in symbols_by_simple_name_lists.items()
             if len(symbols) == 1
         }
-        projections_by_module_name = {
-            projection.module_name: projection for projection in self.projections
+        import_aliases_by_module_name = {
+            projection.module_name: dict(projection.import_aliases)
+            for projection in self.projections
         }
         classes_by_symbol = {
             record.symbol: record.with_resolved_base_symbols(
@@ -3320,7 +3321,7 @@ class CompactClassFamilyIndexBuilder:
                         resolved := self._resolved_symbol(
                             parts,
                             record.module_name,
-                            projections_by_module_name,
+                            import_aliases_by_module_name,
                             known_symbols,
                             unique_symbols_by_name,
                         )
@@ -3353,13 +3354,12 @@ class CompactClassFamilyIndexBuilder:
     def _resolved_symbol(
         parts: tuple[str, ...],
         module_name: str,
-        projections_by_module_name: dict[str, CompactModuleClassProjection],
+        import_aliases_by_module_name: dict[str, dict[str, str]],
         known_symbols: frozenset[str],
         unique_symbols_by_name: dict[str, str],
         allow_unique_unqualified: bool = True,
     ) -> str | None:
-        projection = projections_by_module_name.get(module_name)
-        import_aliases = {} if projection is None else dict(projection.import_aliases)
+        import_aliases = import_aliases_by_module_name.get(module_name, {})
         first, *rest = parts
         alias_target = import_aliases.get(first)
         if alias_target is not None:
@@ -3445,7 +3445,7 @@ def build_compact_class_family_index(
 
 @dataclass(frozen=True)
 class CompactClassReferenceResolver:
-    projections_by_module_name: dict[str, CompactModuleClassProjection]
+    import_aliases_by_module_name: dict[str, dict[str, str]]
     known_symbols: frozenset[str]
     unique_symbols_by_name: dict[str, str]
 
@@ -3456,8 +3456,9 @@ class CompactClassReferenceResolver:
         class_index: CompactClassFamilyIndex,
     ) -> "CompactClassReferenceResolver":
         return cls(
-            projections_by_module_name={
-                projection.module_name: projection for projection in projections
+            import_aliases_by_module_name={
+                projection.module_name: dict(projection.import_aliases)
+                for projection in projections
             },
             known_symbols=frozenset(class_index.classes_by_symbol),
             unique_symbols_by_name={
@@ -3477,7 +3478,7 @@ class CompactClassReferenceResolver:
         return CompactClassFamilyIndexBuilder._resolved_symbol(
             reference_parts,
             module_name,
-            self.projections_by_module_name,
+            self.import_aliases_by_module_name,
             self.known_symbols,
             self.unique_symbols_by_name,
             allow_unique_unqualified,

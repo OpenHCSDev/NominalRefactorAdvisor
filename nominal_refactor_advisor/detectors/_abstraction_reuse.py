@@ -1480,6 +1480,20 @@ def _local_declares_authority_name(
 def _reimplements_authority(
     local: LocalImplementationSignature, authority: AbstractionAuthoritySignature
 ) -> AvailableAbstractionReuseCandidate | None:
+    return _reimplements_authority_from_atoms(
+        local,
+        authority,
+        local.signature.high_signal_atoms,
+        authority.signature.high_signal_atoms,
+    )
+
+
+def _reimplements_authority_from_atoms(
+    local: LocalImplementationSignature,
+    authority: AbstractionAuthoritySignature,
+    local_atoms: frozenset[str],
+    authority_atoms: frozenset[str],
+) -> AvailableAbstractionReuseCandidate | None:
     if local.file_path == authority.file_path:
         return None
     if not _authority_available_to_local(authority, local):
@@ -1489,15 +1503,15 @@ def _reimplements_authority(
         and not _local_declares_authority_name(local, authority)
     ):
         return None
-    overlap = local.signature.high_signal_atoms & authority.signature.high_signal_atoms
+    overlap = local_atoms & authority_atoms
     if len(overlap) < _MIN_OVERLAP_ATOMS:
         return None
     authority_coverage = len(overlap) / max(
-        len(authority.signature.high_signal_atoms), 1
+        len(authority_atoms), 1
     )
     if authority_coverage < _MIN_AUTHORITY_COVERAGE:
         return None
-    local_coverage = len(overlap) / max(len(local.signature.high_signal_atoms), 1)
+    local_coverage = len(overlap) / max(len(local_atoms), 1)
     if local_coverage < _MIN_LOCAL_COVERAGE:
         return None
     structural_overlap = _structural_overlap(overlap)
@@ -1532,12 +1546,46 @@ def _available_abstraction_reuse_candidates_from_signatures(
 ) -> tuple[AvailableAbstractionReuseCandidate, ...]:
     if not authorities:
         return ()
+    authority_tuple = tuple(authorities)
+    authority_atoms = tuple(
+        authority.signature.high_signal_atoms for authority in authority_tuple
+    )
+    authority_indexes_by_name: dict[str, list[int]] = defaultdict(list)
+    shared_authority_indexes_by_package: dict[str, list[int]] = defaultdict(list)
+    for authority_index, authority in enumerate(authority_tuple):
+        authority_indexes_by_name[authority.name].append(authority_index)
+        if authority.shared_path_authority:
+            shared_authority_indexes_by_package[
+                _top_level_package(authority.module_name)
+            ].append(authority_index)
     candidates_by_local: dict[
         tuple[str, int, str], list[AvailableAbstractionReuseCandidate]
     ] = defaultdict(list)
     for local in local_signatures:
-        for authority in authorities:
-            candidate = _reimplements_authority(local, authority)
+        local_atoms = local.signature.high_signal_atoms
+        available_authority_indexes = {
+            authority_index
+            for imported_name in local.imported_names
+            for authority_index in authority_indexes_by_name.get(imported_name, ())
+        }
+        available_authority_indexes.update(
+            shared_authority_indexes_by_package.get(
+                _top_level_package(local.module_name),
+                (),
+            )
+        )
+        for authority_index in sorted(available_authority_indexes):
+            if (
+                len(local_atoms & authority_atoms[authority_index])
+                < _MIN_OVERLAP_ATOMS
+            ):
+                continue
+            candidate = _reimplements_authority_from_atoms(
+                local,
+                authority_tuple[authority_index],
+                local_atoms,
+                authority_atoms[authority_index],
+            )
             if candidate is not None:
                 candidates_by_local[(local.file_path, local.line, local.symbol)].append(
                     candidate

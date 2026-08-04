@@ -3193,8 +3193,50 @@ def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
             projections
         )
     )
+    authorities = tuple(
+        authority for projection in projections for authority in projection.authorities
+    )
+    local_signatures = tuple(
+        local for projection in projections for local in projection.locals
+    )
+    exhaustive_candidates = []
+    for local in local_signatures:
+        candidates = tuple(
+            candidate
+            for authority in authorities
+            if (
+                candidate := abstraction_reuse_detectors._reimplements_authority(
+                    local, authority
+                )
+            )
+            is not None
+        )
+        if candidates:
+            exhaustive_candidates.append(
+                sorted(
+                    candidates,
+                    key=lambda candidate: (
+                        -candidate.overlap_score,
+                        candidate.authority.file_path,
+                        candidate.authority.line,
+                        candidate.authority.name,
+                    ),
+                )[0]
+            )
+    exhaustive_candidates = tuple(
+        sorted(
+            exhaustive_candidates,
+            key=lambda candidate: (
+                candidate.local.file_path,
+                candidate.local.line,
+                candidate.local.symbol,
+                candidate.authority.name,
+            ),
+        )
+    )
 
     assert compact_candidates == legacy_candidates
+    assert compact_candidates == exhaustive_candidates
     assert compact_candidates
     config = DetectorConfig()
     assert detector._findings_from_compact_projections(

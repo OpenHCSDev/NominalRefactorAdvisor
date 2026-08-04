@@ -937,6 +937,32 @@ surface modules, makes every detector-local class-index builder fail, and
 asserts that the repository builder runs exactly once.  Checkpoint verification
 passes all 990 tests in 343.83 seconds.
 
+The first complete global-result publisher after this change returned the same
+12 focused findings in 31.50 seconds at 404,608 KB, including 0.77 seconds of
+preparation and 30.69 seconds of analysis.  Relative to the preceding
+report-independent publisher checkpoint, shared class reasoning removed 6.41
+seconds (16.9%) and 10,680 KB from the end-to-end first pass.
+
+## 2026-08-04 indexed abstraction-availability checkpoint
+
+Available-abstraction reuse no longer compares every local implementation with
+every repository authority.  The exact availability predicate already requires
+either an imported authority name or a shared-path authority in the same
+top-level package, so the join now indexes authorities by those coordinates and
+only then evaluates the unchanged five-capability-atom overlap rule.  This is a
+lossless join bound, not a heuristic: an exhaustive synthetic parity gate uses
+the original Cartesian predicate and must return the same best candidates.
+
+DQDock contains 1,720 abstraction authorities and 8,998 local implementation
+signatures.  The former join considered 15,476,560 pairs to return 79
+candidates; the indexed join returns the same 79 in 0.14 seconds instead of
+about 2.07 seconds.  A fresh complete global-result publisher now returns the
+same 12 focused findings in 28.41 seconds at 403,004 KB, with 0.76 seconds of
+preparation and 27.61 seconds of analysis.  That is 25.1% less wall time and
+3.0% less peak memory than the 37.91-second / 415,288-KB publisher before the
+shared-class and indexed-availability checkpoints.
+Checkpoint verification passes all 990 tests in 359.48 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
