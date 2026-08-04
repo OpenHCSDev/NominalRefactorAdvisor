@@ -543,6 +543,7 @@ def test_same_checkout_finding_rebase_reuses_validated_objects(
 def test_exact_finding_cache_chunks_pickles_and_loads_legacy_payloads(
     tmp_path: Path,
 ) -> None:
+    assert AnalysisCacheStorage(tmp_path / "default-cache").finding_chunk_size == 64
     source_path = tmp_path / "module.py"
     source_path.write_text("VALUE = 1\n", encoding="utf-8")
     identity = AnalysisCacheIdentity.from_roots((tmp_path,), DetectorConfig())

@@ -1153,7 +1153,7 @@ class AnalysisCacheStorage:
     """Filesystem storage authority for serialized analysis-cache payloads."""
 
     storage_root: Path
-    finding_chunk_size: int = 128
+    finding_chunk_size: int = 64
 
     def ensure_directory(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)

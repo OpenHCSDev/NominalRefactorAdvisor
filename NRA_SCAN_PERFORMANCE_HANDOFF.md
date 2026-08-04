@@ -1242,6 +1242,32 @@ Every run remains complete across all 252 detectors and returns the unchanged
 lower in peak memory.  Full verification passes all 998 tests in 342.85
 seconds; the 11 warnings remain the existing concurrent pytest cleanup race.
 
+### Tighter finding-shard chunk follow-up
+
+The exact finding-cache writer now limits each independent pickle memo to 64
+findings instead of 128.  Framing, validation, legacy single-pickle loading,
+and the immutable loaded result are unchanged.  A regression pins the default
+bound while the existing custom-size test still verifies chunk sequencing,
+truncation rejection, and legacy compatibility.
+
+Because whole-process RSS is bimodal under the current allocator layout, this
+gate uses contemporaneous five-run medians rather than comparing one new run
+with the earlier checkpoint.  The pushed 128-finding baseline measured
+326,744 KB and 15.558 seconds of internal scan time; the 64-finding candidate
+measured 323,864 KB and 15.623 seconds.  The tighter bound therefore removes
+2,880 KB (0.9%) from median peak RSS for 0.065 seconds (0.4%) of scan time.
+Every run remained exact across all 252 detectors and returned the same 12
+focused findings.
+
+The 5,246-finding semantic shard grows from 9,229,705 to 9,376,806 bytes
+(1.6%) because chunk metadata and shared records repeat more often.  A second
+report target reused the resulting global shards without rebuilding
+projections, returning the same 333 findings with ``partial`` cache status in
+7.30 internal seconds at 129,400 KB.  Relative to the 27.97-second /
+430,908-KB pre-validation run, the new exact median is 39.5% faster and 24.8%
+lower in peak memory.  Full verification passes all 998 tests in 344.23
+seconds; the 11 warnings remain the existing concurrent pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
