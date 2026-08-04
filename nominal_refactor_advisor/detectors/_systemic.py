@@ -25,6 +25,48 @@ from ._helpers import _facade_only_nominal_authority_candidates
 
 
 @dataclass(frozen=True)
+class CompactSpecAxisModuleProjection:
+    families: tuple[SpecAxisFamily, ...]
+
+
+class CompactSpecAxisModuleProjectionFamily(
+    CollectedFamily[CompactSpecAxisModuleProjection]
+):
+    item_type = CompactSpecAxisModuleProjection
+
+    @classmethod
+    def collect(
+        cls, parsed_module: ParsedModule
+    ) -> list[CompactSpecAxisModuleProjection]:
+        del cls
+        return [CompactSpecAxisModuleProjection(_spec_axis_families(parsed_module))]
+
+
+@dataclass(frozen=True)
+class CompactValidateShapeModuleProjection:
+    methods: tuple[ValidateShapeGuardMethodCandidate, ...]
+
+
+class CompactValidateShapeModuleProjectionFamily(
+    CollectedFamily[CompactValidateShapeModuleProjection]
+):
+    item_type = CompactValidateShapeModuleProjection
+
+    @classmethod
+    def collect(
+        cls, parsed_module: ParsedModule
+    ) -> list[CompactValidateShapeModuleProjection]:
+        del cls
+        return [
+            CompactValidateShapeModuleProjection(
+                _validate_shape_guard_method_candidates(
+                    (parsed_module,), min_guard_count=2
+                )
+            )
+        ]
+
+
+@dataclass(frozen=True)
 class _DataclassNamespaceProjection:
     file_path: str
     line: int
@@ -3021,10 +3063,12 @@ class TransportShellTemplateMethodDetector(
 
 
 class CrossModuleSpecAxisAuthorityDetector(
+    CompactModuleProjectionDetectorMixin[CompactSpecAxisModuleProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[
         CrossModuleSpecAxisAuthorityCandidate
-    ]
+    ],
 ):
+    module_projection_family = CompactSpecAxisModuleProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Cross-module spec axis should have one authority",
@@ -3034,6 +3078,19 @@ class CrossModuleSpecAxisAuthorityDetector(
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactSpecAxisModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        candidates = _cross_module_spec_axis_authority_candidates_from_families(
+            tuple(
+                family for projection in projections for family in projection.families
+            ),
+            config,
+        )
+        return self._findings_for_candidates(candidates, config)
 
     def _finding_for_candidate(
         self, authority_candidate: CrossModuleSpecAxisAuthorityCandidate
@@ -4385,10 +4442,12 @@ class AllMissingAxisPredicateDetector(
 
 
 class RepeatedValidateShapeGuardFamilyDetector(
+    CompactModuleProjectionDetectorMixin[CompactValidateShapeModuleProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[
         RepeatedValidateShapeGuardFamilyCandidate
-    ]
+    ],
 ):
+    module_projection_family = CompactValidateShapeModuleProjectionFamily
     candidate_collector = _repeated_validate_shape_guard_candidates_for_modules
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -4399,6 +4458,19 @@ class RepeatedValidateShapeGuardFamilyDetector(
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
         _CLASS_FAMILY_METHOD_ROLE_NORMALIZED_AST_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactValidateShapeModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        candidates = _group_repeated_validate_shape_guard_candidates(
+            tuple(
+                method for projection in projections for method in projection.methods
+            ),
+            config,
+        )
+        return self._findings_for_candidates(candidates, config)
 
     def _finding_for_candidate(
         self, family_candidate: RepeatedValidateShapeGuardFamilyCandidate

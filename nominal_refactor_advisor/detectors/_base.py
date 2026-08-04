@@ -5656,10 +5656,16 @@ def _spec_axis_families(module: ParsedModule) -> tuple[SpecAxisFamily, ...]:
 def _cross_module_spec_axis_authority_candidates(
     modules: Sequence[ParsedModule], config: DetectorConfig
 ) -> tuple[CrossModuleSpecAxisAuthorityCandidate, ...]:
-    del config
-    families = tuple(
-        (family for module in modules for family in _spec_axis_families(module))
+    return _cross_module_spec_axis_authority_candidates_from_families(
+        tuple(family for module in modules for family in _spec_axis_families(module)),
+        config,
     )
+
+
+def _cross_module_spec_axis_authority_candidates_from_families(
+    families: Sequence[SpecAxisFamily], config: DetectorConfig
+) -> tuple[CrossModuleSpecAxisAuthorityCandidate, ...]:
+    del config
     candidates: list[CrossModuleSpecAxisAuthorityCandidate] = []
     for left, right in combinations(families, 2):
         if left.file_path == right.file_path:

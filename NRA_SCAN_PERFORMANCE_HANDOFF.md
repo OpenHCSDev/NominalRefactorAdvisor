@@ -775,6 +775,34 @@ The cache contains 20,875 files and 244,574,920 payload bytes with zero
 zero-byte entries.
 Checkpoint verification passes all 986 tests in 322.26 seconds.
 
+## 2026-08-04 spec-axis and shape-guard projection checkpoint
+
+Cross-module spec-axis authority and repeated validate-shape guard analysis now
+persist their existing per-module semantic records.  Exact scans flatten seven
+spec families and 35 normalized validate-method records, then run the unchanged
+pairwise axis comparison and maximal guard-clique grouping algorithms.
+
+The frozen 919-module DQDock oracle matches exactly: both paths have zero
+spec-axis candidates and the same two validate-shape candidates and findings,
+with matching canonical digests.  The retained-AST pair took 14.71 seconds at
+930,864 KB, including a 2.22-second join.  The uncached bounded pair took 19.52
+seconds at 133,340 KB, an 85.7% peak-memory reduction.  Its post-projection
+grouping took less than one millisecond.
+
+The two families produce 1,838 payloads totaling 1,374,838 bytes; the largest
+is 2,766 bytes, well below the generic 100-KB ceiling.  Isolated cold took
+23.48 seconds at 134,020 KB, while warm took 0.61 seconds at 78,016 KB.
+
+Schema 20 moves the partition to 183 per-module detectors, 66 compact-global
+detectors, and three AST-retaining context-dependent detectors.  The complete
+compact run produced 9,555 findings from 76,752 top-level projections.  Cold
+took 199.22 seconds at 695,136 KB, including 176.58 seconds of projection and
+22.64 seconds of reconstruction.  Warm took 60.69 seconds at 752,704 KB,
+including 39.26 seconds of projection and 21.43 seconds of reconstruction.
+The cache contains 22,713 files and 245,949,440 payload bytes with zero
+zero-byte entries.
+Checkpoint verification passes all 986 tests in 375.78 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
