@@ -421,6 +421,38 @@ reconstruction remains about 8.6 seconds.  The larger observed RSS is 56.6%
 below the controlled 889,100-KB all-at-once parse baseline.  Schema 8 increases
 the complete persistent cache by only 255,691 bytes relative to schema 7.
 
+Five related structural ABC/inheritance optimizers now reconstruct from one
+shared compact context instead of each retaining the repository ASTs and
+rebuilding the same inheritance and method plans.  The projection keeps a
+lightweight row for every relevant direct method so that a short sibling still
+rejects an otherwise matching long-method family exactly.  Eligible long
+methods carry reversible, zlib-compressed normalized skeleton and semantic
+coordinate tuples; class declarations carry only the inheritable assignment
+metadata required by the class-level optimizer.  Coordinate payloads are
+decoded only after statement counts and compressed skeletons match.  A naive
+expanded layout was rejected after its prototype serialized 53,718,261 bytes;
+the accepted representation increases the complete cache by 3,149,364 bytes.
+
+Focused fixtures compare both candidate tuples and complete findings against
+the legacy algorithms, including the short-method poisoning boundary, and
+prove that all five detectors reuse one compact context.  A separate oracle
+over all 919 frozen DQDock modules compared compact and legacy method plans,
+family plans, and all five candidate families exactly.  Every comparison was
+equal, including 57 class-level candidates; that oracle peaked at 1,004,896 KB
+while holding the legacy AST representation.  The collected-family schema is
+version 9, the final suite passes 973 tests, and the partition is now 183
+per-module detectors, 48 compact-global detectors, and 21 AST-retaining
+context-dependent detectors.
+
+DQDock contributes 9,238 optimizer method rows, including the exact short
+method guards, and 8,561 compact declaration rows.  The five migrated
+detectors add 57 findings, producing 542 identical cold/warm findings from the
+same 68,481 top-level projections.  The accepted fresh-cache cold run took
+117.19 seconds at 344,308 KB.  Warm runs took 43.90 seconds at 367,808 KB and
+42.63 seconds at 367,708 KB.  Cold runtime is effectively flat versus schema 8
+while exact compact coverage grows by five detectors; the larger production
+RSS remains 58.7% below the controlled 889,100-KB all-at-once parse baseline.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

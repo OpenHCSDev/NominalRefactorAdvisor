@@ -9,7 +9,9 @@ reliably from the local AST.
 from __future__ import annotations
 
 import ast
+import pickle
 import re
+import zlib
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
@@ -160,6 +162,10 @@ class CompactModuleClassProjection:
     nominal_surface_facts: tuple["CompactNominalSurfaceFact", ...] = ()
     nominal_wrapper_authorities: tuple["CompactNominalWrapperAuthority", ...] = ()
     pass_through_nominal_wrappers: tuple["CompactPassThroughNominalWrapper", ...] = ()
+    abc_optimizer_methods: tuple["CompactABCOptimizerMethod", ...] = ()
+    abc_optimizer_class_declarations: tuple[
+        "CompactABCOptimizerClassDeclaration", ...
+    ] = ()
 
 
 @dataclass(frozen=True)
@@ -206,6 +212,31 @@ class CompactPassThroughNominalWrapper:
     delegate_field_name: str
     delegate_authority_name: str
     forwarded_member_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactABCOptimizerMethod:
+    """Losslessly encoded method facts for global ABC anti-unification."""
+
+    class_symbol: str
+    method_name: str
+    line: int
+    line_count: int
+    statement_count: int
+    skeleton_blob: bytes | None
+    coordinates_blob: bytes | None
+
+
+@dataclass(frozen=True)
+class CompactABCOptimizerClassDeclaration:
+    """Sparse inheritable class metadata used by the ABC optimizer."""
+
+    class_symbol: str
+    name: str
+    signature: str
+    source: str
+    line: int
+    line_count: int
 
 
 @dataclass(frozen=True)
@@ -534,6 +565,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         ) = _compact_autoregister_function_references(parsed_module)
         indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
         (
+            abc_optimizer_methods,
+            abc_optimizer_class_declarations,
+        ) = _compact_abc_optimizer_facts(parsed_module, indexed_class_nodes)
+        (
             nominal_class_first_line_overrides,
             extra_nominal_class_bases,
             nominal_authority_shapes,
@@ -684,6 +719,8 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 nominal_surface_facts=nominal_surface_facts,
                 nominal_wrapper_authorities=nominal_wrapper_authorities,
                 pass_through_nominal_wrappers=pass_through_nominal_wrappers,
+                abc_optimizer_methods=abc_optimizer_methods,
+                abc_optimizer_class_declarations=abc_optimizer_class_declarations,
             )
         ]
 
@@ -1340,6 +1377,223 @@ def _compact_nominal_field_type_map(
                 continue
             typed_fields.setdefault(target.attr, parameter_annotations[value.id])
     return sorted_tuple(typed_fields.items())
+
+
+_COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES = frozenset(
+    {"ABC", "Generic", "Protocol", "object"}
+)
+
+
+class _CompactABCSemanticSkeletonNormalizer(ast.NodeTransformer):
+    def visit_arg(self, node: ast.arg) -> ast.arg:
+        del node
+        return ast.arg(arg="ARG", annotation=None, type_comment=None)
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        return ast.copy_location(ast.Name(id="VAR", ctx=node.ctx), node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        return ast.copy_location(
+            ast.Attribute(
+                value=self.visit(node.value),
+                attr="ATTR",
+                ctx=node.ctx,
+            ),
+            node,
+        )
+
+    def visit_Constant(self, node: ast.Constant) -> ast.AST:
+        return ast.copy_location(ast.Constant(value="CONST"), node)
+
+
+def _compact_abc_optimizer_statement_skeleton(statement: ast.stmt) -> str:
+    normalized = _CompactABCSemanticSkeletonNormalizer().visit(
+        ast.parse(ast.unparse(statement)).body[0]
+    )
+    ast.fix_missing_locations(normalized)
+    return ast.dump(normalized, include_attributes=False)
+
+
+def _compact_abc_optimizer_coordinates(
+    node: ast.AST,
+    path: tuple[object, ...] = (),
+) -> tuple[tuple[tuple[str, ...], str, str], ...]:
+    coordinates: list[tuple[tuple[str, ...], str, str]] = []
+    coordinate_path = tuple(str(item) for item in path)
+    if isinstance(node, ast.Constant):
+        coordinates.append((coordinate_path, "constant", repr(node.value)))
+    elif isinstance(node, ast.Name):
+        coordinates.append((coordinate_path, "name", node.id))
+    elif isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name) and node.value.id == "self":
+            coordinates.append((coordinate_path, "self_attr", node.attr))
+        else:
+            coordinates.append((coordinate_path, "attribute", ast.unparse(node)))
+    elif isinstance(node, ast.Call):
+        coordinates.append(
+            (
+                tuple(str(item) for item in (*path, "func")),
+                "call",
+                ast.unparse(node.func),
+            )
+        )
+    skipped_fields = {"func"} if isinstance(node, ast.Call) else set()
+    for field_name, value in ast.iter_fields(node):
+        if field_name in skipped_fields:
+            continue
+        if isinstance(value, ast.AST):
+            coordinates.extend(
+                _compact_abc_optimizer_coordinates(value, (*path, field_name))
+            )
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, ast.AST):
+                    coordinates.extend(
+                        _compact_abc_optimizer_coordinates(
+                            item,
+                            (*path, field_name, index),
+                        )
+                    )
+    return tuple(coordinates)
+
+
+def _compact_abc_optimizer_blob(value: object) -> bytes:
+    return zlib.compress(
+        pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL),
+        level=9,
+    )
+
+
+def _compact_abc_optimizer_class_is_eligible(node: ast.ClassDef) -> bool:
+    return any(
+        declared_name not in _COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES
+        for base in node.bases
+        if (declared_name := ClassSymbolResolutionAuthority.declared_base_name(base))
+        is not None
+    )
+
+
+def _compact_abc_optimizer_method(
+    class_symbol: str,
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> CompactABCOptimizerMethod:
+    body = _trim_leading_docstring(list(method.body))
+    statement_count = len(body)
+    skeleton_blob: bytes | None = None
+    coordinates_blob: bytes | None = None
+    if statement_count >= 3:
+        skeleton_blob = _compact_abc_optimizer_blob(
+            tuple(
+                _compact_abc_optimizer_statement_skeleton(statement)
+                for statement in body
+            )
+        )
+        coordinates_blob = _compact_abc_optimizer_blob(
+            tuple(
+                coordinate
+                for statement_index, statement in enumerate(body)
+                for coordinate in _compact_abc_optimizer_coordinates(
+                    statement,
+                    ("body", statement_index),
+                )
+            )
+        )
+    return CompactABCOptimizerMethod(
+        class_symbol=class_symbol,
+        method_name=method.name,
+        line=method.lineno,
+        line_count=max(1, (method.end_lineno or method.lineno) - method.lineno + 1),
+        statement_count=statement_count,
+        skeleton_blob=skeleton_blob,
+        coordinates_blob=coordinates_blob,
+    )
+
+
+def _compact_abc_optimizer_class_declaration_metadata(
+    statement: ast.stmt,
+) -> tuple[str, ast.AST | None] | None:
+    if (
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    ):
+        return statement.targets[0].id, None
+    if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+        return statement.target.id, statement.annotation
+    return None
+
+
+def _compact_abc_optimizer_class_declaration(
+    class_symbol: str,
+    statement: ast.stmt,
+) -> CompactABCOptimizerClassDeclaration | None:
+    metadata = _compact_abc_optimizer_class_declaration_metadata(statement)
+    if metadata is None:
+        return None
+    name, annotation = metadata
+    if not (
+        (name.startswith("__") and name.endswith("__") and len(name) > 4)
+        or name.isupper()
+        or (
+            annotation is not None and CLASSVAR_ANNOTATION_AUTHORITY.matches(annotation)
+        )
+    ):
+        return None
+    if isinstance(statement, ast.Assign):
+        signature = (
+            f"assign:{name}:{ast.dump(statement.value, include_attributes=False)}"
+        )
+    elif isinstance(statement, ast.AnnAssign):
+        annotation_signature = ast.dump(statement.annotation, include_attributes=False)
+        value_signature = (
+            ""
+            if statement.value is None
+            else ast.dump(statement.value, include_attributes=False)
+        )
+        signature = f"annassign:{name}:{annotation_signature}:{value_signature}"
+    else:
+        return None
+    return CompactABCOptimizerClassDeclaration(
+        class_symbol=class_symbol,
+        name=name,
+        signature=signature,
+        source=ast.unparse(statement),
+        line=statement.lineno,
+        line_count=max(
+            1,
+            (statement.end_lineno or statement.lineno) - statement.lineno + 1,
+        ),
+    )
+
+
+def _compact_abc_optimizer_facts(
+    parsed_module: ParsedModule,
+    indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
+) -> tuple[
+    tuple[CompactABCOptimizerMethod, ...],
+    tuple[CompactABCOptimizerClassDeclaration, ...],
+]:
+    methods: list[CompactABCOptimizerMethod] = []
+    declarations: list[CompactABCOptimizerClassDeclaration] = []
+    for qualname, node in indexed_class_nodes:
+        class_symbol = f"{parsed_module.module_name}.{qualname}"
+        if _compact_abc_optimizer_class_is_eligible(node):
+            methods.extend(
+                _compact_abc_optimizer_method(class_symbol, statement)
+                for statement in node.body
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            )
+        seen_signatures: set[str] = set()
+        for statement in _trim_leading_docstring(list(node.body)):
+            declaration = _compact_abc_optimizer_class_declaration(
+                class_symbol,
+                statement,
+            )
+            if declaration is None or declaration.signature in seen_signatures:
+                continue
+            seen_signatures.add(declaration.signature)
+            declarations.append(declaration)
+    return tuple(methods), tuple(declarations)
 
 
 def _compact_manual_family_rosters(

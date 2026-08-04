@@ -34,8 +34,10 @@ from ..semantic_match import effect_step_class_family_authority
 from ..impact_ranking import RefactorImpactKey
 
 import io
+import pickle
 import re
 import tokenize
+import zlib
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import lru_cache
@@ -45,6 +47,14 @@ from typing import Callable, ClassVar, TypeAlias, TypeVar
 from ._base import *
 from ._substrate_support import *
 from ._substrate_support import _class_ancestor_name_map
+from ..class_index import (
+    CompactABCOptimizerClassDeclaration,
+    CompactABCOptimizerMethod,
+    CompactClassFamilyIndex,
+    CompactIndexedClass,
+    CompactModuleClassProjection,
+    build_compact_class_family_index,
+)
 from ..taxonomy import LabeledStrEnum
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
@@ -7626,13 +7636,9 @@ _ABCOptimizerClassDeclarationSignaturesByFamily: TypeAlias = dict[
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerMethodGroupSurface:
+class _ABCOptimizerSharedMethodGroup:
     methods: _ABCOptimizerMethods
     shared_statement_count: int
-
-
-@dataclass(frozen=True)
-class _ABCOptimizerSharedMethodGroup(_ABCOptimizerMethodGroupSurface):
     class_count: int
 
 
@@ -7643,9 +7649,8 @@ class _ABCOptimizerProfileResidueContext(ResidueHookNamesCarrier):
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerMethodGroupProfile(
-    _ABCOptimizerMethodGroupSurface, ResidueHookNamesCarrier
-):
+class _ABCOptimizerMethodGroupProfile(ResidueHookNamesCarrier):
+    shared_statement_count: int
     varying_coordinates: tuple[_SemanticCoordinate, ...]
     compression_certificate: CompressionCertificate
 
@@ -7654,7 +7659,6 @@ class _ABCOptimizerMethodGroupProfile(
 class _ABCOptimizerMethodPlan(ClassFamilyWitnessCarrier):
     base_symbol: str
     method_name: str
-    class_methods: _ABCOptimizerClassMethods
     profile: _ABCOptimizerMethodGroupProfile
     line_numbers: tuple[int, ...]
     line_count: int
@@ -8026,7 +8030,6 @@ class ABCOptimizerAuthority:
                     classvar_count=len(context.classvar_names),
                 ),
                 lambda context, certificate: _ABCOptimizerMethodGroupProfile(
-                    methods=context.group.methods,
                     shared_statement_count=context.group.shared_statement_count,
                     varying_coordinates=context.varying_coordinates,
                     classvar_names=context.classvar_names,
@@ -8256,10 +8259,8 @@ def _abc_optimizer_unrelated_autoregister_registry_controls(
         class_index.classes_by_symbol[symbol] for symbol in class_symbols
     )
     if not all(
-        (
-            _abc_optimizer_declares_autoregister_metaclass(indexed_class.node)
-            for indexed_class in indexed_classes
-        )
+        _abc_optimizer_indexed_class_declares_autoregister(indexed_class)
+        for indexed_class in indexed_classes
     ):
         return False
     for symbol in class_symbols:
@@ -8269,6 +8270,17 @@ def _abc_optimizer_unrelated_autoregister_registry_controls(
         ):
             return False
     return True
+
+
+def _abc_optimizer_indexed_class_declares_autoregister(
+    indexed_class: IndexedClass | CompactIndexedClass,
+) -> bool:
+    if isinstance(indexed_class, CompactIndexedClass):
+        return any(
+            name == "AutoRegisterMeta" or name.endswith("AutoRegisterMeta")
+            for name in indexed_class.metaclass_names
+        )
+    return _abc_optimizer_declares_autoregister_metaclass(indexed_class.node)
 
 
 def _abc_optimizer_class_declaration_certificate(
@@ -8462,16 +8474,16 @@ def _abc_optimizer_method_plan(
         return None
     class_names = tuple(indexed_class.simple_name for indexed_class, _ in class_methods)
     file_paths = tuple(indexed_class.file_path for indexed_class, _ in class_methods)
-    line_numbers = tuple(method.lineno for method in profile.methods)
+    methods = tuple(method for _, method in class_methods)
+    line_numbers = tuple(method.lineno for method in methods)
     line_count = sum(
         max(1, (method.end_lineno or method.lineno) - method.lineno + 1)
-        for method in profile.methods
+        for method in methods
     )
     return _ABCOptimizerMethodPlan(
         base_symbol=base_symbol,
         base_name=base_name,
         method_name=method_name,
-        class_methods=class_methods,
         profile=profile,
         class_names=class_names,
         file_paths=file_paths,
@@ -8508,8 +8520,18 @@ def _abc_optimizer_candidate_from_method_plan(
     method_plan: _ABCOptimizerMethodPlan,
     family_plan: _ABCOptimizerFamilyPlan,
 ) -> SemanticOverlapABCOptimizationCandidate:
+    return _abc_optimizer_candidate_from_method_plan_path(
+        str(module.path), method_plan, family_plan
+    )
+
+
+def _abc_optimizer_candidate_from_method_plan_path(
+    file_path: str,
+    method_plan: _ABCOptimizerMethodPlan,
+    family_plan: _ABCOptimizerFamilyPlan,
+) -> SemanticOverlapABCOptimizationCandidate:
     return SemanticOverlapABCOptimizationCandidate(
-        file_path=str(module.path),
+        file_path=file_path,
         line=min(method_plan.line_numbers),
         base_name=method_plan.base_name,
         method_name=method_plan.method_name,
@@ -9226,6 +9248,313 @@ def _abc_optimizer_specific_method_plans(
                 continue
             method_plans.append(method_plan)
     return _abc_optimizer_more_specific_method_plans(method_plans, class_index)
+
+
+def _compact_abc_optimizer_coordinates_from_blob(
+    blob: bytes,
+) -> tuple[_SemanticCoordinate, ...]:
+    coordinates = pickle.loads(zlib.decompress(blob))
+    if not isinstance(coordinates, tuple):
+        raise TypeError("compact ABC optimizer coordinates must decode to a tuple")
+    return coordinates
+
+
+def _compact_abc_optimizer_varying_coordinates(
+    methods: tuple[CompactABCOptimizerMethod, ...],
+) -> tuple[_SemanticCoordinate, ...]:
+    grouped: dict[tuple[tuple[str, ...], str], set[str]] = defaultdict(set)
+    representatives: dict[tuple[tuple[str, ...], str], _SemanticCoordinate] = {}
+    for method in methods:
+        if method.coordinates_blob is None:
+            return ()
+        for path, kind, value in _compact_abc_optimizer_coordinates_from_blob(
+            method.coordinates_blob
+        ):
+            key = (path, kind)
+            grouped[key].add(value)
+            representatives.setdefault(key, (path, kind, value))
+    return tuple(
+        representatives[key]
+        for key, values in sorted(grouped.items(), key=lambda item: item[0])
+        if len(values) >= 2
+    )
+
+
+def _compact_abc_optimizer_method_plan(
+    base_symbol: str,
+    base_name: str,
+    method_name: str,
+    class_methods: tuple[tuple[CompactIndexedClass, CompactABCOptimizerMethod], ...],
+) -> _ABCOptimizerMethodPlan | None:
+    if len(class_methods) < 2:
+        return None
+    methods = tuple(method for _, method in class_methods)
+    statement_counts = {method.statement_count for method in methods}
+    if len(statement_counts) != 1:
+        return None
+    shared_statement_count = next(iter(statement_counts))
+    if shared_statement_count < 3:
+        return None
+    skeletons = {method.skeleton_blob for method in methods}
+    if None in skeletons or len(skeletons) != 1:
+        return None
+    varying_coordinates = _compact_abc_optimizer_varying_coordinates(methods)
+    if not varying_coordinates or len(varying_coordinates) > max(
+        4, shared_statement_count * 2
+    ):
+        return None
+    classvar_names, property_hook_names, behavior_hook_names = (
+        _abc_optimizer_residue_names(method_name, varying_coordinates)
+    )
+    certificate = ABC_OPTIMIZER_AUTHORITY.paid_certificate(
+        class_count=len({indexed_class.symbol for indexed_class, _ in class_methods}),
+        shared_statement_count=shared_statement_count,
+        hook_count=len(property_hook_names) + len(behavior_hook_names),
+        classvar_count=len(classvar_names),
+    )
+    if certificate is None:
+        return None
+    return _ABCOptimizerMethodPlan(
+        base_symbol=base_symbol,
+        base_name=base_name,
+        method_name=method_name,
+        profile=_ABCOptimizerMethodGroupProfile(
+            shared_statement_count=shared_statement_count,
+            varying_coordinates=varying_coordinates,
+            classvar_names=classvar_names,
+            property_hook_names=property_hook_names,
+            behavior_hook_names=behavior_hook_names,
+            compression_certificate=certificate,
+        ),
+        class_names=tuple(
+            indexed_class.simple_name for indexed_class, _ in class_methods
+        ),
+        file_paths=tuple(indexed_class.file_path for indexed_class, _ in class_methods),
+        line_numbers=tuple(method.line for method in methods),
+        line_count=sum(method.line_count for method in methods),
+    )
+
+
+def _compact_abc_optimizer_specific_method_plans(
+    projections: tuple[CompactModuleClassProjection, ...],
+    class_index: CompactClassFamilyIndex,
+) -> tuple[_ABCOptimizerMethodPlan, ...]:
+    methods_by_class: dict[str, dict[str, CompactABCOptimizerMethod]] = defaultdict(
+        dict
+    )
+    for projection in projections:
+        for method in projection.abc_optimizer_methods:
+            methods_by_class[method.class_symbol][method.method_name] = method
+    classes_by_base = _abc_optimizer_classes_by_base(class_index)
+    method_plans: list[_ABCOptimizerMethodPlan] = []
+    for (base_symbol, base_name), indexed_classes in classes_by_base.items():
+        if len(indexed_classes) < 2:
+            continue
+        method_names = sorted_tuple(
+            {
+                method_name
+                for indexed_class in indexed_classes
+                for method_name in methods_by_class.get(indexed_class.symbol, ())
+            }
+        )
+        for method_name in method_names:
+            class_methods = tuple(
+                (indexed_class, method)
+                for indexed_class in indexed_classes
+                if (
+                    method := methods_by_class.get(indexed_class.symbol, {}).get(
+                        method_name
+                    )
+                )
+                is not None
+            )
+            method_plan = _compact_abc_optimizer_method_plan(
+                base_symbol,
+                base_name,
+                method_name,
+                class_methods,
+            )
+            if method_plan is not None:
+                method_plans.append(method_plan)
+    return _abc_optimizer_more_specific_method_plans(method_plans, class_index)
+
+
+def _compact_abc_optimizer_class_level_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    class_index: CompactClassFamilyIndex,
+) -> tuple[ClassLevelInheritanceOptimizationCandidate, ...]:
+    declarations_by_symbol: dict[str, list[CompactABCOptimizerClassDeclaration]] = (
+        defaultdict(list)
+    )
+    for projection in projections:
+        for declaration in projection.abc_optimizer_class_declarations:
+            declarations_by_symbol[declaration.class_symbol].append(declaration)
+    families_by_signature: dict[
+        str,
+        dict[
+            str,
+            tuple[CompactIndexedClass, CompactABCOptimizerClassDeclaration],
+        ],
+    ] = defaultdict(dict)
+    for indexed_class in sorted_tuple(
+        class_index.classes_by_symbol.values(),
+        key=lambda item: (item.file_path, item.line, item.symbol),
+    ):
+        for declaration in declarations_by_symbol.get(indexed_class.symbol, ()):
+            families_by_signature[declaration.signature][indexed_class.symbol] = (
+                indexed_class,
+                declaration,
+            )
+    signatures_by_family = _abc_optimizer_class_declaration_signatures_by_family(
+        families_by_signature
+    )
+    candidates = tuple(
+        candidate
+        for class_symbols, signatures in signatures_by_family.items()
+        if (
+            candidate := _abc_optimizer_class_level_declaration_candidate(
+                class_symbols,
+                sorted_tuple(
+                    signatures,
+                    key=lambda signature: families_by_signature[signature][
+                        class_symbols[0]
+                    ][1].line,
+                ),
+                families_by_signature,
+                class_index,
+            )
+        )
+        is not None
+    )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.base_name,
+            candidate.class_names,
+        ),
+    )
+
+
+def _compact_semantic_overlap_method_candidates(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    family_plans: dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan],
+) -> tuple[SemanticOverlapABCOptimizationCandidate, ...]:
+    candidates: list[SemanticOverlapABCOptimizationCandidate] = []
+    seen: set[_ABCOptimizerCandidateKey] = set()
+    for method_plan in method_plans:
+        family_plan = family_plans[(method_plan.base_symbol, method_plan.class_names)]
+        candidate = _abc_optimizer_candidate_from_method_plan_path(
+            method_plan.file_paths[0], method_plan, family_plan
+        )
+        key = (candidate.base_name, candidate.method_name, candidate.class_names)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.base_name,
+            candidate.method_name,
+        ),
+    )
+
+
+def _compact_abc_optimizer_family_candidates(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    family_plans: dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan],
+    builder: _ABCOptimizerFamilyCandidateBuilder[_ABCOptimizerFamilyCandidateT],
+) -> tuple[_ABCOptimizerFamilyCandidateT, ...]:
+    candidates: list[_ABCOptimizerFamilyCandidateT] = []
+    for family_key, family_plan in family_plans.items():
+        candidate = builder(
+            _abc_optimizer_family_method_plans(method_plans, family_key),
+            family_plan,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return sorted_tuple(
+        candidates,
+        key=ABC_OPTIMIZER_AUTHORITY.family_candidate_sort_key,
+    )
+
+
+def _compact_global_inheritance_candidates(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    family_plans: dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan],
+) -> tuple[GlobalInheritanceOptimizationCandidate, ...]:
+    method_plans_by_base: dict[str, list[_ABCOptimizerMethodPlan]] = defaultdict(list)
+    family_plans_by_base: dict[str, list[_ABCOptimizerFamilyPlan]] = defaultdict(list)
+    for method_plan in method_plans:
+        method_plans_by_base[method_plan.base_name].append(method_plan)
+    for family_plan in family_plans.values():
+        family_plans_by_base[family_plan.base_name].append(family_plan)
+    candidates = tuple(
+        candidate
+        for base_name, base_method_plans in method_plans_by_base.items()
+        if (
+            candidate := _abc_optimizer_global_inheritance_candidate(
+                base_name,
+                tuple(base_method_plans),
+                tuple(family_plans_by_base[base_name]),
+            )
+        )
+        is not None
+    )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.base_name,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class CompactABCOptimizerContext:
+    class_level_candidates: tuple[ClassLevelInheritanceOptimizationCandidate, ...]
+    method_candidates: tuple[SemanticOverlapABCOptimizationCandidate, ...]
+    family_candidates: tuple[SemanticOverlapABCFamilyOptimizationCandidate, ...]
+    global_candidates: tuple[GlobalInheritanceOptimizationCandidate, ...]
+    residue_axis_candidates: tuple[SemanticOverlapABCResidueAxisCatalogCandidate, ...]
+
+
+def _compact_abc_optimizer_context(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> CompactABCOptimizerContext:
+    del config
+    class_index = build_compact_class_family_index(projections)
+    method_plans = _compact_abc_optimizer_specific_method_plans(
+        projections, class_index
+    )
+    family_plans = ABC_OPTIMIZER_AUTHORITY.family_plans(method_plans)
+    return CompactABCOptimizerContext(
+        class_level_candidates=_compact_abc_optimizer_class_level_candidates(
+            projections, class_index
+        ),
+        method_candidates=_compact_semantic_overlap_method_candidates(
+            method_plans, family_plans
+        ),
+        family_candidates=_compact_abc_optimizer_family_candidates(
+            method_plans,
+            family_plans,
+            _abc_optimizer_family_candidate,
+        ),
+        global_candidates=_compact_global_inheritance_candidates(
+            method_plans, family_plans
+        ),
+        residue_axis_candidates=_compact_abc_optimizer_family_candidates(
+            method_plans,
+            family_plans,
+            _abc_optimizer_residue_axis_catalog_candidate,
+        ),
+    )
 
 
 def _semantic_overlap_abc_optimization_candidates_from_modules(

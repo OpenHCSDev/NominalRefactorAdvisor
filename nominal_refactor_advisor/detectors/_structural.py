@@ -14,6 +14,10 @@ from metaclass_registry import AutoRegisterMeta
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
+from ..class_index import (
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
+)
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
     AstTypedEffectStep,
@@ -956,6 +960,70 @@ class ConstantPropertyHookDetector(
         )
 
 
+class _CompactABCOptimizerDetectorBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CrossModuleCollectorCandidateDetector,
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_abc_optimizer_context)
+    compact_candidate_attribute: ClassVar[str]
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_from_compact_context(
+            projections,
+            _compact_abc_optimizer_context(projections, config),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        if not isinstance(context, CompactABCOptimizerContext):
+            raise TypeError("compact ABC optimizer context is unavailable")
+        return self._findings_for_candidates(
+            getattr(context, type(self).compact_candidate_attribute),
+            config,
+        )
+
+
+class _CompactClassLevelInheritanceOptimizationDetectorBase(
+    _CompactABCOptimizerDetectorBase
+):
+    compact_candidate_attribute = "class_level_candidates"
+
+
+class _CompactSemanticOverlapABCOptimizationDetectorBase(
+    _CompactABCOptimizerDetectorBase
+):
+    compact_candidate_attribute = "method_candidates"
+
+
+class _CompactSemanticOverlapABCFamilyOptimizationDetectorBase(
+    _CompactABCOptimizerDetectorBase
+):
+    compact_candidate_attribute = "family_candidates"
+
+
+class _CompactGlobalInheritanceOptimizationDetectorBase(
+    _CompactABCOptimizerDetectorBase
+):
+    compact_candidate_attribute = "global_candidates"
+
+
+class _CompactSemanticOverlapABCResidueAxisCatalogDetectorBase(
+    _CompactABCOptimizerDetectorBase
+):
+    compact_candidate_attribute = "residue_axis_candidates"
+
+
 declare_candidate_rule_detector(
     ClassLevelInheritanceOptimizationCandidate,
     high_confidence_certified_spec(
@@ -983,7 +1051,7 @@ declare_candidate_rule_detector(
     ),
     detector_priority=-9,
     detector_name="ClassLevelInheritanceOptimizationDetector",
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=_CompactClassLevelInheritanceOptimizationDetectorBase,
     candidate_collector=_class_level_inheritance_optimization_candidates_from_modules,
 )
 
@@ -1028,7 +1096,7 @@ declare_candidate_rule_detector(
     ),
     detector_priority=-10,
     detector_name="SemanticOverlapAbcOptimizationDetector",
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=_CompactSemanticOverlapABCOptimizationDetectorBase,
     candidate_collector=_semantic_overlap_abc_optimization_candidates_from_modules,
 )
 
@@ -1064,7 +1132,7 @@ declare_candidate_rule_detector(
     ),
     detector_priority=-11,
     detector_name="SemanticOverlapAbcFamilyOptimizationDetector",
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=_CompactSemanticOverlapABCFamilyOptimizationDetectorBase,
     candidate_collector=_semantic_overlap_abc_family_optimization_candidates,
 )
 
@@ -1104,7 +1172,7 @@ declare_candidate_rule_detector(
     ),
     detector_priority=-12,
     detector_name="GlobalInheritanceOptimizationDetector",
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=_CompactGlobalInheritanceOptimizationDetectorBase,
     candidate_collector=_semantic_overlap_global_inheritance_candidates,
 )
 
@@ -1136,7 +1204,7 @@ declare_candidate_rule_detector(
     ),
     detector_priority=-13,
     detector_name="SemanticOverlapAbcResidueAxisCatalogDetector",
-    detector_base=CrossModuleCollectorCandidateDetector,
+    detector_base=_CompactSemanticOverlapABCResidueAxisCatalogDetectorBase,
     candidate_collector=_semantic_overlap_abc_residue_axis_catalog_candidates,
 )
 
