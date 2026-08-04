@@ -92,6 +92,8 @@ class CompactIndexedClass:
     base_reference_parts: tuple[tuple[str, ...], ...]
     direct_assignment_expressions: tuple[tuple[str, str | None], ...] = ()
     direct_assignment_lines: tuple[tuple[str, int], ...] = ()
+    direct_constant_string_assignments: tuple[tuple[str, str], ...] = ()
+    direct_non_none_assignment_names: tuple[str, ...] = ()
     metaclass_names: tuple[str, ...] = ()
     keyed_family_key_type_name: str | None = None
     is_final: bool = False
@@ -147,6 +149,35 @@ class CompactModuleClassProjection:
     ] = ()
     autoregister_reference_index: "CompactAutoRegisterReferenceIndex | None" = None
     repeated_keyed_family_roots: tuple["CompactRepeatedKeyedFamilyRoot", ...] = ()
+    manual_subclass_roster_roots: tuple["CompactManualSubclassRosterRoot", ...] = ()
+    latent_rosters: tuple["CompactLatentRosterObservation", ...] = ()
+
+
+@dataclass(frozen=True)
+class CompactManualSubclassRegistrationSite:
+    registry_name: str
+    guard_summary: str | None
+    selector_attr_name: str | None
+    requires_concrete_subclass: bool
+
+
+@dataclass(frozen=True)
+class CompactManualSubclassRosterRoot:
+    class_symbol: str
+    init_subclass_line: int
+    registration_sites: tuple[CompactManualSubclassRegistrationSite, ...]
+    consumer_locations: tuple[tuple[str, int, str, str], ...]
+
+
+@dataclass(frozen=True)
+class CompactLatentRosterObservation:
+    file_path: str
+    roster_name: str
+    line: int
+    roster_kind: str
+    projection_role: str
+    member_names: tuple[str, ...]
+    line_count: int
 
 
 @dataclass(frozen=True)
@@ -453,9 +484,22 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 ),
                 direct_assignment_expressions=tuple(
                     (target_name, ast.unparse(value) if value is not None else None)
-                    for target_name, value in _direct_class_assignments(node).items()
+                    for target_name, value in direct_assignments.items()
                 ),
                 direct_assignment_lines=tuple(_direct_class_assignment_lines(node)),
+                direct_constant_string_assignments=tuple(
+                    sorted(
+                        (name, value.value)
+                        for name, value in direct_assignments.items()
+                        if isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)
+                    )
+                ),
+                direct_non_none_assignment_names=sorted_tuple(
+                    name
+                    for name, value in direct_assignments.items()
+                    if not (isinstance(value, ast.Constant) and value.value is None)
+                ),
                 metaclass_names=tuple(
                     terminal_name
                     for keyword in node.keywords
@@ -508,6 +552,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 predicate_selected_methods=_compact_predicate_selected_methods(node),
             )
             for qualname, node in _iter_class_defs(list(parsed_module.module.body))
+            for direct_assignments in (_direct_class_assignments(node),)
         )
         return [
             CompactModuleClassProjection(
@@ -538,6 +583,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 repeated_keyed_family_roots=_compact_repeated_keyed_family_roots(
                     parsed_module
                 ),
+                manual_subclass_roster_roots=_compact_manual_subclass_roster_roots(
+                    parsed_module
+                ),
+                latent_rosters=_compact_latent_roster_observations(parsed_module),
             )
         ]
 
@@ -680,6 +729,405 @@ def _compact_selection_guard_kind(node: ast.AST, match_name: str) -> str | None:
     if isinstance(operator, ast.Eq) and comparator == 0:
         return "empty"
     return None
+
+
+def _compact_manual_subclass_roster_roots(
+    parsed_module: ParsedModule,
+) -> tuple[CompactManualSubclassRosterRoot, ...]:
+    roots: list[CompactManualSubclassRosterRoot] = []
+    file_path = str(parsed_module.path)
+    for qualname, node in _iter_class_defs(list(parsed_module.module.body)):
+        registry_names = _compact_class_list_registry_names(node)
+        if not registry_names:
+            continue
+        init_subclass = next(
+            (
+                statement
+                for statement in node.body
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and statement.name == "__init_subclass__"
+            ),
+            None,
+        )
+        if init_subclass is None:
+            continue
+        sites = _compact_manual_subclass_registration_sites(
+            init_subclass, registry_names, owner_name=node.name
+        )
+        if not sites:
+            continue
+        consumers: list[tuple[str, int, str, str]] = []
+        for registry_name in registry_names:
+            for method in node.body:
+                if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if method.name == "__init_subclass__":
+                    continue
+                if _compact_uses_named_registry(
+                    method,
+                    registry_name=registry_name,
+                    owner_names=frozenset({"cls", "type", node.name}),
+                ):
+                    consumers.append(
+                        (
+                            registry_name,
+                            method.lineno,
+                            f"{node.name}.{method.name}",
+                            file_path,
+                        )
+                    )
+            for function_qualname, function in _named_functions(parsed_module.module):
+                if "." in function_qualname:
+                    continue
+                if _compact_uses_named_registry(
+                    function,
+                    registry_name=registry_name,
+                    owner_names=frozenset({node.name}),
+                ):
+                    consumers.append(
+                        (
+                            registry_name,
+                            function.lineno,
+                            function_qualname,
+                            file_path,
+                        )
+                    )
+        roots.append(
+            CompactManualSubclassRosterRoot(
+                class_symbol=f"{parsed_module.module_name}.{qualname}",
+                init_subclass_line=init_subclass.lineno,
+                registration_sites=sites,
+                consumer_locations=sorted_tuple(
+                    set(consumers), key=lambda item: (item[1], item[2], item[0])
+                ),
+            )
+        )
+    return tuple(roots)
+
+
+def _compact_class_list_registry_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            target_name
+            for statement in node.body
+            for target_name in (
+                (
+                    statement.targets[0].id
+                    if isinstance(statement, ast.Assign)
+                    and len(statement.targets) == 1
+                    and isinstance(statement.targets[0], ast.Name)
+                    and isinstance(statement.value, ast.List)
+                    else (
+                        statement.target.id
+                        if isinstance(statement, ast.AnnAssign)
+                        and isinstance(statement.target, ast.Name)
+                        and isinstance(statement.value, ast.List)
+                        else None
+                    )
+                ),
+            )
+            if target_name is not None
+        }
+    )
+
+
+def _compact_manual_subclass_registration_sites(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    registry_names: tuple[str, ...],
+    *,
+    owner_name: str,
+) -> tuple[CompactManualSubclassRegistrationSite, ...]:
+    sites: dict[str, CompactManualSubclassRegistrationSite] = {}
+
+    def walk_statements(
+        statements: list[ast.stmt], guard_stack: tuple[ast.AST, ...]
+    ) -> None:
+        for statement in statements:
+            if isinstance(statement, ast.If):
+                walk_statements(statement.body, (*guard_stack, statement.test))
+                walk_statements(statement.orelse, guard_stack)
+                continue
+            for subnode in ast.walk(statement):
+                registry_name = _compact_registration_append_registry_name(
+                    subnode, registry_names, owner_name
+                )
+                if registry_name is None:
+                    continue
+                sites[registry_name] = CompactManualSubclassRegistrationSite(
+                    registry_name=registry_name,
+                    guard_summary=(
+                        " and ".join(ast.unparse(guard) for guard in guard_stack)
+                        if guard_stack
+                        else None
+                    ),
+                    selector_attr_name=next(
+                        (
+                            attr_name
+                            for guard in guard_stack
+                            if (attr_name := _compact_guarded_defined_attr_name(guard))
+                            is not None
+                        ),
+                        None,
+                    ),
+                    requires_concrete_subclass=any(
+                        _compact_guard_requires_concrete_subclass(guard)
+                        for guard in guard_stack
+                    ),
+                )
+
+    walk_statements(_trim_leading_docstring(list(method.body)), ())
+    return tuple(sites[name] for name in sorted(sites))
+
+
+def _compact_registration_append_registry_name(
+    node: ast.AST, registry_names: tuple[str, ...], owner_name: str
+) -> str | None:
+    if not (
+        isinstance(node, ast.Call)
+        and len(node.args) == 1
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr in registry_names
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id in {"cls", "type", owner_name}
+        and _compact_looks_like_cls_registration_value(node.args[0])
+    ):
+        return None
+    return node.func.value.attr
+
+
+def _compact_looks_like_cls_registration_value(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "cls"
+    return bool(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "cast"
+        and node.args
+        and _compact_looks_like_cls_registration_value(node.args[-1])
+    )
+
+
+def _compact_class_dict_get_attr_name(node: ast.AST) -> str | None:
+    if not (
+        isinstance(node, ast.Call)
+        and len(node.args) == 1
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "__dict__"
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "cls"
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ):
+        return None
+    return node.args[0].value
+
+
+def _compact_guarded_defined_attr_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Call):
+        return _compact_class_dict_get_attr_name(node)
+    if not (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], (ast.IsNot, ast.NotEq))
+        and len(node.comparators) == 1
+        and isinstance(node.comparators[0], ast.Constant)
+        and node.comparators[0].value is None
+    ):
+        return None
+    return _compact_class_dict_get_attr_name(node.left)
+
+
+def _compact_guard_requires_concrete_subclass(node: ast.AST) -> bool:
+    return bool(
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.Not)
+        and isinstance(node.operand, ast.Call)
+        and isinstance(node.operand.func, ast.Attribute)
+        and isinstance(node.operand.func.value, ast.Name)
+        and node.operand.func.value.id == "inspect"
+        and node.operand.func.attr == "isabstract"
+        and len(node.operand.args) == 1
+        and isinstance(node.operand.args[0], ast.Name)
+        and node.operand.args[0].id == "cls"
+    )
+
+
+def _compact_uses_named_registry(
+    node: ast.AST,
+    *,
+    registry_name: str,
+    owner_names: frozenset[str],
+) -> bool:
+    return any(
+        isinstance(subnode, ast.Attribute)
+        and subnode.attr == registry_name
+        and isinstance(subnode.value, ast.Name)
+        and subnode.value.id in owner_names
+        for subnode in ast.walk(node)
+    )
+
+
+def _compact_latent_roster_observations(
+    parsed_module: ParsedModule,
+) -> tuple[CompactLatentRosterObservation, ...]:
+    rosters: list[CompactLatentRosterObservation] = []
+    for statement in _trim_leading_docstring(list(parsed_module.module.body)):
+        rosters.extend(
+            _compact_collection_rosters_for_statement(parsed_module, statement)
+        )
+        rosters.extend(_compact_inline_mutation_rosters(parsed_module, statement))
+        if isinstance(statement, ast.ClassDef):
+            for class_statement in _trim_leading_docstring(list(statement.body)):
+                rosters.extend(
+                    _compact_collection_rosters_for_statement(
+                        parsed_module,
+                        class_statement,
+                        roster_prefix=statement.name,
+                    )
+                )
+                rosters.extend(
+                    _compact_inline_mutation_rosters(parsed_module, class_statement)
+                )
+    return tuple(rosters)
+
+
+def _compact_assignment_target_value(
+    statement: ast.stmt,
+) -> tuple[ast.AST, ast.AST] | None:
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        return statement.targets[0], statement.value
+    if isinstance(statement, ast.AnnAssign) and statement.value is not None:
+        return statement.target, statement.value
+    return None
+
+
+def _compact_collection_rosters_for_statement(
+    parsed_module: ParsedModule,
+    statement: ast.stmt,
+    *,
+    roster_prefix: str | None = None,
+) -> tuple[CompactLatentRosterObservation, ...]:
+    target_value = _compact_assignment_target_value(statement)
+    if target_value is None or not isinstance(target_value[0], ast.Name):
+        return ()
+    target, value = target_value
+    roster_name = (
+        f"{roster_prefix}.{target.id}" if roster_prefix is not None else target.id
+    )
+    return _compact_latent_observations_for_value(
+        parsed_module,
+        statement,
+        roster_name=roster_name,
+        value=value,
+    )
+
+
+def _compact_latent_member_names(node: ast.AST) -> tuple[str, ...]:
+    if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return ()
+    members: set[str] = set()
+    for element in node.elts:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            members.add(element.value)
+        elif isinstance(element, ast.Call):
+            if callee_name := _terminal_reference_name(element.func):
+                members.add(callee_name)
+        elif member_name := _terminal_reference_name(element):
+            members.add(member_name)
+    return sorted_tuple(members)
+
+
+def _compact_dict_member_names(
+    nodes: list[ast.expr | None],
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            member_name
+            for node in nodes
+            if node is not None
+            for member_name in _compact_latent_member_names(
+                ast.Tuple(elts=[node], ctx=ast.Load())
+            )
+        }
+    )
+
+
+def _compact_latent_observations_for_value(
+    parsed_module: ParsedModule,
+    statement: ast.stmt,
+    *,
+    roster_name: str,
+    value: ast.AST,
+) -> tuple[CompactLatentRosterObservation, ...]:
+    line_count = (statement.end_lineno or statement.lineno) - statement.lineno + 1
+    if isinstance(value, ast.Dict):
+        observations: list[CompactLatentRosterObservation] = []
+        for projection_role, member_names in (
+            ("dict_keys", _compact_dict_member_names(value.keys)),
+            ("dict_values", _compact_dict_member_names(value.values)),
+        ):
+            if len(member_names) >= 2:
+                observations.append(
+                    CompactLatentRosterObservation(
+                        file_path=str(parsed_module.path),
+                        roster_name=roster_name,
+                        line=statement.lineno,
+                        roster_kind=type(value).__name__,
+                        projection_role=projection_role,
+                        member_names=member_names,
+                        line_count=line_count,
+                    )
+                )
+        return tuple(observations)
+    member_names = _compact_latent_member_names(value)
+    if len(member_names) < 2:
+        return ()
+    return (
+        CompactLatentRosterObservation(
+            file_path=str(parsed_module.path),
+            roster_name=roster_name,
+            line=statement.lineno,
+            roster_kind=type(value).__name__,
+            projection_role="collection_members",
+            member_names=member_names,
+            line_count=line_count,
+        ),
+    )
+
+
+def _compact_inline_mutation_rosters(
+    parsed_module: ParsedModule,
+    statement: ast.stmt,
+) -> tuple[CompactLatentRosterObservation, ...]:
+    if not (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and isinstance(statement.value.func, ast.Attribute)
+        and statement.value.func.attr in {"extend", "update"}
+    ):
+        return ()
+    call = statement.value
+    mutation_name = call.func.attr
+    observations: list[CompactLatentRosterObservation] = []
+    for argument in call.args:
+        for observation in _compact_latent_observations_for_value(
+            parsed_module,
+            statement,
+            roster_name=ast.unparse(call.func.value),
+            value=argument,
+        ):
+            observations.append(
+                replace(
+                    observation,
+                    roster_kind=f"inline_{observation.roster_kind}.{mutation_name}",
+                    projection_role=f"{mutation_name}_{observation.projection_role}",
+                )
+            )
+    return tuple(observations)
 
 
 def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:

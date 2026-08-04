@@ -28,6 +28,8 @@ from ..class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
+    CompactLatentRosterObservation,
+    CompactManualSubclassRosterRoot,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     IndexedClass,
@@ -5320,10 +5322,12 @@ class ManualClassRegistrationDetector(
 
 
 class ManualConcreteSubclassRosterDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[
         ManualConcreteSubclassRosterCandidate
-    ]
+    ],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual concrete-subclass roster should become a metaclass-registry base",
@@ -5333,6 +5337,35 @@ class ManualConcreteSubclassRosterDetector(
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
         _REGISTRY_POPULATION_CLASS_FAMILY_MANUAL_REGISTRATION_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_manual_concrete_subclass_roster_candidates(
+                projections,
+                _compact_concrete_family_context(projections, config),
+                config,
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        if not isinstance(context, _CompactConcreteFamilyContext):
+            raise TypeError("manual subclass roster compact context is missing")
+        return self._findings_for_candidates(
+            _compact_manual_concrete_subclass_roster_candidates(
+                projections, context, config
+            ),
+            config,
+        )
 
     def _finding_for_candidate(
         self, roster_candidate: ManualConcreteSubclassRosterCandidate
@@ -5400,8 +5433,12 @@ class ManualConcreteSubclassRosterDetector(
 
 
 class LatentImplementationRosterDetector(
-    ConfiguredCrossModuleCollectorCandidateDetector[LatentImplementationRosterCandidate]
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector[
+        LatentImplementationRosterCandidate
+    ],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual implementation enumeration should derive from the ABC registry",
@@ -5411,6 +5448,32 @@ class LatentImplementationRosterDetector(
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
         _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_latent_implementation_roster_candidates(
+                _compact_concrete_family_context(projections, config), config
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        if not isinstance(context, _CompactConcreteFamilyContext):
+            raise TypeError("latent implementation roster compact context is missing")
+        return self._findings_for_candidates(
+            _compact_latent_implementation_roster_candidates(context, config),
+            config,
+        )
 
     def _finding_for_candidate(
         self, roster_candidate: LatentImplementationRosterCandidate
@@ -5493,6 +5556,7 @@ def _compact_concrete_descendants(
 @dataclass(frozen=True)
 class _CompactConcreteFamilyContext:
     class_index: CompactClassFamilyIndex
+    latent_rosters: tuple[CompactLatentRosterObservation, ...]
 
 
 def _compact_concrete_family_context(
@@ -5500,7 +5564,182 @@ def _compact_concrete_family_context(
     config: DetectorConfig,
 ) -> _CompactConcreteFamilyContext:
     del config
-    return _CompactConcreteFamilyContext(build_compact_class_family_index(projections))
+    return _CompactConcreteFamilyContext(
+        build_compact_class_family_index(projections),
+        tuple(
+            roster for projection in projections for roster in projection.latent_rosters
+        ),
+    )
+
+
+ManualConcreteSubclassRosterDetector.compact_shared_context_builder = (
+    _compact_concrete_family_context
+)
+LatentImplementationRosterDetector.compact_shared_context_builder = (
+    _compact_concrete_family_context
+)
+
+
+def _compact_manual_concrete_subclass_roster_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    context: _CompactConcreteFamilyContext,
+    config: DetectorConfig,
+) -> tuple[ManualConcreteSubclassRosterCandidate, ...]:
+    class_index = context.class_index
+    roots_by_symbol: dict[str, CompactManualSubclassRosterRoot] = {
+        root.class_symbol: root
+        for projection in projections
+        for root in projection.manual_subclass_roster_roots
+    }
+    candidates: list[ManualConcreteSubclassRosterCandidate] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        root = roots_by_symbol.get(indexed_class.symbol)
+        if root is None:
+            continue
+        descendants = tuple(
+            descendant
+            for symbol in class_index.descendant_symbols(indexed_class.symbol)
+            if (descendant := class_index.class_for(symbol)) is not None
+        )
+        if len(descendants) < config.min_registration_sites:
+            continue
+        for compact_site in root.registration_sites:
+            consumers = tuple(
+                SourceLocation(file_path, line, symbol)
+                for registry_name, line, symbol, file_path in root.consumer_locations
+                if registry_name == compact_site.registry_name
+            )
+            if not consumers:
+                continue
+            site = _ManualSubclassRegistrationSite(
+                registry_name=compact_site.registry_name,
+                guard_summary=compact_site.guard_summary,
+                selector_attr_name=compact_site.selector_attr_name,
+                requires_concrete_subclass=compact_site.requires_concrete_subclass,
+            )
+            if site.selector_attr_name is not None:
+                registered_descendants = tuple(
+                    descendant
+                    for descendant in descendants
+                    if site.selector_attr_name
+                    in descendant.direct_non_none_assignment_names
+                )
+            elif site.requires_concrete_subclass:
+                registered_descendants = tuple(
+                    descendant
+                    for descendant in descendants
+                    if not descendant.is_abstract
+                )
+            else:
+                registered_descendants = descendants
+            if len(registered_descendants) < config.min_registration_sites:
+                continue
+            candidates.append(
+                ManualConcreteSubclassRosterCandidate(
+                    file_path=indexed_class.file_path,
+                    line=root.init_subclass_line,
+                    class_name=_compact_class_display_name(indexed_class, class_index),
+                    registration_site=site,
+                    consumer_locations=consumers,
+                    concrete_class_names=sorted_tuple(
+                        _compact_class_display_name(descendant, class_index)
+                        for descendant in registered_descendants
+                    ),
+                )
+            )
+    return tuple(candidates)
+
+
+def _compact_descendant_key_values(
+    descendants: tuple[CompactIndexedClass, ...], key_attr_name: str
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            value
+            for descendant in descendants
+            for name, value in descendant.direct_constant_string_assignments
+            if name == key_attr_name
+        }
+    )
+
+
+def _compact_matched_latent_roster_key_attr(
+    roster: CompactLatentRosterObservation,
+    descendants: tuple[CompactIndexedClass, ...],
+) -> tuple[str, tuple[float, tuple[str, ...], str | None]] | None:
+    for key_attr_name in _compact_semantic_key_attr_names(descendants):
+        key_values = _compact_descendant_key_values(descendants, key_attr_name)
+        if len(key_values) < 2:
+            continue
+        match = LATENT_ROSTER_PROJECTION_AUTHORITY.match(
+            roster.member_names, key_values, roster.roster_name
+        )
+        if match is not None:
+            return key_attr_name, match
+    return None
+
+
+def _compact_latent_implementation_roster_candidates(
+    context: _CompactConcreteFamilyContext,
+    config: DetectorConfig,
+) -> tuple[LatentImplementationRosterCandidate, ...]:
+    class_index = context.class_index
+    candidates: list[LatentImplementationRosterCandidate] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        if not indexed_class.is_abstract or _compact_family_has_registration_authority(
+            class_index, indexed_class
+        ):
+            continue
+        descendants = _compact_concrete_descendants(class_index, indexed_class)
+        if len(descendants) < max(2, config.min_registration_sites):
+            continue
+        concrete_class_names = sorted_tuple(
+            _compact_class_display_name(descendant, class_index)
+            for descendant in descendants
+        )
+        concrete_simple_names = sorted_tuple(
+            descendant.simple_name for descendant in descendants
+        )
+        for roster in context.latent_rosters:
+            key_attr_name: str | None = None
+            match = LATENT_ROSTER_PROJECTION_AUTHORITY.match(
+                roster.member_names,
+                concrete_class_names,
+                roster.roster_name,
+            ) or LATENT_ROSTER_PROJECTION_AUTHORITY.match(
+                roster.member_names,
+                concrete_simple_names,
+                roster.roster_name,
+            )
+            if match is None:
+                key_match = _compact_matched_latent_roster_key_attr(roster, descendants)
+                if key_match is not None:
+                    key_attr_name, match = key_match
+            if match is None:
+                continue
+            coverage_ratio, missing_member_names, projection_policy_hint = match
+            candidates.append(
+                LatentImplementationRosterCandidate(
+                    file_path=roster.file_path,
+                    line=roster.line,
+                    class_name=_compact_class_display_name(indexed_class, class_index),
+                    roster_name=roster.roster_name,
+                    roster_kind=roster.roster_kind,
+                    roster_member_names=roster.member_names,
+                    concrete_class_names=concrete_class_names,
+                    key_attr_name=key_attr_name,
+                    projection_role=roster.projection_role,
+                    projection_policy_hint=projection_policy_hint,
+                    coverage_ratio=coverage_ratio,
+                    missing_member_names=missing_member_names,
+                    line_count=roster.line_count,
+                )
+            )
+    return tuple(candidates)
 
 
 def _compact_predicate_selected_concrete_family_candidates(

@@ -11,6 +11,7 @@ from nominal_refactor_advisor import cli as cli_module
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.analysis_cache import GlobalModuleContextSignature
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
+from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.deadline import (
     ScanDeadline,
@@ -48,7 +49,7 @@ def test_cross_module_preparation_reuses_exact_candidate_snapshot(
     # Exercise the legacy full-AST candidate snapshot contract. Compact
     # projection detectors intentionally prepare from their persisted family
     # instead of retaining this candidate tuple.
-    detector_type = runtime_detectors.ManualConcreteSubclassRosterDetector
+    detector_type = systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector
     monkeypatch.setattr(detector_type, "_candidate_items", counted_candidates)
     monkeypatch.setattr(detector_type, "_findings_for_candidates", counted_findings)
 

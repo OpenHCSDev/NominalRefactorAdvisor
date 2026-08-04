@@ -304,6 +304,29 @@ Neither newly migrated detector fires on this snapshot.  The paired run took
 KB cold and 374,492 KB warm; the larger value is 57.9% below the controlled
 889,100-KB all-at-once baseline and 7.6% below the prior 32-family warm peak.
 
+Manual concrete-subclass roster and latent implementation-roster analysis now
+also reconstruct from the shared compact class projection.  Manual roots retain
+only normalized ``__init_subclass__`` registration guards, registry consumer
+locations, and exact descendant-filter flags.  Collection rosters retain only
+member names, projection role, source coordinates, and line count; class facts
+add constant-string and non-``None`` assignment summaries for exact key/guard
+matching.  All four concrete-family detectors share one reconstructed
+inheritance graph.  Compact/legacy candidate-equivalence tests and the existing
+shape calibration suite pass.  The collected-family cache schema is bumped to
+version 3 so older cached class records cannot deserialize without the new
+fields.  The full suite passes 966 tests, and the partition is now 183
+per-module detectors, 36 compact-global detectors, and 33 AST-retaining
+context-dependent detectors.
+
+On the same frozen 919-file snapshot, the 36-family run retained the same
+68,481 top-level projections and produced the same 459 cold/warm findings.  The
+new facts comprise zero qualifying manual roots, 858 normalized collection
+rosters, and 6,981 constant-string class assignments; neither added detector
+produces a DQDock finding.  The paired run took 110.13 seconds cold and 35.51
+seconds warm.  Process high-water RSS was 324,564 KB cold and 356,080 KB warm;
+the larger value is 60.0% below the controlled 889,100-KB all-at-once baseline
+and 4.9% below the 34-family warm peak.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

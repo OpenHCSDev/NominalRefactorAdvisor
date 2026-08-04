@@ -2176,6 +2176,63 @@ def test_compact_concrete_family_candidates_match_legacy_ast_candidates(
     )
 
 
+def test_compact_roster_candidates_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "base.py").write_text(
+        "from abc import ABC, abstractmethod\n"
+        "\n"
+        "class RoutedRequest(ABC):\n"
+        "    route_name = None\n"
+        "    _registered_types = []\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        if cls.__dict__.get('route_name') is not None:\n"
+        "            cls._registered_types.append(cls)\n"
+        "    @classmethod\n"
+        "    def concrete_types(cls): return tuple(cls._registered_types)\n"
+        "\n"
+        "class Exporter(ABC):\n"
+        "    @abstractmethod\n"
+        "    def emit(self, rows): ...\n"
+        "\n"
+        "EXPORT_FORMATS = ('csv', 'json')\n",
+        encoding="utf-8",
+    )
+    (package_root / "implementations.py").write_text(
+        "from .base import Exporter, RoutedRequest\n"
+        "\n"
+        "class DirectRequest(RoutedRequest): route_name = 'direct'\n"
+        "class GuidedRequest(RoutedRequest): route_name = 'guided'\n"
+        "class CsvExporter(Exporter):\n"
+        "    format = 'csv'\n"
+        "    def emit(self, rows): return rows\n"
+        "class JsonExporter(Exporter):\n"
+        "    format = 'json'\n"
+        "    def emit(self, rows): return rows\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    projections = runtime_detectors.ManualConcreteSubclassRosterDetector.compact_module_projections(
+        modules
+    )
+    context = runtime_detectors._compact_concrete_family_context(projections, config)
+
+    assert runtime_detectors._compact_manual_concrete_subclass_roster_candidates(
+        projections, context, config
+    ) == runtime_detectors._manual_concrete_subclass_roster_candidates(
+        list(modules), config
+    )
+    assert runtime_detectors._compact_latent_implementation_roster_candidates(
+        context, config
+    ) == runtime_detectors._latent_implementation_roster_candidates(
+        list(modules), config
+    )
+
+
 def test_concrete_family_detectors_share_one_compact_graph_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2184,6 +2241,8 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     package_root.mkdir()
     (package_root / "mod.py").write_text("class Root: pass\n", encoding="utf-8")
     detector_types = (
+        runtime_detectors.ManualConcreteSubclassRosterDetector,
+        runtime_detectors.LatentImplementationRosterDetector,
         runtime_detectors.PredicateSelectedConcreteFamilyDetector,
         runtime_detectors.ParallelMirroredLeafFamilyDetector,
     )
@@ -2310,8 +2369,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.ParallelMirroredLeafFamilyDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 34
-    assert len(partition.ast_retaining_context_detector_types) == 35
+    assert runtime_detectors.ManualConcreteSubclassRosterDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.LatentImplementationRosterDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 36
+    assert len(partition.ast_retaining_context_detector_types) == 33
     assert len(partition.per_module_detector_types) == 183
 
 
