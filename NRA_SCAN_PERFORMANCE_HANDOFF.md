@@ -631,6 +631,40 @@ more than schema 14, and both integrity audits found zero zero-byte entries.
 Compared with schema 14, the warm total grows by only 1.86 seconds while
 performing 1,119 additional exact finding reconstructions.
 
+## 2026-08-04 nominal-bypass projection checkpoint
+
+ABC-polymorphism bypass and algebraic variant-method-family analysis now share
+one AST-free per-module projection.  It retains concrete-dispatch scatters,
+cross-class method templates, wrapper chains, cancelable product-composition
+signals, and variant-method surfaces; the bypass detector joins those facts to
+the existing complete compact inheritance graph.  Composition target IDs are
+projected from the live module AST and the same stable source-index geometry,
+so the compact path preserves related evidence without reparsing source text.
+
+The frozen 919-module DQDock oracle matched both legacy bypass findings and its
+zero variant-family findings object-for-object.  It also matched all 16 raw
+``isinstance`` scatter candidates.  A relevance prepass reduced scatter
+projection from 9.57 to 2.38 seconds while preserving the legacy repeated-walk
+attribution and ordering for every function that can contribute.  The complete
+new family takes about 11.2 seconds when all repository ASTs are already live.
+
+In isolation, the migrated pair completed from a bounded stream at 193,880 KB
+peak, versus 1,888,896 KB for the retained-AST legacy equivalence run, an 89.7%
+reduction.  The isolated wall times are not comparable because the compact
+pair includes module streaming and the shared class projection that the full
+compact scan pays once.  The partition is now 183 per-module detectors, 60
+compact-global detectors, and nine AST-retaining context-dependent detectors.
+
+The accepted schema-16 cache produced 4,228 findings from 72,157 top-level
+projections.  Cold took 162.13 seconds at 460,364 KB, including 146.05 seconds
+of projection and 16.07 seconds of finding reconstruction.  Warm took 51.02
+seconds at 491,604 KB, including 35.49 seconds of projection and 15.53 seconds
+of reconstruction.  The cache contains 18,118 files and 201,188,173 payload
+bytes with zero zero-byte entries.  The new family contributes 919 payloads,
+1,332,603 bytes total, and a 17,476-byte largest module, so the generic 100-KB
+per-family ceiling covers the entire corpus.
+Checkpoint verification passes all 983 tests in 340.19 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

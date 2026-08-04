@@ -3348,6 +3348,130 @@ def test_compact_role_surface_projection_matches_both_legacy_global_joins(
     ] == case_detector._findings_for_candidates(legacy_case_candidates, config)
 
 
+def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text(
+        "from abc import ABC\n\n"
+        "class Payload(ABC):\n"
+        "    pass\n\n"
+        "class AlphaPayload(Payload):\n"
+        "    def render_payload(self, request):\n"
+        "        return PayloadResult(request.left, request.right)\n\n"
+        "class BetaPayload(Payload):\n"
+        "    def render_payload(self, request):\n"
+        "        return PayloadResult(request.left, request.right)\n\n"
+        "def render_payload(value, request):\n"
+        "    if isinstance(value, AlphaPayload):\n"
+        "        return value.render_payload(request)\n"
+        "    if isinstance(value, BetaPayload):\n"
+        "        return value.render_payload(request)\n"
+        "    return None\n\n"
+        "class PayloadBuilder:\n"
+        "    def build_alpha_payload(self, request):\n"
+        "        return PayloadResult(request.left, request.right)\n\n"
+        "    def build_beta_payload(self, request):\n"
+        "        return PayloadResult(request.left, request.right)\n\n"
+        "def payload_forward(request):\n"
+        "    return PayloadResult(request.left, request.right)\n\n"
+        "def payload_outer(request):\n"
+        "    return payload_inner(request)\n\n"
+        "def payload_inner(request):\n"
+        "    return request.payload()\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    bypass_detector = (
+        runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector()
+    )
+    variant_detector = runtime_detectors.AlgebraicVariantMethodFamilyDetector()
+    groups = type(bypass_detector).compact_module_projection_groups(modules)
+    nominal_projections = groups[
+        runtime_detectors.CompactNominalBypassModuleProjectionFamily
+    ]
+    class_projections = groups[runtime_detectors.CompactModuleClassProjectionFamily]
+
+    legacy_bypass = runtime_detectors._nominal_authority_bypass_candidates(
+        list(modules)
+    )
+    compact_bypass = (
+        runtime_detectors._nominal_authority_bypass_candidates_from_compact_projections(
+            nominal_projections,
+            class_projections,
+        )
+    )
+    legacy_variants = runtime_detectors._variant_method_family_candidates(list(modules))
+    compact_variants = (
+        runtime_detectors._variant_method_family_candidates_from_compact_projections(
+            nominal_projections
+        )
+    )
+
+    assert len(compact_bypass) == len(legacy_bypass) == 1
+    assert len(compact_variants) == len(legacy_variants) == 1
+    assert compact_bypass[0].composition_signals == (
+        legacy_bypass[0].composition_signals
+    )
+    assert compact_variants[0].composition_signals == (
+        legacy_variants[0].composition_signals
+    )
+    assert bypass_detector._findings_from_compact_projection_groups(
+        groups,
+        config,
+    ) == [
+        bypass_detector._finding_for_candidate(candidate) for candidate in legacy_bypass
+    ]
+    assert variant_detector._findings_from_compact_projections(
+        nominal_projections,
+        config,
+    ) == [
+        variant_detector._finding_for_candidate(candidate)
+        for candidate in legacy_variants
+    ]
+
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        (type(bypass_detector), type(variant_detector)),
+        use_parse_cache=False,
+    )
+    findings = accumulator.findings_by_detector(config)
+    assert accumulator.projection_count == 2
+    assert len(findings[type(bypass_detector)]) == 1
+    assert len(findings[type(variant_detector)]) == 1
+
+
+def test_compact_isinstance_scatter_preserves_nested_function_attribution(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text(
+        "class AlphaPayload:\n"
+        "    pass\n\n"
+        "class BetaPayload:\n"
+        "    pass\n\n"
+        "def outer(value):\n"
+        "    def inner():\n"
+        "        if isinstance(value, AlphaPayload):\n"
+        "            return 'alpha'\n"
+        "        if isinstance(value, BetaPayload):\n"
+        "            return 'beta'\n"
+        "        return None\n"
+        "    return inner()\n",
+        encoding="utf-8",
+    )
+    module = parse_python_modules(package_root, use_parse_cache=False)[0]
+
+    legacy = runtime_detectors._isinstance_family_scatter_candidates(module)
+    compact = runtime_detectors._compact_isinstance_family_scatter_candidates(module)
+
+    assert compact == legacy
+    assert {candidate.qualname for candidate in compact} == {"inner", "outer"}
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -3520,8 +3644,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert role_surface_detectors.GenericRoleCaseTableDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 58
-    assert len(partition.ast_retaining_context_detector_types) == 11
+    assert runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.AlgebraicVariantMethodFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 60
+    assert len(partition.ast_retaining_context_detector_types) == 9
     assert len(partition.per_module_detector_types) == 183
 
 
