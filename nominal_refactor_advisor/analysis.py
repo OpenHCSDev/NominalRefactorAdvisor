@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -25,7 +25,6 @@ from .analysis_cache import (
     AnalysisLatestPointerPolicy,
     ContextualModuleAnalysisCacheIdentity,
     GlobalDetectorAnalysisCacheIdentity,
-    GlobalDetectorFamilyAnalysisCacheIdentity,
     GlobalModuleContextSignature,
     PerModuleAnalysisCacheIdentity,
     SourceFileSignatureCache,
@@ -926,7 +925,15 @@ class BoundedCompactProjectionManifest:
     def findings_by_detector(
         self,
         config: DetectorConfig,
+        *,
+        finding_consumer: Callable[
+            [type[IssueDetector], list[RefactorFinding]], None
+        ]
+        | None = None,
+        retain_findings: bool = True,
     ) -> dict[type[IssueDetector], list[RefactorFinding]]:
+        """Join bounded families, optionally consuming detector shards eagerly."""
+
         detector_types_by_families: dict[
             tuple[type[CollectedFamily], ...], list[type[IssueDetector]]
         ] = {}
@@ -938,7 +945,23 @@ class BoundedCompactProjectionManifest:
             detector_types_by_families.setdefault(families, []).append(detector_type)
 
         findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
+
+        def accept_findings(
+            group_findings: dict[type[IssueDetector], list[RefactorFinding]],
+        ) -> None:
+            if finding_consumer is not None:
+                for detector_type, detector_findings in group_findings.items():
+                    finding_consumer(detector_type, detector_findings)
+            if retain_findings:
+                findings.update(group_findings)
+
         shared_contexts: dict[Hashable, object] = {}
+
+        def release_class_derived_contexts() -> None:
+            for shared_context in tuple(shared_contexts.values()):
+                if isinstance(shared_context, CompactClassRepositoryContext):
+                    shared_context.release_derived()
+
         remaining_groups = set(detector_types_by_families)
         multi_family_groups = tuple(
             families for families in detector_types_by_families if len(families) > 1
@@ -962,7 +985,7 @@ class BoundedCompactProjectionManifest:
             anchor_projections = self.projections_for_family(anchor_family)
             anchor_single_group = (anchor_family,)
             if anchor_single_group in remaining_groups:
-                findings.update(
+                accept_findings(
                     _compact_findings_by_detector(
                         tuple(detector_types_by_families[anchor_single_group]),
                         {anchor_family: anchor_projections},
@@ -971,6 +994,7 @@ class BoundedCompactProjectionManifest:
                     )
                 )
                 remaining_groups.remove(anchor_single_group)
+                release_class_derived_contexts()
             for families in multi_family_groups:
                 if anchor_family not in families or families not in remaining_groups:
                     continue
@@ -982,7 +1006,7 @@ class BoundedCompactProjectionManifest:
                     projections_by_family[family] = family_projections
                     single_group = (family,)
                     if single_group in remaining_groups:
-                        findings.update(
+                        accept_findings(
                             _compact_findings_by_detector(
                                 tuple(detector_types_by_families[single_group]),
                                 {family: family_projections},
@@ -991,7 +1015,7 @@ class BoundedCompactProjectionManifest:
                             )
                         )
                         remaining_groups.remove(single_group)
-                findings.update(
+                accept_findings(
                     _compact_findings_by_detector(
                         tuple(detector_types_by_families[families]),
                         projections_by_family,
@@ -1004,6 +1028,7 @@ class BoundedCompactProjectionManifest:
                 del family_projections
                 release_module_analysis_memory(collect_cycles=False)
             del anchor_projections
+            shared_contexts.clear()
             release_module_analysis_memory(collect_cycles=False)
 
         for families in detector_types_by_families:
@@ -1012,7 +1037,7 @@ class BoundedCompactProjectionManifest:
             projections_by_family = {
                 family: self.projections_for_family(family) for family in families
             }
-            findings.update(
+            accept_findings(
                 _compact_findings_by_detector(
                     tuple(detector_types_by_families[families]),
                     projections_by_family,
@@ -1110,21 +1135,43 @@ def analyze_compact_roots_with_cache(
         source_paths=tuple(source_paths),
     ).cache_identity()
     global_context_signature = global_context_identity.cache_token
-    global_family_identity = (
-        GlobalDetectorFamilyAnalysisCacheIdentity.from_global_context(
+    global_findings: list[RefactorFinding] = []
+    global_cache_hit_count = 0
+    missing_global_detector_types: list[type[IssueDetector]] = []
+    global_identity_by_detector: dict[
+        type[IssueDetector], GlobalDetectorAnalysisCacheIdentity
+    ] = {}
+
+    def extend_report_findings(
+        detector_findings: Iterable[RefactorFinding],
+    ) -> None:
+        if report_scope is None or not report_scope.has_report_filter:
+            global_findings.extend(detector_findings)
+            return
+        global_findings.extend(
+            finding
+            for finding in detector_findings
+            if any(
+                report_scope.includes_report_file_path(item.file_path)
+                for item in finding.evidence
+            )
+        )
+
+    for detector_type in partition.compact_global_detector_types:
+        detector_identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
             config,
-            partition.compact_global_detector_types,
+            detector_type,
             global_context_signature,
             roots,
         )
-    )
-    global_family_lookup = analysis_cache.load(global_family_identity)
-    global_findings = list(global_family_lookup.findings)
-    missing_global_detector_types = (
-        []
-        if global_family_lookup.status is AnalysisCacheStatus.HIT
-        else list(partition.compact_global_detector_types)
-    )
+        global_identity_by_detector[detector_type] = detector_identity
+        detector_lookup = analysis_cache.load(detector_identity)
+        if detector_lookup.status is AnalysisCacheStatus.HIT:
+            global_cache_hit_count += 1
+            extend_report_findings(detector_lookup.findings)
+        else:
+            missing_global_detector_types.append(detector_type)
+        del detector_lookup
 
     projection_manifest = BoundedCompactProjectionManifest(
         tuple(missing_global_detector_types)
@@ -1251,13 +1298,21 @@ def analyze_compact_roots_with_cache(
 
     join_started = perf_counter()
     if missing_global_detector_types:
-        missing_findings_by_detector = projection_manifest.findings_by_detector(config)
-        global_findings = [
-            finding
-            for detector_type in partition.compact_global_detector_types
-            for finding in missing_findings_by_detector[detector_type]
-        ]
-        analysis_cache.store(global_family_identity, global_findings)
+        def consume_global_detector_findings(
+            detector_type: type[IssueDetector],
+            detector_findings: list[RefactorFinding],
+        ) -> None:
+            analysis_cache.store(
+                global_identity_by_detector[detector_type],
+                detector_findings,
+            )
+            extend_report_findings(detector_findings)
+
+        projection_manifest.findings_by_detector(
+            config,
+            finding_consumer=consume_global_detector_findings,
+            retain_findings=False,
+        )
     findings = SortedFindingsAuthority.sort(
         [
             *local_findings,
@@ -1275,7 +1330,7 @@ def analyze_compact_roots_with_cache(
         else (
             AnalysisCacheStatus.PARTIAL
             if local_cache_hit_count
-            or global_family_lookup.status is AnalysisCacheStatus.HIT
+            or global_cache_hit_count
             else AnalysisCacheStatus.MISS
         )
     )

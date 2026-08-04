@@ -33,6 +33,8 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheStatus,
     AnalysisFindingCache,
     DetectorRegistrySignature,
+    GlobalDetectorAnalysisCacheIdentity,
+    GlobalDetectorFamilyAnalysisCacheIdentity,
     SourceFileSignatureCache,
 )
 from nominal_refactor_advisor.ast_tools import (
@@ -1708,6 +1710,64 @@ def test_compact_global_detector_shards_reuse_across_focused_report_targets(
     assert second.cache_status is AnalysisCacheStatus.PARTIAL
     assert second.findings == second_scope.filter_findings(all_findings)
     assert second.projection_count == 0
+
+
+def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "generated.py").write_text(
+        "# generated file\nSEMANTIC_MODE = 'canonical'\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector,
+        structural_detectors.ExportPolicyPredicateDetector,
+    )
+    observed_retain_findings: list[bool] = []
+    observed_consumer: list[object] = []
+    stored_identities: list[object] = []
+    original_join = (
+        analysis_module.BoundedCompactProjectionManifest.findings_by_detector
+    )
+    original_store = AnalysisFindingCache.store
+
+    def observing_join(self, config, **kwargs):
+        observed_retain_findings.append(kwargs["retain_findings"])
+        observed_consumer.append(kwargs["finding_consumer"])
+        return original_join(self, config, **kwargs)
+
+    def observing_store(self, identity, findings, *args, **kwargs):
+        stored_identities.append(identity)
+        return original_store(self, identity, findings, *args, **kwargs)
+
+    monkeypatch.setattr(
+        analysis_module.BoundedCompactProjectionManifest,
+        "findings_by_detector",
+        observing_join,
+    )
+    monkeypatch.setattr(AnalysisFindingCache, "store", observing_store)
+
+    analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=tmp_path / ".nra-cache" / "ast",
+        analysis_cache_dir=tmp_path / ".nra-cache" / "analysis",
+        detector_types=detector_types,
+    )
+
+    assert observed_retain_findings == [False]
+    assert len(observed_consumer) == 1
+    assert callable(observed_consumer[0])
+    assert sum(
+        isinstance(identity, GlobalDetectorAnalysisCacheIdentity)
+        for identity in stored_identities
+    ) == len(detector_types)
+    assert not any(
+        isinstance(identity, GlobalDetectorFamilyAnalysisCacheIdentity)
+        for identity in stored_identities
+    )
 
 
 def test_compact_hierarchy_projection_matches_full_ast_detection(

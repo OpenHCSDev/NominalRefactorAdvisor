@@ -1016,6 +1016,38 @@ repository-global reasoning; no family was sampled, omitted, or reduced to a
 local approximation.  Checkpoint verification passes all 994 tests in 369.28
 seconds; the 11 warnings are the existing concurrent pytest cleanup race.
 
+## 2026-08-04 bounded global-result shard checkpoint
+
+The focused exact path no longer retains every repository-global finding until
+one aggregate cache write.  Phase-level RSS sampling showed 9,564 findings
+alive together at that boundary; the semantic-mirror detector alone contributed
+5,246 intermediate findings and roughly 95 MB of live object growth.  The
+bounded manifest now sends each completed detector result to a consumer, which
+persists one report-independent ``GlobalDetectorAnalysisCacheIdentity`` shard,
+selects any evidence relevant to the current report scope, and releases the
+complete repository result before loading the next projection family.  A
+regression requires this non-retaining consumer mode, one shard per detector,
+and no replacement family aggregate.
+
+The class repository context now also releases single-family derived indexes
+before class-dependent multi-family joins, then releases the raw class context
+after the final such join.  Later independent families no longer inherit the
+class-analysis memory floor.  The class graph itself remains shared while it is
+needed, so semantic descent, role drift, nominal bypass, private-helper, and
+systemic joins retain the same resolved repository lineage.
+
+On the frozen 919-module DQDock snapshot, a fresh exact publisher miss now
+returns the same 12 focused findings from the same 77,671 projections in 17.95
+seconds at 371,472 KB.  Compared with the preceding certified-cache checkpoint,
+that is 56,136 KB (13.1%) less peak RSS and 0.82 seconds faster.  Compared with
+the directly instrumented 27.97-second / 430,908-KB pre-validation run, it is
+35.8% faster and 13.8% lower in peak memory.  A second report target reused all
+global detector shards without loading projections: it returned 333 exact
+focused findings in 7.85 seconds at 129,320 KB with ``partial`` cache status.
+No detector, authority, or context-dependent match is sampled or omitted.
+Checkpoint verification passes all 995 tests in 359.38 seconds; the 11 warnings
+are the existing concurrent pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

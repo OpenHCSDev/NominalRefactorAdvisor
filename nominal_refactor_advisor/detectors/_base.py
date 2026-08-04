@@ -940,6 +940,11 @@ class CompactClassRepositoryContext:
             self._derived[key] = builder()
         return cast(CompactDerivedContextT, self._derived[key])
 
+    def release_derived(self) -> None:
+        """Release single-family indexes after their detector group completes."""
+
+        self._derived.clear()
+
 
 def compact_class_repository_context(
     projections: tuple[CompactModuleClassProjection, ...],
