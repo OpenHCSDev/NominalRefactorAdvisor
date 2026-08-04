@@ -215,6 +215,8 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     assert isinstance(function, ast.FunctionDef)
     ast_tools_module._walk_nodes(module)
     ast_tools_module.walk_function_body_nodes(function)
+    first_signature = abstraction_reuse_detectors._signature_for_node(function)
+    assert first_signature is abstraction_reuse_detectors._signature_for_node(function)
     runtime_detectors.SurfaceFunctionIndex.from_module(module)
 
     cleared_cache_count = release_module_analysis_memory()
@@ -222,6 +224,7 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     assert cleared_cache_count > 0
     assert ast_tools_module._walk_nodes.cache_info().currsize == 0
     assert ast_tools_module.walk_function_body_nodes.cache_info().currsize == 0
+    assert abstraction_reuse_detectors._signature_for_node.cache_info().currsize == 0
     assert runtime_detectors.SurfaceFunctionIndex.from_module.cache_info().currsize == 0
 
 
@@ -4471,6 +4474,30 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     groups = type(detector).compact_module_projection_groups(modules)
     semantic_projections = groups[CompactSemanticModuleProjectionFamily]
     class_projections = groups[runtime_detectors.CompactModuleClassProjectionFamily]
+    legacy_supplements = tuple(
+        supplement
+        for module in modules
+        for qualname, node in semantic_descent_module._semantic_indexed_class_nodes(
+            list(module.module.body)
+        )
+        if (
+            supplement := semantic_descent_module._compact_semantic_class_supplement(
+                module,
+                qualname,
+                node,
+            )
+        )
+        is not None
+    )
+
+    assert (
+        tuple(
+            supplement
+            for projection in semantic_projections
+            for supplement in projection.class_supplements
+        )
+        == legacy_supplements
+    )
 
     legacy_graph = build_semantic_descent_graph(list(modules), use_cache=False)
     compact_graph = build_compact_semantic_descent_graph(

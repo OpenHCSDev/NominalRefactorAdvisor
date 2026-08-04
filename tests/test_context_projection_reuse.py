@@ -123,7 +123,12 @@ def _outer(value: "argument-literal") -> "return-literal":
     """function docs"""
     local = value.member
 
+    if isinstance(value, Owner):
+        local = value._method
+
     def nested():
+        if isinstance(value, Nested):
+            return value.field
         return "nested-literal", local
 
     class Nested:
@@ -171,6 +176,48 @@ class Owner:
         "pkg.sample.Nested": ("field",),
         "pkg.sample.Owner": ("_method",),
     }
+    assert index.role_guarded_accesses == (
+        runtime_detectors._compact_role_guarded_access_facts_for_module(module)
+    )
+    legacy_named_functions = systemic_detectors._iter_named_functions(module)
+    assert len(index.named_functions) == len(legacy_named_functions)
+    for indexed_function, (qualname, function) in zip(
+        index.named_functions,
+        legacy_named_functions,
+        strict=True,
+    ):
+        assert indexed_function.qualname == qualname
+        assert indexed_function.function is function
+        assert indexed_function.isinstance_calls == tuple(
+            node
+            for node in systemic_detectors._walk_nodes(function)
+            if isinstance(node, ast.Call)
+            and len(node.args) == 2
+            and not node.keywords
+            and systemic_detectors._ast_terminal_name(node.func) == "isinstance"
+        )
+    legacy_reference_sites = systemic_detectors._local_symbol_reference_sites((module,))
+    assert index.reference_summaries_by_symbol == tuple(
+        (
+            symbol,
+            len(sites),
+            tuple(sorted({site.symbol for site in sites})),
+        )
+        for symbol, sites in legacy_reference_sites.items()
+    )
+    declarations = systemic_detectors._public_top_level_declarations(module)
+    public_names = frozenset(declarations)
+    assert index.public_declaration_reference_names_by_name == {
+        name: tuple(
+            sorted(
+                systemic_detectors._public_declaration_reference_names(
+                    node,
+                    public_names,
+                )
+            )
+        )
+        for name, node in sorted(declarations.items())
+    }
 
 
 def test_private_reference_facets_share_one_module_projection(
@@ -192,10 +239,10 @@ def test_private_reference_facets_share_one_module_projection(
     original_projection = runtime_detectors._private_reference_module_index
     projection_calls = 0
 
-    def counted_projection(module, module_name, semantic_hash):
+    def counted_projection(module, module_name, semantic_hash, file_path):
         nonlocal projection_calls
         projection_calls += 1
-        return original_projection(module, module_name, semantic_hash)
+        return original_projection(module, module_name, semantic_hash, file_path)
 
     monkeypatch.setattr(
         runtime_detectors,

@@ -1463,6 +1463,41 @@ the accepted class, role, nominal-bypass, and shared-projection follow-ups have
 removed exactly 25.000 preparation seconds (13.9%). Full verification passes
 all 1001 tests in 360.93 seconds.
 
+### Shared module syntax-facet follow-up
+
+The remaining-systemic and role-guarded collectors both needed the same
+module-wide syntax evidence but previously constructed it independently. The
+private-reference module index now publishes four additional bounded facets
+during its existing traversal: role-guarded accesses, named-function
+``isinstance`` calls, reference-site summaries, and public-declaration reference
+edges. The systemic collector consumes those facets directly, and the
+role-guarded collector reuses the same index. Function-relative depth plus
+source traversal order reconstructs the former breadth-first ``ast.walk`` order,
+including the legacy attribution of nested observations to every enclosing
+function, without walking each function again.
+
+The abstraction-reuse collector now memoizes each function capability signature
+until the module-boundary release and computes imported names once per module.
+Its 919-module family time falls from 5.345 to 3.082 seconds (42.3%), with zero
+projection mismatches. Semantic descent now accumulates class supplements in
+the already-active presentation-projection visitor instead of walking every
+class method afterward. Its family time falls from 7.654 to 6.609 seconds
+(13.7%), and all 14,461 class supplements match the legacy independent walk.
+
+Across frozen DQDock, the systemic plus role-guarded pair falls from 18.257 to
+6.858 seconds (62.4%). Every one of the 919 modules matches the legacy
+role-guard, reference-summary, public-declaration-edge, and named-function
+``isinstance`` projections; the resulting paired projection digest is
+``e443808dfa08ead4f4f7e6690807c1f6ef58007fd7efb32b0622b691b82e960e``.
+
+On the identical empty-cache exact gate, preparation falls from 154.835 to
+148.778 seconds (3.9%) and external wall time from 172.758 to 165.160 seconds
+(4.4%). Peak process-tree RSS is 312.2 MiB, all 252 detectors complete, and the
+same 12 findings are returned. Relative to the 179.835-second current-code cold
+baseline, the accepted cold-construction follow-ups have removed 31.057 seconds
+of preparation (17.3%); external wall time has fallen from 195.842 to 165.160
+seconds (15.7%). Full verification passes all 1001 tests in 704.60 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

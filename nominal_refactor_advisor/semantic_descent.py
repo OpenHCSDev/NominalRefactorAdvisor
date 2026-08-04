@@ -19,7 +19,7 @@ import sys
 import tempfile
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
@@ -3840,6 +3840,8 @@ def _compact_semantic_class_supplement(
     parsed_module: ParsedModule,
     qualname: str,
     node: ast.ClassDef,
+    *,
+    constructed_type_names: Iterable[str] | None = None,
 ) -> CompactSemanticClassSupplement | None:
     authority = AutoRegisterClassAuthority(node)
     constant_assignments = tuple(
@@ -3864,22 +3866,25 @@ def _compact_semantic_class_supplement(
             if (terminal_name := authority.terminal_name(value)) is not None
         }
     )
-    constructed_type_names: set[str] = set()
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for child in ast.walk(statement):
-            if isinstance(child, ast.Call):
-                constructed_type_names.update(
-                    PresentationAuthorityConstructionCollector.construction_type_names(
-                        child
+    if constructed_type_names is None:
+        collected_constructed_type_names: set[str] = set()
+        for statement in node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for child in ast.walk(statement):
+                if isinstance(child, ast.Call):
+                    collected_constructed_type_names.update(
+                        PresentationAuthorityConstructionCollector.construction_type_names(
+                            child
+                        )
                     )
-                )
+    else:
+        collected_constructed_type_names = set(constructed_type_names)
     if not (
         constant_assignments
         or annotated_fields
         or declared_type_names
-        or constructed_type_names
+        or collected_constructed_type_names
         or authority.semantic_authority_shape
     ):
         return None
@@ -3888,7 +3893,7 @@ def _compact_semantic_class_supplement(
         constant_assignments=constant_assignments,
         annotated_fields=annotated_fields,
         declared_type_names=declared_type_names,
-        constructed_type_names=sorted_tuple(constructed_type_names),
+        constructed_type_names=sorted_tuple(collected_constructed_type_names),
         autoregister_authority_shape=authority.semantic_authority_shape,
     )
 
@@ -3909,20 +3914,6 @@ class CompactSemanticModuleProjectionFamily(
         del cls
         visitor = _ProjectionVisitor(parsed_module, None)
         visitor.visit(parsed_module.module)
-        supplements = tuple(
-            supplement
-            for qualname, node in _semantic_indexed_class_nodes(
-                list(parsed_module.module.body)
-            )
-            if (
-                supplement := _compact_semantic_class_supplement(
-                    parsed_module,
-                    qualname,
-                    node,
-                )
-            )
-            is not None
-        )
         return [
             CompactSemanticModuleProjection(
                 module_name=parsed_module.module_name,
@@ -3935,7 +3926,7 @@ class CompactSemanticModuleProjectionFamily(
                         item.label,
                     ),
                 ),
-                class_supplements=supplements,
+                class_supplements=visitor.class_supplements,
             )
         ]
 
@@ -4119,6 +4110,17 @@ class ProjectionOwnerConstructionFrame:
     projection_indices: list[int]
 
 
+@dataclass
+class CompactSemanticClassSupplementFrame:
+    """Accumulate class construction facts during the projection traversal."""
+
+    node: ast.ClassDef
+    qualname: str
+    direct_method_ids: frozenset[int]
+    supplement_index: int
+    constructed_type_names: set[str] = field(default_factory=set)
+
+
 class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
     def __init__(
         self,
@@ -4139,8 +4141,57 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
         self.projections: list[PresentationProjection] = []
         self.owner_construction_stack: list[ProjectionOwnerConstructionFrame] = []
+        self.class_supplement_stack: list[CompactSemanticClassSupplementFrame] = []
+        self.active_class_method_frames: list[CompactSemanticClassSupplementFrame] = []
+        self._class_supplements: list[CompactSemanticClassSupplement | None] = []
+
+    @property
+    def class_supplements(self) -> tuple[CompactSemanticClassSupplement, ...]:
+        return tuple(
+            supplement
+            for supplement in self._class_supplements
+            if supplement is not None
+        )
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        frame: CompactSemanticClassSupplementFrame | None = None
+        if not self.function_stack:
+            frame = CompactSemanticClassSupplementFrame(
+                node=node,
+                qualname=".".join((*self.class_stack, node.name)),
+                direct_method_ids=frozenset(
+                    id(statement)
+                    for statement in node.body
+                    if isinstance(
+                        statement,
+                        (ast.FunctionDef, ast.AsyncFunctionDef),
+                    )
+                ),
+                supplement_index=len(self._class_supplements),
+            )
+            self._class_supplements.append(None)
+            self.class_supplement_stack.append(frame)
+        try:
+            super().visit_ClassDef(node)
+        finally:
+            if frame is not None:
+                self.class_supplement_stack.pop()
+                self._class_supplements[frame.supplement_index] = (
+                    _compact_semantic_class_supplement(
+                        self.parsed_module,
+                        frame.qualname,
+                        node,
+                        constructed_type_names=frame.constructed_type_names,
+                    )
+                )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        direct_class_frames = tuple(
+            frame
+            for frame in self.class_supplement_stack
+            if id(node) in frame.direct_method_ids
+        )
+        self.active_class_method_frames.extend(direct_class_frames)
         frame = ProjectionOwnerConstructionFrame(
             constructions=set(),
             projection_indices=[],
@@ -4162,14 +4213,38 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                         key=lambda item: (item.type_name, item.field_tokens),
                     ),
                 )
+            if direct_class_frames:
+                del self.active_class_method_frames[-len(direct_class_frames) :]
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Call(self, node: ast.Call) -> None:
+        self._record_class_construction_type_names(
+            PresentationAuthorityConstructionCollector.construction_type_names(node)
+        )
         self._record_owner_constructions(
             PresentationAuthorityConstructionCollector.constructions_for_call(node)
         )
         self.generic_visit(node)
+
+    def _record_class_construction_type_names(
+        self,
+        type_names: Iterable[str],
+    ) -> None:
+        type_name_tuple = tuple(type_names)
+        if not type_name_tuple:
+            return
+        for frame in self.active_class_method_frames:
+            frame.constructed_type_names.update(type_name_tuple)
+
+    def _record_class_construction_type_names_for_node(self, node: ast.AST) -> None:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                self._record_class_construction_type_names(
+                    PresentationAuthorityConstructionCollector.construction_type_names(
+                        child
+                    )
+                )
 
     def _record_owner_constructions(
         self,
@@ -4296,6 +4371,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             return False
         if len({token.value for token in tokens}) < 2:
             return False
+        self._record_class_construction_type_names_for_node(value)
         self._append_projection(
             node,
             projection_kind,

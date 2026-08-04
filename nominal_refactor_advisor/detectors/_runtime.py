@@ -3706,9 +3706,7 @@ class CompactRoleGuardedSurfaceModuleProjectionFamily(
                 class_surface_members_by_type_name=tuple(
                     sorted(module_index.class_surface_members_by_type_name.items())
                 ),
-                role_guarded_accesses=_compact_role_guarded_access_facts_for_module(
-                    parsed_module
-                ),
+                role_guarded_accesses=module_index.role_guarded_accesses,
             )
         ]
 
@@ -8825,13 +8823,26 @@ class PrivateReferenceIndexedFunction:
 
 
 @dataclass(frozen=True)
+class PrivateReferenceNamedFunction:
+    """One named function plus its shared runtime-membership call projection."""
+
+    qualname: str
+    function: _RuntimeFunctionNode
+    isinstance_calls: tuple[ast.Call, ...]
+
+
+@dataclass(frozen=True)
 class PrivateReferenceModuleIndex:
     """Single-traversal module index shared by private-reference detectors."""
 
     total_counts: Counter[str]
     function_counts_by_id: dict[int, Counter[str]]
     functions: tuple[PrivateReferenceIndexedFunction, ...]
+    named_functions: tuple[PrivateReferenceNamedFunction, ...]
     class_surface_members_by_type_name: dict[str, tuple[str, ...]]
+    role_guarded_accesses: tuple[CompactRoleGuardedAccessFact, ...]
+    reference_summaries_by_symbol: tuple[tuple[str, int, tuple[str, ...]], ...]
+    public_declaration_reference_names_by_name: dict[str, tuple[str, ...]]
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> "PrivateReferenceModuleIndex":
@@ -8839,6 +8850,7 @@ class PrivateReferenceModuleIndex:
             module.module,
             module.module_name,
             module.semantic_hash,
+            str(module.path),
         )
 
 
@@ -8847,6 +8859,7 @@ def _private_reference_module_index(
     module_node: ast.Module,
     module_name: str,
     semantic_hash: str | None,
+    file_path: str,
 ) -> PrivateReferenceModuleIndex:
     surface_functions = SurfaceFunctionIndex.from_module(module_node).functions
     surface_qualnames_by_id = {
@@ -8860,7 +8873,34 @@ def _private_reference_module_index(
         id(function): set() for _, function in surface_functions
     }
     class_surface_members_by_type_name: dict[str, set[str]] = defaultdict(set)
+    public_declaration_names = frozenset(
+        node.name
+        for node in module_node.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not node.name.startswith("_")
+    )
+    reference_sites_by_symbol: dict[str, set[tuple[int, str]]] = defaultdict(set)
+    public_declaration_reference_names: dict[str, set[str]] = defaultdict(set)
+    named_role_functions: list[tuple[int, str]] = []
+    named_function_nodes_by_id: dict[int, _RuntimeFunctionNode] = {}
+    role_observations_by_function_id: dict[
+        int,
+        list[
+            tuple[
+                int,
+                int,
+                int,
+                tuple[tuple[str, str, str], ...],
+                dict[str, tuple[str, ...]],
+            ]
+        ],
+    ] = defaultdict(list)
+    isinstance_calls_by_function_id: dict[
+        int,
+        list[tuple[int, int, ast.Call]],
+    ] = defaultdict(list)
     visited_node_count = 0
+    traversal_ordinal = 0
 
     def symbol_name(node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
@@ -8876,9 +8916,16 @@ def _private_reference_module_index(
         *,
         counted_function_ids: tuple[int, ...] = (),
         reference_function_id: int | None = None,
+        class_stack: tuple[str, ...] = (),
+        active_role_functions: tuple[tuple[int, str, int], ...] = (),
+        depth: int = 0,
+        scope_stack: tuple[str, ...] = (),
+        public_declaration_name: str | None = None,
     ) -> None:
-        nonlocal visited_node_count
+        nonlocal traversal_ordinal, visited_node_count
         visited_node_count += 1
+        traversal_ordinal += 1
+        node_ordinal = traversal_ordinal
         if visited_node_count % 2048 == 0:
             scan_deadline_checkpoint("contextual_private_reference_index")
         name = symbol_name(node)
@@ -8888,9 +8935,65 @@ def _private_reference_module_index(
                 function_counts_by_id[function_id][name] += 1
             if reference_function_id is not None:
                 symbol_references_by_function_id[reference_function_id].add(name)
+        reference_name = (
+            node.id
+            if isinstance(node, ast.Name)
+            else node.attr if isinstance(node, ast.Attribute) else None
+        )
+        if reference_name is not None:
+            scope_symbol = ".".join(scope_stack) if scope_stack else "<module>"
+            reference_sites_by_symbol[reference_name].add((node.lineno, scope_symbol))
+            if (
+                public_declaration_name is not None
+                and reference_name in public_declaration_names
+                and reference_name != public_declaration_name
+            ):
+                public_declaration_reference_names[public_declaration_name].add(
+                    reference_name
+                )
+
+        if isinstance(node, ast.If) and active_role_functions:
+            bindings = _isinstance_guard_bindings(node.test)
+            if bindings:
+                accessed_by_subject = _accessed_members_by_subject_expression(
+                    node.body,
+                    frozenset(subject for subject, _, _ in bindings),
+                )
+                for function_id, _, function_depth in active_role_functions:
+                    role_observations_by_function_id[function_id].append(
+                        (
+                            depth - function_depth,
+                            node_ordinal,
+                            node.lineno,
+                            bindings,
+                            accessed_by_subject,
+                        )
+                    )
+
+        if (
+            isinstance(node, ast.Call)
+            and len(node.args) == 2
+            and not node.keywords
+            and _ast_terminal_name(node.func) == "isinstance"
+        ):
+            for function_id, _, function_depth in active_role_functions:
+                isinstance_calls_by_function_id[function_id].append(
+                    (depth - function_depth, node_ordinal, node)
+                )
 
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             function_id = id(node)
+            named_function_nodes_by_id[function_id] = node
+            qualname = ".".join((*class_stack, node.name))
+            nested_scope_stack = (*scope_stack, node.name)
+            nested_public_declaration_name = public_declaration_name
+            if not scope_stack and node.name in public_declaration_names:
+                nested_public_declaration_name = node.name
+            named_role_functions.append((function_id, qualname))
+            nested_role_functions = (
+                *active_role_functions,
+                (function_id, qualname, depth),
+            )
             is_surface_function = function_id in surface_qualnames_by_id
             nested_counted_ids = (
                 (*counted_function_ids, function_id)
@@ -8905,6 +9008,11 @@ def _private_reference_module_index(
                         visit(
                             statement,
                             counted_function_ids=nested_counted_ids,
+                            class_stack=class_stack,
+                            active_role_functions=nested_role_functions,
+                            depth=depth + 1,
+                            scope_stack=nested_scope_stack,
+                            public_declaration_name=nested_public_declaration_name,
                         )
                     for statement in body:
                         visit(
@@ -8913,12 +9021,22 @@ def _private_reference_module_index(
                             reference_function_id=(
                                 function_id if is_surface_function else None
                             ),
+                            class_stack=class_stack,
+                            active_role_functions=nested_role_functions,
+                            depth=depth + 1,
+                            scope_stack=nested_scope_stack,
+                            public_declaration_name=nested_public_declaration_name,
                         )
                     continue
                 if isinstance(value, ast.AST):
                     visit(
                         value,
                         counted_function_ids=nested_counted_ids,
+                        class_stack=class_stack,
+                        active_role_functions=nested_role_functions,
+                        depth=depth + 1,
+                        scope_stack=nested_scope_stack,
+                        public_declaration_name=nested_public_declaration_name,
                     )
                 elif isinstance(value, list):
                     for item in value:
@@ -8926,10 +9044,21 @@ def _private_reference_module_index(
                             visit(
                                 item,
                                 counted_function_ids=nested_counted_ids,
+                                class_stack=class_stack,
+                                active_role_functions=nested_role_functions,
+                                depth=depth + 1,
+                                scope_stack=nested_scope_stack,
+                                public_declaration_name=(
+                                    nested_public_declaration_name
+                                ),
                             )
             return
 
         if isinstance(node, ast.ClassDef):
+            nested_scope_stack = (*scope_stack, node.name)
+            nested_public_declaration_name = public_declaration_name
+            if not scope_stack and node.name in public_declaration_names:
+                nested_public_declaration_name = node.name
             declared_members = _declared_class_surface_members(node)
             if declared_members:
                 class_surface_members_by_type_name[node.name].update(declared_members)
@@ -8940,6 +9069,11 @@ def _private_reference_module_index(
                 visit(
                     child,
                     counted_function_ids=counted_function_ids,
+                    class_stack=(*class_stack, node.name),
+                    active_role_functions=active_role_functions,
+                    depth=depth + 1,
+                    scope_stack=nested_scope_stack,
+                    public_declaration_name=nested_public_declaration_name,
                 )
             return
 
@@ -8948,6 +9082,11 @@ def _private_reference_module_index(
                 child,
                 counted_function_ids=counted_function_ids,
                 reference_function_id=reference_function_id,
+                class_stack=class_stack,
+                active_role_functions=active_role_functions,
+                depth=depth + 1,
+                scope_stack=scope_stack,
+                public_declaration_name=public_declaration_name,
             )
 
     visit(module_node)
@@ -8971,9 +9110,52 @@ def _private_reference_module_index(
             )
             for qualname, function in surface_functions
         ),
+        named_functions=tuple(
+            PrivateReferenceNamedFunction(
+                qualname=qualname,
+                function=named_function_nodes_by_id[function_id],
+                isinstance_calls=tuple(
+                    call
+                    for _, _, call in sorted(
+                        isinstance_calls_by_function_id.get(function_id, ()),
+                        key=lambda item: (item[0], item[1]),
+                    )
+                ),
+            )
+            for function_id, qualname in named_role_functions
+        ),
         class_surface_members_by_type_name={
             type_name: tuple(sorted(members))
             for type_name, members in class_surface_members_by_type_name.items()
+        },
+        role_guarded_accesses=tuple(
+            CompactRoleGuardedAccessFact(
+                file_path=file_path,
+                line=binding_line,
+                qualname=qualname,
+                subject_expression=subject_expression,
+                role_type_name=type_name,
+                guard_expression=guard_expression,
+                accessed_members=accessed_by_subject.get(subject_expression, ()),
+            )
+            for function_id, qualname in named_role_functions
+            for _, _, binding_line, bindings, accessed_by_subject in sorted(
+                role_observations_by_function_id.get(function_id, ()),
+                key=lambda item: (item[0], item[1]),
+            )
+            for subject_expression, type_name, guard_expression in bindings
+        ),
+        reference_summaries_by_symbol=tuple(
+            (
+                symbol,
+                len(sites),
+                sorted_tuple({scope_symbol for _, scope_symbol in sites}),
+            )
+            for symbol, sites in sorted(reference_sites_by_symbol.items())
+        ),
+        public_declaration_reference_names_by_name={
+            name: sorted_tuple(public_declaration_reference_names.get(name, ()))
+            for name in sorted(public_declaration_names)
         },
     )
 

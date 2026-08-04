@@ -69,19 +69,18 @@ class CompactRemainingSystemicModuleProjection:
 def _compact_concrete_type_case_function_facts(
     module: ParsedModule,
 ) -> tuple[CompactConcreteTypeCaseFunctionFact, ...]:
+    from ._runtime import PrivateReferenceModuleIndex
+
     union_aliases = tuple(sorted(_module_union_type_aliases(module).items()))
     facts: list[CompactConcreteTypeCaseFunctionFact] = []
-    for qualname, function in _iter_named_functions(module):
+    for indexed_function in PrivateReferenceModuleIndex.from_module(
+        module
+    ).named_functions:
+        qualname = indexed_function.qualname
+        function = indexed_function.function
         alias_sources = _top_level_attribute_aliases(function)
         grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
-        for subnode in _walk_nodes(function):
-            if not (
-                isinstance(subnode, ast.Call)
-                and len(subnode.args) == 2
-                and not subnode.keywords
-                and _ast_terminal_name(subnode.func) == "isinstance"
-            ):
-                continue
+        for subnode in indexed_function.isinstance_calls:
             subject_expression = _attribute_family_subject_expression(
                 subnode.args[0], alias_sources=alias_sources
             )
@@ -180,30 +179,24 @@ def _compact_infrastructure_facts(
     bool,
     tuple[tuple[str, int, tuple[str, ...]], ...],
 ]:
+    from ._runtime import PrivateReferenceModuleIndex
+
     declarations = _public_top_level_declarations(module)
-    public_names = frozenset(declarations)
+    module_index = PrivateReferenceModuleIndex.from_module(module)
     declaration_facts = tuple(
         CompactInfrastructureDeclarationFact(
             name=name,
             line=node.lineno,
-            referenced_public_names=sorted_tuple(
-                _public_declaration_reference_names(node, public_names)
+            referenced_public_names=(
+                module_index.public_declaration_reference_names_by_name.get(name, ())
             ),
         )
         for name, node in declarations.items()
     )
-    reference_sites = _local_symbol_reference_sites((module,))
     return (
         declaration_facts,
         _declares_effect_infrastructure(declarations),
-        tuple(
-            (
-                symbol,
-                len(sites),
-                sorted_tuple({site.symbol for site in sites}),
-            )
-            for symbol, sites in reference_sites.items()
-        ),
+        module_index.reference_summaries_by_symbol,
     )
 
 
@@ -872,9 +865,7 @@ def _compact_method_shape_cohorts(
     for left_index, left_name in enumerate(witness_names):
         left_keys = witness_to_fiber_keys[left_name]
         for right_name in witness_names[left_index + 1 :]:
-            shared_keys = sorted_tuple(
-                left_keys & witness_to_fiber_keys[right_name]
-            )
+            shared_keys = sorted_tuple(left_keys & witness_to_fiber_keys[right_name])
             if not shared_keys:
                 continue
             shared_key_set = frozenset(shared_keys)

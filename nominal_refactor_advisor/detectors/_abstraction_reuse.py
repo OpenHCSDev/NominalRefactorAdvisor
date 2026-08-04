@@ -1218,6 +1218,7 @@ class _LocalSignatureCollector(ast.NodeVisitor):
         self.module = module
         self.class_stack: list[str] = []
         self.locals: list[LocalImplementationSignature] = []
+        self.imported_names = frozenset(_imported_local_names(module))
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.class_stack.append(node.name)
@@ -1241,7 +1242,7 @@ class _LocalSignatureCollector(ast.NodeVisitor):
                     line=node.lineno,
                     symbol=symbol,
                     signature=signature,
-                    imported_names=frozenset(_imported_local_names(self.module)),
+                    imported_names=self.imported_names,
                 )
             )
 
@@ -1288,6 +1289,7 @@ def _looks_like_constructor_name(name: str) -> bool:
     return bool(name) and name[:1].isupper()
 
 
+@lru_cache(maxsize=32768)
 def _signature_for_node(node: ast.AST) -> CapabilitySignature:
     visitor = _CapabilityAtomVisitor()
     visitor.visit(node)
@@ -1506,9 +1508,7 @@ def _reimplements_authority_from_atoms(
     overlap = local_atoms & authority_atoms
     if len(overlap) < _MIN_OVERLAP_ATOMS:
         return None
-    authority_coverage = len(overlap) / max(
-        len(authority_atoms), 1
-    )
+    authority_coverage = len(overlap) / max(len(authority_atoms), 1)
     if authority_coverage < _MIN_AUTHORITY_COVERAGE:
         return None
     local_coverage = len(overlap) / max(len(local_atoms), 1)
@@ -1575,10 +1575,7 @@ def _available_abstraction_reuse_candidates_from_signatures(
             )
         )
         for authority_index in sorted(available_authority_indexes):
-            if (
-                len(local_atoms & authority_atoms[authority_index])
-                < _MIN_OVERLAP_ATOMS
-            ):
+            if len(local_atoms & authority_atoms[authority_index]) < _MIN_OVERLAP_ATOMS:
                 continue
             candidate = _reimplements_authority_from_atoms(
                 local,
