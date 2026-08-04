@@ -62,6 +62,7 @@ from nominal_refactor_advisor.detectors import (
 )
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
+from nominal_refactor_advisor.detectors import _surface as surface_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
@@ -2284,7 +2285,16 @@ def test_compact_roster_candidates_match_legacy_ast_candidates(
         "    def emit(self, rows): return rows\n"
         "class JsonExporter(Exporter):\n"
         "    format = 'json'\n"
-        "    def emit(self, rows): return rows\n",
+        "    def emit(self, rows): return rows\n"
+        "\n"
+        "DEFAULT_EXPORTERS = (CsvExporter(), JsonExporter())\n",
+        encoding="utf-8",
+    )
+    (package_root / "a_shadow.py").write_text(
+        "def hidden_duplicate_names():\n"
+        "    class CsvExporter(Local): pass\n"
+        "    class JsonExporter(Local): pass\n"
+        "    return CsvExporter, JsonExporter\n",
         encoding="utf-8",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
@@ -2304,6 +2314,20 @@ def test_compact_roster_candidates_match_legacy_ast_candidates(
     ) == runtime_detectors._latent_implementation_roster_candidates(
         list(modules), config
     )
+    legacy_index = surface_detectors.NominalAuthorityIndex(modules)
+    assert surface_detectors._compact_manual_family_roster_candidates(
+        projections, context
+    ) == tuple(
+        candidate
+        for module in modules
+        for candidate in surface_detectors._manual_family_roster_candidates(
+            module, legacy_index
+        )
+    )
+    manual_family_detector = surface_detectors.ManualFamilyRosterDetector()
+    assert manual_family_detector._findings_from_compact_context(
+        projections, context, config
+    ) == manual_family_detector._collect_findings(list(modules), config)
 
 
 def test_concrete_family_detectors_share_one_compact_graph_context(
@@ -2318,6 +2342,7 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
         runtime_detectors.LatentImplementationRosterDetector,
         runtime_detectors.PredicateSelectedConcreteFamilyDetector,
         runtime_detectors.ParallelMirroredLeafFamilyDetector,
+        surface_detectors.ManualFamilyRosterDetector,
     )
     calls = 0
     original_builder = runtime_detectors._compact_concrete_family_context
@@ -2454,8 +2479,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.RegistryProjectionPolicyAuthorityDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 38
-    assert len(partition.ast_retaining_context_detector_types) == 31
+    assert surface_detectors.ManualFamilyRosterDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 39
+    assert len(partition.ast_retaining_context_detector_types) == 30
     assert len(partition.per_module_detector_types) == 183
 
 

@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from ..class_index import (
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
+)
 from ._base import *
 from ._helpers import *
 from ._helpers import (
@@ -16,6 +20,8 @@ from ._helpers import (
     _manual_family_roster_candidates,
     _nominal_authority_implementation_retreat_candidates,
 )
+from ._runtime import _CompactConcreteFamilyContext, _compact_concrete_family_context
+from ._substrate_support import _IGNORED_ANCESTOR_NAMES, _class_ancestor_name_map
 from ._nominal_authority_surface import (
     _duplicate_nominal_authority_surface_candidates,
 )
@@ -45,7 +51,90 @@ NOMINAL_AUTHORITY_IMPLEMENTATION_RETREAT_METRICS_AUTHORITY = (
 )
 
 
-class ManualFamilyRosterDetector(IssueDetector):
+def _compact_manual_family_roster_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    context: _CompactConcreteFamilyContext,
+) -> tuple[ManualFamilyRosterCandidate, ...]:
+    observations = tuple(
+        observation
+        for projection in projections
+        for observation in projection.manual_family_rosters
+    )
+    if not observations:
+        return ()
+    base_lookup: dict[str, set[str]] = {}
+    for indexed_class in context.class_index.classes_by_symbol.values():
+        base_lookup.setdefault(indexed_class.simple_name, set()).update(
+            base_name.rsplit(".", 1)[-1]
+            for base_name in indexed_class.declared_base_names
+        )
+    for projection in projections:
+        for class_name, base_names in projection.extra_nominal_class_bases:
+            base_lookup.setdefault(class_name, set()).update(base_names)
+    ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
+    candidates: list[ManualFamilyRosterCandidate] = []
+    for observation in observations:
+        candidate_sets: list[set[str]] = []
+        for member_name in observation.member_names:
+            if member_name not in base_lookup:
+                candidate_sets = []
+                break
+            ancestor_names = {
+                name
+                for name in (
+                    *base_lookup[member_name],
+                    *ancestor_names_by_class[member_name],
+                )
+                if name not in _IGNORED_ANCESTOR_NAMES
+            }
+            if not ancestor_names:
+                candidate_sets = []
+                break
+            candidate_sets.append(ancestor_names)
+        if not candidate_sets:
+            continue
+        shared = set.intersection(*candidate_sets)
+        if not shared:
+            continue
+        family_base_name = sorted(
+            shared,
+            key=lambda item: (item.startswith("Issue"), len(item), item),
+        )[0]
+        candidates.append(
+            ManualFamilyRosterCandidate(
+                file_path=observation.file_path,
+                line=observation.line,
+                owner_name=observation.owner_name,
+                member_names=observation.member_names,
+                family_base_name=family_base_name,
+                constructor_style=observation.constructor_style,
+            )
+        )
+    return tuple(candidates)
+
+
+def _compact_first_nominal_class_locations(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> dict[str, SourceLocation]:
+    locations: dict[str, SourceLocation] = {}
+    for projection in projections:
+        module_first_lines: dict[str, int] = {}
+        for indexed_class in projection.classes:
+            module_first_lines.setdefault(indexed_class.simple_name, indexed_class.line)
+        module_first_lines.update(projection.nominal_class_first_line_overrides)
+        for class_name, line in module_first_lines.items():
+            locations.setdefault(
+                class_name,
+                SourceLocation(projection.file_path, line, class_name),
+            )
+    return locations
+
+
+class ManualFamilyRosterDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection], IssueDetector
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_concrete_family_context)
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual subclass roster should become metaclass-registry auto-registration",
@@ -55,47 +144,94 @@ class ManualFamilyRosterDetector(IssueDetector):
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        context = _compact_concrete_family_context(projections, config)
+        return self._compact_findings(projections, context)
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        if not isinstance(context, _CompactConcreteFamilyContext):
+            raise TypeError("manual family roster compact context is missing")
+        return self._compact_findings(projections, context)
+
+    def _compact_findings(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: _CompactConcreteFamilyContext,
+    ) -> list[RefactorFinding]:
+        candidates = _compact_manual_family_roster_candidates(projections, context)
+        if not candidates:
+            return []
+        first_locations = _compact_first_nominal_class_locations(projections)
+        return [
+            self._finding_for_candidate(
+                candidate,
+                tuple(
+                    location
+                    for member_name in candidate.member_names[:4]
+                    if (location := first_locations.get(member_name)) is not None
+                ),
+            )
+            for candidate in candidates
+        ]
+
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
         index = NominalAuthorityIndex(modules)
-        findings: list[RefactorFinding] = []
-        for module in modules:
-            for candidate in _manual_family_roster_candidates(module, index):
-                evidence = [
-                    SourceLocation(
-                        candidate.file_path, candidate.line, candidate.owner_name
-                    )
-                ]
-                evidence.extend(
-                    (
-                        SourceLocation(shape.file_path, shape.line, shape.class_name)
-                        for member_name in candidate.member_names[:4]
-                        for shape in index.shapes_named(member_name)[:1]
-                    )
-                )
-                findings.append(
-                    self.build_finding(
-                        (
-                            f"`{candidate.owner_name}` manually enumerates {len(candidate.member_names)} members of the `{candidate.family_base_name}` family."
-                        ),
-                        tuple(evidence[:6]),
-                        scaffold=(
-                            f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import ClassVar\n\nclass Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(candidate.member_names, registry_key_attr_name='registration_key')}\n    registration_order: ClassVar[int] = 0\n\nordered_types = tuple(\n    sorted(\n        Registered{candidate.family_base_name}.__registry__.values(),\n        key=lambda registered_type: registered_type.registration_order,\n    )\n)"
-                        ),
-                        codemod_patch=(
-                            f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"
-                            f"# Delete the manual {candidate.constructor_style} roster once subclasses are discoverable through `cls.__registry__.values()`."
-                        ),
-                        metrics=RegistrationMetrics.from_class_names(
-                            registration_site_count=len(candidate.member_names),
-                            registry_name=candidate.owner_name,
-                            class_names=candidate.member_names,
-                        ),
-                    )
-                )
-        return findings
+        return [
+            self._finding_for_candidate(
+                candidate,
+                tuple(
+                    SourceLocation(shape.file_path, shape.line, shape.class_name)
+                    for member_name in candidate.member_names[:4]
+                    for shape in index.shapes_named(member_name)[:1]
+                ),
+            )
+            for module in modules
+            for candidate in _manual_family_roster_candidates(module, index)
+        ]
+
+    def _finding_for_candidate(
+        self,
+        candidate: ManualFamilyRosterCandidate,
+        member_evidence: tuple[SourceLocation, ...],
+    ) -> RefactorFinding:
+        return self.build_finding(
+            (
+                f"`{candidate.owner_name}` manually enumerates {len(candidate.member_names)} members of the `{candidate.family_base_name}` family."
+            ),
+            (
+                SourceLocation(
+                    candidate.file_path,
+                    candidate.line,
+                    candidate.owner_name,
+                ),
+                *member_evidence,
+            )[:6],
+            scaffold=(
+                f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import ClassVar\n\nclass Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(candidate.member_names, registry_key_attr_name='registration_key')}\n    registration_order: ClassVar[int] = 0\n\nordered_types = tuple(\n    sorted(\n        Registered{candidate.family_base_name}.__registry__.values(),\n        key=lambda registered_type: registered_type.registration_order,\n    )\n)"
+            ),
+            codemod_patch=(
+                f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"
+                f"# Delete the manual {candidate.constructor_style} roster once subclasses are discoverable through `cls.__registry__.values()`."
+            ),
+            metrics=RegistrationMetrics.from_class_names(
+                registration_site_count=len(candidate.member_names),
+                registry_name=candidate.owner_name,
+                class_names=candidate.member_names,
+            ),
+        )
 
 
 class FragmentedFamilyAuthorityDetector(

@@ -152,6 +152,9 @@ class CompactModuleClassProjection:
     manual_subclass_roster_roots: tuple["CompactManualSubclassRosterRoot", ...] = ()
     latent_rosters: tuple["CompactLatentRosterObservation", ...] = ()
     named_projection_surfaces: tuple["CompactNamedProjectionSurface", ...] = ()
+    manual_family_rosters: tuple["CompactManualFamilyRosterObservation", ...] = ()
+    nominal_class_first_line_overrides: tuple[tuple[str, int], ...] = ()
+    extra_nominal_class_bases: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -191,6 +194,17 @@ class CompactNamedProjectionSurface:
     sequence_references: tuple[tuple[str, str | None], ...] = ()
     dict_key_references: tuple[tuple[str, str | None], ...] = ()
     dict_value_references: tuple[tuple[str, str | None], ...] = ()
+
+
+@dataclass(frozen=True)
+class CompactManualFamilyRosterObservation:
+    """Top-level local class roster before its shared base is resolved."""
+
+    file_path: str
+    line: int
+    owner_name: str
+    member_names: tuple[str, ...]
+    constructor_style: str
 
 
 @dataclass(frozen=True)
@@ -467,6 +481,11 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             autoregister_function_references,
             autoregister_reference_index,
         ) = _compact_autoregister_function_references(parsed_module)
+        indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
+        (
+            nominal_class_first_line_overrides,
+            extra_nominal_class_bases,
+        ) = _compact_nominal_class_scope_facts(parsed_module, indexed_class_nodes)
         classes = tuple(
             CompactIndexedClass(
                 symbol=f"{parsed_module.module_name}.{qualname}",
@@ -564,7 +583,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 ),
                 predicate_selected_methods=_compact_predicate_selected_methods(node),
             )
-            for qualname, node in _iter_class_defs(list(parsed_module.module.body))
+            for qualname, node in indexed_class_nodes
             for direct_assignments in (_direct_class_assignments(node),)
         )
         return [
@@ -603,6 +622,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 named_projection_surfaces=_compact_named_projection_surfaces(
                     parsed_module
                 ),
+                manual_family_rosters=_compact_manual_family_rosters(parsed_module),
+                nominal_class_first_line_overrides=nominal_class_first_line_overrides,
+                extra_nominal_class_bases=extra_nominal_class_bases,
             )
         ]
 
@@ -1210,6 +1232,113 @@ def _compact_projection_reference(
         if parts is None:
             return ast.unparse(node), None
         return ".".join(parts), parts[0]
+    return None
+
+
+def _compact_manual_family_rosters(
+    parsed_module: ParsedModule,
+) -> tuple[CompactManualFamilyRosterObservation, ...]:
+    known_class_names = {
+        node.name
+        for node in ast.walk(parsed_module.module)
+        if isinstance(node, ast.ClassDef)
+    }
+    observations: list[CompactManualFamilyRosterObservation] = []
+    for statement in _trim_leading_docstring(list(parsed_module.module.body)):
+        owner_name: str | None = None
+        source_node: ast.AST | None = None
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = _trim_leading_docstring(list(statement.body))
+            if (
+                len(body) == 1
+                and isinstance(body[0], ast.Return)
+                and body[0].value is not None
+            ):
+                owner_name = statement.name
+                source_node = body[0].value
+        elif (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        ):
+            owner_name = statement.targets[0].id
+            source_node = statement.value
+        if owner_name is None or not isinstance(
+            source_node, (ast.Tuple, ast.List, ast.Set)
+        ):
+            continue
+        members = tuple(
+            _compact_manual_family_roster_member(element, known_class_names)
+            for element in source_node.elts
+        )
+        if len(members) < 2 or any(member is None for member in members):
+            continue
+        member_names, constructor_styles = zip(
+            *(member for member in members if member is not None), strict=True
+        )
+        observations.append(
+            CompactManualFamilyRosterObservation(
+                file_path=str(parsed_module.path),
+                line=statement.lineno,
+                owner_name=owner_name,
+                member_names=member_names,
+                constructor_style="+".join(sorted(set(constructor_styles))),
+            )
+        )
+    return tuple(observations)
+
+
+def _compact_nominal_class_scope_facts(
+    parsed_module: ParsedModule,
+    indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
+) -> tuple[
+    tuple[tuple[str, int], ...],
+    tuple[tuple[str, tuple[str, ...]], ...],
+]:
+    indexed_node_ids = {id(node) for _, node in indexed_class_nodes}
+    indexed_first_nodes: dict[str, ast.ClassDef] = {}
+    for _, node in indexed_class_nodes:
+        indexed_first_nodes.setdefault(node.name, node)
+    first_nodes: dict[str, ast.ClassDef] = {}
+    extra_bases: dict[str, set[str]] = {}
+    for node in ast.walk(parsed_module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        first_nodes.setdefault(node.name, node)
+        if id(node) in indexed_node_ids:
+            continue
+        extra_bases.setdefault(node.name, set()).update(
+            terminal_name
+            for base in node.bases
+            if (terminal_name := _terminal_reference_name(base)) is not None
+        )
+    return (
+        tuple(
+            (class_name, first_node.lineno)
+            for class_name, first_node in first_nodes.items()
+            if first_node is not indexed_first_nodes.get(class_name)
+        ),
+        tuple(
+            (class_name, sorted_tuple(base_names))
+            for class_name, base_names in extra_bases.items()
+        ),
+    )
+
+
+def _compact_manual_family_roster_member(
+    node: ast.AST,
+    known_class_names: set[str],
+) -> tuple[str, str] | None:
+    if isinstance(node, ast.Name) and node.id in known_class_names:
+        return node.id, "class_reference"
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in known_class_names
+        and not node.args
+        and not node.keywords
+    ):
+        return node.func.id, "constructor_call"
     return None
 
 

@@ -349,6 +349,27 @@ the larger value remains 60.0% below the controlled 889,100-KB all-at-once
 baseline and is 172 KB below the 36-family warm peak despite the added exact
 global analysis.
 
+Manual family-roster analysis now also reconstructs from the shared compact
+concrete-family context.  It retains only top-level local class rosters and
+preserves the legacy detector's simple-name ancestry behavior, including
+qualified bases, function-local shadow classes, and first-evidence ordering.
+All five related concrete-family detectors build one compact inheritance graph.
+Candidate and complete-finding equivalence cover both ordinary constructor
+rosters and the function-local shadow edge.  The collected-family schema is
+version 5, the full suite passes 967 tests, and the partition is now 183
+per-module detectors, 39 compact-global detectors, and 30 AST-retaining
+context-dependent detectors.
+
+The same frozen snapshot contributes zero manual family rosters, one sparse
+first-location override, and one extra simple-base row.  The 39-family run
+retained the same 68,481 top-level projections and produced the same 459
+cold/warm findings; the new detector does not fire.  It took 114.60 seconds
+cold and 35.69 seconds warm, with 326,048-KB and 366,512-KB high-water RSS.
+The larger value is 58.8% below the controlled 889,100-KB all-at-once baseline.
+A trial slotted value-object representation reduced cold RSS to 317,688 KB and
+the family cache by about 1.7 MB, but repeated warm peaks rose to about 369.8
+MB; that trial was rejected in favor of the lower warm-memory representation.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
