@@ -1236,6 +1236,33 @@ class DistributedBoundaryUse(DistributedBoundarySurface):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class CompactDistributedBoundaryDeclarationFact:
+    line: int
+    class_name: str
+    field_name: str
+    is_class_field: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CompactDistributedBoundaryUseFact:
+    line: int
+    symbol: str
+    field_name: str
+    use_kind: str
+    context_tokens: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompactDistributedBoundaryModuleProjection:
+    """AST-free declaration and use facts for one module's boundary graph."""
+
+    file_path: str
+    declarations: tuple[CompactDistributedBoundaryDeclarationFact, ...]
+    class_base_names: tuple[tuple[str, tuple[str, ...]], ...]
+    possible_uses: tuple[CompactDistributedBoundaryUseFact, ...]
+
+
 @dataclass(frozen=True)
 class DistributedBoundaryFanoutCandidate:
     field_name: str
@@ -1546,13 +1573,27 @@ def _active_distributed_boundary_declarations(
 
 
 class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
-    def __init__(self, file_path: str, field_names: frozenset[str]) -> None:
+    def __init__(
+        self,
+        file_path: str,
+        field_names: frozenset[str] | None,
+    ) -> None:
         super().__init__()
         self.file_path = file_path
         self.field_names = field_names
         self.node_stack: list[ast.AST] = []
         self.uses: list[DistributedBoundaryUse] = []
         self._seen: set[tuple[str, int, str, str, tuple[str, ...]]] = set()
+
+    def _includes_field_name(self, field_name: str | None) -> bool:
+        if field_name is None:
+            return False
+        if self.field_names is not None:
+            return field_name in self.field_names
+        return (
+            not field_name.startswith("_")
+            and len(_boundary_identifier_tokens(field_name)) >= 2
+        )
 
     def visit(self, node: ast.AST) -> None:
         self.node_stack.append(node)
@@ -1590,7 +1631,7 @@ class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
         )
 
     def visit_keyword(self, node: ast.keyword) -> None:
-        if node.arg in self.field_names:
+        if self._includes_field_name(node.arg):
             call_node = next(
                 (
                     parent
@@ -1613,7 +1654,7 @@ class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        if node.attr in self.field_names:
+        if self._includes_field_name(node.attr):
             projection_tokens: tuple[str, ...] = ()
             for parent in reversed(self.node_stack[:-1]):
                 if isinstance(parent, ast.Assign) and _boundary_contains_node(
@@ -1647,33 +1688,76 @@ class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
 
 def _distributed_boundary_uses(
     module: ParsedModule,
-    field_names: frozenset[str],
+    field_names: frozenset[str] | None,
 ) -> tuple[DistributedBoundaryUse, ...]:
     visitor = _DistributedBoundaryUseVisitor(str(module.path), field_names)
     visitor.visit(module.module)
     return tuple(visitor.uses)
 
 
-def _distributed_boundary_fanout_candidates(
-    modules: Sequence[ParsedModule],
-    config: DetectorConfig,
-) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
-    return _distributed_boundary_fanout_candidates_cached(tuple(modules), config)
+class CompactDistributedBoundaryModuleProjectionFamily(
+    CollectedFamily[CompactDistributedBoundaryModuleProjection]
+):
+    """Collect the reusable per-module half of the global boundary join."""
+
+    item_type = CompactDistributedBoundaryModuleProjection
+    cache_payload_max_bytes = 1_000_000
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[CompactDistributedBoundaryModuleProjection]:
+        del cls
+        return [
+            CompactDistributedBoundaryModuleProjection(
+                file_path=str(parsed_module.path),
+                declarations=tuple(
+                    CompactDistributedBoundaryDeclarationFact(
+                        line=declaration.line,
+                        class_name=declaration.class_name,
+                        field_name=declaration.field_name,
+                        is_class_field=isinstance(
+                            declaration,
+                            ClassFieldBoundaryDeclaration,
+                        ),
+                    )
+                    for declaration in _distributed_boundary_declarations(parsed_module)
+                ),
+                class_base_names=tuple(
+                    (
+                        node.name,
+                        CLASS_NODE_AUTHORITY.declared_base_names(node),
+                    )
+                    for node in _walk_nodes(parsed_module.module)
+                    if isinstance(node, ast.ClassDef)
+                ),
+                possible_uses=tuple(
+                    CompactDistributedBoundaryUseFact(
+                        line=use_site.line,
+                        symbol=use_site.symbol,
+                        field_name=use_site.field_name,
+                        use_kind=use_site.use_kind,
+                        context_tokens=use_site.context_tokens,
+                    )
+                    for use_site in _distributed_boundary_uses(parsed_module, None)
+                ),
+            )
+        ]
 
 
-@lru_cache(maxsize=8)
-def _distributed_boundary_fanout_candidates_cached(
-    modules: tuple[ParsedModule, ...],
+def _distributed_boundary_fanout_candidates_from_facts(
+    declarations: tuple[DistributedBoundaryDeclaration, ...],
+    *,
+    class_base_names: dict[str, tuple[str, ...]],
+    uses: Iterable[DistributedBoundaryUse],
     config: DetectorConfig,
 ) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
-    declarations = tuple(
-        declaration
-        for module in modules
-        for declaration in _distributed_boundary_declarations(module)
-    )
+    """Join compact module facts into the exact repository boundary graph."""
+
     active_declarations = _active_distributed_boundary_declarations(
         declarations,
-        class_base_names=_distributed_boundary_class_base_names(modules),
+        class_base_names=class_base_names,
     )
     declarations_by_field: dict[str, list[DistributedBoundaryDeclaration]] = (
         defaultdict(list)
@@ -1682,14 +1766,14 @@ def _distributed_boundary_fanout_candidates_cached(
         declarations_by_field[declaration.field_name].append(declaration)
     field_names = frozenset(
         field_name
-        for field_name, declarations in declarations_by_field.items()
-        if len({declaration.class_name for declaration in declarations}) >= 2
+        for field_name, field_declarations in declarations_by_field.items()
+        if len({declaration.class_name for declaration in field_declarations}) >= 2
     )
     if not field_names:
         return ()
     uses_by_field: dict[str, list[DistributedBoundaryUse]] = defaultdict(list)
-    for module in modules:
-        for use_site in _distributed_boundary_uses(module, field_names):
+    for use_site in uses:
+        if use_site.field_name in field_names:
             uses_by_field[use_site.field_name].append(use_site)
 
     candidates: list[DistributedBoundaryFanoutCandidate] = []
@@ -1749,6 +1833,105 @@ def _distributed_boundary_fanout_candidates_cached(
             )
         )
     return tuple(candidates)
+
+
+def _distributed_boundary_fanout_candidates(
+    modules: Sequence[ParsedModule],
+    config: DetectorConfig,
+) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
+    return _distributed_boundary_fanout_candidates_cached(tuple(modules), config)
+
+
+@lru_cache(maxsize=8)
+def _distributed_boundary_fanout_candidates_cached(
+    modules: tuple[ParsedModule, ...],
+    config: DetectorConfig,
+) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
+    declarations = tuple(
+        declaration
+        for module in modules
+        for declaration in _distributed_boundary_declarations(module)
+    )
+    class_base_names = _distributed_boundary_class_base_names(modules)
+    active_declarations = _active_distributed_boundary_declarations(
+        declarations,
+        class_base_names=class_base_names,
+    )
+    declarations_by_field: dict[str, list[DistributedBoundaryDeclaration]] = (
+        defaultdict(list)
+    )
+    for declaration in active_declarations:
+        declarations_by_field[declaration.field_name].append(declaration)
+    field_names = frozenset(
+        field_name
+        for field_name, declarations in declarations_by_field.items()
+        if len({declaration.class_name for declaration in declarations}) >= 2
+    )
+    if not field_names:
+        return ()
+    return _distributed_boundary_fanout_candidates_from_facts(
+        declarations,
+        class_base_names=class_base_names,
+        uses=(
+            use_site
+            for module in modules
+            for use_site in _distributed_boundary_uses(module, field_names)
+        ),
+        config=config,
+    )
+
+
+def _compact_distributed_boundary_fanout_candidates(
+    projections: tuple[CompactDistributedBoundaryModuleProjection, ...],
+    config: DetectorConfig,
+) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
+    declaration_facts = tuple(
+        (projection.file_path, declaration)
+        for projection in projections
+        for declaration in projection.declarations
+    )
+    field_class_names: dict[str, set[str]] = defaultdict(set)
+    for _, declaration in declaration_facts:
+        field_class_names[declaration.field_name].add(declaration.class_name)
+    possible_field_names = frozenset(
+        field_name
+        for field_name, class_names in field_class_names.items()
+        if len(class_names) >= 2
+    )
+    return _distributed_boundary_fanout_candidates_from_facts(
+        tuple(
+            (
+                ClassFieldBoundaryDeclaration
+                if declaration.is_class_field
+                else InstanceFieldBoundaryDeclaration
+            )(
+                file_path=file_path,
+                line=declaration.line,
+                class_name=declaration.class_name,
+                field_name=declaration.field_name,
+            )
+            for file_path, declaration in declaration_facts
+        ),
+        class_base_names={
+            class_name: base_names
+            for projection in projections
+            for class_name, base_names in projection.class_base_names
+        },
+        uses=(
+            DistributedBoundaryUse(
+                file_path=projection.file_path,
+                line=use_site.line,
+                symbol=use_site.symbol,
+                field_name=use_site.field_name,
+                use_kind=use_site.use_kind,
+                context_tokens=use_site.context_tokens,
+            )
+            for projection in projections
+            for use_site in projection.possible_uses
+            if use_site.field_name in possible_field_names
+        ),
+        config=config,
+    )
 
 
 def _boundary_owner_class_names(
@@ -1837,9 +2020,88 @@ def _boundary_local_wrapper_collapse_candidates(
     )
 
 
-class DistributedBoundaryFanoutDetector(
-    ConfiguredCrossModuleCollectorCandidateDetector[DistributedBoundaryFanoutCandidate]
+def _compact_boundary_local_wrapper_collapse_candidates(
+    projections: tuple[CompactDistributedBoundaryModuleProjection, ...],
+    config: DetectorConfig,
+) -> tuple[BoundaryLocalWrapperCollapseCandidate, ...]:
+    return _boundary_local_wrapper_pairs(
+        _compact_distributed_boundary_fanout_candidates(projections, config),
+        config,
+    )
+
+
+class _CompactDistributedBoundaryDetectorBase(
+    CompactModuleProjectionDetectorMixin[CompactDistributedBoundaryModuleProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector,
 ):
+    """Share one exact compact boundary graph across its dependent rules."""
+
+    module_projection_family = CompactDistributedBoundaryModuleProjectionFamily
+    compact_shared_context_builder = staticmethod(
+        _compact_distributed_boundary_fanout_candidates
+    )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactDistributedBoundaryModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_from_compact_context(
+            projections,
+            _compact_distributed_boundary_fanout_candidates(projections, config),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactDistributedBoundaryModuleProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        if not isinstance(context, tuple):
+            raise TypeError("compact distributed-boundary context is unavailable")
+        fanout_candidates = cast(
+            tuple[DistributedBoundaryFanoutCandidate, ...],
+            context,
+        )
+        return self._findings_for_candidates(
+            self._compact_candidates_from_fanout(fanout_candidates, config),
+            config,
+        )
+
+    def _compact_candidates_from_fanout(
+        self,
+        candidates: tuple[DistributedBoundaryFanoutCandidate, ...],
+        config: DetectorConfig,
+    ) -> Sequence[object]:
+        raise NotImplementedError
+
+
+class _CompactDistributedBoundaryFanoutDetectorBase(
+    _CompactDistributedBoundaryDetectorBase
+):
+    def _compact_candidates_from_fanout(
+        self,
+        candidates: tuple[DistributedBoundaryFanoutCandidate, ...],
+        config: DetectorConfig,
+    ) -> Sequence[DistributedBoundaryFanoutCandidate]:
+        del config
+        return candidates
+
+
+class _CompactBoundaryLocalWrapperCollapseDetectorBase(
+    _CompactDistributedBoundaryDetectorBase
+):
+    def _compact_candidates_from_fanout(
+        self,
+        candidates: tuple[DistributedBoundaryFanoutCandidate, ...],
+        config: DetectorConfig,
+    ) -> Sequence[BoundaryLocalWrapperCollapseCandidate]:
+        return _boundary_local_wrapper_pairs(candidates, config)
+
+
+class DistributedBoundaryFanoutDetector(_CompactDistributedBoundaryFanoutDetectorBase):
     ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_CONTEXT,
@@ -1963,7 +2225,7 @@ declare_candidate_rule_detector(
     scaffold=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.scaffold,
     codemod_patch=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.codemod_patch,
     metrics=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.metrics,
-    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    detector_base=_CompactBoundaryLocalWrapperCollapseDetectorBase,
     candidate_collector=_boundary_local_wrapper_collapse_candidates,
     detector_priority=-1,
 )

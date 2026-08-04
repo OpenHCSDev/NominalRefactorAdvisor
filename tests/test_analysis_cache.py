@@ -1298,6 +1298,42 @@ def test_collected_family_items_are_persisted_beside_parse_cache(
     ]
 
 
+def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text(
+        "def export(item):\n"
+        "    return {'name': item.name, 'score': item.score, 'label': item.label}\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    schema = ast_tools_module.CollectedFamilyCacheSchema(
+        version=10_001,
+        max_payload_bytes=64,
+    )
+    monkeypatch.setattr(
+        ast_tools_module,
+        "collected_family_cache_schema",
+        schema,
+    )
+    monkeypatch.setattr(
+        ExportDictShapeFamily,
+        "cache_payload_max_bytes",
+        10_000,
+    )
+
+    module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+    assert collect_family_items(module, ExportDictShapeFamily)
+    payload_paths = tuple((cache_dir / "collected-family").glob("*.pickle"))
+
+    assert len(payload_paths) == 1
+    assert payload_paths[0].stat().st_size > schema.max_payload_bytes
+    assert payload_paths[0].stat().st_size <= 10_000
+
+
 def test_generated_boundary_global_projection_reuses_compact_module_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3083,6 +3119,106 @@ def test_compact_private_helper_cluster_candidates_match_legacy_ast_candidates(
     ) == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
 
 
+def test_compact_distributed_boundary_graph_matches_legacy_global_join(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "models_a.py").write_text(
+        "class RuntimeAdapter:\n"
+        "    axis_id: str\n"
+        "    axis_scope: object\n\n"
+        "class ArtifactQuery:\n"
+        "    axis_scope: object\n",
+        encoding="utf-8",
+    )
+    (package_root / "models_b.py").write_text(
+        "class PlaneResolution:\n"
+        "    axis_id: str\n\n"
+        "class CacheKey:\n"
+        "    axis_scope: object\n",
+        encoding="utf-8",
+    )
+    (package_root / "uses.py").write_text(
+        "def resolve(adapter):\n"
+        "    return PlaneResolution(axis_id=adapter.axis_id)\n\n"
+        "def rebuild(adapter):\n"
+        "    return RuntimeAdapter(axis_id=adapter.axis_id)\n\n"
+        "def project(adapter):\n"
+        "    axis_key = adapter.axis_id\n"
+        "    return axis_key\n\n"
+        "def artifact(adapter):\n"
+        "    return ArtifactQuery(axis_scope=adapter.axis_scope)\n\n"
+        "def cache(adapter):\n"
+        "    return CacheKey(axis_scope=adapter.axis_scope)\n\n"
+        "def project_scope(query):\n"
+        "    runtime_scope = query.axis_scope\n"
+        "    return runtime_scope\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    fanout_detector = surface_detectors.DistributedBoundaryFanoutDetector()
+    wrapper_detector = surface_detectors.BoundaryLocalWrapperCollapseDetector()
+    projections = fanout_detector.compact_module_projections(modules)
+    compact_fanout = surface_detectors._compact_distributed_boundary_fanout_candidates(
+        projections,
+        config,
+    )
+    legacy_fanout = surface_detectors._distributed_boundary_fanout_candidates(
+        modules,
+        config,
+    )
+    compact_wrappers = (
+        surface_detectors._compact_boundary_local_wrapper_collapse_candidates(
+            projections,
+            config,
+        )
+    )
+    wrappers_from_shared_fanout = surface_detectors._boundary_local_wrapper_pairs(
+        compact_fanout,
+        config,
+    )
+    legacy_wrappers = surface_detectors._boundary_local_wrapper_collapse_candidates(
+        modules,
+        config,
+    )
+
+    assert compact_fanout == legacy_fanout
+    assert {candidate.field_name for candidate in compact_fanout} == {
+        "axis_id",
+        "axis_scope",
+    }
+    assert compact_wrappers == legacy_wrappers
+    assert wrappers_from_shared_fanout == legacy_wrappers
+    assert compact_wrappers
+    assert fanout_detector._findings_from_compact_projections(
+        projections,
+        config,
+    ) == fanout_detector._findings_for_candidates(legacy_fanout, config)
+    assert wrapper_detector._findings_from_compact_projections(
+        projections,
+        config,
+    ) == wrapper_detector._findings_for_candidates(legacy_wrappers, config)
+
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        (
+            surface_detectors.DistributedBoundaryFanoutDetector,
+            surface_detectors.BoundaryLocalWrapperCollapseDetector,
+        ),
+        use_parse_cache=False,
+    )
+    assert accumulator.projection_count == len(modules)
+    findings_by_detector = accumulator.findings_by_detector(config)
+    assert findings_by_detector[
+        surface_detectors.DistributedBoundaryFanoutDetector
+    ] == fanout_detector._findings_for_candidates(legacy_fanout, config)
+    assert findings_by_detector[
+        surface_detectors.BoundaryLocalWrapperCollapseDetector
+    ] == wrapper_detector._findings_for_candidates(legacy_wrappers, config)
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -3243,8 +3379,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.NonNominalPrivateHelperDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 54
-    assert len(partition.ast_retaining_context_detector_types) == 15
+    assert surface_detectors.DistributedBoundaryFanoutDetector in (
+        partition.compact_global_detector_types
+    )
+    assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 56
+    assert len(partition.ast_retaining_context_detector_types) == 13
     assert len(partition.per_module_detector_types) == 183
 
 

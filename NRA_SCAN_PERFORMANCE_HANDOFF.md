@@ -561,6 +561,41 @@ seconds of projection and 12.97 seconds of reconstruction.  The complete
 persistent cache grows by 2,616,959 bytes versus schema 12, and both cache
 integrity audits found zero zero-byte entries.
 
+Distributed-boundary fanout and local-wrapper-collapse analysis now share one
+AST-free per-module boundary projection.  Schema 14 retains compact declaration
+facts, class-base rows, and a conservative superset of eligible keyword and
+attribute-use facts.  The repository join first resolves inherited class-field
+contracts and repeated declaring classes globally, then filters the use
+superset and renders both dependent rules from the same exact fanout graph.
+This preserves uses in modules that do not themselves declare the field.
+
+Across the frozen 919-module DQDock inventory, the projection contains 26,674
+declarations, 16,912 class-base rows, and 83,858 possible uses.  Compact and
+legacy output matched all 1,841 fanout candidate tuples and all 17 wrapper
+candidate tuples exactly, including declaration subclasses, evidence order,
+context tokens, and rendered findings.  The compact join took 0.16 seconds
+after projection in the combined oracle.  The final suite passes 980 tests,
+and the partition is now 183 per-module detectors, 56 compact-global
+detectors, and 13 AST-retaining context-dependent detectors.
+
+The family explicitly opts into a 1-MB per-module cache ceiling while the
+generic family limit remains 100 KB.  This is sufficient for all 919 boundary
+payloads and avoids rebuilding the 15 largest modules on a boundary-only warm
+scan.  The isolated migrated pair produced 1,858 findings from 919 projections.
+Its final fresh-cache pass took 33.91 seconds at 159,824 KB, including 33.65
+seconds of projection and 0.26 seconds of reconstruction; warm took 2.41
+seconds at 144,100 KB, including 2.10 seconds of projection and 0.31 seconds of
+reconstruction.
+
+The complete 56-detector schema-14 run produced 3,107 findings from 70,319
+top-level projections.  Cold took 138.54 seconds at 425,916 KB (125.32
+projection, 13.22 reconstruction); warm took 46.03 seconds at 455,712 KB
+(32.87 projection, 13.16 reconstruction).  The cache occupies 191,029,774
+payload bytes, 13,038,588 more than schema 13, and both integrity audits found
+zero zero-byte entries.  The full run now performs 1,858 more finding
+reconstructions than schema 13, so its headline time and RSS are not a
+like-for-like workload comparison.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

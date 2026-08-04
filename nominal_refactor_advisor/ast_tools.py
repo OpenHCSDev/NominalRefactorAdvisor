@@ -162,7 +162,7 @@ ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 class CollectedFamilyCacheSchema:
     """Schema identity for persisted collected-family item projections."""
 
-    version: int = 13
+    version: int = 14
     max_payload_bytes: int = 100_000
 
 
@@ -1147,6 +1147,7 @@ class CollectedFamily(
     __registry__: ClassVar[dict[str, type["CollectedFamily"]]] = {}
     __skip_if_no_key__ = True
     item_type: ClassVar[type[ShapeItemT]]
+    cache_payload_max_bytes: ClassVar[int | None] = None
 
     @classmethod
     def registered_families(cls) -> CollectedFamilyTypes:
@@ -1272,7 +1273,12 @@ def _store_cached_collected_family_items(
     payload = CollectedFamilyCachePayload(identity=identity, items=items)
     try:
         payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-        if len(payload_bytes) > identity.schema.max_payload_bytes:
+        payload_max_bytes = (
+            family.cache_payload_max_bytes
+            if family.cache_payload_max_bytes is not None
+            else identity.schema.max_payload_bytes
+        )
+        if len(payload_bytes) > payload_max_bytes:
             return
         cache_dir.mkdir(parents=True, exist_ok=True)
         with _collected_family_cache_path(cache_dir, identity).open("wb") as handle:
