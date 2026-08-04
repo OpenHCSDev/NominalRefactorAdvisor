@@ -244,6 +244,25 @@ Process-local high-water RSS was 337,992 KB cold and 395,684 KB warm; reporting
 the larger value leaves the checkpoint 55.5% below the controlled 889,100-KB
 all-at-once parse baseline.
 
+AutoRegisterMeta rent analysis now shares the same compact global class graph.
+Registry keys and extractors, registry-reading methods, dynamic factory facts,
+and receiver/method consumer edges are normalized while each module AST is
+live.  The consumer graph preserves nested-function attribution and all 150,566
+DQDock receiver/attribute edges, but interns its names and stores the edges in
+1,422,592 encoded bytes rather than retaining Python tuple/object graphs.  A
+single relevant-key consumer index replaces repeated scans for every family.
+Direct candidate equivalence covers dynamic factories, external consumers,
+registry projections, and abstract hooks.  The current partition is 183
+per-module detectors, 28 compact-global detectors, and 41 AST-retaining
+context-dependent detectors.
+
+The stable-snapshot 28-family run retained the same 68,466 top-level projection
+items and produced 520 identical cold/warm findings, including 29 AutoRegister
+rent findings.  It took 113.25 seconds cold and 35.41 seconds warm.  Process
+high-water RSS was 346,388 KB cold and 393,480 KB warm; the larger value is
+55.7% below the controlled 889,100-KB all-at-once parse baseline and is slightly
+lower than the 27-family warm peak despite the added global reasoning.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

@@ -102,6 +102,9 @@ class CompactIndexedClass:
     is_dataclass: bool = False
     declares_autoregister_meta: bool = False
     is_registration_authority: bool = False
+    autoregister_registry_key_attr_name: str | None = None
+    autoregister_key_extractor_name: str | None = None
+    autoregister_registry_projection_names: tuple[str, ...] = ()
     resolved_base_symbols: tuple[str, ...] = ()
 
     @property
@@ -136,6 +139,30 @@ class CompactModuleClassProjection:
     manual_selector_axes: tuple["CompactManualSelectorAxis", ...] = ()
     top_level_definitions: tuple[tuple[str, int], ...] = ()
     exact_type_guards: tuple["CompactExactTypeGuard", ...] = ()
+    autoregister_function_references: tuple[
+        "CompactAutoRegisterFunctionReference", ...
+    ] = ()
+    autoregister_reference_index: "CompactAutoRegisterReferenceIndex | None" = None
+
+
+@dataclass(frozen=True)
+class CompactAutoRegisterFunctionReference:
+    """Sparse AST-free function facts used by AutoRegister rent analysis."""
+
+    qualname: str
+    referenced_symbols: tuple[str, ...]
+    calls_autoregister_meta: bool
+    receiver_attribute_refs: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class CompactAutoRegisterReferenceIndex:
+    """Interned receiver-attribute edges for registry consumer resolution."""
+
+    function_qualnames: tuple[str, ...]
+    receiver_names: tuple[str, ...]
+    attribute_names: tuple[str, ...]
+    encoded_edges: str
 
 
 @dataclass(frozen=True)
@@ -375,6 +402,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> list[CompactModuleClassProjection]:
         del cls
         file_path = str(parsed_module.path)
+        (
+            autoregister_function_references,
+            autoregister_reference_index,
+        ) = _compact_autoregister_function_references(parsed_module)
         classes = tuple(
             CompactIndexedClass(
                 symbol=f"{parsed_module.module_name}.{qualname}",
@@ -443,6 +474,14 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 is_dataclass=_is_dataclass_class(node),
                 declares_autoregister_meta=_declares_autoregister_meta(node),
                 is_registration_authority=_is_registration_authority(node),
+                autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
+                    parsed_module,
+                    node,
+                ),
+                autoregister_key_extractor_name=_autoregister_key_extractor_name(node),
+                autoregister_registry_projection_names=_autoregister_registry_projection_names(
+                    node
+                ),
             )
             for qualname, node in _iter_class_defs(list(parsed_module.module.body))
         )
@@ -470,6 +509,8 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     )
                 ),
                 exact_type_guards=_compact_exact_type_guards(parsed_module),
+                autoregister_function_references=autoregister_function_references,
+                autoregister_reference_index=autoregister_reference_index,
             )
         ]
 
@@ -929,6 +970,284 @@ def _direct_class_assignments(node: ast.ClassDef) -> dict[str, ast.AST | None]:
         ):
             assignments[statement.target.id] = statement.value
     return assignments
+
+
+def _string_constant(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _module_string_constant_assignments(
+    parsed_module: ParsedModule,
+) -> dict[str, str]:
+    constants: dict[str, str] = {}
+    for statement in parsed_module.module.body:
+        target_name: str | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                target_name = target.id
+                value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            target_name = statement.target.id
+            value = statement.value
+        if target_name is not None and (string_value := _string_constant(value)):
+            constants[target_name] = string_value
+    return constants
+
+
+def _class_direct_string_member_assignments(
+    node: ast.ClassDef,
+) -> dict[str, str]:
+    return {
+        name: string_value
+        for name, value in _direct_class_assignments(node).items()
+        if (string_value := _string_constant(value)) is not None
+    }
+
+
+def _module_string_enum_member_assignments(
+    parsed_module: ParsedModule,
+) -> dict[tuple[str, str], str]:
+    enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
+    members: dict[tuple[str, str], str] = {}
+    for statement in parsed_module.module.body:
+        if not isinstance(statement, ast.ClassDef):
+            continue
+        if not enum_base_names & {
+            terminal_name
+            for base in statement.bases
+            if (terminal_name := _terminal_reference_name(base)) is not None
+        }:
+            continue
+        for member_name, string_value in _class_direct_string_member_assignments(
+            statement
+        ).items():
+            members[(statement.name, member_name)] = string_value
+    return members
+
+
+def _enum_member_value_reference(node: ast.AST | None) -> tuple[str, str] | None:
+    if not (
+        isinstance(node, ast.Attribute)
+        and node.attr == "value"
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ):
+        return None
+    return node.value.value.id, node.value.attr
+
+
+def _autoregister_constant_name(
+    node: ast.AST | None,
+    parsed_module: ParsedModule,
+) -> str | None:
+    if (string_value := _string_constant(node)) is not None:
+        return string_value
+    if (enum_ref := _enum_member_value_reference(node)) is not None:
+        return _module_string_enum_member_assignments(parsed_module).get(enum_ref)
+    if isinstance(node, ast.Name):
+        return (
+            _module_string_constant_assignments(parsed_module).get(node.id) or node.id
+        )
+    if isinstance(node, ast.Attribute) and node.attr == "__registry_key__":
+        return node.attr
+    return None
+
+
+def _registry_family_key_attr_name(node: ast.AST | None) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if _terminal_reference_name(node.func) != "RegistryFamily" or not node.args:
+        return None
+    key_arg = node.args[0]
+    if (key_literal := _string_constant(key_arg)) is not None:
+        return key_literal
+    if isinstance(key_arg, ast.Attribute):
+        return key_arg.attr.lower()
+    return None
+
+
+def _autoregister_registry_key_attr_name(
+    parsed_module: ParsedModule,
+    node: ast.ClassDef,
+) -> str | None:
+    assignments = _direct_class_assignments(node)
+    explicit_key = _autoregister_constant_name(
+        assignments.get("__registry_key__"), parsed_module
+    )
+    if explicit_key is not None:
+        return explicit_key
+    stable_key_axis = assignments.get("stable_key_axis")
+    if (
+        isinstance(stable_key_axis, ast.Name)
+        and stable_key_axis.id == "__registry_key__"
+    ):
+        return stable_key_axis.id
+    stable_key_name = _autoregister_constant_name(stable_key_axis, parsed_module)
+    if stable_key_name is not None:
+        return stable_key_name
+    return _registry_family_key_attr_name(assignments.get("__registry_family__"))
+
+
+def _autoregister_key_extractor_name(node: ast.ClassDef) -> str | None:
+    extractor = _direct_class_assignments(node).get("__key_extractor__")
+    return ast.unparse(extractor) if extractor is not None else None
+
+
+def _autoregister_registry_projection_names(
+    node: ast.ClassDef,
+) -> tuple[str, ...]:
+    return tuple(
+        method.name
+        for method in node.body
+        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if any(
+            isinstance(subnode, ast.Attribute)
+            and subnode.attr in {"__registry__", "_registry", "registry"}
+            for subnode in ast.walk(method)
+        )
+    )
+
+
+@dataclass
+class _CompactAutoRegisterFunctionReferenceBuilder:
+    qualname: str
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    receiver_attribute_refs: set[tuple[str, str]]
+    calls_autoregister_meta: bool = False
+
+
+def _compact_autoregister_function_references(
+    parsed_module: ParsedModule,
+) -> tuple[
+    tuple[CompactAutoRegisterFunctionReference, ...],
+    CompactAutoRegisterReferenceIndex | None,
+]:
+    file_path = str(parsed_module.path)
+    if file_path.startswith("tests/") or "/tests/" in file_path:
+        return (), None
+    builders: list[_CompactAutoRegisterFunctionReferenceBuilder] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+            self.active_functions: list[
+                _CompactAutoRegisterFunctionReferenceBuilder
+            ] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(
+            self, node: ast.FunctionDef | ast.AsyncFunctionDef
+        ) -> None:
+            builder = _CompactAutoRegisterFunctionReferenceBuilder(
+                qualname=".".join((*self.class_stack, node.name)),
+                node=node,
+                receiver_attribute_refs=set(),
+            )
+            builders.append(builder)
+            self.active_functions.append(builder)
+            self.generic_visit(node)
+            self.active_functions.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if isinstance(node.value, ast.Name):
+                reference = (node.value.id, node.attr)
+                for builder in self.active_functions:
+                    builder.receiver_attribute_refs.add(reference)
+            self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if _terminal_reference_name(node.func) == "AutoRegisterMeta":
+                for builder in self.active_functions:
+                    builder.calls_autoregister_meta = True
+            self.generic_visit(node)
+
+    Visitor().visit(parsed_module.module)
+    references: list[CompactAutoRegisterFunctionReference] = []
+    for builder in builders:
+        if builder.calls_autoregister_meta:
+            referenced_symbols = {
+                symbol
+                for subnode in ast.walk(builder.node)
+                for symbol in (
+                    (
+                        subnode.id
+                        if isinstance(subnode, ast.Name)
+                        else (
+                            subnode.value
+                            if isinstance(subnode, ast.Constant)
+                            and isinstance(subnode.value, str)
+                            else (
+                                subnode.attr
+                                if isinstance(subnode, ast.Attribute)
+                                else None
+                            )
+                        )
+                    ),
+                )
+                if symbol is not None
+            }
+            references.append(
+                CompactAutoRegisterFunctionReference(
+                    qualname=builder.qualname,
+                    referenced_symbols=sorted_tuple(referenced_symbols),
+                    calls_autoregister_meta=builder.calls_autoregister_meta,
+                    receiver_attribute_refs=sorted_tuple(
+                        builder.receiver_attribute_refs
+                    ),
+                )
+            )
+    consumer_builders = tuple(
+        builder for builder in builders if builder.receiver_attribute_refs
+    )
+    if not consumer_builders:
+        return tuple(references), None
+    receiver_names = sorted_tuple(
+        {
+            receiver_name
+            for builder in consumer_builders
+            for receiver_name, _attr_name in builder.receiver_attribute_refs
+        }
+    )
+    attribute_names = sorted_tuple(
+        {
+            attr_name
+            for builder in consumer_builders
+            for _receiver_name, attr_name in builder.receiver_attribute_refs
+        }
+    )
+    receiver_indexes = {name: index for index, name in enumerate(receiver_names)}
+    attribute_indexes = {name: index for index, name in enumerate(attribute_names)}
+    return tuple(references), CompactAutoRegisterReferenceIndex(
+        function_qualnames=tuple(builder.qualname for builder in consumer_builders),
+        receiver_names=receiver_names,
+        attribute_names=attribute_names,
+        encoded_edges=";".join(
+            f"{function_index},{receiver_index},{attribute_index}"
+            for function_index, receiver_index, attribute_index in sorted(
+                {
+                    (
+                        function_index,
+                        receiver_indexes[receiver_name],
+                        attribute_indexes[attr_name],
+                    )
+                    for function_index, builder in enumerate(consumer_builders)
+                    for receiver_name, attr_name in builder.receiver_attribute_refs
+                }
+            )
+        ),
+    )
 
 
 def _registration_authority_base_name(base_name: str) -> bool:
