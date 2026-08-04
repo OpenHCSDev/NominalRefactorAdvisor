@@ -399,12 +399,16 @@ class CompactClassFamilyIndex:
 
     classes_by_symbol: dict[str, CompactIndexedClass]
     symbols_by_simple_name: dict[str, tuple[str, ...]]
+    symbols_by_file_and_qualname: dict[tuple[str, str], str]
     children_by_symbol: dict[str, tuple[str, ...]]
     ancestors_by_symbol: dict[str, tuple[str, ...]]
     descendants_by_symbol: dict[str, tuple[str, ...]]
 
     def class_for(self, symbol: str) -> CompactIndexedClass | None:
         return self.classes_by_symbol.get(symbol)
+
+    def symbol_for(self, *, file_path: str, qualname: str) -> str | None:
+        return self.symbols_by_file_and_qualname.get((file_path, qualname))
 
     def descendant_symbols(self, base_symbol: str) -> tuple[str, ...]:
         return self.descendants_by_symbol.get(base_symbol, ())
@@ -3331,6 +3335,10 @@ class CompactClassFamilyIndexBuilder:
             symbols_by_simple_name={
                 name: sorted_tuple(symbols)
                 for name, symbols in symbols_by_simple_name_lists.items()
+            },
+            symbols_by_file_and_qualname={
+                (record.file_path, record.qualname): record.symbol
+                for record in classes_by_symbol.values()
             },
             children_by_symbol=children_by_symbol,
             ancestors_by_symbol=self._ancestors_by_symbol(classes_by_symbol),

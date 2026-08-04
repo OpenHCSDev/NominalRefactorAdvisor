@@ -69,6 +69,9 @@ from nominal_refactor_advisor.detectors import (
 )
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import (
+    _semantic_descent as semantic_descent_detectors,
+)
+from nominal_refactor_advisor.detectors import (
     _role_surface_drift as role_surface_detectors,
 )
 from nominal_refactor_advisor.detectors import _surface as surface_detectors
@@ -77,12 +80,14 @@ from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
+    CompactSemanticModuleProjectionFamily,
     SemanticAuthority,
     SemanticAuthorityKind,
     SemanticDescentGraph,
     SemanticDescentGraphCache,
     SemanticDescentGraphCacheIdentity,
     build_semantic_descent_graph,
+    build_compact_semantic_descent_graph,
 )
 from nominal_refactor_advisor.semantic_algebra import FiniteAxisSystem
 
@@ -3472,6 +3477,64 @@ def test_compact_isinstance_scatter_preserves_nested_function_attribution(
     assert {candidate.qualname for candidate in compact} == {"inner", "outer"}
 
 
+def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text(
+        "from dataclasses import dataclass\n"
+        "from enum import Enum\n\n"
+        "class Step:\n"
+        "    pass\n\n"
+        "class LoadStep(Step):\n"
+        "    step_id = 'load'\n\n"
+        "class SaveStep(Step):\n"
+        "    step_id = 'save'\n\n"
+        "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n\n"
+        "class Field(Enum):\n"
+        "    TITLE = 'title'\n"
+        "    STATUS = 'status'\n\n"
+        "FIELDS = ('title', 'status')\n\n"
+        "@dataclass\n"
+        "class Request:\n"
+        "    title: str\n"
+        "    status: str\n\n"
+        "REQUEST_FIELDS = ('title', 'status')\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    detector = semantic_descent_detectors.SemanticMirrorWithoutDescentDetector()
+    groups = type(detector).compact_module_projection_groups(modules)
+    semantic_projections = groups[CompactSemanticModuleProjectionFamily]
+    class_projections = groups[runtime_detectors.CompactModuleClassProjectionFamily]
+
+    legacy_graph = build_semantic_descent_graph(list(modules), use_cache=False)
+    compact_graph = build_compact_semantic_descent_graph(
+        semantic_projections,
+        class_projections,
+    )
+
+    assert compact_graph.authorities == legacy_graph.authorities
+    assert compact_graph.facts == legacy_graph.facts
+    assert compact_graph.projections == legacy_graph.projections
+    assert compact_graph.mirror_edges == legacy_graph.mirror_edges
+    assert compact_graph.certificates == legacy_graph.certificates
+    config = DetectorConfig()
+    assert detector._findings_from_compact_projection_groups(groups, config) == (
+        detector._collect_findings_from_graph(legacy_graph, list(modules), config)
+    )
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        (type(detector),),
+        use_parse_cache=False,
+    )
+    assert accumulator.projection_count == 2
+    assert accumulator.findings_by_detector(config)[type(detector)] == (
+        detector._collect_findings_from_graph(legacy_graph, list(modules), config)
+    )
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -3650,8 +3713,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.AlgebraicVariantMethodFamilyDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 60
-    assert len(partition.ast_retaining_context_detector_types) == 9
+    assert semantic_descent_detectors.SemanticMirrorWithoutDescentDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 61
+    assert len(partition.ast_retaining_context_detector_types) == 8
     assert len(partition.per_module_detector_types) == 183
 
 
@@ -3812,7 +3878,7 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
     )
 
 
-def test_partial_cache_overlays_changed_modules_for_semantic_graph_findings(
+def test_partial_cache_omits_changed_compact_global_semantic_findings(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -3843,16 +3909,6 @@ def test_partial_cache_overlays_changed_modules_for_semantic_graph_findings(
         for finding in initial_findings
     )
 
-    graph_cache_context = SemanticDescentGraphCacheContext.from_parse_cache(
-        (package_root,),
-        cache_dir,
-        True,
-        None,
-    )
-    cached_graph = graph_cache_context.latest_graph()
-    assert cached_graph is not None
-    assert cached_graph.class_index is not None
-
     members_path.write_text(
         "class LoadStep(Step):\n"
         "    step_id = 'load'\n"
@@ -3872,10 +3928,6 @@ def test_partial_cache_overlays_changed_modules_for_semantic_graph_findings(
             analysis_workers=0,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
-            semantic_descent_source=SemanticDescentGraphAnalysisSource(
-                cached_graph=cached_graph,
-                cache_context=graph_cache_context,
-            ),
         )
     ).result()
 
@@ -3887,15 +3939,25 @@ def test_partial_cache_overlays_changed_modules_for_semantic_graph_findings(
         if finding.detector_id == "semantic_mirror_without_descent"
         and "`STEP_TABLE` mirrors `Step`" in finding.title
     )
-    assert mirror_findings
+    assert not mirror_findings
+
+    exact_findings = analyze_path(
+        package_root,
+        cache_dir=cache_dir,
+        parse_workers=0,
+        analysis_workers=0,
+    )
     assert any(
-        evidence.file_path == str(members_path)
-        for finding in mirror_findings
-        for evidence in finding.evidence
+        finding.detector_id == "semantic_mirror_without_descent"
+        and "`STEP_TABLE` mirrors `Step`" in finding.title
+        and any(
+            evidence.file_path == str(members_path) for evidence in finding.evidence
+        )
+        for finding in exact_findings
     )
 
 
-def test_partial_cache_uses_latest_repo_graph_for_changed_module_scan(
+def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -3932,7 +3994,7 @@ def test_partial_cache_uses_latest_repo_graph_for_changed_module_scan(
         True,
         None,
     )
-    assert graph_cache_context.latest_graph() is not None
+    assert graph_cache_context.latest_graph() is None
 
     members_path.write_text(
         "class LoadStep(Step):\n"
@@ -3953,22 +4015,19 @@ def test_partial_cache_uses_latest_repo_graph_for_changed_module_scan(
             analysis_workers=0,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
-            semantic_descent_source=SemanticDescentGraphAnalysisSource(
-                cache_context=graph_cache_context,
-            ),
         )
     ).result()
 
     assert partial_result is not None
     assert partial_result.cache_status is AnalysisCacheStatus.PARTIAL
-    assert any(
+    assert not any(
         finding.detector_id == "semantic_mirror_without_descent"
         and "`STEP_TABLE` mirrors `Step`" in finding.title
         for finding in partial_result.findings
     )
 
 
-def test_partial_cache_overlays_changed_projection_for_cached_authority_graph(
+def test_partial_cache_omits_changed_compact_semantic_projection(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -4000,16 +4059,6 @@ def test_partial_cache_overlays_changed_projection_for_cached_authority_graph(
         for finding in initial_findings
     )
 
-    graph_cache_context = SemanticDescentGraphCacheContext.from_parse_cache(
-        (package_root,),
-        cache_dir,
-        True,
-        None,
-    )
-    cached_graph = graph_cache_context.latest_graph()
-    assert cached_graph is not None
-    assert cached_graph.class_index is not None
-
     registry_path.write_text(
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
         encoding="utf-8",
@@ -4025,10 +4074,6 @@ def test_partial_cache_overlays_changed_projection_for_cached_authority_graph(
             analysis_workers=0,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
-            semantic_descent_source=SemanticDescentGraphAnalysisSource(
-                cached_graph=cached_graph,
-                cache_context=graph_cache_context,
-            ),
         )
     ).result()
 
@@ -4040,11 +4085,21 @@ def test_partial_cache_overlays_changed_projection_for_cached_authority_graph(
         if finding.detector_id == "semantic_mirror_without_descent"
         and "`STEP_TABLE` mirrors `Step`" in finding.title
     )
-    assert mirror_findings
+    assert not mirror_findings
+
+    exact_findings = analyze_path(
+        package_root,
+        cache_dir=cache_dir,
+        parse_workers=0,
+        analysis_workers=0,
+    )
     assert any(
-        evidence.file_path == str(registry_path)
-        for finding in mirror_findings
-        for evidence in finding.evidence
+        finding.detector_id == "semantic_mirror_without_descent"
+        and "`STEP_TABLE` mirrors `Step`" in finding.title
+        and any(
+            evidence.file_path == str(registry_path) for evidence in finding.evidence
+        )
+        for finding in exact_findings
     )
 
 

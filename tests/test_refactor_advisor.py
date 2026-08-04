@@ -1160,7 +1160,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
     )
 
 
-def test_projected_finding_report_uses_full_graph_source_for_graph_detectors(
+def test_projected_finding_report_omits_compact_global_detectors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1205,32 +1205,25 @@ def test_projected_finding_report_uses_full_graph_source_for_graph_detectors(
         relation_context="changed file evidence",
         evidence=(SourceLocation(changed_path.as_posix(), 2, "Changed.value"),),
     )
-    changed_after_finding = replace(
-        before_finding,
-        summary="changed file after graph finding",
-    )
-    sentinel_graph = object()
     graph_source_calls: list[tuple[str, ...]] = []
     analyzed_module_paths: list[str] = []
-    passed_graph_sources: list[SemanticDescentGraphAnalysisSource] = []
 
     class RecordingSemanticDescentSource:
         def graph_for_modules(self, modules):
             graph_source_calls.append(
                 tuple(module.path.as_posix() for module in modules)
             )
-            return sentinel_graph
+            return object()
 
     def forbidden_full_analysis(*args, **kwargs):
         del args, kwargs
         raise AssertionError("focused projection should not run full analyze_modules")
 
     def fake_analyze_detector_types(modules, config, *, detector_types, **kwargs):
-        del config
-        assert SemanticMirrorWithoutDescentDetector in detector_types
+        del config, kwargs
+        assert SemanticMirrorWithoutDescentDetector not in detector_types
         analyzed_module_paths.extend(module.path.as_posix() for module in modules)
-        passed_graph_sources.append(kwargs["semantic_descent_source"])
-        return [changed_after_finding]
+        return []
 
     monkeypatch.setattr(codemod_workflow, "analyze_modules", forbidden_full_analysis)
     monkeypatch.setattr(
@@ -1251,14 +1244,8 @@ def test_projected_finding_report_uses_full_graph_source_for_graph_detectors(
 
     assert report.scan_mode == "evidence_local_partial"
     assert analyzed_module_paths == [changed_path.as_posix()]
-    assert {path for call in graph_source_calls for path in call} == {
-        changed_path.as_posix(),
-        other_path.as_posix(),
-    }
-    assert passed_graph_sources[0].cached_graph is sentinel_graph
-    assert tuple(finding.summary for finding in report.after_findings) == (
-        "changed file after graph finding",
-    )
+    assert graph_source_calls == []
+    assert report.after_findings == ()
 
 
 def test_replace_text_operation_allows_empty_json_replacement(

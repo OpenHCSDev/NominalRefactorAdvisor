@@ -665,6 +665,50 @@ bytes with zero zero-byte entries.  The new family contributes 919 payloads,
 per-family ceiling covers the entire corpus.
 Checkpoint verification passes all 983 tests in 340.19 seconds.
 
+## 2026-08-04 semantic-descent projection checkpoint
+
+Semantic-mirror-without-descent analysis now builds its repository graph from
+one deferred semantic module family plus the existing compact class family.
+Per-module facts retain presentation tokens, construction shapes, unresolved
+class-reference parts, and sparse enum/dataclass/materializer supplements.
+Class references are resolved only after the complete compact import and
+inheritance graph exists.  The final graph does not retain a class AST index.
+
+The frozen 919-module DQDock oracle matches the retained-AST graph exactly at
+every layer: 7,236 authorities, 52,151 facts, 20,652 presentation projections,
+and all 5,246 mirror edges and certificates.  Compact graph reconstruction took
+5.88 seconds in the combined oracle versus 13.17 seconds for the legacy graph.
+The combined process intentionally retained both representations and is not a
+bounded-memory measurement.
+
+The isolated compact detector produced all 5,246 findings at a 348,472-KB cold
+peak and 351,824-KB warm peak.  Cold took 63.41 seconds (60.55 projection, 2.86
+finding reconstruction); warm took 22.47 seconds (19.13 projection, 3.33
+reconstruction).  The old isolated retained-AST graph reached 1,090,768 KB in
+the direct oracle, while the earlier detector-order profile reached about 1.58
+GB.  The compact comparison therefore removes at least 68% of the measured
+semantic detector's isolated high-water mark.
+
+Schema 17 moves the partition to 183 per-module detectors, 61 compact-global
+detectors, and eight AST-retaining context-dependent detectors.  The complete
+compact run produced 9,474 findings from 73,076 top-level projections.  Cold
+took 174.39 seconds at 570,696 KB, including 155.57 seconds of projection and
+18.82 seconds of reconstruction.  Warm took 54.72 seconds at 604,292 KB,
+including 35.32 seconds of projection and 19.40 seconds of reconstruction.
+The cache contains 19,037 files and 219,514,657 payload bytes with zero
+zero-byte entries.  The semantic family contributes 919 payloads and
+18,326,484 bytes; its largest module is 265,448 bytes, below the explicit 1-MB
+family ceiling.
+
+The semantic detector no longer materializes the legacy semantic-graph cache
+during ordinary exact analysis.  Evidence-local partial scans consequently
+omit changed semantic-mirror findings like other compact-global detectors;
+the next exact scan recomputes them from source-validated compact family
+payloads.  Regression coverage now states that boundary explicitly while
+retaining separate tests for the legacy overlay API used by explicit graph
+consumers.
+Checkpoint verification passes all 984 tests in 349.69 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

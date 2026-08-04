@@ -4,17 +4,22 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, ClassVar
+from typing import Callable, ClassVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
 from ._base import (
+    CompactMultiModuleProjectionDetectorMixin,
+    ContextualGlobalCacheContract,
     DetectorConfig,
-    SemanticDescentGraphIssueDetector,
     SemanticMirrorIssueDetector,
     high_confidence_certified_spec,
 )
-from ..ast_tools import ParsedModule
+from ..ast_tools import CollectedFamily, ParsedModule
+from ..class_index import (
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
+)
 from ..models import (
     MappingMetrics,
     RefactorFinding,
@@ -23,6 +28,8 @@ from ..models import (
 )
 from ..patterns import PatternId
 from ..semantic_descent import (
+    CompactSemanticModuleProjection,
+    CompactSemanticModuleProjectionFamily,
     DescentCertificate,
     PresentationProjectionKind,
     PresentationProjection,
@@ -30,7 +37,7 @@ from ..semantic_descent import (
     SemanticDescentGraph,
     SemanticDescentGraphCacheIdentity,
     SemanticFact,
-    build_semantic_descent_graph,
+    build_compact_semantic_descent_graph,
     normalized_name_variants,
 )
 from ..registry_identity import class_name_registry_key
@@ -116,13 +123,18 @@ class AliasOverlapClassKeySourceResolver(SemanticMirrorClassKeySourceResolver):
 
 
 class SemanticMirrorWithoutDescentDetector(
-    SemanticDescentGraphIssueDetector,
+    CompactMultiModuleProjectionDetectorMixin,
+    ContextualGlobalCacheContract,
     SemanticMirrorIssueDetector,
 ):
     """Report presentation projections that mirror a nominal semantic authority."""
 
     detector_priority = -100
     semantic_mirror_authority_evidence_index = 1
+    module_projection_families = (
+        CompactSemanticModuleProjectionFamily,
+        CompactModuleClassProjectionFamily,
+    )
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_BOUNDARY,
         "Semantic mirror should descend to its nominal authority",
@@ -153,11 +165,24 @@ class SemanticMirrorWithoutDescentDetector(
         del cls, config
         return SemanticDescentGraphCacheIdentity.from_modules(modules).cache_token
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        graph = build_semantic_descent_graph(modules)
-        return self._collect_findings_from_graph(graph, modules, config)
+        semantic_projections = cast(
+            tuple[CompactSemanticModuleProjection, ...],
+            projections_by_family[CompactSemanticModuleProjectionFamily],
+        )
+        class_projections = cast(
+            tuple[CompactModuleClassProjection, ...],
+            projections_by_family[CompactModuleClassProjectionFamily],
+        )
+        graph = build_compact_semantic_descent_graph(
+            semantic_projections,
+            class_projections,
+        )
+        return self._collect_findings_from_graph(graph, [], config)
 
     def _collect_findings_from_graph(
         self,

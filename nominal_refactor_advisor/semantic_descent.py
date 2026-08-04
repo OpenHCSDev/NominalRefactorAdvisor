@@ -31,6 +31,7 @@ from metaclass_registry import AutoRegisterMeta
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
+    CollectedFamily,
     ParsedModule,
     PythonModulePathIdentity,
     PythonSourcePathPolicy,
@@ -47,9 +48,14 @@ from .cache_checkout import (
 )
 from .class_index import (
     ClassFamilyIndex,
+    CompactClassFamilyIndex,
+    CompactClassReferenceResolver,
+    CompactIndexedClass,
+    CompactModuleClassProjection,
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
+    build_compact_class_family_index,
     overlay_class_family_index,
 )
 from .collection_algebra import sorted_tuple
@@ -84,6 +90,8 @@ _CLASS_SUFFIXES = (
     "Spec",
 )
 _ENUM_BASE_NAMES = frozenset(("Enum", "IntEnum", "StrEnum"))
+
+SemanticClassFamilyIndex: TypeAlias = ClassFamilyIndex | CompactClassFamilyIndex
 
 
 class SemanticAuthorityKind(StrEnum):
@@ -961,6 +969,7 @@ class PresentationKeyValuePair:
     value_source: str
     value_tokens: tuple[str, ...]
     value_class_symbols: tuple[str, ...] = ()
+    value_class_reference_parts: tuple[tuple[str, ...], ...] = ()
 
     @classmethod
     def from_nodes(
@@ -1004,6 +1013,7 @@ class PresentationProjection(SemanticProjectionReference):
     owner_constructions: tuple[PresentationAuthorityConstruction, ...] = ()
     key_value_pairs: tuple[PresentationKeyValuePair, ...] = ()
     class_symbols: tuple[str, ...] = ()
+    class_reference_parts: tuple[tuple[str, ...], ...] = ()
 
     @cached_property
     def normalized_tokens(self) -> tuple[str, ...]:
@@ -1012,6 +1022,106 @@ class PresentationProjection(SemanticProjectionReference):
     @cached_property
     def owner(self) -> ProjectionOwnerSymbol:
         return ProjectionOwnerSymbol(self.owner_symbol)
+
+
+@dataclass(frozen=True)
+class CompactSemanticClassSupplement:
+    """AST-free class facts used only by semantic authority resolution."""
+
+    class_symbol: str
+    constant_assignments: tuple[tuple[str, int, str | None], ...]
+    annotated_fields: tuple[tuple[str, int], ...]
+    declared_type_names: tuple[str, ...]
+    constructed_type_names: tuple[str, ...]
+    autoregister_authority_shape: bool
+
+
+@dataclass(frozen=True)
+class CompactSemanticModuleProjection:
+    """One module's deferred semantic projections and class supplements."""
+
+    module_name: str
+    file_path: str
+    projections: tuple[PresentationProjection, ...]
+    class_supplements: tuple[CompactSemanticClassSupplement, ...]
+
+
+def _class_reference_parts(node: ast.AST) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Subscript):
+        return _class_reference_parts(node.value)
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        parent = _class_reference_parts(node.value)
+        return None if parent is None else (*parent, node.attr)
+    return None
+
+
+@dataclass(frozen=True)
+class DeferredModuleClassReferenceCollector:
+    """Collect resolvable reference parts before the global class index exists."""
+
+    parsed_module: ParsedModule
+
+    @cached_property
+    def constructor_assignment_reference_parts(
+        self,
+    ) -> dict[str, tuple[str, ...]]:
+        assignments: dict[str, tuple[str, ...]] = {}
+        for statement in self.parsed_module.module.body:
+            pair = SingleAssignmentAndValueNameProjection(statement).pair
+            if pair is None:
+                continue
+            target_name, value = pair
+            if not isinstance(value, ast.Call):
+                continue
+            reference_parts = _class_reference_parts(value.func)
+            if reference_parts is not None:
+                assignments[target_name] = reference_parts
+        return assignments
+
+    def reference_parts_for_node(
+        self,
+        node: ast.AST,
+    ) -> tuple[tuple[str, ...], ...]:
+        collector = _DeferredClassReferencePartsVisitor(
+            self.constructor_assignment_reference_parts
+        )
+        collector.visit(node)
+        return sorted_tuple(collector.reference_parts)
+
+
+class _DeferredClassReferencePartsVisitor(ast.NodeVisitor):
+    def __init__(
+        self,
+        constructor_assignment_reference_parts: dict[str, tuple[str, ...]],
+    ) -> None:
+        self.constructor_assignment_reference_parts = (
+            constructor_assignment_reference_parts
+        )
+        self.reference_parts: set[tuple[str, ...]] = set()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self._add(_class_reference_parts(node.func))
+        for argument in node.args:
+            self.visit(argument)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        self._add(_class_reference_parts(node))
+
+    def visit_Name(self, node: ast.Name) -> None:
+        self._add(
+            self.constructor_assignment_reference_parts.get(
+                node.id,
+                (node.id,),
+            )
+        )
+
+    def _add(self, reference_parts: tuple[str, ...] | None) -> None:
+        if reference_parts is not None:
+            self.reference_parts.add(reference_parts)
 
 
 class ProjectionSuppressionIntent(StrEnum):
@@ -3288,6 +3398,158 @@ class SemanticAuthorityBuilder:
 
 
 @dataclass(frozen=True)
+class CompactSemanticAuthorityBuilder:
+    """Reconstruct semantic authorities from compact class facts."""
+
+    class_index: CompactClassFamilyIndex
+    supplements_by_symbol: Mapping[str, CompactSemanticClassSupplement]
+
+    def build(self) -> tuple[tuple[SemanticAuthority, ...], tuple[SemanticFact, ...]]:
+        authorities: list[SemanticAuthority] = []
+        facts: list[SemanticFact] = []
+        for indexed_class in sorted_tuple(
+            self.class_index.classes_by_symbol.values(),
+            key=lambda item: item.symbol,
+        ):
+            result = self._provider_result(indexed_class)
+            if result is None:
+                continue
+            authorities.append(
+                SemanticAuthority(
+                    authority_id=indexed_class.symbol,
+                    kind=result.kind,
+                    name=indexed_class.simple_name,
+                    location=SourceLocation(
+                        indexed_class.file_path,
+                        indexed_class.line,
+                        indexed_class.qualname,
+                    ),
+                    fact_ids=tuple(fact.fact_id for fact in result.facts),
+                )
+            )
+            facts.extend(result.facts)
+        return (
+            sorted_tuple(authorities, key=lambda item: item.authority_id),
+            sorted_tuple(facts, key=lambda item: item.fact_id),
+        )
+
+    def _provider_result(
+        self,
+        indexed_class: CompactIndexedClass,
+    ) -> SemanticAuthorityProviderResult | None:
+        supplement = self.supplements_by_symbol.get(indexed_class.symbol)
+        if any(
+            base_name.rsplit(".", 1)[-1] in _ENUM_BASE_NAMES
+            for base_name in indexed_class.declared_base_names
+        ):
+            enum_facts = self._enum_facts(indexed_class, supplement)
+            if enum_facts:
+                return SemanticAuthorityProviderResult(
+                    SemanticAuthorityKind.ENUM,
+                    enum_facts,
+                )
+        if indexed_class.is_dataclass:
+            dataclass_facts = self._dataclass_facts(indexed_class, supplement)
+            if dataclass_facts:
+                return SemanticAuthorityProviderResult(
+                    SemanticAuthorityKind.DATACLASS_SCHEMA,
+                    dataclass_facts,
+                )
+        descendants = self.class_index.descendant_symbols(indexed_class.symbol)
+        if len(descendants) < 2:
+            return None
+        family_facts = tuple(
+            self._class_member_fact(indexed_class.symbol, descendant)
+            for descendant_symbol in descendants
+            if (descendant := self.class_index.class_for(descendant_symbol)) is not None
+        )
+        if not family_facts:
+            return None
+        kind = (
+            SemanticAuthorityKind.AUTOREGISTER_FAMILY
+            if supplement is not None and supplement.autoregister_authority_shape
+            else SemanticAuthorityKind.CLASS_FAMILY
+        )
+        return SemanticAuthorityProviderResult(kind, family_facts)
+
+    @staticmethod
+    def _enum_facts(
+        indexed_class: CompactIndexedClass,
+        supplement: CompactSemanticClassSupplement | None,
+    ) -> tuple[SemanticFact, ...]:
+        if supplement is None:
+            return ()
+        facts = tuple(
+            SemanticFact(
+                fact_id=f"{indexed_class.symbol}:{name}",
+                authority_id=indexed_class.symbol,
+                kind=SemanticFactKind.ENUM_MEMBER,
+                name=name,
+                aliases=(
+                    (name,)
+                    if string_value is None
+                    else sorted_tuple((name, string_value))
+                ),
+                location=SourceLocation(
+                    indexed_class.file_path,
+                    line,
+                    f"{indexed_class.qualname}.{name}",
+                ),
+            )
+            for name, line, string_value in supplement.constant_assignments
+        )
+        return facts if len(facts) >= 2 else ()
+
+    @staticmethod
+    def _dataclass_facts(
+        indexed_class: CompactIndexedClass,
+        supplement: CompactSemanticClassSupplement | None,
+    ) -> tuple[SemanticFact, ...]:
+        if supplement is None:
+            return ()
+        facts = tuple(
+            SemanticFact(
+                fact_id=f"{indexed_class.symbol}:{name}",
+                authority_id=indexed_class.symbol,
+                kind=SemanticFactKind.DATACLASS_FIELD,
+                name=name,
+                aliases=(name,),
+                location=SourceLocation(
+                    indexed_class.file_path,
+                    line,
+                    f"{indexed_class.qualname}.{name}",
+                ),
+            )
+            for name, line in supplement.annotated_fields
+        )
+        return facts if len(facts) >= 2 else ()
+
+    @staticmethod
+    def _class_member_fact(
+        authority_symbol: str,
+        descendant: CompactIndexedClass,
+    ) -> SemanticFact:
+        semantic_string_aliases = tuple(
+            value
+            for name, value in descendant.direct_constant_string_assignments
+            if not name.startswith("__")
+            if PresentationTokenProjection.looks_like_semantic_literal(value)
+        )
+        return SemanticFact(
+            fact_id=f"{authority_symbol}:{descendant.symbol}",
+            authority_id=authority_symbol,
+            kind=SemanticFactKind.CLASS_MEMBER,
+            name=descendant.simple_name,
+            aliases=sorted_tuple((descendant.simple_name, *semantic_string_aliases)),
+            location=SourceLocation(
+                descendant.file_path,
+                descendant.line,
+                descendant.qualname,
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class SemanticAuthorityProviderResult:
     """Authority kind and facts selected by one authority provider."""
 
@@ -3537,6 +3799,251 @@ class SemanticProjectionCollector:
         )
 
 
+def _semantic_indexed_class_nodes(
+    statements: list[ast.stmt],
+    *,
+    parent_qualname: str | None = None,
+) -> tuple[tuple[str, ast.ClassDef], ...]:
+    classes: list[tuple[str, ast.ClassDef]] = []
+    for statement in statements:
+        if not isinstance(statement, ast.ClassDef):
+            continue
+        qualname = (
+            statement.name
+            if parent_qualname is None
+            else f"{parent_qualname}.{statement.name}"
+        )
+        classes.append((qualname, statement))
+        classes.extend(
+            _semantic_indexed_class_nodes(
+                list(statement.body),
+                parent_qualname=qualname,
+            )
+        )
+    return tuple(classes)
+
+
+def _compact_semantic_class_supplement(
+    parsed_module: ParsedModule,
+    qualname: str,
+    node: ast.ClassDef,
+) -> CompactSemanticClassSupplement | None:
+    authority = AutoRegisterClassAuthority(node)
+    constant_assignments = tuple(
+        (
+            name,
+            value.lineno,
+            value.value if isinstance(value.value, str) else None,
+        )
+        for name, value in authority.assignment_pairs
+        if isinstance(value, ast.Constant)
+    )
+    annotated_fields = tuple(
+        (statement.target.id, statement.lineno)
+        for statement in node.body
+        if isinstance(statement, ast.AnnAssign)
+        if isinstance(statement.target, ast.Name)
+    )
+    declared_type_names = sorted_tuple(
+        {
+            terminal_name
+            for _, value in authority.assignment_pairs
+            if (terminal_name := authority.terminal_name(value)) is not None
+        }
+    )
+    constructed_type_names: set[str] = set()
+    for statement in node.body:
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for child in ast.walk(statement):
+            if isinstance(child, ast.Call):
+                constructed_type_names.update(
+                    PresentationAuthorityConstructionCollector.construction_type_names(
+                        child
+                    )
+                )
+    if not (
+        constant_assignments
+        or annotated_fields
+        or declared_type_names
+        or constructed_type_names
+        or authority.semantic_authority_shape
+    ):
+        return None
+    return CompactSemanticClassSupplement(
+        class_symbol=f"{parsed_module.module_name}.{qualname}",
+        constant_assignments=constant_assignments,
+        annotated_fields=annotated_fields,
+        declared_type_names=declared_type_names,
+        constructed_type_names=sorted_tuple(constructed_type_names),
+        autoregister_authority_shape=authority.semantic_authority_shape,
+    )
+
+
+class CompactSemanticModuleProjectionFamily(
+    CollectedFamily[CompactSemanticModuleProjection]
+):
+    """Persist deferred semantic-descent facts without repository ASTs."""
+
+    item_type = CompactSemanticModuleProjection
+    cache_payload_max_bytes = 1_000_000
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[CompactSemanticModuleProjection]:
+        del cls
+        visitor = _ProjectionVisitor(parsed_module, None)
+        visitor.visit(parsed_module.module)
+        supplements = tuple(
+            supplement
+            for qualname, node in _semantic_indexed_class_nodes(
+                list(parsed_module.module.body)
+            )
+            if (
+                supplement := _compact_semantic_class_supplement(
+                    parsed_module,
+                    qualname,
+                    node,
+                )
+            )
+            is not None
+        )
+        return [
+            CompactSemanticModuleProjection(
+                module_name=parsed_module.module_name,
+                file_path=str(parsed_module.path),
+                projections=sorted_tuple(
+                    visitor.projections,
+                    key=lambda item: (
+                        item.location.file_path,
+                        item.location.line,
+                        item.label,
+                    ),
+                ),
+                class_supplements=supplements,
+            )
+        ]
+
+
+def _resolved_compact_class_symbols(
+    resolver: CompactClassReferenceResolver,
+    *,
+    module_name: str,
+    reference_parts: tuple[tuple[str, ...], ...],
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            symbol
+            for parts in reference_parts
+            if (
+                symbol := resolver.symbol_for(
+                    module_name=module_name,
+                    reference_parts=parts,
+                    allow_unique_unqualified=False,
+                )
+            )
+            is not None
+        }
+    )
+
+
+def _resolved_compact_semantic_projections(
+    semantic_projections: tuple[CompactSemanticModuleProjection, ...],
+    class_projections: tuple[CompactModuleClassProjection, ...],
+    class_index: CompactClassFamilyIndex,
+) -> tuple[PresentationProjection, ...]:
+    resolver = CompactClassReferenceResolver.from_index(
+        class_projections,
+        class_index,
+    )
+    resolved: list[PresentationProjection] = []
+    for module_projection in semantic_projections:
+        for projection in module_projection.projections:
+            class_symbols = _resolved_compact_class_symbols(
+                resolver,
+                module_name=module_projection.module_name,
+                reference_parts=projection.class_reference_parts,
+            )
+            key_value_pairs = tuple(
+                replace(
+                    pair,
+                    value_tokens=sorted_tuple(
+                        set(pair.value_tokens)
+                        | _class_reference_normalized_tokens(
+                            class_index,
+                            value_class_symbols,
+                        )
+                    ),
+                    value_class_symbols=value_class_symbols,
+                    value_class_reference_parts=(),
+                )
+                for pair in projection.key_value_pairs
+                for value_class_symbols in (
+                    _resolved_compact_class_symbols(
+                        resolver,
+                        module_name=module_projection.module_name,
+                        reference_parts=pair.value_class_reference_parts,
+                    ),
+                )
+            )
+            resolved.append(
+                replace(
+                    projection,
+                    key_value_pairs=key_value_pairs,
+                    class_symbols=class_symbols,
+                    class_reference_parts=(),
+                )
+            )
+    return sorted_tuple(
+        resolved,
+        key=lambda item: (item.location.file_path, item.location.line, item.label),
+    )
+
+
+def build_compact_semantic_descent_graph(
+    semantic_projections: tuple[CompactSemanticModuleProjection, ...],
+    class_projections: tuple[CompactModuleClassProjection, ...],
+) -> SemanticDescentGraph:
+    """Build the exact semantic graph from AST-free repository projections."""
+
+    class_index = build_compact_class_family_index(class_projections)
+    supplements = tuple(
+        supplement
+        for projection in semantic_projections
+        for supplement in projection.class_supplements
+    )
+    authorities, facts = CompactSemanticAuthorityBuilder(
+        class_index,
+        {supplement.class_symbol: supplement for supplement in supplements},
+    ).build()
+    projections = _resolved_compact_semantic_projections(
+        semantic_projections,
+        class_projections,
+        class_index,
+    )
+    mirror_edges = SemanticMirrorResolver(
+        authorities,
+        facts,
+        projections,
+        class_index,
+        supplements,
+    ).edges()
+    graph_space = SemanticDescentGraphSpace(authorities, facts, projections)
+    certificates = SemanticDescentCertificateBuilder(
+        graph_space
+    ).certificates_for_edges(mirror_edges)
+    return SemanticDescentGraph(
+        authorities=authorities,
+        facts=facts,
+        projections=projections,
+        mirror_edges=mirror_edges,
+        certificates=certificates,
+        class_index=None,
+    )
+
+
 @dataclass
 class ProjectionOwnerConstructionFrame:
     """Single-pass function construction state for direct owner projections."""
@@ -3549,13 +4056,19 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
     def __init__(
         self,
         parsed_module: ParsedModule,
-        class_index: ClassFamilyIndex,
+        class_index: ClassFamilyIndex | None,
     ) -> None:
         super().__init__()
         self.parsed_module = parsed_module
-        self.class_reference_resolver = ModuleClassReferenceResolver(
-            parsed_module,
-            class_index,
+        self.class_reference_resolver = (
+            None
+            if class_index is None
+            else ModuleClassReferenceResolver(parsed_module, class_index)
+        )
+        self.deferred_class_reference_collector = (
+            DeferredModuleClassReferenceCollector(parsed_module)
+            if class_index is None
+            else None
         )
         self.projections: list[PresentationProjection] = []
         self.owner_construction_stack: list[ProjectionOwnerConstructionFrame] = []
@@ -3690,7 +4203,16 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
         projection_constructions = self._projection_constructions(value)
         self._record_owner_constructions(projection_constructions)
-        class_symbols = self.class_reference_resolver.symbols_for_node(value)
+        class_symbols = (
+            self.class_reference_resolver.symbols_for_node(value)
+            if self.class_reference_resolver is not None
+            else ()
+        )
+        class_reference_parts = (
+            self.deferred_class_reference_collector.reference_parts_for_node(value)
+            if self.deferred_class_reference_collector is not None
+            else ()
+        )
         tokens = tuple(
             PresentationTokenProjection.tokens_for_node(
                 value,
@@ -3715,6 +4237,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             projection_constructions,
             key_value_pairs,
             class_symbols,
+            class_reference_parts,
         )
         return True
 
@@ -3741,15 +4264,41 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         self,
         value: ast.Dict,
     ) -> tuple[PresentationKeyValuePair, ...]:
-        pairs = tuple(
-            PresentationKeyValuePair.from_nodes(
-                key=key,
-                value=item_value,
-                class_reference_resolver=self.class_reference_resolver,
+        pairs: list[PresentationKeyValuePair] = []
+        for key, item_value in zip(value.keys, value.values, strict=True):
+            if key is None:
+                continue
+            if self.class_reference_resolver is not None:
+                pairs.append(
+                    PresentationKeyValuePair.from_nodes(
+                        key=key,
+                        value=item_value,
+                        class_reference_resolver=self.class_reference_resolver,
+                    )
+                )
+                continue
+            if self.deferred_class_reference_collector is None:
+                raise RuntimeError("deferred class-reference collector disappeared")
+            pairs.append(
+                PresentationKeyValuePair(
+                    key_source=ast.unparse(key),
+                    value_source=ast.unparse(item_value),
+                    value_tokens=sorted_tuple(
+                        {
+                            token.value
+                            for token in PresentationTokenProjection.tokens_for_node(
+                                item_value,
+                                PresentationTokenRole.DICT_VALUE,
+                            )
+                        }
+                    ),
+                    value_class_reference_parts=(
+                        self.deferred_class_reference_collector.reference_parts_for_node(
+                            item_value
+                        )
+                    ),
+                )
             )
-            for key, item_value in zip(value.keys, value.values, strict=True)
-            if key is not None
-        )
         return sorted_tuple(
             pairs,
             key=lambda item: (item.key_source, item.value_source),
@@ -3764,6 +4313,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         projection_constructions: tuple[PresentationAuthorityConstruction, ...] = (),
         key_value_pairs: tuple[PresentationKeyValuePair, ...] = (),
         class_symbols: tuple[str, ...] = (),
+        class_reference_parts: tuple[tuple[str, ...], ...] = (),
     ) -> None:
         line = node.lineno
         projection_id = (
@@ -3792,6 +4342,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 ),
                 key_value_pairs=key_value_pairs,
                 class_symbols=class_symbols,
+                class_reference_parts=class_reference_parts,
             )
         )
         if self.owner_construction_stack:
@@ -3878,7 +4429,7 @@ class ProjectionSemanticAuthority:
 class ProjectionClassSymbolLineageIndex:
     """Resolve presentation projections into indexed class lineage."""
 
-    class_index: ClassFamilyIndex
+    class_index: SemanticClassFamilyIndex
     projections: tuple[PresentationProjection, ...]
 
     @cached_property
@@ -3964,9 +4515,12 @@ class DataclassAuthorityNameAffinity:
 class ConstructionAuthorityResolver:
     """Resolve owner construction sites that descend to semantic authorities."""
 
-    class_index: ClassFamilyIndex
+    class_index: SemanticClassFamilyIndex
     authorities: tuple[SemanticAuthority, ...]
     projection_construction_type_names: frozenset[str] = frozenset()
+    compact_class_supplements_by_symbol: Mapping[
+        str, CompactSemanticClassSupplement
+    ] = field(default_factory=dict)
 
     @cached_property
     def construction_authority_class_cache(
@@ -4124,8 +4678,18 @@ class ConstructionAuthorityResolver:
 
     def _class_materialization_inputs(
         self,
-        indexed_class: IndexedClass,
+        indexed_class: IndexedClass | CompactIndexedClass,
     ) -> tuple[frozenset[str], frozenset[str]]:
+        if isinstance(indexed_class, CompactIndexedClass):
+            supplement = self.compact_class_supplements_by_symbol.get(
+                indexed_class.symbol
+            )
+            if supplement is None:
+                return frozenset(), frozenset()
+            return (
+                frozenset(supplement.declared_type_names),
+                frozenset(supplement.constructed_type_names),
+            )
         declared_type_names = frozenset(
             terminal_name
             for _, value in AutoRegisterClassAuthority(
@@ -4524,7 +5088,8 @@ class SemanticMirrorResolutionContext:
 class SemanticMirrorResolver(SemanticDescentGraphSpace):
     """Resolve graph edges where a projection mirrors an authority."""
 
-    class_index: ClassFamilyIndex
+    class_index: SemanticClassFamilyIndex
+    compact_class_supplements: tuple[CompactSemanticClassSupplement, ...] = ()
 
     @cached_property
     def policy_catalog(self) -> SemanticMirrorPolicyCatalog:
@@ -4548,6 +5113,10 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
                 for projection in self.projections
                 for construction in projection.owner_constructions
             ),
+            compact_class_supplements_by_symbol={
+                supplement.class_symbol: supplement
+                for supplement in self.compact_class_supplements
+            },
         )
 
     @cached_property
@@ -4790,7 +5359,7 @@ def normalized_name_variants(raw_name: str) -> tuple[str, ...]:
 
 
 def _class_reference_normalized_tokens(
-    class_index: ClassFamilyIndex,
+    class_index: SemanticClassFamilyIndex,
     class_symbols: tuple[str, ...],
 ) -> frozenset[str]:
     tokens: set[str] = set()
