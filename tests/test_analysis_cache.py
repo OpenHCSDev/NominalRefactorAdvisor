@@ -2367,6 +2367,104 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     assert calls == 1
 
 
+def test_compact_nominal_authority_candidates_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "authority.py").write_text(
+        "from abc import ABC\n"
+        "from dataclasses import dataclass\n"
+        "@dataclass\n"
+        "class JobSpecBase(ABC):\n"
+        "    name: str\n"
+        "    priority: int\n"
+        "    def start(self, value): return value\n"
+        "    def stop(self, value): return value\n",
+        encoding="utf-8",
+    )
+    (package_root / "duplicate.py").write_text(
+        "from dataclasses import dataclass\n"
+        "from .authority import JobSpecBase\n"
+        "@dataclass\n"
+        "class JobSpecCopy:\n"
+        "    name: str\n"
+        "    priority: int\n"
+        "class JobSpecWrapper:\n"
+        "    delegate: JobSpecBase\n"
+        "    def start(self, value): return self.delegate.start(value)\n"
+        "    def stop(self, value): return self.delegate.stop(value)\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    detector = surface_detectors.ExistingNominalAuthorityReuseDetector()
+    projections = detector.compact_module_projections(modules)
+    compact_index = surface_detectors._compact_nominal_authority_index(
+        projections, config
+    )
+    legacy_index = surface_detectors.NominalAuthorityIndex(modules)
+
+    assert surface_detectors._existing_nominal_authority_reuse_candidates_from_index(
+        compact_index
+    ) == surface_detectors._existing_nominal_authority_reuse_candidates_from_index(
+        legacy_index
+    )
+    assert surface_detectors._nominal_authority_implementation_retreat_candidates_from_index(
+        compact_index
+    ) == surface_detectors._nominal_authority_implementation_retreat_candidates_from_index(
+        legacy_index
+    )
+    for detector_type, collector in (
+        (
+            surface_detectors.ExistingNominalAuthorityReuseDetector,
+            surface_detectors._existing_nominal_authority_reuse_candidates_from_index,
+        ),
+        (
+            surface_detectors.NominalAuthorityImplementationRetreatDetector,
+            surface_detectors._nominal_authority_implementation_retreat_candidates_from_index,
+        ),
+    ):
+        instance = detector_type()
+        assert instance._findings_from_compact_context(
+            projections, compact_index, config
+        ) == instance._findings_for_candidates(collector(legacy_index), config)
+
+
+def test_nominal_authority_detectors_share_one_compact_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text("class Root: pass\n", encoding="utf-8")
+    detector_types = (
+        surface_detectors.ExistingNominalAuthorityReuseDetector,
+        surface_detectors.NominalAuthorityImplementationRetreatDetector,
+    )
+    calls = 0
+    original_builder = surface_detectors._compact_nominal_authority_index
+
+    def counting_builder(projections, config):
+        nonlocal calls
+        calls += 1
+        return original_builder(projections, config)
+
+    for detector_type in detector_types:
+        monkeypatch.setattr(
+            detector_type,
+            "compact_shared_context_builder",
+            staticmethod(counting_builder),
+        )
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,), detector_types, use_parse_cache=False
+    )
+
+    accumulator.findings_by_detector(DetectorConfig())
+
+    assert calls == 1
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -2482,8 +2580,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert surface_detectors.ManualFamilyRosterDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 39
-    assert len(partition.ast_retaining_context_detector_types) == 30
+    assert surface_detectors.ExistingNominalAuthorityReuseDetector in (
+        partition.compact_global_detector_types
+    )
+    assert surface_detectors.NominalAuthorityImplementationRetreatDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 41
+    assert len(partition.ast_retaining_context_detector_types) == 28
     assert len(partition.per_module_detector_types) == 183
 
 

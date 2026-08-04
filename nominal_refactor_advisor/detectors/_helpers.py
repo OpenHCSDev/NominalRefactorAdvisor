@@ -36,7 +36,7 @@ from ..impact_ranking import RefactorImpactKey
 import io
 import re
 import tokenize
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import lru_cache
 from itertools import combinations
@@ -1342,7 +1342,7 @@ def _shared_ordered_suffix(
     return tuple(reversed(shared_reversed))
 
 
-def _nominal_authority_shapes(
+def _nominal_authority_shapes_without_ancestors(
     modules: Sequence[ParsedModule],
 ) -> tuple[NominalAuthorityShape, ...]:
     shapes_without_ancestors: list[NominalAuthorityShape] = []
@@ -1368,6 +1368,13 @@ def _nominal_authority_shapes(
                 )
             )
 
+    return tuple(shapes_without_ancestors)
+
+
+def _nominal_authority_shapes(
+    modules: Sequence[ParsedModule],
+) -> tuple[NominalAuthorityShape, ...]:
+    shapes_without_ancestors = _nominal_authority_shapes_without_ancestors(modules)
     base_lookup: dict[str, set[str]] = defaultdict(set)
     for shape in shapes_without_ancestors:
         base_lookup[shape.class_name].update(shape.declared_base_names)
@@ -1395,9 +1402,45 @@ def _nominal_authority_shapes(
 class NominalAuthorityIndex:
     def __init__(self, modules: Sequence[ParsedModule]) -> None:
         self._shapes = _nominal_authority_shapes(modules)
+        self._build_derived_indexes()
+
+    def _build_derived_indexes(self) -> None:
         self._shapes_by_name: dict[str, list[NominalAuthorityShape]] = defaultdict(list)
+        self._reusable_shapes_by_first_field: dict[
+            tuple[str, str], list[NominalAuthorityShape]
+        ] = defaultdict(list)
         for shape in self._shapes:
             self._shapes_by_name[shape.class_name].append(shape)
+            if len(shape.field_type_map) >= 2 and _is_reusable_nominal_authority(shape):
+                self._reusable_shapes_by_first_field[shape.field_type_map[0]].append(
+                    shape
+                )
+
+    @classmethod
+    def from_shapes(
+        cls,
+        shapes: Sequence[NominalAuthorityShape],
+        *,
+        base_lookup: dict[str, set[str]] | None = None,
+    ) -> "NominalAuthorityIndex":
+        active_base_lookup: dict[str, set[str]] = defaultdict(set)
+        if base_lookup is None:
+            for shape in shapes:
+                active_base_lookup[shape.class_name].update(shape.declared_base_names)
+        else:
+            for class_name, base_names in base_lookup.items():
+                active_base_lookup[class_name].update(base_names)
+        ancestor_names_by_class = _class_ancestor_name_map(active_base_lookup)
+        instance = cls.__new__(cls)
+        instance._shapes = tuple(
+            replace(
+                shape,
+                ancestor_names=ancestor_names_by_class[shape.class_name],
+            )
+            for shape in shapes
+        )
+        instance._build_derived_indexes()
+        return instance
 
     def all_shapes(self) -> tuple[NominalAuthorityShape, ...]:
         return self._shapes
@@ -1409,12 +1452,14 @@ class NominalAuthorityIndex:
         self, shape: NominalAuthorityShape
     ) -> tuple[NominalAuthorityShape, ...]:
         compatible: list[NominalAuthorityShape] = []
-        for authority in self._shapes:
+        for authority in (
+            authority
+            for field in shape.field_type_map
+            for authority in self._reusable_shapes_by_first_field.get(field, ())
+        ):
             if authority.class_name == shape.class_name:
                 continue
             if authority.class_name in set(shape.ancestor_names):
-                continue
-            if not _is_reusable_nominal_authority(authority):
                 continue
             shared_field_names = (
                 HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
@@ -2379,7 +2424,14 @@ def _reuse_kind_for_authority(shape: NominalAuthorityShape) -> str:
 def _existing_nominal_authority_reuse_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ExistingNominalAuthorityReuseCandidate, ...]:
-    index = NominalAuthorityIndex(modules)
+    return _existing_nominal_authority_reuse_candidates_from_index(
+        NominalAuthorityIndex(modules)
+    )
+
+
+def _existing_nominal_authority_reuse_candidates_from_index(
+    index: NominalAuthorityIndex,
+) -> tuple[ExistingNominalAuthorityReuseCandidate, ...]:
     candidates: list[ExistingNominalAuthorityReuseCandidate] = []
     for shape in index.all_shapes():
         if shape.is_abstract or len(shape.field_type_map) < 2:
@@ -2437,7 +2489,14 @@ def _existing_nominal_authority_reuse_candidates(
 def _nominal_authority_implementation_retreat_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[NominalAuthorityImplementationRetreatCandidate, ...]:
-    index = NominalAuthorityIndex(modules)
+    return _nominal_authority_implementation_retreat_candidates_from_index(
+        NominalAuthorityIndex(modules)
+    )
+
+
+def _nominal_authority_implementation_retreat_candidates_from_index(
+    index: NominalAuthorityIndex,
+) -> tuple[NominalAuthorityImplementationRetreatCandidate, ...]:
     candidates: list[NominalAuthorityImplementationRetreatCandidate] = []
     for shape in index.all_shapes():
         if shape.is_abstract or not shape.is_dataclass_family:

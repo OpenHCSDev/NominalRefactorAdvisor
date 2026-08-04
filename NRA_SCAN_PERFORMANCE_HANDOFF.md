@@ -370,6 +370,31 @@ A trial slotted value-object representation reduced cold RSS to 317,688 KB and
 the family cache by about 1.7 MB, but repeated warm peaks rose to about 369.8
 MB; that trial was rejected in favor of the lower warm-memory representation.
 
+Existing nominal-authority reuse and dataclass implementation-retreat analysis
+now also reconstruct from the shared compact class projection.  The projection
+retains full legacy simple-name ancestry but stores typed fields only for the
+4,866 classes with at least two fields, totaling 22,546 field rows.  It also
+preserves ``ast.walk`` class order and function-local classes.  A reusable
+authority index keyed by the authority's first typed field replaces the legacy
+quadratic compatibility scan without changing candidate ordering or findings.
+Candidate and complete-finding equivalence cover both detectors, which share
+one reconstructed nominal-authority context.  The collected-family schema is
+version 7, the final full suite passes 969 tests, and the partition is now 183
+per-module detectors, 41 compact-global detectors, and 28 AST-retaining
+context-dependent detectors.
+
+The accepted 41-family run on the same frozen snapshot retained the same
+68,481 top-level projections and produced 475 identical cold/warm findings.
+The two newly migrated detectors each contribute eight findings.  Cold took
+114.13 seconds at 330,888 KB; warm took 35.24 seconds at 377,300 KB.  Runtime
+is effectively flat versus the 39-family checkpoint while exact coverage grew,
+and the larger RSS remains 57.6% below the controlled 889,100-KB all-at-once
+baseline.  Two rejected layouts informed the sparse representation: a separate
+duplicated authority family took 202.46 seconds cold, while putting typed fields
+on every compact class took 220.03 seconds and 386,280 KB cold because it
+crossed a per-object dictionary capacity boundary across roughly 17,000 class
+records.  Neither rejected layout is present in the accepted code.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

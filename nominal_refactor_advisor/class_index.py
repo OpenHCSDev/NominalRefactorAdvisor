@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
 from pathlib import Path
 
+from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     CollectedFamily,
@@ -155,6 +156,19 @@ class CompactModuleClassProjection:
     manual_family_rosters: tuple["CompactManualFamilyRosterObservation", ...] = ()
     nominal_class_first_line_overrides: tuple[tuple[str, int], ...] = ()
     extra_nominal_class_bases: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    nominal_authority_shapes: tuple["CompactNominalAuthorityShape", ...] = ()
+
+
+@dataclass(frozen=True)
+class CompactNominalAuthorityShape:
+    file_path: str
+    class_name: str
+    line: int
+    declared_base_names: tuple[str, ...]
+    field_type_map: tuple[tuple[str, str], ...]
+    method_names: tuple[str, ...]
+    is_abstract: bool
+    is_dataclass: bool
 
 
 @dataclass(frozen=True)
@@ -485,6 +499,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         (
             nominal_class_first_line_overrides,
             extra_nominal_class_bases,
+            nominal_authority_shapes,
         ) = _compact_nominal_class_scope_facts(parsed_module, indexed_class_nodes)
         classes = tuple(
             CompactIndexedClass(
@@ -625,6 +640,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 manual_family_rosters=_compact_manual_family_rosters(parsed_module),
                 nominal_class_first_line_overrides=nominal_class_first_line_overrides,
                 extra_nominal_class_bases=extra_nominal_class_bases,
+                nominal_authority_shapes=nominal_authority_shapes,
             )
         ]
 
@@ -1235,6 +1251,54 @@ def _compact_projection_reference(
     return None
 
 
+def _compact_nominal_field_type_map(
+    node: ast.ClassDef,
+) -> tuple[tuple[str, str], ...]:
+    typed_fields: dict[str, str] = {}
+    for statement in node.body:
+        if isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            if CLASSVAR_ANNOTATION_AUTHORITY.matches(statement.annotation):
+                continue
+            typed_fields.setdefault(
+                statement.target.id, ast.unparse(statement.annotation)
+            )
+            continue
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if statement.name != "__init__":
+            continue
+        parameter_annotations = {
+            argument.arg: ast.unparse(argument.annotation)
+            for argument in (
+                *statement.args.posonlyargs,
+                *statement.args.args,
+                *statement.args.kwonlyargs,
+            )
+            if argument.annotation is not None
+        }
+        for inner in statement.body:
+            target: ast.AST | None = None
+            value: ast.AST | None = None
+            if isinstance(inner, ast.Assign) and len(inner.targets) == 1:
+                target = inner.targets[0]
+                value = inner.value
+            elif isinstance(inner, ast.AnnAssign):
+                target = inner.target
+                value = inner.value
+            if not (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+                and isinstance(value, ast.Name)
+                and value.id in parameter_annotations
+            ):
+                continue
+            typed_fields.setdefault(target.attr, parameter_annotations[value.id])
+    return sorted_tuple(typed_fields.items())
+
+
 def _compact_manual_family_rosters(
     parsed_module: ParsedModule,
 ) -> tuple[CompactManualFamilyRosterObservation, ...]:
@@ -1294,6 +1358,7 @@ def _compact_nominal_class_scope_facts(
 ) -> tuple[
     tuple[tuple[str, int], ...],
     tuple[tuple[str, tuple[str, ...]], ...],
+    tuple[CompactNominalAuthorityShape, ...],
 ]:
     indexed_node_ids = {id(node) for _, node in indexed_class_nodes}
     indexed_first_nodes: dict[str, ast.ClassDef] = {}
@@ -1301,10 +1366,35 @@ def _compact_nominal_class_scope_facts(
         indexed_first_nodes.setdefault(node.name, node)
     first_nodes: dict[str, ast.ClassDef] = {}
     extra_bases: dict[str, set[str]] = {}
+    nominal_shapes: list[CompactNominalAuthorityShape] = []
     for node in ast.walk(parsed_module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         first_nodes.setdefault(node.name, node)
+        field_type_map = _compact_nominal_field_type_map(node)
+        if len(field_type_map) >= 2:
+            nominal_shapes.append(
+                CompactNominalAuthorityShape(
+                    file_path=str(parsed_module.path),
+                    class_name=node.name,
+                    line=node.lineno,
+                    declared_base_names=sorted_tuple(
+                        terminal_name
+                        for base in node.bases
+                        if (terminal_name := _terminal_reference_name(base)) is not None
+                    ),
+                    field_type_map=field_type_map,
+                    method_names=sorted_tuple(
+                        statement.name
+                        for statement in node.body
+                        if isinstance(
+                            statement, (ast.FunctionDef, ast.AsyncFunctionDef)
+                        )
+                    ),
+                    is_abstract=_is_abstract_class(node),
+                    is_dataclass=_is_dataclass_class(node),
+                )
+            )
         if id(node) in indexed_node_ids:
             continue
         extra_bases.setdefault(node.name, set()).update(
@@ -1322,6 +1412,7 @@ def _compact_nominal_class_scope_facts(
             (class_name, sorted_tuple(base_names))
             for class_name, base_names in extra_bases.items()
         ),
+        tuple(nominal_shapes),
     )
 
 

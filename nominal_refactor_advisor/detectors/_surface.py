@@ -16,9 +16,11 @@ from ._base import *
 from ._helpers import *
 from ._helpers import (
     _derived_query_index_candidates,
+    _existing_nominal_authority_reuse_candidates_from_index,
     _keyword_bag_adapter_candidates,
     _manual_family_roster_candidates,
     _nominal_authority_implementation_retreat_candidates,
+    _nominal_authority_implementation_retreat_candidates_from_index,
 )
 from ._runtime import _CompactConcreteFamilyContext, _compact_concrete_family_context
 from ._substrate_support import _IGNORED_ANCESTOR_NAMES, _class_ancestor_name_map
@@ -49,6 +51,41 @@ class NominalAuthorityImplementationRetreatMetricsAuthority:
 NOMINAL_AUTHORITY_IMPLEMENTATION_RETREAT_METRICS_AUTHORITY = (
     NominalAuthorityImplementationRetreatMetricsAuthority()
 )
+
+
+def _compact_nominal_authority_index(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> NominalAuthorityIndex:
+    del config
+    base_lookup: dict[str, set[str]] = {}
+    for projection in projections:
+        for indexed_class in projection.classes:
+            base_lookup.setdefault(indexed_class.simple_name, set()).update(
+                base_name.rsplit(".", 1)[-1]
+                for base_name in indexed_class.declared_base_names
+            )
+        for class_name, base_names in projection.extra_nominal_class_bases:
+            base_lookup.setdefault(class_name, set()).update(base_names)
+    return NominalAuthorityIndex.from_shapes(
+        tuple(
+            NominalAuthorityShape(
+                file_path=shape.file_path,
+                class_name=shape.class_name,
+                line=shape.line,
+                declared_base_names=shape.declared_base_names,
+                ancestor_names=(),
+                field_names=tuple(name for name, _ in shape.field_type_map),
+                field_type_map=shape.field_type_map,
+                method_names=shape.method_names,
+                is_abstract=shape.is_abstract,
+                is_dataclass_family=shape.is_dataclass,
+            )
+            for projection in projections
+            for shape in projection.nominal_authority_shapes
+        ),
+        base_lookup=base_lookup,
+    )
 
 
 def _compact_manual_family_roster_candidates(
@@ -423,8 +460,11 @@ declare_candidate_rule_detector(
 
 
 class ExistingNominalAuthorityReuseDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     CrossModuleCollectorCandidateDetector[ExistingNominalAuthorityReuseCandidate],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_nominal_authority_index)
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Existing nominal authority should be reused",
@@ -435,6 +475,31 @@ class ExistingNominalAuthorityReuseDetector(
     )
 
     candidate_collector = staticmethod(_existing_nominal_authority_reuse_candidates)
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _existing_nominal_authority_reuse_candidates_from_index(
+                _compact_nominal_authority_index(projections, config)
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        if not isinstance(context, NominalAuthorityIndex):
+            raise TypeError("nominal authority compact context is missing")
+        return self._findings_for_candidates(
+            _existing_nominal_authority_reuse_candidates_from_index(context), config
+        )
 
     def _findings_for_candidates(
         self,
@@ -490,10 +555,13 @@ class ExistingNominalAuthorityReuseDetector(
 
 
 class NominalAuthorityImplementationRetreatDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     CrossModuleCollectorCandidateDetector[
         NominalAuthorityImplementationRetreatCandidate
     ],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_nominal_authority_index)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Implementation mechanics must not split nominal authority identity",
@@ -506,6 +574,32 @@ class NominalAuthorityImplementationRetreatDetector(
     candidate_collector = staticmethod(
         _nominal_authority_implementation_retreat_candidates
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _nominal_authority_implementation_retreat_candidates_from_index(
+                _compact_nominal_authority_index(projections, config)
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        if not isinstance(context, NominalAuthorityIndex):
+            raise TypeError("nominal authority compact context is missing")
+        return self._findings_for_candidates(
+            _nominal_authority_implementation_retreat_candidates_from_index(context),
+            config,
+        )
 
     def _findings_for_candidates(
         self,
@@ -645,9 +739,21 @@ class PassThroughNominalWrapperDetector(IssueDetector):
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _pass_through_nominal_wrapper_candidates(modules):
-            evidence = (
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in _pass_through_nominal_wrapper_candidates(modules)
+        ]
+
+    def _finding_for_candidate(
+        self, candidate: PassThroughNominalWrapperCandidate
+    ) -> RefactorFinding:
+        return self.build_finding(
+            (
+                f"`{candidate.class_name}` forwards members {candidate.forwarded_member_names} to "
+                f"`{candidate.delegate_authority_name}` through `{candidate.delegate_field_name}` without "
+                "adding any new invariant."
+            ),
+            (
                 SourceLocation(
                     candidate.file_path, candidate.line, candidate.class_name
                 ),
@@ -656,27 +762,17 @@ class PassThroughNominalWrapperDetector(IssueDetector):
                     candidate.delegate_authority_line,
                     candidate.delegate_authority_name,
                 ),
-            )
-            findings.append(
-                self.build_finding(
-                    (
-                        f"`{candidate.class_name}` forwards members {candidate.forwarded_member_names} to "
-                        f"`{candidate.delegate_authority_name}` through `{candidate.delegate_field_name}` without "
-                        "adding any new invariant."
-                    ),
-                    evidence,
-                    scaffold=(
-                        f"# Delete `{candidate.class_name}` and type consumers against `{candidate.delegate_authority_name}` directly.\n"
-                        f"{candidate.delegate_field_name}: {candidate.delegate_authority_name}"
-                    ),
-                    codemod_patch=(
-                        f"# Remove `{candidate.class_name}` as a pass-through wrapper.\n"
-                        f"# Accept `{candidate.delegate_authority_name}` directly anywhere the wrapper is only forwarding "
-                        f"{candidate.forwarded_member_names}."
-                    ),
-                )
-            )
-        return findings
+            ),
+            scaffold=(
+                f"# Delete `{candidate.class_name}` and type consumers against `{candidate.delegate_authority_name}` directly.\n"
+                f"{candidate.delegate_field_name}: {candidate.delegate_authority_name}"
+            ),
+            codemod_patch=(
+                f"# Remove `{candidate.class_name}` as a pass-through wrapper.\n"
+                f"# Accept `{candidate.delegate_authority_name}` directly anywhere the wrapper is only forwarding "
+                f"{candidate.forwarded_member_names}."
+            ),
+        )
 
 
 class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
