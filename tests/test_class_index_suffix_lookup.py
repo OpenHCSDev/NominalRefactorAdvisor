@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor import class_index as class_index_module
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -94,6 +96,7 @@ def test_import_alias_suffix_index_is_lazy_and_repository_bounded() -> None:
 
 def test_compact_class_family_index_matches_full_ast_inheritance_graph(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -125,6 +128,14 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
     )
     modules = parse_python_modules(tmp_path, use_parse_cache=False)
     full_index = build_class_family_index(modules)
+    original_walk_nodes = class_index_module._walk_nodes
+    walked_roots: list[ast.AST] = []
+
+    def tracked_walk_nodes(root: ast.AST) -> tuple[ast.AST, ...]:
+        walked_roots.append(root)
+        return original_walk_nodes(root)
+
+    monkeypatch.setattr(class_index_module, "_walk_nodes", tracked_walk_nodes)
     compact_projections = tuple(
         projection
         for module in modules
@@ -139,6 +150,9 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
         compact_index,
     )
 
+    assert walked_roots == [
+        module.module for module in modules for _root_walk in range(4)
+    ]
     assert compact_resolver.known_symbols is compact_index.classes_by_symbol
     assert (
         compact_resolver.unique_symbols_by_suffix._symbols_by_terminal_name

@@ -1333,6 +1333,42 @@ complete exact status in 8.071 internal seconds.  Full verification passes all
 999 tests in 394.06 seconds; the 11 warnings remain the existing concurrent
 pytest cleanup race.
 
+### Cold class-projection traversal follow-up
+
+A new empty-cache baseline replaces the historical fully cold estimate. On the
+frozen 919-module snapshot, current exact construction completes in 195.842
+external seconds at 324.7 MiB peak RSS, returning the same 12 focused findings
+with all 252 detectors complete. Its internal split is 179.835 seconds of
+streamed parsing/projection preparation and 14.525 seconds of analysis. The old
+250.14-second / 881,776-KB integrated measurement therefore no longer describes
+current cold behavior: even before this follow-up, wall time is 21.7% lower and
+peak memory is approximately 62% lower.
+
+Per-family timing attributes 150.521 of 176.062 preparation seconds to the 25
+compact projection collectors. The class projection is the largest individual
+family at 30.103 seconds. It separately traversed the same module root four
+times to select classes, manual family rosters, selector axes, and registry-order
+calls. Those four complete walks now share the existing AST traversal tuple for
+the current module. Subtree walks remain lazy, and the tuple is cleared by the
+existing module-boundary cache release before the next source file.
+
+The isolated class-family gate falls from 29.708 to 23.901 seconds (19.5%) across
+all 919 modules. Baseline and candidate projection streams produce the same
+SHA-256 digest,
+``259445399c42ec5e4b307a1e7834445732a19217cf7fee30379de8ade1f3963b``.
+A regression requires exactly four cached walks per module and requires each
+walk root to be that module, preventing subtree retention from being widened
+accidentally.
+
+With an entirely new cache, the accepted candidate completes in 184.355 external
+seconds and 182.979 internal seconds. Preparation falls to 168.601 seconds,
+11.234 seconds (6.2%) below the new baseline; external wall time falls by 11.487
+seconds (5.9%). Peak RSS is 325.9 MiB, a 1.2-MiB (0.4%) difference inside the
+allocator's observed run-to-run range. The exact analysis phase remains stable
+at 14.378 seconds and all 252 detectors complete. Full verification passes all
+999 tests in 348.82 seconds; the 11 warnings remain the existing concurrent
+pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

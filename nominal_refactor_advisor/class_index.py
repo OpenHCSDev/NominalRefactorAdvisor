@@ -22,6 +22,7 @@ from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     CollectedFamily,
     ParsedModule,
+    _walk_nodes,
 )
 from .collection_algebra import sorted_tuple
 from .constructor_algebra import ConstructorParameterField
@@ -614,7 +615,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
         all_class_nodes = tuple(
             node
-            for node in ast.walk(parsed_module.module)
+            for node in _walk_nodes(parsed_module.module)
             if isinstance(node, ast.ClassDef)
         )
         class_field_type_maps = {
@@ -1846,7 +1847,7 @@ def _compact_manual_family_rosters(
 ) -> tuple[CompactManualFamilyRosterObservation, ...]:
     known_class_names = {
         node.name
-        for node in ast.walk(parsed_module.module)
+        for node in _walk_nodes(parsed_module.module)
         if isinstance(node, ast.ClassDef)
     }
     observations: list[CompactManualFamilyRosterObservation] = []
@@ -2392,7 +2393,7 @@ def _compact_manual_selector_axes(
         if len(case_names) >= 2
     )
     axes: list[CompactManualSelectorAxis] = []
-    for node in ast.walk(parsed_module.module):
+    for node in _walk_nodes(parsed_module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         for method in node.body:
@@ -3260,7 +3261,7 @@ def _compact_registry_order_calls(
     module: ast.Module,
 ) -> tuple[CompactRegistryOrderCall, ...]:
     calls: list[CompactRegistryOrderCall] = []
-    for node in ast.walk(module):
+    for node in _walk_nodes(module):
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
