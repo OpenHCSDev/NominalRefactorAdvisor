@@ -1508,6 +1508,68 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
     assert warm.projection_count == 0
 
 
+def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "mod.py"
+    source = "class Example:\n    pass\n"
+    module_path.write_text(source, encoding="utf-8")
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=tmp_path / ".nra-cache" / "analysis",
+    )
+    partition = DetectorTypePartition.from_detector_types(
+        default_detector_types_for_analysis()
+    )
+    families = tuple(
+        dict.fromkeys(
+            family
+            for detector_type in partition.compact_global_detector_types
+            for family in detector_type.compact_projection_families()
+        )
+    )
+    parser = ast_tools_module.PythonModuleRootParser.for_root(
+        package_root,
+        cache_dir=cache_dir,
+    )
+    module_identity = ast_tools_module.PythonModulePathIdentity.from_path(
+        module_path,
+        parser.analysis_root,
+    )
+    bundle_kwargs = {
+        "path": module_path,
+        "module_name": module_identity.import_name,
+        "source_signature": ast_tools_module.python_source_cache_signature(source),
+        "family_cache_dir": parser.collected_family_cache_dir,
+        "families": families,
+    }
+    assert (
+        ast_tools_module.collected_family_cache_bundle_is_complete_for_source_signature(
+            **bundle_kwargs
+        )
+    )
+
+    def unexpected_family_stat(**kwargs):
+        del kwargs
+        raise AssertionError("complete bundle marker should bypass family stat fan-out")
+
+    monkeypatch.setattr(
+        ast_tools_module,
+        "collected_family_cache_entry_exists_for_source_signature",
+        unexpected_family_stat,
+    )
+    assert (
+        ast_tools_module.collected_family_cache_bundle_is_complete_for_source_signature(
+            **bundle_kwargs
+        )
+    )
+
+
 def test_compact_hierarchy_projection_matches_full_ast_detection(
     tmp_path: Path,
 ) -> None:

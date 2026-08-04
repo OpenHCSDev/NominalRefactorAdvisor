@@ -867,6 +867,34 @@ above the interactive target.  The next representation step is family-at-a-time
 loading and joining so every compact family need not coexist in memory.
 Checkpoint verification passes all 987 tests in 336.99 seconds.
 
+## 2026-08-04 family-at-a-time exact-join checkpoint
+
+Exact compact orchestration no longer retains all 25 projection families at
+once.  Detectors are grouped by their declared family tuple; the compact class
+graph stays live as the shared anchor for its five multi-family joins, while
+each companion and single-family projection is loaded, joined, and released in
+turn.  Shared contexts still span every detector consuming the same live family,
+and every loaded item is revalidated against the no-AST contract.
+
+Each module now has one source- and family-set-specific completeness marker.
+After the marker exists, streamed preparation performs one marker check rather
+than 25 cache-entry checks.  Lazy payload loading still validates every pickle
+and reparses just that source/family if an entry is absent or corrupt.  The
+compact class, inheritance-method, and repeated-builder families now have an
+explicit 3-MB per-module ceiling so large but AST-free DQ modules persist rather
+than being reparsed on every exact run.  On the frozen inventory all three have
+919 payloads; their observed maxima are 687,144, 2,003,228, and 472,469 bytes.
+
+Before bundle markers, the same 333-finding `definitive_refinement.py` exact
+scan fell from 79.00 seconds / 835,988 KB to 66.93 seconds / 449,552 KB.  Once
+all 919 module bundles were complete, a fresh exact scan of
+`definitive_refinement_sparse_projection.py` completed all 252 detectors with
+12 in-scope findings in 34.38 seconds at 406,464 KB.  Its reported preparation
+time was 0.56 seconds and analysis time was 32.65 seconds.  Relative to the
+first integrated focused exact run, this is 56.5% less wall time and 51.4% less
+peak memory while preserving complete repository context.
+Checkpoint verification passes all 988 tests in 373.52 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

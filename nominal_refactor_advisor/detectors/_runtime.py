@@ -4910,6 +4910,7 @@ class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]
     """Persist normalized builder calls for repository-wide grouping."""
 
     item_type = BuilderCallShape
+    cache_payload_max_bytes = 3_000_000
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[BuilderCallShape]:

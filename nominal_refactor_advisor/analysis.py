@@ -37,10 +37,14 @@ from .ast_tools import (
     PythonModuleRootParser,
     PythonSourcePathDiscovery,
     PythonSourcePathPolicy,
+    collected_family_cache_bundle_is_complete_for_source_signature,
+    collected_family_cache_entry_exists_for_source_signature,
     collect_family_items,
     load_cached_collected_family_items_for_source,
+    load_cached_collected_family_items_for_source_signature,
     parse_python_module_roots,
     parse_python_modules,
+    python_source_cache_signature,
     semantic_python_source_hash,
 )
 from .cache_paths import (
@@ -604,52 +608,15 @@ class CompactGlobalProjectionAccumulator:
         self,
         config: DetectorConfig,
     ) -> dict[type[IssueDetector], list[RefactorFinding]]:
-        findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
         projections_by_family = {
             family: tuple(self._projections_by_family.get(family, ()))
             for family in self.projection_families
         }
-        shared_contexts: dict[tuple[type[CollectedFamily], object], object] = {}
-        for detector_type in self.detector_types:
-            detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
-            compact_detector_type = cast(
-                type[CompactModuleProjectionDetectorMixin], detector_type
-            )
-            families = compact_detector_type.compact_projection_families()
-            context_builder = compact_detector_type.compact_shared_context_builder
-            if len(families) != 1:
-                if context_builder is not None:
-                    raise TypeError(
-                        f"{detector_type.__name__} cannot use a single-family "
-                        "shared context builder for a multi-family compact join"
-                    )
-                findings[detector_type] = (
-                    detector._findings_from_compact_projection_groups(
-                        {
-                            family: projections_by_family.get(family, ())
-                            for family in families
-                        },
-                        config,
-                    )
-                )
-                continue
-            family = families[0]
-            projections = projections_by_family.get(family, ())
-            context: object | None = None
-            if context_builder is not None:
-                context_key = (family, context_builder)
-                if context_key not in shared_contexts:
-                    shared_contexts[context_key] = context_builder(
-                        projections,
-                        config,
-                    )
-                context = shared_contexts[context_key]
-            findings[detector_type] = detector._findings_from_compact_context(
-                projections,
-                context,
-                config,
-            )
-        return findings
+        return _compact_findings_by_detector(
+            self.detector_types,
+            projections_by_family,
+            config,
+        )
 
     @property
     def projection_count(self) -> int:
@@ -686,6 +653,52 @@ class CompactGlobalProjectionAccumulator:
         if isinstance(value, (tuple, list, set, frozenset)):
             return any(cls._retains_ast(item, seen) for item in value)
         return False
+
+
+def _compact_findings_by_detector(
+    detector_types: tuple[type[IssueDetector], ...],
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> dict[type[IssueDetector], list[RefactorFinding]]:
+    """Join one live compact-family group with shared-context reuse."""
+
+    findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
+    shared_contexts: dict[tuple[type[CollectedFamily], object], object] = {}
+    for detector_type in detector_types:
+        detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
+        compact_detector_type = cast(
+            type[CompactModuleProjectionDetectorMixin], detector_type
+        )
+        families = compact_detector_type.compact_projection_families()
+        context_builder = compact_detector_type.compact_shared_context_builder
+        if len(families) != 1:
+            if context_builder is not None:
+                raise TypeError(
+                    f"{detector_type.__name__} cannot use a single-family "
+                    "shared context builder for a multi-family compact join"
+                )
+            findings[detector_type] = detector._findings_from_compact_projection_groups(
+                {family: projections_by_family.get(family, ()) for family in families},
+                config,
+            )
+            continue
+        family = families[0]
+        projections = projections_by_family.get(family, ())
+        context: object | None = None
+        if context_builder is not None:
+            context_key = (family, context_builder)
+            if context_key not in shared_contexts:
+                shared_contexts[context_key] = context_builder(
+                    projections,
+                    config,
+                )
+            context = shared_contexts[context_key]
+        findings[detector_type] = detector._findings_from_compact_context(
+            projections,
+            context,
+            config,
+        )
+    return findings
 
 
 def accumulate_compact_global_projections_for_roots(
@@ -754,6 +767,241 @@ def accumulate_compact_global_projections_for_roots(
             release_module_analysis_memory(collect_cycles=False)
     gc.collect()
     return accumulator
+
+
+@dataclass(frozen=True)
+class CompactProjectionCacheSource:
+    """One source identity from which a compact family can be loaded or repaired."""
+
+    path: Path
+    module_name: str
+    source_signature: str
+    family_cache_dir: Path | None
+    scan_root: Path
+    cache_dir: Path | None
+    use_parse_cache: bool
+    source_policy: PythonSourcePathPolicy
+
+
+@dataclass
+class BoundedCompactProjectionManifest:
+    """Load compact families only for the repository join currently running."""
+
+    detector_types: tuple[type[IssueDetector], ...]
+    sources: list[CompactProjectionCacheSource] = field(default_factory=list)
+    fallback_projections: dict[
+        tuple[type[CollectedFamily], str], tuple[object, ...]
+    ] = field(default_factory=dict)
+    _projection_counts_by_family: dict[type[CollectedFamily], int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+
+    def add_source(self, source: CompactProjectionCacheSource) -> None:
+        self.sources.append(source)
+
+    @property
+    def projection_families(self) -> tuple[type[CollectedFamily], ...]:
+        families: list[type[CollectedFamily]] = []
+        seen: set[type[CollectedFamily]] = set()
+        for detector_type in self.detector_types:
+            compact_type = cast(
+                type[CompactModuleProjectionDetectorMixin], detector_type
+            )
+            for family in compact_type.compact_projection_families():
+                if family in seen:
+                    continue
+                seen.add(family)
+                families.append(family)
+        return tuple(families)
+
+    def add_fallback(
+        self,
+        family: type[CollectedFamily],
+        path: Path,
+        projections: tuple[object, ...],
+    ) -> None:
+        self.fallback_projections[family, str(path.resolve())] = projections
+
+    def cache_entry_exists(
+        self,
+        source: CompactProjectionCacheSource,
+        family: type[CollectedFamily],
+    ) -> bool:
+        return collected_family_cache_entry_exists_for_source_signature(
+            path=source.path,
+            module_name=source.module_name,
+            source_signature=source.source_signature,
+            family_cache_dir=source.family_cache_dir,
+            family=family,
+        )
+
+    def cache_bundle_is_complete(
+        self,
+        source: CompactProjectionCacheSource,
+    ) -> bool:
+        return collected_family_cache_bundle_is_complete_for_source_signature(
+            path=source.path,
+            module_name=source.module_name,
+            source_signature=source.source_signature,
+            family_cache_dir=source.family_cache_dir,
+            families=self.projection_families,
+        )
+
+    def projections_for_family(
+        self,
+        family: type[CollectedFamily],
+    ) -> tuple[object, ...]:
+        projections: list[object] = []
+        for source in self.sources:
+            source_projections = (
+                load_cached_collected_family_items_for_source_signature(
+                    path=source.path,
+                    module_name=source.module_name,
+                    source_signature=source.source_signature,
+                    family_cache_dir=source.family_cache_dir,
+                    family=family,
+                )
+            )
+            if source_projections is None:
+                source_projections = self.fallback_projections.get(
+                    (family, str(source.path.resolve()))
+                )
+            if source_projections is None:
+                source_projections = self._repair_source_family(source, family)
+            for projection in source_projections:
+                if CompactGlobalProjectionAccumulator._retains_ast(projection):
+                    raise TypeError(
+                        f"{family.__name__} compact projection retains an AST"
+                    )
+            projections.extend(source_projections)
+        family_projections = tuple(projections)
+        self._projection_counts_by_family.setdefault(
+            family,
+            len(family_projections),
+        )
+        return family_projections
+
+    def _repair_source_family(
+        self,
+        source: CompactProjectionCacheSource,
+        family: type[CollectedFamily],
+    ) -> tuple[object, ...]:
+        parser = PythonModuleRootParser.for_root(
+            source.scan_root,
+            cache_dir=source.cache_dir,
+            use_parse_cache=source.use_parse_cache,
+            parse_workers=1,
+            source_policy=source.source_policy,
+        )
+        repaired: tuple[object, ...] = ()
+        for module in parser.parsed_source_paths((source.path,)):
+            repaired = tuple(collect_family_items(module, family))
+            del module
+        release_module_analysis_memory(collect_cycles=False)
+        return repaired
+
+    def findings_by_detector(
+        self,
+        config: DetectorConfig,
+    ) -> dict[type[IssueDetector], list[RefactorFinding]]:
+        detector_types_by_families: dict[
+            tuple[type[CollectedFamily], ...], list[type[IssueDetector]]
+        ] = {}
+        for detector_type in self.detector_types:
+            compact_type = cast(
+                type[CompactModuleProjectionDetectorMixin], detector_type
+            )
+            families = compact_type.compact_projection_families()
+            detector_types_by_families.setdefault(families, []).append(detector_type)
+
+        findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
+        remaining_groups = set(detector_types_by_families)
+        multi_family_groups = tuple(
+            families for families in detector_types_by_families if len(families) > 1
+        )
+        anchor_family: type[CollectedFamily] | None = None
+        if multi_family_groups:
+            use_counts: dict[type[CollectedFamily], int] = {}
+            for families in multi_family_groups:
+                for family in families:
+                    use_counts[family] = use_counts.get(family, 0) + 1
+            anchor_family = max(
+                use_counts,
+                key=lambda family: (
+                    use_counts[family],
+                    family.__module__,
+                    family.__qualname__,
+                ),
+            )
+
+        if anchor_family is not None:
+            anchor_projections = self.projections_for_family(anchor_family)
+            anchor_single_group = (anchor_family,)
+            if anchor_single_group in remaining_groups:
+                findings.update(
+                    _compact_findings_by_detector(
+                        tuple(detector_types_by_families[anchor_single_group]),
+                        {anchor_family: anchor_projections},
+                        config,
+                    )
+                )
+                remaining_groups.remove(anchor_single_group)
+            for families in multi_family_groups:
+                if anchor_family not in families or families not in remaining_groups:
+                    continue
+                projections_by_family = {anchor_family: anchor_projections}
+                for family in families:
+                    if family is anchor_family:
+                        continue
+                    family_projections = self.projections_for_family(family)
+                    projections_by_family[family] = family_projections
+                    single_group = (family,)
+                    if single_group in remaining_groups:
+                        findings.update(
+                            _compact_findings_by_detector(
+                                tuple(detector_types_by_families[single_group]),
+                                {family: family_projections},
+                                config,
+                            )
+                        )
+                        remaining_groups.remove(single_group)
+                findings.update(
+                    _compact_findings_by_detector(
+                        tuple(detector_types_by_families[families]),
+                        projections_by_family,
+                        config,
+                    )
+                )
+                remaining_groups.remove(families)
+                del projections_by_family
+                del family_projections
+                release_module_analysis_memory(collect_cycles=False)
+            del anchor_projections
+            release_module_analysis_memory(collect_cycles=False)
+
+        for families in detector_types_by_families:
+            if families not in remaining_groups:
+                continue
+            projections_by_family = {
+                family: self.projections_for_family(family) for family in families
+            }
+            findings.update(
+                _compact_findings_by_detector(
+                    tuple(detector_types_by_families[families]),
+                    projections_by_family,
+                    config,
+                )
+            )
+            del projections_by_family
+            release_module_analysis_memory(collect_cycles=False)
+        gc.collect()
+        return findings
+
+    @property
+    def projection_count(self) -> int:
+        return sum(self._projection_counts_by_family.values())
 
 
 @dataclass(frozen=True)
@@ -828,7 +1076,7 @@ def analyze_compact_roots_with_cache(
             projection_count=0,
         )
 
-    accumulator = CompactGlobalProjectionAccumulator.from_detector_types(
+    projection_manifest = BoundedCompactProjectionManifest(
         partition.compact_global_detector_types
     )
     local_findings: list[RefactorFinding] = []
@@ -853,10 +1101,22 @@ def analyze_compact_roots_with_cache(
                 continue
             streamed_paths.add(normalized_path)
             source = path.read_text(encoding="utf-8")
+            source_signature = python_source_cache_signature(source)
             module_identity = PythonModulePathIdentity.from_path(
                 path,
                 parser.analysis_root,
             )
+            projection_source = CompactProjectionCacheSource(
+                path=path,
+                module_name=module_identity.import_name,
+                source_signature=source_signature,
+                family_cache_dir=parser.collected_family_cache_dir,
+                scan_root=root,
+                cache_dir=cache_dir,
+                use_parse_cache=use_parse_cache,
+                source_policy=active_source_policy,
+            )
+            projection_manifest.add_source(projection_source)
             include_local_findings = (
                 report_scope is None
                 or not report_scope.has_report_filter
@@ -879,25 +1139,16 @@ def analyze_compact_roots_with_cache(
                     local_cache_hit_count += 1
                     local_findings.extend(local_cache_lookup.findings)
 
-            missing_families = list(accumulator.projection_families)
-            family_cache_dir = parser.collected_family_cache_dir
-            if family_cache_dir is not None:
-                missing_families = []
-                for family in accumulator.projection_families:
-                    projections = load_cached_collected_family_items_for_source(
-                        path=path,
-                        module_name=module_identity.import_name,
-                        source=source,
-                        family_cache_dir=family_cache_dir,
-                        family=family,
-                    )
-                    if projections is None:
-                        missing_families.append(family)
-                        continue
-                    accumulator.add_family_projections(
+            missing_families = []
+            if not projection_manifest.cache_bundle_is_complete(projection_source):
+                missing_families = [
+                    family
+                    for family in projection_manifest.projection_families
+                    if not projection_manifest.cache_entry_exists(
+                        projection_source,
                         family,
-                        cast(tuple[object, ...], projections),
                     )
+                ]
 
             local_cache_miss = bool(
                 include_local_findings
@@ -922,17 +1173,24 @@ def analyze_compact_roots_with_cache(
                         raise RuntimeError("local cache identity disappeared")
                     analysis_cache.store(local_identity, module_findings)
                 for family in missing_families:
-                    accumulator.add_family_projections(
+                    projections = tuple(collect_family_items(module, family))
+                    if not projection_manifest.cache_entry_exists(
+                        projection_source,
                         family,
-                        tuple(collect_family_items(module, family)),
-                    )
+                    ):
+                        projection_manifest.add_fallback(
+                            family,
+                            path,
+                            cast(tuple[object, ...], projections),
+                        )
                 del module
+            projection_manifest.cache_bundle_is_complete(projection_source)
             release_module_analysis_memory(collect_cycles=False)
     gc.collect()
     preparation_seconds = perf_counter() - started - local_analysis_seconds
 
     join_started = perf_counter()
-    findings_by_detector = accumulator.findings_by_detector(config)
+    findings_by_detector = projection_manifest.findings_by_detector(config)
     findings = SortedFindingsAuthority.sort(
         [
             *local_findings,
@@ -963,7 +1221,7 @@ def analyze_compact_roots_with_cache(
         cache_identity=cache_identity,
         preparation_seconds=preparation_seconds,
         analysis_seconds=analysis_seconds,
-        projection_count=accumulator.projection_count,
+        projection_count=projection_manifest.projection_count,
     )
 
 

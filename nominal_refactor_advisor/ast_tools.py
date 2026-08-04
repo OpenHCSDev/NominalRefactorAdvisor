@@ -233,6 +233,12 @@ def _source_signature(source: str) -> str:
     return hashlib.blake2s(source.encode("utf-8"), digest_size=16).hexdigest()
 
 
+def python_source_cache_signature(source: str) -> str:
+    """Return the raw-source token used by AST and collected-family caches."""
+
+    return _source_signature(source)
+
+
 def semantic_python_source_hash(source: str) -> str:
     """Hash significant lexical structure and source positions, not comments."""
 
@@ -1243,16 +1249,126 @@ def load_cached_collected_family_items_for_source(
 
     if family_cache_dir is None:
         return None
-    identity = CollectedFamilyCacheIdentity(
-        path=str(path.resolve()),
+    return load_cached_collected_family_items_for_source_signature(
+        path=path,
         module_name=module_name,
         source_signature=_source_signature(source),
+        family_cache_dir=family_cache_dir,
+        family=family,
+    )
+
+
+def _collected_family_cache_identity_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family: type[CollectedFamily[ShapeItemT]],
+) -> CollectedFamilyCacheIdentity:
+    return CollectedFamilyCacheIdentity(
+        path=str(path.resolve()),
+        module_name=module_name,
+        source_signature=source_signature,
         family_module=family.__module__,
         family_qualname=family.__qualname__,
         item_type_module=family.item_type.__module__,
         item_type_qualname=family.item_type.__qualname__,
         python_version=(sys.version_info.major, sys.version_info.minor),
         schema=collected_family_cache_schema,
+    )
+
+
+def collected_family_cache_entry_exists_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+) -> bool:
+    """Check a compact-family cache path without materializing its payload."""
+
+    if family_cache_dir is None:
+        return False
+    identity = _collected_family_cache_identity_for_source_signature(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family=family,
+    )
+    return _collected_family_cache_path(family_cache_dir, identity).is_file()
+
+
+def collected_family_cache_bundle_is_complete_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    families: tuple[type[CollectedFamily], ...],
+) -> bool:
+    """Use one marker for a complete module/family cache bundle."""
+
+    if family_cache_dir is None:
+        return False
+    bundle_payload = repr(
+        (
+            str(path.resolve()),
+            module_name,
+            source_signature,
+            (sys.version_info.major, sys.version_info.minor),
+            collected_family_cache_schema,
+            tuple(
+                (
+                    family.__module__,
+                    family.__qualname__,
+                    family.item_type.__module__,
+                    family.item_type.__qualname__,
+                )
+                for family in families
+            ),
+        )
+    ).encode("utf-8")
+    marker_token = hashlib.blake2s(bundle_payload, digest_size=16).hexdigest()
+    marker_path = family_cache_dir / f"bundle-{marker_token}.complete"
+    if marker_path.is_file():
+        return True
+    if not all(
+        collected_family_cache_entry_exists_for_source_signature(
+            path=path,
+            module_name=module_name,
+            source_signature=source_signature,
+            family_cache_dir=family_cache_dir,
+            family=family,
+        )
+        for family in families
+    ):
+        return False
+    try:
+        family_cache_dir.mkdir(parents=True, exist_ok=True)
+        marker_path.write_bytes(b"complete\n")
+    except OSError:
+        pass
+    return True
+
+
+def load_cached_collected_family_items_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+) -> tuple[ShapeItemT, ...] | None:
+    """Load compact facts from a precomputed raw-source cache token."""
+
+    if family_cache_dir is None:
+        return None
+    identity = _collected_family_cache_identity_for_source_signature(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family=family,
     )
     return _load_collected_family_cache_payload(
         family_cache_dir,

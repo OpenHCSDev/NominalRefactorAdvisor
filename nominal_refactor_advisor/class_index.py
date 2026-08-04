@@ -571,6 +571,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     """Persist class/import facts needed by the global inheritance graph."""
 
     item_type = CompactModuleClassProjection
+    cache_payload_max_bytes = 3_000_000
 
     @classmethod
     def collect(

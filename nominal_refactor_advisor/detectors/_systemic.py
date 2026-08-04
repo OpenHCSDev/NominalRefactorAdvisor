@@ -800,6 +800,7 @@ class InheritanceMethodShapeFamily(CollectedFamily[MethodShape]):
     """Persist AST-free method shapes used by hierarchy-wide grouping."""
 
     item_type = MethodShape
+    cache_payload_max_bytes = 3_000_000
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[MethodShape]:
