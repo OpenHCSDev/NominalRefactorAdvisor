@@ -895,6 +895,27 @@ first integrated focused exact run, this is 56.5% less wall time and 51.4% less
 peak memory while preserving complete repository context.
 Checkpoint verification passes all 988 tests in 373.52 seconds.
 
+## 2026-08-04 report-independent global-result checkpoint
+
+Focused exact aggregate identities remain report-path-specific, but the 69
+compact-global detector outputs are now also published once under an unfiltered
+repository-context identity.  Moving to another focused file with unchanged
+context loads that exact global family, runs or reuses only the requested
+module-local shard, filters the combined findings, and publishes the new focused
+aggregate.  Global reasoning is not approximated: the reusable payload was
+produced from all 919 module projections and is invalidated by source, config,
+detector-registry, Python, and engine identity.
+
+On the frozen DQ inventory, the first publisher scan of
+`definitive_refinement_sparse_projection.py` completed all 252 detectors with
+12 in-scope findings in 37.91 seconds at 415,288 KB.  A subsequent exact scan of
+`definitive_refinement.py` reused the same complete global result and returned
+333 in-scope findings in 9.69 seconds at 173,972 KB.  Its reported preparation
+and analysis times were 3.99 and 4.45 seconds.  A synthetic two-target parity
+gate forces the global join to fail on the second scan and proves that the
+report-independent cache still matches independently filtered full-AST output.
+Checkpoint verification passes all 989 tests in 434.58 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

@@ -26,6 +26,7 @@ from .analysis_cache import (
     AnalysisLatestPointerPolicy,
     ContextualModuleAnalysisCacheIdentity,
     GlobalDetectorAnalysisCacheIdentity,
+    GlobalDetectorFamilyAnalysisCacheIdentity,
     GlobalModuleContextSignature,
     PerModuleAnalysisCacheIdentity,
     SourceFileSignatureCache,
@@ -1076,8 +1077,32 @@ def analyze_compact_roots_with_cache(
             projection_count=0,
         )
 
+    global_context_identity = AnalysisCacheIdentityAuthority(
+        roots=roots,
+        config=config,
+        source_policy=active_source_policy,
+        source_signature_cache=analysis_cache.source_signature_cache(),
+        source_paths=tuple(source_paths),
+    ).cache_identity()
+    global_context_signature = global_context_identity.cache_token
+    global_family_identity = (
+        GlobalDetectorFamilyAnalysisCacheIdentity.from_global_context(
+            config,
+            partition.compact_global_detector_types,
+            global_context_signature,
+            roots,
+        )
+    )
+    global_family_lookup = analysis_cache.load(global_family_identity)
+    global_findings = list(global_family_lookup.findings)
+    missing_global_detector_types = (
+        []
+        if global_family_lookup.status is AnalysisCacheStatus.HIT
+        else list(partition.compact_global_detector_types)
+    )
+
     projection_manifest = BoundedCompactProjectionManifest(
-        partition.compact_global_detector_types
+        tuple(missing_global_detector_types)
     )
     local_findings: list[RefactorFinding] = []
     local_analysis_seconds = 0.0
@@ -1100,28 +1125,35 @@ def analyze_compact_roots_with_cache(
             ):
                 continue
             streamed_paths.add(normalized_path)
+            include_local_findings = (
+                report_scope is None
+                or not report_scope.has_report_filter
+                or report_scope.includes_report_path(path)
+            )
+            if not missing_global_detector_types and not include_local_findings:
+                continue
             source = path.read_text(encoding="utf-8")
             source_signature = python_source_cache_signature(source)
             module_identity = PythonModulePathIdentity.from_path(
                 path,
                 parser.analysis_root,
             )
-            projection_source = CompactProjectionCacheSource(
-                path=path,
-                module_name=module_identity.import_name,
-                source_signature=source_signature,
-                family_cache_dir=parser.collected_family_cache_dir,
-                scan_root=root,
-                cache_dir=cache_dir,
-                use_parse_cache=use_parse_cache,
-                source_policy=active_source_policy,
+            projection_source = (
+                CompactProjectionCacheSource(
+                    path=path,
+                    module_name=module_identity.import_name,
+                    source_signature=source_signature,
+                    family_cache_dir=parser.collected_family_cache_dir,
+                    scan_root=root,
+                    cache_dir=cache_dir,
+                    use_parse_cache=use_parse_cache,
+                    source_policy=active_source_policy,
+                )
+                if missing_global_detector_types
+                else None
             )
-            projection_manifest.add_source(projection_source)
-            include_local_findings = (
-                report_scope is None
-                or not report_scope.has_report_filter
-                or report_scope.includes_report_path(path)
-            )
+            if projection_source is not None:
+                projection_manifest.add_source(projection_source)
             local_identity = None
             local_cache_lookup = None
             if include_local_findings and partition.per_module_detector_types:
@@ -1140,7 +1172,9 @@ def analyze_compact_roots_with_cache(
                     local_findings.extend(local_cache_lookup.findings)
 
             missing_families = []
-            if not projection_manifest.cache_bundle_is_complete(projection_source):
+            if projection_source is not None and not (
+                projection_manifest.cache_bundle_is_complete(projection_source)
+            ):
                 missing_families = [
                     family
                     for family in projection_manifest.projection_families
@@ -1184,21 +1218,25 @@ def analyze_compact_roots_with_cache(
                             cast(tuple[object, ...], projections),
                         )
                 del module
-            projection_manifest.cache_bundle_is_complete(projection_source)
+            if projection_source is not None:
+                projection_manifest.cache_bundle_is_complete(projection_source)
             release_module_analysis_memory(collect_cycles=False)
     gc.collect()
     preparation_seconds = perf_counter() - started - local_analysis_seconds
 
     join_started = perf_counter()
-    findings_by_detector = projection_manifest.findings_by_detector(config)
+    if missing_global_detector_types:
+        missing_findings_by_detector = projection_manifest.findings_by_detector(config)
+        global_findings = [
+            finding
+            for detector_type in partition.compact_global_detector_types
+            for finding in missing_findings_by_detector[detector_type]
+        ]
+        analysis_cache.store(global_family_identity, global_findings)
     findings = SortedFindingsAuthority.sort(
         [
             *local_findings,
-            *(
-                finding
-                for detector_type in partition.compact_global_detector_types
-                for finding in findings_by_detector[detector_type]
-            ),
+            *global_findings,
         ],
         detector_types=detector_types,
     )
@@ -1212,6 +1250,7 @@ def analyze_compact_roots_with_cache(
         else (
             AnalysisCacheStatus.PARTIAL
             if local_cache_hit_count
+            or global_family_lookup.status is AnalysisCacheStatus.HIT
             else AnalysisCacheStatus.MISS
         )
     )

@@ -893,11 +893,42 @@ class GlobalDetectorAnalysisCacheIdentity(AnalysisCacheEntryContext):
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
+@dataclass(frozen=True, kw_only=True)
+class GlobalDetectorFamilyAnalysisCacheIdentity(AnalysisCacheEntryContext):
+    """Report-independent output identity for one exact global detector family."""
+
+    context_signature: str
+
+    @classmethod
+    def from_global_context(
+        cls,
+        config: DetectorConfig,
+        detector_types: tuple[type[IssueDetector], ...],
+        context_signature: str,
+        presentation_roots: tuple[Path | str, ...] = (),
+    ) -> "GlobalDetectorFamilyAnalysisCacheIdentity":
+        return cls(
+            config=detector_config_signature(config),
+            detector_registry=DetectorRegistrySignature.from_detector_types(
+                detector_types
+            ),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            context_signature=context_signature,
+            presentation_roots=presentation_root_texts(presentation_roots),
+        )
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
 AnalysisCacheEntryIdentity: TypeAlias = (
     AnalysisCacheIdentity
     | PerModuleAnalysisCacheIdentity
     | ContextualModuleAnalysisCacheIdentity
     | GlobalDetectorAnalysisCacheIdentity
+    | GlobalDetectorFamilyAnalysisCacheIdentity
 )
 AnalysisCachePayloadValue: TypeAlias = (
     AnalysisCacheEntryIdentity

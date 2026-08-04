@@ -10,6 +10,7 @@ from time import sleep
 import pytest
 
 from nominal_refactor_advisor.analysis import (
+    AnalysisPathScope,
     CachedPathAnalysisRequest,
     ChangedPathRootAssignment,
     DetectorTypePartition,
@@ -40,6 +41,7 @@ from nominal_refactor_advisor.ast_tools import (
     parse_python_modules,
 )
 from nominal_refactor_advisor import ast_tools as ast_tools_module
+from nominal_refactor_advisor import analysis as analysis_module
 from nominal_refactor_advisor import semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.cache_paths import (
     AdvisorCacheRetention,
@@ -1568,6 +1570,65 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
             **bundle_kwargs
         )
     )
+
+
+def test_compact_global_detector_shards_reuse_across_focused_report_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    generated_path = package_root / "generated_policy.py"
+    runtime_path = package_root / "runtime.py"
+    generated_path.write_text(
+        "# generated from policy schema\n"
+        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    runtime_path.write_text(
+        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    analysis_cache_dir = tmp_path / ".nra-cache" / "analysis"
+    first_scope = AnalysisPathScope(
+        analysis_roots=(package_root,),
+        report_roots=(generated_path,),
+    )
+    second_scope = AnalysisPathScope(
+        analysis_roots=(package_root,),
+        report_roots=(runtime_path,),
+    )
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+    all_findings = analyze_modules(modules, DetectorConfig(), analysis_workers=1)
+
+    first = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        report_scope=first_scope,
+    )
+    assert first.findings == first_scope.filter_findings(all_findings)
+
+    def unexpected_global_join(self, config):
+        del self, config
+        raise AssertionError("cross-target scan should reuse exact global shards")
+
+    monkeypatch.setattr(
+        analysis_module.BoundedCompactProjectionManifest,
+        "findings_by_detector",
+        unexpected_global_join,
+    )
+    second = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        report_scope=second_scope,
+    )
+
+    assert second.cache_status is AnalysisCacheStatus.PARTIAL
+    assert second.findings == second_scope.filter_findings(all_findings)
+    assert second.projection_count == 0
 
 
 def test_compact_hierarchy_projection_matches_full_ast_detection(
