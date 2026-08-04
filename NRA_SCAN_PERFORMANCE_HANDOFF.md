@@ -327,6 +327,28 @@ seconds warm.  Process high-water RSS was 324,564 KB cold and 356,080 KB warm;
 the larger value is 60.0% below the controlled 889,100-KB all-at-once baseline
 and 4.9% below the 34-family warm peak.
 
+Registry projection-surface and repeated subset-policy authority analysis now
+also reconstruct from the shared compact keyed-registry proof.  Top-level
+tuple, list, and dict references are normalized while each module AST is live;
+constant strings remain distinct from imported aliases, and mapping direction
+is retained so key-to-type and type-to-key projections remain exact.  All five
+keyed-registry detectors build the shared proof context once.  Direct
+compact/legacy equivalence covers cross-module aliases, surface roles, subset
+policies, and the legacy reassignment behavior where one name can contribute
+both sequence and mapping surfaces.  The collected-family cache schema is now
+version 4.  The full suite passes 967 tests, and the partition is 183
+per-module detectors, 38 compact-global detectors, and 31 AST-retaining
+context-dependent detectors.
+
+On the same frozen 919-file snapshot, the 38-family run retained the same
+68,481 top-level projections plus 223 nested named projection surfaces and
+produced the same 459 cold/warm findings.  Neither newly migrated detector
+fires on this snapshot.  The paired run took 111.11 seconds cold and 35.67
+seconds warm.  Process high-water RSS was 325,596 KB cold and 355,908 KB warm;
+the larger value remains 60.0% below the controlled 889,100-KB all-at-once
+baseline and is 172 KB below the 36-family warm peak despite the added exact
+global analysis.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

@@ -17,6 +17,7 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..ast_tools import fingerprint_function
+from ..class_index import CompactNamedProjectionSurface
 
 from ._base import *
 from ._helpers import *
@@ -3476,6 +3477,216 @@ def _compact_injective_type_registry_candidates_from_facts(
     )
 
 
+def _compact_mature_injective_registry_facts(
+    facts: tuple[KeyedRegistryAxisFact, ...],
+) -> tuple[KeyedRegistryAxisFact, ...]:
+    return tuple(
+        fact
+        for fact in facts
+        if not fact.missing_maturity_signals
+        and not fact.injectivity_proof.duplicate_key_names
+        and not fact.injectivity_proof.duplicate_type_names
+        and not fact.injectivity_proof.missing_type_names
+    )
+
+
+def _compact_registry_projection_import_aliases(
+    projection: CompactModuleClassProjection,
+    *,
+    registry_projection: CompactModuleClassProjection,
+    fact: KeyedRegistryAxisFact,
+) -> dict[str, str]:
+    canonical_names = frozenset(
+        (
+            fact.class_name,
+            fact.key_type_name,
+            *fact.injectivity_proof.registered_type_names,
+        )
+    )
+    return {
+        local_name: canonical_name
+        for local_name, qualified_name in projection.import_aliases
+        for canonical_name in canonical_names
+        if qualified_name == f"{registry_projection.module_name}.{canonical_name}"
+    }
+
+
+def _compact_registry_projection_reference_name(
+    reference: tuple[str, str | None],
+    import_aliases: dict[str, str],
+) -> str:
+    value, alias_head = reference
+    if alias_head is None or alias_head not in import_aliases:
+        return value
+    canonical_head = import_aliases[alias_head]
+    if value == alias_head:
+        return canonical_head
+    return f"{canonical_head}{value[len(alias_head):]}"
+
+
+def _compact_registry_projection_surface_candidate(
+    surface: CompactNamedProjectionSurface,
+    *,
+    fact: KeyedRegistryAxisFact,
+    import_aliases: dict[str, str],
+) -> RegistryProjectionSurfaceCandidate | None:
+    proof = fact.injectivity_proof
+    if surface.sequence_references:
+        reference_names = tuple(
+            _compact_registry_projection_reference_name(reference, import_aliases)
+            for reference in surface.sequence_references
+        )
+        shared_key_names = sorted_tuple(
+            frozenset(reference_names) & frozenset(proof.key_names)
+        )
+        shared_type_names = sorted_tuple(
+            frozenset(reference_names) & frozenset(proof.registered_type_names)
+        )
+        surface_kind = _REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_kind(
+            surface_name=surface.surface_name,
+            shared_key_names=shared_key_names,
+            shared_type_names=shared_type_names,
+            has_key_to_type_pairs=False,
+            has_type_to_key_pairs=False,
+        )
+        if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 2:
+            return None
+        return _REGISTRY_PROJECTION_SURFACE_ANALYZER.candidate(
+            file_path=surface.file_path,
+            fact=fact,
+            surface_name=surface.surface_name,
+            line=surface.line,
+            surface_kind=surface_kind,
+            projected_names=reference_names,
+            shared_key_names=shared_key_names,
+            shared_type_names=shared_type_names,
+        )
+
+    key_names = tuple(
+        _compact_registry_projection_reference_name(reference, import_aliases)
+        for reference in surface.dict_key_references
+    )
+    value_names = tuple(
+        _compact_registry_projection_reference_name(reference, import_aliases)
+        for reference in surface.dict_value_references
+    )
+    proof_key_names = frozenset(proof.key_names)
+    proof_type_names = frozenset(proof.registered_type_names)
+    shared_key_names = sorted_tuple(
+        (frozenset(key_names) | frozenset(value_names)) & proof_key_names
+    )
+    shared_type_names = sorted_tuple(
+        (frozenset(key_names) | frozenset(value_names)) & proof_type_names
+    )
+    has_key_to_type_pairs = bool(
+        len(frozenset(key_names) & proof_key_names) >= 2
+        and len(frozenset(value_names) & proof_type_names) >= 2
+    )
+    has_type_to_key_pairs = bool(
+        len(frozenset(key_names) & proof_type_names) >= 2
+        and len(frozenset(value_names) & proof_key_names) >= 2
+    )
+    surface_kind = _REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_kind(
+        surface_name=surface.surface_name,
+        shared_key_names=shared_key_names,
+        shared_type_names=shared_type_names,
+        has_key_to_type_pairs=has_key_to_type_pairs,
+        has_type_to_key_pairs=has_type_to_key_pairs,
+    )
+    if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 3:
+        return None
+    return _REGISTRY_PROJECTION_SURFACE_ANALYZER.candidate(
+        file_path=surface.file_path,
+        fact=fact,
+        surface_name=surface.surface_name,
+        line=surface.line,
+        surface_kind=surface_kind,
+        projected_names=(*key_names, *value_names),
+        shared_key_names=shared_key_names,
+        shared_type_names=shared_type_names,
+    )
+
+
+def _compact_registry_projection_surface_candidates_from_facts(
+    projections: tuple[CompactModuleClassProjection, ...],
+    facts: tuple[KeyedRegistryAxisFact, ...],
+) -> tuple[RegistryProjectionSurfaceCandidate, ...]:
+    projections_by_path = {
+        projection.file_path: projection for projection in projections
+    }
+    candidates: list[RegistryProjectionSurfaceCandidate] = []
+    for fact in _compact_mature_injective_registry_facts(facts):
+        registry_projection = projections_by_path.get(fact.file_path)
+        if registry_projection is None:
+            continue
+        for projection in projections:
+            if projection.file_path == fact.file_path:
+                import_aliases: dict[str, str] = {}
+            else:
+                import_aliases = _compact_registry_projection_import_aliases(
+                    projection,
+                    registry_projection=registry_projection,
+                    fact=fact,
+                )
+                if not (
+                    fact.key_type_name in import_aliases.values()
+                    or fact.class_name in import_aliases.values()
+                    or frozenset(import_aliases.values())
+                    & frozenset(fact.injectivity_proof.registered_type_names)
+                ):
+                    continue
+            for surface in projection.named_projection_surfaces:
+                candidate = _compact_registry_projection_surface_candidate(
+                    surface,
+                    fact=fact,
+                    import_aliases=import_aliases,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (
+            item.file_path,
+            item.line,
+            item.registry_class_name,
+            item.surface_name,
+        ),
+    )
+
+
+def _compact_registry_projection_surface_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[RegistryProjectionSurfaceCandidate, ...]:
+    return _compact_registry_projection_surface_candidates_from_facts(
+        projections,
+        _compact_keyed_registry_axis_facts(projections, config),
+    )
+
+
+def _compact_registry_projection_policy_authority_candidates_from_facts(
+    projections: tuple[CompactModuleClassProjection, ...],
+    facts: tuple[KeyedRegistryAxisFact, ...],
+) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
+    return (
+        _REGISTRY_PROJECTION_SURFACE_ANALYZER.policy_authority_candidates_from_surfaces(
+            _compact_registry_projection_surface_candidates_from_facts(
+                projections, facts
+            )
+        )
+    )
+
+
+def _compact_registry_projection_policy_authority_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
+    return _compact_registry_projection_policy_authority_candidates_from_facts(
+        projections,
+        _compact_keyed_registry_axis_facts(projections, config),
+    )
+
+
 class _CompactPrematureRegistryInfrastructureDetectorBase(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[
@@ -3567,6 +3778,74 @@ class _CompactInjectiveTypeRegistryDetectorBase(
         facts = cast(tuple[KeyedRegistryAxisFact, ...], context)
         return self._findings_for_candidates(
             _compact_injective_type_registry_candidates_from_facts(facts),
+            config,
+        )
+
+
+class _CompactRegistryProjectionSurfaceDetectorBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector[RegistryProjectionSurfaceCandidate],
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_keyed_registry_axis_facts)
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_registry_projection_surface_candidates(projections, config),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        facts = cast(tuple[KeyedRegistryAxisFact, ...], context)
+        return self._findings_for_candidates(
+            _compact_registry_projection_surface_candidates_from_facts(
+                projections, facts
+            ),
+            config,
+        )
+
+
+class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector[
+        RegistryProjectionPolicyAuthorityCandidate
+    ],
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_keyed_registry_axis_facts)
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_registry_projection_policy_authority_candidates(
+                projections, config
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        facts = cast(tuple[KeyedRegistryAxisFact, ...], context)
+        return self._findings_for_candidates(
+            _compact_registry_projection_policy_authority_candidates_from_facts(
+                projections, facts
+            ),
             config,
         )
 
@@ -3746,7 +4025,7 @@ declare_candidate_rule_detector(
             candidate.materialization_rule,
         ),
     ),
-    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    detector_base=_CompactRegistryProjectionSurfaceDetectorBase,
     candidate_collector=_REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_candidates,
 )
 
@@ -3790,7 +4069,7 @@ declare_candidate_rule_detector(
             *candidate.materialization_rules,
         ),
     ),
-    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    detector_base=_CompactRegistryProjectionPolicyAuthorityDetectorBase,
     candidate_collector=(
         _REGISTRY_PROJECTION_SURFACE_ANALYZER.policy_authority_candidates
     ),

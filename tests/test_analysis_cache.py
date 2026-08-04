@@ -2023,6 +2023,77 @@ def test_compact_keyed_registry_axis_facts_match_legacy_ast_facts(
     )
 
 
+def test_compact_registry_projection_candidates_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "core.py").write_text(
+        "from abc import ABC, abstractmethod\n"
+        "from enum import Enum, auto\n"
+        "from typing import Generic, TypeVar\n"
+        "KeyT = TypeVar('KeyT')\n"
+        "class AutoRegisterByClassVar: pass\n"
+        "class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]): pass\n"
+        "class Mode(Enum):\n"
+        "    ALPHA = auto()\n"
+        "    BETA = auto()\n"
+        "    GAMMA = auto()\n"
+        "class ModeRunner(KeyedNominalFamily[Mode], ABC):\n"
+        "    registry_key_attr = 'mode'\n"
+        "    _registry = {}\n"
+        "    @classmethod\n"
+        "    def for_mode(cls, mode): return cls._registry[mode]\n"
+        "    @abstractmethod\n"
+        "    def run(self): ...\n"
+        "class AlphaModeRunner(ModeRunner):\n"
+        "    mode = Mode.ALPHA\n"
+        "    def run(self): return 'alpha'\n"
+        "class BetaModeRunner(ModeRunner):\n"
+        "    mode = Mode.BETA\n"
+        "    def run(self): return 'beta'\n"
+        "class GammaModeRunner(ModeRunner):\n"
+        "    mode = Mode.GAMMA\n"
+        "    def run(self): return 'gamma'\n"
+        "def run_alpha(): return ModeRunner.for_mode(Mode.ALPHA).run()\n"
+        "def run_beta(): return ModeRunner.for_mode(Mode.BETA).run()\n",
+        encoding="utf-8",
+    )
+    (package_root / "config.py").write_text(
+        "from pkg.core import (\n"
+        "    AlphaModeRunner as Alpha, BetaModeRunner as Beta, Mode as ModeKey,\n"
+        ")\n"
+        "PUBLIC_MODE_CHOICES = (ModeKey.ALPHA, ModeKey.BETA)\n"
+        "PUBLIC_MODE_TYPES = {ModeKey.ALPHA: Alpha, ModeKey.BETA: Beta}\n"
+        "DUAL_MODE_SURFACE = (ModeKey.ALPHA, ModeKey.BETA)\n"
+        "DUAL_MODE_SURFACE = {ModeKey.ALPHA: Alpha, ModeKey.BETA: Beta}\n"
+        "ALIAS_NAME_STRINGS = ('Alpha', 'Beta')\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    projections = (
+        systemic_detectors.RegistryProjectionSurfaceDetector.compact_module_projections(
+            modules
+        )
+    )
+    facts = systemic_detectors._compact_keyed_registry_axis_facts(projections, config)
+
+    assert (
+        systemic_detectors._compact_registry_projection_surface_candidates_from_facts(
+            projections, facts
+        )
+        == systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_candidates(
+            list(modules), config
+        )
+    )
+    assert systemic_detectors._compact_registry_projection_policy_authority_candidates_from_facts(
+        projections, facts
+    ) == systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER.policy_authority_candidates(
+        list(modules), config
+    )
+
+
 def test_keyed_registry_detectors_share_one_compact_fact_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2048,6 +2119,8 @@ def test_keyed_registry_detectors_share_one_compact_fact_context(
         systemic_detectors.NonInjectiveTypeRegistryDetector,
         systemic_detectors.InjectiveTypeRegistryDetector,
         systemic_detectors.PrematureRegistryInfrastructureDetector,
+        systemic_detectors.RegistryProjectionSurfaceDetector,
+        systemic_detectors.RegistryProjectionPolicyAuthorityDetector,
     )
     calls = 0
     original_builder = systemic_detectors._compact_keyed_registry_axis_facts
@@ -2375,8 +2448,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.LatentImplementationRosterDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 36
-    assert len(partition.ast_retaining_context_detector_types) == 33
+    assert systemic_detectors.RegistryProjectionSurfaceDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.RegistryProjectionPolicyAuthorityDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 38
+    assert len(partition.ast_retaining_context_detector_types) == 31
     assert len(partition.per_module_detector_types) == 183
 
 

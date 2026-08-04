@@ -151,6 +151,7 @@ class CompactModuleClassProjection:
     repeated_keyed_family_roots: tuple["CompactRepeatedKeyedFamilyRoot", ...] = ()
     manual_subclass_roster_roots: tuple["CompactManualSubclassRosterRoot", ...] = ()
     latent_rosters: tuple["CompactLatentRosterObservation", ...] = ()
+    named_projection_surfaces: tuple["CompactNamedProjectionSurface", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,18 @@ class CompactLatentRosterObservation:
     projection_role: str
     member_names: tuple[str, ...]
     line_count: int
+
+
+@dataclass(frozen=True)
+class CompactNamedProjectionSurface:
+    """Top-level tuple/list/dict references used by registry projections."""
+
+    file_path: str
+    surface_name: str
+    line: int
+    sequence_references: tuple[tuple[str, str | None], ...] = ()
+    dict_key_references: tuple[tuple[str, str | None], ...] = ()
+    dict_value_references: tuple[tuple[str, str | None], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -587,6 +600,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     parsed_module
                 ),
                 latent_rosters=_compact_latent_roster_observations(parsed_module),
+                named_projection_surfaces=_compact_named_projection_surfaces(
+                    parsed_module
+                ),
             )
         ]
 
@@ -1128,6 +1144,73 @@ def _compact_inline_mutation_rosters(
                 )
             )
     return tuple(observations)
+
+
+def _compact_named_projection_surfaces(
+    parsed_module: ParsedModule,
+) -> tuple[CompactNamedProjectionSurface, ...]:
+    named_values: dict[str, tuple[int, ast.AST]] = {}
+    named_sequences: dict[str, tuple[int, ast.Tuple | ast.List]] = {}
+    for statement in _trim_leading_docstring(list(parsed_module.module.body)):
+        target_value = _compact_assignment_target_value(statement)
+        if target_value is None or not isinstance(target_value[0], ast.Name):
+            continue
+        target, value = target_value
+        named_values[target.id] = (statement.lineno, value)
+        if isinstance(value, (ast.Tuple, ast.List)):
+            named_sequences[target.id] = (statement.lineno, value)
+
+    surfaces: list[CompactNamedProjectionSurface] = []
+    for surface_name, (line, value) in named_sequences.items():
+        surfaces.append(
+            CompactNamedProjectionSurface(
+                file_path=str(parsed_module.path),
+                surface_name=surface_name,
+                line=line,
+                sequence_references=tuple(
+                    reference
+                    for element in value.elts
+                    if (reference := _compact_projection_reference(element)) is not None
+                ),
+            )
+        )
+    for surface_name, (line, value) in named_values.items():
+        if isinstance(value, ast.Dict):
+            surfaces.append(
+                CompactNamedProjectionSurface(
+                    file_path=str(parsed_module.path),
+                    surface_name=surface_name,
+                    line=line,
+                    dict_key_references=tuple(
+                        reference
+                        for key in value.keys
+                        if key is not None
+                        if (reference := _compact_projection_reference(key)) is not None
+                    ),
+                    dict_value_references=tuple(
+                        reference
+                        for item in value.values
+                        if (reference := _compact_projection_reference(item))
+                        is not None
+                    ),
+                )
+            )
+    return tuple(surfaces)
+
+
+def _compact_projection_reference(
+    node: ast.AST,
+) -> tuple[str, str | None] | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value, None
+    if isinstance(node, ast.Name):
+        return node.id, node.id
+    if isinstance(node, ast.Attribute):
+        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(node)
+        if parts is None:
+            return ast.unparse(node), None
+        return ".".join(parts), parts[0]
+    return None
 
 
 def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:

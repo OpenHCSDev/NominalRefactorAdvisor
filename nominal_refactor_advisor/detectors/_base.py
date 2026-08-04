@@ -8549,7 +8549,7 @@ class _RegistryProjectionSurfaceAnalyzer:
     def candidate(
         self,
         *,
-        module: ParsedModule,
+        file_path: str,
         fact: KeyedRegistryAxisFact,
         surface_name: str,
         line: int,
@@ -8572,7 +8572,7 @@ class _RegistryProjectionSurfaceAnalyzer:
             shared_type_names=shared_type_names,
         )
         projection_role = self.surface_role(
-            file_path=str(module.path),
+            file_path=file_path,
             surface_name=surface_name,
             surface_kind=surface_kind,
         )
@@ -8589,7 +8589,7 @@ class _RegistryProjectionSurfaceAnalyzer:
             projection_role=projection_role,
         )
         return RegistryProjectionSurfaceCandidate(
-            file_path=str(module.path),
+            file_path=file_path,
             line=line,
             registry_class_name=fact.class_name,
             key_type_name=fact.key_type_name,
@@ -8650,7 +8650,7 @@ class _RegistryProjectionSurfaceAnalyzer:
         if surface_kind is None or (len(shared_key_names) + len(shared_type_names) < 2):
             return None
         return self.candidate(
-            module=module,
+            file_path=str(module.path),
             fact=fact,
             surface_name=surface_name,
             line=line,
@@ -8708,7 +8708,7 @@ class _RegistryProjectionSurfaceAnalyzer:
         if surface_kind is None or (len(shared_key_names) + len(shared_type_names) < 3):
             return None
         return self.candidate(
-            module=module,
+            file_path=str(module.path),
             fact=fact,
             surface_name=surface_name,
             line=line,
@@ -8780,10 +8780,18 @@ class _RegistryProjectionSurfaceAnalyzer:
     def policy_authority_candidates(
         self, modules: Sequence[ParsedModule], config: DetectorConfig
     ) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
+        return self.policy_authority_candidates_from_surfaces(
+            self.surface_candidates(modules, config)
+        )
+
+    def policy_authority_candidates_from_surfaces(
+        self,
+        surface_candidates: Sequence[RegistryProjectionSurfaceCandidate],
+    ) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
         grouped: dict[
             tuple[str, str, str], list[RegistryProjectionSurfaceCandidate]
         ] = defaultdict(list)
-        for candidate in self.surface_candidates(modules, config):
+        for candidate in surface_candidates:
             if (
                 candidate.projection_coverage_ratio >= 1.0
                 or candidate.subset_policy_hint is None
