@@ -965,7 +965,7 @@ class _CompactABCOptimizerDetectorBase(
     CrossModuleCollectorCandidateDetector,
 ):
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(_compact_abc_optimizer_context)
+    compact_shared_context_builder = staticmethod(compact_class_repository_context)
     compact_candidate_attribute: ClassVar[str]
 
     def _findings_from_compact_projections(
@@ -975,7 +975,7 @@ class _CompactABCOptimizerDetectorBase(
     ) -> list[RefactorFinding]:
         return self._findings_from_compact_context(
             projections,
-            _compact_abc_optimizer_context(projections, config),
+            compact_class_repository_context(projections, config),
             config,
         )
 
@@ -985,11 +985,20 @@ class _CompactABCOptimizerDetectorBase(
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        del projections
-        if not isinstance(context, CompactABCOptimizerContext):
-            raise TypeError("compact ABC optimizer context is unavailable")
+        if isinstance(context, CompactABCOptimizerContext):
+            abc_context = context
+        else:
+            repository = require_compact_class_repository_context(context)
+            abc_context = repository.cached(
+                _compact_abc_optimizer_context,
+                lambda: _compact_abc_optimizer_context(
+                    projections,
+                    config,
+                    class_index=repository.class_index,
+                ),
+            )
         return self._findings_for_candidates(
-            getattr(context, type(self).compact_candidate_attribute),
+            getattr(abc_context, type(self).compact_candidate_attribute),
             config,
         )
 

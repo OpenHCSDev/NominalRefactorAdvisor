@@ -37,6 +37,8 @@ from ._base import (
     high_confidence_spec,
     CompactModuleProjectionDetectorMixin,
     CrossModuleCollectorCandidateDetector,
+    compact_class_repository_context,
+    require_compact_class_repository_context,
 )
 from ._helpers import (
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
@@ -1670,9 +1672,12 @@ class CompactCarrierReuseContext:
 def _compact_carrier_reuse_context(
     projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> CompactCarrierReuseContext:
     del config
-    class_index = build_compact_class_family_index(projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(projections)
     return CompactCarrierReuseContext(
         available_candidates=_compact_available_carrier_reuse_candidates(projections),
         composition_candidates=_compact_carrier_composition_retreat_candidates(
@@ -1687,7 +1692,7 @@ class _CompactCarrierReuseDetectorBase(
     CrossModuleCollectorCandidateDetector,
 ):
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(_compact_carrier_reuse_context)
+    compact_shared_context_builder = staticmethod(compact_class_repository_context)
     compact_candidate_attribute: ClassVar[str]
 
     def _findings_from_compact_projections(
@@ -1697,7 +1702,7 @@ class _CompactCarrierReuseDetectorBase(
     ) -> list[RefactorFinding]:
         return self._findings_from_compact_context(
             projections,
-            _compact_carrier_reuse_context(projections, config),
+            compact_class_repository_context(projections, config),
             config,
         )
 
@@ -1707,11 +1712,20 @@ class _CompactCarrierReuseDetectorBase(
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        del projections
-        if not isinstance(context, CompactCarrierReuseContext):
-            raise TypeError("compact carrier-reuse context is unavailable")
+        if isinstance(context, CompactCarrierReuseContext):
+            carrier_context = context
+        else:
+            repository = require_compact_class_repository_context(context)
+            carrier_context = repository.cached(
+                _compact_carrier_reuse_context,
+                lambda: _compact_carrier_reuse_context(
+                    projections,
+                    config,
+                    class_index=repository.class_index,
+                ),
+            )
         return self._findings_for_candidates(
-            getattr(context, type(self).compact_candidate_attribute),
+            getattr(carrier_context, type(self).compact_candidate_attribute),
             config,
         )
 

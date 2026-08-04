@@ -67,6 +67,8 @@ from nominal_refactor_advisor.detectors import _environment as environment_detec
 from nominal_refactor_advisor.detectors import (
     _abstraction_reuse as abstraction_reuse_detectors,
 )
+from nominal_refactor_advisor.detectors import _base as base_detectors
+from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import (
     _nominal_authority_surface as nominal_surface_detectors,
 )
@@ -2322,7 +2324,7 @@ def test_compact_registry_projection_candidates_match_legacy_ast_candidates(
     )
 
 
-def test_keyed_registry_detectors_share_one_compact_fact_context(
+def test_keyed_registry_detectors_share_one_compact_repository_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2353,23 +2355,98 @@ def test_keyed_registry_detectors_share_one_compact_fact_context(
     calls = 0
     original_builder = systemic_detectors._compact_keyed_registry_axis_facts
 
-    def counting_builder(projections, config):
+    def counting_builder(projections, config, *, class_index=None):
         nonlocal calls
         calls += 1
-        return original_builder(projections, config)
-
-    for detector_type in detector_types:
-        monkeypatch.setattr(
-            detector_type,
-            "compact_shared_context_builder",
-            staticmethod(counting_builder),
+        return original_builder(
+            projections,
+            config,
+            class_index=class_index,
         )
+
+    monkeypatch.setattr(
+        systemic_detectors,
+        "_compact_keyed_registry_axis_facts",
+        counting_builder,
+    )
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
         detector_types,
         use_parse_cache=False,
     )
 
+    accumulator.findings_by_detector(DetectorConfig())
+
+    assert calls == 1
+
+
+def test_compact_class_detectors_share_one_repository_inheritance_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "family.py").write_text(
+        "from abc import ABC, abstractmethod\n"
+        "\n"
+        "class Handler(ABC):\n"
+        "    @abstractmethod\n"
+        "    def run(self): ...\n"
+        "\n"
+        "class AlphaHandler(Handler):\n"
+        "    def run(self): return 'alpha'\n"
+        "\n"
+        "class BetaHandler(Handler):\n"
+        "    def run(self): return 'beta'\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        structural_detectors.ClassLevelInheritanceOptimizationDetector,
+        abstraction_reuse_detectors.CarrierCompositionRetreatDetector,
+        runtime_detectors.ManualConcreteSubclassRosterDetector,
+        runtime_detectors.LatentImplementationRosterDetector,
+        runtime_detectors.SemanticInheritanceFamilySSOTDetector,
+        runtime_detectors.AutoRegisterMetaUnderRentedDetector,
+        runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
+        systemic_detectors.CrossModuleAxisShadowFamilyDetector,
+        systemic_detectors.PrematureRegistryInfrastructureDetector,
+        systemic_detectors.InheritedAutoRegisterConfigBoilerplateDetector,
+        systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector,
+        surface_detectors.ManualFamilyRosterDetector,
+    )
+    calls = 0
+    original_builder = base_detectors.build_compact_class_family_index
+
+    def counting_builder(projections):
+        nonlocal calls
+        calls += 1
+        return original_builder(projections)
+
+    def forbidden_builder(_projections):
+        raise AssertionError("detector rebuilt the shared compact class graph")
+
+    monkeypatch.setattr(
+        base_detectors,
+        "build_compact_class_family_index",
+        counting_builder,
+    )
+    for module in (
+        abstraction_reuse_detectors,
+        helper_detectors,
+        runtime_detectors,
+        systemic_detectors,
+    ):
+        monkeypatch.setattr(
+            module,
+            "build_compact_class_family_index",
+            forbidden_builder,
+        )
+
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        use_parse_cache=False,
+    )
     accumulator.findings_by_detector(DetectorConfig())
 
     assert calls == 1

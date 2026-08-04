@@ -916,6 +916,27 @@ gate forces the global join to fail on the second scan and proves that the
 report-independent cache still matches independently filtered full-AST output.
 Checkpoint verification passes all 989 tests in 434.58 seconds.
 
+## 2026-08-04 shared compact class-repository checkpoint
+
+The 34 detectors that consume the compact module-class family now share one
+scan-scoped repository context.  That context constructs the exact 919-module
+inheritance graph once and lazily memoizes detector-group derivatives such as
+ABC optimizer plans, carrier-reuse candidates, concrete-family rosters, keyed
+axis specifications, and keyed-registry facts.  Exact-type guards,
+AutoRegister rent, semantic-family SSOT, inherited registry configuration, and
+axis-authority joins all consume the same graph instead of reconstructing it.
+This preserves global reasoning: the shared index still contains every compact
+class declaration and every resolved cross-module ancestor/descendant edge.
+
+On the frozen DQDock inventory, the isolated 34-detector class-family join
+returned the same 538 unfiltered findings while falling from 11.23 seconds to
+4.06 seconds, a 63.9% reduction.  Loading the 919 cached projections took 1.88
+seconds and the isolated process peaked at 203,292 KB.  A regression mixes
+detectors from the structural, abstraction-reuse, runtime, systemic, and
+surface modules, makes every detector-local class-index builder fail, and
+asserts that the repository builder runs exactly once.  Checkpoint verification
+passes all 990 tests in 343.83 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

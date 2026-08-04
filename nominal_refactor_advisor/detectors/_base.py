@@ -914,6 +914,52 @@ class ContextualGlobalCacheContract(ABC):
 
 
 CompactProjectionItemT = TypeVar("CompactProjectionItemT")
+CompactDerivedContextT = TypeVar("CompactDerivedContextT")
+
+
+@dataclass(frozen=True)
+class CompactClassRepositoryContext:
+    """One scan-scoped inheritance graph plus lazily shared derived indexes."""
+
+    projections: tuple[CompactModuleClassProjection, ...]
+    config: DetectorConfig
+    class_index: CompactClassFamilyIndex
+    _derived: dict[Hashable, object] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def cached(
+        self,
+        key: Hashable,
+        builder: Callable[[], CompactDerivedContextT],
+    ) -> CompactDerivedContextT:
+        if key not in self._derived:
+            self._derived[key] = builder()
+        return cast(CompactDerivedContextT, self._derived[key])
+
+
+def compact_class_repository_context(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> CompactClassRepositoryContext:
+    """Build the exact compact class graph once for every participating detector."""
+
+    return CompactClassRepositoryContext(
+        projections=projections,
+        config=config,
+        class_index=build_compact_class_family_index(projections),
+    )
+
+
+def require_compact_class_repository_context(
+    context: object | None,
+) -> CompactClassRepositoryContext:
+    if not isinstance(context, CompactClassRepositoryContext):
+        raise TypeError("compact class repository context is unavailable")
+    return context
 
 
 class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
@@ -6916,7 +6962,14 @@ def _compact_constant_string(expression: str | None) -> str | None:
 def _compact_keyed_family_axis_specs(
     projections: tuple[CompactModuleClassProjection, ...],
 ) -> tuple[_KeyedFamilyAxisSpec, ...]:
-    class_index = build_compact_class_family_index(projections)
+    return _compact_keyed_family_axis_specs_from_index(
+        build_compact_class_family_index(projections)
+    )
+
+
+def _compact_keyed_family_axis_specs_from_index(
+    class_index: CompactClassFamilyIndex,
+) -> tuple[_KeyedFamilyAxisSpec, ...]:
     specs: list[_KeyedFamilyAxisSpec] = []
     for indexed_class in sorted(
         class_index.classes_by_symbol.values(), key=lambda item: item.symbol
@@ -7581,8 +7634,18 @@ def _residual_closed_axis_branching_candidates(
 def _residual_closed_axis_branching_candidates_from_compact_projections(
     projections: tuple[CompactModuleClassProjection, ...],
 ) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
+    return _residual_closed_axis_branching_candidates_from_compact_specs(
+        projections,
+        _compact_keyed_family_axis_specs(projections),
+    )
+
+
+def _residual_closed_axis_branching_candidates_from_compact_specs(
+    projections: tuple[CompactModuleClassProjection, ...],
+    keyed_family_specs: tuple[_KeyedFamilyAxisSpec, ...],
+) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
     authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey = defaultdict(list)
-    for spec in _compact_keyed_family_axis_specs(projections):
+    for spec in keyed_family_specs:
         authoritative_specs_by_key[spec.key_type_name].append(spec)
     if not authoritative_specs_by_key:
         return ()

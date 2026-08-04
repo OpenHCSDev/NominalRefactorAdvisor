@@ -23,7 +23,11 @@ from ._helpers import (
     _nominal_authority_implementation_retreat_candidates,
     _nominal_authority_implementation_retreat_candidates_from_index,
 )
-from ._runtime import _CompactConcreteFamilyContext, _compact_concrete_family_context
+from ._runtime import (
+    _CompactConcreteFamilyContext,
+    _compact_concrete_family_context,
+    _compact_concrete_family_context_from_repository,
+)
 from ._substrate_support import _IGNORED_ANCESTOR_NAMES, _class_ancestor_name_map
 from ._nominal_authority_surface import (
     _compact_duplicate_nominal_authority_surface_candidates,
@@ -214,7 +218,7 @@ class ManualFamilyRosterDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection], IssueDetector
 ):
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(_compact_concrete_family_context)
+    compact_shared_context_builder = staticmethod(compact_class_repository_context)
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual subclass roster should become metaclass-registry auto-registration",
@@ -239,9 +243,10 @@ class ManualFamilyRosterDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        if not isinstance(context, _CompactConcreteFamilyContext):
-            raise TypeError("manual family roster compact context is missing")
-        return self._compact_findings(projections, context)
+        return self._compact_findings(
+            projections,
+            _compact_concrete_family_context_from_repository(context),
+        )
 
     def _compact_findings(
         self,

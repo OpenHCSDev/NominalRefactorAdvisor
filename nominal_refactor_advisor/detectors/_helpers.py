@@ -9527,9 +9527,12 @@ class CompactABCOptimizerContext:
 def _compact_abc_optimizer_context(
     projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> CompactABCOptimizerContext:
     del config
-    class_index = build_compact_class_family_index(projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(projections)
     method_plans = _compact_abc_optimizer_specific_method_plans(
         projections, class_index
     )

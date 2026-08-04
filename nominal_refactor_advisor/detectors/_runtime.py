@@ -5580,11 +5580,10 @@ class ManualConcreteSubclassRosterDetector(
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        if not isinstance(context, _CompactConcreteFamilyContext):
-            raise TypeError("manual subclass roster compact context is missing")
+        concrete_context = _compact_concrete_family_context_from_repository(context)
         return self._findings_for_candidates(
             _compact_manual_concrete_subclass_roster_candidates(
-                projections, context, config
+                projections, concrete_context, config
             ),
             config,
         )
@@ -5690,10 +5689,11 @@ class LatentImplementationRosterDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del projections
-        if not isinstance(context, _CompactConcreteFamilyContext):
-            raise TypeError("latent implementation roster compact context is missing")
+        concrete_context = _compact_concrete_family_context_from_repository(context)
         return self._findings_for_candidates(
-            _compact_latent_implementation_roster_candidates(context, config),
+            _compact_latent_implementation_roster_candidates(
+                concrete_context, config
+            ),
             config,
         )
 
@@ -5784,21 +5784,41 @@ class _CompactConcreteFamilyContext:
 def _compact_concrete_family_context(
     projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> _CompactConcreteFamilyContext:
     del config
+    if class_index is None:
+        class_index = build_compact_class_family_index(projections)
     return _CompactConcreteFamilyContext(
-        build_compact_class_family_index(projections),
+        class_index,
         tuple(
             roster for projection in projections for roster in projection.latent_rosters
         ),
     )
 
 
+def _compact_concrete_family_context_from_repository(
+    context: object | None,
+) -> _CompactConcreteFamilyContext:
+    if isinstance(context, _CompactConcreteFamilyContext):
+        return context
+    repository = require_compact_class_repository_context(context)
+    return repository.cached(
+        _compact_concrete_family_context,
+        lambda: _compact_concrete_family_context(
+            repository.projections,
+            repository.config,
+            class_index=repository.class_index,
+        ),
+    )
+
+
 ManualConcreteSubclassRosterDetector.compact_shared_context_builder = (
-    _compact_concrete_family_context
+    compact_class_repository_context
 )
 LatentImplementationRosterDetector.compact_shared_context_builder = (
-    _compact_concrete_family_context
+    compact_class_repository_context
 )
 
 
@@ -6194,8 +6214,11 @@ def _compact_semantic_key_attr_names(
 def _compact_semantic_inheritance_family_ssot_candidates(
     projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[SemanticInheritanceFamilySSOTCandidate, ...]:
-    class_index = build_compact_class_family_index(projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(projections)
     minimum_leaf_count = max(2, config.min_registration_sites)
     enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
     candidates: list[SemanticInheritanceFamilySSOTCandidate] = []
@@ -6305,6 +6328,7 @@ class SemanticInheritanceFamilySSOTDetector(
     ],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(compact_class_repository_context)
     ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
@@ -6327,6 +6351,23 @@ class SemanticInheritanceFamilySSOTDetector(
             _compact_semantic_inheritance_family_ssot_candidates(
                 projections,
                 config,
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_semantic_inheritance_family_ssot_candidates(
+                projections,
+                config,
+                class_index=require_compact_class_repository_context(
+                    context
+                ).class_index,
             ),
             config,
         )
@@ -6515,8 +6556,11 @@ def _compact_autoregister_consumer_symbols(
 def _compact_autoregister_meta_rent_candidates(
     projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[AutoRegisterMetaRentCandidate, ...]:
-    class_index = build_compact_class_family_index(projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(projections)
     relevant_consumer_keys = frozenset(
         (family_name, method_name)
         for indexed_class in class_index.classes_by_symbol.values()
@@ -6646,6 +6690,7 @@ class AutoRegisterMetaUnderRentedDetector(
     ConfiguredCrossModuleCollectorCandidateDetector[AutoRegisterMetaRentCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(compact_class_repository_context)
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "AutoRegisterMeta family should prove its rent",
@@ -6665,6 +6710,23 @@ class AutoRegisterMetaUnderRentedDetector(
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
             _compact_autoregister_meta_rent_candidates(projections, config),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_autoregister_meta_rent_candidates(
+                projections,
+                config,
+                class_index=require_compact_class_repository_context(
+                    context
+                ).class_index,
+            ),
             config,
         )
 
@@ -7694,8 +7756,11 @@ FAIL_LOUD_BLOCK_AUTHORITY = FailLoudBlockAuthority()
 
 def _exact_type_guard_candidates_from_compact_projections(
     projections: tuple[CompactModuleClassProjection, ...],
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[ExactTypeGuardInheritanceRetreatCandidate, ...]:
-    class_index = build_compact_class_family_index(projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(projections)
     resolver = CompactClassReferenceResolver.from_index(projections, class_index)
     candidates: list[ExactTypeGuardInheritanceRetreatCandidate] = []
     for projection in projections:
@@ -7747,6 +7812,7 @@ class ExactTypeGuardInheritanceRetreatDetector(
     CrossModuleCollectorCandidateDetector[ExactTypeGuardInheritanceRetreatCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(compact_class_repository_context)
     detector_priority = -21
     candidate_collector = ExactTypeGuardBoundaryCollector.collect
     finding_spec = high_confidence_certified_spec(
@@ -7774,6 +7840,22 @@ class ExactTypeGuardInheritanceRetreatDetector(
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
             _exact_type_guard_candidates_from_compact_projections(projections),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _exact_type_guard_candidates_from_compact_projections(
+                projections,
+                class_index=require_compact_class_repository_context(
+                    context
+                ).class_index,
+            ),
             config,
         )
 
