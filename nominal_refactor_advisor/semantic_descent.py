@@ -1220,14 +1220,22 @@ class SemanticMirrorMatch:
         cls,
         facts: tuple[SemanticFact, ...],
         matches_by_fact_id: dict[str, set[str]],
+        fact_references_by_id: dict[str, SemanticFactReference] | None = None,
     ) -> "SemanticMirrorMatch | None":
         if len(facts) < 2:
             return None
-        fact_refs = tuple(
-            SemanticFactReference(fact.authority_id, fact.fact_id)
-            for fact in facts
-            if fact.fact_id in matches_by_fact_id
+        active_fact_references = (
+            {} if fact_references_by_id is None else fact_references_by_id
         )
+        fact_refs: list[SemanticFactReference] = []
+        for fact in facts:
+            if fact.fact_id not in matches_by_fact_id:
+                continue
+            fact_ref = active_fact_references.get(fact.fact_id)
+            if fact_ref is None:
+                fact_ref = SemanticFactReference(fact.authority_id, fact.fact_id)
+                active_fact_references[fact.fact_id] = fact_ref
+            fact_refs.append(fact_ref)
         if len(fact_refs) < 2:
             return None
         tokens: set[str] = set()
@@ -1237,7 +1245,7 @@ class SemanticMirrorMatch:
         if coverage_ratio < 0.5 and len(fact_refs) < 3:
             return None
         return cls(
-            fact_refs=fact_refs,
+            fact_refs=tuple(fact_refs),
             tokens=sorted_tuple(tokens),
             coverage_ratio=coverage_ratio,
         )
@@ -4442,30 +4450,38 @@ class ProjectionClassSymbolLineageIndex:
 
     @cached_property
     def class_symbols_by_projection_id(self) -> dict[str, str | None]:
-        return {
-            projection.projection_id: self._resolve_class_symbol(projection)
-            for projection in self.projections
-        }
+        return {}
 
     @cached_property
     def ancestor_symbols_by_class_symbol(self) -> dict[str, frozenset[str]]:
-        return {
-            symbol: frozenset(self.class_index.ancestor_symbols(symbol))
-            for symbol in self.class_index.classes_by_symbol
-        }
+        return {}
 
     def class_symbol_for_projection(
         self,
         projection: PresentationProjection,
     ) -> str | None:
-        return self.class_symbols_by_projection_id[projection.projection_id]
+        cache = self.class_symbols_by_projection_id
+        if projection.projection_id not in cache:
+            cache[projection.projection_id] = self._resolve_class_symbol(projection)
+        return cache[projection.projection_id]
+
+    def ancestor_symbols_for_class(self, class_symbol: str) -> frozenset[str]:
+        cache = self.ancestor_symbols_by_class_symbol
+        if class_symbol not in cache:
+            cache[class_symbol] = frozenset(
+                self.class_index.ancestor_symbols(class_symbol)
+            )
+        return cache[class_symbol]
 
     def _resolve_class_symbol(
         self,
         projection: PresentationProjection,
     ) -> str | None:
-        for end_index in range(len(projection.owner.qualname_parts), 0, -1):
-            owner_qualname = ".".join(projection.owner.qualname_parts[:end_index])
+        if projection.owner_symbol == ProjectionOwnerSymbol.module_owner_value:
+            return None
+        owner_qualname_parts = tuple(projection.owner_symbol.split("."))
+        for end_index in range(len(owner_qualname_parts), 0, -1):
+            owner_qualname = ".".join(owner_qualname_parts[:end_index])
             symbol = self.class_index.symbol_for(
                 file_path=projection.location.file_path,
                 qualname=owner_qualname,
@@ -4988,12 +5004,12 @@ class DataclassProjectionDescentAuthority:
         if projection_class_symbol is None:
             return False
         shared_ancestors = (
-            self.projection_class_symbol_lineage.ancestor_symbols_by_class_symbol[
+            self.projection_class_symbol_lineage.ancestor_symbols_for_class(
                 projection_class_symbol
-            ]
-            & self.projection_class_symbol_lineage.ancestor_symbols_by_class_symbol[
+            )
+            & self.projection_class_symbol_lineage.ancestor_symbols_for_class(
                 authority.authority_id
-            ]
+            )
             & self.dataclass_authority_ids
         )
         return bool(shared_ancestors)
@@ -5008,9 +5024,9 @@ class DataclassProjectionDescentAuthority:
         if projection_class_symbol is None:
             return frozenset()
         projection_ancestor_symbols = (
-            self.projection_class_symbol_lineage.ancestor_symbols_by_class_symbol[
+            self.projection_class_symbol_lineage.ancestor_symbols_for_class(
                 projection_class_symbol
-            ]
+            )
         )
         return frozenset(
             {
@@ -5255,6 +5271,10 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
     ]:
         return {}
 
+    @cached_property
+    def fact_references_by_id(self) -> dict[str, SemanticFactReference]:
+        return {}
+
     def _candidate_refs_for_token(
         self,
         token: PresentationToken,
@@ -5303,7 +5323,11 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         facts: tuple[SemanticFact, ...],
         matches_by_fact_id: dict[str, set[str]],
     ) -> MirrorEdge | None:
-        match = SemanticMirrorMatch.from_authority_matches(facts, matches_by_fact_id)
+        match = SemanticMirrorMatch.from_authority_matches(
+            facts,
+            matches_by_fact_id,
+            self.fact_references_by_id,
+        )
         if match is None:
             return None
         candidate = SemanticMirrorEdgeCandidate(

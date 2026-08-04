@@ -4219,7 +4219,8 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         "class Request:\n"
         "    title: str\n"
         "    status: str\n\n"
-        "REQUEST_FIELDS = ('title', 'status')\n",
+        "REQUEST_FIELDS = ('title', 'status')\n"
+        "REQUEST_COLUMNS = ('title', 'status')\n",
         encoding="utf-8",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
@@ -4246,6 +4247,20 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     assert compact_graph.facts
     assert compact_graph.facts[0].normalized_aliases
     assert "normalized_aliases" not in vars(compact_graph.facts[0])
+    assert all(
+        "owner" not in vars(projection) for projection in compact_graph.projections
+    )
+    fact_reference_by_id: dict[str, object] = {}
+    reused_fact_reference = False
+    for edge in compact_graph.mirror_edges:
+        for fact_reference in edge.match.fact_refs:
+            previous = fact_reference_by_id.get(fact_reference.fact_id)
+            if previous is None:
+                fact_reference_by_id[fact_reference.fact_id] = fact_reference
+                continue
+            reused_fact_reference = True
+            assert previous is fact_reference
+    assert reused_fact_reference
     assert compact_graph.authorities == legacy_graph.authorities
     assert compact_graph.facts == legacy_graph.facts
     assert compact_graph.projections == legacy_graph.projections

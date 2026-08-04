@@ -1102,6 +1102,28 @@ faster and 17.9% lower in peak memory.  Full verification passes all 996 tests
 in 350.03 seconds; the 11 warnings remain the existing concurrent pytest
 cleanup race.
 
+### Semantic lineage and edge-reference follow-up
+
+Mirror resolution no longer caches a ``ProjectionOwnerSymbol`` wrapper on all
+20,652 projections merely to split its qualified owner name.  Class ancestor
+sets are also resolved on demand: DQDock needs 5,670 of the 7,236 possible
+sets.  Finally, mirror edges share one lightweight ``SemanticFactReference``
+per matched fact instead of constructing one per edge occurrence.  The frozen
+inventory retains 7,530 shared references for 18,912 edge occurrences while
+preserving the serialized graph shape.  Regressions require compact/full-AST
+graph parity, absence of cached projection-owner wrappers, and identity reuse
+for repeated fact references.
+
+These changes reduce the isolated mirror-edge peak from 330,968 KB to 324,240
+KB while edge resolution remains approximately 1.39 seconds.  A fresh exact
+DQDock miss returns the unchanged 12 focused findings and 77,671 projections
+in 16.68 seconds at 346,492 KB.  That is another 7,196 KB (2.0%) below the
+preceding pushed checkpoint, with the 0.07-second wall-time difference inside
+run-to-run noise.  Relative to the 27.97-second / 430,908-KB pre-validation
+run, exact analysis is 40.4% faster and 19.6% lower in peak memory.  Full
+verification passes all 996 tests in 349.87 seconds; the 11 warnings remain the
+existing concurrent pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
