@@ -5691,9 +5691,7 @@ class LatentImplementationRosterDetector(
         del projections
         concrete_context = _compact_concrete_family_context_from_repository(context)
         return self._findings_for_candidates(
-            _compact_latent_implementation_roster_candidates(
-                concrete_context, config
-            ),
+            _compact_latent_implementation_roster_candidates(concrete_context, config),
             config,
         )
 
@@ -12226,9 +12224,16 @@ def _public_method_template_owner(qualname: str, function_name: str) -> str | No
 def _cross_class_small_method_template_candidates(
     module: ParsedModule,
 ) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
-    grouped: dict[
-        tuple[str, int, tuple[str, ...]],
-        list[tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]],
+    coarse_groups: dict[
+        tuple[str, int, tuple[type[ast.stmt], ...]],
+        list[
+            tuple[
+                str,
+                str,
+                ast.FunctionDef | ast.AsyncFunctionDef,
+                tuple[ast.stmt, ...],
+            ]
+        ],
     ] = defaultdict(list)
     for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         owner_name = _public_method_template_owner(qualname, function.name)
@@ -12240,12 +12245,32 @@ def _cross_class_small_method_template_candidates(
         if not 1 <= len(body) <= 8:
             continue
         parameter_count = len(function.args.args) + len(function.args.kwonlyargs)
-        key = (
-            function.name,
-            parameter_count,
-            _normalized_cross_class_method_template(body),
-        )
-        grouped[key].append((owner_name, qualname, function))
+        coarse_groups[
+            (
+                function.name,
+                parameter_count,
+                tuple(type(statement) for statement in body),
+            )
+        ].append((owner_name, qualname, function, body))
+
+    grouped: dict[
+        tuple[str, int, tuple[str, ...]],
+        list[tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]],
+    ] = defaultdict(list)
+    for (
+        method_name,
+        parameter_count,
+        _statement_types,
+    ), coarse_functions in coarse_groups.items():
+        if len(coarse_functions) < 2:
+            continue
+        for owner_name, qualname, function, body in coarse_functions:
+            key = (
+                method_name,
+                parameter_count,
+                _normalized_cross_class_method_template(body),
+            )
+            grouped[key].append((owner_name, qualname, function))
 
     candidates: list[CrossClassSmallMethodTemplateCandidate] = []
     for (method_name, parameter_count, template), functions in grouped.items():

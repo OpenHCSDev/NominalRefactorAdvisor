@@ -4251,6 +4251,7 @@ def test_role_surface_projection_reuses_visitor_traversal_and_active_path(
 
 def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidates(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -4289,7 +4290,25 @@ def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidat
         runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector()
     )
     variant_detector = runtime_detectors.AlgebraicVariantMethodFamilyDetector()
+    original_normalize = runtime_detectors._normalized_cross_class_method_template
+    normalized_bodies: list[tuple[ast.stmt, ...]] = []
+
+    def tracked_normalize(body: tuple[ast.stmt, ...]) -> tuple[str, ...]:
+        normalized_bodies.append(body)
+        return original_normalize(body)
+
+    monkeypatch.setattr(
+        runtime_detectors,
+        "_normalized_cross_class_method_template",
+        tracked_normalize,
+    )
     groups = type(bypass_detector).compact_module_projection_groups(modules)
+    assert len(normalized_bodies) == 2
+    monkeypatch.setattr(
+        runtime_detectors,
+        "_normalized_cross_class_method_template",
+        original_normalize,
+    )
     nominal_projections = groups[
         runtime_detectors.CompactNominalBypassModuleProjectionFamily
     ]

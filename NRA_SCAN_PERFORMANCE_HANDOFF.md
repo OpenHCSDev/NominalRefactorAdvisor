@@ -1401,6 +1401,34 @@ role uses while allowing only the small context-token roots to be walked. Full
 verification passes all 1000 tests in 343.47 seconds using a pytest base outside
 the quota-limited shared temporary directory.
 
+### Cold nominal-bypass normalization follow-up
+
+The compact nominal-bypass family normalized every eligible one-to-eight
+statement public method by deep-copying its body, transforming names and
+literals, fixing locations, and dumping the transformed AST. Frozen DQDock has
+16,421 eligible methods, but only 2,045 belong to a same-name, same-parameter,
+same-top-level-statement-shape bucket with at least two members in one module.
+The other 87.5% cannot contribute to a cross-class duplicate family.
+
+The collector now forms that lossless coarse bucket first and performs the
+expensive exact normalization only for buckets with at least two members.
+Normalized-template equality necessarily implies equality of method name,
+parameter count, and top-level statement types, so the prefilter cannot split
+an existing exact group. A regression pins the number of normalized fixture
+bodies while the existing compact/legacy nominal-bypass and algebraic-variant
+parity gate remains in place.
+
+The isolated 919-module family gate falls from 26.472 to 18.302 seconds (30.9%)
+and preserves the exact projection-stream SHA-256 digest,
+``a971e2c4a85885ec842405a9dc5b0b609ff6cc835ad58d3f5f0ed1d7167cedd8``.
+On the same single-target empty-cache exact scan, preparation falls from 167.351
+to 163.956 seconds (2.0%). The scan completes in 182.570 external seconds at
+322.3 MiB process-tree peak RSS, returns the same 12 findings, and completes all
+252 detectors. Relative to the 179.835-second current-code cold baseline before
+the class, role, and nominal-bypass follow-ups, preparation is now 15.879
+seconds (8.8%) lower. This remains an incremental improvement, not a practical
+cold-scan endpoint. Full verification passes all 1000 tests in 344.33 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
