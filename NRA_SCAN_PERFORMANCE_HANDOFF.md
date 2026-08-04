@@ -963,6 +963,27 @@ preparation and 27.61 seconds of analysis.  That is 25.1% less wall time and
 shared-class and indexed-availability checkpoints.
 Checkpoint verification passes all 990 tests in 359.48 seconds.
 
+## 2026-08-04 shared multi-family context checkpoint
+
+Compact shared contexts now support multi-family joins as well as single-family
+joins.  The three remaining-systemic detectors consume both the 919-module
+systemic projection and the 919-module class projection; they previously built
+the same exact inheritance graph independently.  They now share one graph while
+retaining both complete projection families and their unchanged candidate
+logic.  A regression replaces their common group-context builder with a counter
+and requires one construction across all three detectors.
+
+On the frozen DQDock inventory, the isolated three-detector join preserved the
+same result counts (zero repeated-concrete-type findings, zero implicit-mixin
+findings, and nine under-amortized-infrastructure findings) while completing in
+0.42 seconds.  A fresh complete global-result publisher returned the same 12
+focused findings in 27.94 seconds at 406,708 KB, including 0.76 seconds of
+preparation and 27.14 seconds of analysis.  This is 26.3% below the
+37.91-second publisher before the shared-context and exact-index checkpoints.
+Checkpoint verification passes all 991 tests in 344.86 seconds; one unrelated
+CLI subprocess test failed once with empty output in the preceding run and then
+passed both in isolation and in the clean full-suite rerun.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

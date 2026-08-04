@@ -359,8 +359,11 @@ def _compact_repeated_concrete_type_case_candidates(
     projections: tuple[CompactRemainingSystemicModuleProjection, ...],
     class_projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[RepeatedConcreteTypeCaseAnalysisCandidate, ...]:
-    class_index = build_compact_class_family_index(class_projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(class_projections)
     min_function_count = max(3, config.min_registration_sites)
     min_class_count = max(2, config.min_reflective_selector_values)
     candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
@@ -419,8 +422,11 @@ def _compact_implicit_self_contract_mixin_candidates(
     projections: tuple[CompactRemainingSystemicModuleProjection, ...],
     class_projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[ImplicitSelfContractMixinCandidate, ...]:
-    class_index = build_compact_class_family_index(class_projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(class_projections)
     min_consumer_count = max(2, config.min_registration_sites)
     facts_by_class_symbol = {
         class_symbol: fact
@@ -468,8 +474,11 @@ def _compact_implicit_self_contract_mixin_candidates(
 def _compact_under_amortized_infrastructure_candidates(
     projections: tuple[CompactRemainingSystemicModuleProjection, ...],
     class_projections: tuple[CompactModuleClassProjection, ...],
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[UnderAmortizedInfrastructureCandidate, ...]:
-    class_index = build_compact_class_family_index(class_projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(class_projections)
     reference_summaries: dict[str, list[tuple[str, int, tuple[str, ...]]]] = (
         defaultdict(list)
     )
@@ -4933,6 +4942,25 @@ class ManualStructuralRecordMechanicsDetector(
         )
 
 
+def _compact_remaining_systemic_class_index(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> CompactClassFamilyIndex:
+    del config
+    return build_compact_class_family_index(
+        cast(
+            tuple[CompactModuleClassProjection, ...],
+            projections_by_family[CompactModuleClassProjectionFamily],
+        )
+    )
+
+
+def _shared_compact_class_index(context: object | None) -> CompactClassFamilyIndex:
+    if not isinstance(context, CompactClassFamilyIndex):
+        raise TypeError("shared compact class index is unavailable")
+    return context
+
+
 class RepeatedConcreteTypeCaseAnalysisDetector(
     CompactMultiModuleProjectionDetectorMixin,
     ConfiguredCrossModuleCollectorCandidateDetector[
@@ -4942,6 +4970,9 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(
+        _compact_remaining_systemic_class_index
     )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -4968,6 +4999,26 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
                 projections_by_family[CompactModuleClassProjectionFamily],
             ),
             config,
+        )
+        return self._findings_for_candidates(candidates, config)
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        candidates = _compact_repeated_concrete_type_case_candidates(
+            cast(
+                tuple[CompactRemainingSystemicModuleProjection, ...],
+                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+            config,
+            class_index=_shared_compact_class_index(context),
         )
         return self._findings_for_candidates(candidates, config)
 
@@ -5027,6 +5078,9 @@ class ImplicitSelfContractMixinDetector(
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
+    compact_shared_group_context_builder = staticmethod(
+        _compact_remaining_systemic_class_index
+    )
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Concrete mixins should not hide consumer contracts behind `self`-casts",
@@ -5052,6 +5106,26 @@ class ImplicitSelfContractMixinDetector(
                 projections_by_family[CompactModuleClassProjectionFamily],
             ),
             config,
+        )
+        return self._findings_for_candidates(candidates, config)
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        candidates = _compact_implicit_self_contract_mixin_candidates(
+            cast(
+                tuple[CompactRemainingSystemicModuleProjection, ...],
+                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+            config,
+            class_index=_shared_compact_class_index(context),
         )
         return self._findings_for_candidates(candidates, config)
 
@@ -5506,6 +5580,9 @@ class UnderAmortizedInfrastructureDetector(
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
+    compact_shared_group_context_builder = staticmethod(
+        _compact_remaining_systemic_class_index
+    )
     finding_spec = finding_spec_template(
         PatternId.STAGED_ORCHESTRATION,
         "Matcher infrastructure should pay rent through fanout",
@@ -5530,6 +5607,25 @@ class UnderAmortizedInfrastructureDetector(
                 tuple[CompactModuleClassProjection, ...],
                 projections_by_family[CompactModuleClassProjectionFamily],
             ),
+        )
+        return self._findings_for_candidates(candidates, config)
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        candidates = _compact_under_amortized_infrastructure_candidates(
+            cast(
+                tuple[CompactRemainingSystemicModuleProjection, ...],
+                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+            class_index=_shared_compact_class_index(context),
         )
         return self._findings_for_candidates(candidates, config)
 

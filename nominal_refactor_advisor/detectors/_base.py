@@ -1054,6 +1054,13 @@ class CompactMultiModuleProjectionDetectorMixin(
     """Global detector joining two or more reusable compact fact families."""
 
     module_projection_families: ClassVar[tuple[type[CollectedFamily], ...]]
+    compact_shared_group_context_builder: ClassVar[
+        Callable[
+            [dict[type[CollectedFamily], tuple[object, ...]], DetectorConfig],
+            object,
+        ]
+        | None
+    ] = None
 
     @classmethod
     def compact_projection_families(
@@ -1089,6 +1096,18 @@ class CompactMultiModuleProjectionDetectorMixin(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del context
+        return self._findings_from_compact_projection_groups(
+            projections_by_family,
+            config,
+        )
 
 
 class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):

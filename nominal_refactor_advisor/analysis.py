@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import ast
-from collections.abc import Iterable
+from collections.abc import Hashable, Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
@@ -56,6 +56,7 @@ from .cache_paths import (
 )
 from .cache_checkout import absolute_checkout_path
 from .detectors import (
+    CompactMultiModuleProjectionDetectorMixin,
     CompactModuleProjectionDetectorMixin,
     ContextualGlobalCacheContract,
     ContextualModuleIssueDetector,
@@ -664,7 +665,7 @@ def _compact_findings_by_detector(
     """Join one live compact-family group with shared-context reuse."""
 
     findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
-    shared_contexts: dict[tuple[type[CollectedFamily], object], object] = {}
+    shared_contexts: dict[Hashable, object] = {}
     for detector_type in detector_types:
         detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
         compact_detector_type = cast(
@@ -678,9 +679,31 @@ def _compact_findings_by_detector(
                     f"{detector_type.__name__} cannot use a single-family "
                     "shared context builder for a multi-family compact join"
                 )
-            findings[detector_type] = detector._findings_from_compact_projection_groups(
-                {family: projections_by_family.get(family, ()) for family in families},
-                config,
+            grouped_projections = {
+                family: projections_by_family.get(family, ()) for family in families
+            }
+            multi_detector = cast(
+                CompactMultiModuleProjectionDetectorMixin,
+                detector,
+            )
+            group_context_builder = (
+                type(multi_detector).compact_shared_group_context_builder
+            )
+            group_context: object | None = None
+            if group_context_builder is not None:
+                group_context_key = (families, group_context_builder)
+                if group_context_key not in shared_contexts:
+                    shared_contexts[group_context_key] = group_context_builder(
+                        grouped_projections,
+                        config,
+                    )
+                group_context = shared_contexts[group_context_key]
+            findings[detector_type] = (
+                multi_detector._findings_from_compact_projection_groups_context(
+                    grouped_projections,
+                    group_context,
+                    config,
+                )
             )
             continue
         family = families[0]

@@ -2452,6 +2452,57 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
     assert calls == 1
 
 
+def test_multi_family_systemic_detectors_share_one_compact_class_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "family.py").write_text(
+        "from abc import ABC, abstractmethod\n"
+        "\n"
+        "class Handler(ABC):\n"
+        "    @abstractmethod\n"
+        "    def run(self): ...\n"
+        "\n"
+        "class AlphaHandler(Handler):\n"
+        "    def run(self): return 'alpha'\n"
+        "\n"
+        "class BetaHandler(Handler):\n"
+        "    def run(self): return 'beta'\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
+        systemic_detectors.ImplicitSelfContractMixinDetector,
+        systemic_detectors.UnderAmortizedInfrastructureDetector,
+    )
+    calls = 0
+    original_builder = systemic_detectors._compact_remaining_systemic_class_index
+
+    def counting_builder(projections_by_family, config):
+        nonlocal calls
+        calls += 1
+        return original_builder(projections_by_family, config)
+
+    for detector_type in detector_types:
+        monkeypatch.setattr(
+            detector_type,
+            "compact_shared_group_context_builder",
+            staticmethod(counting_builder),
+        )
+
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        use_parse_cache=False,
+    )
+    findings = accumulator.findings_by_detector(DetectorConfig())
+
+    assert calls == 1
+    assert set(findings) == set(detector_types)
+
+
 def test_compact_repeated_keyed_family_matches_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
