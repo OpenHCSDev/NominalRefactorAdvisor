@@ -1969,6 +1969,154 @@ def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
     )
 
 
+def test_compact_keyed_registry_axis_facts_match_legacy_ast_facts(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "family.py").write_text(
+        "from abc import ABC\n"
+        "from enum import Enum\n"
+        "\n"
+        "class Kind(Enum):\n"
+        "    ALPHA = 'alpha'\n"
+        "    BETA = 'beta'\n"
+        "\n"
+        "class Handler(KeyedNominalFamily[Kind], ABC):\n"
+        "    registry_key_attr = 'kind'\n"
+        "    @classmethod\n"
+        "    def for_kind(cls, kind): return cls._registry[kind]\n"
+        "    @classmethod\n"
+        "    def type_for_kind(cls, kind): return cls._registry[kind]\n"
+        "\n"
+        "class AlphaHandler(Handler):\n"
+        "    kind = Kind.ALPHA\n"
+        "\n"
+        "class AliasAlphaHandler(Handler):\n"
+        "    kind = Kind.ALPHA\n"
+        "\n"
+        "class MissingKeyHandler(Handler):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (package_root / "consumers.py").write_text(
+        "from .family import Handler\n"
+        "\n"
+        "def first(kind): return Handler.for_kind(kind)\n"
+        "def second(kind): return Handler.type_for_kind(kind)\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    projections = (
+        systemic_detectors.NonInjectiveTypeRegistryDetector.compact_module_projections(
+            modules
+        )
+    )
+
+    assert systemic_detectors._compact_keyed_registry_axis_facts(
+        projections,
+        config,
+    ) == systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
+        list(modules),
+        config,
+    )
+
+
+def test_keyed_registry_detectors_share_one_compact_fact_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "family.py").write_text(
+        "from abc import ABC\n"
+        "\n"
+        "class Handler(KeyedNominalFamily[str], ABC):\n"
+        "    registry_key_attr = 'kind'\n"
+        "    @classmethod\n"
+        "    def for_kind(cls, kind): return cls._registry[kind]\n"
+        "\n"
+        "class AlphaHandler(Handler):\n"
+        "    kind = 'alpha'\n"
+        "\n"
+        "class BetaHandler(Handler):\n"
+        "    kind = 'beta'\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        systemic_detectors.NonInjectiveTypeRegistryDetector,
+        systemic_detectors.InjectiveTypeRegistryDetector,
+        systemic_detectors.PrematureRegistryInfrastructureDetector,
+    )
+    calls = 0
+    original_builder = systemic_detectors._compact_keyed_registry_axis_facts
+
+    def counting_builder(projections, config):
+        nonlocal calls
+        calls += 1
+        return original_builder(projections, config)
+
+    for detector_type in detector_types:
+        monkeypatch.setattr(
+            detector_type,
+            "compact_shared_context_builder",
+            staticmethod(counting_builder),
+        )
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        detector_types,
+        use_parse_cache=False,
+    )
+
+    accumulator.findings_by_detector(DetectorConfig())
+
+    assert calls == 1
+
+
+def test_compact_repeated_keyed_family_matches_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    for module_name, class_name, key_name in (
+        ("alpha", "AlphaPolicy", "alpha"),
+        ("beta", "BetaPolicy", "beta"),
+        ("gamma", "GammaPolicy", "gamma"),
+    ):
+        (package_root / f"{module_name}.py").write_text(
+            "from abc import ABC, abstractmethod\n"
+            "\n"
+            f"class {class_name}(AutoRegisterByClassVar, ABC):\n"
+            f"    registry_key_attr = '{key_name}'\n"
+            "    _registry = {}\n"
+            "    @classmethod\n"
+            f"    def for_{key_name}(cls, key):\n"
+            "        try:\n"
+            "            return cls._registry[key]\n"
+            "        except KeyError as error:\n"
+            "            raise ValueError(key) from error\n"
+            "    @abstractmethod\n"
+            "    def run(self): ...\n",
+            encoding="utf-8",
+        )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    projections = (
+        systemic_detectors.RepeatedKeyedFamilyDetector.compact_module_projections(
+            modules
+        )
+    )
+
+    assert systemic_detectors._compact_repeated_keyed_family_candidates(
+        projections,
+        config,
+    ) == systemic_detectors._repeated_keyed_family_candidates(
+        list(modules),
+        config,
+    )
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -2051,8 +2199,20 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.AutoRegisterMetaUnderRentedDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 28
-    assert len(partition.ast_retaining_context_detector_types) == 41
+    assert systemic_detectors.NonInjectiveTypeRegistryDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.InjectiveTypeRegistryDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.PrematureRegistryInfrastructureDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.RepeatedKeyedFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 32
+    assert len(partition.ast_retaining_context_detector_types) == 37
     assert len(partition.per_module_detector_types) == 183
 
 

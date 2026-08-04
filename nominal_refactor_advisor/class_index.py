@@ -105,6 +105,8 @@ class CompactIndexedClass:
     autoregister_registry_key_attr_name: str | None = None
     autoregister_key_extractor_name: str | None = None
     autoregister_registry_projection_names: tuple[str, ...] = ()
+    keyed_registry_lookup_method_names: tuple[str, ...] = ()
+    keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
     resolved_base_symbols: tuple[str, ...] = ()
 
     @property
@@ -143,6 +145,7 @@ class CompactModuleClassProjection:
         "CompactAutoRegisterFunctionReference", ...
     ] = ()
     autoregister_reference_index: "CompactAutoRegisterReferenceIndex | None" = None
+    repeated_keyed_family_roots: tuple["CompactRepeatedKeyedFamilyRoot", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,19 @@ class CompactAutoRegisterReferenceIndex:
     receiver_names: tuple[str, ...]
     attribute_names: tuple[str, ...]
     encoded_edges: str
+
+
+@dataclass(frozen=True)
+class CompactRepeatedKeyedFamilyRoot:
+    file_path: str
+    line: int
+    class_name: str
+    family_base_name: str
+    registry_key_attr_name: str
+    lookup_method_name: str
+    lookup_style: str
+    error_type_name: str | None
+    abstract_hook_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -482,6 +498,12 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 autoregister_registry_projection_names=_autoregister_registry_projection_names(
                     node
                 ),
+                keyed_registry_lookup_method_names=_keyed_registry_lookup_method_names(
+                    node
+                ),
+                keyed_registry_reverse_lookup_method_names=_keyed_registry_reverse_lookup_method_names(
+                    node
+                ),
             )
             for qualname, node in _iter_class_defs(list(parsed_module.module.body))
         )
@@ -511,6 +533,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 exact_type_guards=_compact_exact_type_guards(parsed_module),
                 autoregister_function_references=autoregister_function_references,
                 autoregister_reference_index=autoregister_reference_index,
+                repeated_keyed_family_roots=_compact_repeated_keyed_family_roots(
+                    parsed_module
+                ),
             )
         ]
 
@@ -1112,6 +1137,199 @@ def _autoregister_registry_projection_names(
             for subnode in ast.walk(method)
         )
     )
+
+
+def _is_classmethod(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return any(
+        _terminal_reference_name(decorator) == "classmethod"
+        for decorator in method.decorator_list
+    )
+
+
+def _method_references_cls_registry(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return any(
+        isinstance(subnode, ast.Attribute)
+        and subnode.attr == "_registry"
+        and isinstance(subnode.value, ast.Name)
+        and subnode.value.id == "cls"
+        for subnode in ast.walk(method)
+    )
+
+
+def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(
+        method.name
+        for method in node.body
+        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if _is_classmethod(method) and _method_references_cls_registry(method)
+    )
+
+
+def _keyed_registry_reverse_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(
+        method.name
+        for method in node.body
+        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if _is_classmethod(method)
+        and _method_references_cls_registry(method)
+        and any(token in method.name for token in ("class", "type", "reverse"))
+    )
+
+
+def _trim_method_docstring(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.stmt]:
+    body = list(method.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
+def _cls_registry_subscript_key(node: ast.AST | None) -> str | None:
+    if not (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "_registry"
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "cls"
+    ):
+        return None
+    return ast.unparse(node.slice)
+
+
+def _raise_type_name(node: ast.Raise | None) -> str | None:
+    if node is None or node.exc is None:
+        return None
+    expression = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+    return _terminal_reference_name(expression)
+
+
+def _try_registry_lookup_shape(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str | None] | None:
+    body = _trim_method_docstring(method)
+    if len(body) != 1 or not isinstance(body[0], ast.Try):
+        return None
+    try_node = body[0]
+    if try_node.orelse or try_node.finalbody or len(try_node.handlers) != 1:
+        return None
+    handler = try_node.handlers[0]
+    if _terminal_reference_name(handler.type) != "KeyError":
+        return None
+    if len(try_node.body) != 1 or not isinstance(try_node.body[0], ast.Return):
+        return None
+    if _cls_registry_subscript_key(try_node.body[0].value) is None:
+        return None
+    raised = next(
+        (statement for statement in handler.body if isinstance(statement, ast.Raise)),
+        None,
+    )
+    return "try_except", _raise_type_name(raised)
+
+
+def _membership_registry_lookup_shape(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str | None] | None:
+    body = _trim_method_docstring(method)
+    if len(body) < 2 or not isinstance(body[0], ast.If):
+        return None
+    guard = body[0]
+    if not isinstance(body[-1], ast.Return):
+        return None
+    test = guard.test
+    if not (
+        isinstance(test, ast.Compare)
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.NotIn)
+        and len(test.comparators) == 1
+        and isinstance(test.comparators[0], ast.Attribute)
+        and test.comparators[0].attr == "_registry"
+        and isinstance(test.comparators[0].value, ast.Name)
+        and test.comparators[0].value.id == "cls"
+    ):
+        return None
+    if _cls_registry_subscript_key(body[-1].value) != ast.unparse(test.left):
+        return None
+    raised = next(
+        (statement for statement in guard.body if isinstance(statement, ast.Raise)),
+        None,
+    )
+    return "membership_guard", _raise_type_name(raised)
+
+
+def _registry_lookup_shape(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str | None] | None:
+    return _try_registry_lookup_shape(method) or _membership_registry_lookup_shape(
+        method
+    )
+
+
+def _compact_repeated_keyed_family_roots(
+    parsed_module: ParsedModule,
+) -> tuple[CompactRepeatedKeyedFamilyRoot, ...]:
+    roots: list[CompactRepeatedKeyedFamilyRoot] = []
+    for node in parsed_module.module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if "AutoRegisterByClassVar" not in {
+            terminal_name
+            for base in node.bases
+            if (terminal_name := _terminal_reference_name(base)) is not None
+        }:
+            continue
+        assignments = _direct_class_assignments(node)
+        registry_key_attr_name = _string_constant(assignments.get("registry_key_attr"))
+        registry = assignments.get("_registry")
+        registry_is_empty = (
+            isinstance(registry, ast.Dict) and not registry.keys and not registry.values
+        ) or (
+            isinstance(registry, ast.Call)
+            and isinstance(registry.func, ast.Name)
+            and registry.func.id == "dict"
+        )
+        if registry_key_attr_name is None or not registry_is_empty:
+            continue
+        lookup_methods = tuple(
+            (method, shape)
+            for method in node.body
+            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if _is_classmethod(method)
+            and method.name.startswith("for_")
+            and (shape := _registry_lookup_shape(method)) is not None
+        )
+        if len(lookup_methods) != 1:
+            continue
+        lookup_method, (lookup_style, error_type_name) = lookup_methods[0]
+        roots.append(
+            CompactRepeatedKeyedFamilyRoot(
+                file_path=str(parsed_module.path),
+                line=node.lineno,
+                class_name=node.name,
+                family_base_name="AutoRegisterByClassVar",
+                registry_key_attr_name=registry_key_attr_name,
+                lookup_method_name=lookup_method.name,
+                lookup_style=lookup_style,
+                error_type_name=error_type_name,
+                abstract_hook_names=tuple(
+                    method.name
+                    for method in node.body
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    if any(
+                        _terminal_reference_name(decorator) == "abstractmethod"
+                        for decorator in method.decorator_list
+                    )
+                ),
+            )
+        )
+    return tuple(roots)
 
 
 @dataclass

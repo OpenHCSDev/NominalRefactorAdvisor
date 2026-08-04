@@ -602,13 +602,32 @@ class CompactGlobalProjectionAccumulator:
         config: DetectorConfig,
     ) -> dict[type[IssueDetector], list[RefactorFinding]]:
         findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
+        projections_by_family = {
+            family: tuple(self._projections_by_family.get(family, ()))
+            for family in self.projection_families
+        }
+        shared_contexts: dict[tuple[type[CollectedFamily], object], object] = {}
         for detector_type in self.detector_types:
             detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
             family = cast(
                 type[CompactModuleProjectionDetectorMixin], detector_type
             ).module_projection_family
-            findings[detector_type] = detector._findings_from_compact_projections(
-                tuple(self._projections_by_family.get(family, ())),
+            projections = projections_by_family.get(family, ())
+            context_builder = cast(
+                type[CompactModuleProjectionDetectorMixin], detector_type
+            ).compact_shared_context_builder
+            context: object | None = None
+            if context_builder is not None:
+                context_key = (family, context_builder)
+                if context_key not in shared_contexts:
+                    shared_contexts[context_key] = context_builder(
+                        projections,
+                        config,
+                    )
+                context = shared_contexts[context_key]
+            findings[detector_type] = detector._findings_from_compact_context(
+                projections,
+                context,
                 config,
             )
         return findings

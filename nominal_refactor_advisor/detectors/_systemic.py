@@ -7,6 +7,7 @@ axis authority, registration, and other repo-wide architectural smells.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -3113,9 +3114,47 @@ class ParallelRegistryProjectionFamilyDetector(
         )
 
 
+def _compact_repeated_keyed_family_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[RepeatedKeyedFamilyCandidate, ...]:
+    roots = tuple(
+        KeyedFamilyRootCandidate(
+            file_path=root.file_path,
+            line=root.line,
+            class_name=root.class_name,
+            family_base_name=root.family_base_name,
+            registry_key_attr_name=root.registry_key_attr_name,
+            lookup_method_name=root.lookup_method_name,
+            lookup_style=root.lookup_style,
+            error_type_name=root.error_type_name,
+            abstract_hook_names=root.abstract_hook_names,
+        )
+        for projection in projections
+        for root in projection.repeated_keyed_family_roots
+    )
+    min_roots = max(3, config.min_registration_sites)
+    grouped: dict[tuple[str, str], list[KeyedFamilyRootCandidate]] = {}
+    for root in roots:
+        grouped.setdefault((root.family_base_name, root.lookup_style), []).append(root)
+    return tuple(
+        RepeatedKeyedFamilyCandidate(
+            family_base_name=family_base_name,
+            lookup_style=lookup_style,
+            roots=sorted_tuple(
+                items, key=lambda item: (item.file_path, item.line, item.class_name)
+            ),
+        )
+        for (family_base_name, lookup_style), items in sorted(grouped.items())
+        if len(items) >= min_roots
+    )
+
+
 class RepeatedKeyedFamilyDetector(
-    ConfiguredCrossModuleCollectorCandidateDetector[RepeatedKeyedFamilyCandidate]
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector[RepeatedKeyedFamilyCandidate],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Repeated keyed family scaffolding should collapse into one typed metaclass-registry base",
@@ -3125,6 +3164,16 @@ class RepeatedKeyedFamilyDetector(
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
         _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_repeated_keyed_family_candidates(projections, config),
+            config,
+        )
 
     def _finding_for_candidate(
         self, family_candidate: RepeatedKeyedFamilyCandidate
@@ -3151,6 +3200,374 @@ class RepeatedKeyedFamilyDetector(
             codemod_patch=(
                 "# Extract one typed metaclass-registry base that owns registration lookup, duplicate handling, and error shaping.\n# Leave only declarative key attributes and irreducible hook methods on each family root, and read the registered classes from `cls.__registry__`."
             ),
+        )
+
+
+def _compact_registry_class_display_name(
+    indexed_class: CompactIndexedClass,
+    class_index: CompactClassFamilyIndex,
+) -> str:
+    if len(class_index.symbols_by_simple_name.get(indexed_class.simple_name, ())) <= 1:
+        return indexed_class.simple_name
+    return indexed_class.symbol
+
+
+def _compact_string_literal(expression: str | None) -> str | None:
+    if expression is None:
+        return None
+    try:
+        value = ast.literal_eval(expression)
+    except (SyntaxError, ValueError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _compact_registry_reference_edges(
+    encoded_edges: str,
+) -> Iterator[tuple[int, int, int]]:
+    for encoded_edge in encoded_edges.split(";"):
+        if not encoded_edge:
+            continue
+        function_index, receiver_index, attribute_index = encoded_edge.split(",")
+        yield int(function_index), int(receiver_index), int(attribute_index)
+
+
+def _compact_registry_consumer_index(
+    projections: tuple[CompactModuleClassProjection, ...],
+    relevant_keys: frozenset[tuple[str, str]],
+) -> dict[tuple[str, str], frozenset[str]]:
+    consumers: dict[tuple[str, str], set[str]] = {}
+    for projection in projections:
+        reference_index = projection.autoregister_reference_index
+        if reference_index is None:
+            continue
+        for (
+            function_index,
+            receiver_index,
+            attribute_index,
+        ) in _compact_registry_reference_edges(reference_index.encoded_edges):
+            key = (
+                reference_index.receiver_names[receiver_index],
+                reference_index.attribute_names[attribute_index],
+            )
+            if key not in relevant_keys:
+                continue
+            consumers.setdefault(key, set()).add(
+                reference_index.function_qualnames[function_index]
+            )
+    return {key: frozenset(symbols) for key, symbols in consumers.items()}
+
+
+def _compact_registry_consumer_symbols(
+    consumer_index: dict[tuple[str, str], frozenset[str]],
+    *,
+    family_name: str,
+    lookup_method_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            qualname
+            for method_name in lookup_method_names
+            for qualname in consumer_index.get((family_name, method_name), ())
+            if not qualname.startswith(f"{family_name}.")
+        }
+    )
+
+
+def _compact_keyed_registry_axis_facts(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[KeyedRegistryAxisFact, ...]:
+    class_index = build_compact_class_family_index(projections)
+    registry_classes = tuple(
+        indexed_class
+        for indexed_class in class_index.classes_by_symbol.values()
+        if indexed_class.keyed_family_key_type_name is not None
+        and _compact_string_literal(
+            indexed_class.assignments_by_name.get("registry_key_attr")
+        )
+        is not None
+    )
+    relevant_consumer_keys = frozenset(
+        (family_name, method_name)
+        for indexed_class in registry_classes
+        for family_name in (
+            _compact_registry_class_display_name(indexed_class, class_index),
+        )
+        for method_name in indexed_class.keyed_registry_lookup_method_names
+    )
+    consumer_index = _compact_registry_consumer_index(
+        projections, relevant_consumer_keys
+    )
+    min_case_count = max(2, config.min_registration_sites)
+    min_consumer_count = max(2, config.min_registration_sites)
+    facts: list[KeyedRegistryAxisFact] = []
+    for indexed_class in sorted(registry_classes, key=lambda item: item.symbol):
+        if indexed_class.file_path.startswith("tests/") or "/tests/" in (
+            indexed_class.file_path
+        ):
+            continue
+        key_type_name = indexed_class.keyed_family_key_type_name
+        registry_key_attr_name = _compact_string_literal(
+            indexed_class.assignments_by_name.get("registry_key_attr")
+        )
+        if key_type_name is None or registry_key_attr_name is None:
+            continue
+        family_name = _compact_registry_class_display_name(indexed_class, class_index)
+        lookup_method_names = indexed_class.keyed_registry_lookup_method_names
+        consumer_symbols = _compact_registry_consumer_symbols(
+            consumer_index,
+            family_name=family_name,
+            lookup_method_names=lookup_method_names,
+        )
+        descendants = tuple(
+            descendant
+            for symbol in class_index.descendant_symbols(indexed_class.symbol)
+            if (descendant := class_index.class_for(symbol)) is not None
+        )
+        concrete_descendants = tuple(
+            descendant for descendant in descendants if not descendant.is_abstract
+        )
+        registered_case_names = sorted_tuple(
+            {
+                expression
+                for descendant in descendants
+                if (
+                    expression := descendant.assignments_by_name.get(
+                        registry_key_attr_name
+                    )
+                )
+                is not None
+            }
+        )
+        type_names_by_key: dict[str, list[str]] = {}
+        for descendant in concrete_descendants:
+            expression = descendant.assignments_by_name.get(registry_key_attr_name)
+            if expression is None:
+                continue
+            type_names_by_key.setdefault(expression, []).append(
+                _compact_registry_class_display_name(descendant, class_index)
+            )
+        injectivity_proof = InjectiveTypeRegistryProof.from_type_map(
+            key_axis_name=key_type_name,
+            type_names_by_key={
+                key_name: sorted_tuple(type_names)
+                for key_name, type_names in sorted(type_names_by_key.items())
+            },
+            registered_type_names=tuple(
+                _compact_registry_class_display_name(descendant, class_index)
+                for descendant in concrete_descendants
+            ),
+            reverse_lookup_names=indexed_class.keyed_registry_reverse_lookup_method_names,
+            consumer_symbols=consumer_symbols,
+        )
+        facts.append(
+            KeyedRegistryAxisFact(
+                file_path=indexed_class.file_path,
+                line=indexed_class.line,
+                class_name=family_name,
+                key_type_name=key_type_name,
+                registry_key_attr_name=registry_key_attr_name,
+                lookup_method_names=lookup_method_names,
+                registered_case_names=registered_case_names,
+                consumer_symbols=consumer_symbols,
+                missing_maturity_signals=_registry_maturity_missing_signals(
+                    registered_case_count=len(registered_case_names),
+                    lookup_method_names=lookup_method_names,
+                    consumer_count=len(consumer_symbols),
+                    min_case_count=min_case_count,
+                    min_consumer_count=min_consumer_count,
+                ),
+                injectivity_proof=injectivity_proof,
+            )
+        )
+    return tuple(facts)
+
+
+def _compact_premature_registry_infrastructure_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
+    return _compact_premature_registry_infrastructure_candidates_from_facts(
+        _compact_keyed_registry_axis_facts(projections, config)
+    )
+
+
+def _compact_premature_registry_infrastructure_candidates_from_facts(
+    facts: tuple[KeyedRegistryAxisFact, ...],
+) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
+    return tuple(
+        PrematureRegistryInfrastructureCandidate(
+            file_path=fact.file_path,
+            line=fact.line,
+            class_name=fact.class_name,
+            key_type_name=fact.key_type_name,
+            registry_key_attr_name=fact.registry_key_attr_name,
+            lookup_method_names=fact.lookup_method_names,
+            registered_case_names=fact.registered_case_names,
+            consumer_symbols=fact.consumer_symbols,
+            missing_maturity_signals=fact.missing_maturity_signals,
+        )
+        for fact in facts
+        if fact.missing_maturity_signals
+    )
+
+
+def _compact_non_injective_type_registry_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[NonInjectiveTypeRegistryCandidate, ...]:
+    return _compact_non_injective_type_registry_candidates_from_facts(
+        _compact_keyed_registry_axis_facts(projections, config)
+    )
+
+
+def _compact_non_injective_type_registry_candidates_from_facts(
+    facts: tuple[KeyedRegistryAxisFact, ...],
+) -> tuple[NonInjectiveTypeRegistryCandidate, ...]:
+    return tuple(
+        NonInjectiveTypeRegistryCandidate(
+            file_path=fact.file_path,
+            line=fact.line,
+            class_name=fact.class_name,
+            key_type_name=fact.key_type_name,
+            registry_key_attr_name=fact.registry_key_attr_name,
+            lookup_method_names=fact.lookup_method_names,
+            registered_case_names=fact.registered_case_names,
+            consumer_symbols=fact.consumer_symbols,
+            injectivity_proof=fact.injectivity_proof,
+        )
+        for fact in facts
+        if fact.injectivity_proof.duplicate_key_names
+        or fact.injectivity_proof.duplicate_type_names
+        or fact.injectivity_proof.missing_type_names
+    )
+
+
+def _compact_injective_type_registry_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[InjectiveTypeRegistryCandidate, ...]:
+    return _compact_injective_type_registry_candidates_from_facts(
+        _compact_keyed_registry_axis_facts(projections, config)
+    )
+
+
+def _compact_injective_type_registry_candidates_from_facts(
+    facts: tuple[KeyedRegistryAxisFact, ...],
+) -> tuple[InjectiveTypeRegistryCandidate, ...]:
+    return tuple(
+        InjectiveTypeRegistryCandidate(
+            file_path=fact.file_path,
+            line=fact.line,
+            class_name=fact.class_name,
+            key_type_name=fact.key_type_name,
+            registry_key_attr_name=fact.registry_key_attr_name,
+            lookup_method_names=fact.lookup_method_names,
+            registered_case_names=fact.registered_case_names,
+            consumer_symbols=fact.consumer_symbols,
+            injectivity_proof=fact.injectivity_proof,
+        )
+        for fact in facts
+        if not fact.missing_maturity_signals
+        and not fact.injectivity_proof.duplicate_key_names
+        and not fact.injectivity_proof.duplicate_type_names
+        and not fact.injectivity_proof.missing_type_names
+    )
+
+
+class _CompactPrematureRegistryInfrastructureDetectorBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector[
+        PrematureRegistryInfrastructureCandidate
+    ],
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_keyed_registry_axis_facts)
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_premature_registry_infrastructure_candidates(projections, config),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        facts = cast(tuple[KeyedRegistryAxisFact, ...], context)
+        return self._findings_for_candidates(
+            _compact_premature_registry_infrastructure_candidates_from_facts(facts),
+            config,
+        )
+
+
+class _CompactNonInjectiveTypeRegistryDetectorBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector[NonInjectiveTypeRegistryCandidate],
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_keyed_registry_axis_facts)
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_non_injective_type_registry_candidates(projections, config),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        facts = cast(tuple[KeyedRegistryAxisFact, ...], context)
+        return self._findings_for_candidates(
+            _compact_non_injective_type_registry_candidates_from_facts(facts),
+            config,
+        )
+
+
+class _CompactInjectiveTypeRegistryDetectorBase(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector[InjectiveTypeRegistryCandidate],
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(_compact_keyed_registry_axis_facts)
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_injective_type_registry_candidates(projections, config),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        facts = cast(tuple[KeyedRegistryAxisFact, ...], context)
+        return self._findings_for_candidates(
+            _compact_injective_type_registry_candidates_from_facts(facts),
+            config,
         )
 
 
@@ -3193,7 +3610,7 @@ declare_candidate_rule_detector(
         registration_site_count=len(candidate.registered_case_names),
         registry_name=candidate.class_name,
     ),
-    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    detector_base=_CompactNonInjectiveTypeRegistryDetectorBase,
     candidate_collector=_non_injective_type_registry_candidates,
     registry_normal_form_policy=RegistryNormalFormPolicy(
         stage_order=10,
@@ -3240,7 +3657,7 @@ declare_candidate_rule_detector(
         registration_site_count=len(candidate.registered_case_names),
         registry_name=candidate.class_name,
     ),
-    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    detector_base=_CompactInjectiveTypeRegistryDetectorBase,
     candidate_collector=_injective_type_registry_candidates,
     registry_normal_form_policy=RegistryNormalFormPolicy(
         stage_order=60,
@@ -3408,7 +3825,7 @@ declare_candidate_rule_detector(
         "# Replace premature registry infrastructure with a typed table or local strategy map while any signal is missing."
     ),
     metrics=_registry_maturity_fanout_metrics,
-    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    detector_base=_CompactPrematureRegistryInfrastructureDetectorBase,
     candidate_collector=_premature_registry_infrastructure_candidates,
     registry_normal_form_policy=RegistryNormalFormPolicy(
         stage_order=20,

@@ -920,6 +920,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     """Global detector whose cross-module input is a compact cached fact family."""
 
     module_projection_family: ClassVar[type[CollectedFamily]]
+    compact_shared_context_builder: ClassVar[Callable[..., object] | None] = None
 
     @classmethod
     def compact_module_projections(
@@ -944,6 +945,15 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
             type(self).compact_module_projections(modules),
             config,
         )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactProjectionItemT, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del context
+        return self._findings_from_compact_projections(projections, config)
 
     @abstractmethod
     def _findings_from_compact_projections(

@@ -263,6 +263,27 @@ high-water RSS was 346,388 KB cold and 393,480 KB warm; the larger value is
 55.7% below the controlled 889,100-KB all-at-once parse baseline and is slightly
 lower than the 27-family warm peak despite the added global reasoning.
 
+Keyed-registry proof analysis now reconstructs from compact class facts for the
+premature-infrastructure, non-injective, and mature-injective registry
+detectors.  The shared proof preserves exact key/type mappings, missing keyed
+types, duplicate keys and types, reverse lookup names, maturity signals, and
+external consumer fanout.  The three detectors build that proof context once
+per accumulator run instead of repeating the class/consumer graph traversal.
+Repeated ``AutoRegisterByClassVar`` family roots also project their lookup
+style, error type, key attribute, and abstract hooks while each module AST is
+live.  Direct compact/legacy equivalence gates cover both the full injectivity
+fact and repeated-family candidates.  The current partition is 183 per-module
+detectors, 32 compact-global detectors, and 37 AST-retaining context-dependent
+detectors.
+
+The stable-snapshot 32-family run retained the same 68,466 top-level projection
+items and produced 520 identical cold/warm findings.  DQDock contributes no
+findings from the four newly migrated registry detectors, but their exact
+analysis now runs without repository AST retention.  The paired run took
+110.42 seconds cold and 35.59 seconds warm.  Process high-water RSS was 346,700
+KB cold and 405,444 KB warm; the larger value remains 54.4% below the controlled
+889,100-KB all-at-once parse baseline.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
