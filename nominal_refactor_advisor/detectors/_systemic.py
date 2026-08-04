@@ -4942,19 +4942,6 @@ class ManualStructuralRecordMechanicsDetector(
         )
 
 
-def _compact_remaining_systemic_class_index(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-    config: DetectorConfig,
-) -> CompactClassFamilyIndex:
-    del config
-    return build_compact_class_family_index(
-        cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
-        )
-    )
-
-
 def _shared_compact_class_index(context: object | None) -> CompactClassFamilyIndex:
     if not isinstance(context, CompactClassFamilyIndex):
         raise TypeError("shared compact class index is unavailable")
@@ -4972,7 +4959,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         CompactModuleClassProjectionFamily,
     )
     compact_shared_group_context_builder = staticmethod(
-        _compact_remaining_systemic_class_index
+        compact_class_index_from_projection_groups
     )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -5079,7 +5066,7 @@ class ImplicitSelfContractMixinDetector(
         CompactModuleClassProjectionFamily,
     )
     compact_shared_group_context_builder = staticmethod(
-        _compact_remaining_systemic_class_index
+        compact_class_index_from_projection_groups
     )
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -5581,7 +5568,7 @@ class UnderAmortizedInfrastructureDetector(
         CompactModuleClassProjectionFamily,
     )
     compact_shared_group_context_builder = staticmethod(
-        _compact_remaining_systemic_class_index
+        compact_class_index_from_projection_groups
     )
     finding_spec = finding_spec_template(
         PatternId.STAGED_ORCHESTRATION,

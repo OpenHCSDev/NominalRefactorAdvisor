@@ -4005,10 +4005,13 @@ def _resolved_compact_semantic_projections(
 def build_compact_semantic_descent_graph(
     semantic_projections: tuple[CompactSemanticModuleProjection, ...],
     class_projections: tuple[CompactModuleClassProjection, ...],
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> SemanticDescentGraph:
     """Build the exact semantic graph from AST-free repository projections."""
 
-    class_index = build_compact_class_family_index(class_projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(class_projections)
     supplements = tuple(
         supplement
         for projection in semantic_projections

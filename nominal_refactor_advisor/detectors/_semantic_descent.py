@@ -13,10 +13,12 @@ from ._base import (
     ContextualGlobalCacheContract,
     DetectorConfig,
     SemanticMirrorIssueDetector,
+    compact_class_index_from_projection_groups,
     high_confidence_certified_spec,
 )
 from ..ast_tools import CollectedFamily, ParsedModule
 from ..class_index import (
+    CompactClassFamilyIndex,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
@@ -135,6 +137,9 @@ class SemanticMirrorWithoutDescentDetector(
         CompactSemanticModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
+    compact_shared_group_context_builder = staticmethod(
+        compact_class_index_from_projection_groups
+    )
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_BOUNDARY,
         "Semantic mirror should descend to its nominal authority",
@@ -181,6 +186,29 @@ class SemanticMirrorWithoutDescentDetector(
         graph = build_compact_semantic_descent_graph(
             semantic_projections,
             class_projections,
+        )
+        return self._collect_findings_from_graph(graph, [], config)
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        if not isinstance(context, CompactClassFamilyIndex):
+            raise TypeError("shared compact class index is unavailable")
+        semantic_projections = cast(
+            tuple[CompactSemanticModuleProjection, ...],
+            projections_by_family[CompactSemanticModuleProjectionFamily],
+        )
+        class_projections = cast(
+            tuple[CompactModuleClassProjection, ...],
+            projections_by_family[CompactModuleClassProjectionFamily],
+        )
+        graph = build_compact_semantic_descent_graph(
+            semantic_projections,
+            class_projections,
+            class_index=context,
         )
         return self._collect_findings_from_graph(graph, [], config)
 

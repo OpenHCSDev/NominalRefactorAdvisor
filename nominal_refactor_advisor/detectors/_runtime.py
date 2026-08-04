@@ -11294,6 +11294,8 @@ def _compact_non_nominal_private_helper_candidates(
     private_projections: tuple[CompactPrivateReferenceModuleProjection, ...],
     class_projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[NonNominalPrivateHelperCandidate, ...]:
     contract_names = frozenset(
         name
@@ -11306,7 +11308,8 @@ def _compact_non_nominal_private_helper_candidates(
     calls_by_caller_qualname = _compact_private_helper_calls_by_caller_qualname(
         private_projections
     )
-    class_index = build_compact_class_family_index(class_projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(class_projections)
     candidates: list[NonNominalPrivateHelperCandidate] = []
     for projection in private_projections:
         for function in projection.functions:
@@ -11641,6 +11644,9 @@ class NonNominalPrivateHelperDetector(
         CompactPrivateReferenceModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
+    compact_shared_group_context_builder = staticmethod(
+        compact_class_index_from_projection_groups
+    )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Escaped private helper should become nominal",
@@ -11687,6 +11693,32 @@ class NonNominalPrivateHelperDetector(
                 private_projections,
                 class_projections,
                 config,
+            )
+        ]
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        if not isinstance(context, CompactClassFamilyIndex):
+            raise TypeError("shared compact class index is unavailable")
+        private_projections = cast(
+            tuple[CompactPrivateReferenceModuleProjection, ...],
+            projections_by_family[CompactPrivateReferenceModuleProjectionFamily],
+        )
+        class_projections = cast(
+            tuple[CompactModuleClassProjection, ...],
+            projections_by_family[CompactModuleClassProjectionFamily],
+        )
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in _compact_non_nominal_private_helper_candidates(
+                private_projections,
+                class_projections,
+                config,
+                class_index=context,
             )
         ]
 
@@ -12782,8 +12814,11 @@ def _compact_shared_nominal_base_classes(
 def _nominal_authority_bypass_candidates_from_compact_projections(
     projections: tuple[CompactNominalBypassModuleProjection, ...],
     class_projections: tuple[CompactModuleClassProjection, ...],
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[_NominalAuthorityBypassCandidate, ...]:
-    class_index = build_compact_class_family_index(class_projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(class_projections)
     seeds: list[_NominalAuthorityBypassSeed] = []
     for projection in projections:
         for scatter in projection.isinstance_scatters:
@@ -12871,6 +12906,9 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
         CompactNominalBypassModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
+    compact_shared_group_context_builder = staticmethod(
+        compact_class_index_from_projection_groups
+    )
     detector_id = "abc_polymorphism_bypassed_by_concrete_dispatch"
     detector_priority = -20
     finding_spec = high_confidence_certified_spec(
@@ -12903,6 +12941,32 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
             for candidate in _nominal_authority_bypass_candidates_from_compact_projections(
                 projections,
                 class_projections,
+            )
+        ]
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        if not isinstance(context, CompactClassFamilyIndex):
+            raise TypeError("shared compact class index is unavailable")
+        projections = cast(
+            tuple[CompactNominalBypassModuleProjection, ...],
+            projections_by_family[CompactNominalBypassModuleProjectionFamily],
+        )
+        class_projections = cast(
+            tuple[CompactModuleClassProjection, ...],
+            projections_by_family[CompactModuleClassProjectionFamily],
+        )
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in _nominal_authority_bypass_candidates_from_compact_projections(
+                projections,
+                class_projections,
+                class_index=context,
             )
         ]
 

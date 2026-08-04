@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import ast
 from collections.abc import Hashable, Iterable
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 import gc
@@ -46,6 +45,7 @@ from .ast_tools import (
     parse_python_module_roots,
     parse_python_modules,
     python_source_cache_signature,
+    retains_python_ast,
     semantic_python_source_hash,
 )
 from .cache_paths import (
@@ -56,6 +56,7 @@ from .cache_paths import (
 )
 from .cache_checkout import absolute_checkout_path
 from .detectors import (
+    CompactClassRepositoryContext,
     CompactMultiModuleProjectionDetectorMixin,
     CompactModuleProjectionDetectorMixin,
     ContextualGlobalCacheContract,
@@ -64,6 +65,7 @@ from .detectors import (
     DetectorConfig,
     IssueDetector,
     SemanticDescentGraphIssueDetector,
+    compact_class_index_from_projection_groups,
     default_detectors,
 )
 from .deadline import scan_deadline_checkpoint
@@ -634,38 +636,21 @@ class CompactGlobalProjectionAccumulator:
         value: object,
         seen_ids: set[int] | None = None,
     ) -> bool:
-        if isinstance(value, (ast.AST, ParsedModule)):
-            return True
-        if isinstance(value, (str, bytes, int, float, complex, bool, type(None))):
-            return False
-        seen = set() if seen_ids is None else seen_ids
-        value_id = id(value)
-        if value_id in seen:
-            return False
-        seen.add(value_id)
-        if is_dataclass(value) and not isinstance(value, type):
-            return any(
-                cls._retains_ast(getattr(value, item.name), seen)
-                for item in fields(value)
-            )
-        if isinstance(value, dict):
-            return any(
-                cls._retains_ast(item, seen) for pair in value.items() for item in pair
-            )
-        if isinstance(value, (tuple, list, set, frozenset)):
-            return any(cls._retains_ast(item, seen) for item in value)
-        return False
+        del cls
+        return retains_python_ast(value, seen_ids)
 
 
 def _compact_findings_by_detector(
     detector_types: tuple[type[IssueDetector], ...],
     projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
     config: DetectorConfig,
+    *,
+    shared_contexts: dict[Hashable, object] | None = None,
 ) -> dict[type[IssueDetector], list[RefactorFinding]]:
     """Join one live compact-family group with shared-context reuse."""
 
     findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
-    shared_contexts: dict[Hashable, object] = {}
+    active_shared_contexts = {} if shared_contexts is None else shared_contexts
     for detector_type in detector_types:
         detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
         compact_detector_type = cast(
@@ -691,13 +676,13 @@ def _compact_findings_by_detector(
             )
             group_context: object | None = None
             if group_context_builder is not None:
-                group_context_key = (families, group_context_builder)
-                if group_context_key not in shared_contexts:
-                    shared_contexts[group_context_key] = group_context_builder(
+                group_context_key = ("compact-group", group_context_builder)
+                if group_context_key not in active_shared_contexts:
+                    active_shared_contexts[group_context_key] = group_context_builder(
                         grouped_projections,
                         config,
                     )
-                group_context = shared_contexts[group_context_key]
+                group_context = active_shared_contexts[group_context_key]
             findings[detector_type] = (
                 multi_detector._findings_from_compact_projection_groups_context(
                     grouped_projections,
@@ -711,12 +696,17 @@ def _compact_findings_by_detector(
         context: object | None = None
         if context_builder is not None:
             context_key = (family, context_builder)
-            if context_key not in shared_contexts:
-                shared_contexts[context_key] = context_builder(
+            if context_key not in active_shared_contexts:
+                active_shared_contexts[context_key] = context_builder(
                     projections,
                     config,
                 )
-            context = shared_contexts[context_key]
+            context = active_shared_contexts[context_key]
+            if isinstance(context, CompactClassRepositoryContext):
+                active_shared_contexts.setdefault(
+                    ("compact-group", compact_class_index_from_projection_groups),
+                    context.class_index,
+                )
         findings[detector_type] = detector._findings_from_compact_context(
             projections,
             context,
@@ -846,6 +836,9 @@ class BoundedCompactProjectionManifest:
         path: Path,
         projections: tuple[object, ...],
     ) -> None:
+        for projection in projections:
+            if CompactGlobalProjectionAccumulator._retains_ast(projection):
+                raise TypeError(f"{family.__name__} fallback retains an AST")
         self.fallback_projections[family, str(path.resolve())] = projections
 
     def cache_entry_exists(
@@ -894,11 +887,10 @@ class BoundedCompactProjectionManifest:
                 )
             if source_projections is None:
                 source_projections = self._repair_source_family(source, family)
-            for projection in source_projections:
-                if CompactGlobalProjectionAccumulator._retains_ast(projection):
-                    raise TypeError(
-                        f"{family.__name__} compact projection retains an AST"
-                    )
+            # Persisted family payloads are syntax-free by the cache write
+            # contract. Fallbacks and repairs are checked at their insertion
+            # boundary, so recursively rescanning every warm item here only
+            # repeats the same proof for every exact analysis-cache miss.
             projections.extend(source_projections)
         family_projections = tuple(projections)
         self._projection_counts_by_family.setdefault(
@@ -922,6 +914,11 @@ class BoundedCompactProjectionManifest:
         repaired: tuple[object, ...] = ()
         for module in parser.parsed_source_paths((source.path,)):
             repaired = tuple(collect_family_items(module, family))
+            for projection in repaired:
+                if CompactGlobalProjectionAccumulator._retains_ast(projection):
+                    raise TypeError(
+                        f"{family.__name__} repaired projection retains an AST"
+                    )
             del module
         release_module_analysis_memory(collect_cycles=False)
         return repaired
@@ -941,6 +938,7 @@ class BoundedCompactProjectionManifest:
             detector_types_by_families.setdefault(families, []).append(detector_type)
 
         findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
+        shared_contexts: dict[Hashable, object] = {}
         remaining_groups = set(detector_types_by_families)
         multi_family_groups = tuple(
             families for families in detector_types_by_families if len(families) > 1
@@ -969,6 +967,7 @@ class BoundedCompactProjectionManifest:
                         tuple(detector_types_by_families[anchor_single_group]),
                         {anchor_family: anchor_projections},
                         config,
+                        shared_contexts=shared_contexts,
                     )
                 )
                 remaining_groups.remove(anchor_single_group)
@@ -988,6 +987,7 @@ class BoundedCompactProjectionManifest:
                                 tuple(detector_types_by_families[single_group]),
                                 {family: family_projections},
                                 config,
+                                shared_contexts=shared_contexts,
                             )
                         )
                         remaining_groups.remove(single_group)
@@ -996,6 +996,7 @@ class BoundedCompactProjectionManifest:
                         tuple(detector_types_by_families[families]),
                         projections_by_family,
                         config,
+                        shared_contexts=shared_contexts,
                     )
                 )
                 remaining_groups.remove(families)
@@ -1016,6 +1017,7 @@ class BoundedCompactProjectionManifest:
                     tuple(detector_types_by_families[families]),
                     projections_by_family,
                     config,
+                    shared_contexts=shared_contexts,
                 )
             )
             del projections_by_family

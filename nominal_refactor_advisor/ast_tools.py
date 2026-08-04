@@ -21,7 +21,7 @@ import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from functools import lru_cache
@@ -500,6 +500,34 @@ class ParsedModule:
     source: str
     semantic_hash: str | None = None
     family_cache_dir: Path | None = None
+
+
+def retains_python_ast(
+    value: object,
+    seen_ids: set[int] | None = None,
+) -> bool:
+    """Return whether a compact value transitively retains parsed syntax."""
+
+    if isinstance(value, (ast.AST, ParsedModule)):
+        return True
+    if isinstance(value, (str, bytes, int, float, complex, bool, type(None))):
+        return False
+    seen = set() if seen_ids is None else seen_ids
+    value_id = id(value)
+    if value_id in seen:
+        return False
+    seen.add(value_id)
+    if is_dataclass(value) and not isinstance(value, type):
+        return any(
+            retains_python_ast(getattr(value, item.name), seen) for item in fields(value)
+        )
+    if isinstance(value, dict):
+        return any(
+            retains_python_ast(item, seen) for pair in value.items() for item in pair
+        )
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return any(retains_python_ast(item, seen) for item in value)
+    return False
 
 
 @dataclass(frozen=True)
@@ -1006,6 +1034,7 @@ class CollectedFamilyCachePayload(Generic[ShapeItemT]):
 
     identity: CollectedFamilyCacheIdentity
     items: tuple[ShapeItemT, ...]
+    ast_free: bool = False
 
 
 def _registry_member_key(registered_type: type[_TRegistered]) -> tuple[str, int, str]:
@@ -1234,6 +1263,24 @@ def _load_collected_family_cache_payload(
         return None
     if not all(isinstance(item, family.item_type) for item in payload.items):
         return None
+    if getattr(payload, "ast_free", False) is not True:
+        if retains_python_ast(payload.items):
+            return None
+        certified_payload = CollectedFamilyCachePayload(
+            identity=payload.identity,
+            items=payload.items,
+            ast_free=True,
+        )
+        try:
+            certified_bytes = pickle.dumps(
+                certified_payload,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+            _collected_family_cache_path(cache_dir, identity).write_bytes(
+                certified_bytes
+            )
+        except (OSError, pickle.PickleError, TypeError, AttributeError):
+            pass
     return cast(tuple[ShapeItemT, ...], payload.items)
 
 
@@ -1383,10 +1430,14 @@ def _store_cached_collected_family_items(
     items: tuple[ShapeItemT, ...],
 ) -> None:
     cache_dir = parsed_module.family_cache_dir
-    if cache_dir is None:
+    if cache_dir is None or retains_python_ast(items):
         return
     identity = _collected_family_cache_identity(parsed_module, family)
-    payload = CollectedFamilyCachePayload(identity=identity, items=items)
+    payload = CollectedFamilyCachePayload(
+        identity=identity,
+        items=items,
+        ast_free=True,
+    )
     try:
         payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
         payload_max_bytes = (

@@ -1487,8 +1487,11 @@ def _compact_role_surface_drift_candidates(
     role_projections: tuple[CompactRoleSurfaceModuleProjection, ...],
     class_projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[RoleSurfaceDriftCandidate, ...]:
-    class_index = build_compact_class_family_index(class_projections)
+    if class_index is None:
+        class_index = build_compact_class_family_index(class_projections)
     return _role_surface_drift_candidates_from_facts(
         (
             declaration
@@ -1534,6 +1537,9 @@ class RoleSurfaceDriftDetector(
         CompactRoleSurfaceModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
+    compact_shared_group_context_builder = staticmethod(
+        compact_class_index_from_projection_groups
+    )
     ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_WITNESS_CARRIER,
@@ -1564,6 +1570,32 @@ class RoleSurfaceDriftDetector(
                 role_projections,
                 class_projections,
                 config,
+            ),
+            config,
+        )
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        if not isinstance(context, CompactClassFamilyIndex):
+            raise TypeError("shared compact class index is unavailable")
+        role_projections = cast(
+            tuple[CompactRoleSurfaceModuleProjection, ...],
+            projections_by_family[CompactRoleSurfaceModuleProjectionFamily],
+        )
+        class_projections = cast(
+            tuple[CompactModuleClassProjection, ...],
+            projections_by_family[CompactModuleClassProjectionFamily],
+        )
+        return self._findings_for_candidates(
+            _compact_role_surface_drift_candidates(
+                role_projections,
+                class_projections,
+                config,
+                class_index=context,
             ),
             config,
         )

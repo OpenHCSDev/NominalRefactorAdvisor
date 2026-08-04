@@ -984,6 +984,38 @@ Checkpoint verification passes all 991 tests in 344.86 seconds; one unrelated
 CLI subprocess test failed once with empty output in the preceding run and then
 passed both in isolation and in the clean full-suite rerun.
 
+## 2026-08-04 store-validated projection checkpoint
+
+The compact class anchor is now shared across every class-dependent global
+join, not only detectors with the same family tuple.  The single-family class
+repository context seeds the raw class index used by semantic descent, nominal
+bypass, role-surface drift, private-helper, and remaining-systemic joins.  The
+bounded manifest carries that context across family-at-a-time joins, reducing
+the exact scan from six repository class-index builds to one.  A regression
+executes all five distinct multi-family shapes plus a single-family class
+detector and makes any detector-local rebuild fail.
+
+Group timing then exposed a larger warm-cache cost.  On the frozen 919-module
+snapshot, loading 25 compact families consumed 9.40 seconds, the detector joins
+consumed 10.19 seconds, and explicit module-memory release consumed only 0.23
+seconds.  Recursive ``ast.AST`` retention checks were rewalking every nested
+field of all 77,671 already persisted projections on each exact analysis-cache
+miss.  Compact payloads are now checked before the family cache writes them;
+uncached fallbacks and repairs are checked at their insertion boundary.  Warm
+typed payload loads therefore preserve the syntax-free representation contract
+without repeating the full object-graph traversal.
+
+With a fresh analysis-output cache and a certified complete compact-family
+cache, the focused publisher reproduction changed from 27.97 seconds / 430,908
+KB to 18.77 seconds / 427,608 KB.  Both runs reconstructed the same 77,671
+projections and returned the same 12 findings.  That is a 9.20-second (32.9%)
+runtime reduction with effectively unchanged peak memory.  Existing payloads
+without the certificate are checked and upgraded once; that compatibility pass
+completed in 26.23 seconds with the same output.  This remains exact
+repository-global reasoning; no family was sampled, omitted, or reduced to a
+local approximation.  Checkpoint verification passes all 994 tests in 369.28
+seconds; the 11 warnings are the existing concurrent pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

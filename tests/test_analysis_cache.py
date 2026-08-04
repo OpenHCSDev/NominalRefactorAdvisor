@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import os
 from pathlib import Path
+import pickle
 import sys
 from time import sleep
 
@@ -1311,6 +1312,41 @@ def test_collected_family_items_are_persisted_beside_parse_cache(
     ]
 
 
+def test_legacy_family_cache_payload_is_ast_checked_and_certified(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text(
+        "def export(item):\n"
+        "    return {'name': item.name, 'score': item.score, 'label': item.label}\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+    expected_items = collect_family_items(module, ExportDictShapeFamily)
+    payload_path = next((cache_dir / "collected-family").glob("*.pickle"))
+    payload = pickle.loads(payload_path.read_bytes())
+    payload_path.write_bytes(
+        pickle.dumps(
+            ast_tools_module.CollectedFamilyCachePayload(
+                identity=payload.identity,
+                items=payload.items,
+                ast_free=False,
+            ),
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    )
+    release_module_analysis_memory()
+
+    reloaded_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+    actual_items = collect_family_items(reloaded_module, ExportDictShapeFamily)
+    certified_payload = pickle.loads(payload_path.read_bytes())
+
+    assert actual_items == expected_items
+    assert certified_payload.ast_free is True
+
+
 def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1424,6 +1460,47 @@ def test_warm_compact_projection_stream_skips_ast_deserialization(
         cache_dir=cache_dir,
     )
 
+    assert second.projection_count == first.projection_count
+
+
+def test_warm_bounded_projection_load_skips_revalidating_ast_free_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "generated_catalog.py").write_text(
+        "# generated file\nSEMANTIC_MODE = 'canonical'\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    detector_types = (
+        runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector,
+    )
+    first = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=tmp_path / ".nra-cache" / "analysis-first",
+        detector_types=detector_types,
+    )
+
+    def unexpected_revalidation(cls, value, seen_ids=None):
+        del cls, value, seen_ids
+        raise AssertionError("store-validated compact cache was recursively rescanned")
+
+    monkeypatch.setattr(
+        analysis_module.CompactGlobalProjectionAccumulator,
+        "_retains_ast",
+        classmethod(unexpected_revalidation),
+    )
+    second = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=tmp_path / ".nra-cache" / "analysis-second",
+        detector_types=detector_types,
+    )
+
+    assert second.findings == first.findings
     assert second.projection_count == first.projection_count
 
 
@@ -2478,7 +2555,7 @@ def test_multi_family_systemic_detectors_share_one_compact_class_graph(
         systemic_detectors.UnderAmortizedInfrastructureDetector,
     )
     calls = 0
-    original_builder = systemic_detectors._compact_remaining_systemic_class_index
+    original_builder = systemic_detectors.compact_class_index_from_projection_groups
 
     def counting_builder(projections_by_family, config):
         nonlocal calls
@@ -2498,6 +2575,81 @@ def test_multi_family_systemic_detectors_share_one_compact_class_graph(
         use_parse_cache=False,
     )
     findings = accumulator.findings_by_detector(DetectorConfig())
+
+    assert calls == 1
+    assert set(findings) == set(detector_types)
+
+
+def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "family.py").write_text(
+        "from abc import ABC, abstractmethod\n"
+        "\n"
+        "class Handler(ABC):\n"
+        "    @abstractmethod\n"
+        "    def run(self): ...\n"
+        "\n"
+        "class AlphaHandler(Handler):\n"
+        "    def run(self): return 'alpha'\n",
+        encoding="utf-8",
+    )
+    detector_types = (
+        runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
+        systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
+        semantic_descent_detectors.SemanticMirrorWithoutDescentDetector,
+        runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector,
+        role_surface_detectors.RoleSurfaceDriftDetector,
+        runtime_detectors.NonNominalPrivateHelperDetector,
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    manifest = analysis_module.BoundedCompactProjectionManifest(detector_types)
+    projections_by_family = {
+        family: tuple(
+            projection
+            for module in modules
+            for projection in collect_family_items(module, family)
+        )
+        for family in manifest.projection_families
+    }
+    monkeypatch.setattr(
+        manifest,
+        "projections_for_family",
+        lambda family: projections_by_family[family],
+    )
+
+    calls = 0
+    original_builder = base_detectors.build_compact_class_family_index
+
+    def counting_builder(projections):
+        nonlocal calls
+        calls += 1
+        return original_builder(projections)
+
+    def forbidden_builder(_projections):
+        raise AssertionError("multi-family detector rebuilt the compact class graph")
+
+    monkeypatch.setattr(
+        base_detectors,
+        "build_compact_class_family_index",
+        counting_builder,
+    )
+    for module in (
+        role_surface_detectors,
+        runtime_detectors,
+        semantic_descent_module,
+        systemic_detectors,
+    ):
+        monkeypatch.setattr(
+            module,
+            "build_compact_class_family_index",
+            forbidden_builder,
+        )
+
+    findings = manifest.findings_by_detector(DetectorConfig())
 
     assert calls == 1
     assert set(findings) == set(detector_types)

@@ -962,6 +962,21 @@ def require_compact_class_repository_context(
     return context
 
 
+def compact_class_index_from_projection_groups(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> CompactClassFamilyIndex:
+    """Build the shared class anchor for compact multi-family joins."""
+
+    del config
+    return build_compact_class_family_index(
+        cast(
+            tuple[CompactModuleClassProjection, ...],
+            projections_by_family[CompactModuleClassProjectionFamily],
+        )
+    )
+
+
 class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     """Global detector whose cross-module input is a compact cached fact family."""
 
