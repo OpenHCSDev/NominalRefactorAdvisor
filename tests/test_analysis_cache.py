@@ -7,6 +7,7 @@ from pathlib import Path
 import pickle
 import sys
 from time import sleep
+import weakref
 
 import pytest
 
@@ -45,6 +46,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor import ast_tools as ast_tools_module
 from nominal_refactor_advisor import analysis as analysis_module
+from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor import semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.cache_paths import (
     AdvisorCacheRetention,
@@ -506,6 +508,33 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
     foreign_identity = SemanticDescentGraphCacheIdentity.from_roots((checkout_b,))
     assert foreign_identity.cache_token != graph_identity_a.cache_token
     assert graph_cache.load(foreign_identity).graph is None
+
+
+def test_same_checkout_finding_rebase_reuses_validated_objects(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "module.py"
+    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    finding = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Stable",
+        why="stable",
+        capability_gap="stable",
+        relation_context="stable",
+    ).build(
+        "stable_cache_detector",
+        "stable finding",
+        (SourceLocation(str(source_path), 1, "VALUE"),),
+    )
+
+    rebased = analysis_cache_module._rebase_findings(
+        (finding,),
+        (str(tmp_path),),
+        (str(tmp_path),),
+    )
+
+    assert rebased[0] is finding
+    assert rebased[0].evidence[0] is finding.evidence[0]
 
 
 def test_relocatable_caches_reject_path_escape_and_ambiguous_roots(
@@ -4210,6 +4239,7 @@ def test_compact_isinstance_scatter_preserves_nested_function_attribution(
 
 def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -4279,9 +4309,36 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     assert compact_graph.mirror_edges == legacy_graph.mirror_edges
     assert compact_graph.certificates == legacy_graph.certificates
     config = DetectorConfig()
+
+    def unexpected_certificate_batch(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("compact publishing must stream certificates")
+
+    monkeypatch.setattr(
+        semantic_descent_module.SemanticDescentCertificateBuilder,
+        "certificates_for_edges",
+        unexpected_certificate_batch,
+    )
+    original_resolution = (
+        semantic_descent_detectors.build_compact_semantic_mirror_resolution
+    )
+    released_edge_refs: list[weakref.ReferenceType[object]] = []
+
+    def tracked_resolution(*args, **kwargs):
+        graph_space, edges = original_resolution(*args, **kwargs)
+        released_edge_refs.append(weakref.ref(edges[0]))
+        return graph_space, edges
+
+    monkeypatch.setattr(
+        semantic_descent_detectors,
+        "build_compact_semantic_mirror_resolution",
+        tracked_resolution,
+    )
     assert detector._findings_from_compact_projection_groups(groups, config) == (
         detector._collect_findings_from_graph(legacy_graph, list(modules), config)
     )
+    assert released_edge_refs
+    assert all(edge_ref() is None for edge_ref in released_edge_refs)
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
         (type(detector),),

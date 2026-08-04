@@ -33,13 +33,16 @@ from ..semantic_descent import (
     CompactSemanticModuleProjection,
     CompactSemanticModuleProjectionFamily,
     DescentCertificate,
+    MirrorEdge,
     PresentationProjectionKind,
     PresentationProjection,
     SemanticAuthority,
+    SemanticDescentCertificateBuilder,
     SemanticDescentGraph,
     SemanticDescentGraphCacheIdentity,
+    SemanticDescentGraphSpace,
     SemanticFact,
-    build_compact_semantic_descent_graph,
+    build_compact_semantic_mirror_resolution,
     normalized_name_variants,
 )
 from ..registry_identity import class_name_registry_key
@@ -183,11 +186,10 @@ class SemanticMirrorWithoutDescentDetector(
             tuple[CompactModuleClassProjection, ...],
             projections_by_family[CompactModuleClassProjectionFamily],
         )
-        graph = build_compact_semantic_descent_graph(
+        return self._findings_from_compact_resolver(
             semantic_projections,
             class_projections,
         )
-        return self._collect_findings_from_graph(graph, [], config)
 
     def _findings_from_compact_projection_groups_context(
         self,
@@ -205,12 +207,40 @@ class SemanticMirrorWithoutDescentDetector(
             tuple[CompactModuleClassProjection, ...],
             projections_by_family[CompactModuleClassProjectionFamily],
         )
-        graph = build_compact_semantic_descent_graph(
+        return self._findings_from_compact_resolver(
             semantic_projections,
             class_projections,
             class_index=context,
         )
-        return self._collect_findings_from_graph(graph, [], config)
+
+    def _findings_from_compact_resolver(
+        self,
+        semantic_projections: tuple[CompactSemanticModuleProjection, ...],
+        class_projections: tuple[CompactModuleClassProjection, ...],
+        *,
+        class_index: CompactClassFamilyIndex | None = None,
+    ) -> list[RefactorFinding]:
+        graph_space, mirror_edges = build_compact_semantic_mirror_resolution(
+            semantic_projections,
+            class_projections,
+            class_index=class_index,
+        )
+        certificate_builder = SemanticDescentCertificateBuilder(graph_space)
+        edge_queue: list[MirrorEdge | None] = list(mirror_edges)
+        del mirror_edges
+        findings: list[RefactorFinding] = []
+        for index in range(len(edge_queue)):
+            edge = edge_queue[index]
+            if edge is None:
+                raise TypeError("semantic mirror edge queue contains a non-edge")
+            findings.append(
+                self._finding_for_certificate(
+                    graph_space,
+                    certificate_builder.certificate_for_edge(edge),
+                )
+            )
+            edge_queue[index] = None
+        return findings
 
     def _collect_findings_from_graph(
         self,
@@ -244,7 +274,7 @@ class SemanticMirrorWithoutDescentDetector(
 
     def _finding_for_certificate(
         self,
-        graph: SemanticDescentGraph,
+        graph: SemanticDescentGraphSpace,
         certificate: DescentCertificate,
     ) -> RefactorFinding:
         edge = certificate.edge
@@ -283,7 +313,7 @@ class SemanticMirrorWithoutDescentDetector(
     @classmethod
     def _certificate_evidence(
         cls,
-        graph: SemanticDescentGraph,
+        graph: SemanticDescentGraphSpace,
         certificate: DescentCertificate,
     ) -> tuple[SourceLocation, ...]:
         edge = certificate.edge

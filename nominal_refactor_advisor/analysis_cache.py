@@ -972,6 +972,7 @@ def _rebase_findings(
     rebased_findings: list[RefactorFinding] = []
     for finding in findings:
         rebased_evidence: list[SourceLocation] = []
+        evidence_changed = False
         for location in finding.evidence:
             if not location.file_path:
                 rebased_evidence.append(location)
@@ -980,17 +981,21 @@ def _rebase_findings(
                 raise CacheCheckoutPathError(
                     "cached finding has source evidence but no admitted roots"
                 )
-            rebased_evidence.append(
-                replace(
-                    location,
-                    file_path=rebase_checkout_path(
-                        location.file_path,
-                        source_roots,
-                        target_roots,
-                    ),
-                )
+            rebased_file_path = rebase_checkout_path(
+                location.file_path,
+                source_roots,
+                target_roots,
             )
-        rebased_findings.append(replace(finding, evidence=tuple(rebased_evidence)))
+            if rebased_file_path == location.file_path:
+                rebased_evidence.append(location)
+                continue
+            evidence_changed = True
+            rebased_evidence.append(replace(location, file_path=rebased_file_path))
+        rebased_findings.append(
+            replace(finding, evidence=tuple(rebased_evidence))
+            if evidence_changed
+            else finding
+        )
     return tuple(rebased_findings)
 
 
@@ -1481,14 +1486,12 @@ class AnalysisFindingCache:
                 findings,
                 cache_surface=AnalysisFindingCacheEntryPayload.__name__,
             )
-            payload = AnalysisFindingCacheEntryPayload.from_findings(
-                identity,
-                list(
-                    _rebase_findings(
-                        validated_findings,
-                        identity.presentation_roots,
-                        identity.presentation_roots,
-                    )
+            payload = AnalysisFindingCacheEntryPayload(
+                identity=identity,
+                findings=_rebase_findings(
+                    validated_findings,
+                    identity.presentation_roots,
+                    identity.presentation_roots,
                 ),
             )
             storage.store_finding_payload_atomic(storage.entry_path(identity), payload)

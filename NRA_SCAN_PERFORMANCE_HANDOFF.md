@@ -1185,6 +1185,38 @@ faster and 23.5% lower in peak memory.  Full verification passes all 996 tests
 in 394.39 seconds; the 11 warnings remain the existing concurrent pytest
 cleanup race.
 
+### Streaming semantic publication follow-up
+
+The compact semantic detector no longer constructs a complete certificate
+tuple and a second full graph carrier before publishing findings.  It resolves
+the exact 5,246 edges, transfers only the authority/fact/projection tuples into
+a lightweight graph space, releases the matching-only resolver caches, and
+creates each certificate immediately before its finding.  A mutable edge queue
+then clears each processed edge slot, allowing edge and match allocations to
+be reused while the finding list grows.  Regressions make batched certificate
+construction fail and require processed edges to become collectible while
+preserving compact/full-AST finding parity.
+
+Exact shard publication also reuses validated ``RefactorFinding`` and
+``SourceLocation`` objects when source and target checkout roots are identical.
+The path-containment check still runs, while the cache writer avoids replacing
+every finding and evidence record and no longer performs a redundant
+list/tuple validation copy.  Cross-checkout loads continue to construct rebased
+records and the path-escape rejection gate remains unchanged.
+
+In the instrumented frozen-DQDock run, the semantic phase peak falls from
+330,704 to approximately 328,120 KB.  Progressive edge release lowers the live
+end of 5,246-finding construction from 328,332 to 324,136 KB, and reusable
+same-checkout publication leaves only 299,700 KB live after the semantic shard
+is written instead of 322,164 KB.  The uninstrumented three-run exact median is
+328,184 KB and 17.07 seconds, down from 329,536 KB and 17.53 seconds at the
+preceding checkpoint.  All runs return the same 12 focused findings from
+77,671 projections with all 252 detectors complete.  Relative to the
+27.97-second / 430,908-KB pre-validation run, the exact median is 39.0% faster
+and 23.8% lower in peak memory.  Full verification passes all 997 tests in
+347.71 seconds; the 11 warnings remain the existing concurrent pytest cleanup
+race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

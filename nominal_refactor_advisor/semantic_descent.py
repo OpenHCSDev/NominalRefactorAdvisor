@@ -4030,13 +4030,13 @@ def _resolved_compact_semantic_projections(
     )
 
 
-def build_compact_semantic_descent_graph(
+def build_compact_semantic_mirror_resolver(
     semantic_projections: tuple[CompactSemanticModuleProjection, ...],
     class_projections: tuple[CompactModuleClassProjection, ...],
     *,
     class_index: CompactClassFamilyIndex | None = None,
-) -> SemanticDescentGraph:
-    """Build the exact semantic graph from AST-free repository projections."""
+) -> SemanticMirrorResolver:
+    """Build one reusable exact resolver from AST-free repository projections."""
 
     if class_index is None:
         class_index = build_compact_class_family_index(class_projections)
@@ -4054,21 +4054,57 @@ def build_compact_semantic_descent_graph(
         class_projections,
         class_index,
     )
-    mirror_edges = SemanticMirrorResolver(
+    return SemanticMirrorResolver(
         authorities,
         facts,
         projections,
         class_index,
         supplements,
-    ).edges()
-    graph_space = SemanticDescentGraphSpace(authorities, facts, projections)
+    )
+
+
+def build_compact_semantic_mirror_resolution(
+    semantic_projections: tuple[CompactSemanticModuleProjection, ...],
+    class_projections: tuple[CompactModuleClassProjection, ...],
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
+) -> tuple[SemanticDescentGraphSpace, tuple[MirrorEdge, ...]]:
+    """Resolve edges, then release matching-only caches before publication."""
+
+    resolver = build_compact_semantic_mirror_resolver(
+        semantic_projections,
+        class_projections,
+        class_index=class_index,
+    )
+    mirror_edges = resolver.edges()
+    graph_space = SemanticDescentGraphSpace(
+        resolver.authorities,
+        resolver.facts,
+        resolver.projections,
+    )
+    return graph_space, mirror_edges
+
+
+def build_compact_semantic_descent_graph(
+    semantic_projections: tuple[CompactSemanticModuleProjection, ...],
+    class_projections: tuple[CompactModuleClassProjection, ...],
+    *,
+    class_index: CompactClassFamilyIndex | None = None,
+) -> SemanticDescentGraph:
+    """Build the exact semantic graph from AST-free repository projections."""
+
+    graph_space, mirror_edges = build_compact_semantic_mirror_resolution(
+        semantic_projections,
+        class_projections,
+        class_index=class_index,
+    )
     certificates = SemanticDescentCertificateBuilder(
         graph_space
     ).certificates_for_edges(mirror_edges)
     return SemanticDescentGraph(
-        authorities=authorities,
-        facts=facts,
-        projections=projections,
+        authorities=graph_space.authorities,
+        facts=graph_space.facts,
+        projections=graph_space.projections,
         mirror_edges=mirror_edges,
         certificates=certificates,
         class_index=None,
