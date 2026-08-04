@@ -32,6 +32,9 @@ from nominal_refactor_advisor.analysis import (
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
+    AnalysisCacheStorage,
+    AnalysisFindingCacheChunkStreamHeader,
+    AnalysisFindingCacheEntryPayload,
     AnalysisFindingCache,
     DetectorRegistrySignature,
     GlobalDetectorAnalysisCacheIdentity,
@@ -535,6 +538,54 @@ def test_same_checkout_finding_rebase_reuses_validated_objects(
 
     assert rebased[0] is finding
     assert rebased[0].evidence[0] is finding.evidence[0]
+
+
+def test_exact_finding_cache_chunks_pickles_and_loads_legacy_payloads(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "module.py"
+    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    identity = AnalysisCacheIdentity.from_roots((tmp_path,), DetectorConfig())
+    findings = [
+        FindingSpec(
+            pattern_id=PatternId.NOMINAL_BOUNDARY,
+            title="Chunked",
+            why="chunked",
+            capability_gap="chunked",
+            relation_context="chunked",
+        ).build(
+            "chunked_cache_detector",
+            f"chunked finding {index}",
+            (SourceLocation(str(source_path), index + 1, f"VALUE:{index}"),),
+        )
+        for index in range(5)
+    ]
+    payload = AnalysisFindingCacheEntryPayload.from_findings(identity, findings)
+    storage = AnalysisCacheStorage(tmp_path / "cache", finding_chunk_size=2)
+    cache_path = storage.entry_path(identity)
+
+    storage.store_finding_payload_atomic(cache_path, payload)
+
+    with cache_path.open("rb") as handle:
+        header = pickle.load(handle)
+        chunks = (pickle.load(handle), pickle.load(handle), pickle.load(handle))
+        with pytest.raises(EOFError):
+            pickle.load(handle)
+    assert isinstance(header, AnalysisFindingCacheChunkStreamHeader)
+    assert header.finding_count == 5
+    assert tuple(len(chunk) for chunk in chunks) == (2, 2, 1)
+    assert storage.load_finding_payload(cache_path, identity) == payload
+
+    legacy_path = storage.cache_file_path("legacy.pickle")
+    with legacy_path.open("wb") as handle:
+        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    assert storage.load_finding_payload(legacy_path, identity) == payload
+
+    truncated_path = storage.cache_file_path("truncated.pickle")
+    with truncated_path.open("wb") as handle:
+        pickle.dump(header, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(chunks[0], handle, protocol=pickle.HIGHEST_PROTOCOL)
+    assert storage.load_finding_payload(truncated_path, identity) is None
 
 
 def test_relocatable_caches_reject_path_escape_and_ambiguous_roots(

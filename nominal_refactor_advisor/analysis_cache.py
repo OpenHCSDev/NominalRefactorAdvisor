@@ -14,7 +14,7 @@ import pickle
 import sys
 from time import monotonic, sleep, time
 from types import TracebackType
-from typing import TypeAlias
+from typing import BinaryIO, TypeAlias
 
 from .ast_tools import (
     ParsedModule,
@@ -1035,6 +1035,15 @@ class AnalysisFindingCacheEntryPayload(FindingCachePayloadValidationMixin):
 
 
 @dataclass(frozen=True)
+class AnalysisFindingCacheChunkStreamHeader:
+    """Framing metadata for bounded-memo exact finding-cache serialization."""
+
+    identity: AnalysisCacheEntryIdentity
+    finding_count: int
+    chunk_size: int
+
+
+@dataclass(frozen=True)
 class AnalysisPartialFindingCachePayload(FindingCachePayloadValidationMixin):
     """Persisted evidence-local partial finding-cache payload."""
 
@@ -1144,6 +1153,7 @@ class AnalysisCacheStorage:
     """Filesystem storage authority for serialized analysis-cache payloads."""
 
     storage_root: Path
+    finding_chunk_size: int = 128
 
     def ensure_directory(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)
@@ -1214,7 +1224,26 @@ class AnalysisCacheStorage:
         cache_path: Path,
         identity: AnalysisCacheEntryIdentity,
     ) -> AnalysisFindingCacheEntryPayload | None:
-        payload = self.load_serializable_payload(cache_path).payload
+        try:
+            with cache_path.open("rb") as handle:
+                payload = pickle.load(handle)
+                if isinstance(payload, AnalysisFindingCacheChunkStreamHeader):
+                    payload = self._load_chunked_finding_payload(
+                        handle,
+                        payload,
+                        identity,
+                    )
+        except (
+            FileNotFoundError,
+            OSError,
+            pickle.PickleError,
+            EOFError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            ImportError,
+        ):
+            return None
         if not isinstance(payload, AnalysisFindingCacheEntryPayload):
             return None
         if payload.identity != identity:
@@ -1222,6 +1251,41 @@ class AnalysisCacheStorage:
         if not payload.has_valid_findings:
             return None
         return payload
+
+    @staticmethod
+    def _load_chunked_finding_payload(
+        handle: BinaryIO,
+        header: AnalysisFindingCacheChunkStreamHeader,
+        identity: AnalysisCacheEntryIdentity,
+    ) -> AnalysisFindingCacheEntryPayload | None:
+        if header.identity != identity:
+            return None
+        if header.finding_count < 0 or header.chunk_size < 1:
+            return None
+        findings: list[RefactorFinding] = []
+        remaining = header.finding_count
+        while remaining:
+            chunk = pickle.load(handle)
+            validated_chunk = CachedFindingPayloadShape.findings_from_sequence(chunk)
+            if (
+                validated_chunk is None
+                or not validated_chunk
+                or len(validated_chunk) > header.chunk_size
+                or len(validated_chunk) > remaining
+            ):
+                return None
+            findings.extend(validated_chunk)
+            remaining -= len(validated_chunk)
+        try:
+            pickle.load(handle)
+        except EOFError:
+            pass
+        else:
+            return None
+        return AnalysisFindingCacheEntryPayload(
+            identity=header.identity,
+            findings=tuple(findings),
+        )
 
     def load_partial_finding_payload(
         self,
@@ -1295,7 +1359,29 @@ class AnalysisCacheStorage:
         cache_path: Path,
         payload: AnalysisFindingCacheEntryPayload,
     ) -> None:
-        self.store_serializable_payload_atomic(cache_path, payload)
+        if self.finding_chunk_size < 1:
+            raise ValueError("finding cache chunk size must be positive")
+        self.ensure_directory()
+        started = monotonic()
+        temp_path = cache_path.with_name(
+            f".{cache_path.name}.{os.getpid()}.{started:.9f}.tmp"
+        )
+        header = AnalysisFindingCacheChunkStreamHeader(
+            identity=payload.identity,
+            finding_count=len(payload.findings),
+            chunk_size=self.finding_chunk_size,
+        )
+        with temp_path.open("wb") as handle:
+            pickle.dump(header, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            for offset in range(0, len(payload.findings), self.finding_chunk_size):
+                pickle.dump(
+                    payload.findings[offset : offset + self.finding_chunk_size],
+                    handle,
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, cache_path)
 
     def store_partial_finding_payload_atomic(
         self,

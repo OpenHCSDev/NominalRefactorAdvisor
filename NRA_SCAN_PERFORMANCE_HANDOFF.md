@@ -1217,6 +1217,31 @@ and 23.8% lower in peak memory.  Full verification passes all 997 tests in
 347.71 seconds; the 11 warnings remain the existing concurrent pytest cleanup
 race.
 
+### Bounded finding-shard serialization follow-up
+
+Exact finding-cache entries now use a framed chunk stream instead of one
+monolithic pickle graph.  The header records the exact cache identity, finding
+count, and a 128-finding chunk size; each chunk receives an independent pickle
+memo.  Loading validates every chunk, rejects truncation, surplus objects,
+invalid counts, and identity mismatches, then reconstructs the same immutable
+finding tuple.  Existing single-pickle entries remain readable, so this is a
+one-way compatible cache upgrade rather than a forced cache invalidation.
+
+On the 5,246-finding semantic shard, bounded memoization reduces the
+instrumented publisher peak from approximately 328,120 to 325,284 KB and the
+semantic join from about 3.46 to 3.17 seconds.  The shard grows from 8.74 to
+9.23 MB because a small amount of pickle metadata repeats across chunks.  A
+second focused target loads the new global shards without any projections and
+returns the same 333 findings in 7.32 seconds at 129,492 KB.
+
+The frozen-DQDock three-run fresh exact median is now 324,868 KB and 16.49
+seconds, down from 328,184 KB and 17.07 seconds at the preceding checkpoint.
+Every run remains complete across all 252 detectors and returns the unchanged
+12 focused findings from 77,671 projections.  Relative to the 27.97-second /
+430,908-KB pre-validation run, exact publishing is 41.0% faster and 24.6%
+lower in peak memory.  Full verification passes all 998 tests in 342.85
+seconds; the 11 warnings remain the existing concurrent pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
