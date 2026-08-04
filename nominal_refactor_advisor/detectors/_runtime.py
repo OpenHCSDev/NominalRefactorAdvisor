@@ -25,6 +25,7 @@ from ..ast_tools import (
     collect_family_items,
 )
 from ..class_index import (
+    CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
@@ -5468,11 +5469,216 @@ class LatentImplementationRosterDetector(
         )
 
 
+def _compact_class_display_name(
+    indexed_class: CompactIndexedClass,
+    class_index: CompactClassFamilyIndex,
+) -> str:
+    if len(class_index.symbols_by_simple_name.get(indexed_class.simple_name, ())) <= 1:
+        return indexed_class.simple_name
+    return indexed_class.symbol
+
+
+def _compact_concrete_descendants(
+    class_index: CompactClassFamilyIndex,
+    indexed_class: CompactIndexedClass,
+) -> tuple[CompactIndexedClass, ...]:
+    return tuple(
+        descendant
+        for symbol in class_index.descendant_symbols(indexed_class.symbol)
+        if (descendant := class_index.class_for(symbol)) is not None
+        if not descendant.is_abstract
+    )
+
+
+def _compact_family_has_registration_authority(
+    class_index: CompactClassFamilyIndex,
+    indexed_class: CompactIndexedClass,
+) -> bool:
+    return any(
+        candidate is not None and candidate.is_registration_authority
+        for symbol in (
+            indexed_class.symbol,
+            *class_index.ancestor_symbols(indexed_class.symbol),
+        )
+        for candidate in (class_index.class_for(symbol),)
+    )
+
+
+def _compact_descendants_have_intermediate_autoregister_authority(
+    class_index: CompactClassFamilyIndex,
+    indexed_class: CompactIndexedClass,
+    descendants: tuple[CompactIndexedClass, ...],
+) -> bool:
+    return bool(descendants) and all(
+        any(
+            ancestor_symbol != indexed_class.symbol
+            and (ancestor := class_index.class_for(ancestor_symbol)) is not None
+            and ancestor.declares_autoregister_meta
+            for ancestor_symbol in class_index.ancestor_symbols(descendant.symbol)
+        )
+        for descendant in descendants
+    )
+
+
+def _compact_descendants_share_external_registration_authority(
+    class_index: CompactClassFamilyIndex,
+    indexed_class: CompactIndexedClass,
+    descendants: tuple[CompactIndexedClass, ...],
+) -> bool:
+    if not descendants:
+        return False
+    shared_authorities: frozenset[str] | None = None
+    for descendant in descendants:
+        authority_symbols = frozenset(
+            ancestor_symbol
+            for ancestor_symbol in class_index.ancestor_symbols(descendant.symbol)
+            if ancestor_symbol != indexed_class.symbol
+            if (ancestor := class_index.class_for(ancestor_symbol)) is not None
+            if ancestor.is_registration_authority
+        )
+        shared_authorities = (
+            authority_symbols
+            if shared_authorities is None
+            else shared_authorities & authority_symbols
+        )
+        if not shared_authorities:
+            return False
+    return bool(shared_authorities)
+
+
+def _compact_semantic_key_attr_names(
+    descendants: tuple[CompactIndexedClass, ...],
+) -> tuple[str, ...]:
+    if not descendants:
+        return ()
+    assignment_name_sets = tuple(
+        frozenset(
+            name
+            for name, value in descendant.direct_assignment_expressions
+            if value is not None and _looks_like_semantic_key_attr(name)
+        )
+        for descendant in descendants
+    )
+    common_names = set(assignment_name_sets[0])
+    for assignment_names in assignment_name_sets[1:]:
+        common_names &= set(assignment_names)
+    return sorted_tuple(common_names)
+
+
+def _compact_semantic_inheritance_family_ssot_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[SemanticInheritanceFamilySSOTCandidate, ...]:
+    class_index = build_compact_class_family_index(projections)
+    minimum_leaf_count = max(2, config.min_registration_sites)
+    enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
+    candidates: list[SemanticInheritanceFamilySSOTCandidate] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        if indexed_class.simple_name.endswith("Mixin"):
+            continue
+        terminal_base_names = {
+            parts[-1] for parts in indexed_class.base_reference_parts if parts
+        }
+        if enum_base_names & terminal_base_names:
+            continue
+        if _compact_family_has_registration_authority(class_index, indexed_class):
+            continue
+        concrete_descendants = _compact_concrete_descendants(class_index, indexed_class)
+        if len(concrete_descendants) < minimum_leaf_count:
+            continue
+        if _compact_descendants_have_intermediate_autoregister_authority(
+            class_index, indexed_class, concrete_descendants
+        ):
+            continue
+        if _compact_descendants_share_external_registration_authority(
+            class_index, indexed_class, concrete_descendants
+        ):
+            continue
+        abstract_method_names = indexed_class.abstract_method_names
+        semantic_method_names = sorted_tuple(
+            {
+                method_name
+                for candidate in (indexed_class, *concrete_descendants)
+                for method_name in candidate.method_names
+                if not method_name.startswith("__")
+            }
+        )
+        key_attr_names = _compact_semantic_key_attr_names(concrete_descendants)
+        nominal_base_names = tuple(
+            name for name in terminal_base_names if name not in _IGNORED_BASE_NAMES
+        )
+        if (
+            any(name.startswith("_") for name in key_attr_names)
+            and nominal_base_names
+            and not indexed_class.resolved_base_symbols
+        ):
+            continue
+        if (
+            indexed_class.is_dataclass
+            and not abstract_method_names
+            and not key_attr_names
+            and all(item.is_dataclass for item in concrete_descendants)
+        ):
+            continue
+        if not abstract_method_names and not semantic_method_names:
+            continue
+        suggested_key_attr_name = (
+            key_attr_names[0] if key_attr_names else "registry_key"
+        )
+        class_name = _compact_class_display_name(indexed_class, class_index)
+        concrete_class_names = sorted_tuple(
+            _compact_class_display_name(descendant, class_index)
+            for descendant in concrete_descendants
+        )
+        certificate = _semantic_inheritance_ssot_certificate(
+            class_name,
+            concrete_class_names,
+            semantic_method_names,
+            abstract_method_names,
+            suggested_key_attr_name,
+        )
+        if not certificate.pays_rent:
+            continue
+        derived_projection_count = _semantic_inheritance_derived_projection_count(
+            semantic_method_names=semantic_method_names,
+            key_attr_names=key_attr_names,
+            abstract_method_names=abstract_method_names,
+        )
+        candidates.append(
+            SemanticInheritanceFamilySSOTCandidate(
+                file_path=indexed_class.file_path,
+                line=indexed_class.line,
+                class_name=class_name,
+                concrete_class_names=concrete_class_names,
+                semantic_method_names=semantic_method_names,
+                abstract_method_names=abstract_method_names,
+                key_attr_names=key_attr_names,
+                suggested_key_attr_name=suggested_key_attr_name,
+                membership_object_count=HELPER_SUPPORT_PROJECTION_AUTHORITY.semantic_inheritance_membership_object_count(
+                    concrete_class_names,
+                    semantic_method_names=semantic_method_names,
+                    abstract_method_names=abstract_method_names,
+                ),
+                derived_projection_count=derived_projection_count,
+                rent_margin=_semantic_inheritance_rent_margin(certificate),
+                line_count=(indexed_class.end_line or indexed_class.line)
+                - indexed_class.line
+                + 1,
+                compression_certificate=certificate,
+            )
+        )
+    return tuple(candidates)
+
+
 class SemanticInheritanceFamilySSOTDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[
         SemanticInheritanceFamilySSOTCandidate
-    ]
+    ],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
     ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
@@ -5485,6 +5691,19 @@ class SemanticInheritanceFamilySSOTDetector(
     )
     detector_id = "semantic_inheritance_family_ssot"
     candidate_collector = _semantic_inheritance_family_ssot_candidates
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_semantic_inheritance_family_ssot_candidates(
+                projections,
+                config,
+            ),
+            config,
+        )
 
     def _finding_for_candidate(
         self, family_candidate: SemanticInheritanceFamilySSOTCandidate

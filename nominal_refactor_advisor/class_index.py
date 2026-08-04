@@ -9,6 +9,7 @@ reliably from the local AST.
 from __future__ import annotations
 
 import ast
+import re
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
@@ -94,6 +95,13 @@ class CompactIndexedClass:
     metaclass_names: tuple[str, ...] = ()
     keyed_family_key_type_name: str | None = None
     is_final: bool = False
+    end_line: int | None = None
+    method_names: tuple[str, ...] = ()
+    abstract_method_names: tuple[str, ...] = ()
+    is_abstract: bool = False
+    is_dataclass: bool = False
+    declares_autoregister_meta: bool = False
+    is_registration_authority: bool = False
     resolved_base_symbols: tuple[str, ...] = ()
 
     @property
@@ -416,6 +424,25 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     )
                     for decorator in node.decorator_list
                 ),
+                end_line=node.end_lineno,
+                method_names=tuple(
+                    statement.name
+                    for statement in node.body
+                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ),
+                abstract_method_names=sorted_tuple(
+                    statement.name
+                    for statement in node.body
+                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    if any(
+                        _terminal_reference_name(decorator) == "abstractmethod"
+                        for decorator in statement.decorator_list
+                    )
+                ),
+                is_abstract=_is_abstract_class(node),
+                is_dataclass=_is_dataclass_class(node),
+                declares_autoregister_meta=_declares_autoregister_meta(node),
+                is_registration_authority=_is_registration_authority(node),
             )
             for qualname, node in _iter_class_defs(list(parsed_module.module.body))
         )
@@ -902,6 +929,92 @@ def _direct_class_assignments(node: ast.ClassDef) -> dict[str, ast.AST | None]:
         ):
             assignments[statement.target.id] = statement.value
     return assignments
+
+
+def _registration_authority_base_name(base_name: str) -> bool:
+    tokens = frozenset(
+        token.lower()
+        for token in re.findall(
+            r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
+            base_name,
+        )
+        if token
+    )
+    return bool(
+        tokens & {"autoregister", "registered", "registry"}
+        or (
+            "registration" in tokens
+            and bool(tokens & {"authority", "base", "family", "meta", "root"})
+        )
+        or ("stable" in tokens and bool(tokens & {"axis", "key"}))
+        or ("key" in tokens and "family" in tokens)
+        or (
+            "nominal" in tokens
+            and "base" in tokens
+            and bool(tokens & {"axis", "family", "formula", "policy"})
+        )
+    )
+
+
+def _declares_autoregister_meta(node: ast.ClassDef) -> bool:
+    return any(
+        terminal_name == "AutoRegisterMeta"
+        or terminal_name.endswith("AutoRegisterMeta")
+        or _registration_authority_base_name(terminal_name)
+        or ("Registered" in terminal_name and terminal_name.endswith("Meta"))
+        for keyword in node.keywords
+        if keyword.arg == "metaclass"
+        if (terminal_name := _terminal_reference_name(keyword.value)) is not None
+    )
+
+
+def _is_registration_authority(node: ast.ClassDef) -> bool:
+    assignments = _direct_class_assignments(node)
+    inherits_named_authority = any(
+        _registration_authority_base_name(terminal_name)
+        for base in node.bases
+        if (terminal_name := _terminal_reference_name(base)) is not None
+    )
+    declares_named_authority = (
+        "AutoRegister" in node.name
+        or "Registered" in node.name
+        or node.name.endswith("KeyFamily")
+        or _registration_authority_base_name(node.name)
+    )
+    return bool(
+        _declares_autoregister_meta(node)
+        or inherits_named_authority
+        or declares_named_authority
+        or ("__registry__" in assignments and "__registry_key__" in assignments)
+        or "stable_key_axis" in assignments
+    )
+
+
+def _is_abstract_class(node: ast.ClassDef) -> bool:
+    if {"ABC", "ABCMeta"} & {
+        terminal_name
+        for base in node.bases
+        if (terminal_name := _terminal_reference_name(base)) is not None
+    }:
+        return True
+    return any(
+        _terminal_reference_name(decorator) == "abstractmethod"
+        for statement in node.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for decorator in statement.decorator_list
+    )
+
+
+def _is_dataclass_class(node: ast.ClassDef) -> bool:
+    return any(
+        (isinstance(decorator, ast.Name) and decorator.id == "dataclass")
+        or (
+            isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Name)
+            and decorator.func.id == "dataclass"
+        )
+        for decorator in node.decorator_list
+    )
 
 
 def _direct_class_assignment_lines(node: ast.ClassDef) -> list[tuple[str, int]]:

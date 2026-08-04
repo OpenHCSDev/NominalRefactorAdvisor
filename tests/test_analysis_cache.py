@@ -1890,6 +1890,42 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
     ]
 
 
+def test_compact_semantic_inheritance_projection_matches_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "family.py").write_text(
+        "from abc import ABC, abstractmethod\n"
+        "\n"
+        "class Exporter(ABC):\n"
+        "    @abstractmethod\n"
+        "    def emit(self, rows): ...\n"
+        "\n"
+        "class CsvExporter(Exporter):\n"
+        "    format = 'csv'\n"
+        "    def emit(self, rows): return rows\n"
+        "\n"
+        "class JsonExporter(Exporter):\n"
+        "    format = 'json'\n"
+        "    def emit(self, rows): return rows\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    projections = runtime_detectors.SemanticInheritanceFamilySSOTDetector.compact_module_projections(
+        modules
+    )
+
+    assert runtime_detectors._compact_semantic_inheritance_family_ssot_candidates(
+        projections,
+        config,
+    ) == runtime_detectors._semantic_inheritance_family_ssot_candidates(
+        list(modules),
+        config,
+    )
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -1966,8 +2002,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.ExactTypeGuardInheritanceRetreatDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 26
-    assert len(partition.ast_retaining_context_detector_types) == 43
+    assert runtime_detectors.SemanticInheritanceFamilySSOTDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 27
+    assert len(partition.ast_retaining_context_detector_types) == 42
     assert len(partition.per_module_detector_types) == 183
 
 

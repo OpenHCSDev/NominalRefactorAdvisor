@@ -227,6 +227,23 @@ findings in 104.86 seconds cold and 30.01 seconds warm, with a 380,992-KB peak.
 This remains 57.1% below the controlled 889,100-KB all-at-once parse baseline
 while adding 49 exact global inheritance-boundary findings.
 
+Semantic-inheritance membership SSOT analysis now also reconstructs from the
+shared compact class graph.  The projection retains direct method and abstract
+method names, dataclass/abstract status, registration-authority predicates, and
+source extents without retaining class ASTs.  Direct candidate-equivalence
+tests cover the compact and legacy collectors, while detector calibration still
+covers inherited/external registration authorities, enum roots, imported key
+bases, and dataclass product families.  The current partition is 183 per-module
+detectors, 27 compact-global detectors, and 42 AST-retaining context-dependent
+detectors.
+
+The stable-snapshot 27-family run retained the same 68,466 top-level projection
+items and produced 491 identical cold/warm findings, including 93 semantic
+inheritance findings.  It took 107.44 seconds cold and 30.41 seconds warm.
+Process-local high-water RSS was 337,992 KB cold and 395,684 KB warm; reporting
+the larger value leaves the checkpoint 55.5% below the controlled 889,100-KB
+all-at-once parse baseline.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
