@@ -1079,6 +1079,29 @@ instrumented 27.97-second / 430,908-KB pre-validation run, exact analysis is
 tests in 381.54 seconds; the 11 warnings remain the existing concurrent pytest
 cleanup race.
 
+### Fact-token index follow-up
+
+The semantic resolver previously allocated one ``_FactTokenReference`` plus
+globally sorted pair tuples for every normalized fact alias.  The exact index
+now groups references to the already-live ``SemanticFact`` carriers in one
+pass, transfers each list into its final tuple without retaining both complete
+representations, and preserves deterministic authority/fact ordering.  A
+regression requires the token index to return the original fact objects even
+when its input arrives out of order.  The name-normalization working sets are
+also capped at 8,192 variant entries and 4,096 token-set entries, bounding
+their growth within a single large-repository join.
+
+The isolated semantic peak fell by a further 8,628 KB, from 339,364 KB before
+the token-index change to 330,736 KB with the bounded cache, while graph build
+time remained approximately 2.1 seconds.  A fresh frozen-DQDock exact miss now
+returns the same 12 focused findings and 77,671 projections in 16.61 seconds
+at 353,688 KB.  Relative to the immediately preceding pushed checkpoint that
+is another 7,760 KB (2.1%) and 0.35 seconds (2.1%) reduction.  Relative to the
+27.97-second / 430,908-KB pre-validation run, exact analysis is now 40.6%
+faster and 17.9% lower in peak memory.  Full verification passes all 996 tests
+in 350.03 seconds; the 11 warnings remain the existing concurrent pytest
+cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

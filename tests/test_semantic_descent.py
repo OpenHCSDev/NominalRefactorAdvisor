@@ -90,6 +90,33 @@ def test_semantic_authority_mirror_policy_registry_covers_authority_kinds() -> N
     )
 
 
+def test_fact_token_index_reuses_facts_in_deterministic_reference_order() -> None:
+    later_fact = semantic_descent_module.SemanticFact(
+        fact_id="beta:item",
+        authority_id="beta",
+        kind=semantic_descent_module.SemanticFactKind.DATACLASS_FIELD,
+        name="item",
+        aliases=("shared_item",),
+        location=SourceLocation("pkg/beta.py", 2, "Beta.item"),
+    )
+    earlier_fact = semantic_descent_module.SemanticFact(
+        fact_id="alpha:item",
+        authority_id="alpha",
+        kind=semantic_descent_module.SemanticFactKind.DATACLASS_FIELD,
+        name="item",
+        aliases=("shared_item",),
+        location=SourceLocation("pkg/alpha.py", 2, "Alpha.item"),
+    )
+
+    refs = semantic_descent_module.SemanticFactTokenIndex(
+        (later_fact, earlier_fact)
+    ).refs_for_token("shared_item")
+
+    assert refs == (earlier_fact, later_fact)
+    assert refs[0] is earlier_fact
+    assert refs[1] is later_fact
+
+
 def test_construction_authority_materialization_indexes_each_method_once(
     tmp_path: Path,
     monkeypatch,

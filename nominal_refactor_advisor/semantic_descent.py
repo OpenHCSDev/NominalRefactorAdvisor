@@ -1510,15 +1510,10 @@ class FindingDeclaredAuthorityMirrorPolicy(SemanticAuthorityMirrorPolicy):
     authority_kind = SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
 
 
-@dataclass(frozen=True)
-class _FactTokenReference(SemanticFactReference):
-    """Indexed lookup row from one normalized token to one semantic fact."""
-
-
 FactsByAuthorityId: TypeAlias = dict[str, tuple[SemanticFact, ...]]
 AuthorityIdsByName: TypeAlias = dict[str, tuple[str, ...]]
 AuthorityIdsByFactName: TypeAlias = dict[tuple[SemanticFactKind, str], frozenset[str]]
-FactRefsByToken: TypeAlias = dict[str, tuple[_FactTokenReference, ...]]
+FactRefsByToken: TypeAlias = dict[str, tuple[SemanticFact, ...]]
 FactMatchesByAuthority: TypeAlias = dict[str, dict[str, set[str]]]
 ConstructionAuthorityCacheKey: TypeAlias = tuple[str, str]
 
@@ -1659,27 +1654,22 @@ class SemanticFactTokenIndex:
 
     @cached_property
     def by_token(self) -> FactRefsByToken:
-        ref_tokens = tuple(
-            (alias, _FactTokenReference(fact.authority_id, fact.fact_id))
-            for fact in self.facts
-            for alias in fact.normalized_aliases
-        )
-        ordered_ref_tokens = sorted_tuple(
-            ref_tokens,
-            key=lambda item: (item[0], item[1].authority_id, item[1].fact_id),
-        )
-        return {
-            token: tuple(ref for _, ref in token_refs)
-            for token, token_refs in groupby(
-                ordered_ref_tokens,
-                key=lambda item: item[0],
-            )
-        }
+        refs_by_token: dict[str, list[SemanticFact]] = {}
+        for fact in sorted(
+            self.facts,
+            key=lambda item: (item.authority_id, item.fact_id),
+        ):
+            for alias in fact.normalized_aliases:
+                refs_by_token.setdefault(alias, []).append(fact)
+        ordered_refs: FactRefsByToken = {}
+        for token in sorted(refs_by_token):
+            ordered_refs[token] = tuple(refs_by_token.pop(token))
+        return ordered_refs
 
     def contains_token(self, token: str) -> bool:
         return token in self.by_token
 
-    def refs_for_token(self, token: str) -> tuple[_FactTokenReference, ...]:
+    def refs_for_token(self, token: str) -> tuple[SemanticFact, ...]:
         return self.by_token[token]
 
 
@@ -5261,14 +5251,14 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         self,
     ) -> dict[
         tuple[str, PresentationTokenKind, str | None],
-        tuple[_FactTokenReference, ...],
+        tuple[SemanticFact, ...],
     ]:
         return {}
 
     def _candidate_refs_for_token(
         self,
         token: PresentationToken,
-    ) -> tuple[_FactTokenReference, ...]:
+    ) -> tuple[SemanticFact, ...]:
         signature = (token.value, token.kind, token.qualifier)
         cache = self.candidate_refs_by_token_signature
         if signature not in cache:
@@ -5278,7 +5268,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
     def _candidate_refs_for_token_uncached(
         self,
         token: PresentationToken,
-    ) -> tuple[_FactTokenReference, ...]:
+    ) -> tuple[SemanticFact, ...]:
         if not self.fact_token_index.contains_token(token.value):
             return ()
         refs = self.fact_token_index.refs_for_token(token.value)
@@ -5338,7 +5328,7 @@ class NormalizeNameProjection:
     """Normalize source names and literal keys into semantic comparison tokens."""
 
     @classmethod
-    @lru_cache(maxsize=None)
+    @lru_cache(maxsize=8_192)
     def variants(cls, raw_name: str) -> tuple[str, ...]:
         normalized = cls.normalize(raw_name)
         variants = {normalized} if normalized else set()
@@ -5350,7 +5340,7 @@ class NormalizeNameProjection:
         return sorted_tuple(variants)
 
     @classmethod
-    @lru_cache(maxsize=None)
+    @lru_cache(maxsize=4_096)
     def token_set(cls, raw_name: str) -> frozenset[str]:
         return frozenset(
             token
