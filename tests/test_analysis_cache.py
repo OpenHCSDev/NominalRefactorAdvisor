@@ -62,6 +62,9 @@ from nominal_refactor_advisor.detectors import (
 )
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
 from nominal_refactor_advisor.detectors import (
+    _abstraction_reuse as abstraction_reuse_detectors,
+)
+from nominal_refactor_advisor.detectors import (
     _nominal_authority_surface as nominal_surface_detectors,
 )
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
@@ -2760,6 +2763,121 @@ def test_abc_optimizer_detectors_share_one_compact_context(
     assert calls == 1
 
 
+def _write_compact_carrier_reuse_fixture(package_root: Path) -> None:
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (package_root / "models.py").write_text(
+        "from dataclasses import dataclass\n"
+        "from pathlib import Path\n"
+        "@dataclass(frozen=True)\n"
+        "class RequestCarrier:\n"
+        "    request_id: str\n"
+        "    source_path: Path\n"
+        "    workspace_root: Path\n",
+        encoding="utf-8",
+    )
+    (package_root / "local.py").write_text(
+        "from dataclasses import dataclass\n"
+        "from pathlib import Path\n"
+        "from .models import RequestCarrier as RC\n"
+        "@dataclass(frozen=True)\n"
+        "class LocalEnvelope:\n"
+        "    request_id: str\n"
+        "    source_path: Path\n"
+        "    workspace_root: Path\n"
+        "@dataclass(frozen=True)\n"
+        "class ComposedRequest:\n"
+        "    carrier: 'RC'\n",
+        encoding="utf-8",
+    )
+
+
+def test_compact_carrier_reuse_candidates_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    _write_compact_carrier_reuse_fixture(package_root)
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    projections = abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_module_projections(
+        modules
+    )
+    context = abstraction_reuse_detectors._compact_carrier_reuse_context(
+        projections, config
+    )
+    carrier_surfaces = abstraction_reuse_detectors._carrier_surfaces_with_ancestors(
+        abstraction_reuse_detectors._compact_carrier_surfaces(projections)
+    )
+    assert abstraction_reuse_detectors._available_carrier_reuse_candidates_from_surfaces(
+        carrier_surfaces
+    ) == abstraction_reuse_detectors._exhaustive_available_carrier_reuse_candidates_from_surfaces(
+        carrier_surfaces
+    )
+    detector_legacy_pairs = (
+        (
+            abstraction_reuse_detectors.AvailableCarrierReuseDetector,
+            context.available_candidates,
+            abstraction_reuse_detectors._available_carrier_reuse_candidates(modules),
+        ),
+        (
+            abstraction_reuse_detectors.CarrierCompositionRetreatDetector,
+            context.composition_candidates,
+            abstraction_reuse_detectors._carrier_composition_retreat_candidates(
+                modules
+            ),
+        ),
+        (
+            abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector,
+            context.parallel_candidates,
+            abstraction_reuse_detectors._parallel_primitive_carrier_candidates(
+                list(modules)
+            ),
+        ),
+    )
+
+    for detector_type, compact_candidates, legacy_candidates in detector_legacy_pairs:
+        assert compact_candidates == legacy_candidates
+        detector = detector_type()
+        assert detector._findings_from_compact_context(
+            projections, context, config
+        ) == detector._findings_for_candidates(legacy_candidates, config)
+        assert compact_candidates
+
+
+def test_carrier_reuse_detectors_share_one_compact_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    _write_compact_carrier_reuse_fixture(package_root)
+    detector_types = (
+        abstraction_reuse_detectors.AvailableCarrierReuseDetector,
+        abstraction_reuse_detectors.CarrierCompositionRetreatDetector,
+        abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector,
+    )
+    calls = 0
+    original_builder = abstraction_reuse_detectors._compact_carrier_reuse_context
+
+    def counting_builder(projections, config):
+        nonlocal calls
+        calls += 1
+        return original_builder(projections, config)
+
+    for detector_type in detector_types:
+        monkeypatch.setattr(
+            detector_type,
+            "compact_shared_context_builder",
+            staticmethod(counting_builder),
+        )
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,), detector_types, use_parse_cache=False
+    )
+
+    accumulator.findings_by_detector(DetectorConfig())
+
+    assert calls == 1
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -2902,8 +3020,17 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert structural_detectors.SemanticOverlapAbcResidueAxisCatalogDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 48
-    assert len(partition.ast_retaining_context_detector_types) == 21
+    assert abstraction_reuse_detectors.AvailableCarrierReuseDetector in (
+        partition.compact_global_detector_types
+    )
+    assert abstraction_reuse_detectors.CarrierCompositionRetreatDetector in (
+        partition.compact_global_detector_types
+    )
+    assert abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 51
+    assert len(partition.ast_retaining_context_detector_types) == 18
     assert len(partition.per_module_detector_types) == 183
 
 

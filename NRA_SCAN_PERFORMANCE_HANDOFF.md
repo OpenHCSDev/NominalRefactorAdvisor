@@ -453,6 +453,38 @@ same 68,481 top-level projections.  The accepted fresh-cache cold run took
 while exact compact coverage grows by five detectors; the larger production
 RSS remains 58.7% below the controlled 889,100-KB all-at-once parse baseline.
 
+Available carrier reuse, carrier-composition retreat, and parallel primitive
+carrier detection now share one compact carrier context.  Schema 10 stores
+8,361 sparse carrier class rows and 9,021 simple-name inheritance edges on the
+existing module-class projection.  The rows preserve exact direct annotations,
+constructor-derived fields, dataclass state, bases, module imports, constructor
+aliases, and source order without retaining AST nodes.  Nominal and carrier
+field maps are extracted in one class-body pass, so the new detector coverage
+does not duplicate the existing nominal-surface traversal.
+
+Focused gates compare candidates and complete findings against all three
+legacy AST collectors, cover aliased forward references, and prove one shared
+compact context.  Across all 919 frozen DQDock modules, compact and legacy
+projections matched exactly for 3,205 carrier surfaces and 76 primitive
+bundles.  Final candidate tuples also matched exactly: 31 available-carrier,
+233 composition-retreat, and nine parallel-carrier candidates.  The indexed
+available-carrier join separately matched exhaustive authority pairing.  That
+full-AST oracle peaked at 1,018,468 KB.  The final suite passes 975 tests, and
+the partition is now 183 per-module, 51 compact-global, and 18 AST-retaining
+context-dependent detectors.
+
+An initial exact implementation retained the sparse memory result but used an
+all-pairs join across 3,205 surfaces and 684 carrier authorities.  It took
+150.59 seconds cold, including 30.11 seconds of finding reconstruction, and
+was rejected.  The accepted join indexes authorities by the minimum three
+shared semantic roles, then runs the unchanged exact predicate on only the
+eligible pairs.  Finding reconstruction fell to 11.90 seconds.  The final
+fresh-cache run produced 815 findings in 119.39 seconds at 352,348 KB, with
+projection itself at 107.50 seconds versus schema 9's 107.42 seconds.  The
+matching warm run took 42.17 seconds at 371,028 KB.  The complete persistent
+cache grows by only 555,956 bytes, and the larger production RSS remains 58.3%
+below the controlled 889,100-KB all-at-once parse baseline.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
