@@ -2958,6 +2958,72 @@ def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
     )
 
 
+def test_compact_public_private_delegate_context_matches_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "scoring.py").write_text(
+        "class _Router:\n"
+        "    @classmethod\n"
+        "    def for_engine(cls, engine):\n"
+        "        return cls()\n\n"
+        "    def score(self, payload):\n"
+        "        return payload['value']\n\n"
+        "    def requires_electrostatics(self):\n"
+        "        return True\n\n"
+        "def route_scoring(engine, **payload):\n"
+        "    return _Router.for_engine(engine).score(payload)\n\n"
+        "def scoring_engine_requires_electrostatics(engine):\n"
+        "    return _Router.for_engine(engine).requires_electrostatics()\n",
+        encoding="utf-8",
+    )
+    consumer_source = (
+        "from pkg.scoring import route_scoring, scoring_engine_requires_electrostatics\n\n"
+        "def score_request():\n"
+        "    if scoring_engine_requires_electrostatics('fast'):\n"
+        "        return route_scoring('fast', value=1.0)\n"
+        "    return 0.0\n"
+    )
+    (package_root / "pipeline.py").write_text(consumer_source, encoding="utf-8")
+    (package_root / "api.py").write_text(consumer_source, encoding="utf-8")
+    modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+    config = DetectorConfig()
+    shell_detector = runtime_detectors.PublicApiPrivateDelegateShellDetector()
+    family_detector = runtime_detectors.PublicApiPrivateDelegateFamilyDetector()
+    projections = type(shell_detector).compact_module_projections(modules)
+    context = runtime_detectors._compact_public_api_private_delegate_context(
+        projections, config
+    )
+    legacy_shell_candidates = (
+        runtime_detectors._public_api_private_delegate_shell_candidates(modules, config)
+    )
+    legacy_family_candidates = (
+        runtime_detectors._public_api_private_delegate_family_candidates(
+            modules, config
+        )
+    )
+
+    assert context.shell_candidates == legacy_shell_candidates
+    assert context.family_candidates == legacy_family_candidates
+    assert len(context.shell_candidates) == 2
+    assert len(context.family_candidates) == 1
+    assert shell_detector._findings_from_compact_context(
+        projections, context, config
+    ) == shell_detector._findings_for_candidates(legacy_shell_candidates, config)
+    assert family_detector._findings_from_compact_context(
+        projections, context, config
+    ) == family_detector._findings_for_candidates(legacy_family_candidates, config)
+    detector_types = (type(shell_detector), type(family_detector))
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (tmp_path,), detector_types, use_parse_cache=False
+    )
+    findings = accumulator.findings_by_detector(config)
+    assert accumulator.projection_count == len(modules)
+    assert len(findings[type(shell_detector)]) == 2
+    assert len(findings[type(family_detector)]) == 1
+
+
 def test_carrier_reuse_detectors_share_one_compact_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3789,8 +3855,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert abstraction_reuse_detectors.AvailableAbstractionReuseDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 62
-    assert len(partition.ast_retaining_context_detector_types) == 7
+    assert runtime_detectors.PublicApiPrivateDelegateShellDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.PublicApiPrivateDelegateFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 64
+    assert len(partition.ast_retaining_context_detector_types) == 5
     assert len(partition.per_module_detector_types) == 183
 
 

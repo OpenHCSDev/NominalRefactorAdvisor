@@ -10454,16 +10454,53 @@ def _trivial_forwarding_wrapper_candidates(
     )
 
 
-def _public_api_private_delegate_shell_candidates(
-    modules: Sequence[ParsedModule],
+def _public_api_private_delegate_module_facts(
+    module: ParsedModule,
+) -> PublicApiPrivateDelegateModuleFacts:
+    return PublicApiPrivateDelegateModuleFacts(
+        file_path=str(module.path),
+        module_name=module.module_name,
+        top_level_symbol_lines=tuple(sorted(_top_level_symbol_lines(module).items())),
+        wrappers=_trivial_forwarding_wrapper_candidates(module),
+        callsites_by_target=tuple(
+            sorted(_external_callsites_by_target((module,)).items())
+        ),
+    )
+
+
+def _public_api_private_delegate_callsites_by_target_from_facts(
+    module_facts: Sequence[PublicApiPrivateDelegateModuleFacts],
+) -> ExternalCallsitesByTarget:
+    callsites_by_target: dict[str, set[ResolvedExternalCallsite]] = defaultdict(set)
+    for facts in module_facts:
+        for target, callsites in facts.callsites_by_target:
+            callsites_by_target[target].update(callsites)
+    return {
+        target: sorted_tuple(
+            callsites,
+            key=lambda item: (
+                item.location.file_path,
+                item.location.line,
+                item.location.symbol,
+                item.module_name,
+            ),
+        )
+        for target, callsites in callsites_by_target.items()
+    }
+
+
+def _public_api_private_delegate_shell_candidates_from_facts(
+    module_facts: Sequence[PublicApiPrivateDelegateModuleFacts],
     config: DetectorConfig,
 ) -> tuple[PublicApiPrivateDelegateShellCandidate, ...]:
     min_external_callsites = max(2, config.min_registration_sites)
-    callsites_by_target = _external_callsites_by_target(modules)
+    callsites_by_target = _public_api_private_delegate_callsites_by_target_from_facts(
+        module_facts
+    )
     candidates: list[PublicApiPrivateDelegateShellCandidate] = []
-    for module in modules:
-        top_level_lines = _top_level_symbol_lines(module)
-        for wrapper_candidate in _trivial_forwarding_wrapper_candidates(module):
+    for facts in module_facts:
+        top_level_lines = dict(facts.top_level_symbol_lines)
+        for wrapper_candidate in facts.wrappers:
             if not _is_public_module_api_qualname(wrapper_candidate.qualname):
                 continue
             delegate_root_symbol = _delegate_root_symbol(
@@ -10471,22 +10508,20 @@ def _public_api_private_delegate_shell_candidates(
             )
             if not _is_private_symbol_name(delegate_root_symbol):
                 continue
-            wrapper_symbol = f"{module.module_name}.{wrapper_candidate.qualname}"
+            wrapper_symbol = f"{facts.module_name}.{wrapper_candidate.qualname}"
             external_callsites = tuple(
-                (
-                    site
-                    for site in HELPER_SUPPORT_PROJECTION_AUTHORITY.matching_external_callsites(
-                        callsites_by_target, target_symbol=wrapper_symbol
-                    )
-                    if site.module_name != module.module_name
+                site
+                for site in HELPER_SUPPORT_PROJECTION_AUTHORITY.matching_external_callsites(
+                    callsites_by_target, target_symbol=wrapper_symbol
                 )
+                if site.module_name != facts.module_name
             )
             if len(external_callsites) < min_external_callsites:
                 continue
             candidates.append(
                 PublicApiPrivateDelegateShellCandidate(
                     wrapper=wrapper_candidate,
-                    module_name=module.module_name,
+                    module_name=facts.module_name,
                     delegate_root_symbol=delegate_root_symbol,
                     delegate_root_line=top_level_lines.get(delegate_root_symbol),
                     external_callsites=external_callsites,
@@ -10502,20 +10537,32 @@ def _public_api_private_delegate_shell_candidates(
     )
 
 
-def _public_api_private_delegate_family_candidates(
+def _public_api_private_delegate_shell_candidates(
     modules: Sequence[ParsedModule],
+    config: DetectorConfig,
+) -> tuple[PublicApiPrivateDelegateShellCandidate, ...]:
+    return _public_api_private_delegate_shell_candidates_from_facts(
+        tuple(_public_api_private_delegate_module_facts(module) for module in modules),
+        config,
+    )
+
+
+def _public_api_private_delegate_family_candidates_from_facts(
+    module_facts: Sequence[PublicApiPrivateDelegateModuleFacts],
     config: DetectorConfig,
 ) -> tuple[PublicApiPrivateDelegateFamilyCandidate, ...]:
     min_wrapper_count = max(2, config.min_registration_sites)
     min_external_callsites = max(2, config.min_registration_sites)
-    callsites_by_target = _external_callsites_by_target(modules)
+    callsites_by_target = _public_api_private_delegate_callsites_by_target_from_facts(
+        module_facts
+    )
     grouped_wrappers: dict[
         tuple[str, str, str], list[TrivialForwardingWrapperCandidate]
     ] = defaultdict(list)
     delegate_lines: dict[tuple[str, str, str], int | None] = {}
-    for module in modules:
-        top_level_lines = _top_level_symbol_lines(module)
-        for wrapper_candidate in _trivial_forwarding_wrapper_candidates(module):
+    for facts in module_facts:
+        top_level_lines = dict(facts.top_level_symbol_lines)
+        for wrapper_candidate in facts.wrappers:
             if not _is_public_module_api_qualname(wrapper_candidate.qualname):
                 continue
             delegate_root_symbol = _delegate_root_symbol(
@@ -10523,7 +10570,7 @@ def _public_api_private_delegate_family_candidates(
             )
             if not _is_private_symbol_name(delegate_root_symbol):
                 continue
-            key = (str(module.path), module.module_name, delegate_root_symbol)
+            key = (facts.file_path, facts.module_name, delegate_root_symbol)
             grouped_wrappers[key].append(wrapper_candidate)
             delegate_lines.setdefault(key, top_level_lines.get(delegate_root_symbol))
     candidates: list[PublicApiPrivateDelegateFamilyCandidate] = []
@@ -10574,6 +10621,16 @@ def _public_api_private_delegate_family_candidates(
             item.delegate_root_symbol,
             item.wrappers[0].line,
         ),
+    )
+
+
+def _public_api_private_delegate_family_candidates(
+    modules: Sequence[ParsedModule],
+    config: DetectorConfig,
+) -> tuple[PublicApiPrivateDelegateFamilyCandidate, ...]:
+    return _public_api_private_delegate_family_candidates_from_facts(
+        tuple(_public_api_private_delegate_module_facts(module) for module in modules),
+        config,
     )
 
 

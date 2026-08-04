@@ -12789,6 +12789,15 @@ class ResolvedExternalCallsite:
 
 
 @dataclass(frozen=True)
+class PublicApiPrivateDelegateModuleFacts:
+    file_path: str
+    module_name: str
+    top_level_symbol_lines: tuple[tuple[str, int], ...]
+    wrappers: tuple[TrivialForwardingWrapperCandidate, ...]
+    callsites_by_target: tuple[tuple[str, tuple[ResolvedExternalCallsite, ...]], ...]
+
+
+@dataclass(frozen=True)
 class PublicApiPrivateDelegateSurface(ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key

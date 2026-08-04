@@ -742,6 +742,39 @@ The cache contains 19,956 files and 236,213,431 payload bytes with zero
 zero-byte entries.
 Checkpoint verification passes all 985 tests in 352.12 seconds.
 
+## 2026-08-04 public/private delegate projection checkpoint
+
+Public-API/private-delegate shell and family analysis now share one per-module
+projection containing forwarding-wrapper facts, top-level delegate locations,
+and import-resolved call targets.  The two compact detectors build one shared
+global context, so external-call matching and delegate-family grouping run once
+per exact scan.  The legacy AST entry points and compact path share the same
+fact-to-candidate authorities.
+
+The frozen 919-module DQDock oracle has zero shell and family candidates on
+both paths with matching canonical candidate and finding digests; a separate
+non-empty three-module oracle matches two shell candidates and one family
+candidate object-for-object.  The isolated retained-AST DQDock run took 22.77
+seconds at 964,412 KB, including a 9.78-second global join.  The uncached
+bounded pair took 26.57 seconds at 155,396 KB, including a 0.12-second shared
+join.  That is an 83.9% peak-memory reduction; as in the abstraction checkpoint,
+cold wall time includes streaming and release work that the legacy run omits.
+
+The projection contains 95 forwarding wrappers and 17,456 per-module resolved
+call targets.  Its 919 cache payloads occupy 8,362,395 bytes; the largest is
+248,868 bytes and fits the explicit 1-MB ceiling.  With all payloads cached,
+the isolated detector pair takes 0.95 seconds at 125,840 KB.
+
+Schema 19 moves the partition to 183 per-module detectors, 64 compact-global
+detectors, and five AST-retaining context-dependent detectors.  The complete
+compact run produced 9,553 findings from 74,914 top-level projections.  Cold
+took 188.39 seconds at 698,900 KB, including 167.04 seconds of projection and
+21.34 seconds of reconstruction.  Warm took 58.68 seconds at 749,588 KB,
+including 37.29 seconds of projection and 21.39 seconds of reconstruction.
+The cache contains 20,875 files and 244,574,920 payload bytes with zero
+zero-byte entries.
+Checkpoint verification passes all 986 tests in 322.26 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
