@@ -2707,7 +2707,9 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
     )
 
     calls = 0
+    collect_cycles_calls: list[bool] = []
     original_builder = base_detectors.build_compact_class_family_index
+    original_release = analysis_module.release_module_analysis_memory
 
     def counting_builder(projections):
         nonlocal calls
@@ -2716,6 +2718,10 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
 
     def forbidden_builder(_projections):
         raise AssertionError("multi-family detector rebuilt the compact class graph")
+
+    def observing_release(*, collect_cycles=True):
+        collect_cycles_calls.append(collect_cycles)
+        return original_release(collect_cycles=collect_cycles)
 
     monkeypatch.setattr(
         base_detectors,
@@ -2733,11 +2739,17 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
             "build_compact_class_family_index",
             forbidden_builder,
         )
+    monkeypatch.setattr(
+        analysis_module,
+        "release_module_analysis_memory",
+        observing_release,
+    )
 
     findings = manifest.findings_by_detector(DetectorConfig())
 
     assert calls == 1
     assert set(findings) == set(detector_types)
+    assert collect_cycles_calls[-1] is True
 
 
 def test_compact_repeated_keyed_family_matches_legacy_ast_candidates(

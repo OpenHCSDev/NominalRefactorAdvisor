@@ -1048,7 +1048,7 @@ class BoundedCompactProjectionManifest:
                 release_module_analysis_memory(collect_cycles=False)
             del anchor_projections
             shared_contexts.clear()
-            release_module_analysis_memory(collect_cycles=False)
+            release_module_analysis_memory(collect_cycles=True)
 
         for families in detector_types_by_families:
             if families not in remaining_groups:

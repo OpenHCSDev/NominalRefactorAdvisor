@@ -1124,6 +1124,35 @@ run, exact analysis is 40.4% faster and 19.6% lower in peak memory.  Full
 verification passes all 996 tests in 349.87 seconds; the 11 warnings remain the
 existing concurrent pytest cleanup race.
 
+### Lazy semantic specificity and anchor reclamation follow-up
+
+The dataclass mirror policy previously built a map from every fact-role name to
+the complete set of owning authority ids, although its only question is whether
+the role occurs under more than one authority.  Exact resolution now builds an
+8,213-key reused-role set and leaves the legacy full map unmaterialized.  The
+projection-to-dataclass descent index is demand-driven as well: only 936 of
+20,652 projection lineage rows are required on frozen DQDock.  Regressions
+require both lazy indexes to remain unmaterialized until queried while
+preserving compact/full-AST graph parity.
+
+After the final class-dependent multi-family join, the bounded manifest now
+performs one real cycle collection as it clears the shared class/semantic
+contexts.  This matters for subsequent large independent families: the
+available-abstraction join fell from an approximately 349-MB process high-water
+to approximately 311 MB in the instrumented phase run.  A boundary regression
+requires this collection at anchor teardown; per-family joins still avoid
+repeated collections.
+
+Isolated semantic edge resolution fell from 324,240 KB / about 1.39 seconds to
+310,336 KB / about 1.14 seconds with the same 5,246 edges.  Two fresh exact
+DQDock misses stabilized at 333,472 and 333,524 KB; the repeat returned the
+unchanged 12 focused findings and 77,671 projections in 16.68 seconds.  Against
+the preceding pushed checkpoint this is 12,968 KB (3.7%) less peak RSS with
+unchanged wall time.  Against the 27.97-second / 430,908-KB pre-validation run,
+exact analysis is 40.4% faster and 22.6% lower in peak memory.  Full
+verification passes all 996 tests in 357.26 seconds; the 11 warnings remain the
+existing concurrent pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

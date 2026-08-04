@@ -115,6 +115,11 @@ def test_fact_token_index_reuses_facts_in_deterministic_reference_order() -> Non
     assert refs == (earlier_fact, later_fact)
     assert refs[0] is earlier_fact
     assert refs[1] is later_fact
+    specificity = semantic_descent_module.SemanticFactSpecificityIndex(
+        (later_fact, earlier_fact)
+    )
+    assert specificity.matched_facts_are_reused_roles((earlier_fact, later_fact))
+    assert "authority_ids_by_fact_name" not in vars(specificity)
 
 
 def test_construction_authority_materialization_indexes_each_method_once(
@@ -220,6 +225,13 @@ def test_constructed_dataclass_inverse_index_matches_pairwise_resolution(
         facts=graph.facts,
         projections=graph.projections,
         class_index=graph.class_index,
+    )
+    descent = resolver.dataclass_descent
+    assert descent.projection_descent_authority_ids == {}
+    first_projection = resolver.projections[0]
+    descent.descent_authority_ids_for_projection(first_projection)
+    assert tuple(descent.projection_descent_authority_ids) == (
+        first_projection.projection_id,
     )
 
     for projection in resolver.projections:

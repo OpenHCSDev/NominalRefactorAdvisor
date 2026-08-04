@@ -1581,8 +1581,21 @@ class SemanticFactSpecificityIndex:
             )
         }
 
+    @cached_property
+    def reused_fact_names(self) -> frozenset[tuple[SemanticFactKind, str]]:
+        authority_id_by_fact_name: dict[tuple[SemanticFactKind, str], str] = {}
+        reused_fact_names: set[tuple[SemanticFactKind, str]] = set()
+        for fact in self.facts:
+            key = (fact.kind, fact.name)
+            authority_id = authority_id_by_fact_name.get(key)
+            if authority_id is None:
+                authority_id_by_fact_name[key] = fact.authority_id
+            elif authority_id != fact.authority_id:
+                reused_fact_names.add(key)
+        return frozenset(reused_fact_names)
+
     def fact_is_reused_role(self, fact: SemanticFact) -> bool:
-        return len(self.authority_ids_by_fact_name[(fact.kind, fact.name)]) > 1
+        return (fact.kind, fact.name) in self.reused_fact_names
 
     def matched_facts_are_reused_roles(
         self,
@@ -4827,10 +4840,18 @@ class DataclassProjectionDescentAuthority:
 
     @cached_property
     def projection_descent_authority_ids(self) -> dict[str, frozenset[str]]:
-        return {
-            projection.projection_id: self._projection_descent_authority_ids(projection)
-            for projection in self.projections
-        }
+        return {}
+
+    def descent_authority_ids_for_projection(
+        self,
+        projection: PresentationProjection,
+    ) -> frozenset[str]:
+        cache = self.projection_descent_authority_ids
+        if projection.projection_id not in cache:
+            cache[projection.projection_id] = self._projection_descent_authority_ids(
+                projection
+            )
+        return cache[projection.projection_id]
 
     @cached_property
     def projection_materializes_any_dataclass_authority_cache(self) -> dict[str, bool]:
@@ -4855,14 +4876,14 @@ class DataclassProjectionDescentAuthority:
     ) -> bool:
         return (
             authority.authority_id
-            in self.projection_descent_authority_ids[projection.projection_id]
+            in self.descent_authority_ids_for_projection(projection)
         )
 
     def projection_descends_to_any_dataclass_authority(
         self,
         projection: PresentationProjection,
     ) -> bool:
-        return bool(self.projection_descent_authority_ids[projection.projection_id])
+        return bool(self.descent_authority_ids_for_projection(projection))
 
     def projection_materializes_any_dataclass_authority(
         self,
