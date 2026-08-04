@@ -500,27 +500,54 @@ class AttributeChainAuthority:
 ATTRIBUTE_CHAIN_AUTHORITY = AttributeChainAuthority()
 
 
-@lru_cache(maxsize=None)
+class _UniqueKnownSymbolSuffixIndex:
+    """Resolve only requested suffixes from terminal-name candidate buckets."""
+
+    __slots__ = ("_matches_by_suffix", "_symbols_by_terminal_name")
+
+    def __init__(self, known_symbols: frozenset[str]) -> None:
+        symbols_by_terminal_name: dict[str, list[str]] = defaultdict(list)
+        for symbol in known_symbols:
+            symbols_by_terminal_name[symbol.rsplit(".", 1)[-1]].append(symbol)
+        self._symbols_by_terminal_name = {
+            terminal_name: tuple(symbols)
+            for terminal_name, symbols in symbols_by_terminal_name.items()
+        }
+        self._matches_by_suffix: dict[str, str | None] = {}
+
+    @classmethod
+    def from_terminal_buckets(
+        cls,
+        symbols_by_terminal_name: dict[str, tuple[str, ...]],
+    ) -> "_UniqueKnownSymbolSuffixIndex":
+        index = cls.__new__(cls)
+        index._symbols_by_terminal_name = symbols_by_terminal_name
+        index._matches_by_suffix = {}
+        return index
+
+    def get(self, suffix: str) -> str | None:
+        if suffix in self._matches_by_suffix:
+            return self._matches_by_suffix[suffix]
+        qualified_suffix = f".{suffix}"
+        match: str | None = None
+        for symbol in self._symbols_by_terminal_name.get(suffix.rsplit(".", 1)[-1], ()):
+            if symbol != suffix and not symbol.endswith(qualified_suffix):
+                continue
+            if match is not None and match != symbol:
+                match = None
+                break
+            match = symbol
+        self._matches_by_suffix[suffix] = match
+        return match
+
+
+@lru_cache(maxsize=8)
 def _unique_known_symbol_by_suffix(
     known_symbols: frozenset[str],
-) -> dict[str, str]:
-    """Index the suffix rule once instead of scanning every class per reference."""
+) -> _UniqueKnownSymbolSuffixIndex:
+    """Share a bounded lazy suffix resolver for one repository symbol set."""
 
-    unique: dict[str, str] = {}
-    ambiguous: set[str] = set()
-    for symbol in known_symbols:
-        parts = symbol.split(".")
-        for start in range(len(parts)):
-            suffix = ".".join(parts[start:])
-            if suffix in ambiguous:
-                continue
-            previous = unique.get(suffix)
-            if previous is None:
-                unique[suffix] = symbol
-            elif previous != symbol:
-                del unique[suffix]
-                ambiguous.add(suffix)
-    return unique
+    return _UniqueKnownSymbolSuffixIndex(known_symbols)
 
 
 def _resolve_relative_module(
@@ -3355,9 +3382,10 @@ class CompactClassFamilyIndexBuilder:
         parts: tuple[str, ...],
         module_name: str,
         import_aliases_by_module_name: dict[str, dict[str, str]],
-        known_symbols: frozenset[str],
+        known_symbols: frozenset[str] | dict[str, CompactIndexedClass],
         unique_symbols_by_name: dict[str, str],
         allow_unique_unqualified: bool = True,
+        unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex | None = None,
     ) -> str | None:
         import_aliases = import_aliases_by_module_name.get(module_name, {})
         first, *rest = parts
@@ -3367,11 +3395,16 @@ class CompactClassFamilyIndexBuilder:
             if candidate in known_symbols:
                 return candidate
             candidate_parts = candidate.split(".")
-            unique_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
+            unique_by_suffix = unique_symbols_by_suffix
+            if unique_by_suffix is None:
+                unique_by_suffix = _unique_known_symbol_by_suffix(
+                    frozenset(known_symbols)
+                )
             for suffix_width in range(len(candidate_parts) - 1, 0, -1):
                 suffix = ".".join(candidate_parts[-suffix_width:])
-                if suffix in unique_by_suffix:
-                    return unique_by_suffix[suffix]
+                match = unique_by_suffix.get(suffix)
+                if match is not None:
+                    return match
         module_local = ".".join((module_name, *parts))
         if module_local in known_symbols:
             return module_local
@@ -3446,8 +3479,9 @@ def build_compact_class_family_index(
 @dataclass(frozen=True)
 class CompactClassReferenceResolver:
     import_aliases_by_module_name: dict[str, dict[str, str]]
-    known_symbols: frozenset[str]
+    known_symbols: dict[str, CompactIndexedClass]
     unique_symbols_by_name: dict[str, str]
+    unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex
 
     @classmethod
     def from_index(
@@ -3460,12 +3494,17 @@ class CompactClassReferenceResolver:
                 projection.module_name: dict(projection.import_aliases)
                 for projection in projections
             },
-            known_symbols=frozenset(class_index.classes_by_symbol),
+            known_symbols=class_index.classes_by_symbol,
             unique_symbols_by_name={
                 name: symbols[0]
                 for name, symbols in class_index.symbols_by_simple_name.items()
                 if len(symbols) == 1
             },
+            unique_symbols_by_suffix=(
+                _UniqueKnownSymbolSuffixIndex.from_terminal_buckets(
+                    class_index.symbols_by_simple_name
+                )
+            ),
         )
 
     def symbol_for(
@@ -3482,6 +3521,7 @@ class CompactClassReferenceResolver:
             self.known_symbols,
             self.unique_symbols_by_name,
             allow_unique_unqualified,
+            self.unique_symbols_by_suffix,
         )
 
 

@@ -1301,6 +1301,38 @@ and reported 7.371 internal seconds with ``partial`` cache status.  Full
 verification passes all 998 tests in 375.49 seconds; the 11 warnings remain the
 existing concurrent pytest cleanup race.
 
+### Lazy class-symbol suffix follow-up
+
+The cross-root import fallback no longer expands every repository class symbol
+into every possible qualified suffix.  That eager index retained roughly
+50,000 derived strings on frozen DQDock even though exact semantic resolution
+queries only a subset of those suffixes.  The resolver now groups each symbol
+once by its already-indexed terminal class name, resolves requested suffixes
+lazily within that narrow bucket, and caches only the queried answers.  The
+fail-closed ambiguity rule is unchanged.  The general resolver cache is capped
+at eight repository symbol sets, while compact exact joins directly reuse the
+class index's existing symbol dictionary and terminal-name buckets.
+
+An allocation trace around the semantic join measures 66,517,546 bytes at the
+old build peak and 55,667,092 bytes with the lazy reused index, a 10,850,454-byte
+reduction.  Live traced allocations after semantic finding publication fall
+from 18,478,180 to 7,631,984 bytes.  Regressions cover unique and ambiguous
+root-relative imports, lazy cardinality, the bounded cross-repository cache,
+compact index object reuse, and compact/full-AST inheritance parity.
+
+The frozen-DQDock performance gate interleaves five fresh-analysis-cache runs
+of the pushed checkpoint with five candidate runs.  Median exact peak RSS falls
+from 322,288 to 320,804 KB, while internal scan time falls from 15.811 to 14.960
+seconds (5.4%) and external wall time from 17.038 to 16.197 seconds (4.9%).  All
+ten runs complete all 252 detectors and return the same 12 focused findings.
+All 71 framed finding payloads written by the two final runs, including global
+detector shards and the focused aggregate, are object-for-object identical; the
+largest corresponding shard contains 5,246 findings.  A second report target
+reuses the candidate global results and returns the same 333 findings with
+complete exact status in 8.071 internal seconds.  Full verification passes all
+999 tests in 394.06 seconds; the 11 warnings remain the existing concurrent
+pytest cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

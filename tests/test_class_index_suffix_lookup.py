@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from nominal_refactor_advisor import class_index as class_index_module
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     collect_family_items,
@@ -10,6 +11,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_index import (
     ClassSymbolResolutionAuthority,
+    CompactClassReferenceResolver,
     CompactModuleClassProjectionFamily,
     build_class_family_index,
     build_compact_class_family_index,
@@ -64,6 +66,32 @@ def test_import_alias_suffix_index_preserves_ambiguous_fail_closed_result() -> N
     )
 
 
+def test_import_alias_suffix_index_is_lazy_and_repository_bounded() -> None:
+    symbols = frozenset(
+        {
+            *(f"root.package_{index}.types.Target_{index}" for index in range(100)),
+            "root.unique.types.Unique",
+            "root.left.types.Target",
+            "root.right.types.Target",
+        }
+    )
+    class_index_module._unique_known_symbol_by_suffix.cache_clear()
+
+    suffix_index = class_index_module._unique_known_symbol_by_suffix(symbols)
+
+    assert suffix_index._matches_by_suffix == {}
+    assert sum(
+        len(bucket) for bucket in suffix_index._symbols_by_terminal_name.values()
+    ) == len(symbols)
+    assert suffix_index.get("types.Unique") == "root.unique.types.Unique"
+    assert suffix_index.get("types.Target") is None
+    assert set(suffix_index._matches_by_suffix) == {"types.Unique", "types.Target"}
+    assert class_index_module._unique_known_symbol_by_suffix.cache_parameters() == {
+        "maxsize": 8,
+        "typed": False,
+    }
+
+
 def test_compact_class_family_index_matches_full_ast_inheritance_graph(
     tmp_path: Path,
 ) -> None:
@@ -97,17 +125,25 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
     )
     modules = parse_python_modules(tmp_path, use_parse_cache=False)
     full_index = build_class_family_index(modules)
-    compact_index = build_compact_class_family_index(
-        tuple(
-            projection
-            for module in modules
-            for projection in collect_family_items(
-                module,
-                CompactModuleClassProjectionFamily,
-            )
+    compact_projections = tuple(
+        projection
+        for module in modules
+        for projection in collect_family_items(
+            module,
+            CompactModuleClassProjectionFamily,
         )
     )
+    compact_index = build_compact_class_family_index(compact_projections)
+    compact_resolver = CompactClassReferenceResolver.from_index(
+        compact_projections,
+        compact_index,
+    )
 
+    assert compact_resolver.known_symbols is compact_index.classes_by_symbol
+    assert (
+        compact_resolver.unique_symbols_by_suffix._symbols_by_terminal_name
+        is compact_index.symbols_by_simple_name
+    )
     assert set(compact_index.classes_by_symbol) == set(full_index.classes_by_symbol)
     for symbol, full_class in full_index.classes_by_symbol.items():
         compact_class = compact_index.classes_by_symbol[symbol]
