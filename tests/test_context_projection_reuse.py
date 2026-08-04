@@ -12,7 +12,10 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.analysis_cache import GlobalModuleContextSignature
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
-from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._base import (
+    CrossModuleCollectorCandidateDetector,
+    DetectorConfig,
+)
 from nominal_refactor_advisor.deadline import (
     ScanDeadline,
     ScanDeadlineExceeded,
@@ -29,6 +32,9 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
 def test_cross_module_preparation_reuses_exact_candidate_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class LegacyCandidateSnapshotProbe(CrossModuleCollectorCandidateDetector[str]):
+        candidate_collector = staticmethod(lambda modules: ())
+
     candidate_calls = 0
     finding_calls = 0
     candidates = ("first", "second")
@@ -46,10 +52,10 @@ def test_cross_module_preparation_reuses_exact_candidate_snapshot(
         assert tuple(prepared_candidates) == candidates
         return []
 
-    # Exercise the legacy full-AST candidate snapshot contract. Compact
-    # projection detectors intentionally prepare from their persisted family
-    # instead of retaining this candidate tuple.
-    detector_type = systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector
+    # Exercise the base full-AST candidate snapshot contract independently of
+    # the production registry. All production contextual-global detectors now
+    # prepare from persisted compact projection families.
+    detector_type = LegacyCandidateSnapshotProbe
     monkeypatch.setattr(detector_type, "_candidate_items", counted_candidates)
     monkeypatch.setattr(detector_type, "_findings_for_candidates", counted_findings)
 

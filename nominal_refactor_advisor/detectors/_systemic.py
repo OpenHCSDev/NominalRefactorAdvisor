@@ -7,7 +7,8 @@ axis authority, registration, and other repo-wide architectural smells.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator
+from collections import defaultdict
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -22,6 +23,552 @@ from ..class_index import CompactNamedProjectionSurface
 from ._base import *
 from ._helpers import *
 from ._helpers import _facade_only_nominal_authority_candidates
+
+
+@dataclass(frozen=True)
+class CompactConcreteTypeCaseFunctionFact:
+    file_path: str
+    module_name: str
+    line: int
+    function_name: str
+    subject_expression: str
+    subject_role: str
+    type_names_by_check: tuple[tuple[str, ...], ...]
+    union_aliases: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+@dataclass(frozen=True)
+class CompactImplicitSelfMixinFact:
+    file_path: str
+    qualname: str
+    line: int
+    method_names: tuple[str, ...]
+    method_lines: tuple[int, ...]
+    cast_type_names: tuple[str, ...]
+    accessed_attribute_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactInfrastructureDeclarationFact:
+    name: str
+    line: int
+    referenced_public_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactRemainingSystemicModuleProjection:
+    file_path: str
+    module_name: str
+    concrete_type_functions: tuple[CompactConcreteTypeCaseFunctionFact, ...]
+    implicit_self_mixins: tuple[CompactImplicitSelfMixinFact, ...]
+    infrastructure_declarations: tuple[CompactInfrastructureDeclarationFact, ...]
+    declares_effect_infrastructure: bool
+    reference_summaries_by_symbol: tuple[tuple[str, int, tuple[str, ...]], ...]
+
+
+def _compact_concrete_type_case_function_facts(
+    module: ParsedModule,
+) -> tuple[CompactConcreteTypeCaseFunctionFact, ...]:
+    union_aliases = tuple(sorted(_module_union_type_aliases(module).items()))
+    facts: list[CompactConcreteTypeCaseFunctionFact] = []
+    for qualname, function in _iter_named_functions(module):
+        alias_sources = _top_level_attribute_aliases(function)
+        grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
+        for subnode in _walk_nodes(function):
+            if not (
+                isinstance(subnode, ast.Call)
+                and len(subnode.args) == 2
+                and not subnode.keywords
+                and _ast_terminal_name(subnode.func) == "isinstance"
+            ):
+                continue
+            subject_expression = _attribute_family_subject_expression(
+                subnode.args[0], alias_sources=alias_sources
+            )
+            if subject_expression is None:
+                continue
+            type_node = subnode.args[1]
+            type_items = (
+                type_node.elts if isinstance(type_node, ast.Tuple) else (type_node,)
+            )
+            type_names = sorted_tuple(
+                {
+                    type_name
+                    for item in type_items
+                    if (type_name := _ast_terminal_name(item))
+                    not in {None, "None", "NoneType"}
+                }
+            )
+            if type_names:
+                grouped_checks[subject_expression].append(type_names)
+        for subject_expression, checks in sorted(grouped_checks.items()):
+            facts.append(
+                CompactConcreteTypeCaseFunctionFact(
+                    file_path=str(module.path),
+                    module_name=module.module_name,
+                    line=function.lineno,
+                    function_name=qualname,
+                    subject_expression=subject_expression,
+                    subject_role=subject_expression.rsplit(".", 1)[-1],
+                    type_names_by_check=tuple(checks),
+                    union_aliases=union_aliases,
+                )
+            )
+    return sorted_tuple(
+        facts,
+        key=lambda item: (item.file_path, item.subject_role, item.line),
+    )
+
+
+def _iter_qualified_classes(
+    statements: Sequence[ast.stmt], parent: str | None = None
+) -> Iterator[tuple[str, ast.ClassDef]]:
+    for statement in statements:
+        if not isinstance(statement, ast.ClassDef):
+            continue
+        qualname = statement.name if parent is None else f"{parent}.{statement.name}"
+        yield qualname, statement
+        yield from _iter_qualified_classes(statement.body, qualname)
+
+
+def _compact_implicit_self_mixin_facts(
+    module: ParsedModule,
+) -> tuple[CompactImplicitSelfMixinFact, ...]:
+    facts: list[CompactImplicitSelfMixinFact] = []
+    for qualname, class_node in _iter_qualified_classes(module.module.body):
+        if not class_node.name.endswith("Mixin") or CLASS_NODE_AUTHORITY.is_abstract(
+            class_node
+        ):
+            continue
+        method_names: list[str] = []
+        method_lines: list[int] = []
+        cast_type_names: set[str] = set()
+        accessed_attribute_names: set[str] = set()
+        for method in CLASS_NODE_AUTHORITY.methods(class_node):
+            if _is_abstract_method(method):
+                continue
+            alias_names, method_cast_types = _self_cast_alias_names(method)
+            if not alias_names:
+                continue
+            method_names.append(method.name)
+            method_lines.append(method.lineno)
+            cast_type_names.update(method_cast_types)
+            accessed_attribute_names.update(
+                SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
+                    method, root_names=set(alias_names)
+                )
+            )
+        if method_names:
+            facts.append(
+                CompactImplicitSelfMixinFact(
+                    file_path=str(module.path),
+                    qualname=qualname,
+                    line=class_node.lineno,
+                    method_names=tuple(method_names),
+                    method_lines=tuple(method_lines),
+                    cast_type_names=sorted_tuple(cast_type_names),
+                    accessed_attribute_names=sorted_tuple(accessed_attribute_names),
+                )
+            )
+    return tuple(facts)
+
+
+def _compact_infrastructure_facts(
+    module: ParsedModule,
+) -> tuple[
+    tuple[CompactInfrastructureDeclarationFact, ...],
+    bool,
+    tuple[tuple[str, int, tuple[str, ...]], ...],
+]:
+    declarations = _public_top_level_declarations(module)
+    public_names = frozenset(declarations)
+    declaration_facts = tuple(
+        CompactInfrastructureDeclarationFact(
+            name=name,
+            line=node.lineno,
+            referenced_public_names=sorted_tuple(
+                _public_declaration_reference_names(node, public_names)
+            ),
+        )
+        for name, node in declarations.items()
+    )
+    reference_sites = _local_symbol_reference_sites((module,))
+    return (
+        declaration_facts,
+        _declares_effect_infrastructure(declarations),
+        tuple(
+            (
+                symbol,
+                len(sites),
+                sorted_tuple({site.symbol for site in sites}),
+            )
+            for symbol, sites in reference_sites.items()
+        ),
+    )
+
+
+class CompactRemainingSystemicModuleProjectionFamily(
+    CollectedFamily[CompactRemainingSystemicModuleProjection]
+):
+    item_type = CompactRemainingSystemicModuleProjection
+    cache_payload_max_bytes = 1_000_000
+
+    @classmethod
+    def collect(
+        cls, parsed_module: ParsedModule
+    ) -> list[CompactRemainingSystemicModuleProjection]:
+        del cls
+        declarations, declares_effect, reference_sites = _compact_infrastructure_facts(
+            parsed_module
+        )
+        return [
+            CompactRemainingSystemicModuleProjection(
+                file_path=str(parsed_module.path),
+                module_name=parsed_module.module_name,
+                concrete_type_functions=_compact_concrete_type_case_function_facts(
+                    parsed_module
+                ),
+                implicit_self_mixins=_compact_implicit_self_mixin_facts(parsed_module),
+                infrastructure_declarations=declarations,
+                declares_effect_infrastructure=declares_effect,
+                reference_summaries_by_symbol=reference_sites,
+            )
+        ]
+
+
+def _compact_class_for_detector_name(
+    class_index: CompactClassFamilyIndex,
+    *,
+    module_name: str,
+    class_name: str,
+) -> CompactIndexedClass | None:
+    local_class = class_index.class_for(f"{module_name}.{class_name}")
+    if local_class is not None:
+        return local_class
+    symbols = class_index.symbols_by_simple_name.get(class_name, ())
+    if len(symbols) != 1:
+        return None
+    return class_index.class_for(symbols[0])
+
+
+def _compact_class_display_name(
+    indexed_class: CompactIndexedClass,
+    class_index: CompactClassFamilyIndex,
+) -> str:
+    if len(class_index.symbols_by_simple_name.get(indexed_class.simple_name, ())) <= 1:
+        return indexed_class.simple_name
+    return indexed_class.symbol
+
+
+def _compact_concrete_type_function_candidates(
+    projection: CompactRemainingSystemicModuleProjection,
+    class_index: CompactClassFamilyIndex,
+) -> tuple[ConcreteTypeCaseFunctionCandidate, ...]:
+    candidates: list[ConcreteTypeCaseFunctionCandidate] = []
+    for fact in projection.concrete_type_functions:
+        resolved_checks: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        for type_names in fact.type_names_by_check:
+            concrete_names: list[str] = []
+            abstract_names: list[str] = []
+            for type_name in type_names:
+                indexed_class = _compact_class_for_detector_name(
+                    class_index,
+                    module_name=fact.module_name,
+                    class_name=type_name,
+                )
+                if indexed_class is None:
+                    continue
+                display_name = _compact_class_display_name(indexed_class, class_index)
+                if indexed_class.is_abstract:
+                    abstract_names.append(display_name)
+                else:
+                    concrete_names.append(display_name)
+            concrete = sorted_tuple(set(concrete_names))
+            if concrete:
+                resolved_checks.append((concrete, sorted_tuple(set(abstract_names))))
+        concrete_class_names = sorted_tuple(
+            {
+                name
+                for concrete_names, _abstract_names in resolved_checks
+                for name in concrete_names
+            }
+        )
+        if len(concrete_class_names) < 2:
+            continue
+        union_alias_names = sorted_tuple(
+            alias_name
+            for alias_name, member_names in fact.union_aliases
+            if set(concrete_class_names) <= set(member_names)
+        )
+        candidates.append(
+            ConcreteTypeCaseFunctionCandidate(
+                file_path=fact.file_path,
+                line=fact.line,
+                function_name=fact.function_name,
+                subject_expression=fact.subject_expression,
+                subject_role=fact.subject_role,
+                concrete_class_names=concrete_class_names,
+                abstract_class_names=sorted_tuple(
+                    {
+                        name
+                        for _concrete_names, abstract_names in resolved_checks
+                        for name in abstract_names
+                    }
+                ),
+                union_alias_names=union_alias_names,
+                case_site_count=len(resolved_checks),
+            )
+        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.file_path, item.subject_role, item.line),
+    )
+
+
+def _compact_common_abstract_base_names(
+    projection: CompactRemainingSystemicModuleProjection,
+    class_index: CompactClassFamilyIndex,
+    class_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    indexed_classes = tuple(
+        indexed_class
+        for class_name in class_names
+        if (
+            indexed_class := _compact_class_for_detector_name(
+                class_index,
+                module_name=projection.module_name,
+                class_name=class_name,
+            )
+        )
+        is not None
+    )
+    if len(indexed_classes) < 2:
+        return ()
+    common_symbols = set(class_index.ancestor_symbols(indexed_classes[0].symbol))
+    for indexed_class in indexed_classes[1:]:
+        common_symbols &= set(class_index.ancestor_symbols(indexed_class.symbol))
+    return sorted_tuple(
+        _compact_class_display_name(indexed_class, class_index)
+        for symbol in sorted(common_symbols)
+        if (indexed_class := class_index.class_for(symbol)) is not None
+        and indexed_class.is_abstract
+    )
+
+
+def _compact_repeated_concrete_type_case_candidates(
+    projections: tuple[CompactRemainingSystemicModuleProjection, ...],
+    class_projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[RepeatedConcreteTypeCaseAnalysisCandidate, ...]:
+    class_index = build_compact_class_family_index(class_projections)
+    min_function_count = max(3, config.min_registration_sites)
+    min_class_count = max(2, config.min_reflective_selector_values)
+    candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
+    for projection in projections:
+        grouped: dict[str, list[ConcreteTypeCaseFunctionCandidate]] = defaultdict(list)
+        for function_candidate in _compact_concrete_type_function_candidates(
+            projection, class_index
+        ):
+            grouped[function_candidate.subject_role].append(function_candidate)
+        for subject_role, functions in sorted(grouped.items()):
+            if len(functions) < min_function_count:
+                continue
+            concrete_class_names = sorted_tuple(
+                class_name
+                for function in functions
+                for class_name in function.concrete_class_names
+            )
+            concrete_class_names = sorted_tuple(set(concrete_class_names))
+            if len(concrete_class_names) < min_class_count:
+                continue
+            abstract_base_names = _compact_common_abstract_base_names(
+                projection, class_index, concrete_class_names
+            )
+            union_alias_names = sorted_tuple(
+                {
+                    alias_name
+                    for function in functions
+                    for alias_name in function.union_alias_names
+                }
+            )
+            shared_suffix = CLASS_NAME_ALGEBRA.longest_common_suffix(
+                concrete_class_names
+            )
+            shared_prefix = CLASS_NAME_ALGEBRA.longest_common_prefix(
+                concrete_class_names
+            )
+            if (
+                not abstract_base_names
+                and not union_alias_names
+                and max(len(shared_suffix), len(shared_prefix)) < 6
+            ):
+                continue
+            candidates.append(
+                RepeatedConcreteTypeCaseAnalysisCandidate(
+                    file_path=projection.file_path,
+                    functions=sorted_tuple(
+                        functions, key=lambda item: (item.line, item.function_name)
+                    ),
+                    abstract_base_names=abstract_base_names,
+                )
+            )
+    return tuple(candidates)
+
+
+def _compact_implicit_self_contract_mixin_candidates(
+    projections: tuple[CompactRemainingSystemicModuleProjection, ...],
+    class_projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[ImplicitSelfContractMixinCandidate, ...]:
+    class_index = build_compact_class_family_index(class_projections)
+    min_consumer_count = max(2, config.min_registration_sites)
+    facts_by_class_symbol = {
+        class_symbol: fact
+        for projection in projections
+        for fact in projection.implicit_self_mixins
+        if (
+            class_symbol := class_index.symbol_for(
+                file_path=fact.file_path, qualname=fact.qualname
+            )
+        )
+        is not None
+    }
+    candidates: list[ImplicitSelfContractMixinCandidate] = []
+    for class_symbol, fact in sorted(facts_by_class_symbol.items()):
+        indexed_class = class_index.class_for(class_symbol)
+        if indexed_class is None:
+            continue
+        consumers = tuple(
+            descendant
+            for descendant_symbol in class_index.descendant_symbols(class_symbol)
+            if (descendant := class_index.class_for(descendant_symbol)) is not None
+            and not descendant.is_abstract
+        )
+        if len(consumers) < min_consumer_count:
+            continue
+        candidates.append(
+            ImplicitSelfContractMixinCandidate(
+                file_path=fact.file_path,
+                line=fact.line,
+                mixin_name=_compact_class_display_name(indexed_class, class_index),
+                method_names=fact.method_names,
+                method_lines=fact.method_lines,
+                cast_type_names=fact.cast_type_names,
+                consumer_class_names=sorted_tuple(
+                    _compact_class_display_name(consumer, class_index)
+                    for consumer in consumers
+                ),
+                consumer_lines=tuple(consumer.line for consumer in consumers),
+                accessed_attribute_names=fact.accessed_attribute_names,
+            )
+        )
+    return tuple(candidates)
+
+
+def _compact_under_amortized_infrastructure_candidates(
+    projections: tuple[CompactRemainingSystemicModuleProjection, ...],
+    class_projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[UnderAmortizedInfrastructureCandidate, ...]:
+    class_index = build_compact_class_family_index(class_projections)
+    reference_summaries: dict[str, list[tuple[str, int, tuple[str, ...]]]] = (
+        defaultdict(list)
+    )
+    for projection in projections:
+        for (
+            symbol,
+            site_count,
+            owner_symbols,
+        ) in projection.reference_summaries_by_symbol:
+            reference_summaries[symbol].append(
+                (projection.file_path, site_count, owner_symbols)
+            )
+    candidates: list[UnderAmortizedInfrastructureCandidate] = []
+    for projection in projections:
+        declarations = {
+            item.name: item for item in projection.infrastructure_declarations
+        }
+        if not declarations or not projection.declares_effect_infrastructure:
+            continue
+        public_names = frozenset(declarations)
+        external_consumer_site_counts = {
+            name: sum(
+                site_count
+                for file_path, site_count, _owner_symbols in reference_summaries.get(
+                    name, ()
+                )
+                if file_path != projection.file_path
+            )
+            for name in public_names
+        }
+        external_consumers = {
+            name: frozenset(
+                owner_symbol
+                for file_path, _site_count, owner_symbols in reference_summaries.get(
+                    name, ()
+                )
+                if file_path != projection.file_path
+                for owner_symbol in owner_symbols
+            )
+            for name in public_names
+        }
+        declaration_refs = {
+            name: frozenset(item.referenced_public_names)
+            for name, item in declarations.items()
+        }
+        amortized_support_names = frozenset(
+            support_name
+            for name, refs in declaration_refs.items()
+            if external_consumer_site_counts[name] > 1
+            for support_name in refs
+        )
+
+        def descendant_fanout(name: str) -> int:
+            symbol = class_index.symbol_for(
+                file_path=projection.file_path, qualname=name
+            )
+            if symbol is None:
+                return 0
+            return sum(
+                1
+                for descendant_symbol in class_index.descendant_symbols(symbol)
+                if (descendant := class_index.class_for(descendant_symbol)) is not None
+                and not descendant.is_abstract
+            )
+
+        names = sorted_tuple(
+            name
+            for name in public_names
+            if external_consumer_site_counts[name] == 1
+            and _looks_like_infrastructure_declaration_name(name)
+            and name not in amortized_support_names
+            and descendant_fanout(name) < 2
+        )
+        if not names:
+            continue
+        internal_consumers: dict[str, set[str]] = defaultdict(set)
+        for name, refs in declaration_refs.items():
+            for ref_name in refs:
+                internal_consumers[ref_name].add(name)
+        support_names = sorted_tuple(
+            ref_name
+            for name in names
+            for ref_name in declaration_refs[name]
+            if external_consumer_site_counts[ref_name] == 0
+            and internal_consumers[ref_name] <= {name}
+        )
+        consumers = sorted_tuple(
+            consumer for name in names for consumer in external_consumers[name]
+        )
+        candidates.append(
+            UnderAmortizedInfrastructureCandidate(
+                file_path=projection.file_path,
+                line=min(declarations[name].line for name in names),
+                declaration_names=names,
+                consumer_symbols=sorted_tuple(set(consumers)),
+                support_names=support_names,
+            )
+        )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line))
 
 
 @dataclass(frozen=True)
@@ -4261,10 +4808,15 @@ class ManualStructuralRecordMechanicsDetector(
 
 
 class RepeatedConcreteTypeCaseAnalysisDetector(
+    CompactMultiModuleProjectionDetectorMixin,
     ConfiguredCrossModuleCollectorCandidateDetector[
         RepeatedConcreteTypeCaseAnalysisCandidate
-    ]
+    ],
 ):
+    module_projection_families = (
+        CompactRemainingSystemicModuleProjectionFamily,
+        CompactModuleClassProjectionFamily,
+    )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Repeated concrete-type recovery should become nominal family behavior",
@@ -4274,6 +4826,24 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_MRO_ORDERING_CAPABILITY_TAGS,
         _CLASS_FAMILY_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        candidates = _compact_repeated_concrete_type_case_candidates(
+            cast(
+                tuple[CompactRemainingSystemicModuleProjection, ...],
+                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+            config,
+        )
+        return self._findings_for_candidates(candidates, config)
 
     def _finding_for_candidate(
         self, case_candidate: RepeatedConcreteTypeCaseAnalysisCandidate
@@ -4324,8 +4894,13 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
 
 
 class ImplicitSelfContractMixinDetector(
-    ConfiguredCrossModuleCollectorCandidateDetector[ImplicitSelfContractMixinCandidate]
+    CompactMultiModuleProjectionDetectorMixin,
+    ConfiguredCrossModuleCollectorCandidateDetector[ImplicitSelfContractMixinCandidate],
 ):
+    module_projection_families = (
+        CompactRemainingSystemicModuleProjectionFamily,
+        CompactModuleClassProjectionFamily,
+    )
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Concrete mixins should not hide consumer contracts behind `self`-casts",
@@ -4335,6 +4910,24 @@ class ImplicitSelfContractMixinDetector(
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
         _CLASS_FAMILY_REPEATED_METHOD_ROLES_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        candidates = _compact_implicit_self_contract_mixin_candidates(
+            cast(
+                tuple[CompactRemainingSystemicModuleProjection, ...],
+                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+            config,
+        )
+        return self._findings_for_candidates(candidates, config)
 
     def _finding_for_candidate(
         self, mixin_candidate: ImplicitSelfContractMixinCandidate
@@ -4780,8 +5373,13 @@ declare_candidate_rule_detector(
 
 
 class UnderAmortizedInfrastructureDetector(
-    CrossModuleCollectorCandidateDetector[UnderAmortizedInfrastructureCandidate]
+    CompactMultiModuleProjectionDetectorMixin,
+    CrossModuleCollectorCandidateDetector[UnderAmortizedInfrastructureCandidate],
 ):
+    module_projection_families = (
+        CompactRemainingSystemicModuleProjectionFamily,
+        CompactModuleClassProjectionFamily,
+    )
     finding_spec = finding_spec_template(
         PatternId.STAGED_ORCHESTRATION,
         "Matcher infrastructure should pay rent through fanout",
@@ -4791,6 +5389,23 @@ class UnderAmortizedInfrastructureDetector(
         _SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        candidates = _compact_under_amortized_infrastructure_candidates(
+            cast(
+                tuple[CompactRemainingSystemicModuleProjection, ...],
+                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+        )
+        return self._findings_for_candidates(candidates, config)
 
     def _finding_for_candidate(
         self, under_amortized: UnderAmortizedInfrastructureCandidate

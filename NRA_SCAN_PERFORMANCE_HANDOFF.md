@@ -803,6 +803,42 @@ The cache contains 22,713 files and 245,949,440 payload bytes with zero
 zero-byte entries.
 Checkpoint verification passes all 986 tests in 375.78 seconds.
 
+## 2026-08-04 zero retained-AST global checkpoint
+
+The final three context-wide detectors now share one systemic module projection
+and the existing compact class graph.  It retains unresolved concrete-type
+checks for post-graph class resolution, concrete mixin cast/access summaries,
+and infrastructure declarations plus per-module reference counts and owner
+symbols.  Reference sites are reduced to the exact sufficient statistics used
+by rent analysis; no line-level locations or repository ASTs survive the
+module stream.
+
+The frozen 919-module DQDock oracle matches all three legacy collectors and
+renderers exactly: zero repeated concrete-type candidates, zero implicit-self
+mixin candidates, and nine under-amortized infrastructure candidates/findings,
+with matching canonical digests.  The retained-AST triple took 26.85 seconds at
+1,272,516 KB, including a 13.65-second global join.  The final uncached bounded
+triple took 63.46 seconds at 281,728 KB, including 61.78 seconds of projection
+and 1.68 seconds of finding reconstruction.  This is a 77.9% peak-memory
+reduction; cold wall time includes streaming, release, and construction of the
+shared compact class graph that the legacy detector-order measurement retains.
+
+The systemic family projects 755 possible concrete-type functions and 174,964
+module-local reference-symbol summaries on DQDock.  Its 919 payloads occupy
+30,435,447 bytes; the largest is 727,629 bytes, below the explicit 1-MB ceiling.
+With both the systemic and class families cached, the isolated triple takes
+20.10 seconds at 298,780 KB.
+
+Schema 21 moves the partition to 183 per-module detectors, 69 compact-global
+detectors, and zero AST-retaining context-dependent detectors.  The complete
+compact run produced 9,564 findings from 77,671 top-level projections.  Cold
+took 206.68 seconds at 775,948 KB, including 183.04 seconds of projection and
+23.64 seconds of reconstruction.  Warm took 63.27 seconds at 845,152 KB,
+including 39.02 seconds of projection and 24.25 seconds of reconstruction.
+The cache contains 23,632 files and 276,385,400 payload bytes with zero
+zero-byte entries.
+Checkpoint verification passes all 986 tests in 367.58 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

@@ -3867,8 +3867,17 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.RepeatedValidateShapeGuardFamilyDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 66
-    assert len(partition.ast_retaining_context_detector_types) == 3
+    assert systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.ImplicitSelfContractMixinDetector in (
+        partition.compact_global_detector_types
+    )
+    assert systemic_detectors.UnderAmortizedInfrastructureDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 69
+    assert len(partition.ast_retaining_context_detector_types) == 0
     assert len(partition.per_module_detector_types) == 183
 
 
