@@ -1369,6 +1369,38 @@ at 14.378 seconds and all 252 detectors complete. Full verification passes all
 999 tests in 348.82 seconds; the 11 warnings remain the existing concurrent
 pytest cleanup race.
 
+### Cold role-surface traversal follow-up
+
+The next-largest profiled collector, the compact role-surface family, spent
+12.528 seconds in the integrated cold profile. Its generic role-case path
+walked each qualifying class or function once for semantic tokens and then
+visited it again for literal records. It also issued 76,952 subtree walks to
+rediscover whether an attribute was under a particular ancestor field even
+though the active visitor path already represented that relation.
+
+One visitor now collects generic role-case tokens and literals together. Role
+use classification checks the next edge in its active ancestor path for
+subscript values, loop iterators, comprehension iterators, keyword values, and
+assignment values. It no longer walks any ancestor subtree. Per-module cache
+release and compact projection payloads are unchanged.
+
+Two isolated all-module observations put the baseline role-family construction
+at 21.672 and 24.696 seconds and the candidate at 18.650 and 18.588 seconds. The
+median falls from 23.184 to 18.619 seconds (19.7%). Every run produces the same
+919-projection SHA-256 digest,
+``4fe61aff0438bc54c8d6fce5d0db0b0668606401936c8deb57c670628e6851de``.
+The exact single-target cold gate retains the same 12 findings with all 252
+detectors complete at 314.2 MiB process-tree peak RSS. Its preparation phase is
+167.351 seconds, compared with 168.601 seconds at the preceding checkpoint.
+The host experienced unrelated I/O contention during that gate, so its inflated
+analysis and wall times are not used as speed evidence.
+
+A regression requires the generic role-case site to complete without an AST
+walk and verifies indexed, iterated, assignment-derived, and keyword-forwarded
+role uses while allowing only the small context-token roots to be walked. Full
+verification passes all 1000 tests in 343.47 seconds using a pytest base outside
+the quota-limited shared temporary directory.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

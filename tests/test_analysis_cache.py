@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import os
@@ -4182,6 +4183,70 @@ def test_compact_role_surface_projection_matches_both_legacy_global_joins(
     assert findings_by_detector[
         role_surface_detectors.GenericRoleCaseTableDetector
     ] == case_detector._findings_for_candidates(legacy_case_candidates, config)
+
+
+def test_role_surface_projection_reuses_visitor_traversal_and_active_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    source_path = package_root / "roles.py"
+    source_path.write_text(
+        "class FieldDisplayPolicy:\n"
+        "    LABELS = {'alpha': 'A', 'beta': 'B'}\n\n"
+        "    def field_label(self, field, value):\n"
+        "        return self.LABELS.get(field, value)\n\n"
+        "def project_planes(provenance, plane_index):\n"
+        "    plane_metadata = provenance.channel_source_component_metadata\n"
+        "    indexed = provenance.channel_source_component_metadata[plane_index]\n"
+        "    for plane_record in provenance.channel_source_component_metadata:\n"
+        "        consume(plane_record)\n"
+        "    projected = [plane_record for plane_record in "
+        "provenance.channel_source_component_metadata]\n"
+        "    return Target(\n"
+        "        plane_metadata=provenance.channel_source_component_metadata,\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    class_node = next(
+        node for node in module.module.body if isinstance(node, ast.ClassDef)
+    )
+    original_walk = ast.walk
+    walked_roots: list[ast.AST] = []
+
+    def tracked_walk(root: ast.AST):
+        walked_roots.append(root)
+        return original_walk(root)
+
+    monkeypatch.setattr(ast, "walk", tracked_walk)
+    site = role_surface_detectors._generic_role_case_table_site(
+        module=module,
+        owner_symbol=class_node.name,
+        owner_name=class_node.name,
+        line=class_node.lineno,
+        root=class_node,
+        minimum_case_count=1,
+    )
+
+    assert site is not None
+    assert walked_roots == []
+
+    use_sites = role_surface_detectors._role_surface_use_sites(module, None)
+
+    assert {
+        use_site.operation_kind
+        for use_site in use_sites
+        if use_site.field_name == "channel_source_component_metadata"
+    } == {
+        role_surface_detectors._ROLE_SURFACE_OPERATION_ASSIGNED_FROM,
+        role_surface_detectors._ROLE_SURFACE_OPERATION_INDEXED,
+        role_surface_detectors._ROLE_SURFACE_OPERATION_ITERATED,
+        role_surface_detectors._ROLE_SURFACE_OPERATION_KEYWORD_FORWARDED,
+    }
+    assert walked_roots
+    assert all(isinstance(root, ast.Name) for root in walked_roots)
 
 
 def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidates(

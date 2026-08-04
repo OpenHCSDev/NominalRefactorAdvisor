@@ -535,18 +535,11 @@ def _generic_role_case_context(
     parent = parents[-1] if parents else None
     if isinstance(parent, ast.Dict) and node in parent.keys:
         if any(
-            isinstance(parent_node, ast.Return)
-            and parent_node.value is not None
-            and _role_surface_contains_node(parent_node.value, parent)
-            for parent_node in reversed(parents)
+            isinstance(parent_node, ast.Return) for parent_node in reversed(parents)
         ):
             return None
         return _GENERIC_ROLE_CASE_CONTEXT_MAP_KEY
-    if any(
-        isinstance(parent_node, ast.Compare)
-        and _role_surface_contains_node(parent_node, node)
-        for parent_node in reversed(parents)
-    ):
+    if any(isinstance(parent_node, ast.Compare) for parent_node in reversed(parents)):
         return _GENERIC_ROLE_CASE_CONTEXT_COMPARE
     return None
 
@@ -555,8 +548,29 @@ class _GenericRoleCaseLiteralVisitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.parents: list[ast.AST] = []
         self.records: list[tuple[int, str, tuple[str, ...], str]] = []
+        self._body_tokens: set[str] = set()
+
+    @property
+    def body_tokens(self) -> tuple[str, ...]:
+        return tuple(sorted(self._body_tokens))
 
     def visit(self, node: ast.AST) -> None:
+        if isinstance(node, ast.Name):
+            self._body_tokens.update(
+                ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(node.id)
+            )
+        elif isinstance(node, ast.Attribute):
+            self._body_tokens.update(
+                ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(node.attr)
+            )
+        elif isinstance(node, ast.arg):
+            self._body_tokens.update(
+                ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(node.arg)
+            )
+        elif isinstance(node, ast.keyword) and node.arg is not None:
+            self._body_tokens.update(
+                ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(node.arg)
+            )
         self.parents.append(node)
         try:
             super().visit(node)
@@ -702,7 +716,8 @@ def _generic_role_case_table_site(
     owner_tokens = ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(owner_name)
     if len(owner_tokens) < 2:
         return None
-    body_tokens = _generic_role_case_body_tokens(root)
+    visitor = _GenericRoleCaseLiteralVisitor()
+    visitor.visit(root)
     module_tokens = {
         token
         for part in module.path.with_suffix("").parts
@@ -710,14 +725,12 @@ def _generic_role_case_table_site(
     }
     role_boundary = BroadSemanticAxisTokenBoundary.from_context(
         owner_tokens=owner_tokens,
-        body_tokens=body_tokens,
+        body_tokens=visitor.body_tokens,
         module_tokens=frozenset(module_tokens),
     )
     if role_boundary is None:
         return None
 
-    visitor = _GenericRoleCaseLiteralVisitor()
-    visitor.visit(root)
     literal_records = visitor.records
     if not literal_records:
         return None
@@ -1107,8 +1120,16 @@ def _role_surface_class_field_declarations(
     return tuple(declarations)
 
 
-def _role_surface_contains_node(root: ast.AST, target: ast.AST) -> bool:
-    return any(child is target for child in ast.walk(root))
+def _role_surface_path_descends_through(
+    parents: Sequence[ast.AST],
+    parent_index: int,
+    child_root: ast.AST,
+    target: ast.AST,
+) -> bool:
+    """Check an ancestor field from the visitor's already-known active path."""
+
+    next_node = parents[parent_index + 1] if parent_index + 1 < len(parents) else target
+    return next_node is child_root
 
 
 def _role_surface_call_name(call: ast.Call | None) -> str | None:
@@ -1121,15 +1142,18 @@ def _role_surface_assignment_target_tokens(
     parents: Sequence[ast.AST],
     node: ast.AST,
 ) -> tuple[str, ...]:
-    for parent in reversed(parents):
-        if isinstance(parent, ast.Assign) and _role_surface_contains_node(
-            parent.value, node
+    for parent_index in range(len(parents) - 1, -1, -1):
+        parent = parents[parent_index]
+        if isinstance(parent, ast.Assign) and _role_surface_path_descends_through(
+            parents, parent_index, parent.value, node
         ):
             return ROLE_SURFACE_TOKEN_PROJECTION.target_tokens(parent.targets)
         if (
             isinstance(parent, ast.AnnAssign)
             and parent.value is not None
-            and _role_surface_contains_node(parent.value, node)
+            and _role_surface_path_descends_through(
+                parents, parent_index, parent.value, node
+            )
         ):
             return ROLE_SURFACE_TOKEN_PROJECTION.target_tokens((parent.target,))
     return ()
@@ -1186,33 +1210,38 @@ class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
         context_tokens: set[str] = set()
         operation_kind: str | None = None
 
-        for parent in reversed(parents):
-            if isinstance(parent, ast.Subscript) and _role_surface_contains_node(
-                parent.value, node
+        for parent_index in range(len(parents) - 1, -1, -1):
+            parent = parents[parent_index]
+            if isinstance(
+                parent, ast.Subscript
+            ) and _role_surface_path_descends_through(
+                parents, parent_index, parent.value, node
             ):
                 operation_kind = _ROLE_SURFACE_OPERATION_INDEXED
                 context_tokens.update(
                     ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.slice)
                 )
                 break
-            if isinstance(parent, ast.For) and _role_surface_contains_node(
-                parent.iter, node
+            if isinstance(parent, ast.For) and _role_surface_path_descends_through(
+                parents, parent_index, parent.iter, node
             ):
                 operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
                 context_tokens.update(
                     ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
                 )
                 break
-            if isinstance(parent, ast.comprehension) and _role_surface_contains_node(
-                parent.iter, node
+            if isinstance(
+                parent, ast.comprehension
+            ) and _role_surface_path_descends_through(
+                parents, parent_index, parent.iter, node
             ):
                 operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
                 context_tokens.update(
                     ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
                 )
                 break
-            if isinstance(parent, ast.keyword) and _role_surface_contains_node(
-                parent.value, node
+            if isinstance(parent, ast.keyword) and _role_surface_path_descends_through(
+                parents, parent_index, parent.value, node
             ):
                 operation_kind = _ROLE_SURFACE_OPERATION_KEYWORD_FORWARDED
                 if parent.arg is not None:
