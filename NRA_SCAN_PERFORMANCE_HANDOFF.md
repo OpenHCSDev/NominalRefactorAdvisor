@@ -284,6 +284,26 @@ analysis now runs without repository AST retention.  The paired run took
 KB cold and 405,444 KB warm; the larger value remains 54.4% below the controlled
 889,100-KB all-at-once parse baseline.
 
+Predicate-selected concrete-family and parallel mirrored-leaf-family analysis
+now reconstruct from the same compact inheritance projection.  Predicate
+selection retains only locally certified selector method coordinates (line,
+selector, predicate, and context parameter); mirrored-family analysis needs no
+new syntax facts.  The two detectors share one compact inheritance graph per
+accumulator run.  Direct candidate-equivalence tests cover both positive
+shapes, and the full suite passes with the partition at 183 per-module
+detectors, 34 compact-global detectors, and 35 AST-retaining context-dependent
+detectors.
+
+The earlier frozen source snapshot had been removed, so the 34-family benchmark
+uses a new frozen copy of the current 919-file production inventory (32,144,215
+source bytes).  It retained 68,481 top-level projections and produced 459
+identical cold/warm findings; the finding-count difference from the 32-family
+checkpoint reflects the changed DQDock source snapshot, not detector drift.
+Neither newly migrated detector fires on this snapshot.  The paired run took
+113.40 seconds cold and 35.22 seconds warm.  Process high-water RSS was 320,372
+KB cold and 374,492 KB warm; the larger value is 57.9% below the controlled
+889,100-KB all-at-once baseline and 7.6% below the prior 32-family warm peak.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

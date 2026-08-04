@@ -2117,6 +2117,99 @@ def test_compact_repeated_keyed_family_matches_legacy_ast_candidates(
     )
 
 
+def test_compact_concrete_family_candidates_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "families.py").write_text(
+        "from abc import ABC, abstractmethod\n"
+        "\n"
+        "class RenderRule(ABC):\n"
+        "    _registered_types = []\n"
+        "    @classmethod\n"
+        "    def registered_types(cls): return tuple(cls._registered_types)\n"
+        "    @classmethod\n"
+        "    def resolve(cls, artifact):\n"
+        "        matches = [candidate for candidate in cls.registered_types() "
+        "if candidate.matches_context(artifact)]\n"
+        "        if not matches: raise ValueError(artifact)\n"
+        "        if len(matches) > 1: raise TypeError(artifact)\n"
+        "        return matches[0]()\n"
+        "\n"
+        "class InvoiceFieldEmitter(ABC):\n"
+        "    _registered_types = []\n"
+        "    @abstractmethod\n"
+        "    def emit(self, artifact): ...\n"
+        "\n"
+        "class ReceiptFieldEmitter(ABC):\n"
+        "    _registered_types = []\n"
+        "    @abstractmethod\n"
+        "    def emit(self, artifact): ...\n"
+        "\n"
+        "class AlphaRenderRule(RenderRule): pass\n"
+        "class BetaRenderRule(RenderRule): pass\n"
+        "class InvoiceAlphaEmitter(InvoiceFieldEmitter): pass\n"
+        "class InvoiceBetaEmitter(InvoiceFieldEmitter): pass\n"
+        "class InvoiceGammaEmitter(InvoiceFieldEmitter): pass\n"
+        "class ReceiptAlphaEmitter(ReceiptFieldEmitter): pass\n"
+        "class ReceiptBetaEmitter(ReceiptFieldEmitter): pass\n"
+        "class ReceiptGammaEmitter(ReceiptFieldEmitter): pass\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    projections = runtime_detectors.PredicateSelectedConcreteFamilyDetector.compact_module_projections(
+        modules
+    )
+    context = runtime_detectors._compact_concrete_family_context(projections, config)
+
+    assert runtime_detectors._compact_predicate_selected_concrete_family_candidates(
+        context, config
+    ) == runtime_detectors._predicate_selected_concrete_family_candidates(
+        list(modules), config
+    )
+    assert runtime_detectors._compact_parallel_mirrored_leaf_family_candidates(
+        context, config
+    ) == runtime_detectors._parallel_mirrored_leaf_family_candidates(
+        list(modules), config
+    )
+
+
+def test_concrete_family_detectors_share_one_compact_graph_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text("class Root: pass\n", encoding="utf-8")
+    detector_types = (
+        runtime_detectors.PredicateSelectedConcreteFamilyDetector,
+        runtime_detectors.ParallelMirroredLeafFamilyDetector,
+    )
+    calls = 0
+    original_builder = runtime_detectors._compact_concrete_family_context
+
+    def counting_builder(projections, config):
+        nonlocal calls
+        calls += 1
+        return original_builder(projections, config)
+
+    for detector_type in detector_types:
+        monkeypatch.setattr(
+            detector_type,
+            "compact_shared_context_builder",
+            staticmethod(counting_builder),
+        )
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,), detector_types, use_parse_cache=False
+    )
+
+    accumulator.findings_by_detector(DetectorConfig())
+
+    assert calls == 1
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -2211,8 +2304,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.RepeatedKeyedFamilyDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 32
-    assert len(partition.ast_retaining_context_detector_types) == 37
+    assert runtime_detectors.PredicateSelectedConcreteFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert runtime_detectors.ParallelMirroredLeafFamilyDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 34
+    assert len(partition.ast_retaining_context_detector_types) == 35
     assert len(partition.per_module_detector_types) == 183
 
 

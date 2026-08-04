@@ -107,6 +107,7 @@ class CompactIndexedClass:
     autoregister_registry_projection_names: tuple[str, ...] = ()
     keyed_registry_lookup_method_names: tuple[str, ...] = ()
     keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
+    predicate_selected_methods: tuple[tuple[int, str, str, str], ...] = ()
     resolved_base_symbols: tuple[str, ...] = ()
 
     @property
@@ -504,6 +505,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 keyed_registry_reverse_lookup_method_names=_keyed_registry_reverse_lookup_method_names(
                     node
                 ),
+                predicate_selected_methods=_compact_predicate_selected_methods(node),
             )
             for qualname, node in _iter_class_defs(list(parsed_module.module.body))
         )
@@ -538,6 +540,146 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 ),
             )
         ]
+
+
+def _compact_predicate_selected_methods(
+    node: ast.ClassDef,
+) -> tuple[tuple[int, str, str, str], ...]:
+    """Project exact registered-types selector shapes without retaining method ASTs."""
+
+    methods: list[tuple[int, str, str, str]] = []
+    for statement in node.body:
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not any(
+            _terminal_reference_name(decorator) == "classmethod"
+            for decorator in statement.decorator_list
+        ):
+            continue
+        shape = _compact_registered_type_match_shape(statement)
+        if shape is None:
+            continue
+        match_name, predicate_name, context_name = shape
+        guard_kinds = {
+            _compact_selection_guard_kind(candidate.test, match_name)
+            for candidate in _trim_leading_docstring(list(statement.body))
+            if isinstance(candidate, ast.If)
+        }
+        if not (
+            "not_exactly_one" in guard_kinds or ({"empty", "ambiguous"} <= guard_kinds)
+        ):
+            continue
+        if not any(
+            isinstance(candidate, ast.Subscript)
+            and isinstance(candidate.value, ast.Name)
+            and candidate.value.id == match_name
+            and isinstance(candidate.slice, ast.Constant)
+            and candidate.slice.value == 0
+            for candidate in ast.walk(statement)
+        ):
+            continue
+        methods.append((statement.lineno, statement.name, predicate_name, context_name))
+    return tuple(methods)
+
+
+def _trim_leading_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
+def _compact_registered_type_match_shape(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str, str] | None:
+    parameter_names = {
+        argument.arg
+        for argument in (
+            *method.args.posonlyargs,
+            *method.args.args,
+            *method.args.kwonlyargs,
+        )
+        if argument.arg not in {"self", "cls"}
+    }
+    for statement in _trim_leading_docstring(list(method.body)):
+        if not (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.ListComp)
+            and len(statement.value.generators) == 1
+        ):
+            continue
+        match_name = statement.targets[0].id
+        comprehension = statement.value
+        generator = comprehension.generators[0]
+        if not (
+            not generator.is_async
+            and isinstance(generator.target, ast.Name)
+            and isinstance(comprehension.elt, ast.Name)
+            and comprehension.elt.id == generator.target.id
+            and isinstance(generator.iter, ast.Call)
+            and not generator.iter.args
+            and not generator.iter.keywords
+            and isinstance(generator.iter.func, ast.Attribute)
+            and generator.iter.func.attr == "registered_types"
+            and isinstance(generator.iter.func.value, ast.Name)
+            and generator.iter.func.value.id == "cls"
+            and len(generator.ifs) == 1
+            and isinstance(generator.ifs[0], ast.Call)
+        ):
+            continue
+        predicate = generator.ifs[0]
+        if not (
+            not predicate.keywords
+            and len(predicate.args) == 1
+            and isinstance(predicate.args[0], ast.Name)
+            and predicate.args[0].id in parameter_names
+            and isinstance(predicate.func, ast.Attribute)
+            and predicate.func.attr
+            and isinstance(predicate.func.value, ast.Name)
+            and predicate.func.value.id == generator.target.id
+        ):
+            continue
+        return match_name, predicate.func.attr, predicate.args[0].id
+    return None
+
+
+def _compact_selection_guard_kind(node: ast.AST, match_name: str) -> str | None:
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.Not)
+        and isinstance(node.operand, ast.Name)
+        and node.operand.id == match_name
+    ):
+        return "empty"
+    if not (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and len(node.comparators) == 1
+        and isinstance(node.left, ast.Call)
+        and isinstance(node.left.func, ast.Name)
+        and node.left.func.id == "len"
+        and len(node.left.args) == 1
+        and isinstance(node.left.args[0], ast.Name)
+        and node.left.args[0].id == match_name
+        and isinstance(node.comparators[0], ast.Constant)
+        and isinstance(node.comparators[0].value, int)
+    ):
+        return None
+    operator = node.ops[0]
+    comparator = node.comparators[0].value
+    if isinstance(operator, ast.NotEq) and comparator == 1:
+        return "not_exactly_one"
+    if isinstance(operator, ast.Gt) and comparator == 1:
+        return "ambiguous"
+    if isinstance(operator, ast.Eq) and comparator == 0:
+        return "empty"
+    return None
 
 
 def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:

@@ -5490,6 +5490,171 @@ def _compact_concrete_descendants(
     )
 
 
+@dataclass(frozen=True)
+class _CompactConcreteFamilyContext:
+    class_index: CompactClassFamilyIndex
+
+
+def _compact_concrete_family_context(
+    projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> _CompactConcreteFamilyContext:
+    del config
+    return _CompactConcreteFamilyContext(build_compact_class_family_index(projections))
+
+
+def _compact_predicate_selected_concrete_family_candidates(
+    context: _CompactConcreteFamilyContext,
+    config: DetectorConfig,
+) -> tuple[PredicateSelectedConcreteFamilyCandidate, ...]:
+    class_index = context.class_index
+    candidates: list[PredicateSelectedConcreteFamilyCandidate] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        if "_registered_types" not in indexed_class.assignments_by_name:
+            continue
+        descendants = _compact_concrete_descendants(class_index, indexed_class)
+        if len(descendants) < config.min_registration_sites:
+            continue
+        concrete_class_names = sorted_tuple(
+            _compact_class_display_name(descendant, class_index)
+            for descendant in descendants
+        )
+        for (
+            line,
+            selector_method_name,
+            predicate_method_name,
+            context_param_name,
+        ) in indexed_class.predicate_selected_methods:
+            candidates.append(
+                PredicateSelectedConcreteFamilyCandidate(
+                    file_path=indexed_class.file_path,
+                    line=line,
+                    class_name=_compact_class_display_name(indexed_class, class_index),
+                    selector_method_name=selector_method_name,
+                    predicate_method_name=predicate_method_name,
+                    context_param_name=context_param_name,
+                    concrete_class_names=concrete_class_names,
+                )
+            )
+    return tuple(candidates)
+
+
+def _compact_mirrored_leaf_family_map(
+    descendants: tuple[CompactIndexedClass, ...],
+    *,
+    axis_prefix_tokens: tuple[str, ...],
+) -> dict[str, CompactIndexedClass]:
+    leaf_map: dict[str, CompactIndexedClass] = {}
+    for descendant in descendants:
+        tokens = CLASS_NAME_ALGEBRA.ordered_tokens(descendant.simple_name)
+        if (
+            len(tokens) <= len(axis_prefix_tokens)
+            or tokens[: len(axis_prefix_tokens)] != axis_prefix_tokens
+        ):
+            continue
+        family_tokens = tokens[len(axis_prefix_tokens) :]
+        if family_tokens:
+            leaf_map.setdefault(" ".join(family_tokens), descendant)
+    return leaf_map
+
+
+def _compact_parallel_mirrored_leaf_family_candidates(
+    context: _CompactConcreteFamilyContext,
+    config: DetectorConfig,
+) -> tuple[ParallelMirroredLeafFamilyCandidate, ...]:
+    class_index = context.class_index
+    min_shared_families = max(3, config.min_registration_sites)
+    roots: list[
+        tuple[
+            CompactIndexedClass,
+            tuple[str, ...],
+            tuple[CompactIndexedClass, ...],
+        ]
+    ] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        if "_registered_types" not in indexed_class.assignments_by_name:
+            continue
+        if not indexed_class.abstract_method_names:
+            continue
+        descendants = _compact_concrete_descendants(class_index, indexed_class)
+        if len(descendants) >= min_shared_families:
+            roots.append(
+                (indexed_class, indexed_class.abstract_method_names, descendants)
+            )
+
+    candidates: list[ParallelMirroredLeafFamilyCandidate] = []
+    for (left_root, left_methods, left_descendants), (
+        right_root,
+        right_methods,
+        right_descendants,
+    ) in combinations(roots, 2):
+        shared_methods = sorted_tuple(set(left_methods) & set(right_methods))
+        if not shared_methods:
+            continue
+        left_tokens = CLASS_NAME_ALGEBRA.ordered_tokens(left_root.simple_name)
+        right_tokens = CLASS_NAME_ALGEBRA.ordered_tokens(right_root.simple_name)
+        shared_root_suffix = _shared_ordered_suffix(left_tokens, right_tokens)
+        if not shared_root_suffix:
+            continue
+        left_axis_prefix = left_tokens[: len(left_tokens) - len(shared_root_suffix)]
+        right_axis_prefix = right_tokens[: len(right_tokens) - len(shared_root_suffix)]
+        if (
+            not left_axis_prefix
+            or not right_axis_prefix
+            or left_axis_prefix == right_axis_prefix
+        ):
+            continue
+        left_leaf_map = _compact_mirrored_leaf_family_map(
+            left_descendants, axis_prefix_tokens=left_axis_prefix
+        )
+        right_leaf_map = _compact_mirrored_leaf_family_map(
+            right_descendants, axis_prefix_tokens=right_axis_prefix
+        )
+        if not left_leaf_map or not right_leaf_map:
+            continue
+        shared_leaf_families = sorted_tuple(set(left_leaf_map) & set(right_leaf_map))
+        if len(shared_leaf_families) < max(
+            min_shared_families, min(len(left_leaf_map), len(right_leaf_map)) // 2
+        ):
+            continue
+
+        def leaf_evidence(
+            leaf_map: dict[str, CompactIndexedClass],
+        ) -> tuple[SourceLocation, ...]:
+            return tuple(
+                SourceLocation(
+                    leaf_map[family_name].file_path,
+                    leaf_map[family_name].line,
+                    _compact_class_display_name(leaf_map[family_name], class_index),
+                )
+                for family_name in shared_leaf_families
+            )
+
+        candidates.append(
+            ParallelMirroredLeafFamilyCandidate(
+                left=MirroredLeafFamilySide(
+                    file_path=left_root.file_path,
+                    line=left_root.line,
+                    root_name=_compact_class_display_name(left_root, class_index),
+                    leaf_evidence=leaf_evidence(left_leaf_map),
+                ),
+                right=MirroredLeafFamilySide(
+                    file_path=right_root.file_path,
+                    line=right_root.line,
+                    root_name=_compact_class_display_name(right_root, class_index),
+                    leaf_evidence=leaf_evidence(right_leaf_map),
+                ),
+                contract_method_names=shared_methods,
+                shared_leaf_family_names=shared_leaf_families,
+            )
+        )
+    return tuple(candidates)
+
+
 def _compact_family_has_registration_authority(
     class_index: CompactClassFamilyIndex,
     indexed_class: CompactIndexedClass,
@@ -6093,10 +6258,13 @@ class AutoRegisterMetaUnderRentedDetector(
 
 
 class PredicateSelectedConcreteFamilyDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[
         PredicateSelectedConcreteFamilyCandidate
-    ]
+    ],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = _compact_concrete_family_context
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Predicate-selected concrete family should collapse into one metaclass-registry selector base",
@@ -6106,6 +6274,32 @@ class PredicateSelectedConcreteFamilyDetector(
         _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _CLASS_FAMILY_PREDICATE_CHAIN_REGISTRY_POPULATION_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_predicate_selected_concrete_family_candidates(
+                _compact_concrete_family_context(projections, config), config
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        if not isinstance(context, _CompactConcreteFamilyContext):
+            raise TypeError("predicate selector compact context is missing")
+        return self._findings_for_candidates(
+            _compact_predicate_selected_concrete_family_candidates(context, config),
+            config,
+        )
 
     def _finding_for_candidate(
         self, family_candidate: PredicateSelectedConcreteFamilyCandidate
@@ -6138,8 +6332,13 @@ class PredicateSelectedConcreteFamilyDetector(
 
 
 class ParallelMirroredLeafFamilyDetector(
-    ConfiguredCrossModuleCollectorCandidateDetector[ParallelMirroredLeafFamilyCandidate]
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    ConfiguredCrossModuleCollectorCandidateDetector[
+        ParallelMirroredLeafFamilyCandidate
+    ],
 ):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = _compact_concrete_family_context
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Parallel mirrored leaf families should derive from one axis-declared family substrate",
@@ -6149,6 +6348,32 @@ class ParallelMirroredLeafFamilyDetector(
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         _CLASS_FAMILY_REGISTRY_POPULATION_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
     )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_parallel_mirrored_leaf_family_candidates(
+                _compact_concrete_family_context(projections, config), config
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        if not isinstance(context, _CompactConcreteFamilyContext):
+            raise TypeError("mirrored leaf compact context is missing")
+        return self._findings_for_candidates(
+            _compact_parallel_mirrored_leaf_family_candidates(context, config),
+            config,
+        )
 
     def _finding_for_candidate(
         self, mirrored_candidate: ParallelMirroredLeafFamilyCandidate
