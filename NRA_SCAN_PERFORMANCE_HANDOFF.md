@@ -709,6 +709,39 @@ retaining separate tests for the legacy overlay API used by explicit graph
 consumers.
 Checkpoint verification passes all 984 tests in 349.69 seconds.
 
+## 2026-08-04 available-abstraction projection checkpoint
+
+Available-abstraction reuse now projects focused authority and local
+implementation capability signatures per module, then performs the existing
+availability, overlap, coverage, and best-authority join over those immutable
+facts.  The legacy retained-AST collector and the compact join share the same
+candidate authority, so this migration does not fork detector semantics.
+
+The frozen 919-module DQDock oracle produced the same 79 candidates and 79
+findings on both paths; canonical candidate and finding digests match exactly.
+The isolated retained-AST run took 22.28 seconds and peaked at 1,009,284 KB,
+including a 9.88-second global join.  The uncached bounded run took 27.83
+seconds and peaked at 210,840 KB, including a 4.11-second global join.  The
+79.1% peak-memory reduction is authoritative; the cold end-to-end wall times
+are not directly comparable because only the compact path streams and releases
+module ASTs.
+
+The family contains 1,720 authority signatures and 8,998 local signatures.
+Its 919 cache payloads occupy 16,699,920 bytes; the largest is 839,140 bytes,
+so an explicit 1-MB family ceiling covers the whole corpus.  Isolated cold
+projection plus finding reconstruction took 28.96 seconds at 212,608 KB.  With
+all family payloads cached, warm took 3.19 seconds at 192,048 KB.
+
+Schema 18 moves the partition to 183 per-module detectors, 62 compact-global
+detectors, and seven AST-retaining context-dependent detectors.  The complete
+compact run produced 9,553 findings from 73,995 top-level projections.  Cold
+took 187.28 seconds at 668,352 KB, including 165.64 seconds of projection and
+21.64 seconds of reconstruction.  Warm took 58.87 seconds at 720,856 KB,
+including 37.68 seconds of projection and 21.18 seconds of reconstruction.
+The cache contains 19,956 files and 236,213,431 payload bytes with zero
+zero-byte entries.
+Checkpoint verification passes all 985 tests in 352.12 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

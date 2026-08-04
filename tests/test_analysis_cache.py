@@ -2888,6 +2888,76 @@ def test_compact_carrier_reuse_candidates_match_legacy_ast_candidates(
         assert compact_candidates
 
 
+def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    shared_root = package_root / "shared"
+    shared_root.mkdir(parents=True)
+    (shared_root / "button_panel.py").write_text(
+        "class ButtonPanel:\n"
+        "    def __init__(self, button_configs, on_action, style_generator=None, parent=None):\n"
+        "        layout = QGridLayout(self)\n"
+        "        layout.setContentsMargins(5, 5, 5, 5)\n"
+        "        layout.setSpacing(5)\n"
+        "        self.buttons = {}\n"
+        "        for index, (label, action_id, tooltip) in enumerate(button_configs):\n"
+        "            button = QPushButton(label)\n"
+        "            button.setToolTip(tooltip)\n"
+        "            if style_generator:\n"
+        "                button.setStyleSheet(style_generator.generate_button_style())\n"
+        "            button.clicked.connect(lambda checked, a=action_id: on_action(a))\n"
+        "            self.buttons[action_id] = button\n"
+        "            layout.addWidget(button, 0, index)\n",
+        encoding="utf-8",
+    )
+    (package_root / "debug_toolbar.py").write_text(
+        "class DebugToolbarWidget:\n"
+        "    BUTTONS = (('Run', 'run', 'Run'), ('Stop', 'stop', 'Stop'))\n\n"
+        "    def __init__(self, style_generator=None):\n"
+        "        layout = QVBoxLayout(self)\n"
+        "        layout.setContentsMargins(0, 0, 0, 0)\n"
+        "        layout.setSpacing(0)\n"
+        "        self.buttons = {}\n"
+        "        for label, action_id, tooltip in self.BUTTONS:\n"
+        "            button = QPushButton(label)\n"
+        "            button.setToolTip(tooltip)\n"
+        "            if style_generator:\n"
+        "                button.setStyleSheet(style_generator.generate_button_style())\n"
+        "            button.clicked.connect(lambda checked, a=action_id: self.emit(a))\n"
+        "            self.buttons[action_id] = button\n"
+        "            layout.addWidget(button, 0, index)\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+    detector = abstraction_reuse_detectors.AvailableAbstractionReuseDetector()
+    projections = type(detector).compact_module_projections(modules)
+    legacy_candidates = (
+        abstraction_reuse_detectors._available_abstraction_reuse_candidates(modules)
+    )
+    compact_candidates = (
+        abstraction_reuse_detectors._compact_available_abstraction_reuse_candidates(
+            projections
+        )
+    )
+
+    assert compact_candidates == legacy_candidates
+    assert compact_candidates
+    config = DetectorConfig()
+    assert detector._findings_from_compact_projections(
+        projections, config
+    ) == detector._findings_for_candidates(legacy_candidates, config)
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (tmp_path,),
+        (type(detector),),
+        use_parse_cache=False,
+    )
+    assert accumulator.projection_count == len(modules)
+    assert accumulator.findings_by_detector(config)[type(detector)] == (
+        detector._findings_for_candidates(legacy_candidates, config)
+    )
+
+
 def test_carrier_reuse_detectors_share_one_compact_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3716,8 +3786,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert semantic_descent_detectors.SemanticMirrorWithoutDescentDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 61
-    assert len(partition.ast_retaining_context_detector_types) == 8
+    assert abstraction_reuse_detectors.AvailableAbstractionReuseDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 62
+    assert len(partition.ast_retaining_context_detector_types) == 7
     assert len(partition.per_module_detector_types) == 183
 
 

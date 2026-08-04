@@ -10,6 +10,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import ClassVar, Iterable, Sequence
 
+from ..ast_tools import CollectedFamily
 from ..class_index import (
     ATTRIBUTE_CHAIN_AUTHORITY,
     ClassSymbolResolutionAuthority,
@@ -1122,6 +1123,12 @@ class AvailableAbstractionReuseCandidate:
     overlap_score: int
 
 
+@dataclass(frozen=True, slots=True)
+class CompactAvailableAbstractionReuseModuleProjection:
+    authorities: tuple[AbstractionAuthoritySignature, ...]
+    locals: tuple[LocalImplementationSignature, ...]
+
+
 class _CapabilityAtomVisitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.atoms: set[str] = set()
@@ -1404,6 +1411,26 @@ def _module_locals(module: ParsedModule) -> tuple[LocalImplementationSignature, 
     )
 
 
+class CompactAvailableAbstractionReuseModuleProjectionFamily(
+    CollectedFamily[CompactAvailableAbstractionReuseModuleProjection]
+):
+    item_type = CompactAvailableAbstractionReuseModuleProjection
+    cache_payload_max_bytes = 1_000_000
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[CompactAvailableAbstractionReuseModuleProjection]:
+        del cls
+        return [
+            CompactAvailableAbstractionReuseModuleProjection(
+                authorities=_module_authorities(parsed_module),
+                locals=_module_locals(parsed_module),
+            )
+        ]
+
+
 def _top_level_package(module_name: str) -> str:
     return module_name.split(".", 1)[0]
 
@@ -1497,25 +1524,22 @@ def _reimplements_authority(
     )
 
 
-def _available_abstraction_reuse_candidates(
-    modules: Sequence[ParsedModule],
+def _available_abstraction_reuse_candidates_from_signatures(
+    authorities: Sequence[AbstractionAuthoritySignature],
+    local_signatures: Sequence[LocalImplementationSignature],
 ) -> tuple[AvailableAbstractionReuseCandidate, ...]:
-    authorities = tuple(
-        authority for module in modules for authority in _module_authorities(module)
-    )
     if not authorities:
         return ()
     candidates_by_local: dict[
         tuple[str, int, str], list[AvailableAbstractionReuseCandidate]
     ] = defaultdict(list)
-    for module in modules:
-        for local in _module_locals(module):
-            for authority in authorities:
-                candidate = _reimplements_authority(local, authority)
-                if candidate is not None:
-                    candidates_by_local[
-                        (local.file_path, local.line, local.symbol)
-                    ].append(candidate)
+    for local in local_signatures:
+        for authority in authorities:
+            candidate = _reimplements_authority(local, authority)
+            if candidate is not None:
+                candidates_by_local[(local.file_path, local.line, local.symbol)].append(
+                    candidate
+                )
     best_candidates = [
         sorted(
             candidates,
@@ -1539,9 +1563,37 @@ def _available_abstraction_reuse_candidates(
     )
 
 
+def _available_abstraction_reuse_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[AvailableAbstractionReuseCandidate, ...]:
+    return _available_abstraction_reuse_candidates_from_signatures(
+        tuple(
+            authority for module in modules for authority in _module_authorities(module)
+        ),
+        tuple(local for module in modules for local in _module_locals(module)),
+    )
+
+
+def _compact_available_abstraction_reuse_candidates(
+    projections: Sequence[CompactAvailableAbstractionReuseModuleProjection],
+) -> tuple[AvailableAbstractionReuseCandidate, ...]:
+    return _available_abstraction_reuse_candidates_from_signatures(
+        tuple(
+            authority
+            for projection in projections
+            for authority in projection.authorities
+        ),
+        tuple(local for projection in projections for local in projection.locals),
+    )
+
+
 class AvailableAbstractionReuseDetector(
+    CompactModuleProjectionDetectorMixin[
+        CompactAvailableAbstractionReuseModuleProjection
+    ],
     CrossModuleCollectorCandidateDetector[AvailableAbstractionReuseCandidate],
 ):
+    module_projection_family = CompactAvailableAbstractionReuseModuleProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.STAGED_ORCHESTRATION,
         "Local implementation should reuse the available abstraction authority",
@@ -1557,6 +1609,16 @@ class AvailableAbstractionReuseDetector(
     )
 
     candidate_collector = staticmethod(_available_abstraction_reuse_candidates)
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactAvailableAbstractionReuseModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_available_abstraction_reuse_candidates(projections),
+            config,
+        )
 
     def _findings_for_candidates(
         self,
