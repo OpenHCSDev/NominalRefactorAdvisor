@@ -923,6 +923,26 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     compact_shared_context_builder: ClassVar[Callable[..., object] | None] = None
 
     @classmethod
+    def compact_projection_families(
+        cls,
+    ) -> tuple[type[CollectedFamily], ...]:
+        return (cls.module_projection_family,)
+
+    @classmethod
+    def compact_module_projection_groups(
+        cls,
+        modules: Sequence[ParsedModule],
+    ) -> dict[type[CollectedFamily], tuple[object, ...]]:
+        return {
+            family: tuple(
+                projection
+                for module in modules
+                for projection in collect_family_items(module, family)
+            )
+            for family in cls.compact_projection_families()
+        }
+
+    @classmethod
     def compact_module_projections(
         cls,
         modules: Sequence[ParsedModule],
@@ -941,8 +961,25 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         modules: list[ParsedModule],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
+        return self._findings_from_compact_projection_groups(
+            type(self).compact_module_projection_groups(modules),
+            config,
+        )
+
+    def _findings_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        families = type(self).compact_projection_families()
+        if len(families) != 1:
+            raise TypeError(
+                f"{type(self).__name__} must implement its multi-family compact join"
+            )
         return self._findings_from_compact_projections(
-            type(self).compact_module_projections(modules),
+            cast(
+                tuple[CompactProjectionItemT, ...], projections_by_family[families[0]]
+            ),
             config,
         )
 
@@ -959,6 +996,50 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     def _findings_from_compact_projections(
         self,
         projections: tuple[CompactProjectionItemT, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        raise NotImplementedError
+
+
+class CompactMultiModuleProjectionDetectorMixin(
+    CompactModuleProjectionDetectorMixin[object],
+    ABC,
+):
+    """Global detector joining two or more reusable compact fact families."""
+
+    module_projection_families: ClassVar[tuple[type[CollectedFamily], ...]]
+
+    @classmethod
+    def compact_projection_families(
+        cls,
+    ) -> tuple[type[CollectedFamily], ...]:
+        families = cls.module_projection_families
+        if len(families) < 2 or len(set(families)) != len(families):
+            raise TypeError(
+                f"{cls.__name__} requires at least two distinct compact families"
+            )
+        return families
+
+    @classmethod
+    def compact_module_projections(
+        cls,
+        modules: Sequence[ParsedModule],
+    ) -> tuple[object, ...]:
+        del modules
+        raise TypeError(f"{cls.__name__} requires compact_module_projection_groups()")
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[object, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections, config
+        raise TypeError(f"{type(self).__name__} requires grouped compact projections")
+
+    @abstractmethod
+    def _findings_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError

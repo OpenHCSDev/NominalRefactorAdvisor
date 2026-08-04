@@ -9281,10 +9281,30 @@ class CompactPrivateFunctionFact:
     is_detector_override_hook: bool
     static_payload_stats: StaticPayloadStats
     sink_kinds: tuple[str, ...]
+    statement_count: int
     parameter_names: tuple[str, ...] = ()
     private_helper_callee_names: tuple[str, ...] = ()
     private_helper_return_kinds: tuple[str, ...] = ()
     private_helper_constructed_type_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CompactPrivateHelperArgumentFact:
+    value: str
+    kind: _PrivateHelperResidueKind
+
+
+@dataclass(frozen=True)
+class CompactPrivateHelperKeywordArgumentFact:
+    name: str
+    argument: CompactPrivateHelperArgumentFact
+
+
+@dataclass(frozen=True)
+class CompactPrivateHelperCallFact:
+    helper_name: str
+    positional_arguments: tuple[CompactPrivateHelperArgumentFact, ...]
+    keyword_arguments: tuple[CompactPrivateHelperKeywordArgumentFact, ...]
 
 
 @dataclass(frozen=True)
@@ -9295,6 +9315,46 @@ class CompactPrivateReferenceModuleProjection:
     derived_candidate_collector_contract_names: tuple[str, ...]
     functions: tuple[CompactPrivateFunctionFact, ...]
     caller_symbols_by_private_name: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    private_helper_caller_qualnames: tuple[str, ...] = ()
+    private_helper_calls_by_caller_index: tuple[
+        tuple[int, tuple[CompactPrivateHelperCallFact, ...]], ...
+    ] = ()
+
+
+def _compact_private_helper_argument_fact(
+    argument: ast.AST,
+) -> CompactPrivateHelperArgumentFact:
+    return CompactPrivateHelperArgumentFact(
+        value=ast.unparse(argument),
+        kind=_private_helper_residue_kind(argument),
+    )
+
+
+def _compact_private_helper_call_fact(
+    node: ast.Call,
+) -> CompactPrivateHelperCallFact | None:
+    if isinstance(node.func, ast.Name):
+        helper_name = node.func.id
+    elif isinstance(node.func, ast.Attribute):
+        helper_name = node.func.attr
+    else:
+        return None
+    if not _is_private_symbol_name(helper_name):
+        return None
+    return CompactPrivateHelperCallFact(
+        helper_name=helper_name,
+        positional_arguments=tuple(
+            _compact_private_helper_argument_fact(argument) for argument in node.args
+        ),
+        keyword_arguments=tuple(
+            CompactPrivateHelperKeywordArgumentFact(
+                name=keyword.arg,
+                argument=_compact_private_helper_argument_fact(keyword.value),
+            )
+            for keyword in node.keywords
+            if keyword.arg is not None
+        ),
+    )
 
 
 class CompactPrivateReferenceModuleProjectionFamily(
@@ -9310,14 +9370,29 @@ class CompactPrivateReferenceModuleProjectionFamily(
         del cls
         module_index = PrivateReferenceModuleIndex.from_module(parsed_module)
         functions: list[CompactPrivateFunctionFact] = []
+        caller_qualnames: list[str] = []
+        calls_by_caller_index: list[
+            tuple[int, tuple[CompactPrivateHelperCallFact, ...]]
+        ] = []
         caller_symbols_by_private_name: dict[str, set[str]] = defaultdict(set)
         for indexed_function in module_index.functions:
+            function = indexed_function.function
+            body_nodes = _walk_function_body_nodes(function)
+            caller_index = len(caller_qualnames)
+            caller_qualnames.append(indexed_function.qualname)
+            private_helper_calls = tuple(
+                call_fact
+                for node in body_nodes
+                if isinstance(node, ast.Call)
+                if (call_fact := _compact_private_helper_call_fact(node)) is not None
+            )
+            if private_helper_calls:
+                calls_by_caller_index.append((caller_index, private_helper_calls))
             for symbol_name in indexed_function.symbol_references:
                 if _is_private_symbol_name(symbol_name):
                     caller_symbols_by_private_name[symbol_name].add(
                         indexed_function.qualname
                     )
-            function = indexed_function.function
             if not _is_private_symbol_name(function.name):
                 continue
             owner_name = (
@@ -9325,7 +9400,6 @@ class CompactPrivateReferenceModuleProjectionFamily(
                 if "." in indexed_function.qualname
                 else None
             )
-            body_nodes = _walk_function_body_nodes(function)
             functions.append(
                 CompactPrivateFunctionFact(
                     file_path=str(parsed_module.path),
@@ -9351,6 +9425,7 @@ class CompactPrivateReferenceModuleProjectionFamily(
                     ),
                     static_payload_stats=_static_payload_stats(function),
                     sink_kinds=_static_payload_sink_kinds(function),
+                    statement_count=len(_trim_docstring_body(list(function.body))),
                     parameter_names=FUNCTION_PARAMETER_NAME_PROJECTION.names(function),
                     private_helper_callee_names=sorted_tuple(
                         {
@@ -9414,6 +9489,8 @@ class CompactPrivateReferenceModuleProjectionFamily(
                         caller_symbols_by_private_name.items()
                     )
                 ),
+                private_helper_caller_qualnames=tuple(caller_qualnames),
+                private_helper_calls_by_caller_index=tuple(calls_by_caller_index),
             )
         ]
 
@@ -10138,7 +10215,8 @@ def _private_helper_caller_owner_names(
 
 
 def _private_helper_unique_class_symbol(
-    class_index: ClassFamilyIndex, owner_name: str
+    class_index: ClassFamilyIndex | CompactClassFamilyIndex,
+    owner_name: str,
 ) -> str | None:
     symbols = class_index.symbols_by_simple_name.get(
         owner_name.rsplit(".", 1)[-1],
@@ -10150,7 +10228,8 @@ def _private_helper_unique_class_symbol(
 
 
 def _private_helper_deepest_common_ancestor_symbol(
-    class_index: ClassFamilyIndex, class_symbols: tuple[str, ...]
+    class_index: ClassFamilyIndex | CompactClassFamilyIndex,
+    class_symbols: tuple[str, ...],
 ) -> str | None:
     return (
         Maybe.of(class_symbols)
@@ -10293,12 +10372,30 @@ def _private_helper_residue_plan(
     caller_functions: tuple[_RuntimeFunctionNode, ...],
 ) -> PrivateHelperResiduePlan:
     call_argument_maps = tuple(
-        (
-            _private_helper_call_argument_map(call, parameter_names)
-            for caller_function in caller_functions
-            for call in _private_helper_call_nodes(caller_function, function.name)
-        )
+        {
+            parameter_name: _compact_private_helper_argument_fact(argument)
+            for parameter_name, argument in _private_helper_call_argument_map(
+                call, parameter_names
+            ).items()
+        }
+        for caller_function in caller_functions
+        for call in _private_helper_call_nodes(caller_function, function.name)
     )
+    return _private_helper_residue_plan_from_argument_facts(
+        function_name=function.name,
+        parameter_names=parameter_names,
+        statement_count=len(_trim_docstring_body(list(function.body))),
+        call_argument_maps=call_argument_maps,
+    )
+
+
+def _private_helper_residue_plan_from_argument_facts(
+    *,
+    function_name: str,
+    parameter_names: tuple[str, ...],
+    statement_count: int,
+    call_argument_maps: tuple[dict[str, CompactPrivateHelperArgumentFact], ...],
+) -> PrivateHelperResiduePlan:
     classvar_names: list[str] = []
     property_hook_names: list[str] = []
     behavior_hook_names: list[str] = []
@@ -10312,10 +10409,8 @@ def _private_helper_residue_plan(
         )
         if not arguments:
             continue
-        argument_values = {ast.unparse(argument) for argument in arguments}
-        argument_kinds = {
-            _private_helper_residue_kind(argument) for argument in arguments
-        }
+        argument_values = {argument.value for argument in arguments}
+        argument_kinds = {argument.kind for argument in arguments}
         if argument_kinds == {_PrivateHelperResidueKind.NAME} and argument_values == {
             parameter_name
         }:
@@ -10329,19 +10424,18 @@ def _private_helper_residue_plan(
             continue
         callsite_axis_count += 1
         kind = next(iter(sorted(argument_kinds)))
-        residue_name = _private_helper_residue_name(function.name, parameter_name, kind)
+        residue_name = _private_helper_residue_name(function_name, parameter_name, kind)
         _PrivateHelperResidueSink.for_kind(kind).append_residue(
             residue_name,
             classvar_names=classvar_names,
             property_hook_names=property_hook_names,
             behavior_hook_names=behavior_hook_names,
         )
-    shared_statement_count = len(_trim_docstring_body(list(function.body)))
     leaf_residue_names = sorted_tuple(
         (*classvar_names, *property_hook_names, *behavior_hook_names)
     )
     normal_form = (
-        f"HELPER_TEMPLATE({function.name})"
+        f"HELPER_TEMPLATE({function_name})"
         f" -> input({','.join(sorted_tuple(transported_parameter_names))})"
         f" + residue({','.join(leaf_residue_names)})"
     )
@@ -10351,7 +10445,7 @@ def _private_helper_residue_plan(
         behavior_hook_names=tuple(dict.fromkeys(behavior_hook_names)),
         transported_parameter_names=tuple(dict.fromkeys(transported_parameter_names)),
         callsite_axis_count=callsite_axis_count,
-        shared_statement_count=shared_statement_count,
+        shared_statement_count=statement_count,
         residue_normal_form=normal_form,
     )
 
@@ -10560,6 +10654,25 @@ def _private_helper_placement_plan(
     )
     if len(caller_owner_names) == len(caller_symbols):
         class_index = class_index or build_class_family_index(list(modules))
+    return _private_helper_placement_plan_from_facts(
+        function_name=function_name,
+        caller_symbols=caller_symbols,
+        residue_plan=residue_plan,
+        class_index=class_index,
+    )
+
+
+def _private_helper_placement_plan_from_facts(
+    *,
+    function_name: str,
+    caller_symbols: tuple[str, ...],
+    residue_plan: PrivateHelperResiduePlan,
+    class_index: ClassFamilyIndex | CompactClassFamilyIndex | None,
+) -> PrivateHelperPlacementPlan:
+    caller_owner_names = _private_helper_caller_owner_names(caller_symbols)
+    if len(caller_owner_names) == len(caller_symbols):
+        if class_index is None:
+            raise TypeError("class placement requires a compact or AST class index")
         class_symbols = tuple(
             (
                 class_symbol
@@ -10992,6 +11105,121 @@ def _compact_private_helper_caller_symbols_by_name(
     }
 
 
+def _compact_private_helper_calls_by_caller_qualname(
+    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+) -> dict[str, tuple[CompactPrivateHelperCallFact, ...]]:
+    calls_by_qualname: dict[str, tuple[CompactPrivateHelperCallFact, ...]] = {}
+    for projection in projections:
+        calls_by_index = dict(projection.private_helper_calls_by_caller_index)
+        for caller_index, qualname in enumerate(
+            projection.private_helper_caller_qualnames
+        ):
+            calls_by_qualname[qualname] = calls_by_index.get(caller_index, ())
+    return calls_by_qualname
+
+
+def _compact_private_helper_call_argument_map(
+    call: CompactPrivateHelperCallFact,
+    parameter_names: tuple[str, ...],
+) -> dict[str, CompactPrivateHelperArgumentFact]:
+    argument_map = {
+        parameter_name: argument
+        for parameter_name, argument in zip(parameter_names, call.positional_arguments)
+    }
+    argument_map.update(
+        {keyword.name: keyword.argument for keyword in call.keyword_arguments}
+    )
+    return argument_map
+
+
+def _compact_private_helper_residue_plan(
+    function: CompactPrivateFunctionFact,
+    *,
+    caller_symbols: tuple[str, ...],
+    calls_by_caller_qualname: dict[str, tuple[CompactPrivateHelperCallFact, ...]],
+) -> PrivateHelperResiduePlan:
+    call_argument_maps = tuple(
+        _compact_private_helper_call_argument_map(call, function.parameter_names)
+        for caller_symbol in caller_symbols
+        for call in calls_by_caller_qualname.get(caller_symbol, ())
+        if call.helper_name == function.function_name
+    )
+    return _private_helper_residue_plan_from_argument_facts(
+        function_name=function.function_name,
+        parameter_names=function.parameter_names,
+        statement_count=function.statement_count,
+        call_argument_maps=call_argument_maps,
+    )
+
+
+def _compact_non_nominal_private_helper_candidates(
+    private_projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+    class_projections: tuple[CompactModuleClassProjection, ...],
+    config: DetectorConfig,
+) -> tuple[NonNominalPrivateHelperCandidate, ...]:
+    contract_names = frozenset(
+        name
+        for projection in private_projections
+        for name in projection.derived_candidate_collector_contract_names
+    )
+    callers_by_name = _compact_private_helper_caller_symbols_by_name(
+        private_projections
+    )
+    calls_by_caller_qualname = _compact_private_helper_calls_by_caller_qualname(
+        private_projections
+    )
+    class_index = build_compact_class_family_index(class_projections)
+    candidates: list[NonNominalPrivateHelperCandidate] = []
+    for projection in private_projections:
+        for function in projection.functions:
+            if function.owner_name is not None:
+                continue
+            if function.has_external_protocol_shape:
+                continue
+            if function.function_name in contract_names:
+                continue
+            caller_symbols = tuple(
+                caller_symbol
+                for caller_symbol in callers_by_name.get(function.function_name, ())
+                if caller_symbol != function.qualname
+            )
+            if not PRIVATE_HELPER_ESCAPE_AUTHORITY.escapes_private_scope(
+                caller_symbols
+            ):
+                continue
+            if (
+                not PRIVATE_HELPER_ESCAPE_AUTHORITY.has_single_public_module_caller(
+                    caller_symbols
+                )
+                and function.line_count < config.min_unreferenced_private_function_lines
+            ):
+                continue
+            residue_plan = _compact_private_helper_residue_plan(
+                function,
+                caller_symbols=caller_symbols,
+                calls_by_caller_qualname=calls_by_caller_qualname,
+            )
+            candidates.append(
+                NonNominalPrivateHelperCandidate(
+                    file_path=function.file_path,
+                    line=function.line,
+                    qualname=function.qualname,
+                    function_name=function.function_name,
+                    parameter_names=function.parameter_names,
+                    caller_symbols=caller_symbols,
+                    placement_plan=_private_helper_placement_plan_from_facts(
+                        function_name=function.function_name,
+                        caller_symbols=caller_symbols,
+                        residue_plan=residue_plan,
+                        class_index=class_index,
+                    ),
+                    line_count=function.line_count,
+                    call_site_count=function.call_site_count,
+                )
+            )
+    return tuple(candidates)
+
+
 def _compact_private_helper_semantic_cluster_candidates(
     projections: tuple[CompactPrivateReferenceModuleProjection, ...],
     config: DetectorConfig,
@@ -11268,8 +11496,13 @@ class UnreferencedPrivateFunctionDetector(
 
 
 class NonNominalPrivateHelperDetector(
+    CompactMultiModuleProjectionDetectorMixin,
     PrivateReferenceContextualDetector[NonNominalPrivateHelperCandidate],
 ):
+    module_projection_families = (
+        CompactPrivateReferenceModuleProjectionFamily,
+        CompactModuleClassProjectionFamily,
+    )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Escaped private helper should become nominal",
@@ -11296,6 +11529,28 @@ class NonNominalPrivateHelperDetector(
             private_helper_call_graph=private_reference_context.private_helper_call_graph,
             class_index=private_reference_context.class_index,
         )
+
+    def _findings_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        private_projections = cast(
+            tuple[CompactPrivateReferenceModuleProjection, ...],
+            projections_by_family[CompactPrivateReferenceModuleProjectionFamily],
+        )
+        class_projections = cast(
+            tuple[CompactModuleClassProjection, ...],
+            projections_by_family[CompactModuleClassProjectionFamily],
+        )
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in _compact_non_nominal_private_helper_candidates(
+                private_projections,
+                class_projections,
+                config,
+            )
+        ]
 
     finding_renderer = CandidateFindingRenderer[NonNominalPrivateHelperCandidate](
         summary=lambda helper_candidate: (

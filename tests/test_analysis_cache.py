@@ -2960,6 +2960,90 @@ def test_compact_role_guarded_surface_candidates_match_legacy_ast_candidates(
     ) == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
 
 
+def test_compact_non_nominal_private_helper_matches_legacy_multi_family_join(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "helpers.py").write_text(
+        "def _build_plan(value, mode):\n"
+        "    first = normalize(value)\n"
+        "    second = prepare(first, mode)\n"
+        "    third = validate(second)\n"
+        "    fourth = transform(third)\n"
+        "    fifth = finalize(fourth)\n"
+        "    sixth = audit(fifth)\n"
+        "    seventh = publish(sixth)\n"
+        "    return seventh\n\n"
+        "class BaseRunner:\n"
+        "    pass\n\n"
+        "class AlphaRunner(BaseRunner):\n"
+        "    def run(self, value):\n"
+        "        return _build_plan(value, 'alpha')\n\n"
+        "class BetaRunner(BaseRunner):\n"
+        "    def run(self, value):\n"
+        "        return _build_plan(value, self.mode)\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    detector = runtime_detectors.NonNominalPrivateHelperDetector()
+    projection_groups = type(detector).compact_module_projection_groups(modules)
+    private_projections = projection_groups[
+        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily
+    ]
+    class_projections = projection_groups[
+        runtime_detectors.CompactModuleClassProjectionFamily
+    ]
+    config = DetectorConfig()
+    compact_candidates = (
+        runtime_detectors._compact_non_nominal_private_helper_candidates(
+            private_projections,
+            class_projections,
+            config,
+        )
+    )
+    legacy_context = runtime_detectors.PrivateReferenceDetectorContext(modules)
+    legacy_candidates = tuple(
+        candidate
+        for module in modules
+        for candidate in runtime_detectors._non_nominal_private_helper_candidates(
+            module,
+            config,
+            reference_modules=modules,
+            derived_candidate_collector_contract_names=(
+                legacy_context.derived_candidate_collector_contract_names
+            ),
+            private_helper_call_graph=legacy_context.private_helper_call_graph,
+            class_index=legacy_context.class_index,
+        )
+    )
+
+    assert compact_candidates == legacy_candidates
+    assert len(compact_candidates) == 1
+    placement = compact_candidates[0].placement_plan
+    assert placement.placement_kind == "existing_inheritance_root"
+    assert placement.insertion_owner_name == "BaseRunner"
+    assert placement.residue_plan.transported_parameter_names == ("value",)
+    assert placement.residue_plan.callsite_axis_count == 1
+    assert detector._findings_from_compact_projection_groups(
+        projection_groups,
+        config,
+    ) == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        (
+            runtime_detectors.NonNominalPrivateHelperDetector,
+            runtime_detectors.PrivateHelperSemanticClusterDetector,
+            runtime_detectors.ManualConcreteSubclassRosterDetector,
+        ),
+        use_parse_cache=False,
+    )
+    assert accumulator.projection_count == 2
+    assert accumulator.findings_by_detector(config)[
+        runtime_detectors.NonNominalPrivateHelperDetector
+    ] == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
+
+
 def test_compact_private_helper_cluster_candidates_match_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
@@ -3156,8 +3240,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.RoleGuardedSurfaceAccessDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 53
-    assert len(partition.ast_retaining_context_detector_types) == 16
+    assert runtime_detectors.NonNominalPrivateHelperDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 54
+    assert len(partition.ast_retaining_context_detector_types) == 15
     assert len(partition.per_module_detector_types) == 183
 
 

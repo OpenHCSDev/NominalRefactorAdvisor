@@ -535,6 +535,32 @@ was rejected after its cache audit found 7,004 zero-byte entries while
 ``/tmp`` was under pressure; the accepted pair had 4.1 GB free and zero
 zero-byte entries.
 
+Escaped non-nominal private-helper analysis now joins multiple reusable
+compact families.  The accumulator's schema-13 multi-family contract lets one
+detector consume the existing private-reference and compact class-family
+projections without copying either family or introducing another per-module
+projection.  The private-reference family adds exact helper call-argument
+summaries and statement counts.  It retains all 30,824 caller qualnames to
+preserve legacy last-definition-wins behavior, while storing call payloads for
+only the 3,105 caller indexes that actually invoke private helpers.
+
+The full 919-module oracle matched all 390 candidate tuples, placement plans,
+residue plans, and rendered findings exactly.  The placement distribution is
+176 module nominal authorities, 101 boundary strategies, 98 new family
+mixins/ABCs, and 15 existing inheritance roots.  The oracle peaked at
+1,143,628 KB because it deliberately retained both compact families and the
+legacy full-AST context.  The final suite passes 978 tests, and the partition
+is now 183 per-module detectors, 54 compact-global detectors, and 15
+AST-retaining context-dependent detectors.
+
+The accepted schema-13 cache produced 1,249 findings while the top-level
+projection count remained 69,400.  Cold took 124.01 seconds at 369,068 KB,
+including 111.32 seconds of projection and 12.70 seconds of finding
+reconstruction.  Warm took 44.24 seconds at 397,884 KB, including 31.27
+seconds of projection and 12.97 seconds of reconstruction.  The complete
+persistent cache grows by 2,616,959 bytes versus schema 12, and both cache
+integrity audits found zero zero-byte entries.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

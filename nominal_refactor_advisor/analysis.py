@@ -568,10 +568,11 @@ class CompactGlobalProjectionAccumulator:
     ) -> dict[type[CollectedFamily], tuple[type[IssueDetector], ...]]:
         grouped: dict[type[CollectedFamily], list[type[IssueDetector]]] = {}
         for detector_type in self.detector_types:
-            family = cast(
+            compact_detector_type = cast(
                 type[CompactModuleProjectionDetectorMixin], detector_type
-            ).module_projection_family
-            grouped.setdefault(family, []).append(detector_type)
+            )
+            for family in compact_detector_type.compact_projection_families():
+                grouped.setdefault(family, []).append(detector_type)
         return {family: tuple(types) for family, types in grouped.items()}
 
     @property
@@ -609,13 +610,29 @@ class CompactGlobalProjectionAccumulator:
         shared_contexts: dict[tuple[type[CollectedFamily], object], object] = {}
         for detector_type in self.detector_types:
             detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
-            family = cast(
+            compact_detector_type = cast(
                 type[CompactModuleProjectionDetectorMixin], detector_type
-            ).module_projection_family
+            )
+            families = compact_detector_type.compact_projection_families()
+            context_builder = compact_detector_type.compact_shared_context_builder
+            if len(families) != 1:
+                if context_builder is not None:
+                    raise TypeError(
+                        f"{detector_type.__name__} cannot use a single-family "
+                        "shared context builder for a multi-family compact join"
+                    )
+                findings[detector_type] = (
+                    detector._findings_from_compact_projection_groups(
+                        {
+                            family: projections_by_family.get(family, ())
+                            for family in families
+                        },
+                        config,
+                    )
+                )
+                continue
+            family = families[0]
             projections = projections_by_family.get(family, ())
-            context_builder = cast(
-                type[CompactModuleProjectionDetectorMixin], detector_type
-            ).compact_shared_context_builder
             context: object | None = None
             if context_builder is not None:
                 context_key = (family, context_builder)
