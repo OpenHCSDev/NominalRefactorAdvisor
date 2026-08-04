@@ -1153,6 +1153,38 @@ exact analysis is 40.4% faster and 22.6% lower in peak memory.  Full
 verification passes all 996 tests in 357.26 seconds; the 11 warnings remain the
 existing concurrent pytest cleanup race.
 
+### Sparse semantic edge-cache follow-up
+
+The semantic mirror join now retains only successful construction and
+materialization resolutions.  Empty results share one immutable sentinel, the
+authority-name seed index stores its overwhelmingly singleton values directly,
+and the legacy set-valued view remains lazy.  Dataclass fact-token sets are
+also created only for authorities reached by descent resolution.  On frozen
+DQDock, the retained constructed-type map falls from 17,369 rows to 2,736, the
+materialization map from 7,183 to 1,177, and the dataclass fact-token map from
+4,836 to 533.
+
+Ordinary presentation tokens now read directly from the already-indexed fact
+table.  The secondary candidate cache is reserved for qualified attributes,
+where authority policy actually changes the result, and it keys those entries
+with already-live immutable projection tokens.  This reduces that cache from
+32,118 allocated signature keys to 13,588 retained projection-token keys.
+Regressions require the legacy authority and token-signature indexes to remain
+unmaterialized, preserve shared empty misses, and prove that cached token keys
+reuse input objects.
+
+With a fixed hash seed, isolated semantic edge resolution falls from 310,416
+KB to 299,272 KB while returning the same 5,246 edges in 1.095 seconds.  The
+complete exact publisher has substantial process-layout variance, so the
+whole-process gate uses a three-run median: 329,536 KB and 17.53 seconds,
+versus 333,696 KB and 17.59 seconds for the pushed checkpoint under the same
+harness.  Every candidate run completed all 252 detectors and returned the
+unchanged 12 focused findings from 77,671 projections.  Relative to the
+27.97-second / 430,908-KB pre-validation run, the median exact scan is 37.3%
+faster and 23.5% lower in peak memory.  Full verification passes all 996 tests
+in 394.39 seconds; the 11 warnings remain the existing concurrent pytest
+cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

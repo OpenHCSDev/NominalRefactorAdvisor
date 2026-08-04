@@ -186,6 +186,31 @@ def test_construction_authority_materialization_indexes_each_method_once(
         )
 
     assert walked_method_names == ["state_build"]
+    missing_constructed_ids = resolver.authority_ids_for_constructed_type_name(
+        "MissingState"
+    )
+    assert not missing_constructed_ids
+    assert (
+        resolver.authority_ids_for_constructed_type_name("MissingState")
+        is missing_constructed_ids
+    )
+    assert "MissingState" not in resolver.authority_ids_by_constructed_type_name
+    assert "MissingState" in resolver.resolved_constructed_type_names
+
+    missing_materialized_ids = (
+        resolver.materialized_authority_ids_for_construction_type("MissingFactory")
+    )
+    assert not missing_materialized_ids
+    assert (
+        resolver.materialized_authority_ids_for_construction_type("MissingFactory")
+        is missing_materialized_ids
+    )
+    assert (
+        "MissingFactory" not in resolver.materialized_authority_ids_by_construction_type
+    )
+    assert "MissingFactory" in resolver.resolved_additional_materialization_type_names
+    assert "compact_authority_ids_by_name" in vars(resolver)
+    assert "authority_ids_by_name" not in vars(resolver)
 
 
 def test_constructed_dataclass_inverse_index_matches_pairwise_resolution(
@@ -228,6 +253,22 @@ def test_constructed_dataclass_inverse_index_matches_pairwise_resolution(
     )
     descent = resolver.dataclass_descent
     assert descent.projection_descent_authority_ids == {}
+    assert descent.dataclass_fact_tokens_by_authority_id == {}
+    first_dataclass_authority = descent.dataclass_authorities[0]
+    expected_first_tokens = frozenset(
+        variant
+        for fact in resolver.fact_authority_index.facts_for_authority(
+            first_dataclass_authority.authority_id
+        )
+        for variant in semantic_descent_module.normalized_name_variants(fact.name)
+    )
+    assert (
+        descent.fact_tokens_for_authority(first_dataclass_authority.authority_id)
+        == expected_first_tokens
+    )
+    assert tuple(descent.dataclass_fact_tokens_by_authority_id) == (
+        first_dataclass_authority.authority_id,
+    )
     first_projection = resolver.projections[0]
     descent.descent_authority_ids_for_projection(first_projection)
     assert tuple(descent.projection_descent_authority_ids) == (
@@ -270,6 +311,25 @@ def test_constructed_dataclass_inverse_index_matches_pairwise_resolution(
             resolver.dataclass_descent.constructed_dataclass_authority_ids(projection)
             == pairwise_constructed_ids
         )
+
+    qualified_token = semantic_descent_module.PresentationToken(
+        value="value",
+        kind=semantic_descent_module.PresentationTokenKind.QUALIFIED_ATTRIBUTE,
+        role=PresentationTokenRole.DICT_VALUE,
+        qualifier="external",
+    )
+    resolver._candidate_refs_for_token(qualified_token)
+    assert tuple(resolver.candidate_refs_by_token) == (qualified_token,)
+    assert next(iter(resolver.candidate_refs_by_token)) is qualified_token
+
+    resolver.edges()
+    retained_token_ids = {
+        id(token) for projection in resolver.projections for token in projection.tokens
+    } | {id(qualified_token)}
+    assert all(
+        id(token) in retained_token_ids for token in resolver.candidate_refs_by_token
+    )
+    assert "candidate_refs_by_token_signature" not in vars(resolver)
 
 
 def test_semantic_descent_graph_flags_manual_class_family_projection(

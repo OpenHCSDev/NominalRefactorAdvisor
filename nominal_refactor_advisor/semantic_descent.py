@@ -1524,6 +1524,8 @@ AuthorityIdsByFactName: TypeAlias = dict[tuple[SemanticFactKind, str], frozenset
 FactRefsByToken: TypeAlias = dict[str, tuple[SemanticFact, ...]]
 FactMatchesByAuthority: TypeAlias = dict[str, dict[str, set[str]]]
 ConstructionAuthorityCacheKey: TypeAlias = tuple[str, str]
+CompactAuthorityIdsByNameValue: TypeAlias = str | tuple[str, ...]
+_EMPTY_STRING_FROZENSET: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -4630,13 +4632,19 @@ class ConstructionAuthorityResolver:
         construction_type: str,
     ) -> frozenset[str]:
         materialized = self.materialized_authority_ids_by_construction_type
-        if construction_type not in materialized:
-            materialized[construction_type] = (
-                self._materialized_authority_ids_for_construction_type(
-                    construction_type
-                )
+        if (
+            construction_type not in materialized
+            and construction_type not in self.projection_construction_type_names
+            and construction_type
+            not in self.resolved_additional_materialization_type_names
+        ):
+            authority_ids = self._materialized_authority_ids_for_construction_type(
+                construction_type
             )
-        return materialized[construction_type]
+            if authority_ids:
+                materialized[construction_type] = authority_ids
+            self.resolved_additional_materialization_type_names.add(construction_type)
+        return materialized.get(construction_type, _EMPTY_STRING_FROZENSET)
 
     def _construction_authority_cache_result(
         self,
@@ -4668,10 +4676,29 @@ class ConstructionAuthorityResolver:
 
     @cached_property
     def authority_ids_by_name(self) -> dict[str, frozenset[str]]:
-        authority_ids: dict[str, set[str]] = {}
+        """Materialize the legacy set-valued name index only on direct demand."""
+
+        return {
+            name: frozenset(
+                (authority_ids,) if isinstance(authority_ids, str) else authority_ids
+            )
+            for name, authority_ids in self.compact_authority_ids_by_name.items()
+        }
+
+    @cached_property
+    def compact_authority_ids_by_name(
+        self,
+    ) -> dict[str, CompactAuthorityIdsByNameValue]:
+        authority_ids: dict[str, CompactAuthorityIdsByNameValue] = {}
         for authority in self.authorities:
-            authority_ids.setdefault(authority.name, set()).add(authority.authority_id)
-        return {name: frozenset(ids) for name, ids in authority_ids.items()}
+            existing = authority_ids.get(authority.name)
+            if existing is None:
+                authority_ids[authority.name] = authority.authority_id
+            elif isinstance(existing, str):
+                authority_ids[authority.name] = (existing, authority.authority_id)
+            else:
+                authority_ids[authority.name] = (*existing, authority.authority_id)
+        return authority_ids
 
     @cached_property
     def known_authority_ids(self) -> frozenset[str]:
@@ -4683,7 +4710,7 @@ class ConstructionAuthorityResolver:
     ) -> dict[str, frozenset[str]]:
         """Memoize only constructed types reached from relevant materializers."""
 
-        return dict(self.authority_ids_by_name)
+        return {}
 
     @cached_property
     def resolved_constructed_type_names(self) -> set[str]:
@@ -4695,8 +4722,14 @@ class ConstructionAuthorityResolver:
     ) -> frozenset[str]:
         authority_ids_by_type = self.authority_ids_by_constructed_type_name
         if type_name in self.resolved_constructed_type_names:
-            return authority_ids_by_type[type_name]
-        authority_ids = set(authority_ids_by_type.get(type_name, frozenset()))
+            return authority_ids_by_type.get(type_name, _EMPTY_STRING_FROZENSET)
+        direct_authority_ids = self.compact_authority_ids_by_name.get(type_name)
+        if direct_authority_ids is None:
+            authority_ids: set[str] = set()
+        elif isinstance(direct_authority_ids, str):
+            authority_ids = {direct_authority_ids}
+        else:
+            authority_ids = set(direct_authority_ids)
         for class_symbol in self.class_index.symbols_by_simple_name.get(
             type_name,
             (),
@@ -4708,8 +4741,11 @@ class ConstructionAuthorityResolver:
                     self.class_index.ancestor_symbols(class_symbol)
                 )
             )
-        resolved_ids = frozenset(authority_ids)
-        authority_ids_by_type[type_name] = resolved_ids
+        resolved_ids = (
+            frozenset(authority_ids) if authority_ids else _EMPTY_STRING_FROZENSET
+        )
+        if resolved_ids:
+            authority_ids_by_type[type_name] = resolved_ids
         self.resolved_constructed_type_names.add(type_name)
         return resolved_ids
 
@@ -4722,7 +4758,7 @@ class ConstructionAuthorityResolver:
                 indexed_class.symbol
             )
             if supplement is None:
-                return frozenset(), frozenset()
+                return _EMPTY_STRING_FROZENSET, _EMPTY_STRING_FROZENSET
             return (
                 frozenset(supplement.declared_type_names),
                 frozenset(supplement.constructed_type_names),
@@ -4754,14 +4790,18 @@ class ConstructionAuthorityResolver:
     ) -> dict[str, frozenset[str]]:
         """Preindex only materializers named by projection construction evidence."""
 
-        return {
-            construction_type: (
-                self._materialized_authority_ids_for_construction_type(
-                    construction_type
-                )
+        materialized: dict[str, frozenset[str]] = {}
+        for construction_type in self.projection_construction_type_names:
+            authority_ids = self._materialized_authority_ids_for_construction_type(
+                construction_type
             )
-            for construction_type in self.projection_construction_type_names
-        }
+            if authority_ids:
+                materialized[construction_type] = authority_ids
+        return materialized
+
+    @cached_property
+    def resolved_additional_materialization_type_names(self) -> set[str]:
+        return set()
 
     def _materialized_authority_ids_for_construction_type(
         self,
@@ -4779,14 +4819,18 @@ class ConstructionAuthorityResolver:
                 self._class_materialization_inputs(indexed_class)
             )
             for type_name in declared_type_names:
-                authority_ids.update(
-                    self.authority_ids_by_name.get(type_name, frozenset())
+                declared_authority_ids = self.compact_authority_ids_by_name.get(
+                    type_name
                 )
+                if isinstance(declared_authority_ids, str):
+                    authority_ids.add(declared_authority_ids)
+                elif declared_authority_ids is not None:
+                    authority_ids.update(declared_authority_ids)
             for type_name in constructed_type_names:
                 authority_ids.update(
                     self.authority_ids_for_constructed_type_name(type_name)
                 )
-        return frozenset(authority_ids)
+        return frozenset(authority_ids) if authority_ids else _EMPTY_STRING_FROZENSET
 
 
 @dataclass(frozen=True)
@@ -4827,16 +4871,17 @@ class DataclassProjectionDescentAuthority:
     def dataclass_fact_tokens_by_authority_id(
         self,
     ) -> dict[str, frozenset[str]]:
-        return {
-            authority.authority_id: frozenset(
+        return {}
+
+    def fact_tokens_for_authority(self, authority_id: str) -> frozenset[str]:
+        cache = self.dataclass_fact_tokens_by_authority_id
+        if authority_id not in cache:
+            cache[authority_id] = frozenset(
                 variant
-                for fact in self.fact_authority_index.facts_for_authority(
-                    authority.authority_id
-                )
+                for fact in self.fact_authority_index.facts_for_authority(authority_id)
                 for variant in normalized_name_variants(fact.name)
             )
-            for authority in self.dataclass_authorities
-        }
+        return cache[authority_id]
 
     @cached_property
     def projection_descent_authority_ids(self) -> dict[str, frozenset[str]]:
@@ -4874,9 +4919,8 @@ class DataclassProjectionDescentAuthority:
         projection: PresentationProjection,
         authority: SemanticAuthority,
     ) -> bool:
-        return (
-            authority.authority_id
-            in self.descent_authority_ids_for_projection(projection)
+        return authority.authority_id in self.descent_authority_ids_for_projection(
+            projection
         )
 
     def projection_descends_to_any_dataclass_authority(
@@ -4969,9 +5013,7 @@ class DataclassProjectionDescentAuthority:
                 & self.dataclass_authority_ids
             )
             for authority_id in descended_dataclass_authority_ids:
-                matched_tokens = self.dataclass_fact_tokens_by_authority_id[
-                    authority_id
-                ]
+                matched_tokens = self.fact_tokens_for_authority(authority_id)
                 if not matched_tokens:
                     continue
                 accumulated_field_tokens.setdefault(authority_id, set()).update(
@@ -4984,7 +5026,7 @@ class DataclassProjectionDescentAuthority:
             authority_id
             for authority_id, descended_field_tokens in accumulated_field_tokens.items()
             if authority_id in directly_covered_authority_ids
-            or self.dataclass_fact_tokens_by_authority_id[authority_id]
+            or self.fact_tokens_for_authority(authority_id)
             <= frozenset(descended_field_tokens)
         )
 
@@ -5043,18 +5085,17 @@ class DataclassProjectionDescentAuthority:
             self.projection_class_symbol_lineage.class_symbol_for_projection(projection)
         )
         if projection_class_symbol is None:
-            return frozenset()
+            return _EMPTY_STRING_FROZENSET
         projection_ancestor_symbols = (
             self.projection_class_symbol_lineage.ancestor_symbols_for_class(
                 projection_class_symbol
             )
         )
-        return frozenset(
-            {
-                projection_class_symbol,
-                *projection_ancestor_symbols,
-            }.intersection(self.dataclass_authority_ids)
-        )
+        authority_ids = {
+            projection_class_symbol,
+            *projection_ancestor_symbols,
+        }.intersection(self.dataclass_authority_ids)
+        return frozenset(authority_ids) if authority_ids else _EMPTY_STRING_FROZENSET
 
     def _projection_materializes_any_dataclass_authority_uncached(
         self,
@@ -5074,7 +5115,7 @@ class DataclassProjectionDescentAuthority:
             self._projection_owner_derives_dataclass_authority_from_tokens(
                 projection,
                 self.dataclass_authorities_by_id[authority_id],
-                self.dataclass_fact_tokens_by_authority_id[authority_id],
+                self.fact_tokens_for_authority(authority_id),
                 self.construction_resolver.construction_type_materializes_authority,
             )
             for authority_id in candidate_authority_ids
@@ -5293,6 +5334,12 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         return {}
 
     @cached_property
+    def candidate_refs_by_token(
+        self,
+    ) -> dict[PresentationToken, tuple[SemanticFact, ...]]:
+        return {}
+
+    @cached_property
     def fact_references_by_id(self) -> dict[str, SemanticFactReference]:
         return {}
 
@@ -5300,20 +5347,20 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         self,
         token: PresentationToken,
     ) -> tuple[SemanticFact, ...]:
-        signature = (token.value, token.kind, token.qualifier)
-        cache = self.candidate_refs_by_token_signature
-        if signature not in cache:
-            cache[signature] = self._candidate_refs_for_token_uncached(token)
-        return cache[signature]
+        refs = self.fact_token_index.by_token.get(token.value, ())
+        if not refs or token.kind is not PresentationTokenKind.QUALIFIED_ATTRIBUTE:
+            return refs
+        cache = self.candidate_refs_by_token
+        if token not in cache:
+            cache[token] = self._candidate_refs_for_token_uncached(token)
+        return cache[token]
 
     def _candidate_refs_for_token_uncached(
         self,
         token: PresentationToken,
     ) -> tuple[SemanticFact, ...]:
-        if not self.fact_token_index.contains_token(token.value):
-            return ()
-        refs = self.fact_token_index.refs_for_token(token.value)
-        if token.kind is not PresentationTokenKind.QUALIFIED_ATTRIBUTE:
+        refs = self.fact_token_index.by_token.get(token.value, ())
+        if not refs or token.kind is not PresentationTokenKind.QUALIFIED_ATTRIBUTE:
             return refs
         qualifier = token.qualifier
         if qualifier is not None and self.authority_name_index.contains_name(qualifier):
