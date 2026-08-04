@@ -21287,8 +21287,12 @@ def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
         check=False,
     )
     payload = json.loads(result.stdout)
+    scan_status = cast(dict[str, object], payload["scan_status"])
 
     assert result.returncode == 0, result.stderr
+    assert scan_status["complete"] is True
+    assert scan_status["mode"] == "exact_compact_global"
+    assert scan_status["omitted_detector_count"] == 0
     assert payload["finding_payload_mode"] == "counts_only"
     assert payload["findings"] == []
     assert "source_index" not in payload

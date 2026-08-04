@@ -785,6 +785,40 @@ class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
             presentation_roots=presentation_root_texts(effective_roots),
         )
 
+    @classmethod
+    def from_source(
+        cls,
+        *,
+        path: Path,
+        module_name: str,
+        is_package_init: bool,
+        semantic_hash: str,
+        config: DetectorConfig,
+        detector_types: tuple[type[IssueDetector], ...],
+        presentation_roots: tuple[Path | str, ...] = (),
+    ) -> "PerModuleAnalysisCacheIdentity":
+        """Build an exact local-shard identity without materializing an AST."""
+
+        effective_roots = (
+            presentation_roots
+            if presentation_roots
+            else inferred_checkout_roots((path,))
+        )
+        return cls(
+            config=detector_config_signature(config),
+            detector_registry=DetectorRegistrySignature.from_detector_types(
+                detector_types
+            ),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            source_file=ModuleSourceSignature(
+                path=checkout_relative_path(path, effective_roots),
+                parsed_import_name=module_name,
+                is_package_init=is_package_init,
+                source_hash=semantic_hash,
+            ),
+            presentation_roots=presentation_root_texts(effective_roots),
+        )
+
     @property
     def cache_token(self) -> str:
         payload = repr(self).encode("utf-8")

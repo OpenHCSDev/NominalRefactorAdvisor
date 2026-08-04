@@ -839,6 +839,34 @@ The cache contains 23,632 files and 276,385,400 payload bytes with zero
 zero-byte entries.
 Checkpoint verification passes all 986 tests in 367.58 seconds.
 
+## 2026-08-04 exact CLI compact-orchestration checkpoint
+
+The lightweight exact CLI now uses the compact engine in production.  It
+streams one source module at a time, reuses or computes the 183 module-local
+detector shards, accumulates the 69 exact global projection families, releases
+the module AST, and only then performs repository-wide joins.  A source-derived
+per-module cache identity is exactly compatible with the parsed-module identity,
+so complete local cache hits and complete projection-family hits bypass AST
+deserialization.  The final aggregate is published under the same exact cache
+identity used by the pre-parse fast path.
+
+On the frozen 919-module DQDock snapshot, the first integrated whole-repository
+CLI pass completed all 252 detectors and produced 12,570 findings in 250.14
+seconds at 881,776 KB.  Its reported split was 62.26 seconds of streamed
+preparation and 181.90 seconds of local plus global analysis.  This pass reused
+the schema-21 family cache but populated the new local and aggregate finding
+shards.  The next identical CLI invocation returned the same 12,570 findings in
+0.99 seconds at 72,724 KB; the exact aggregate lookup itself took 0.082 seconds.
+
+A file-focused exact scan of `definitive_refinement.py`, with all 919 modules as
+reasoning context, completed all 252 detectors and returned 333 in-scope
+findings in 79.00 seconds at 835,988 KB.  It spent 45.76 seconds loading and
+validating compact facts and 31.49 seconds reconstructing findings.  The path is
+now bounded and complete, but this cold/changed-context latency and peak remain
+above the interactive target.  The next representation step is family-at-a-time
+loading and joining so every compact family need not coexist in memory.
+Checkpoint verification passes all 987 tests in 336.99 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

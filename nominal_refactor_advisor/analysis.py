@@ -13,6 +13,7 @@ import gc
 import os
 from pathlib import Path
 import sys
+from time import perf_counter
 from typing import ClassVar, cast
 
 from metaclass_registry import AutoRegisterMeta
@@ -40,6 +41,7 @@ from .ast_tools import (
     load_cached_collected_family_items_for_source,
     parse_python_module_roots,
     parse_python_modules,
+    semantic_python_source_hash,
 )
 from .cache_paths import (
     ParseCacheDirectory,
@@ -752,6 +754,217 @@ def accumulate_compact_global_projections_for_roots(
             release_module_analysis_memory(collect_cycles=False)
     gc.collect()
     return accumulator
+
+
+@dataclass(frozen=True)
+class CompactPathAnalysisResult:
+    """Exact streamed findings and split preparation/analysis timings."""
+
+    findings: list[RefactorFinding]
+    cache_status: AnalysisCacheStatus
+    cache_identity: AnalysisCacheIdentity
+    preparation_seconds: float
+    analysis_seconds: float
+    projection_count: int
+
+
+def analyze_compact_roots_with_cache(
+    roots: tuple[Path, ...],
+    config: DetectorConfig | None = None,
+    *,
+    cache_dir: Path | None = None,
+    analysis_cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    source_policy: PythonSourcePathPolicy | None = None,
+    report_scope: AnalysisPathScope | None = None,
+    detector_types: tuple[type[IssueDetector], ...] | None = None,
+) -> CompactPathAnalysisResult:
+    """Run the complete detector set while retaining only compact global facts."""
+
+    config = config or DetectorConfig()
+    if detector_types is None:
+        detector_types = default_detector_types_for_analysis()
+    partition = DetectorTypePartition.from_detector_types(detector_types)
+    if partition.ast_retaining_context_detector_types:
+        detector_names = ", ".join(
+            detector_type.__name__
+            for detector_type in partition.ast_retaining_context_detector_types
+        )
+        raise ValueError(
+            "compact root analysis requires every context-dependent detector to "
+            f"declare compact projections; remaining: {detector_names}"
+        )
+
+    started = perf_counter()
+    active_source_policy = source_policy or PythonSourcePathPolicy()
+    source_paths: list[Path] = []
+    seen_source_paths: set[Path] = set()
+    for root in roots:
+        for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
+            normalized_path = path.resolve()
+            if normalized_path in seen_source_paths:
+                continue
+            seen_source_paths.add(normalized_path)
+            source_paths.append(path)
+
+    analysis_cache = AnalysisFindingCache(analysis_cache_dir)
+    report_roots = () if report_scope is None else report_scope.report_roots
+    cache_identity = AnalysisCacheIdentityAuthority(
+        roots=roots,
+        config=config,
+        source_policy=active_source_policy,
+        source_signature_cache=analysis_cache.source_signature_cache(),
+        source_paths=tuple(source_paths),
+        report_roots=report_roots,
+    ).cache_identity()
+    aggregate_lookup = analysis_cache.load(cache_identity)
+    if aggregate_lookup.status is AnalysisCacheStatus.HIT:
+        return CompactPathAnalysisResult(
+            findings=list(aggregate_lookup.findings),
+            cache_status=AnalysisCacheStatus.HIT,
+            cache_identity=cache_identity,
+            preparation_seconds=perf_counter() - started,
+            analysis_seconds=0.0,
+            projection_count=0,
+        )
+
+    accumulator = CompactGlobalProjectionAccumulator.from_detector_types(
+        partition.compact_global_detector_types
+    )
+    local_findings: list[RefactorFinding] = []
+    local_analysis_seconds = 0.0
+    local_cache_hit_count = 0
+    source_path_set = {path.resolve() for path in source_paths}
+    streamed_paths: set[Path] = set()
+    for root in roots:
+        parser = PythonModuleRootParser.for_root(
+            root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=1,
+            source_policy=active_source_policy,
+        )
+        for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
+            normalized_path = path.resolve()
+            if (
+                normalized_path not in source_path_set
+                or normalized_path in streamed_paths
+            ):
+                continue
+            streamed_paths.add(normalized_path)
+            source = path.read_text(encoding="utf-8")
+            module_identity = PythonModulePathIdentity.from_path(
+                path,
+                parser.analysis_root,
+            )
+            include_local_findings = (
+                report_scope is None
+                or not report_scope.has_report_filter
+                or report_scope.includes_report_path(path)
+            )
+            local_identity = None
+            local_cache_lookup = None
+            if include_local_findings and partition.per_module_detector_types:
+                local_identity = PerModuleAnalysisCacheIdentity.from_source(
+                    path=path,
+                    module_name=module_identity.import_name,
+                    is_package_init=module_identity.is_package_init,
+                    semantic_hash=semantic_python_source_hash(source),
+                    config=config,
+                    detector_types=partition.per_module_detector_types,
+                    presentation_roots=roots,
+                )
+                local_cache_lookup = analysis_cache.load(local_identity)
+                if local_cache_lookup.status is AnalysisCacheStatus.HIT:
+                    local_cache_hit_count += 1
+                    local_findings.extend(local_cache_lookup.findings)
+
+            missing_families = list(accumulator.projection_families)
+            family_cache_dir = parser.collected_family_cache_dir
+            if family_cache_dir is not None:
+                missing_families = []
+                for family in accumulator.projection_families:
+                    projections = load_cached_collected_family_items_for_source(
+                        path=path,
+                        module_name=module_identity.import_name,
+                        source=source,
+                        family_cache_dir=family_cache_dir,
+                        family=family,
+                    )
+                    if projections is None:
+                        missing_families.append(family)
+                        continue
+                    accumulator.add_family_projections(
+                        family,
+                        cast(tuple[object, ...], projections),
+                    )
+
+            local_cache_miss = bool(
+                include_local_findings
+                and partition.per_module_detector_types
+                and local_cache_lookup is not None
+                and local_cache_lookup.status is not AnalysisCacheStatus.HIT
+            )
+            if not missing_families and not local_cache_miss:
+                continue
+            for module in parser.parsed_source_paths((path,)):
+                if local_cache_miss:
+                    local_started = perf_counter()
+                    module_findings = analyze_detector_types(
+                        [module],
+                        config,
+                        detector_types=partition.per_module_detector_types,
+                        analysis_workers=1,
+                    )
+                    local_analysis_seconds += perf_counter() - local_started
+                    local_findings.extend(module_findings)
+                    if local_identity is None:
+                        raise RuntimeError("local cache identity disappeared")
+                    analysis_cache.store(local_identity, module_findings)
+                for family in missing_families:
+                    accumulator.add_family_projections(
+                        family,
+                        tuple(collect_family_items(module, family)),
+                    )
+                del module
+            release_module_analysis_memory(collect_cycles=False)
+    gc.collect()
+    preparation_seconds = perf_counter() - started - local_analysis_seconds
+
+    join_started = perf_counter()
+    findings_by_detector = accumulator.findings_by_detector(config)
+    findings = SortedFindingsAuthority.sort(
+        [
+            *local_findings,
+            *(
+                finding
+                for detector_type in partition.compact_global_detector_types
+                for finding in findings_by_detector[detector_type]
+            ),
+        ],
+        detector_types=detector_types,
+    )
+    if report_scope is not None and report_scope.has_report_filter:
+        findings = report_scope.filter_findings(findings)
+    analysis_seconds = local_analysis_seconds + perf_counter() - join_started
+    analysis_cache.store(cache_identity, findings)
+    cache_status = (
+        AnalysisCacheStatus.DISABLED
+        if aggregate_lookup.status is AnalysisCacheStatus.DISABLED
+        else (
+            AnalysisCacheStatus.PARTIAL
+            if local_cache_hit_count
+            else AnalysisCacheStatus.MISS
+        )
+    )
+    return CompactPathAnalysisResult(
+        findings=findings,
+        cache_status=cache_status,
+        cache_identity=cache_identity,
+        preparation_seconds=preparation_seconds,
+        analysis_seconds=analysis_seconds,
+        projection_count=accumulator.projection_count,
+    )
 
 
 @dataclass(frozen=True)

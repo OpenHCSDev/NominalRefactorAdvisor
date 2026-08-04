@@ -32,6 +32,7 @@ from .analysis import (
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     analysis_cache_dir_for_root,
+    analyze_compact_roots_with_cache,
     analyze_lean_export,
     analyze_module_detector_types_with_cache,
     analyze_modules_with_cache,
@@ -5843,6 +5844,39 @@ def _main_without_deadline() -> int:
                     len(detector_types) - len(local_detector_types)
                 ),
                 reason="cold_auto_context_omits_context_dependent_detectors",
+            )
+        elif (
+            args.json
+            and json_payload_profile.sections.lightweight_status_payload
+            and not preparse_cache_policy.parsed_modules_required
+            and codemod_scan_query_mode.needs_analysis
+            and not codemod_requested
+            and not DetectorTypePartition.from_detector_types(
+                default_detector_types_for_analysis()
+            ).ast_retaining_context_detector_types
+        ):
+            compact_result = analyze_compact_roots_with_cache(
+                roots,
+                config,
+                cache_dir=parse_cache_dir,
+                analysis_cache_dir=analysis_cache_dir,
+                use_parse_cache=args.use_parse_cache,
+                source_policy=source_policy,
+                report_scope=path_scope,
+            )
+            modules = []
+            findings = compact_result.findings
+            parse_seconds = round(compact_result.preparation_seconds, 3)
+            analysis_seconds = round(compact_result.analysis_seconds, 3)
+            analysis_cache_status = compact_result.cache_status
+            analysis_cache_identity = compact_result.cache_identity
+            detector_types = default_detector_types_for_analysis()
+            scan_status = JsonScanStatus(
+                complete=True,
+                mode="exact_compact_global",
+                analyzed_detector_count=len(detector_types),
+                omitted_detector_count=0,
+                reason="all_context_detectors_use_compact_global_projections",
             )
         else:
             started = perf_counter()

@@ -17,6 +17,7 @@ from nominal_refactor_advisor.analysis import (
     FastCachedPathAnalysisAuthority,
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
+    analyze_compact_roots_with_cache,
     analyze_modules,
     analyze_modules_with_cache,
     analyze_module_detector_types_with_cache,
@@ -1453,6 +1454,58 @@ def test_compact_global_projection_accumulator_matches_full_ast_detection(
     assert [finding.to_dict() for finding in projected_findings] == [
         finding.to_dict() for finding in full_ast_findings
     ]
+
+
+def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "generated_policy.py").write_text(
+        "# generated from policy schema\n"
+        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    (package_root / "runtime.py").write_text(
+        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    analysis_cache_dir = tmp_path / ".nra-cache" / "analysis"
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+    expected = analyze_modules(modules, DetectorConfig(), analysis_workers=1)
+
+    cold = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+    )
+
+    assert [finding.to_dict() for finding in cold.findings] == [
+        finding.to_dict() for finding in expected
+    ]
+    assert cold.cache_status is AnalysisCacheStatus.MISS
+    assert cold.projection_count > 0
+
+    def unexpected_parser(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("aggregate hit should bypass compact projection parsing")
+
+    monkeypatch.setattr(
+        ast_tools_module.PythonModuleRootParser,
+        "for_root",
+        unexpected_parser,
+    )
+    warm = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+    )
+
+    assert warm.cache_status is AnalysisCacheStatus.HIT
+    assert warm.findings == cold.findings
+    assert warm.projection_count == 0
 
 
 def test_compact_hierarchy_projection_matches_full_ast_detection(
