@@ -596,6 +596,41 @@ zero zero-byte entries.  The full run now performs 1,858 more finding
 reconstructions than schema 13, so its headline time and RSS are not a
 like-for-like workload comparison.
 
+Role-surface drift and generic role-case-table analysis now share one compact
+role-surface projection.  Schema 15 stores declared field-role tokens, a
+conservative superset of eligible structural attribute uses, and local
+case-table sites collected with a configuration-independent one-case floor.
+The global joins apply the active detector thresholds later.  Role drift joins
+the existing compact class family so inherited-field uses are still suppressed
+through the complete repository inheritance graph; generic case tables need
+only the shared role projection.
+
+The frozen 919-module DQDock oracle contains 24,027 role declarations, 45,239
+possible structural uses, and 657 raw case-table sites.  Its compact payloads
+serialize to 8,213,787 bytes, with a 314,643-byte largest module.  Compact and
+legacy output matched all 982 role-drift candidates and all 137 generic
+case-table candidates exactly.  The combined equivalence process peaked at
+1,102,948 KB because it deliberately retained the AST indexes and both compact
+families together.  Configuration-override gates also compare strict role-use
+and case-count thresholds.
+
+Profiling exposed a legacy quadratic owner lookup: each of 12,915 field groups
+rescanned every indexed repository class.  One exact
+``(file_path, simple_name) -> class symbols`` index reduces compact role finding
+construction from about 18 seconds to 0.50 seconds.  A DQDock gate compared all
+12,915 indexed results with the former full scan.  The final suite passes 981
+tests, and the partition is now 183 per-module detectors, 58 compact-global
+detectors, and 11 AST-retaining context-dependent detectors.
+
+The accepted schema-15 cache produced 4,226 findings from 71,238 top-level
+projections.  Cold took 147.95 seconds at 460,140 KB, including 133.17 seconds
+of projection and 14.77 seconds of finding reconstruction.  Warm took 47.89
+seconds at 493,572 KB, including 33.00 seconds of projection and 14.89 seconds
+of reconstruction.  The cache occupies 199,855,570 payload bytes, 8,825,796
+more than schema 14, and both integrity audits found zero zero-byte entries.
+Compared with schema 14, the warm total grows by only 1.86 seconds while
+performing 1,119 additional exact finding reconstructions.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

@@ -68,6 +68,9 @@ from nominal_refactor_advisor.detectors import (
     _nominal_authority_surface as nominal_surface_detectors,
 )
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
+from nominal_refactor_advisor.detectors import (
+    _role_surface_drift as role_surface_detectors,
+)
 from nominal_refactor_advisor.detectors import _surface as surface_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
@@ -3219,6 +3222,132 @@ def test_compact_distributed_boundary_graph_matches_legacy_global_join(
     ] == wrapper_detector._findings_for_candidates(legacy_wrappers, config)
 
 
+def test_compact_role_surface_projection_matches_both_legacy_global_joins(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "provenance.py").write_text(
+        "class SourceProvenance:\n"
+        "    channel_source_component_metadata: tuple[object, ...]\n",
+        encoding="utf-8",
+    )
+    (package_root / "closure.py").write_text(
+        "from .provenance import SourceProvenance\n\n"
+        "class SourceClosure(SourceProvenance):\n"
+        "    def inherited_projection(self, plane_index):\n"
+        "        plane_metadata = self.channel_source_component_metadata[plane_index]\n"
+        "        return plane_metadata\n",
+        encoding="utf-8",
+    )
+    (package_root / "consumers.py").write_text(
+        "def stream_plane(provenance, plane_index):\n"
+        "    plane_metadata = provenance.channel_source_component_metadata[plane_index]\n"
+        "    return plane_metadata\n\n"
+        "def display_plane(provenance, plane_index):\n"
+        "    return Target(plane_metadata=provenance.channel_source_component_metadata[plane_index])\n",
+        encoding="utf-8",
+    )
+    for module_name, class_name in (
+        ("display", "FieldDisplayPolicy"),
+        ("labels", "WidgetFieldLabelAuthority"),
+        ("report", "ReportFieldLabelPresenter"),
+    ):
+        (package_root / f"{module_name}.py").write_text(
+            f"class {class_name}:\n"
+            "    LABELS = {\n"
+            "        'alpha': 'A', 'beta': 'B', 'gamma': 'G',\n"
+            "        'delta': 'D', 'epsilon': 'E',\n"
+            "    }\n\n"
+            "    def field_label(self, field, value):\n"
+            "        return self.LABELS.get(field, value)\n",
+            encoding="utf-8",
+        )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    role_detector = role_surface_detectors.RoleSurfaceDriftDetector()
+    case_detector = role_surface_detectors.GenericRoleCaseTableDetector()
+    role_projections = role_detector.compact_module_projection_groups(modules)[
+        role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily
+    ]
+    class_projections = role_detector.compact_module_projection_groups(modules)[
+        runtime_detectors.CompactModuleClassProjectionFamily
+    ]
+    compact_role_candidates = (
+        role_surface_detectors._compact_role_surface_drift_candidates(
+            role_projections,
+            class_projections,
+            config,
+        )
+    )
+    legacy_role_candidates = role_surface_detectors._role_surface_drift_candidates(
+        modules,
+        config,
+    )
+    compact_case_candidates = (
+        role_surface_detectors._compact_generic_role_case_table_candidates(
+            role_projections,
+            config,
+        )
+    )
+    legacy_case_candidates = role_surface_detectors._generic_role_case_table_candidates(
+        modules, config
+    )
+
+    assert compact_role_candidates == legacy_role_candidates
+    assert len(compact_role_candidates) == 1
+    assert len(compact_role_candidates[0].use_sites) == 2
+    assert compact_case_candidates == legacy_case_candidates
+    assert compact_case_candidates
+    strict_role_config = DetectorConfig(min_role_drift_use_sites=3)
+    assert role_surface_detectors._compact_role_surface_drift_candidates(
+        role_projections,
+        class_projections,
+        strict_role_config,
+    ) == role_surface_detectors._role_surface_drift_candidates(
+        modules,
+        strict_role_config,
+    )
+    strict_case_config = DetectorConfig(min_generic_role_case_table_cases=6)
+    assert role_surface_detectors._compact_generic_role_case_table_candidates(
+        role_projections,
+        strict_case_config,
+    ) == role_surface_detectors._generic_role_case_table_candidates(
+        modules,
+        strict_case_config,
+    )
+    assert role_detector._findings_from_compact_projection_groups(
+        {
+            role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily: (
+                role_projections
+            ),
+            runtime_detectors.CompactModuleClassProjectionFamily: class_projections,
+        },
+        config,
+    ) == role_detector._findings_for_candidates(legacy_role_candidates, config)
+    assert case_detector._findings_from_compact_projections(
+        role_projections,
+        config,
+    ) == case_detector._findings_for_candidates(legacy_case_candidates, config)
+
+    accumulator = accumulate_compact_global_projections_for_roots(
+        (package_root,),
+        (
+            role_surface_detectors.RoleSurfaceDriftDetector,
+            role_surface_detectors.GenericRoleCaseTableDetector,
+        ),
+        use_parse_cache=False,
+    )
+    assert accumulator.projection_count == len(modules) * 2
+    findings_by_detector = accumulator.findings_by_detector(config)
+    assert findings_by_detector[
+        role_surface_detectors.RoleSurfaceDriftDetector
+    ] == role_detector._findings_for_candidates(legacy_role_candidates, config)
+    assert findings_by_detector[
+        role_surface_detectors.GenericRoleCaseTableDetector
+    ] == case_detector._findings_for_candidates(legacy_case_candidates, config)
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -3385,8 +3514,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 56
-    assert len(partition.ast_retaining_context_detector_types) == 13
+    assert role_surface_detectors.RoleSurfaceDriftDetector in (
+        partition.compact_global_detector_types
+    )
+    assert role_surface_detectors.GenericRoleCaseTableDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 58
+    assert len(partition.ast_retaining_context_detector_types) == 11
     assert len(partition.per_module_detector_types) == 183
 
 
