@@ -485,6 +485,31 @@ matching warm run took 42.17 seconds at 371,028 KB.  The complete persistent
 cache grows by only 555,956 bytes, and the larger production RSS remains 58.3%
 below the controlled 889,100-KB all-at-once parse baseline.
 
+Private-helper semantic clustering now reuses the compact private-reference
+projection instead of retaining repository ASTs.  Schema 11 adds exact
+parameter, public-callee, return-kind, constructed-result-type, and global
+private-caller summaries to that existing family.  The production projection
+contains 3,032 private-function rows and 5,126 per-module private caller-name
+rows.  Candidate reconstruction still joins callers across every module, so
+the migration preserves repository-wide reasoning while allowing each module
+AST to be released after projection.
+
+A full oracle over all 919 frozen DQDock modules compared compact and legacy
+candidate tuples and complete rendered findings exactly.  Both paths produced
+the same 12 semantic-cluster candidates.  The comparison peaked at 1,039,100
+KB because it deliberately retained the legacy full-AST context alongside the
+compact facts.  The final suite passes 976 tests, and the partition is now 183
+per-module detectors, 52 compact-global detectors, and 17 AST-retaining
+context-dependent detectors.
+
+The isolated schema-11 cold run produced 827 findings in 118.70 seconds at
+355,044 KB, including 106.83 seconds of projection and 11.87 seconds of finding
+reconstruction.  The matching warm run took 42.69 seconds at 382,752 KB,
+including 30.79 seconds of projection and 11.90 seconds of finding
+reconstruction.  The projection count remains 68,481 because the migrated
+detector shares an already-retained family, and the complete persistent cache
+grows by 601,382 bytes versus schema 10.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

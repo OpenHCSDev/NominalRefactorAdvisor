@@ -2878,6 +2878,80 @@ def test_carrier_reuse_detectors_share_one_compact_context(
     assert calls == 1
 
 
+def _write_compact_private_helper_cluster_fixture(package_root: Path) -> None:
+    package_root.mkdir()
+    (package_root / "helpers.py").write_text(
+        "def _class_field_names(node):\n"
+        "    names = []\n"
+        "    for item in node.body:\n"
+        "        if isinstance(item, AnnAssign):\n"
+        "            names.append(item.target)\n"
+        "    return tuple(names)\n\n"
+        "def _class_method_names(node):\n"
+        "    names = []\n"
+        "    for item in node.body:\n"
+        "        if isinstance(item, FunctionDef):\n"
+        "            names.append(item.name)\n"
+        "    return tuple(names)\n\n"
+        "def _class_base_names(node):\n"
+        "    names = []\n"
+        "    for item in node.bases:\n"
+        "        if isinstance(item, Name):\n"
+        "            names.append(item.id)\n"
+        "    return tuple(names)\n\n"
+        "def _class_decorator_names(node):\n"
+        "    names = []\n"
+        "    for item in node.decorator_list:\n"
+        "        if isinstance(item, Name):\n"
+        "            names.append(item.id)\n"
+        "    return tuple(names)\n",
+        encoding="utf-8",
+    )
+    (package_root / "consumer.py").write_text(
+        "def inspect_fields(node):\n" "    return _class_field_names(node)\n",
+        encoding="utf-8",
+    )
+
+
+def test_compact_private_helper_cluster_candidates_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    _write_compact_private_helper_cluster_fixture(package_root)
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    detector = runtime_detectors.PrivateHelperSemanticClusterDetector()
+    projections = type(detector).compact_module_projections(modules)
+    compact_candidates = (
+        runtime_detectors._compact_private_helper_semantic_cluster_candidates(
+            projections,
+            config,
+        )
+    )
+    legacy_context = runtime_detectors.PrivateReferenceDetectorContext(modules)
+    legacy_candidates = tuple(
+        candidate
+        for module in modules
+        for candidate in runtime_detectors._private_helper_semantic_cluster_candidates(
+            module,
+            config,
+            reference_modules=modules,
+            derived_candidate_collector_contract_names=(
+                legacy_context.derived_candidate_collector_contract_names
+            ),
+            private_helper_call_graph=legacy_context.private_helper_call_graph,
+        )
+    )
+
+    assert compact_candidates == legacy_candidates
+    assert compact_candidates
+    assert "inspect_fields" in compact_candidates[0].consumer_symbols
+    assert detector._findings_from_compact_projections(
+        projections,
+        config,
+    ) == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()
@@ -3029,8 +3103,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 51
-    assert len(partition.ast_retaining_context_detector_types) == 18
+    assert runtime_detectors.PrivateHelperSemanticClusterDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 52
+    assert len(partition.ast_retaining_context_detector_types) == 17
     assert len(partition.per_module_detector_types) == 183
 
 

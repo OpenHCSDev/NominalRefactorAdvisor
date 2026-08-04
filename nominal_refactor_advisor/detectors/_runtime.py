@@ -9115,6 +9115,10 @@ class CompactPrivateFunctionFact:
     is_detector_override_hook: bool
     static_payload_stats: StaticPayloadStats
     sink_kinds: tuple[str, ...]
+    parameter_names: tuple[str, ...] = ()
+    private_helper_callee_names: tuple[str, ...] = ()
+    private_helper_return_kinds: tuple[str, ...] = ()
+    private_helper_constructed_type_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -9124,6 +9128,7 @@ class CompactPrivateReferenceModuleProjection:
     total_counts: tuple[tuple[str, int], ...]
     derived_candidate_collector_contract_names: tuple[str, ...]
     functions: tuple[CompactPrivateFunctionFact, ...]
+    caller_symbols_by_private_name: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 class CompactPrivateReferenceModuleProjectionFamily(
@@ -9139,7 +9144,13 @@ class CompactPrivateReferenceModuleProjectionFamily(
         del cls
         module_index = PrivateReferenceModuleIndex.from_module(parsed_module)
         functions: list[CompactPrivateFunctionFact] = []
+        caller_symbols_by_private_name: dict[str, set[str]] = defaultdict(set)
         for indexed_function in module_index.functions:
+            for symbol_name in indexed_function.symbol_references:
+                if _is_private_symbol_name(symbol_name):
+                    caller_symbols_by_private_name[symbol_name].add(
+                        indexed_function.qualname
+                    )
             function = indexed_function.function
             if not _is_private_symbol_name(function.name):
                 continue
@@ -9174,6 +9185,45 @@ class CompactPrivateReferenceModuleProjectionFamily(
                     ),
                     static_payload_stats=_static_payload_stats(function),
                     sink_kinds=_static_payload_sink_kinds(function),
+                    parameter_names=FUNCTION_PARAMETER_NAME_PROJECTION.names(function),
+                    private_helper_callee_names=sorted_tuple(
+                        {
+                            call_name
+                            for node in body_nodes
+                            if isinstance(node, ast.Call)
+                            for call_name in (_call_name(node.func),)
+                            if call_name is not None and not call_name.startswith("_")
+                        }
+                    ),
+                    private_helper_return_kinds=sorted_tuple(
+                        {
+                            _private_helper_return_kind(node.value)
+                            for node in body_nodes
+                            if isinstance(node, ast.Return)
+                        }
+                    ),
+                    private_helper_constructed_type_names=sorted_tuple(
+                        {
+                            call_name
+                            for node in body_nodes
+                            if isinstance(node, ast.Call)
+                            for call_name in (_call_name(node.func),)
+                            if call_name is not None
+                            and call_name.endswith(
+                                (
+                                    "Candidate",
+                                    "Finding",
+                                    "Metrics",
+                                    "Observation",
+                                    "Plan",
+                                    "Profile",
+                                    "Shape",
+                                    "Spec",
+                                    "Witness",
+                                )
+                            )
+                        }
+                    ),
                 )
             )
         return [
@@ -9192,6 +9242,12 @@ class CompactPrivateReferenceModuleProjectionFamily(
                     )
                 ),
                 functions=tuple(functions),
+                caller_symbols_by_private_name=tuple(
+                    (symbol_name, sorted_tuple(caller_symbols))
+                    for symbol_name, caller_symbols in sorted(
+                        caller_symbols_by_private_name.items()
+                    )
+                ),
             )
         ]
 
@@ -10212,8 +10268,16 @@ def _private_helper_pascal_name(tokens: tuple[str, ...], fallback: str) -> str:
 def _shared_private_helper_stem(
     functions: _RuntimeFunctionSequence,
 ) -> tuple[str, ...]:
+    return _shared_private_helper_stem_from_names(
+        tuple(function.name for function in functions)
+    )
+
+
+def _shared_private_helper_stem_from_names(
+    function_names: tuple[str, ...],
+) -> tuple[str, ...]:
     token_lists = tuple(
-        (_private_helper_name_tokens(function.name) for function in functions)
+        _private_helper_name_tokens(function_name) for function_name in function_names
     )
     if not token_lists:
         return ()
@@ -10249,8 +10313,18 @@ def _dominant_private_helper_role_tokens(
     functions: _RuntimeFunctionSequence,
     stem_tokens: tuple[str, ...],
 ) -> tuple[str, ...]:
+    return _dominant_private_helper_role_tokens_from_names(
+        tuple(function.name for function in functions),
+        stem_tokens,
+    )
+
+
+def _dominant_private_helper_role_tokens_from_names(
+    function_names: tuple[str, ...],
+    stem_tokens: tuple[str, ...],
+) -> tuple[str, ...]:
     token_lists = tuple(
-        (_private_helper_name_tokens(function.name) for function in functions)
+        _private_helper_name_tokens(function_name) for function_name in function_names
     )
     threshold = max(2, (len(token_lists) + 1) // 2)
     stem_set = frozenset(stem_tokens)
@@ -10579,11 +10653,27 @@ def _private_helper_cluster_classification(
     *,
     shared_call_names: tuple[str, ...],
 ) -> PrivateHelperClusterClassification:
-    stem_tokens = _shared_private_helper_stem(functions)
-    dominant_role_tokens = _dominant_private_helper_role_tokens(functions, stem_tokens)
+    return _private_helper_cluster_classification_from_summaries(
+        function_names=tuple(function.name for function in functions),
+        return_kinds=_private_helper_return_kinds(functions),
+        constructed_type_names=_private_helper_constructed_type_names(functions),
+        shared_call_names=shared_call_names,
+    )
+
+
+def _private_helper_cluster_classification_from_summaries(
+    *,
+    function_names: tuple[str, ...],
+    return_kinds: tuple[str, ...],
+    constructed_type_names: tuple[str, ...],
+    shared_call_names: tuple[str, ...],
+) -> PrivateHelperClusterClassification:
+    stem_tokens = _shared_private_helper_stem_from_names(function_names)
+    dominant_role_tokens = _dominant_private_helper_role_tokens_from_names(
+        function_names,
+        stem_tokens,
+    )
     semantic_tokens = (*stem_tokens, *dominant_role_tokens)
-    return_kinds = _private_helper_return_kinds(functions)
-    constructed_type_names = _private_helper_constructed_type_names(functions)
     normal_form = _private_helper_cluster_normal_form(
         semantic_tokens=semantic_tokens,
         return_kinds=return_kinds,
@@ -10596,8 +10686,8 @@ def _private_helper_cluster_classification(
     role_tokens = sorted_tuple(
         {
             token
-            for function in functions
-            for token in _private_helper_name_tokens(function.name)
+            for function_name in function_names
+            for token in _private_helper_name_tokens(function_name)
             if token not in set(stem_tokens)
         }
     )
@@ -10721,6 +10811,122 @@ def _private_helper_semantic_cluster_candidates(
         candidates,
         key=lambda item: (item.file_path, item.line, item.semantic_family),
     )
+
+
+def _compact_private_helper_caller_symbols_by_name(
+    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+) -> dict[str, tuple[str, ...]]:
+    callers_by_name: dict[str, set[str]] = defaultdict(set)
+    for projection in projections:
+        for function_name, caller_symbols in projection.caller_symbols_by_private_name:
+            callers_by_name[function_name].update(caller_symbols)
+    return {
+        function_name: sorted_tuple(caller_symbols)
+        for function_name, caller_symbols in callers_by_name.items()
+    }
+
+
+def _compact_private_helper_semantic_cluster_candidates(
+    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+    config: DetectorConfig,
+) -> tuple[PrivateHelperSemanticClusterCandidate, ...]:
+    contract_names = frozenset(
+        name
+        for projection in projections
+        for name in projection.derived_candidate_collector_contract_names
+    )
+    callers_by_name = _compact_private_helper_caller_symbols_by_name(projections)
+    minimum_cluster_line_count = max(
+        3, config.min_unreferenced_private_function_lines // 2
+    )
+    all_candidates: list[PrivateHelperSemanticClusterCandidate] = []
+    for projection in projections:
+        grouped: dict[tuple[str, str, str], list[CompactPrivateFunctionFact]] = (
+            defaultdict(list)
+        )
+        for function in projection.functions:
+            if function.owner_name is not None:
+                continue
+            if function.has_external_protocol_shape:
+                continue
+            if function.function_name in contract_names:
+                continue
+            if function.line_count < minimum_cluster_line_count:
+                continue
+            grouped[_private_helper_cluster_key(function.function_name)].append(
+                function
+            )
+
+        candidates: list[PrivateHelperSemanticClusterCandidate] = []
+        for (semantic_family, _, _), helpers in sorted(grouped.items()):
+            if len(helpers) < 4:
+                continue
+            parameter_sets = tuple(
+                set(function.parameter_names) for function in helpers
+            )
+            shared_parameter_names = sorted_tuple(set.intersection(*parameter_sets))
+            call_name_sets = tuple(
+                set(function.private_helper_callee_names) for function in helpers
+            )
+            shared_call_names = (
+                sorted_tuple(set.intersection(*call_name_sets))
+                if call_name_sets
+                else ()
+            )
+            consumer_symbols = sorted_tuple(
+                {
+                    caller_symbol
+                    for function in helpers
+                    for caller_symbol in callers_by_name.get(function.function_name, ())
+                    if caller_symbol != function.qualname
+                }
+            )
+            if not (shared_parameter_names or shared_call_names):
+                continue
+            function_names = tuple(function.function_name for function in helpers)
+            classification = _private_helper_cluster_classification_from_summaries(
+                function_names=function_names,
+                return_kinds=sorted_tuple(
+                    {
+                        return_kind
+                        for function in helpers
+                        for return_kind in function.private_helper_return_kinds
+                    }
+                ),
+                constructed_type_names=sorted_tuple(
+                    {
+                        type_name
+                        for function in helpers
+                        for type_name in (
+                            function.private_helper_constructed_type_names
+                        )
+                    }
+                ),
+                shared_call_names=shared_call_names,
+            )
+            line_numbers = tuple(function.line for function in helpers)
+            candidate = PrivateHelperSemanticClusterCandidate(
+                file_path=helpers[0].file_path,
+                line=min(line_numbers),
+                helper_names=sorted_tuple(function_names),
+                semantic_family=semantic_family,
+                classification=classification,
+                shared_parameter_names=shared_parameter_names,
+                shared_call_names=shared_call_names,
+                consumer_symbols=consumer_symbols,
+                line_numbers=line_numbers,
+                line_count=sum(function.line_count for function in helpers),
+                cluster_size=len(helpers),
+            )
+            if _private_helper_cluster_certificate(candidate).pays_rent:
+                candidates.append(candidate)
+        all_candidates.extend(
+            sorted_tuple(
+                candidates,
+                key=lambda item: (item.file_path, item.line, item.semantic_family),
+            )
+        )
+    return tuple(all_candidates)
 
 
 class PrivateHelperEscapeAuthority:
@@ -10966,8 +11172,10 @@ class NonNominalPrivateHelperDetector(
 
 
 class PrivateHelperSemanticClusterDetector(
+    CompactModuleProjectionDetectorMixin[CompactPrivateReferenceModuleProjection],
     PrivateReferenceContextualDetector[PrivateHelperSemanticClusterCandidate],
 ):
+    module_projection_family = CompactPrivateReferenceModuleProjectionFamily
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Private helper cluster should have a semantic owner",
@@ -10993,6 +11201,19 @@ class PrivateHelperSemanticClusterDetector(
             ),
             private_helper_call_graph=private_reference_context.private_helper_call_graph,
         )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in _compact_private_helper_semantic_cluster_candidates(
+                projections,
+                config,
+            )
+        ]
 
     finding_renderer = CandidateFindingRenderer[PrivateHelperSemanticClusterCandidate](
         summary=lambda cluster: (
