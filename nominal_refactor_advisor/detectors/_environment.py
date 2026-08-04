@@ -11,7 +11,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from ..ast_tools import CollectedFamily, ParsedModule
+from ..ast_tools import CollectedFamily, ParsedModule, walk_function_body_nodes
 from ..class_index import ATTRIBUTE_CHAIN_AUTHORITY
 from ..models import RefactorFinding, SourceLocation
 from ..name_algebra import CLASS_NAME_ALGEBRA
@@ -239,26 +239,7 @@ class _FunctionScope:
         )
 
     def nodes(self) -> tuple[ast.AST, ...]:
-        nodes: list[ast.AST] = []
-
-        def visit(node: ast.AST) -> None:
-            nodes.append(node)
-            for child in ast.iter_child_nodes(node):
-                if isinstance(
-                    child,
-                    (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
-                ):
-                    continue
-                visit(child)
-
-        for statement in self.node.body:
-            if isinstance(
-                statement,
-                (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
-            ):
-                continue
-            visit(statement)
-        return tuple(nodes)
+        return walk_function_body_nodes(self.node)
 
     @staticmethod
     def assignment_nodes(

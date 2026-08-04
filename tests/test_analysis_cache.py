@@ -210,15 +210,47 @@ def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
 
 
 def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
-    module = ast_tools_module.ast.parse("value = source + 1\n")
+    module = ast_tools_module.ast.parse("def project():\n    return source + 1\n")
+    function = module.body[0]
+    assert isinstance(function, ast.FunctionDef)
     ast_tools_module._walk_nodes(module)
+    ast_tools_module.walk_function_body_nodes(function)
     runtime_detectors.SurfaceFunctionIndex.from_module(module)
 
     cleared_cache_count = release_module_analysis_memory()
 
     assert cleared_cache_count > 0
     assert ast_tools_module._walk_nodes.cache_info().currsize == 0
+    assert ast_tools_module.walk_function_body_nodes.cache_info().currsize == 0
     assert runtime_detectors.SurfaceFunctionIndex.from_module.cache_info().currsize == 0
+
+
+def test_environment_and_runtime_share_bounded_function_body_projection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "environment.py").write_text(
+        "def trace_environment_enabled(value):\n"
+        '    """Interpret one environment flag."""\n'
+        "    normalized = value.strip().lower()\n"
+        "    return normalized in {'1', 'true'}\n",
+        encoding="utf-8",
+    )
+    module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    scope = environment_detectors._function_scopes(module)[0]
+
+    environment_nodes = scope.nodes()
+    runtime_nodes = runtime_detectors._walk_function_body_nodes(scope.node)
+
+    assert environment_nodes is scope.nodes()
+    assert environment_nodes is runtime_nodes
+    assert isinstance(environment_nodes[0], ast.Assign)
+    assert not any(
+        isinstance(node, ast.Constant)
+        and node.value == "Interpret one environment flag."
+        for node in environment_nodes
+    )
 
 
 def test_module_detector_shard_cache_reuses_exact_focused_findings(
@@ -3961,6 +3993,7 @@ def test_compact_private_helper_cluster_candidates_match_legacy_ast_candidates(
 
 def test_compact_distributed_boundary_graph_matches_legacy_global_join(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -4000,7 +4033,20 @@ def test_compact_distributed_boundary_graph_matches_legacy_global_join(
     config = DetectorConfig()
     fanout_detector = surface_detectors.DistributedBoundaryFanoutDetector()
     wrapper_detector = surface_detectors.BoundaryLocalWrapperCollapseDetector()
+    original_walk = ast.walk
+    walked_roots: list[ast.AST] = []
+
+    def tracked_walk(root: ast.AST):
+        walked_roots.append(root)
+        return original_walk(root)
+
+    monkeypatch.setattr(ast, "walk", tracked_walk)
     projections = fanout_detector.compact_module_projections(modules)
+    assert not any(
+        isinstance(root, (ast.Assign, ast.AnnAssign, ast.Subscript))
+        for root in walked_roots
+    )
+    monkeypatch.setattr(ast, "walk", original_walk)
     compact_fanout = surface_detectors._compact_distributed_boundary_fanout_candidates(
         projections,
         config,

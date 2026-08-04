@@ -519,7 +519,8 @@ def retains_python_ast(
     seen.add(value_id)
     if is_dataclass(value) and not isinstance(value, type):
         return any(
-            retains_python_ast(getattr(value, item.name), seen) for item in fields(value)
+            retains_python_ast(getattr(value, item.name), seen)
+            for item in fields(value)
         )
     if isinstance(value, dict):
         return any(
@@ -2094,6 +2095,35 @@ def _name_family(names: set[str] | frozenset[str]) -> AstNameFamily:
 @lru_cache(maxsize=32768)
 def _walk_nodes(node: ast.AST) -> tuple[ast.AST, ...]:
     return tuple(ast.walk(node))
+
+
+@lru_cache(maxsize=32768)
+def walk_function_body_nodes(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.AST, ...]:
+    """Return one bounded, reusable walk that excludes nested definition bodies."""
+
+    nodes: list[ast.AST] = []
+    stack = list(reversed(_trim_docstring_body(function.body)))
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        stack.extend(reversed(tuple(ast.iter_child_nodes(node))))
+    return tuple(nodes)
+
+
+def active_path_descends_through(
+    parents: Sequence[ast.AST],
+    parent_index: int,
+    child_root: ast.AST,
+    target: ast.AST,
+) -> bool:
+    """Check an ancestor field from a visitor's already-known active path."""
+
+    next_node = parents[parent_index + 1] if parent_index + 1 < len(parents) else target
+    return next_node is child_root
 
 
 def _iter_attribute_family_calls(

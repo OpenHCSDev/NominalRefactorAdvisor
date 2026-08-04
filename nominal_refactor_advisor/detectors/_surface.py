@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from ..ast_tools import active_path_descends_through
 from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -1417,10 +1418,6 @@ def _boundary_node_tokens(node: ast.AST) -> tuple[str, ...]:
     return tuple(sorted(tokens))
 
 
-def _boundary_contains_node(root: ast.AST, target: ast.AST) -> bool:
-    return any(child is target for child in ast.walk(root))
-
-
 def _boundary_target_tokens(targets: Iterable[ast.AST]) -> tuple[str, ...]:
     tokens: set[str] = set()
     for target in targets:
@@ -1661,8 +1658,12 @@ class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if self._includes_field_name(node.attr):
             projection_tokens: tuple[str, ...] = ()
-            for parent in reversed(self.node_stack[:-1]):
-                if isinstance(parent, ast.Assign) and _boundary_contains_node(
+            parents = self.node_stack[:-1]
+            for parent_index in range(len(parents) - 1, -1, -1):
+                parent = parents[parent_index]
+                if isinstance(parent, ast.Assign) and active_path_descends_through(
+                    parents,
+                    parent_index,
                     parent.value,
                     node,
                 ):
@@ -1671,11 +1672,18 @@ class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
                 if (
                     isinstance(parent, ast.AnnAssign)
                     and parent.value is not None
-                    and _boundary_contains_node(parent.value, node)
+                    and active_path_descends_through(
+                        parents,
+                        parent_index,
+                        parent.value,
+                        node,
+                    )
                 ):
                     projection_tokens = _boundary_target_tokens((parent.target,))
                     break
-                if isinstance(parent, ast.Subscript) and _boundary_contains_node(
+                if isinstance(parent, ast.Subscript) and active_path_descends_through(
+                    parents,
+                    parent_index,
                     parent.value,
                     node,
                 ):

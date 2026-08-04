@@ -10,7 +10,7 @@ from functools import lru_cache
 from types import EllipsisType
 from typing import Iterable, Sequence, cast
 
-from ..ast_tools import BuiltinCallName, CollectedFamily
+from ..ast_tools import BuiltinCallName, CollectedFamily, active_path_descends_through
 from ..class_index import (
     ClassFamilyIndex,
     CompactClassFamilyIndex,
@@ -1120,18 +1120,6 @@ def _role_surface_class_field_declarations(
     return tuple(declarations)
 
 
-def _role_surface_path_descends_through(
-    parents: Sequence[ast.AST],
-    parent_index: int,
-    child_root: ast.AST,
-    target: ast.AST,
-) -> bool:
-    """Check an ancestor field from the visitor's already-known active path."""
-
-    next_node = parents[parent_index + 1] if parent_index + 1 < len(parents) else target
-    return next_node is child_root
-
-
 def _role_surface_call_name(call: ast.Call | None) -> str | None:
     if call is None:
         return None
@@ -1144,16 +1132,14 @@ def _role_surface_assignment_target_tokens(
 ) -> tuple[str, ...]:
     for parent_index in range(len(parents) - 1, -1, -1):
         parent = parents[parent_index]
-        if isinstance(parent, ast.Assign) and _role_surface_path_descends_through(
+        if isinstance(parent, ast.Assign) and active_path_descends_through(
             parents, parent_index, parent.value, node
         ):
             return ROLE_SURFACE_TOKEN_PROJECTION.target_tokens(parent.targets)
         if (
             isinstance(parent, ast.AnnAssign)
             and parent.value is not None
-            and _role_surface_path_descends_through(
-                parents, parent_index, parent.value, node
-            )
+            and active_path_descends_through(parents, parent_index, parent.value, node)
         ):
             return ROLE_SURFACE_TOKEN_PROJECTION.target_tokens((parent.target,))
     return ()
@@ -1212,9 +1198,7 @@ class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
 
         for parent_index in range(len(parents) - 1, -1, -1):
             parent = parents[parent_index]
-            if isinstance(
-                parent, ast.Subscript
-            ) and _role_surface_path_descends_through(
+            if isinstance(parent, ast.Subscript) and active_path_descends_through(
                 parents, parent_index, parent.value, node
             ):
                 operation_kind = _ROLE_SURFACE_OPERATION_INDEXED
@@ -1222,7 +1206,7 @@ class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
                     ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.slice)
                 )
                 break
-            if isinstance(parent, ast.For) and _role_surface_path_descends_through(
+            if isinstance(parent, ast.For) and active_path_descends_through(
                 parents, parent_index, parent.iter, node
             ):
                 operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
@@ -1230,9 +1214,7 @@ class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
                     ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
                 )
                 break
-            if isinstance(
-                parent, ast.comprehension
-            ) and _role_surface_path_descends_through(
+            if isinstance(parent, ast.comprehension) and active_path_descends_through(
                 parents, parent_index, parent.iter, node
             ):
                 operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
@@ -1240,7 +1222,7 @@ class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
                     ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
                 )
                 break
-            if isinstance(parent, ast.keyword) and _role_surface_path_descends_through(
+            if isinstance(parent, ast.keyword) and active_path_descends_through(
                 parents, parent_index, parent.value, node
             ):
                 operation_kind = _ROLE_SURFACE_OPERATION_KEYWORD_FORWARDED

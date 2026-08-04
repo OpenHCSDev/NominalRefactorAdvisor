@@ -23,6 +23,7 @@ from ..ast_tools import (
     CollectedFamily,
     ParsedModule,
     collect_family_items,
+    walk_function_body_nodes,
 )
 from ..class_index import (
     CompactClassFamilyIndex,
@@ -8626,19 +8627,10 @@ class SurfaceFunctionIndex:
         return cls(tuple(functions))
 
 
-@lru_cache(maxsize=None)
 def _walk_function_body_nodes(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[ast.AST, ...]:
-    nodes: list[ast.AST] = []
-    stack = list(reversed(_trim_docstring_body(function.body)))
-    while stack:
-        node = stack.pop()
-        nodes.append(node)
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        stack.extend(reversed(tuple(ast.iter_child_nodes(node))))
-    return tuple(nodes)
+    return walk_function_body_nodes(function)
 
 
 def _payload_literal_line_count(value: str) -> int:

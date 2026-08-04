@@ -1429,6 +1429,40 @@ the class, role, and nominal-bypass follow-ups, preparation is now 15.879
 seconds (8.8%) lower. This remains an incremental improvement, not a practical
 cold-scan endpoint. Full verification passes all 1000 tests in 344.33 seconds.
 
+### Shared bounded syntax-projection follow-up
+
+The environment-boolean collector independently rebuilt a non-nested function
+body walk four to five times per function while runtime detector families owned
+a separate cached version of the same projection. The walk now lives in the
+common AST substrate. Environment and runtime consumers receive the identical
+tuple, and the existing module-boundary release clears it before the next source
+file. Docstrings are excluded and nested definition bodies remain opaque, which
+matches the runtime projection contract and leaves environment findings
+unchanged.
+
+The common substrate also owns the active-visitor-path edge check introduced by
+the role-surface optimization. Distributed-boundary projection now uses that
+same edge relation for assignment values, annotated-assignment values, and
+subscript values instead of walking ancestor subtrees. Regressions require
+environment/runtime tuple identity, cache release at the module boundary, and
+the absence of assignment/subscript ancestor walks while preserving compact and
+legacy boundary parity.
+
+The isolated environment-family gate falls from 20.666 to 12.391 seconds
+(40.0%) with exact projection digest
+``ca84facbf6b45e09758def09686bbd449a18c12c9b1aba2f217c1c2d5c4cf010``.
+The distributed-boundary family falls from 16.867 to 16.316 seconds (3.3%) with
+exact digest
+``0dafc20f09a084e97857a9d834f27eba62181f7fdf217662a3804b36e9f89d8c``.
+
+On the identical empty-cache exact gate, preparation falls from 163.956 to
+154.835 seconds (5.6%) and external wall time from 182.570 to 172.758 seconds.
+Peak process-tree RSS is 326.1 MiB, all 252 detectors complete, and the same 12
+findings are returned. Relative to the 179.835-second current-code cold baseline,
+the accepted class, role, nominal-bypass, and shared-projection follow-ups have
+removed exactly 25.000 preparation seconds (13.9%). Full verification passes
+all 1001 tests in 360.93 seconds.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a
