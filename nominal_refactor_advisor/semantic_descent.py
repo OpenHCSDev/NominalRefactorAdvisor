@@ -592,7 +592,7 @@ class SemanticFact(SemanticFactReference):
     aliases: tuple[str, ...]
     location: SourceLocation
 
-    @cached_property
+    @property
     def normalized_aliases(self) -> tuple[str, ...]:
         return sorted_tuple(
             {
@@ -3966,32 +3966,47 @@ def _resolved_compact_semantic_projections(
                 module_name=module_projection.module_name,
                 reference_parts=projection.class_reference_parts,
             )
-            key_value_pairs = tuple(
-                replace(
-                    pair,
-                    value_tokens=sorted_tuple(
-                        set(pair.value_tokens)
-                        | _class_reference_normalized_tokens(
-                            class_index,
-                            value_class_symbols,
-                        )
-                    ),
-                    value_class_symbols=value_class_symbols,
-                    value_class_reference_parts=(),
+            key_value_pairs: list[PresentationKeyValuePair] = []
+            for pair in projection.key_value_pairs:
+                value_class_symbols = _resolved_compact_class_symbols(
+                    resolver,
+                    module_name=module_projection.module_name,
+                    reference_parts=pair.value_class_reference_parts,
                 )
-                for pair in projection.key_value_pairs
-                for value_class_symbols in (
-                    _resolved_compact_class_symbols(
-                        resolver,
-                        module_name=module_projection.module_name,
-                        reference_parts=pair.value_class_reference_parts,
-                    ),
+                value_tokens = sorted_tuple(
+                    set(pair.value_tokens)
+                    | _class_reference_normalized_tokens(
+                        class_index,
+                        value_class_symbols,
+                    )
                 )
-            )
+                if (
+                    pair.value_tokens == value_tokens
+                    and pair.value_class_symbols == value_class_symbols
+                    and not pair.value_class_reference_parts
+                ):
+                    key_value_pairs.append(pair)
+                    continue
+                key_value_pairs.append(
+                    replace(
+                        pair,
+                        value_tokens=value_tokens,
+                        value_class_symbols=value_class_symbols,
+                        value_class_reference_parts=(),
+                    )
+                )
+            resolved_key_value_pairs = tuple(key_value_pairs)
+            if (
+                projection.key_value_pairs == resolved_key_value_pairs
+                and projection.class_symbols == class_symbols
+                and not projection.class_reference_parts
+            ):
+                resolved.append(projection)
+                continue
             resolved.append(
                 replace(
                     projection,
-                    key_value_pairs=key_value_pairs,
+                    key_value_pairs=resolved_key_value_pairs,
                     class_symbols=class_symbols,
                     class_reference_parts=(),
                 )

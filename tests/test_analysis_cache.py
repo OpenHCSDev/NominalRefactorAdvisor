@@ -1728,11 +1728,13 @@ def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate
     )
     observed_retain_findings: list[bool] = []
     observed_consumer: list[object] = []
+    observed_inner_retention: list[tuple[bool, bool]] = []
     stored_identities: list[object] = []
     original_join = (
         analysis_module.BoundedCompactProjectionManifest.findings_by_detector
     )
     original_store = AnalysisFindingCache.store
+    original_compact_join = analysis_module._compact_findings_by_detector
 
     def observing_join(self, config, **kwargs):
         observed_retain_findings.append(kwargs["retain_findings"])
@@ -1743,12 +1745,26 @@ def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate
         stored_identities.append(identity)
         return original_store(self, identity, findings, *args, **kwargs)
 
+    def observing_compact_join(*args, **kwargs):
+        observed_inner_retention.append(
+            (
+                kwargs["retain_findings"],
+                callable(kwargs["finding_consumer"]),
+            )
+        )
+        return original_compact_join(*args, **kwargs)
+
     monkeypatch.setattr(
         analysis_module.BoundedCompactProjectionManifest,
         "findings_by_detector",
         observing_join,
     )
     monkeypatch.setattr(AnalysisFindingCache, "store", observing_store)
+    monkeypatch.setattr(
+        analysis_module,
+        "_compact_findings_by_detector",
+        observing_compact_join,
+    )
 
     analyze_compact_roots_with_cache(
         (package_root,),
@@ -1760,6 +1776,8 @@ def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate
     assert observed_retain_findings == [False]
     assert len(observed_consumer) == 1
     assert callable(observed_consumer[0])
+    assert observed_inner_retention
+    assert set(observed_inner_retention) == {(False, True)}
     assert sum(
         isinstance(identity, GlobalDetectorAnalysisCacheIdentity)
         for identity in stored_identities
@@ -1795,6 +1813,13 @@ def test_compact_hierarchy_projection_matches_full_ast_detection(
         "    def evaluate(self, value):\n"
         "        scored = self.compute(value)\n"
         "        return self.finish(scored)\n",
+        encoding="utf-8",
+    )
+    (package_root / "gamma.py").write_text(
+        "class Gamma:\n"
+        "    def assemble(self, value):\n"
+        "        ready = self.normalize(value)\n"
+        "        return self.finish(ready)\n",
         encoding="utf-8",
     )
     detector_types = (
@@ -4209,6 +4234,18 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         class_projections,
     )
 
+    original_projection_objects = {
+        id(projection)
+        for module_projection in semantic_projections
+        for projection in module_projection.projections
+    }
+    assert any(
+        id(projection) in original_projection_objects
+        for projection in compact_graph.projections
+    )
+    assert compact_graph.facts
+    assert compact_graph.facts[0].normalized_aliases
+    assert "normalized_aliases" not in vars(compact_graph.facts[0])
     assert compact_graph.authorities == legacy_graph.authorities
     assert compact_graph.facts == legacy_graph.facts
     assert compact_graph.projections == legacy_graph.projections

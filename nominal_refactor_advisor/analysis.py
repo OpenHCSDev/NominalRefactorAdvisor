@@ -645,10 +645,25 @@ def _compact_findings_by_detector(
     config: DetectorConfig,
     *,
     shared_contexts: dict[Hashable, object] | None = None,
+    finding_consumer: Callable[
+        [type[IssueDetector], list[RefactorFinding]], None
+    ]
+    | None = None,
+    retain_findings: bool = True,
 ) -> dict[type[IssueDetector], list[RefactorFinding]]:
     """Join one live compact-family group with shared-context reuse."""
 
     findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
+
+    def accept_findings(
+        detector_type: type[IssueDetector],
+        detector_findings: list[RefactorFinding],
+    ) -> None:
+        if finding_consumer is not None:
+            finding_consumer(detector_type, detector_findings)
+        if retain_findings:
+            findings[detector_type] = detector_findings
+
     active_shared_contexts = {} if shared_contexts is None else shared_contexts
     for detector_type in detector_types:
         detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
@@ -682,13 +697,15 @@ def _compact_findings_by_detector(
                         config,
                     )
                 group_context = active_shared_contexts[group_context_key]
-            findings[detector_type] = (
+            detector_findings = (
                 multi_detector._findings_from_compact_projection_groups_context(
                     grouped_projections,
                     group_context,
                     config,
                 )
             )
+            accept_findings(detector_type, detector_findings)
+            del detector_findings
             continue
         family = families[0]
         projections = projections_by_family.get(family, ())
@@ -706,11 +723,13 @@ def _compact_findings_by_detector(
                     ("compact-group", compact_class_index_from_projection_groups),
                     context.class_index,
                 )
-        findings[detector_type] = detector._findings_from_compact_context(
+        detector_findings = detector._findings_from_compact_context(
             projections,
             context,
             config,
         )
+        accept_findings(detector_type, detector_findings)
+        del detector_findings
     return findings
 
 
@@ -946,14 +965,14 @@ class BoundedCompactProjectionManifest:
 
         findings: dict[type[IssueDetector], list[RefactorFinding]] = {}
 
-        def accept_findings(
-            group_findings: dict[type[IssueDetector], list[RefactorFinding]],
+        def accept_detector_findings(
+            detector_type: type[IssueDetector],
+            detector_findings: list[RefactorFinding],
         ) -> None:
             if finding_consumer is not None:
-                for detector_type, detector_findings in group_findings.items():
-                    finding_consumer(detector_type, detector_findings)
+                finding_consumer(detector_type, detector_findings)
             if retain_findings:
-                findings.update(group_findings)
+                findings[detector_type] = detector_findings
 
         shared_contexts: dict[Hashable, object] = {}
 
@@ -985,13 +1004,13 @@ class BoundedCompactProjectionManifest:
             anchor_projections = self.projections_for_family(anchor_family)
             anchor_single_group = (anchor_family,)
             if anchor_single_group in remaining_groups:
-                accept_findings(
-                    _compact_findings_by_detector(
-                        tuple(detector_types_by_families[anchor_single_group]),
-                        {anchor_family: anchor_projections},
-                        config,
-                        shared_contexts=shared_contexts,
-                    )
+                _compact_findings_by_detector(
+                    tuple(detector_types_by_families[anchor_single_group]),
+                    {anchor_family: anchor_projections},
+                    config,
+                    shared_contexts=shared_contexts,
+                    finding_consumer=accept_detector_findings,
+                    retain_findings=False,
                 )
                 remaining_groups.remove(anchor_single_group)
                 release_class_derived_contexts()
@@ -1006,22 +1025,22 @@ class BoundedCompactProjectionManifest:
                     projections_by_family[family] = family_projections
                     single_group = (family,)
                     if single_group in remaining_groups:
-                        accept_findings(
-                            _compact_findings_by_detector(
-                                tuple(detector_types_by_families[single_group]),
-                                {family: family_projections},
-                                config,
-                                shared_contexts=shared_contexts,
-                            )
+                        _compact_findings_by_detector(
+                            tuple(detector_types_by_families[single_group]),
+                            {family: family_projections},
+                            config,
+                            shared_contexts=shared_contexts,
+                            finding_consumer=accept_detector_findings,
+                            retain_findings=False,
                         )
                         remaining_groups.remove(single_group)
-                accept_findings(
-                    _compact_findings_by_detector(
-                        tuple(detector_types_by_families[families]),
-                        projections_by_family,
-                        config,
-                        shared_contexts=shared_contexts,
-                    )
+                _compact_findings_by_detector(
+                    tuple(detector_types_by_families[families]),
+                    projections_by_family,
+                    config,
+                    shared_contexts=shared_contexts,
+                    finding_consumer=accept_detector_findings,
+                    retain_findings=False,
                 )
                 remaining_groups.remove(families)
                 del projections_by_family
@@ -1037,13 +1056,13 @@ class BoundedCompactProjectionManifest:
             projections_by_family = {
                 family: self.projections_for_family(family) for family in families
             }
-            accept_findings(
-                _compact_findings_by_detector(
-                    tuple(detector_types_by_families[families]),
-                    projections_by_family,
-                    config,
-                    shared_contexts=shared_contexts,
-                )
+            _compact_findings_by_detector(
+                tuple(detector_types_by_families[families]),
+                projections_by_family,
+                config,
+                shared_contexts=shared_contexts,
+                finding_consumer=accept_detector_findings,
+                retain_findings=False,
             )
             del projections_by_family
             release_module_analysis_memory(collect_cycles=False)

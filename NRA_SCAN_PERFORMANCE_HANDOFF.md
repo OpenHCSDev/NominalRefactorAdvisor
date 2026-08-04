@@ -1048,6 +1048,37 @@ No detector, authority, or context-dependent match is sampled or omitted.
 Checkpoint verification passes all 995 tests in 359.38 seconds; the 11 warnings
 are the existing concurrent pytest cleanup race.
 
+## 2026-08-04 semantic and method-key compaction checkpoint
+
+The exact join now consumes each detector result immediately instead of
+retaining all results from the same projection-family group.  Semantic descent
+also reuses persisted presentation projections and key/value pairs when class
+resolution does not change them, and computes a fact's normalized aliases on
+demand instead of retaining an extra tuple on each of 52,151 facts.  On the
+frozen inventory, 16,820 of 20,652 semantic projections have no direct class
+reference to rewrite.  The isolated semantic build peak fell from 354,724 KB
+to 343,812 KB while stable analysis time remained approximately 5.9 seconds.
+
+The later inheritance-method join was the remaining whole-process high-water.
+It contains 26,756 method shapes, and the old grouping path copied each often
+large normalized AST fingerprint into a concatenated string fiber key.  The
+compact path now groups by a tuple that references the persisted fingerprint,
+then derives cohorts directly from those method carriers without constructing
+``StructuralObservation`` or ``ObservationGraph`` mirrors.  In isolation,
+fiber grouping rose only 3,332 KB above the loaded-family baseline instead of
+43,132 KB, and took 0.028 seconds instead of 0.054 seconds.  Compact/full-AST
+parity covers overlapping three-class cohorts and the cross-domain public
+method guard.
+
+On the frozen 919-module DQDock snapshot, a fresh exact publisher miss returns
+the unchanged 12 focused findings from 77,671 projections in 16.96 seconds at
+361,448 KB.  Against the preceding pushed checkpoint this is 10,024 KB (2.7%)
+less peak RSS and 0.99 seconds (5.5%) faster.  Against the directly
+instrumented 27.97-second / 430,908-KB pre-validation run, exact analysis is
+39.4% faster and 16.1% lower in peak memory.  Full verification passes all 995
+tests in 381.54 seconds; the 11 warnings remain the existing concurrent pytest
+cleanup race.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

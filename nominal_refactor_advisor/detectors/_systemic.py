@@ -817,6 +817,83 @@ class InheritanceMethodShapeFamily(CollectedFamily[MethodShape]):
         return list(_inheritance_method_shapes(parsed_module, 0))
 
 
+_MethodShapeFiberKey = tuple[bool, str, str]
+
+
+def _compact_method_shape_fiber_key(method: MethodShape) -> _MethodShapeFiberKey:
+    return (method.is_private, str(method.param_count), method.fingerprint)
+
+
+def _compact_method_shape_fibers(
+    projections: tuple[MethodShape, ...],
+    *,
+    min_statement_count: int,
+) -> dict[_MethodShapeFiberKey, tuple[MethodShape, ...]]:
+    grouped: dict[_MethodShapeFiberKey, list[MethodShape]] = defaultdict(list)
+    for method in projections:
+        if method.statement_count < min_statement_count:
+            continue
+        grouped[_compact_method_shape_fiber_key(method)].append(method)
+    return {
+        fiber_key: sorted_tuple(
+            methods,
+            key=lambda item: (item.file_path, item.lineno, item.symbol),
+        )
+        for fiber_key, methods in grouped.items()
+    }
+
+
+def _compact_method_shape_cohorts(
+    projections: tuple[MethodShape, ...],
+    *,
+    min_statement_count: int,
+) -> tuple[
+    tuple[tuple[str, ...], tuple[tuple[MethodShape, ...], ...]],
+    ...,
+]:
+    fibers = _compact_method_shape_fibers(
+        projections,
+        min_statement_count=min_statement_count,
+    )
+    relevant_fibers = {
+        fiber_key: methods
+        for fiber_key, methods in fibers.items()
+        if len({method.nominal_witness for method in methods}) >= 2
+    }
+    witness_to_fiber_keys: dict[str, set[_MethodShapeFiberKey]] = defaultdict(set)
+    for fiber_key, methods in relevant_fibers.items():
+        for witness in {method.nominal_witness for method in methods}:
+            witness_to_fiber_keys[witness].add(fiber_key)
+    witness_names = sorted_tuple(witness_to_fiber_keys)
+    cohorts: dict[
+        tuple[tuple[str, ...], tuple[_MethodShapeFiberKey, ...]],
+        tuple[tuple[MethodShape, ...], ...],
+    ] = {}
+    for left_index, left_name in enumerate(witness_names):
+        left_keys = witness_to_fiber_keys[left_name]
+        for right_name in witness_names[left_index + 1 :]:
+            shared_keys = sorted_tuple(
+                left_keys & witness_to_fiber_keys[right_name]
+            )
+            if not shared_keys:
+                continue
+            shared_key_set = frozenset(shared_keys)
+            supporting_witnesses = sorted_tuple(
+                witness
+                for witness, fiber_keys in witness_to_fiber_keys.items()
+                if shared_key_set <= fiber_keys
+            )
+            if len(supporting_witnesses) < 2:
+                continue
+            cohorts[supporting_witnesses, shared_keys] = tuple(
+                relevant_fibers[fiber_key] for fiber_key in shared_keys
+            )
+    return tuple(
+        (supporting_witnesses, cohorts[supporting_witnesses, fiber_keys])
+        for supporting_witnesses, fiber_keys in sorted(cohorts)
+    )
+
+
 def _option_record_quotient_compression_certificate(
     candidate: OptionRecordQuotientCandidate,
 ) -> CompressionCertificate:
@@ -990,6 +1067,23 @@ class RepeatedPrivateMethodDetector(
     def _module_shapes(self, module: ParsedModule) -> tuple[MethodShape, ...]:
         return _inheritance_method_shapes(module, 0)
 
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[MethodShape, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        fibers = _compact_method_shape_fibers(
+            tuple(method for method in projections if method.class_name),
+            min_statement_count=config.min_duplicate_statements,
+        )
+        repeated_shapes = [
+            method
+            for fiber_key in sorted(fibers)
+            for method in fibers[fiber_key]
+            if len(fibers[fiber_key]) >= 2 and method.class_name
+        ]
+        return self._findings_for_shapes(repeated_shapes, config)
+
     def _include_shape(self, shape: MethodShape, config: DetectorConfig) -> bool:
         return bool(
             shape.class_name
@@ -1064,38 +1158,14 @@ class InheritanceHierarchyCandidateDetector(
         projections: tuple[MethodShape, ...],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        repeated_methods = tuple(
-            method
-            for method in projections
-            if method.statement_count >= config.min_duplicate_statements
-        )
-        graph = ObservationGraph(
-            tuple((method.structural_observation for method in repeated_methods))
-        )
-        lookup = _carrier_lookup(tuple(repeated_methods))
-
         findings: list[RefactorFinding] = []
-        for cohort in graph.coherence_cohorts_for(
-            ObservationKind.METHOD_SHAPE,
-            StructuralExecutionLevel.FUNCTION_BODY,
-            minimum_witnesses=2,
-            minimum_fibers=1,
+        for class_names, groups in _compact_method_shape_cohorts(
+            projections,
+            min_statement_count=config.min_duplicate_statements,
         ):
-            groups = [
-                tuple(
-                    (
-                        item
-                        for item in SUPPORT_PROJECTION_AUTHORITY.materialize_observations(
-                            fiber.observations, lookup
-                        )
-                        if isinstance(item, MethodShape)
-                    )
-                )
-                for fiber in cohort.fibers
-            ]
             if not groups:
                 continue
-            class_names = frozenset(cohort.nominal_witnesses)
+            class_name_set = frozenset(class_names)
             method_count_by_class: dict[str, int] = defaultdict(int)
             for methods in groups:
                 for method in methods:
@@ -1112,14 +1182,16 @@ class InheritanceHierarchyCandidateDetector(
                 for methods in groups
                 for method in methods
             ]
+            group_list = list(groups)
             findings.append(
                 self.build_finding(
                     f"Classes {', '.join(sorted(class_names))} share {len(groups)} repeated method-shape groups and repeated method roles that likely want one ABC family.",
                     tuple(evidence[:8]),
-                    scaffold=_abc_family_scaffold(class_names, groups),
-                    codemod_patch=_abc_family_patch(class_names, groups),
+                    scaffold=_abc_family_scaffold(class_name_set, group_list),
+                    codemod_patch=_abc_family_patch(class_name_set, group_list),
                     metrics=HierarchyCandidateMetrics(
-                        duplicate_group_count=len(groups), class_count=len(class_names)
+                        duplicate_group_count=len(groups),
+                        class_count=len(class_name_set),
                     ),
                 )
             )
