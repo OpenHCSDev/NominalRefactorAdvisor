@@ -61,6 +61,9 @@ from nominal_refactor_advisor.detectors import (
     SemanticDescentGraphIssueDetector,
 )
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
+from nominal_refactor_advisor.detectors import (
+    _nominal_authority_surface as nominal_surface_detectors,
+)
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import _surface as surface_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
@@ -75,6 +78,7 @@ from nominal_refactor_advisor.semantic_descent import (
     SemanticDescentGraphCacheIdentity,
     build_semantic_descent_graph,
 )
+from nominal_refactor_advisor.semantic_algebra import FiniteAxisSystem
 
 
 def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGraph:
@@ -2429,6 +2433,117 @@ def test_compact_nominal_authority_candidates_match_legacy_ast_candidates(
         assert instance._findings_from_compact_context(
             projections, compact_index, config
         ) == instance._findings_for_candidates(collector(legacy_index), config)
+    compact_wrapper_candidates = (
+        surface_detectors._compact_pass_through_nominal_wrapper_candidates(projections)
+    )
+    legacy_wrapper_candidates = (
+        surface_detectors._pass_through_nominal_wrapper_candidates(modules)
+    )
+    assert compact_wrapper_candidates == legacy_wrapper_candidates
+    wrapper_detector = surface_detectors.PassThroughNominalWrapperDetector()
+    assert wrapper_detector._findings_from_compact_projections(projections, config) == [
+        wrapper_detector._finding_for_candidate(candidate)
+        for candidate in legacy_wrapper_candidates
+    ]
+
+
+def test_compact_duplicate_nominal_surface_matches_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "authority.py").write_text(
+        "class JobAuthority:\n"
+        "    job_name: str\n"
+        "    job_path: str\n"
+        "    def run(self):\n"
+        "        return self.job_name, self.job_path\n",
+        encoding="utf-8",
+    )
+    (package_root / "shell.py").write_text(
+        "from .authority import JobAuthority\n"
+        "class JobShell:\n"
+        "    job_name: str\n"
+        "    job_path: str\n"
+        "    def run(self):\n"
+        "        return self.job_name, self.job_path\n"
+        "    def build(self):\n"
+        "        return JobAuthority(self.job_name, self.job_path)\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    config = DetectorConfig()
+    detector = surface_detectors.DuplicateNominalAuthoritySurfaceDetector()
+    projections = detector.compact_module_projections(modules)
+    compact_candidates = (
+        surface_detectors._compact_duplicate_nominal_authority_surface_candidates(
+            projections
+        )
+    )
+    legacy_candidates = (
+        surface_detectors._duplicate_nominal_authority_surface_candidates(modules)
+    )
+
+    assert compact_candidates == legacy_candidates
+    assert detector._findings_from_compact_projections(
+        projections, config
+    ) == detector._findings_for_candidates(legacy_candidates, config)
+
+
+def test_nominal_surface_indexed_components_match_axis_graph() -> None:
+    def surface_node(
+        class_name: str,
+        public_method_names: tuple[str, ...],
+        method_flow_roles: tuple[tuple[str, tuple[str, ...]], ...],
+    ):
+        return nominal_surface_detectors._NominalAuthoritySurfaceNode(
+            shape=surface_detectors.NominalAuthorityShape(
+                file_path="fixture.py",
+                class_name=class_name,
+                line=len(class_name),
+                declared_base_names=(),
+                ancestor_names=(),
+                field_names=("job_name", "job_path"),
+                field_type_map=(("job_name", "str"), ("job_path", "str")),
+                method_names=public_method_names,
+                is_abstract=False,
+                is_dataclass_family=False,
+            ),
+            field_roles=("job",),
+            public_method_names=public_method_names,
+            method_flow_roles=method_flow_roles,
+            constructed_delegate_names=(),
+        )
+
+    nodes = (
+        surface_node("Alpha", ("extra", "run"), (("run", ("name",)),)),
+        surface_node("Beta", ("extra", "run"), (("run", ("path",)),)),
+        surface_node("Gamma", ("other", "run"), (("run", ("path",)),)),
+    )
+    axis_system = FiniteAxisSystem.from_rows(
+        (
+            (
+                node,
+                {
+                    "field_roles": node.field_roles,
+                    "method_names": node.public_method_names,
+                    "method_flow_roles": node.method_flow_roles,
+                },
+            )
+            for node in nodes
+        )
+    )
+    expected = axis_system.confusability_graph(
+        (
+            ("field_roles", "method_names"),
+            ("field_roles", "method_flow_roles"),
+        )
+    ).connected_components
+
+    assert expected == (nodes,)
+    assert (
+        nominal_surface_detectors._surface_confusability_components(nodes) == expected
+    )
 
 
 def test_nominal_authority_detectors_share_one_compact_context(
@@ -2586,8 +2701,14 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert surface_detectors.NominalAuthorityImplementationRetreatDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 41
-    assert len(partition.ast_retaining_context_detector_types) == 28
+    assert surface_detectors.DuplicateNominalAuthoritySurfaceDetector in (
+        partition.compact_global_detector_types
+    )
+    assert surface_detectors.PassThroughNominalWrapperDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 43
+    assert len(partition.ast_retaining_context_detector_types) == 26
     assert len(partition.per_module_detector_types) == 183
 
 

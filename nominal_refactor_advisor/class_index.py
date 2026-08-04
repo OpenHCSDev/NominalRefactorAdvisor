@@ -157,6 +157,9 @@ class CompactModuleClassProjection:
     nominal_class_first_line_overrides: tuple[tuple[str, int], ...] = ()
     extra_nominal_class_bases: tuple[tuple[str, tuple[str, ...]], ...] = ()
     nominal_authority_shapes: tuple["CompactNominalAuthorityShape", ...] = ()
+    nominal_surface_facts: tuple["CompactNominalSurfaceFact", ...] = ()
+    nominal_wrapper_authorities: tuple["CompactNominalWrapperAuthority", ...] = ()
+    pass_through_nominal_wrappers: tuple["CompactPassThroughNominalWrapper", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -169,6 +172,40 @@ class CompactNominalAuthorityShape:
     method_names: tuple[str, ...]
     is_abstract: bool
     is_dataclass: bool
+
+
+@dataclass(frozen=True)
+class CompactNominalSurfaceFact:
+    """Sparse method-flow facts for a typed nominal surface."""
+
+    file_path: str
+    class_name: str
+    line: int
+    public_method_names: tuple[str, ...]
+    method_flow_field_names: tuple[tuple[str, tuple[str, ...]], ...]
+    constructed_delegate_candidate_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactNominalWrapperAuthority:
+    """Reusable authority member names in repository AST walk order."""
+
+    file_path: str
+    class_name: str
+    line: int
+    method_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompactPassThroughNominalWrapper:
+    """A locally proven forwarding shell awaiting its global authority join."""
+
+    file_path: str
+    class_name: str
+    line: int
+    delegate_field_name: str
+    delegate_authority_name: str
+    forwarded_member_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -500,6 +537,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             nominal_class_first_line_overrides,
             extra_nominal_class_bases,
             nominal_authority_shapes,
+            nominal_surface_facts,
+            nominal_wrapper_authorities,
+            pass_through_nominal_wrappers,
         ) = _compact_nominal_class_scope_facts(parsed_module, indexed_class_nodes)
         classes = tuple(
             CompactIndexedClass(
@@ -641,6 +681,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 nominal_class_first_line_overrides=nominal_class_first_line_overrides,
                 extra_nominal_class_bases=extra_nominal_class_bases,
                 nominal_authority_shapes=nominal_authority_shapes,
+                nominal_surface_facts=nominal_surface_facts,
+                nominal_wrapper_authorities=nominal_wrapper_authorities,
+                pass_through_nominal_wrappers=pass_through_nominal_wrappers,
             )
         ]
 
@@ -1359,6 +1402,9 @@ def _compact_nominal_class_scope_facts(
     tuple[tuple[str, int], ...],
     tuple[tuple[str, tuple[str, ...]], ...],
     tuple[CompactNominalAuthorityShape, ...],
+    tuple[CompactNominalSurfaceFact, ...],
+    tuple[CompactNominalWrapperAuthority, ...],
+    tuple[CompactPassThroughNominalWrapper, ...],
 ]:
     indexed_node_ids = {id(node) for _, node in indexed_class_nodes}
     indexed_first_nodes: dict[str, ast.ClassDef] = {}
@@ -1367,11 +1413,39 @@ def _compact_nominal_class_scope_facts(
     first_nodes: dict[str, ast.ClassDef] = {}
     extra_bases: dict[str, set[str]] = {}
     nominal_shapes: list[CompactNominalAuthorityShape] = []
-    for node in ast.walk(parsed_module.module):
-        if not isinstance(node, ast.ClassDef):
-            continue
+    nominal_surface_facts: list[CompactNominalSurfaceFact] = []
+    nominal_wrapper_authorities: list[CompactNominalWrapperAuthority] = []
+    pass_through_nominal_wrappers: list[CompactPassThroughNominalWrapper] = []
+    class_nodes = tuple(
+        node
+        for node in ast.walk(parsed_module.module)
+        if isinstance(node, ast.ClassDef)
+    )
+    for node in class_nodes:
         first_nodes.setdefault(node.name, node)
         field_type_map = _compact_nominal_field_type_map(node)
+        if _compact_is_reusable_nominal_wrapper_authority(node):
+            nominal_wrapper_authorities.append(
+                CompactNominalWrapperAuthority(
+                    file_path=str(parsed_module.path),
+                    class_name=node.name,
+                    line=node.lineno,
+                    method_names=sorted_tuple(
+                        statement.name
+                        for statement in node.body
+                        if isinstance(
+                            statement, (ast.FunctionDef, ast.AsyncFunctionDef)
+                        )
+                    ),
+                )
+            )
+        wrapper = _compact_pass_through_nominal_wrapper(
+            parsed_module,
+            node,
+            field_type_map,
+        )
+        if wrapper is not None:
+            pass_through_nominal_wrappers.append(wrapper)
         if len(field_type_map) >= 2:
             nominal_shapes.append(
                 CompactNominalAuthorityShape(
@@ -1395,6 +1469,9 @@ def _compact_nominal_class_scope_facts(
                     is_dataclass=_is_dataclass_class(node),
                 )
             )
+            surface_fact = _compact_nominal_surface_fact(parsed_module, node)
+            if surface_fact is not None:
+                nominal_surface_facts.append(surface_fact)
         if id(node) in indexed_node_ids:
             continue
         extra_bases.setdefault(node.name, set()).update(
@@ -1413,6 +1490,225 @@ def _compact_nominal_class_scope_facts(
             for class_name, base_names in extra_bases.items()
         ),
         tuple(nominal_shapes),
+        tuple(nominal_surface_facts),
+        tuple(nominal_wrapper_authorities),
+        tuple(pass_through_nominal_wrappers),
+    )
+
+
+def _compact_self_attribute_names(node: ast.AST) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            current.attr
+            for current in ast.walk(node)
+            if isinstance(current, ast.Attribute)
+            and isinstance(current.value, ast.Name)
+            and current.value.id == "self"
+        }
+    )
+
+
+def _compact_call_self_attribute_names(call: ast.Call) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            current.attr
+            for argument in (
+                *call.args,
+                *(keyword.value for keyword in call.keywords),
+            )
+            for current in ast.walk(argument)
+            if isinstance(current, ast.Attribute)
+            and isinstance(current.value, ast.Name)
+            and current.value.id == "self"
+        }
+    )
+
+
+def _compact_constructed_delegate_candidate_names(
+    methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...],
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            call.func.id
+            for method in methods
+            for call in ast.walk(method)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and len(_compact_call_self_attribute_names(call)) >= 2
+        }
+    )
+
+
+def _compact_nominal_surface_fact(
+    parsed_module: ParsedModule,
+    node: ast.ClassDef,
+) -> CompactNominalSurfaceFact | None:
+    public_methods = tuple(
+        statement
+        for statement in node.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not statement.name.startswith("_")
+    )
+    if not public_methods:
+        return None
+    method_flow_field_names = sorted_tuple(
+        (method.name, field_names)
+        for method in public_methods
+        if (field_names := _compact_self_attribute_names(method))
+    )
+    if not method_flow_field_names:
+        return None
+    return CompactNominalSurfaceFact(
+        file_path=str(parsed_module.path),
+        class_name=node.name,
+        line=node.lineno,
+        public_method_names=sorted_tuple(method.name for method in public_methods),
+        method_flow_field_names=method_flow_field_names,
+        constructed_delegate_candidate_names=_compact_constructed_delegate_candidate_names(
+            public_methods
+        ),
+    )
+
+
+def _compact_is_reusable_nominal_wrapper_authority(node: ast.ClassDef) -> bool:
+    if node.name.endswith("Detector"):
+        return False
+    return _is_abstract_class(node) or node.name.endswith(("Base", "Mixin", "Carrier"))
+
+
+def _compact_normalized_nominal_authority_name(annotation_text: str) -> str:
+    text = annotation_text.strip("\"'")
+    text = re.split("\\s*\\|\\s*", text, maxsplit=1)[0]
+    text = re.split("[\\[,]", text, maxsplit=1)[0]
+    return text.rsplit(".", 1)[-1].strip()
+
+
+def _compact_forwarded_parameter_names(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    return tuple(
+        argument.arg
+        for argument in (
+            *method.args.posonlyargs,
+            *method.args.args[1:],
+            *method.args.kwonlyargs,
+        )
+    )
+
+
+def _compact_call_forwards_parameters(
+    call: ast.Call,
+    parameter_names: tuple[str, ...],
+) -> bool:
+    parameter_set = frozenset(parameter_names)
+
+    def forwards_argument(node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in parameter_set
+        return bool(
+            isinstance(node, ast.Starred)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in parameter_set
+        )
+
+    return all(forwards_argument(argument) for argument in call.args) and all(
+        keyword.arg is None
+        or (
+            keyword.arg in parameter_set
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == keyword.arg
+        )
+        for keyword in call.keywords
+    )
+
+
+def _compact_forwarded_nominal_member_name(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    delegate_field_name: str,
+) -> str | None:
+    body = _trim_leading_docstring(list(method.body))
+    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+        return None
+    returned = body[0].value
+    is_property = any(
+        _terminal_reference_name(decorator) == "property"
+        for decorator in method.decorator_list
+    )
+    if is_property:
+        if not (
+            isinstance(returned, ast.Attribute)
+            and returned.attr == method.name
+            and isinstance(returned.value, ast.Attribute)
+            and returned.value.attr == delegate_field_name
+            and isinstance(returned.value.value, ast.Name)
+            and returned.value.value.id == "self"
+        ):
+            return None
+        return method.name
+    if not (
+        isinstance(returned, ast.Call)
+        and isinstance(returned.func, ast.Attribute)
+        and returned.func.attr == method.name
+        and isinstance(returned.func.value, ast.Attribute)
+        and returned.func.value.attr == delegate_field_name
+        and isinstance(returned.func.value.value, ast.Name)
+        and returned.func.value.value.id == "self"
+        and _compact_call_forwards_parameters(
+            returned,
+            _compact_forwarded_parameter_names(method),
+        )
+    ):
+        return None
+    return method.name
+
+
+def _compact_pass_through_nominal_wrapper(
+    parsed_module: ParsedModule,
+    node: ast.ClassDef,
+    field_type_map: tuple[tuple[str, str], ...],
+) -> CompactPassThroughNominalWrapper | None:
+    if _is_abstract_class(node) or len(field_type_map) != 1:
+        return None
+    delegate_field_name, annotation_text = field_type_map[0]
+    delegate_authority_name = _compact_normalized_nominal_authority_name(
+        annotation_text
+    )
+    if not delegate_authority_name:
+        return None
+    declared_base_names = {
+        terminal_name
+        for base in node.bases
+        if (terminal_name := _terminal_reference_name(base)) is not None
+    }
+    if delegate_authority_name in declared_base_names:
+        return None
+    forwarded_member_names: list[str] = []
+    for statement in _trim_leading_docstring(list(node.body)):
+        if isinstance(statement, (ast.AnnAssign, ast.Assign)):
+            continue
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if statement.name == "__init__":
+                continue
+            if statement.name.startswith("__") and statement.name.endswith("__"):
+                return None
+            forwarded_member_name = _compact_forwarded_nominal_member_name(
+                statement,
+                delegate_field_name,
+            )
+            if forwarded_member_name is None:
+                return None
+            forwarded_member_names.append(forwarded_member_name)
+            continue
+        return None
+    if len(forwarded_member_names) < 2:
+        return None
+    return CompactPassThroughNominalWrapper(
+        file_path=str(parsed_module.path),
+        class_name=node.name,
+        line=node.lineno,
+        delegate_field_name=delegate_field_name,
+        delegate_authority_name=delegate_authority_name,
+        forwarded_member_names=sorted_tuple(set(forwarded_member_names)),
     )
 
 

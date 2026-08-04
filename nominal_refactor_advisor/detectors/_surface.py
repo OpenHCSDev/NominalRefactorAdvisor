@@ -11,6 +11,7 @@ from functools import lru_cache
 from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
+    CompactNominalWrapperAuthority,
 )
 from ._base import *
 from ._helpers import *
@@ -25,6 +26,7 @@ from ._helpers import (
 from ._runtime import _CompactConcreteFamilyContext, _compact_concrete_family_context
 from ._substrate_support import _IGNORED_ANCESTOR_NAMES, _class_ancestor_name_map
 from ._nominal_authority_surface import (
+    _compact_duplicate_nominal_authority_surface_candidates,
     _duplicate_nominal_authority_surface_candidates,
 )
 
@@ -85,6 +87,47 @@ def _compact_nominal_authority_index(
             for shape in projection.nominal_authority_shapes
         ),
         base_lookup=base_lookup,
+    )
+
+
+def _compact_pass_through_nominal_wrapper_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[PassThroughNominalWrapperCandidate, ...]:
+    authorities_by_name: dict[str, list[CompactNominalWrapperAuthority]] = defaultdict(
+        list
+    )
+    for projection in projections:
+        for authority in projection.nominal_wrapper_authorities:
+            authorities_by_name[authority.class_name].append(authority)
+    candidates: list[PassThroughNominalWrapperCandidate] = []
+    for projection in projections:
+        for wrapper in projection.pass_through_nominal_wrappers:
+            authorities = authorities_by_name.get(wrapper.delegate_authority_name, ())
+            if not authorities:
+                continue
+            authority = authorities[0]
+            if not set(wrapper.forwarded_member_names) <= set(authority.method_names):
+                continue
+            candidates.append(
+                PassThroughNominalWrapperCandidate(
+                    file_path=wrapper.file_path,
+                    line=wrapper.line,
+                    subject_name=wrapper.class_name,
+                    name_family=wrapper.forwarded_member_names,
+                    delegate_field_name=wrapper.delegate_field_name,
+                    delegate_authority_file_path=authority.file_path,
+                    delegate_authority_name=authority.class_name,
+                    delegate_authority_line=authority.line,
+                )
+            )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (
+            item.file_path,
+            item.line,
+            item.class_name,
+            item.delegate_authority_name,
+        ),
     )
 
 
@@ -658,7 +701,10 @@ class NominalAuthorityImplementationRetreatDetector(
         return findings
 
 
-class DuplicateNominalAuthoritySurfaceDetector(IssueDetector):
+class DuplicateNominalAuthoritySurfaceDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    IssueDetector,
+):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_WITNESS_CARRIER,
         "Duplicate nominal authority surface should collapse onto one owner",
@@ -668,12 +714,26 @@ class DuplicateNominalAuthoritySurfaceDetector(IssueDetector):
         _NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    module_projection_family = CompactModuleClassProjectionFamily
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            _compact_duplicate_nominal_authority_surface_candidates(projections),
+            config,
+        )
+
+    def _findings_for_candidates(
+        self,
+        candidates: Sequence[DuplicateNominalAuthoritySurfaceCandidate],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _duplicate_nominal_authority_surface_candidates(modules):
+        for candidate in candidates:
             role_names = candidate.name_family
             duplicate_evidence = tuple(
                 SourceLocation(candidate.file_path, line, class_name)
@@ -725,7 +785,10 @@ class DuplicateNominalAuthoritySurfaceDetector(IssueDetector):
         return findings
 
 
-class PassThroughNominalWrapperDetector(IssueDetector):
+class PassThroughNominalWrapperDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    IssueDetector,
+):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Pass-through wrapper should reuse the existing nominal authority directly",
@@ -735,13 +798,19 @@ class PassThroughNominalWrapperDetector(IssueDetector):
         _NOMINAL_IDENTITY_PROVENANCE_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    module_projection_family = CompactModuleClassProjectionFamily
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         return [
             self._finding_for_candidate(candidate)
-            for candidate in _pass_through_nominal_wrapper_candidates(modules)
+            for candidate in _compact_pass_through_nominal_wrapper_candidates(
+                projections
+            )
         ]
 
     def _finding_for_candidate(

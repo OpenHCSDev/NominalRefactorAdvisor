@@ -395,6 +395,32 @@ on every compact class took 220.03 seconds and 386,280 KB cold because it
 crossed a per-object dictionary capacity boundary across roughly 17,000 class
 records.  Neither rejected layout is present in the accepted code.
 
+Duplicate nominal-authority surfaces and pass-through nominal wrappers now
+also reconstruct from the shared compact class projection.  The projection
+adds only surfaces that have at least two typed fields plus public self-field
+flow, reusable wrapper authorities, and locally proven forwarding shells.  It
+preserves repository ``ast.walk`` order, including function-local authority
+classes, before joining wrapper members to the first reusable authority.  The
+duplicate-surface component pass now unions exact axis-equality buckets instead
+of materializing the equivalent quadratic confusability-graph cliques; an
+oracle test proves identical transitive connected components.  Candidate
+tuples match the legacy AST algorithms both in focused fixtures and across all
+919 frozen DQDock modules.  That full-AST oracle used 1,001,260 KB, illustrating
+the representation being removed.  The collected-family schema is version 8,
+the final suite passes 971 tests, and the partition is 183 per-module, 43
+compact-global, and 26 AST-retaining context-dependent detectors.
+
+DQDock contributes 2,271 duplicate-surface facts, 1,295 reusable wrapper
+authorities, and six locally proven wrapper facts.  Duplicate-surface analysis
+adds ten findings; pass-through wrappers add none, producing 485 identical
+cold/warm findings from the same 68,481 top-level projections.  The accepted
+fresh-cache pair took 116.59 seconds cold at 332,432 KB and 38.38 seconds warm
+at 385,004 KB; an equivalent-cache repeat took 35.80 seconds at 385,444 KB,
+showing that the warm timing variance is in projection loading while finding
+reconstruction remains about 8.6 seconds.  The larger observed RSS is 56.6%
+below the controlled 889,100-KB all-at-once parse baseline.  Schema 8 increases
+the complete persistent cache by only 255,691 bytes relative to schema 7.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

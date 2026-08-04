@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Sequence, TypeAlias
 
+from ..class_index import CompactModuleClassProjection
 from ._base import (
     DuplicateNominalAuthoritySurfaceCandidate,
     NominalAuthorityShape,
@@ -21,7 +22,6 @@ from ._helpers import (
     _walk_nodes,
     name_id,
 )
-from ..semantic_algebra import FiniteAxisSystem
 
 SurfaceMethodNodes: TypeAlias = tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
 
@@ -137,9 +137,7 @@ def _nominal_authority_surface_nodes(
             continue
         method_flow_roles = tuple(
             sorted(
-                flow
-                for method in methods
-                if (flow := _method_flow_roles(method))[1]
+                flow for method in methods if (flow := _method_flow_roles(method))[1]
             )
         )
         if not method_flow_roles:
@@ -167,6 +165,12 @@ def _nominal_authority_surface_nodes(
             )
         )
 
+    return _surface_nodes_with_ancestors(tuple(nodes))
+
+
+def _surface_nodes_with_ancestors(
+    nodes: tuple[_NominalAuthoritySurfaceNode, ...],
+) -> tuple[_NominalAuthoritySurfaceNode, ...]:
     base_lookup: defaultdict[str, set[str]] = defaultdict(set)
     for surface_node in nodes:
         base_lookup[surface_node.class_name].update(
@@ -211,6 +215,68 @@ def _nominal_authority_surface_nodes(
     )
 
 
+def _compact_nominal_authority_surface_nodes(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[_NominalAuthoritySurfaceNode, ...]:
+    shapes_by_location = {
+        (shape.file_path, shape.line, shape.class_name): shape
+        for projection in projections
+        for shape in projection.nominal_authority_shapes
+    }
+    known_class_names = frozenset(
+        (
+            *(
+                indexed_class.simple_name
+                for projection in projections
+                for indexed_class in projection.classes
+            ),
+            *(
+                class_name
+                for projection in projections
+                for class_name, _ in projection.extra_nominal_class_bases
+            ),
+        )
+    )
+    nodes: list[_NominalAuthoritySurfaceNode] = []
+    for projection in projections:
+        for fact in projection.nominal_surface_facts:
+            shape = shapes_by_location[(fact.file_path, fact.line, fact.class_name)]
+            field_names = tuple(name for name, _ in shape.field_type_map)
+            nodes.append(
+                _NominalAuthoritySurfaceNode(
+                    shape=NominalAuthorityShape(
+                        file_path=shape.file_path,
+                        class_name=shape.class_name,
+                        line=shape.line,
+                        declared_base_names=shape.declared_base_names,
+                        ancestor_names=(),
+                        field_names=field_names,
+                        field_type_map=shape.field_type_map,
+                        method_names=fact.public_method_names,
+                        is_abstract=shape.is_abstract,
+                        is_dataclass_family=shape.is_dataclass,
+                    ),
+                    field_roles=_semantic_role_names_for_fields(field_names),
+                    public_method_names=fact.public_method_names,
+                    method_flow_roles=tuple(
+                        sorted(
+                            (
+                                method_name,
+                                _semantic_role_names_for_fields(field_names),
+                            )
+                            for method_name, field_names in fact.method_flow_field_names
+                        )
+                    ),
+                    constructed_delegate_names=tuple(
+                        name
+                        for name in fact.constructed_delegate_candidate_names
+                        if name in known_class_names
+                    ),
+                )
+            )
+    return _surface_nodes_with_ancestors(tuple(nodes))
+
+
 class SurfaceNodesRelatedAuthority:
     def related(
         self,
@@ -238,9 +304,7 @@ def _shared_surface_methods(
     left: _NominalAuthoritySurfaceNode,
     right: _NominalAuthoritySurfaceNode,
 ) -> tuple[str, ...]:
-    return tuple(
-        sorted(set(left.public_method_names) & set(right.public_method_names))
-    )
+    return tuple(sorted(set(left.public_method_names) & set(right.public_method_names)))
 
 
 def _direct_duplicate_nominal_authority_surface_candidates(
@@ -299,33 +363,58 @@ def _preferred_surface_authority(
     )[0]
 
 
+def _surface_confusability_components(
+    nodes: tuple[_NominalAuthoritySurfaceNode, ...],
+) -> tuple[tuple[_NominalAuthoritySurfaceNode, ...], ...]:
+    """Return the exact axis-equality graph components without clique edges."""
+
+    parents = list(range(len(nodes)))
+    ranks = [0] * len(nodes)
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return
+        if ranks[left_root] < ranks[right_root]:
+            left_root, right_root = right_root, left_root
+        parents[right_root] = left_root
+        if ranks[left_root] == ranks[right_root]:
+            ranks[left_root] += 1
+
+    first_index_by_view: dict[tuple[object, ...], int] = {}
+    for index, node in enumerate(nodes):
+        for view_key in (
+            ("methods", node.field_roles, node.public_method_names),
+            ("flow", node.field_roles, node.method_flow_roles),
+        ):
+            first_index = first_index_by_view.setdefault(view_key, index)
+            union(first_index, index)
+
+    indices_by_root: dict[int, list[int]] = {}
+    for index in range(len(nodes)):
+        indices_by_root.setdefault(find(index), []).append(index)
+    ordered_indices = sorted(indices_by_root.values(), key=lambda indices: indices[0])
+    return tuple(
+        tuple(nodes[index] for index in component_indices)
+        for component_indices in ordered_indices
+    )
+
+
 def _component_duplicate_nominal_authority_surface_candidates(
     nodes: tuple[_NominalAuthoritySurfaceNode, ...],
 ) -> tuple[DuplicateNominalAuthoritySurfaceCandidate, ...]:
     if len(nodes) < 3:
         return ()
-    axis_system = FiniteAxisSystem.from_rows(
-        (
-            (
-                node,
-                {
-                    "field_roles": node.field_roles,
-                    "method_names": node.public_method_names,
-                    "method_flow_roles": node.method_flow_roles,
-                },
-            )
-            for node in nodes
-        )
-    )
-    graph = axis_system.confusability_graph(
-        (
-            ("field_roles", "method_names"),
-            ("field_roles", "method_flow_roles"),
-        )
-    )
 
     candidates: list[DuplicateNominalAuthoritySurfaceCandidate] = []
-    for component in graph.connected_components:
+    for component in _surface_confusability_components(nodes):
         if len(component) < 3:
             continue
         if any(
@@ -338,9 +427,7 @@ def _component_duplicate_nominal_authority_surface_candidates(
         )
         shared_methods = tuple(
             sorted(
-                set.intersection(
-                    *(set(node.public_method_names) for node in component)
-                )
+                set.intersection(*(set(node.public_method_names) for node in component))
             )
         )
         if len(shared_roles) < 2 or not shared_methods:
@@ -370,7 +457,22 @@ def _component_duplicate_nominal_authority_surface_candidates(
 def _duplicate_nominal_authority_surface_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[DuplicateNominalAuthoritySurfaceCandidate, ...]:
-    nodes = _nominal_authority_surface_nodes(modules)
+    return _duplicate_nominal_authority_surface_candidates_from_nodes(
+        _nominal_authority_surface_nodes(modules)
+    )
+
+
+def _compact_duplicate_nominal_authority_surface_candidates(
+    projections: tuple[CompactModuleClassProjection, ...],
+) -> tuple[DuplicateNominalAuthoritySurfaceCandidate, ...]:
+    return _duplicate_nominal_authority_surface_candidates_from_nodes(
+        _compact_nominal_authority_surface_nodes(projections)
+    )
+
+
+def _duplicate_nominal_authority_surface_candidates_from_nodes(
+    nodes: tuple[_NominalAuthoritySurfaceNode, ...],
+) -> tuple[DuplicateNominalAuthoritySurfaceCandidate, ...]:
     candidates = (
         *_direct_duplicate_nominal_authority_surface_candidates(nodes),
         *_component_duplicate_nominal_authority_surface_candidates(nodes),
