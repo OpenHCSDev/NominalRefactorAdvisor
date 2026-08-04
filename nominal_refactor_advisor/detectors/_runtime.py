@@ -3453,6 +3453,13 @@ class RoleGuardedSurfaceAccessCandidate(RuntimeSubjectFunctionCandidate):
     declared_members: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CompactRoleGuardedAccessFact(RuntimeSubjectFunctionCandidate):
+    role_type_name: str
+    guard_expression: str
+    accessed_members: tuple[str, ...]
+
+
 def _declared_class_surface_members(node: ast.ClassDef) -> tuple[str, ...]:
     members: set[str] = set()
     for statement in node.body:
@@ -3555,6 +3562,142 @@ def _accessed_declared_members(
     for statement in statements:
         visitor.visit(statement)
     return sorted_tuple(accessed)
+
+
+def _accessed_members_by_subject_expression(
+    statements: Sequence[ast.stmt],
+    subject_expressions: frozenset[str],
+) -> dict[str, tuple[str, ...]]:
+    accessed_by_subject: dict[str, set[str]] = defaultdict(set)
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            del node
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            del node
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            del node
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            subject_expression = ast.unparse(node.value)
+            if subject_expression in subject_expressions:
+                accessed_by_subject[subject_expression].add(node.attr)
+            self.generic_visit(node)
+
+    visitor = Visitor()
+    for statement in statements:
+        visitor.visit(statement)
+    return {
+        subject_expression: sorted_tuple(accessed_members)
+        for subject_expression, accessed_members in accessed_by_subject.items()
+    }
+
+
+def _compact_role_guarded_access_facts_for_module(
+    module: ParsedModule,
+) -> tuple[CompactRoleGuardedAccessFact, ...]:
+    facts: list[CompactRoleGuardedAccessFact] = []
+    for qualname, function in _iter_named_functions(module):
+        for node in ast.walk(function):
+            if not isinstance(node, ast.If):
+                continue
+            bindings = _isinstance_guard_bindings(node.test)
+            if not bindings:
+                continue
+            accessed_by_subject = _accessed_members_by_subject_expression(
+                node.body,
+                frozenset(subject for subject, _, _ in bindings),
+            )
+            for subject_expression, type_name, guard_expression in bindings:
+                facts.append(
+                    CompactRoleGuardedAccessFact(
+                        file_path=str(module.path),
+                        line=node.lineno,
+                        qualname=qualname,
+                        subject_expression=subject_expression,
+                        role_type_name=type_name,
+                        guard_expression=guard_expression,
+                        accessed_members=accessed_by_subject.get(
+                            subject_expression, ()
+                        ),
+                    )
+                )
+    return tuple(facts)
+
+
+@dataclass(frozen=True, slots=True)
+class CompactRoleGuardedSurfaceModuleProjection:
+    class_surface_members_by_type_name: tuple[tuple[str, tuple[str, ...]], ...]
+    role_guarded_accesses: tuple[CompactRoleGuardedAccessFact, ...]
+
+
+class CompactRoleGuardedSurfaceModuleProjectionFamily(
+    CollectedFamily[CompactRoleGuardedSurfaceModuleProjection]
+):
+    item_type = CompactRoleGuardedSurfaceModuleProjection
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[CompactRoleGuardedSurfaceModuleProjection]:
+        del cls
+        module_index = PrivateReferenceModuleIndex.from_module(parsed_module)
+        return [
+            CompactRoleGuardedSurfaceModuleProjection(
+                class_surface_members_by_type_name=tuple(
+                    sorted(module_index.class_surface_members_by_type_name.items())
+                ),
+                role_guarded_accesses=_compact_role_guarded_access_facts_for_module(
+                    parsed_module
+                ),
+            )
+        ]
+
+
+def _compact_role_surface_members_by_type_name(
+    projections: tuple[CompactRoleGuardedSurfaceModuleProjection, ...],
+) -> dict[str, tuple[str, ...]]:
+    surfaces: dict[str, set[str]] = defaultdict(set)
+    for projection in projections:
+        for type_name, members in projection.class_surface_members_by_type_name:
+            surfaces[type_name].update(members)
+    return {
+        type_name: sorted_tuple(members)
+        for type_name, members in sorted(surfaces.items())
+    }
+
+
+def _compact_role_guarded_surface_access_candidates(
+    projections: tuple[CompactRoleGuardedSurfaceModuleProjection, ...],
+) -> tuple[RoleGuardedSurfaceAccessCandidate, ...]:
+    role_surfaces = _compact_role_surface_members_by_type_name(projections)
+    candidates: list[RoleGuardedSurfaceAccessCandidate] = []
+    for projection in projections:
+        for fact in projection.role_guarded_accesses:
+            declared_members = role_surfaces.get(fact.role_type_name)
+            if declared_members is None:
+                continue
+            accessed_members = sorted_tuple(
+                set(fact.accessed_members) & set(declared_members)
+            )
+            if not accessed_members:
+                continue
+            candidates.append(
+                RoleGuardedSurfaceAccessCandidate(
+                    file_path=fact.file_path,
+                    line=fact.line,
+                    qualname=fact.qualname,
+                    subject_expression=fact.subject_expression,
+                    role_type_name=fact.role_type_name,
+                    guard_expression=fact.guard_expression,
+                    accessed_members=accessed_members,
+                    declared_members=declared_members,
+                )
+            )
+    return tuple(candidates)
 
 
 def _role_guarded_surface_access_candidates_for_function(
@@ -3683,7 +3826,11 @@ def _role_guarded_surface_access_patch(
     )
 
 
-class RoleGuardedSurfaceAccessDetector(ContextualModuleIssueDetector):
+class RoleGuardedSurfaceAccessDetector(
+    CompactModuleProjectionDetectorMixin[CompactRoleGuardedSurfaceModuleProjection],
+    ContextualModuleIssueDetector,
+):
+    module_projection_family = CompactRoleGuardedSurfaceModuleProjectionFamily
     detector_priority = -25
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -3721,22 +3868,41 @@ class RoleGuardedSurfaceAccessDetector(ContextualModuleIssueDetector):
         del config
         role_surfaces = _role_surface_members_by_type_name(modules)
         return [
-            self.build_finding(
-                _role_guarded_surface_access_summary(candidate),
-                _role_guarded_surface_access_evidence(candidate),
-                scaffold=_role_guarded_surface_access_scaffold(candidate),
-                codemod_patch=_role_guarded_surface_access_patch(candidate),
-                metrics=DispatchCountMetrics(
-                    dispatch_site_count=1,
-                    dispatch_axis=candidate.subject_expression,
-                    literal_cases=(candidate.role_type_name,),
-                ),
-            )
+            self._finding_for_candidate(candidate)
             for candidate in _role_guarded_surface_access_candidates_for_module(
                 module,
                 role_surfaces,
             )
         ]
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactRoleGuardedSurfaceModuleProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in _compact_role_guarded_surface_access_candidates(
+                projections
+            )
+        ]
+
+    def _finding_for_candidate(
+        self,
+        candidate: RoleGuardedSurfaceAccessCandidate,
+    ) -> RefactorFinding:
+        return self.build_finding(
+            _role_guarded_surface_access_summary(candidate),
+            _role_guarded_surface_access_evidence(candidate),
+            scaffold=_role_guarded_surface_access_scaffold(candidate),
+            codemod_patch=_role_guarded_surface_access_patch(candidate),
+            metrics=DispatchCountMetrics(
+                dispatch_site_count=1,
+                dispatch_axis=candidate.subject_expression,
+                literal_cases=(candidate.role_type_name,),
+            ),
+        )
 
 
 _LITERAL_DISCRIMINATOR_AXIS_TOKENS = frozenset(

@@ -510,6 +510,31 @@ reconstruction.  The projection count remains 68,481 because the migrated
 detector shares an already-retained family, and the complete persistent cache
 grows by 601,382 bytes versus schema 10.
 
+Role-guarded surface access now uses an AST-free role-surface projection.
+Schema 12 stores declared class members under both simple and module-qualified
+type names, plus local ``isinstance`` guard/access events.  The global join
+unions declarations across the repository and intersects each guarded access
+with the declared role surface.  DQDock contributes 29,280 per-module role
+surface rows and 1,186 local access events.
+
+The full 919-module oracle matched all 32 candidate tuples and rendered
+findings exactly, including source order and negative guarded accesses to
+members absent from the declared role.  The comparison peaked at 1,001,628 KB
+while intentionally holding the compact and legacy full-AST representations
+together.  The final suite passes 977 tests, and the partition is now 183
+per-module detectors, 53 compact-global detectors, and 16 AST-retaining
+context-dependent detectors.
+
+The space-controlled schema-12 cache produced 859 findings from 69,400
+top-level projections.  Cold took 124.01 seconds at 359,880 KB, including
+112.05 seconds of projection and 11.96 seconds of finding reconstruction.
+Warm took 43.16 seconds at 387,000 KB, including 31.07 seconds of projection
+and 12.08 seconds of reconstruction.  The complete persistent cache grows by
+4,352,145 bytes versus schema 11.  A prior 81.27-second nominally warm sample
+was rejected after its cache audit found 7,004 zero-byte entries while
+``/tmp`` was under pressure; the accepted pair had 4.1 GB free and zero
+zero-byte entries.
+
 ## 2026-08-03 large-repository update
 
 The normal file-focused edit loop is now bounded and explicitly partial on a

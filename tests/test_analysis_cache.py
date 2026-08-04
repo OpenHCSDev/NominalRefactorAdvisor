@@ -2913,6 +2913,53 @@ def _write_compact_private_helper_cluster_fixture(package_root: Path) -> None:
     )
 
 
+def test_compact_role_guarded_surface_candidates_match_legacy_ast_candidates(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "roles.py").write_text(
+        "class AvoidWidgetsWindow:\n"
+        "    def position_avoid_widgets(self):\n"
+        "        raise NotImplementedError\n",
+        encoding="utf-8",
+    )
+    (package_root / "consumer.py").write_text(
+        "def place_window(window):\n"
+        "    if isinstance(window, AvoidWidgetsWindow):\n"
+        "        return tuple(window.position_avoid_widgets())\n"
+        "    return ()\n\n"
+        "def inspect_window(window):\n"
+        "    if isinstance(window, AvoidWidgetsWindow):\n"
+        "        return window.windowTitle()\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    detector = runtime_detectors.RoleGuardedSurfaceAccessDetector()
+    projections = type(detector).compact_module_projections(modules)
+    compact_candidates = (
+        runtime_detectors._compact_role_guarded_surface_access_candidates(projections)
+    )
+    role_surfaces = runtime_detectors._role_surface_members_by_type_name(modules)
+    legacy_candidates = tuple(
+        candidate
+        for module in modules
+        for candidate in runtime_detectors._role_guarded_surface_access_candidates_for_module(
+            module,
+            role_surfaces,
+        )
+    )
+
+    assert compact_candidates == legacy_candidates
+    assert len(compact_candidates) == 1
+    assert compact_candidates[0].accessed_members == ("position_avoid_widgets",)
+    assert detector._findings_from_compact_projections(
+        projections,
+        DetectorConfig(),
+    ) == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
+
+
 def test_compact_private_helper_cluster_candidates_match_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
@@ -3106,8 +3153,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.PrivateHelperSemanticClusterDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 52
-    assert len(partition.ast_retaining_context_detector_types) == 17
+    assert runtime_detectors.RoleGuardedSurfaceAccessDetector in (
+        partition.compact_global_detector_types
+    )
+    assert len(partition.compact_global_detector_types) == 53
+    assert len(partition.ast_retaining_context_detector_types) == 16
     assert len(partition.per_module_detector_types) == 183
 
 
