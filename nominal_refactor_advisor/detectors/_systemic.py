@@ -297,11 +297,47 @@ def _collect_remaining_systemic_ast_demand(
     )
 
 
+def _collect_remaining_systemic_source_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    if not isinstance(demand, CompactRemainingSystemicProjectionDemand):
+        raise TypeError("remaining-systemic demand has the wrong authority type")
+    if not syntax_index.is_complete:
+        return None
+    names = demand.infrastructure_names
+    if not names or not any(name in source_module.source for name in names):
+        return []
+    from ._runtime import _selected_reference_summaries
+
+    reference_summaries = _selected_reference_summaries(
+        ast.parse(source_module.source, filename=str(source_module.path)),
+        names,
+    )
+    if not reference_summaries:
+        return []
+    return [
+        CompactRemainingSystemicModuleProjection(
+            file_path=str(source_module.path),
+            module_name=source_module.module_name,
+            concrete_type_functions=(),
+            implicit_self_mixins=(),
+            infrastructure_declarations=(),
+            declares_effect_infrastructure=False,
+            reference_summaries_by_symbol=reference_summaries,
+        )
+    ]
+
+
 CompactRemainingSystemicModuleProjectionFamily.report_demand_builder = staticmethod(
     _remaining_systemic_projection_demand
 )
 CompactRemainingSystemicModuleProjectionFamily.ast_demand_collector = staticmethod(
     _collect_remaining_systemic_ast_demand
+)
+CompactRemainingSystemicModuleProjectionFamily.source_demand_collector = staticmethod(
+    _collect_remaining_systemic_source_demand
 )
 CompactRemainingSystemicModuleProjectionFamily.cached_demand_projector = staticmethod(
     _project_remaining_systemic_demand

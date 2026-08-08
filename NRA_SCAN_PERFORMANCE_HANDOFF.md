@@ -2456,3 +2456,16 @@ short-circuits before its full visitor; the DQDock target has no such support
 definition, and the next exact run completed in 23.21 seconds with the same 12
 findings.  This is retained as demand-contract cleanup, not claimed as the
 dominant solution.
+
+The remaining-systemic context family now has an exact selected-reference
+source collector.  The target report demands 37 infrastructure symbols in both
+representative repositories, but those names occur in only 2 of 919 DQDock
+context files and 4 of 1,243 OpenHCS context files.  A lossless source-name gate
+rejects every other file; only candidates receive a Python AST, whose reference
+counts and lexical owners are derived through the existing module syntax index.
+Production collector replay has zero cached-demand mismatches across both full
+inventories.  The incremental collector work is 0.63 aggregate seconds on
+DQDock and 0.31 on OpenHCS; including the already-shared native parse gives
+2.94 and 1.96 seconds.  This collector is another necessary all-native
+dependency.  It does not activate mixed dispatch or change the current cold
+wall time until the final demanded AST families are eliminated.

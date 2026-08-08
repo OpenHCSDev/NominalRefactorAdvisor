@@ -2801,6 +2801,52 @@ def test_native_inheritance_method_demand_matches_cached_fibers(
     assert actual is not None
     assert tuple(actual) == expected
     assert [item.method_name for item in actual] == ["normalize", "select"]
+
+
+def test_native_remaining_systemic_demand_matches_selected_references(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    context_path = package_root / "context.py"
+    target_path.write_text(
+        "class PipelineService:\n"
+        "    pass\n"
+        "\n"
+        "def build_registry():\n"
+        "    return PipelineService()\n",
+        encoding="utf-8",
+    )
+    context_source = (
+        "PipelineService = object()\n"
+        "\n"
+        "class Consumer:\n"
+        "    def run(self):\n"
+        "        return owner.PipelineService\n"
+    )
+    context_path.write_text(context_source, encoding="utf-8")
+    modules = {
+        module.path.name: module
+        for module in parse_python_modules(package_root, use_parse_cache=False)
+    }
+    family = systemic_detectors.CompactRemainingSystemicModuleProjectionFamily
+    target_items = tuple(family.collect(modules["target.py"]))
+    context_items = tuple(family.collect(modules["context.py"]))
+    demand = family.report_demand(target_items, DetectorConfig())
+
+    expected = family.project_cached_demand(context_items, demand)
+    actual = family.collect_demanded_source(
+        SourceModule(context_path, "context", context_source),
+        NativePythonSyntaxIndex.from_source(context_source),
+        demand,
+    )
+
+    assert actual is not None
+    assert tuple(actual) == expected
+    assert actual[0].reference_summaries_by_symbol == (
+        ("PipelineService", 2, ("<module>", "Consumer.run")),
+    )
     assert (
         abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_report_class_header_core_safe
         is False

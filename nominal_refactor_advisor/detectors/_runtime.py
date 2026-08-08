@@ -9614,6 +9614,48 @@ class PrivateReferenceModuleIndex:
         )
 
 
+def _reference_summary_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _reference_summaries_from_sites(
+    reference_sites_by_symbol: dict[str, set[tuple[int, str]]],
+) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
+    return tuple(
+        (
+            symbol,
+            len(sites),
+            sorted_tuple({scope_symbol for _, scope_symbol in sites}),
+        )
+        for symbol, sites in sorted(reference_sites_by_symbol.items())
+    )
+
+
+def _selected_reference_summaries(
+    module_node: ast.Module,
+    symbol_names: frozenset[str],
+) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
+    """Project exact lexical reference summaries for selected symbol names."""
+
+    syntax_index = module_syntax_index(module_node)
+    scope_symbols = tuple(
+        ".".join(scope.names) if scope.names else "<module>"
+        for scope in syntax_index.scopes
+    )
+    reference_sites_by_symbol: dict[str, set[tuple[int, str]]] = defaultdict(set)
+    for node_index, node in enumerate(syntax_index.depth_first_nodes):
+        reference_name = _reference_summary_name(node)
+        if reference_name in symbol_names:
+            reference_sites_by_symbol[reference_name].add(
+                (node.lineno, scope_symbols[syntax_index.scope_ids[node_index]])
+            )
+    return _reference_summaries_from_sites(reference_sites_by_symbol)
+
+
 @lru_cache(maxsize=None)
 def _private_reference_module_index(
     module_node: ast.Module,
@@ -9746,11 +9788,7 @@ def _private_reference_module_index(
                 function_counts_by_id[function_id][name] += 1
             if reference_function_id is not None:
                 symbol_references_by_function_id[reference_function_id].add(name)
-        reference_name = (
-            node.id
-            if isinstance(node, ast.Name)
-            else node.attr if isinstance(node, ast.Attribute) else None
-        )
+        reference_name = _reference_summary_name(node)
         if reference_name is not None:
             reference_sites_by_symbol[reference_name].add(
                 (node.lineno, scope_symbols[scope_id])
@@ -9861,13 +9899,8 @@ def _private_reference_module_index(
             )
             for subject_expression, type_name, guard_expression in bindings
         ),
-        reference_summaries_by_symbol=tuple(
-            (
-                symbol,
-                len(sites),
-                sorted_tuple({scope_symbol for _, scope_symbol in sites}),
-            )
-            for symbol, sites in sorted(reference_sites_by_symbol.items())
+        reference_summaries_by_symbol=_reference_summaries_from_sites(
+            reference_sites_by_symbol
         ),
         public_declaration_reference_names_by_name={
             name: sorted_tuple(public_declaration_reference_names.get(name, ()))
