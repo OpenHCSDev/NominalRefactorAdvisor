@@ -17,8 +17,9 @@ from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
 )
-from ..ast_tools import fingerprint_function
+from ..ast_tools import SourceModule, fingerprint_function
 from ..class_index import CompactNamedProjectionSurface
+from ..native_syntax import NativePythonSyntaxIndex
 
 from ._base import *
 from ._helpers import *
@@ -227,6 +228,84 @@ class CompactRemainingSystemicModuleProjectionFamily(
                 reference_summaries_by_symbol=reference_sites,
             )
         ]
+
+
+@dataclass(frozen=True)
+class CompactRemainingSystemicProjectionDemand:
+    """External reference summaries needed for target-owned infrastructure."""
+
+    infrastructure_names: frozenset[str]
+
+
+def _remaining_systemic_projection_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactRemainingSystemicProjectionDemand:
+    del config
+    return CompactRemainingSystemicProjectionDemand(
+        infrastructure_names=frozenset(
+            declaration.name
+            for item in target_items
+            if isinstance(item, CompactRemainingSystemicModuleProjection)
+            and item.declares_effect_infrastructure
+            for declaration in item.infrastructure_declarations
+        )
+    )
+
+
+def _project_remaining_systemic_demand(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactRemainingSystemicProjectionDemand):
+        return items
+    projected: list[CompactRemainingSystemicModuleProjection] = []
+    for item in items:
+        if not isinstance(item, CompactRemainingSystemicModuleProjection):
+            continue
+        reference_summaries = tuple(
+            summary
+            for summary in item.reference_summaries_by_symbol
+            if summary[0] in demand.infrastructure_names
+        )
+        if reference_summaries:
+            projected.append(
+                CompactRemainingSystemicModuleProjection(
+                    file_path=item.file_path,
+                    module_name=item.module_name,
+                    concrete_type_functions=(),
+                    implicit_self_mixins=(),
+                    infrastructure_declarations=(),
+                    declares_effect_infrastructure=False,
+                    reference_summaries_by_symbol=reference_summaries,
+                )
+            )
+    return tuple(projected)
+
+
+def _collect_remaining_systemic_ast_demand(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[object]:
+    return list(
+        _project_remaining_systemic_demand(
+            tuple(
+                CompactRemainingSystemicModuleProjectionFamily.collect(parsed_module)
+            ),
+            demand,
+        )
+    )
+
+
+CompactRemainingSystemicModuleProjectionFamily.report_demand_builder = staticmethod(
+    _remaining_systemic_projection_demand
+)
+CompactRemainingSystemicModuleProjectionFamily.ast_demand_collector = staticmethod(
+    _collect_remaining_systemic_ast_demand
+)
+CompactRemainingSystemicModuleProjectionFamily.cached_demand_projector = staticmethod(
+    _project_remaining_systemic_demand
+)
 
 
 def _compact_class_for_detector_name(
@@ -582,6 +661,19 @@ class CompactSpecAxisModuleProjectionFamily(
     CollectedFamily[CompactSpecAxisModuleProjection]
 ):
     item_type = CompactSpecAxisModuleProjection
+    report_presence_predicate = staticmethod(
+        lambda items, config: any(
+            item.families
+            for item in items
+            if isinstance(item, CompactSpecAxisModuleProjection)
+        )
+    )
+    source_collector = staticmethod(
+        lambda source_module, syntax_index: _native_spec_axis_projections(
+            source_module,
+            syntax_index,
+        )
+    )
 
     @classmethod
     def collect(
@@ -589,6 +681,31 @@ class CompactSpecAxisModuleProjectionFamily(
     ) -> list[CompactSpecAxisModuleProjection]:
         del cls
         return [CompactSpecAxisModuleProjection(_spec_axis_families(parsed_module))]
+
+
+def _native_spec_axis_projections(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[CompactSpecAxisModuleProjection] | None:
+    """Project spec axes from the shared top-level assignment fragments."""
+
+    if not syntax_index.is_complete:
+        return None
+    try:
+        statements = tuple(
+            syntax_index.statement_for(node)
+            for node in syntax_index.top_level_assignment_statements()
+        )
+        parsed_module = ParsedModule(
+            path=source_module.path,
+            module_name=source_module.module_name,
+            is_package_init=source_module.path.name == "__init__.py",
+            module=ast.Module(body=list(statements), type_ignores=[]),
+            source=source_module.source,
+        )
+        return [CompactSpecAxisModuleProjection(_spec_axis_families(parsed_module))]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -600,6 +717,19 @@ class CompactValidateShapeModuleProjectionFamily(
     CollectedFamily[CompactValidateShapeModuleProjection]
 ):
     item_type = CompactValidateShapeModuleProjection
+    report_presence_predicate = staticmethod(
+        lambda items, config: any(
+            item.methods
+            for item in items
+            if isinstance(item, CompactValidateShapeModuleProjection)
+        )
+    )
+    source_collector = staticmethod(
+        lambda source_module, syntax_index: _native_validate_shape_projections(
+            source_module,
+            syntax_index,
+        )
+    )
 
     @classmethod
     def collect(
@@ -613,6 +743,53 @@ class CompactValidateShapeModuleProjectionFamily(
                 )
             )
         ]
+
+
+def _native_validate_shape_projections(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[CompactValidateShapeModuleProjection] | None:
+    """Project only direct class ``validate`` methods from native syntax."""
+
+    if not syntax_index.is_complete:
+        return None
+    parsed_module = ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=[], type_ignores=[]),
+        source=source_module.source,
+    )
+    methods: list[ValidateShapeGuardMethodCandidate] = []
+    try:
+        for function_node in sorted(
+            syntax_index.common_captures().get("function", ()),
+            key=lambda node: (node.start_byte, -node.end_byte),
+        ):
+            if syntax_index.declared_name(function_node) != "validate":
+                continue
+            class_node = syntax_index.direct_enclosing_class(function_node)
+            if class_node is None:
+                continue
+            function = syntax_index.function_for(function_node)
+            synthetic_class = ast.ClassDef(
+                name=syntax_index.declared_name(class_node),
+                bases=[],
+                keywords=[],
+                body=[function],
+                decorator_list=[],
+            )
+            candidate = _validate_shape_guard_method_candidate(
+                parsed_module,
+                synthetic_class,
+                function,
+                min_guard_count=2,
+            )
+            if candidate is not None:
+                methods.append(candidate)
+        return [CompactValidateShapeModuleProjection(tuple(methods))]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -643,6 +820,19 @@ class _DataclassNamespaceCliModuleProjectionFamily(
     CollectedFamily[_DataclassNamespaceCliModuleProjection]
 ):
     item_type = _DataclassNamespaceCliModuleProjection
+    report_presence_predicate = staticmethod(
+        lambda items, config: any(
+            item.dataclasses or item.cli_specs
+            for item in items
+            if isinstance(item, _DataclassNamespaceCliModuleProjection)
+        )
+    )
+    source_collector = staticmethod(
+        lambda source_module, syntax_index: _native_dataclass_namespace_cli_projections(
+            source_module,
+            syntax_index,
+        )
+    )
 
     @classmethod
     def collect(
@@ -688,6 +878,80 @@ class _DataclassNamespaceCliModuleProjectionFamily(
                 cli_specs=cli_specs,
             )
         ]
+
+
+def _native_dataclass_namespace_cli_projections(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[_DataclassNamespaceCliModuleProjection] | None:
+    """Project sparse dataclass/CLI mirrors from selected declarations."""
+
+    if not syntax_index.is_complete:
+        return None
+    file_path = str(source_module.path)
+    try:
+        dataclasses: list[_DataclassNamespaceProjection] = []
+        for class_node in syntax_index.top_level_declarations("class"):
+            class_source = syntax_index.source_for(class_node)
+            decorated_source = (
+                syntax_index.source_for(class_node.parent)
+                if class_node.parent is not None
+                and class_node.parent.type == "decorated_definition"
+                else class_source
+            )
+            if b"dataclass" not in decorated_source or b"from_namespace" not in (
+                class_source
+            ):
+                continue
+            parsed_class = syntax_index.class_for(class_node)
+            field_names = _dataclass_config_field_names(parsed_class)
+            if not field_names:
+                continue
+            namespace_assignment = _from_namespace_keyword_names(parsed_class)
+            if namespace_assignment is None:
+                continue
+            from_namespace_line, namespace_field_names = namespace_assignment
+            dataclasses.append(
+                _DataclassNamespaceProjection(
+                    file_path=file_path,
+                    line=parsed_class.lineno,
+                    class_name=parsed_class.name,
+                    field_names=field_names,
+                    namespace_field_names=namespace_field_names,
+                    from_namespace_line=from_namespace_line,
+                )
+            )
+        cli_statements = tuple(
+            syntax_index.statement_for(node)
+            for node in syntax_index.top_level_assignment_statements()
+            if b"ArgumentSpec" in syntax_index.source_for(node)
+        )
+        cli_module = ParsedModule(
+            path=source_module.path,
+            module_name=source_module.module_name,
+            is_package_init=source_module.path.name == "__init__.py",
+            module=ast.Module(body=list(cli_statements), type_ignores=[]),
+            source=source_module.source,
+        )
+        cli_specs = tuple(
+            _CliArgumentSpecProjection(
+                file_path=file_path,
+                name=name,
+                line=line,
+                field_names=field_names,
+            )
+            for name, line, field_names in _cli_argument_spec_fields(cli_module)
+        )
+        if not dataclasses and not cli_specs:
+            return []
+        return [
+            _DataclassNamespaceCliModuleProjection(
+                dataclasses=tuple(dataclasses),
+                cli_specs=cli_specs,
+            )
+        ]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
 
 
 def _dataclass_namespace_cli_mirror_candidates_from_projections(
@@ -883,6 +1147,64 @@ def _compact_method_shape_cohorts(
         (supporting_witnesses, cohorts[supporting_witnesses, fiber_keys])
         for supporting_witnesses, fiber_keys in sorted(cohorts)
     )
+
+
+@dataclass(frozen=True)
+class InheritanceMethodShapeProjectionDemand:
+    """Method fibers capable of producing findings with target evidence."""
+
+    fiber_keys: frozenset[_MethodShapeFiberKey]
+
+
+def _inheritance_method_shape_projection_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> InheritanceMethodShapeProjectionDemand:
+    del config
+    return InheritanceMethodShapeProjectionDemand(
+        fiber_keys=frozenset(
+            _compact_method_shape_fiber_key(item)
+            for item in target_items
+            if isinstance(item, MethodShape)
+        )
+    )
+
+
+def _project_inheritance_method_shape_demand(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, InheritanceMethodShapeProjectionDemand):
+        return items
+    return tuple(
+        item
+        for item in items
+        if isinstance(item, MethodShape)
+        and _compact_method_shape_fiber_key(item) in demand.fiber_keys
+    )
+
+
+def _collect_inheritance_method_shape_ast_demand(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[object]:
+    return list(
+        _project_inheritance_method_shape_demand(
+            tuple(_inheritance_method_shapes(parsed_module, 0)),
+            demand,
+        )
+    )
+
+
+InheritanceMethodShapeFamily.report_demand_builder = staticmethod(
+    _inheritance_method_shape_projection_demand
+)
+InheritanceMethodShapeFamily.ast_demand_collector = staticmethod(
+    _collect_inheritance_method_shape_ast_demand
+)
+InheritanceMethodShapeFamily.cached_demand_projector = staticmethod(
+    _project_inheritance_method_shape_demand
+)
 
 
 def _option_record_quotient_compression_certificate(
@@ -5783,6 +6105,78 @@ class PublicBareSupportModuleProjectionFamily(
                 ),
             )
         ]
+
+
+@dataclass(frozen=True)
+class PublicBareSupportProjectionDemand:
+    """Reference names needed to score target-owned support definitions."""
+
+    function_names: frozenset[str]
+
+
+def _public_bare_support_projection_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> PublicBareSupportProjectionDemand:
+    del config
+    return PublicBareSupportProjectionDemand(
+        function_names=frozenset(
+            definition.function_name
+            for item in target_items
+            if isinstance(item, PublicBareSupportModuleProjection)
+            for definition in item.definitions
+        )
+    )
+
+
+def _project_public_bare_support_demand(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, PublicBareSupportProjectionDemand):
+        return items
+    projected: list[PublicBareSupportModuleProjection] = []
+    for item in items:
+        if not isinstance(item, PublicBareSupportModuleProjection):
+            continue
+        reference_counts = tuple(
+            (name, count)
+            for name, count in item.reference_counts
+            if name in demand.function_names
+        )
+        if reference_counts:
+            projected.append(
+                PublicBareSupportModuleProjection(
+                    file_path=item.file_path,
+                    module_role=None,
+                    definitions=(),
+                    reference_counts=reference_counts,
+                )
+            )
+    return tuple(projected)
+
+
+def _collect_public_bare_support_ast_demand(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[object]:
+    return list(
+        _project_public_bare_support_demand(
+            tuple(PublicBareSupportModuleProjectionFamily.collect(parsed_module)),
+            demand,
+        )
+    )
+
+
+PublicBareSupportModuleProjectionFamily.report_demand_builder = staticmethod(
+    _public_bare_support_projection_demand
+)
+PublicBareSupportModuleProjectionFamily.ast_demand_collector = staticmethod(
+    _collect_public_bare_support_ast_demand
+)
+PublicBareSupportModuleProjectionFamily.cached_demand_projector = staticmethod(
+    _project_public_bare_support_demand
+)
 
 
 def _public_bare_support_function_candidates_from_projections(

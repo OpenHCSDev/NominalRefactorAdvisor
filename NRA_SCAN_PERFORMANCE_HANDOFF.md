@@ -1,5 +1,145 @@
 # NRA scan-performance handoff
 
+## 2026-08-08 demand and join reassessment checkpoint
+
+The live DQDock production inventory and the read-only benchmark snapshot are
+identical at this checkpoint: 1,343 Python modules, 39,106,631 source bytes,
+and relative-path/content digest
+``d7ee8ee578fb5ed951d48409beb6caf07d6b5ec8599539778659fa71c45922f4``.
+The exact focused report still contains the same 12 findings from the same four
+detectors: one ``carrier_composition_retreat``, eight
+``distributed_boundary_fanout``, one ``generic_role_case_table``, and two
+``role_surface_drift`` findings.
+
+Two structural costs were removed after the parallel-construction checkpoint.
+Cold workers now pass their already-certified AST-free projections directly to
+the current join instead of writing roughly 24,000 family payloads and
+immediately reopening them.  The persistent files remain the authority for
+later scans.  Failed family writes can no longer masquerade as complete cache
+entries: zero-byte remnants are rejected, and a versioned bundle marker is
+published only after every family path is nonempty.  Cyclic collection is also
+deferred at the module boundary while all AST-bound caches are still cleared;
+the streamed module AST is acyclic, and collecting after every one of 1,343
+shards was fixed overhead.  On the full no-cache gate this alone reduced
+preparation from 31.206 to 26.259 seconds and external wall time from 39.86 to
+34.84 seconds without changing findings.
+
+The next class-family consolidation was then completed rather than left as a
+proposal.  Exact-type guards, closed-axis branches, and AutoRegister function
+references now derive together from the shared module syntax index.  Compact
+typed-node positions avoid rediscovering candidate nodes, and only functions
+that actually invoke ``AutoRegisterMeta`` pay for their symbol walk.  All class
+projection representations match the clean implementation across the 48
+largest modules.  On that replay, class-family CPU fell from 13.784 to 8.290
+seconds and all-family wall time fell from 8.146 to 7.805 seconds.  Sequential
+class projection across the same modules fell from 17.754 to 15.737 seconds.
+The exact no-cache CLI gate, however, improved by only another 0.60 second,
+from 34.84 to 34.24 seconds.  This is retained as a shared-authority dependency
+but decisively rejects class-facet consolidation alone as the endpoint.
+
+The serial join's dominant quadratic operation was replaced structurally.
+``FiniteAxisSystem.confusability_components`` unions equal correlated view
+tuples directly instead of materializing every edge of an equivalence clique.
+It preserves the joint axis values rather than decomposing extrema.  On the
+saved DQDock role projections, the generic-role join fell from 13.414 to 0.544
+seconds (24.7x) while all 512 repository findings had the identical digest.
+The generic authority now also replaces the earlier detector-local union-find
+implementation.
+
+The last comparable cache-enabled empty-cache exact CLI gate, measured before
+the class-facet consolidation, takes 41.71 external seconds,
+split as 30.083 seconds preparation and 10.187 seconds analysis.  This is 5.47x
+faster than the original 228.165-second sequential checkpoint and 1.17x faster
+than the 48.861-second first parallel checkpoint, but it is not an
+orders-of-magnitude endpoint.  The current cache-disabled CPU floor is 34.24
+external seconds, split 25.632/7.255 seconds.
+
+Several routes were rejected by representative replay rather than promoted:
+
+- Target-only projection completes in 0.235 seconds but misses 11 of 12 exact
+  findings because their correlated declarations and uses cross modules.
+- Conservative lexical demand closure still selects 641 of 1,343 modules and
+  30.7 of 39.1 MB, so it cannot close the gap.
+- Even an oracle restricted to the four detectors known after the full run
+  takes 17.63 seconds (15.924 preparation, 1.626 analysis).  Detector-family
+  selection alone therefore has only a further 2x best case and is rejected as
+  the endpoint.
+- Deriving every requested subtree walk from the shared syntax index changed
+  the 48-module wall from 8.327 to 8.446 seconds while adding metadata and
+  memory.  Its premise failed and the prototype was reverted.
+
+The remaining dominant term is still the 25.632-second extraction stage, but
+the strongest measured class consolidation moved end-to-end wall by only 1.7%.
+This route is now in a demonstrated local minimum.  A fresh 48-module replay
+places role-guarded extraction first at 9.898 aggregate CPU seconds, followed
+by class at 8.371, role-surface at 6.986, distributed-boundary at 4.617, and
+semantic extraction at 4.568.  On the largest 1.28-MB shard, call-level
+profiling attributes 4.264 of 9.372 seconds to all repeated ``NodeVisitor``
+dispatch.  Even the impossible best case of deleting that entire term would
+not produce a 2x shard speedup, so one more visitor consolidation cannot be an
+order-scale route.
+
+Meeting a materially lower target therefore requires a different extraction
+engine or changing which source facts the exact report needs; further isolated
+walk, class-facet, or collector tuning cannot bridge the measured gap.  Exact
+value parity was replayed across all 25 families on the 48 largest modules,
+nested lexical cases were added to the three consolidated projection parity
+gates, and the full suite passes all 1,004 tests in 340.84 seconds.
+
+## 2026-08-08 parallel cold-construction checkpoint
+
+The current DQDock production inventory has grown to 1,343 Python modules and
+39,106,631 source bytes.  Its exact source-tree digest for this checkpoint is
+``08316f120af41ab03645a4513ff37c44984ff51d30d0c8d5876a660bb581fdf3``.
+An isolated empty-cache exact scan of
+``definitive_refinement_sparse_projection.py`` took 228.165 external seconds
+at 346,308 KB RSS.  NRA reported 210.604 seconds of compact projection
+preparation and 15.815 seconds of analysis, so preparation is 93.0% of the
+internal runtime and remains the dominant term.
+
+A representative replay over the 48 largest modules (14,912,962 source bytes)
+constructed all 25 compact families in 49.094 seconds sequentially and 8.850
+seconds with 12 module workers, preserving 31,903 projected items.  The 5.5x
+local scaling is material but cannot by itself deliver an orders-of-magnitude
+end-to-end reduction because the global join remains serial.  It was therefore
+accepted only as a structural execution layer, not as the endpoint.
+
+Exact compact orchestration now schedules cold module shards through the
+existing ``--parse-workers`` authority.  Each worker parses one module,
+constructs all missing compact families, runs a missing module-local shard when
+needed, persists bounded family payloads, and returns only AST-free oversized
+fallbacks and findings.  The parent retains the single projection-manifest and
+analysis-cache authorities.  Largest modules are scheduled first with unit
+chunks to avoid tail imbalance, while ``--parse-workers 1`` preserves the
+sequential lane.
+
+On the identical DQDock source digest, 12 workers reduced the exact empty-cache
+gate from 228.165 to 48.861 external seconds (4.67x).  NRA's split fell from
+210.604/15.815 seconds to 31.753/15.186 seconds.  Both runs completed all 252
+detectors and returned the identical 12 findings: one
+``carrier_composition_retreat``, eight ``distributed_boundary_fanout``, one
+``generic_role_case_table``, and two ``role_surface_drift`` findings.  The
+parallel process-tree peak was 1,355.4 MB, so this route exchanges memory for
+latency and does not satisfy the requested final state.
+
+The representative deterministic profile recorded 585.7 million Python calls;
+91.8 profiled seconds were under repeated ``NodeVisitor`` dispatch and another
+25.0 seconds under repeated ``ast.walk`` dispatch.  This validates the next
+architecture step: one module syntax authority with derived detector views.
+The first production consumers now share one class-qualified named-function
+traversal, and repeated-builder extraction consumes the already-shared bounded
+function-body projection.  On the same 48-module replay, builder projection
+fell from 3.131 to 1.176 seconds with object-for-object parity across all 48
+modules.  Total replay time fell from 53.898 to 51.204 seconds; this incremental
+result is retained only because it wires consumers onto the dominant shared
+syntax route, not because it closes the remaining gap.
+
+The next work must consolidate the class, role-surface, distributed-boundary,
+semantic, and environment visitors behind that module syntax authority, then
+make focused global joins report-demand-driven.  Further isolated collector
+micro-tuning is rejected unless it is a dependency of that consolidation.
+Checkpoint verification passes all 1,003 tests in 446.73 seconds.
+
 ## 2026-08-03 exact-global checkpoint
 
 Exact/global optimization is now a separate active workstream from the bounded
@@ -1722,3 +1862,434 @@ timeout until NRA's own budget is proven reliable.
 Do not run the expensive NRA reproduction while a DQDock benchmark is active.
 NRA work must remain in the NRA checkout; it must not edit the authoritative
 DQDock receipt checkout.
+
+## 2026-08-08 native source-extraction checkpoint
+
+This checkpoint supersedes the original remaining-work ordering above for cold
+compact scans.  On the immutable 1,343-path / 39,106,631-byte DQDock snapshot,
+the current pre-native exact baseline was 34.24 external seconds, split into
+25.632 seconds of projection preparation and 7.255 seconds of analysis.  It
+returned the historical 12 focused findings with all 252 detectors complete.
+The old 228.165-second empty-cache baseline has therefore fallen by 85.0%, but
+the result is still not an order-scale interactive cold scan.
+
+CPython 3.14 exposes ``sys._jit`` on this host but reports JIT unavailable.  A
+Cython compilation of the two role detector families preserved their exact
+projection digests but regressed representative wall time from 7.72 to 8.55
+seconds, so compiled Python was rejected.  In contrast, tree-sitter parsed and
+queried the 48 largest saved modules (14,912,962 bytes) into 885,433 stable
+syntax events in 0.474 seconds with 12 workers, versus 7.718 seconds for the 25
+Python projection families.  That 16.3x physical result justified a shared
+native syntax authority and exact AST fallback.
+
+``NativePythonSyntaxIndex`` now owns one tree-sitter parse and compiled query
+set per source worker.  ``CollectedFamily.source_collector`` is a declarative,
+derived production hook; source-built projections use the same family cache
+identity and AST-free certification as legacy collection.  The registration
+shape and compact role-guarded families have native collectors.  Full-snapshot
+parity is 1,343/1,343 modules for each family; the one grammar-error module
+falls back to the Python AST.  With role-guarded measured first, aggregate
+family CPU fell from 26.23 to 14.12 seconds, while registration fell from 10.87
+to 2.13 seconds.  Immutable native queries are process-lifetime authorities and
+are deliberately not cleared by module AST-memory release.
+
+Those isolated wins did not transfer while the other 23 projection families
+still require Python AST construction.  On the same heavily saturated host, an
+exact same-code scan with eager native mixed-mode collection took 41.69 external
+seconds / 40.288 internal seconds; disabling the two source collectors took
+39.99 / 38.759 seconds.  Both returned the identical 12 findings.  The absolute
+times are invalid as release performance evidence because unrelated
+uninterruptible work held load average above 160, but the paired result rejects
+paying for two parsers in a mixed shard.  Production now uses native extraction
+only when every missing family in that source shard is source-native and no
+local detector requires the AST.  Mixed shards remain on the single Python AST
+path.  This preserves useful all-native/cache-repair behavior without regressing
+today's cold scan.
+
+A native compact role-surface prototype was also rejected before promotion.
+On the 48 largest modules its first exact-fragment design matched only 5 modules
+and took 13.10 aggregate CPU seconds versus 12.54 legacy.  A fully native
+declaration/use prototype made those two facets set-exact and reduced their
+combined CPU to about 1.5 seconds, but generic role-case correlation still took
+7.75 seconds and changed 76 of 351 sites in the largest test module.  The whole
+candidate remained only about 16% faster before native parse cost.  This is not
+strong enough to bridge the target gap, so no role-surface production code was
+changed.
+
+The next accepted route must operate at family-set scale: migrate enough of the
+remaining universal projection authority that a representative shard can skip
+Python AST construction entirely, then reopen mixed/all-native orchestration
+only after a local replay demonstrates a large end-to-end collapse.  Do not
+promote another isolated source collector merely because its family-local CPU
+number improves.
+
+## 2026-08-08 native family-set expansion checkpoint
+
+The shared native authority now has exact source collectors for 13 of the 25
+active compact families.  In addition to registration and role-guarded facts,
+the migrated set is export dictionaries, repeated builder calls, declared-field
+extraction, formal-boundary constants, generated-boundary constants, subclass
+traversal, export-policy predicates, support-prelude facts, validate-shape
+facts, dataclass/CLI mirrors, and spec-axis facts.  Every retained collector
+matches its legacy family on all 1,343 frozen DQDock modules; the one known
+tree-sitter grammar-error module requests the exact Python AST fallback.
+
+The common native query and fragment authority are shared production
+dependencies rather than family-local parsers.  Query captures and parsed
+statement/expression fragments are cached once per module index.  Statement
+fragments are parsed under a synthetic outer block while preserving their raw
+indentation bytes; this repaired a correctness defect where text dedenting
+changed indented multiline string values.  All retained families were replayed
+after that repair.  Support-module catalog inspection now uses the same native
+assignment authority with a grammar-error AST fallback instead of an
+unconditional second Python parse.
+
+Eager mixed mode was re-evaluated after seven exact collectors existed.  Two
+same-host cache-disabled exact runs per mode returned the identical historical
+12 findings.  The baseline median was 34.787 seconds and the eager-mixed median
+was 33.443 seconds, a 1.344-second / 3.9% reduction.  That cannot materially
+close the remaining target and is not required by the all-native endpoint, so
+the experiment was reverted.  Production still invokes native extraction only
+when every missing family in a shard is source-native and no local detector
+requires the Python AST.
+
+Three more routes failed their representative promotion gates and were removed:
+
+- parsing every class-owned function fragment for inheritance method shapes was
+  exact only after the multiline-string fix, but took 19.61 aggregate CPU
+  seconds versus 8.60 for the legacy family;
+- broad identifier/attribute capture for public-support reference counts had 33
+  mismatching modules, took 12.97 seconds versus 6.84 legacy, and inflated the
+  shared query costs paid by already-migrated families;
+- the earlier eager-mixed result above remained only a 3.9% local minimum.
+
+The retained sparse families are coverage dependencies, not an endpoint.
+Representative examples include subclass traversal at 0.109 versus 0.764
+aggregate CPU seconds, support prelude at 0.056 versus 0.284, and validate-shape
+facts at 0.368 versus 0.928.  Export-policy and spec-axis collection are roughly
+neutral alone.  The normal exact cold path is therefore still the single Python
+AST path until the remaining 12 complex families migrate.  Full verification
+passes 1,020 tests in 342.32 seconds using a workspace-local temporary tree;
+all focused native gates pass and ``git diff --check`` is clean.
+
+## 2026-08-08 sixteen-family native checkpoint
+
+Three additional production families now use the shared source authority:
+compact distributed-boundary facts, environment-boolean facts, and the bundled
+compact nominal-bypass projection.  Each is exact on all 1,342 grammar-valid
+frozen DQDock modules; the same generated registry module remains the sole
+tree-sitter grammar fallback.  The source-native set is therefore 16 of the 25
+active global projection families.  Production mixed shards remain AST-only.
+
+The distributed-boundary collector uses a dedicated keyword/attribute query
+and canonical persisted ordering.  Its full-snapshot CPU fell from 33.626 to
+26.834 seconds (20%).  The environment collector parses only possible readers,
+authority declarations, and methods of classes small enough to be wrappers;
+its CPU fell from 20.006 to 14.558 seconds (27%).  These two families are
+retained primarily as required all-native coverage dependencies.
+
+Nominal bypass was the stronger result.  A component profile attributed 8.292
+of 20.432 legacy seconds to scattered ``isinstance`` recovery, with templates,
+wrappers, cancelable compositions, and variant methods making up the rest.  The
+native collector reconstructs exact correlated call/function scopes, parses
+only qualifying statements and expressions, and feeds the existing template,
+wrapper, composition, and variant semantic authorities.  It does not parse
+whole functions.  Final replay was 1,342 exact plus one grammar fallback with
+zero mismatches.  Collection CPU fell from 21.590 to 7.590 seconds (64.8%); it
+remained 51.5% faster even when charged the entire 2.886-second native parse,
+which is actually shared by all source families.  Focused native and AST-bypass
+verification passes 19 tests.
+
+The updated production-order profile assigns 58.886 aggregate CPU seconds to
+the nine remaining families.  Class projection is dominant at 21.756 seconds,
+followed by role surface at 10.804 and semantic projection at 8.190.  Private
+reference and remaining-systemic projection are below one second and are not
+valid next routes.  An AST-based field inventory confirmed every persisted
+class facet has a production consumer.
+
+A proposed dedicated class-facet visitor was rejected and removed.  In
+isolation it reproduced all four syntax facets on 1,343/1,343 modules and cut
+their CPU by more than half.  The rest of the class collector, however, already
+reuses the generic module index for its class, selector, roster, and registry
+walks.  The new visitor therefore added a traversal instead of replacing the
+one class-wide event authority, and complete class-family CPU regressed.  This
+invalidates an isolated facet rewrite.  The next class route must replace the
+whole class event stream or complete a source-native class authority; it cannot
+optimize only the first consumer of the shared traversal.
+
+The cache-disabled exact DQDock CLI gate after this checkpoint returns the same
+12 focused findings (carrier composition 1, distributed boundary 8, generic
+role case table 1, role surface drift 2) with all 252 detectors complete.  The
+host-contended 35.380-second wall time is correctness evidence only, not a new
+release baseline.  Full verification passes all 1,022 tests in 362.61 seconds;
+the workspace-local pytest tree was deleted after completion.
+
+## 2026-08-08 post-checkpoint route rejections
+
+Four further prototypes were measured against the complete immutable snapshot
+and removed when their premises failed.
+
+First, a sparse native semantic-projection replay reconstructed lexical class
+and function shells and fed selected collection, branch, match, and construction
+fragments into the existing semantic visitor.  It missed return projections in
+27 of 1,343 modules and requested the known grammar fallback in one module.
+More decisively, with the shared tree-sitter indexes already built, collection
+took 29.872 aggregate CPU seconds versus 7.886 for the legacy AST visitor.  The
+route was removed before parity work because it was already 3.8x slower at its
+production boundary.
+
+Second, the generic ``ModuleSyntaxIndex`` constructor was prototyped without
+its two currently unconsumed parent-metadata streams and with specialized child
+ownership propagation.  Every consumed index view matched on 1,343/1,343
+modules, and paired construction CPU fell from 15.344 to 6.216 seconds.  The
+9.128 aggregate-CPU-second maximum saving is under one second at the 12-worker
+production boundary, however, and this AST-only index is not a dependency of
+the required all-native endpoint.  The handoff above already demonstrates that
+a comparable class consolidation moved the exact CLI by only 0.60 second, so
+this locally large percentage was rejected and reverted under the end-to-end
+admission rule.
+
+An attempted follow-on derivation of AutoRegister referenced symbols from the
+single class event stream preserved the complete facet digest
+``911940dc6021a4e57d787f78c1ba0843fc6e3f1bf0457ef52e9a3d1f0c0d3fe6`` but
+regressed facet CPU from 3.432 to 4.354 seconds.  Updating every active lexical
+builder cost more than replaying only the functions proved to invoke
+``AutoRegisterMeta``.  That change was also reverted.
+
+Finally, a family-set native function-event query captured 1,594,453
+identifier, loop, exception, augmented-store, and import events in 1.354 CPU
+seconds.  Its first correlation consumer was not viable: native available-
+abstraction collection took 9.388 seconds versus 4.173 legacy and differed in
+1,142 modules.  The query and consumer were removed rather than extending an
+invalid broad-capture design to public-support and private/systemic families.
+The cheaper selective-class fallback is not a structural alternative: under
+the production no-tests policy, class-free modules are only 110 of 920 paths
+and 806,916 of 32,205,091 source bytes (2.5%).  Class-bearing modules contain
+the dominant workload.
+
+No rejected implementation remains.  The shared enclosing-function lookup
+used by the accepted nominal native collector remains on the nominal syntax
+authority; its focused AST-bypass and compact-candidate gates pass 4/4 tests.
+Compilation, Black, and ``git diff --check`` are clean.  The source-native set
+therefore remains 16 of 25 families.  The demonstrated local minimum is now
+sharper: completing the cold target requires a native representation that
+emits correlated class/function facts without Python-side broad-event replay,
+or an equivalent extraction-engine change.  AST visitor/index tuning,
+class-free fast paths, and uncorrelated tree-sitter capture cannot bridge the
+remaining end-to-end gap.
+
+### Sparse whole-class feasibility result
+
+A subsequent complete-family probe changed the class-route premise without
+promoting partial code.  On the 920-module production/no-tests inventory, the
+minimum AST fragments needed for class headers, direct method signatures, and
+direct class assignments comprise 16,934 classes, 26,836 direct methods, and
+38,596 assignments.  They parse in 3.237 aggregate CPU seconds.  A sparse
+lexical module containing exact imports, declarations, decorators, class
+assignments, headers, line spans, and stub method bodies then ran the existing
+complete ``CompactModuleClassProjectionFamily`` in 11.131 seconds versus
+23.082 legacy (51.8% faster).  Its differences are confined to twelve
+body-derived fields: AutoRegister reference correlation, closed-axis branches,
+nominal surfaces, ABC optimizer methods, exact-type guards, carrier field
+facts, and six much rarer registry/wrapper/nominal fields.
+
+The all-body control proves the sparse module's structural completeness.  When
+every retained top-level/direct-class function used its exact body, all 919
+grammar-valid modules matched every projection field and the known grammar
+module requested fallback.  That control regressed to 37.304 versus 26.891
+legacy seconds, so parsing all method bodies is rejected.  Selective native
+body-facet synthesis is required.
+
+The first selective facet is physically viable.  Direct native AutoRegister
+receiver/reference correlation, with full AST parsing only for functions
+proved to call ``AutoRegisterMeta``, takes 3.184 seconds and matches 914 of 919
+grammar-valid production modules.  The five residual mismatches are all class-
+pattern syntax: Python AST exposes ``ast.Name``/``ast.BinOp``-style dotted
+patterns as ``Attribute`` nodes while tree-sitter exposes ``dotted_name``.
+Capturing the first dotted-name edge is the concrete parity repair.  No probe
+code is retained yet.  The next class implementation should combine this
+repaired facet with the sparse structural skeleton, then synthesize
+if/match/assert facets and parse exact bodies only for the 9,295 methods (5.83
+MB) whose nontrivial bases make their complete ABC-optimizer payload a required
+production fact.  Promotion still requires object-exact parity and a complete-
+family replay with a margin large enough to preserve the current 2x sparse
+advantage.
+
+### Sparse whole-class route invalidation
+
+The selective implementation completed the correctness experiment and then
+failed its production-value gate.  The repaired AutoRegister correlation,
+native if/match/assert facets, native nominal method-flow facts, native registry
+method views, exact ABC bodies, constructors, the three true forwarding
+wrappers, the one registry-order function, and function-local classes matched
+the complete legacy projection object-for-object on all 919 grammar-valid
+production modules and all 1,342 grammar-valid full-snapshot modules.  The same
+generated registry module remained the sole exact AST fallback.  Selective
+full-body parsing was bounded to approximately 9,500 functions and 5.95 MB.
+
+Correctness did not transfer to performance.  On the full 1,343-module replay,
+the completed source collector took 38.214 aggregate CPU seconds versus 23.398
+for the legacy class collector; the 920-module production replay similarly took
+34.496 versus 24.262 seconds.  The implementation was therefore not promoted.
+
+More decisively, an exact family-set replay on the 48 largest modules compared
+the current one-AST/all-25 path with one shared AST for the eight residual
+families plus native collection for the other 17.  The legacy path took 46.704
+aggregate CPU seconds; the hybrid regressed to 59.856.  Component replay put
+the 17 native collectors at 37.412 seconds and their shared native parse at
+1.224 seconds.  Thus even the impossible best case in which the eight remaining
+families became free would reduce the legacy family-set cost by only 17.3%.
+Class collection alone was the largest native cost at 16.812 seconds.
+
+This invalidates “finish native family coverage” as an order-scale route, not
+just this class implementation.  The source-native set remains 16 of 25, the
+class prototype and its tests were removed, and no long CLI benchmark was run
+after the lower bound failed.  A viable next architecture must reduce or avoid
+the complete family-set work itself; swapping its syntax representation while
+preserving every eagerly produced projection cannot close the cold target.
+
+## 2026-08-08 report-target demand checkpoint
+
+The next architecture was tested at the report boundary rather than by making
+the complete global projection cheaper.  A target-only all-252-detector scan of
+``definitive_refinement_sparse_projection.py`` completes in 1.589 internal
+seconds, establishing that the physical latency target is reachable, but it
+returns only the local carrier-composition finding.  The other eleven reference
+findings genuinely require repository context.
+
+The target's complete role and distributed projections provide 82 and 93 field
+keys respectively.  Filtering context projection by those keys reduces role
+declarations from 24,064 to 159, role uses from 45,326 to 1,086, distributed
+declarations from 26,717 to 177, distributed uses from 84,032 to 4,942, and
+carrier facts from 8,371 to the target's 25.  A full saved-artifact replay
+preserves the four relevant detector outputs object-for-object: one carrier,
+two role-surface, one generic-role-table, and eight distributed-boundary
+findings.
+
+An end-to-end 12-worker prototype that still parsed all 919 context modules but
+emitted only those demanded facts returned all twelve stable finding IDs in
+8.631 seconds (6.623 preparation, 2.008 join).  This was a 4x structural win but
+was rejected as an endpoint because parsing the entire context remained the
+dominant term.  A 29-path oracle frontier reached 2.694 seconds, but it also
+created a false ``seed_indices`` role finding when the inheritance/declaration
+context was truncated.  That counterexample proves a complete correlated class
+header graph is a correctness dependency; a mere text-hit frontier is not an
+exact scan.
+
+The corrected prototype now uses one shared native syntax index per context
+module, exact field-demanded role extraction, exact generic-role extraction
+bounded by the target's broad-axis and shared-case tokens, filtered native
+distributed facts, and a target/use/declaration ancestor closure over the class
+header catalog.  Only 988 of the 16,934 production classes survive into the
+join.  It returns the exact historical twelve stable finding IDs with all 252
+detectors instantiated in 3.88–4.20 seconds; the join itself is only
+0.34–0.36 second.  Representative aggregate worker CPU is 4.06 seconds for the
+shared native parse, 3.99 for class headers, 8.39 for demanded role facts, and
+7.89 for demanded distributed facts.
+
+The native demanded role facts are set-exact against the AST projection on all
+919 grammar-valid production modules; the known generated grammar-error module
+requests the AST fallback.  A focused fixture also proves demanded role,
+generic-role, and distributed facts against their canonical AST families.  The
+distributed source authority now accepts an optional field demand and can reuse
+the already-derived class base view.  These helpers are retained as dependencies
+of the report-demand worker, not enabled as ordinary whole-family collectors.
+
+This checkpoint is empirical strength for the architecture, not yet a complete
+production optimization.  The prototype deliberately gives context projections
+only to the four detectors that produce the DQDock report.  The other 65 compact
+global detectors still need declared target-witness contracts before the normal
+CLI can skip their context facts without creating false negatives on another
+workload.  Therefore the production cache-disabled CLI remains on the exact
+34.866-second path.  The concrete wiring plan is: make witness/demand derivation
+a declaration on each detector/family authority; stage full report-target
+projections first; union detector demands per family; run the demanded source
+worker with AST fallback; and retain the existing eager path whenever any
+selected detector lacks a demand contract.  Do not promote a DQDock-only
+shortcut or report the 3.9-second prototype as the default scan time.
+
+## 2026-08-08 production demand and incremental-cache checkpoint
+
+Report demand is now a production family contract rather than a DQDock-only
+prototype.  ``CollectedFamily`` can declare target-demand construction,
+source/AST demand collection, cached-view projection, and target-presence
+behavior.  The compact worker stages complete target facts, derives the unioned
+family demand, and persists demanded context views without publishing them as
+complete family entries.  Role surface, distributed boundary, class/ABC,
+semantic descent, and role-guarded access have explicit demand contracts.
+Single-family detectors whose target family is empty use a conservative
+presence demand that proves context-only findings cannot enter the report
+scope.  Families without a declared contract remain eager.
+
+Demand identities and family-content signatures use a canonical dataclass,
+mapping, and set representation.  This fixed a process-hash-order failure that
+made equivalent ``frozenset`` demands miss across runs.  Each demanded family
+view has a lightweight semantic-signature sidecar.  Detector results are cached
+against the family-content signature rather than the raw repository digest, so
+an irrelevant source edit can reuse a detector shard exactly.  Demand hashes
+are computed once per family rather than once per source, and a demand-aware
+bundle marker collapses the 920-by-family cache-stat fan-out to one marker per
+unchanged module.
+
+The persistent source-file signature manifest is now also the projection source
+identity authority.  On a focused cache miss, unchanged context files are
+validated by stat and are not reread as source text; the report target and
+genuinely missing shards remain the only text reads.  A regression test spies on
+``Path.read_text`` after an unrelated edit and proves the unchanged context
+module is not loaded.  The complete analysis-cache suite passes after updating
+the obsolete assumption that every detector shard must be identical across two
+different report-derived demands; compatible shards are reused and
+target-specific shards are joined again.
+
+On the immutable DQDock snapshot, an append-only one-context-file edit now runs
+the complete compact 252-detector surface in 2.470 internal seconds and 3.49
+seconds wall, returning the same twelve findings.  The normal ``loop`` CLI uses
+its intentionally partial evidence-local contract and returns the same twelve
+observed findings in 1.350 internal seconds and 2.54 seconds wall, with 183
+detectors rerun and 69 explicitly reported as omitted.  The earlier exact
+aggregate-miss floor was approximately seven internal seconds before demand
+hash and bundle-marker consolidation.
+
+OpenHCS was cloned recursively at commit ``5d124139a`` with all eight submodules
+checked out.  Its main checkout contains 1,827 Python files including tests and
+submodules.  A cache-disabled focused scan of
+``openhcs/core/steps/function_runtime.py`` returns 45 findings with all 252
+detectors complete in 24.636 internal seconds (16.527 preparation, 8.109 join)
+and 26.02 seconds wall.  After one context-file edit, the loop CLI returns the
+same 45 observed findings in 1.297 internal seconds and 2.24 seconds wall.  An
+exact compact replay of that edit takes 9.970 internal seconds and 10.97 seconds
+wall because the edit shifts source lines and invalidates undemanded family
+content.  This generalization gate therefore supports the few-second edit-loop
+claim, but it also proves that exact changed-context reuse still depends on the
+remaining family contracts.
+
+Do not use the latest DQDock cache-disabled number as a baseline: the host was
+heavily swapped, the default 20-second deadline first terminated the scan, and
+the 120-second rerun completed all twelve findings in a non-comparable 76.742
+internal seconds.  The healthy OpenHCS cold gate and the earlier DQDock
+approximately 29-second checkpoint both show that cold preparation remains the
+dominant gap.
+
+All 25 collected families now have an explicit report-demand or report-presence
+contract.  The later contracts preserve positive-fixture results while reducing
+saved DQDock context facts as follows: repeated-builder facts 37,044 to 4,162;
+export groups 839 to 1; inheritance methods 26,836 to 1,462; available
+abstraction facts 920 to 1; systemic facts 920 to 3; and nominal-bypass facts
+920 to 56.  The corresponding OpenHCS collapses are 16,881 to 450, 413 to 0,
+18,399 to 467, 1,244 to 1, 1,244 to 4, and 1,244 to 127.  Delegate and public
+support views also filter by target symbols.  Private-reference evidence remains
+deliberately eager: its transitive reference graph needs a correlated closure,
+and its measured collection cost is below one aggregate CPU second, so an
+independent-extrema shortcut would add correctness risk without closing the cold
+runtime gap.
+
+Completing those contracts did not itself collapse the dominant cold term.  On
+a healthy OpenHCS comparison the join improved by only 0.708 second while
+preparation remained dominant; a later total was contaminated by host
+contention and is not a replacement baseline.  This invalidates further
+family-projection polishing as the next cold route.  The production next step is
+source-native demanded collection (with AST fallback) for the residual families
+that currently build a complete AST before projecting it, sharing each module's
+native syntax index across consumers.  Measure that route first on saved
+frontiers, and promote only if its preparation-time collapse can plausibly
+bridge the remaining cold gap.

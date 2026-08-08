@@ -27,7 +27,6 @@ from itertools import groupby
 from typing import ClassVar, TypeAlias
 
 from metaclass_registry import AutoRegisterMeta
-
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
@@ -1044,6 +1043,37 @@ class CompactSemanticModuleProjection:
     file_path: str
     projections: tuple[PresentationProjection, ...]
     class_supplements: tuple[CompactSemanticClassSupplement, ...]
+
+
+@dataclass(frozen=True)
+class CompactSemanticProjectionDemand:
+    """Focused-scan view that retains authorities but no context reports."""
+
+    include_presentations: bool
+
+
+def _semantic_report_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactSemanticProjectionDemand:
+    del target_items, config
+    return CompactSemanticProjectionDemand(include_presentations=False)
+
+
+def _cached_semantic_demand_projection(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactSemanticProjectionDemand):
+        raise TypeError("semantic projection demand has the wrong authority type")
+    return tuple(
+        replace(
+            item,
+            projections=(item.projections if demand.include_presentations else ()),
+        )
+        for item in items
+        if isinstance(item, CompactSemanticModuleProjection)
+    )
 
 
 def _class_reference_parts(node: ast.AST) -> tuple[str, ...] | None:
@@ -3905,14 +3935,42 @@ class CompactSemanticModuleProjectionFamily(
 
     item_type = CompactSemanticModuleProjection
     cache_payload_max_bytes = 1_000_000
+    report_demand_builder = staticmethod(_semantic_report_demand)
+    cached_demand_projector = staticmethod(_cached_semantic_demand_projection)
 
     @classmethod
     def collect(
         cls,
         parsed_module: ParsedModule,
     ) -> list[CompactSemanticModuleProjection]:
+        return cls._collect(parsed_module, include_presentations=True)
+
+    @classmethod
+    def collect_demanded(
+        cls,
+        parsed_module: ParsedModule,
+        demand: object,
+    ) -> list[CompactSemanticModuleProjection] | None:
+        if not isinstance(demand, CompactSemanticProjectionDemand):
+            raise TypeError("semantic projection demand has the wrong authority type")
+        return cls._collect(
+            parsed_module,
+            include_presentations=demand.include_presentations,
+        )
+
+    @classmethod
+    def _collect(
+        cls,
+        parsed_module: ParsedModule,
+        *,
+        include_presentations: bool,
+    ) -> list[CompactSemanticModuleProjection]:
         del cls
-        visitor = _ProjectionVisitor(parsed_module, None)
+        visitor = _ProjectionVisitor(
+            parsed_module,
+            None,
+            include_presentations=include_presentations,
+        )
         visitor.visit(parsed_module.module)
         return [
             CompactSemanticModuleProjection(
@@ -4126,17 +4184,20 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         self,
         parsed_module: ParsedModule,
         class_index: ClassFamilyIndex | None,
+        *,
+        include_presentations: bool = True,
     ) -> None:
         super().__init__()
         self.parsed_module = parsed_module
+        self.include_presentations = include_presentations
         self.class_reference_resolver = (
             None
-            if class_index is None
+            if class_index is None or not include_presentations
             else ModuleClassReferenceResolver(parsed_module, class_index)
         )
         self.deferred_class_reference_collector = (
             DeferredModuleClassReferenceCollector(parsed_module)
-            if class_index is None
+            if class_index is None and include_presentations
             else None
         )
         self.projections: list[PresentationProjection] = []
@@ -4192,39 +4253,47 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             if id(node) in frame.direct_method_ids
         )
         self.active_class_method_frames.extend(direct_class_frames)
-        frame = ProjectionOwnerConstructionFrame(
-            constructions=set(),
-            projection_indices=[],
+        frame = (
+            ProjectionOwnerConstructionFrame(
+                constructions=set(),
+                projection_indices=[],
+            )
+            if self.include_presentations
+            else None
         )
-        self.owner_construction_stack.append(frame)
+        if frame is not None:
+            self.owner_construction_stack.append(frame)
         try:
             super().visit_FunctionDef(node)
         finally:
-            self.owner_construction_stack.pop()
-            owner_constructions = frozenset(frame.constructions)
-            for projection_index in frame.projection_indices:
-                projection = self.projections[projection_index]
-                self.projections[projection_index] = replace(
-                    projection,
-                    owner_constructions=sorted_tuple(
-                        frozenset(
-                            (*projection.owner_constructions, *owner_constructions)
+            if frame is not None:
+                self.owner_construction_stack.pop()
+                owner_constructions = frozenset(frame.constructions)
+                for projection_index in frame.projection_indices:
+                    projection = self.projections[projection_index]
+                    self.projections[projection_index] = replace(
+                        projection,
+                        owner_constructions=sorted_tuple(
+                            frozenset(
+                                (*projection.owner_constructions, *owner_constructions)
+                            ),
+                            key=lambda item: (item.type_name, item.field_tokens),
                         ),
-                        key=lambda item: (item.type_name, item.field_tokens),
-                    ),
-                )
+                    )
             if direct_class_frames:
                 del self.active_class_method_frames[-len(direct_class_frames) :]
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Call(self, node: ast.Call) -> None:
-        self._record_class_construction_type_names(
-            PresentationAuthorityConstructionCollector.construction_type_names(node)
-        )
-        self._record_owner_constructions(
-            PresentationAuthorityConstructionCollector.constructions_for_call(node)
-        )
+        if self.active_class_method_frames:
+            self._record_class_construction_type_names(
+                PresentationAuthorityConstructionCollector.construction_type_names(node)
+            )
+        if self.include_presentations:
+            self._record_owner_constructions(
+                PresentationAuthorityConstructionCollector.constructions_for_call(node)
+            )
         self.generic_visit(node)
 
     def _record_class_construction_type_names(
@@ -4256,11 +4325,17 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             frame.constructions.update(constructions)
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        if not self.include_presentations:
+            self.generic_visit(node)
+            return
         if self._collect_assignment_projection(node, node.value):
             return
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if not self.include_presentations:
+            self.generic_visit(node)
+            return
         if node.value is not None and self._collect_assignment_projection(
             node, node.value
         ):
@@ -4268,11 +4343,17 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         self.generic_visit(node)
 
     def visit_Return(self, node: ast.Return) -> None:
+        if not self.include_presentations:
+            self.generic_visit(node)
+            return
         if node.value is not None and self._collect_return_projection(node, node.value):
             return
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If) -> None:
+        if not self.include_presentations:
+            self.generic_visit(node)
+            return
         tokens = tuple(
             PresentationTokenProjection.tokens_for_node(
                 node.test,
@@ -4289,6 +4370,9 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         self.generic_visit(node)
 
     def visit_Match(self, node: ast.Match) -> None:
+        if not self.include_presentations:
+            self.generic_visit(node)
+            return
         tokens: list[PresentationToken] = []
         for case in node.cases:
             tokens.extend(

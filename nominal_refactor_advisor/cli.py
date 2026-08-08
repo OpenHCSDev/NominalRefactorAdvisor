@@ -5861,6 +5861,7 @@ def _main_without_deadline() -> int:
                 cache_dir=parse_cache_dir,
                 analysis_cache_dir=analysis_cache_dir,
                 use_parse_cache=args.use_parse_cache,
+                parse_workers=args.parse_workers,
                 source_policy=source_policy,
                 report_scope=path_scope,
             )

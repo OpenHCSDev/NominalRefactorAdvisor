@@ -9,6 +9,7 @@ from itertools import combinations
 from typing import Sequence, TypeAlias
 
 from ..class_index import CompactModuleClassProjection
+from ..semantic_algebra import FiniteAxisSystem
 from ._base import (
     DuplicateNominalAuthoritySurfaceCandidate,
     NominalAuthorityShape,
@@ -368,42 +369,24 @@ def _surface_confusability_components(
 ) -> tuple[tuple[_NominalAuthoritySurfaceNode, ...], ...]:
     """Return the exact axis-equality graph components without clique edges."""
 
-    parents = list(range(len(nodes)))
-    ranks = [0] * len(nodes)
-
-    def find(index: int) -> int:
-        while parents[index] != index:
-            parents[index] = parents[parents[index]]
-            index = parents[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root = find(left)
-        right_root = find(right)
-        if left_root == right_root:
-            return
-        if ranks[left_root] < ranks[right_root]:
-            left_root, right_root = right_root, left_root
-        parents[right_root] = left_root
-        if ranks[left_root] == ranks[right_root]:
-            ranks[left_root] += 1
-
-    first_index_by_view: dict[tuple[object, ...], int] = {}
-    for index, node in enumerate(nodes):
-        for view_key in (
-            ("methods", node.field_roles, node.public_method_names),
-            ("flow", node.field_roles, node.method_flow_roles),
-        ):
-            first_index = first_index_by_view.setdefault(view_key, index)
-            union(first_index, index)
-
-    indices_by_root: dict[int, list[int]] = {}
-    for index in range(len(nodes)):
-        indices_by_root.setdefault(find(index), []).append(index)
-    ordered_indices = sorted(indices_by_root.values(), key=lambda indices: indices[0])
-    return tuple(
-        tuple(nodes[index] for index in component_indices)
-        for component_indices in ordered_indices
+    axis_system = FiniteAxisSystem.from_rows(
+        (
+            (
+                node,
+                {
+                    "field_roles": node.field_roles,
+                    "method_names": node.public_method_names,
+                    "method_flow_roles": node.method_flow_roles,
+                },
+            )
+            for node in nodes
+        )
+    )
+    return axis_system.confusability_components(
+        (
+            ("field_roles", "method_names"),
+            ("field_roles", "method_flow_roles"),
+        )
     )
 
 

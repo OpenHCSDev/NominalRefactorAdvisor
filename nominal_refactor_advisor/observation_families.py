@@ -17,6 +17,7 @@ from typing import Callable, ClassVar, Generic, ParamSpec, TypeAlias, TypeVar, c
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .collection_algebra import sorted_tuple
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from .native_syntax import NativePythonSyntaxIndex
 
 from .observation_shapes import (
     AccessorWrapperCandidate,
@@ -61,6 +62,7 @@ from .ast_tools import (
     SharedRegistryRootBase,
     ShapeEmission,
     SingleSpecCollectedFamily,
+    SourceModule,
     _ATTRIBUTE_ERROR_FAMILY,
     _GETATTR_CALL_FAMILY,
     _HASATTR_CALL_FAMILY,
@@ -118,12 +120,29 @@ class GeneratedShapeHelper(Generic[GeneratedHelperParams, GeneratedItemT]):
 
 
 @dataclass(frozen=True)
+class GeneratedSourceCollector(Generic[GeneratedItemT]):
+    """Source-only collector derived into one generated family declaration."""
+
+    function: Callable[
+        [SourceModule, NativePythonSyntaxIndex], list[GeneratedItemT] | None
+    ]
+
+    def __call__(
+        self,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list[GeneratedItemT] | None:
+        return self.function(source_module, syntax_index)
+
+
+@dataclass(frozen=True)
 class GeneratedFamilySpec(Generic[GeneratedItemT]):
     """Declarative recipe for one generated collected family export."""
 
     item_type: type[GeneratedItemT]
     family_root: type[CollectedFamily[GeneratedItemT]]
     export_name: str | None = None
+    source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None
 
 
 GeneratedFamilySpecSet: TypeAlias = tuple[GeneratedFamilySpec, ...]
@@ -137,6 +156,7 @@ GeneratedClassAttributeValue: TypeAlias = (
     | GeneratedClassTypeValue
     | GeneratedFamilySpecSet
     | GeneratedShapeHelper[..., GeneratedItemT]
+    | GeneratedSourceCollector[GeneratedItemT]
 )
 GeneratedClassAttribute: TypeAlias = tuple[str, GeneratedClassAttributeValue]
 GeneratedNamespaceValue: TypeAlias = (
@@ -174,13 +194,19 @@ class GeneratedClassDeclarationFactory:
         family_root: type[CollectedFamily[GeneratedItemT]],
         *base_names: str,
         export_name: str | None = None,
+        source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None,
     ) -> _GeneratedClassDeclaration:
         return self.class_declaration(
             class_name,
             "FamilyGeneratingSpec",
             *base_names,
             _registry_root=True,
-            family_specs=_family_specs(item_type, family_root, export_name),
+            family_specs=_family_specs(
+                item_type,
+                family_root,
+                export_name,
+                source_collector=source_collector,
+            ),
         )
 
 
@@ -191,8 +217,17 @@ def _family_specs(
     item_type: type[GeneratedItemT],
     family_root: type[CollectedFamily[GeneratedItemT]],
     export_name: str | None = None,
+    *,
+    source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None,
 ) -> tuple[GeneratedFamilySpec[GeneratedItemT], ...]:
-    return (GeneratedFamilySpec(item_type, family_root, export_name),)
+    return (
+        GeneratedFamilySpec(
+            item_type,
+            family_root,
+            export_name,
+            source_collector,
+        ),
+    )
 
 
 def _materialize_class_declarations(
@@ -320,6 +355,7 @@ def _shape_root(
     *base_names: str,
     item_type: type[GeneratedItemT] | None = None,
     export_name: str | None = None,
+    source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None,
 ) -> _GeneratedClassDeclaration:
     return _GENERATED_CLASS_DECLARATIONS.root_spec_declaration(
         f"{stem}ShapeSpec",
@@ -327,6 +363,7 @@ def _shape_root(
         ShapeFamily,
         *base_names,
         export_name=export_name,
+        source_collector=source_collector,
     )
 
 
@@ -335,13 +372,16 @@ def _ctx_shape(
     node_type: type[ast.AST],
     *,
     item_type: type[GeneratedItemT] | None = None,
+    source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None,
 ) -> _GeneratedClassDeclaration:
     return _GENERATED_CLASS_DECLARATIONS.class_declaration(
         f"{stem}ShapeSpec",
         "FamilyGeneratingSpec",
         "ContextHelperShapeSpec",
         family_specs=_family_specs(
-            item_type or _derived_type(stem, "Shape"), ShapeFamily
+            item_type or _derived_type(stem, "Shape"),
+            ShapeFamily,
+            source_collector=source_collector,
         ),
         node_type=node_type,
     )
@@ -463,10 +503,117 @@ class MethodShapeSpec(FamilyGeneratingSpec, FunctionObservationSpec):
         )
 
 
+def _native_export_dict_shapes(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[ExportDictShape] | None:
+    """Derive export-dict shapes from native candidate selection."""
+
+    if not syntax_index.is_complete:
+        return None
+    parsed_module = ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=[], type_ignores=[]),
+        source=source_module.source,
+    )
+    shapes: list[ExportDictShape] = []
+    try:
+        dictionaries = sorted(
+            syntax_index.common_captures().get("dictionary", ()),
+            key=lambda node: (node.start_byte, -node.end_byte),
+        )
+        for dictionary in dictionaries:
+            function_name = syntax_index.nearest_scope_name(
+                dictionary, "function_definition"
+            )
+            if function_name is None:
+                continue
+            children = tuple(
+                child for child in dictionary.named_children if child.type != "comment"
+            )
+            pairs = tuple(child for child in children if child.type == "pair")
+            if len(pairs) < 3 or len(pairs) != len(children):
+                continue
+            expression = syntax_index.expression_for(dictionary)
+            shape = _export_dict_shape(
+                parsed_module,
+                expression,
+                syntax_index.nearest_scope_name(dictionary, "class_definition"),
+                function_name,
+            )
+            if shape is not None:
+                shapes.append(shape)
+        return shapes
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
+@dataclass(frozen=True)
+class ExportDictProjectionDemand:
+    """Exact export groups capable of retaining report-target evidence."""
+
+    group_keys: frozenset[tuple[tuple[str, ...], tuple[str, ...]]]
+
+
+def _export_dict_projection_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> ExportDictProjectionDemand:
+    del config
+    return ExportDictProjectionDemand(
+        group_keys=frozenset(
+            (item.key_names, item.value_fingerprint)
+            for item in target_items
+            if isinstance(item, ExportDictShape)
+        )
+    )
+
+
+def _project_export_dict_demand(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, ExportDictProjectionDemand):
+        return items
+    return tuple(
+        item
+        for item in items
+        if isinstance(item, ExportDictShape)
+        and (item.key_names, item.value_fingerprint) in demand.group_keys
+    )
+
+
+def _collect_export_dict_source_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    shapes = _native_export_dict_shapes(source_module, syntax_index)
+    if shapes is None:
+        return None
+    return list(_project_export_dict_demand(tuple(shapes), demand))
+
+
+def _collect_export_dict_ast_demand(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[object]:
+    family = _FAMILY_EXPORTS["ExportDictShapeFamily"]
+    return list(
+        _project_export_dict_demand(tuple(family.collect(parsed_module)), demand)
+    )
+
+
 _materialize_class_declarations(
     (
         _ctx_shape("BuilderCall", ast.Call),
-        _ctx_shape("ExportDict", ast.Dict),
+        _ctx_shape(
+            "ExportDict",
+            ast.Dict,
+            source_collector=GeneratedSourceCollector(_native_export_dict_shapes),
+        ),
     )
 )
 
@@ -938,6 +1085,139 @@ class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
         )
 
 
+_NATIVE_REGISTRATION_QUERY = """
+(class_definition name: (identifier) @class_name)
+(assignment
+    left: (subscript) @target
+    right: (identifier) @assigned_class) @assignment
+((call
+    function: (attribute attribute: (identifier) @method)
+    arguments: (argument_list . (identifier) @called_class)) @call
+    (#any-of? @method "register" "add" "register_class" "register_type"))
+((decorated_definition
+    (decorator (call function: (identifier) @decorator_method))
+    definition: (class_definition)) @decorated
+    (#any-of? @decorator_method
+        "register" "add" "register_class" "register_type" "auto_register"))
+((decorated_definition
+    (decorator
+        (call function: (attribute attribute: (identifier) @decorator_method)))
+    definition: (class_definition)) @decorated
+    (#any-of? @decorator_method
+        "register" "add" "register_class" "register_type" "auto_register"))
+"""
+
+
+def _native_registration_shapes(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[RegistrationShape] | None:
+    """Recover registration shapes natively, falling back on any uncertainty."""
+
+    if not syntax_index.is_complete:
+        return None
+    captures = syntax_index.captures(_NATIVE_REGISTRATION_QUERY)
+    try:
+        class_names = {
+            syntax_index.source_for(node).decode("utf-8")
+            for node in captures.get("class_name", ())
+        }
+        known_class_family = AstNameFamily(frozenset(class_names))
+        assignments: list[RegistrationShape] = []
+        for syntax_node in sorted(
+            captures.get("assignment", ()),
+            key=lambda node: node.start_byte,
+        ):
+            statement = syntax_index.statement_for(syntax_node)
+            if not isinstance(statement, ast.Assign) or not isinstance(
+                statement.value, ast.Name
+            ):
+                return None
+            if statement.value.id not in class_names:
+                continue
+            for target in statement.targets:
+                registry_name = _subscript_base_name(target)
+                key_fingerprint = _registration_key_fingerprint(target)
+                if registry_name is None or key_fingerprint is None:
+                    continue
+                assignments.append(
+                    RegistrationShape.from_assignment(
+                        source_module,  # type: ignore[arg-type]
+                        statement,
+                        registry_name,
+                        key_fingerprint,
+                    )
+                )
+
+        calls: list[RegistrationShape] = []
+        for syntax_node in sorted(
+            captures.get("call", ()),
+            key=lambda node: (node.start_point.row, node.start_byte),
+        ):
+            node = syntax_index.expression_for(syntax_node)
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _REGISTRATION_CALL_FAMILY.names
+                and node.args
+            ):
+                return None
+            class_name = _class_name_from_expr(node.args[0], known_class_family)
+            registry_name = _terminal_name(node.func.value)
+            if class_name is None or registry_name is None:
+                continue
+            key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
+            calls.append(
+                RegistrationShape.from_registration_call(
+                    source_module,  # type: ignore[arg-type]
+                    node,
+                    registry_name,
+                    class_name,
+                    _fingerprint_builder_value(key_source),
+                )
+            )
+
+        decorators: list[RegistrationShape] = []
+        decorated_nodes = {
+            (node.start_byte, node.end_byte): node
+            for node in captures.get("decorated", ())
+        }
+        for syntax_node in sorted(
+            decorated_nodes.values(),
+            key=lambda node: (node.start_point.row, node.start_byte),
+        ):
+            statement = syntax_index.statement_for(syntax_node)
+            if not isinstance(statement, ast.ClassDef):
+                return None
+            for decorator in statement.decorator_list:
+                if not (
+                    isinstance(decorator, ast.Call)
+                    and _terminal_name(decorator.func)
+                    in _REGISTRATION_DECORATOR_FAMILY.names
+                    and decorator.args
+                ):
+                    continue
+                registry_name = _terminal_name(decorator.args[0])
+                if registry_name is None:
+                    continue
+                key_expression = (
+                    decorator.args[1]
+                    if len(decorator.args) >= 2
+                    else ast.Constant(value=statement.name)
+                )
+                decorators.append(
+                    RegistrationShape.from_decorator(
+                        source_module,  # type: ignore[arg-type]
+                        statement,
+                        registry_name,
+                        _fingerprint_builder_value(key_expression),
+                    )
+                )
+        return [*assignments, *calls, *decorators]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
 _materialize_class_declarations(
     (
         _literal_spec(
@@ -962,6 +1242,7 @@ _materialize_class_declarations(
             "Registration",
             "AutoRegisteredModuleShapeSpec",
             "ABC",
+            source_collector=GeneratedSourceCollector(_native_registration_shapes),
         ),
     )
 )
@@ -1227,6 +1508,7 @@ GeneratedFamilyNamespaceValue: TypeAlias = (
     | type[TypedLiteralObservationSpec]
     | type[AutoRegisteredModuleShapeSpec]
     | type[CollectedFamily]
+    | GeneratedSourceCollector
 )
 
 
@@ -1243,6 +1525,8 @@ def _materialize_generated_family(
         "__module__": __name__,
         "item_type": family_spec.item_type,
     }
+    if family_spec.source_collector is not None:
+        attributes["source_collector"] = family_spec.source_collector
     if family_root is TypedLiteralObservationFamily:
         literal_spec_type = cast(type[TypedLiteralObservationSpec], spec_type)
         attributes["spec_root"] = literal_spec_type
@@ -1272,6 +1556,24 @@ def _materialize_declared_families() -> dict[str, type[CollectedFamily]]:
 
 _FAMILY_EXPORTS = _materialize_declared_families()
 _FAMILY_EXPORT_NAMES = tuple(_FAMILY_EXPORTS)
+
+# A registration finding's evidence is composed only from registration shapes.
+# With no report-target shape, no context-only group can enter report scope.
+_FAMILY_EXPORTS["RegistrationShapeFamily"].report_presence_predicate = staticmethod(
+    lambda items, config: bool(items)
+)
+_FAMILY_EXPORTS["ExportDictShapeFamily"].source_demand_collector = staticmethod(
+    _collect_export_dict_source_demand
+)
+_FAMILY_EXPORTS["ExportDictShapeFamily"].ast_demand_collector = staticmethod(
+    _collect_export_dict_ast_demand
+)
+_FAMILY_EXPORTS["ExportDictShapeFamily"].report_demand_builder = staticmethod(
+    _export_dict_projection_demand
+)
+_FAMILY_EXPORTS["ExportDictShapeFamily"].cached_demand_projector = staticmethod(
+    _project_export_dict_demand
+)
 
 
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(

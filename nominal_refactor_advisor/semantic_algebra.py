@@ -474,6 +474,52 @@ class FiniteAxisSystem(Generic[ObjectT, AxisT]):
                 edges.append(VertexIndexEdge.from_indices(left_index, right_index))
         return ConfusabilityGraph(self.semantic_objects, tuple(edges))
 
+    def confusability_components(
+        self, view_axes: Iterable[Iterable[AxisT]]
+    ) -> tuple[tuple[ObjectT, ...], ...]:
+        """Return exact view-confusability components without clique expansion."""
+
+        if len(self.points) < 2:
+            return tuple((point.semantic_object,) for point in self.points)
+        view_axis_tuples = tuple(tuple(view) for view in view_axes)
+        parents = list(range(len(self.points)))
+        ranks = [0] * len(self.points)
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root == right_root:
+                return
+            if ranks[left_root] < ranks[right_root]:
+                left_root, right_root = right_root, left_root
+            parents[right_root] = left_root
+            if ranks[left_root] == ranks[right_root]:
+                ranks[left_root] += 1
+
+        for view in view_axis_tuples:
+            first_index_by_values: dict[tuple[Hashable, ...], int] = {}
+            for index, point in enumerate(self.points):
+                values = tuple(point.value_for(axis) for axis in view)
+                first_index = first_index_by_values.setdefault(values, index)
+                union(first_index, index)
+
+        indices_by_root: dict[int, list[int]] = {}
+        for index in range(len(self.points)):
+            indices_by_root.setdefault(find(index), []).append(index)
+        ordered_indices = sorted(
+            indices_by_root.values(), key=lambda indices: indices[0]
+        )
+        return tuple(
+            tuple(self.points[index].semantic_object for index in component_indices)
+            for component_indices in ordered_indices
+        )
+
 
 @dataclass(frozen=True)
 class ObjectFamilyShape:

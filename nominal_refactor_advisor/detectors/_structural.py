@@ -18,6 +18,8 @@ from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
+from ..ast_tools import SourceModule
+from ..native_syntax import NativePythonSyntaxIndex
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
     AstTypedEffectStep,
@@ -1902,12 +1904,57 @@ declare_candidate_rule_detector(
 )
 
 
+def _native_export_policy_predicate_candidates(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[ExportPolicyPredicateCandidate] | None:
+    """Project one export-policy predicate from native-selected declarations."""
+
+    if not syntax_index.is_complete:
+        return None
+    try:
+        export_assignments = tuple(
+            syntax_index.statement_for(node)
+            for node in syntax_index.top_level_assignment_statements()
+            if b"__all__" in syntax_index.source_for(node)
+        )
+        predicate_names = frozenset(
+            predicate_name
+            for statement in export_assignments
+            if (predicate_name := _export_all_predicate_name(statement)) is not None
+        )
+        if len(predicate_names) != 1:
+            return []
+        predicate_name = next(iter(predicate_names))
+        functions = tuple(
+            syntax_index.function_for(node)
+            for node in syntax_index.top_level_declarations("function")
+            if syntax_index.declared_name(node) == predicate_name
+        )
+        parsed_module = ParsedModule(
+            path=source_module.path,
+            module_name=source_module.module_name,
+            is_package_init=source_module.path.name == "__init__.py",
+            module=ast.Module(
+                body=[*export_assignments, *functions],
+                type_ignores=[],
+            ),
+            source=source_module.source,
+        )
+        candidate = _module_export_policy_predicate_candidate(parsed_module)
+        return [] if candidate is None else [candidate]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
 class ExportPolicyPredicateCandidateFamily(
     CollectedFamily[ExportPolicyPredicateCandidate]
 ):
     """Persist one compact derived-export policy projection per module."""
 
     item_type = ExportPolicyPredicateCandidate
+    report_presence_predicate = staticmethod(lambda items, config: bool(items))
+    source_collector = staticmethod(_native_export_policy_predicate_candidates)
 
     @classmethod
     def collect(
@@ -2483,10 +2530,35 @@ def _module_has_family_catalog(module_path: Path) -> bool:
     if not module_path.exists():
         return False
     try:
-        tree = ast.parse(module_path.read_text(encoding="utf-8"))
-    except SyntaxError:
+        source = module_path.read_text(encoding="utf-8")
+    except OSError:
         return False
-    for node in tree.body:
+    syntax_index = NativePythonSyntaxIndex.from_source(source)
+    if syntax_index.is_complete:
+        try:
+            statements = tuple(
+                syntax_index.statement_for(node)
+                for node in syntax_index.top_level_assignment_statements()
+                if b"MODULE" in syntax_index.source_for(node)
+                and (
+                    b"CATALOG" in syntax_index.source_for(node)
+                    or b"MANIFEST" in syntax_index.source_for(node)
+                )
+            )
+        except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+            return False
+    else:
+        try:
+            statements = tuple(ast.parse(source).body)
+        except SyntaxError:
+            return False
+    return _statements_declare_family_catalog(statements)
+
+
+def _statements_declare_family_catalog(
+    statements: tuple[ast.stmt, ...],
+) -> bool:
+    for node in statements:
         if not isinstance(node, ast.Assign):
             continue
         if not any(
@@ -2566,8 +2638,56 @@ def _support_prelude_module_family_candidates_from_facts(
     return tuple(candidates)
 
 
+def _native_support_prelude_module_facts(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[SupportPreludeModuleFact] | None:
+    """Project one-class support-prelude modules without a module Python AST."""
+
+    if not syntax_index.is_complete:
+        return None
+    top_level_classes = syntax_index.top_level_declarations("class")
+    if len(top_level_classes) != 1 or syntax_index.top_level_declarations("function"):
+        return []
+    try:
+        imports = tuple(
+            syntax_index.statement_for(node)
+            for node in syntax_index.tree.root_node.named_children
+            if node.type == "import_from_statement"
+        )
+        support_import = _support_prelude_import_name(
+            ast.Module(body=list(imports), type_ignores=[])
+        )
+        if support_import is None:
+            return []
+        parsed_module = ParsedModule(
+            path=source_module.path,
+            module_name=source_module.module_name,
+            is_package_init=source_module.path.name == "__init__.py",
+            module=ast.Module(body=[], type_ignores=[]),
+            source=source_module.source,
+        )
+        support_path = _support_module_path(parsed_module, support_import)
+        if support_path is not None and _module_has_family_catalog(support_path):
+            return []
+        class_node = top_level_classes[0]
+        return [
+            SupportPreludeModuleFact(
+                parent_path=str(source_module.path.parent),
+                support_module_name=support_import,
+                file_path=str(source_module.path),
+                class_name=syntax_index.declared_name(class_node),
+                line=class_node.start_point.row + 1,
+            )
+        ]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
 class SupportPreludeModuleFactFamily(CollectedFamily[SupportPreludeModuleFact]):
     item_type = SupportPreludeModuleFact
+    report_presence_predicate = staticmethod(lambda items, config: bool(items))
+    source_collector = staticmethod(_native_support_prelude_module_facts)
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[SupportPreludeModuleFact]:

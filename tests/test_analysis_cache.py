@@ -44,13 +44,18 @@ from nominal_refactor_advisor.analysis_cache import (
 )
 from nominal_refactor_advisor.ast_tools import (
     ExportDictShapeFamily,
+    RegistrationShapeFamily,
+    SourceModule,
     collect_family_items,
     parse_python_module_roots,
     parse_python_modules,
 )
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor import ast_tools as ast_tools_module
 from nominal_refactor_advisor import analysis as analysis_module
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
+from nominal_refactor_advisor import class_index as class_index_module
+from nominal_refactor_advisor import native_syntax as native_syntax_module
 from nominal_refactor_advisor import semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.cache_paths import (
     AdvisorCacheRetention,
@@ -215,6 +220,8 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     assert isinstance(function, ast.FunctionDef)
     ast_tools_module._walk_nodes(module)
     ast_tools_module.walk_function_body_nodes(function)
+    ast_tools_module.named_function_nodes(module)
+    ast_tools_module.module_syntax_index(module)
     first_signature = abstraction_reuse_detectors._signature_for_node(function)
     assert first_signature is abstraction_reuse_detectors._signature_for_node(function)
     runtime_detectors.SurfaceFunctionIndex.from_module(module)
@@ -224,8 +231,35 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     assert cleared_cache_count > 0
     assert ast_tools_module._walk_nodes.cache_info().currsize == 0
     assert ast_tools_module.walk_function_body_nodes.cache_info().currsize == 0
+    assert ast_tools_module.named_function_nodes.cache_info().currsize == 0
+    assert ast_tools_module.module_syntax_index.cache_info().currsize == 0
     assert abstraction_reuse_detectors._signature_for_node.cache_info().currsize == 0
     assert runtime_detectors.SurfaceFunctionIndex.from_module.cache_info().currsize == 0
+
+
+def test_module_analysis_memory_release_preserves_compiled_native_queries() -> None:
+    query_source = "(class_definition) @class"
+    syntax_index = NativePythonSyntaxIndex.from_source("class Role: pass\n")
+    expected_query = native_syntax_module._python_query(query_source)
+    assert syntax_index.captures(query_source)["class"]
+
+    release_module_analysis_memory()
+
+    assert native_syntax_module._python_query(query_source) is expected_query
+
+
+def test_native_syntax_index_shares_frozen_captures_between_families() -> None:
+    syntax_index = NativePythonSyntaxIndex.from_source(
+        "class Role:\n    def build(self): return Role()\n"
+    )
+    query_source = "(class_definition) @class\n(call) @call"
+
+    first = syntax_index.captures(query_source)
+    second = syntax_index.captures(query_source)
+
+    assert second is first
+    assert len(first["class"]) == 1
+    assert len(first["call"]) == 1
 
 
 def test_environment_and_runtime_share_bounded_function_body_projection(
@@ -253,6 +287,32 @@ def test_environment_and_runtime_share_bounded_function_body_projection(
         isinstance(node, ast.Constant)
         and node.value == "Interpret one environment flag."
         for node in environment_nodes
+    )
+
+
+def test_class_and_detector_collectors_share_named_function_projection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "projection.py").write_text(
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        def build(self):\n"
+        "            return Result(value=1)\n",
+        encoding="utf-8",
+    )
+    module = parse_python_modules(package_root, use_parse_cache=False)[0]
+
+    class_functions = class_index_module._named_functions(module.module)
+    detector_functions = base_detectors._iter_named_functions(module)
+    base_detectors._module_builder_call_shapes(module)
+
+    assert class_functions is detector_functions
+    assert tuple(name for name, _ in class_functions) == ("Outer.Inner.build",)
+    function = class_functions[0][1]
+    assert ast_tools_module.walk_function_body_nodes(function) is (
+        ast_tools_module.walk_function_body_nodes(function)
     )
 
 
@@ -1675,6 +1735,1305 @@ def test_compact_global_projection_accumulator_matches_full_ast_detection(
     ]
 
 
+def test_parallel_compact_root_analysis_returns_uncached_projection_fallbacks(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "generated_policy.py").write_text(
+        "# generated from policy schema\n"
+        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    (package_root / "runtime.py").write_text(
+        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    detector_type = runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+    expected = detector_type().detect(modules, DetectorConfig())
+
+    result = analyze_compact_roots_with_cache(
+        (package_root,),
+        use_parse_cache=False,
+        parse_workers=2,
+        analysis_cache_dir=tmp_path / "analysis",
+        detector_types=(detector_type,),
+    )
+
+    assert [finding.to_dict() for finding in result.findings] == [
+        finding.to_dict() for finding in expected
+    ]
+    assert result.projection_count == 2
+
+
+def test_native_registration_projection_matches_registered_ast_specs(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "registrations.py"
+    module_path.write_text(
+        "class Registry:\n"
+        "    def register(self, cls, key): return cls\n"
+        "    def auto_register(self, registry, key): return lambda cls: cls\n"
+        "\n"
+        "registry = Registry()\n"
+        "REGISTRY = {}\n"
+        "\n"
+        "@registry.auto_register(REGISTRY, 'alpha')\n"
+        "class Alpha:\n"
+        "    pass\n"
+        "\n"
+        "class Beta:\n"
+        "    pass\n"
+        "\n"
+        "REGISTRY['alpha'] = Alpha\n"
+        "registry.register(Beta, 'beta')\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+
+    native = RegistrationShapeFamily.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, RegistrationShapeFamily)
+
+
+def test_native_export_dict_projection_matches_registered_ast_spec(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "exports.py"
+    module_path.write_text(
+        "def export(item):\n"
+        "    return {\n"
+        "        'name': item.name,\n"
+        "        'score': item.score,\n"
+        "        'label': item.label,\n"
+        "    }\n"
+        "\n"
+        "class Renderer:\n"
+        "    def export(self, result):\n"
+        "        return {'name': result.name, 'score': result.score, "
+        "'label': result.label}\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+
+    native = ExportDictShapeFamily.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, ExportDictShapeFamily)
+
+
+def test_native_builder_projection_matches_canonical_ast_family(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "builders.py"
+    module_path.write_text(
+        "class Request:\n"
+        "    @classmethod\n"
+        "    def from_value(cls, value):\n"
+        "        return cls(name=value.name, score=value.score, "
+        "label=value.label)\n"
+        "\n"
+        "def build(value, enabled):\n"
+        "    return (\n"
+        "        Request\n"
+        "        .from_value(value)\n"
+        "        if enabled\n"
+        "        else Request(name=value.name, score=value.score, "
+        "label=value.label)\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    family = runtime_detectors.RepeatedBuilderCallShapeProjectionFamily
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+def test_native_role_guarded_projection_matches_shared_ast_index(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "roles.py"
+    module_path.write_text(
+        "class Role:\n"
+        "    label: str\n"
+        "    def run(self): return self.label\n"
+        "\n"
+        "def consume(value):\n"
+        "    if value is None:\n"
+        "        return None\n"
+        "    elif isinstance(value, Role):\n"
+        "        return value.run()\n"
+        "\n"
+        "def outer(value):\n"
+        "    def nested(candidate):\n"
+        "        if isinstance(candidate, Role):\n"
+        "            return candidate.label\n"
+        "    return nested(value)\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    family = runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+@pytest.mark.parametrize(
+    "family, source",
+    (
+        (
+            runtime_detectors.FormalBoundaryPythonStringConstantFamily,
+            "REQUEST_PROFILE_ID = 'selection_replay_request'\n"
+            "REUSE_PROFILE_ID: str = 'selection_replay_reuse'\n"
+            "FINAL_PROFILE_ID = 'selection_replay_final'\n"
+            "def build_profile():\n"
+            "    return LeanRuntimePolicy.profile(REQUEST_PROFILE_ID)\n",
+        ),
+        (
+            runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily,
+            "# generated from policy schema\n"
+            "POLICY_PROFILE_ID: str = 'axis_policy_profile'\n"
+            "OTHER_PROFILE_ID = MIRRORED_PROFILE_ID = 'shared_profile'\n"
+            "lower_value = 'ignored'\n",
+        ),
+    ),
+)
+def test_native_constant_projection_matches_ast_family(
+    tmp_path: Path,
+    family: type[CollectedFamily],
+    source: str,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "generated_policy.py"
+    module_path.write_text(source, encoding="utf-8")
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+def test_native_subclass_traversal_projection_matches_ast_family(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "registry.py"
+    module_path.write_text(
+        "class PluginBase: pass\n"
+        "def all_plugins():\n"
+        "    ordered = []\n"
+        "    queue = list(PluginBase.__subclasses__())\n"
+        "    while queue:\n"
+        "        current = queue.pop(0)\n"
+        "        queue.extend(current.__subclasses__())\n"
+        "        if not current.__dict__.get('plugin_name'):\n"
+        "            continue\n"
+        "        ordered.append(current)\n"
+        "    return tuple(ordered)\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    family = helper_detectors.SubclassTraversalSiteFamily
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+def test_native_export_policy_projection_matches_ast_family(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "exports.py"
+    module_path.write_text(
+        "class Root: pass\n"
+        "def _is_public_export(name, value):\n"
+        "    if name.startswith('_'): return False\n"
+        "    if not isinstance(value, type): return False\n"
+        "    return issubclass(value, Root)\n"
+        "__all__ = sorted(\n"
+        "    name for name, value in globals().items()\n"
+        "    if _is_public_export(name, value)\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    family = structural_detectors.ExportPolicyPredicateCandidateFamily
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+def test_native_support_prelude_projection_matches_ast_family(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "support.py").write_text(
+        "from pathlib import Path\n",
+        encoding="utf-8",
+    )
+    module_path = package_root / "alpha.py"
+    module_path.write_text(
+        "from .support import *\n" "@decorator\n" "class AlphaMixin: pass\n",
+        encoding="utf-8",
+    )
+    parsed_module = next(
+        module
+        for module in parse_python_modules(package_root, use_parse_cache=False)
+        if module.path == module_path
+    )
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    family = structural_detectors.SupportPreludeModuleFactFamily
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+@pytest.mark.parametrize(
+    "family, source",
+    (
+        (
+            systemic_detectors.CompactValidateShapeModuleProjectionFamily,
+            "class Payload:\n"
+            "    def validate(self):\n"
+            "        if self.values.ndim != 2:\n"
+            "            raise ValueError('ndim')\n"
+            "        if self.values.shape[0] != self.count:\n"
+            "            raise ValueError('shape')\n",
+        ),
+        (
+            systemic_detectors._DataclassNamespaceCliModuleProjectionFamily,
+            "@dataclass(frozen=True)\n"
+            "class Config:\n"
+            "    alpha: str\n"
+            "    beta: str\n"
+            "    gamma: str\n"
+            "    delta: str\n"
+            "    @classmethod\n"
+            "    def from_namespace(cls, namespace):\n"
+            "        return cls(alpha=namespace.alpha, beta=namespace.beta, "
+            "gamma=namespace.gamma, delta=namespace.delta)\n"
+            "CLI_ARGUMENTS = (\n"
+            "    CliArgumentSpec(flags=('--alpha',)),\n"
+            "    CliArgumentSpec(flags=('--beta',)),\n"
+            "    CliArgumentSpec(flags=('--gamma',)),\n"
+            "    CliArgumentSpec(flags=('--delta',)),\n"
+            ")\n",
+        ),
+        (
+            systemic_detectors.CompactSpecAxisModuleProjectionFamily,
+            "ALPHA_SPEC = CaseSpec(stage=AlphaStage, handler=run_alpha)\n"
+            "BETA_SPEC = CaseSpec(stage=BetaStage, handler=run_beta)\n",
+        ),
+    ),
+)
+def test_native_sparse_systemic_projection_matches_ast_family(
+    tmp_path: Path,
+    family: type[CollectedFamily],
+    source: str,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "systemic.py"
+    module_path.write_text(source, encoding="utf-8")
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+def test_native_distributed_boundary_projection_matches_ast_family(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "boundary.py"
+    module_path.write_text(
+        "class Base: pass\n"
+        "class Request(Base):\n"
+        "    axis_offsets: tuple[int, ...]\n"
+        "    def __init__(self, value):\n"
+        "        self.shared_boundary_support = value\n"
+        "def present(request, axis_index):\n"
+        "    projected_offsets = request.axis_offsets\n"
+        "    selected = request.axis_offsets[axis_index]\n"
+        "    return Request(\n"
+        "        axis_offsets=projected_offsets,\n"
+        "        shared_boundary_support=request.shared_boundary_support,\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+def test_native_report_demand_role_and_boundary_facts_match_ast_family(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "demanded.py"
+    module_path.write_text(
+        "class Base: pass\n"
+        "class ScorePayload(Base):\n"
+        "    selected_values: tuple[int, ...]\n"
+        "    projected_axis_offsets: tuple[int, ...]\n"
+        "class RuntimePayload:\n"
+        "    projected_axis_offsets: tuple[int, ...]\n"
+        "class ScoreDebugAuthority:\n"
+        "    @staticmethod\n"
+        "    def write_counts():\n"
+        "        score_payload = 1\n"
+        "        consume({\n"
+        "            'action_count': 1,\n"
+        "            'evaluated_pair_count': 2,\n"
+        "            'identity_reuse_count': score_payload,\n"
+        "        })\n"
+        "def present(payload, index):\n"
+        "    selected = payload.selected_values\n"
+        "    projected = payload.projected_axis_offsets[index]\n"
+        "    return ScorePayload(\n"
+        "        selected_values=payload.selected_values,\n"
+        "        projected_axis_offsets=projected,\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    syntax_index = NativePythonSyntaxIndex.from_source(source_module.source)
+
+    full_role = collect_family_items(
+        parsed_module,
+        role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily,
+    )[0]
+    assert isinstance(
+        role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily.report_demand(
+            (full_role,),
+            DetectorConfig(),
+        ),
+        role_surface_detectors.CompactRoleSurfaceProjectionDemand,
+    )
+    assert full_role.generic_role_case_table_sites
+    axes = frozenset(
+        token
+        for site in full_role.generic_role_case_table_sites
+        for token in site.broad_semantic_axis_tokens
+    )
+    cases = frozenset(
+        token
+        for site in full_role.generic_role_case_table_sites
+        for token in site.case_tokens
+    )
+    field_names = frozenset({"selected_values", "projected_axis_offsets"})
+    native_role = role_surface_detectors._native_demanded_role_surface_projection(
+        source_module,
+        syntax_index,
+        field_names=field_names,
+        generic_axis_tokens=axes,
+        generic_case_tokens=cases,
+    )
+
+    assert native_role is not None
+    assert set(native_role.declarations) == {
+        item for item in full_role.declarations if item.field_name in field_names
+    }
+    assert set(native_role.possible_use_sites) == {
+        item for item in full_role.possible_use_sites if item.field_name in field_names
+    }
+    assert set(native_role.generic_role_case_table_sites) == set(
+        full_role.generic_role_case_table_sites
+    )
+
+    full_boundary = collect_family_items(
+        parsed_module,
+        surface_detectors.CompactDistributedBoundaryModuleProjectionFamily,
+    )[0]
+    native_boundary_items = surface_detectors._native_distributed_boundary_projection(
+        source_module,
+        syntax_index,
+        field_names=frozenset({"projected_axis_offsets"}),
+        class_base_names_override=full_boundary.class_base_names,
+    )
+    assert native_boundary_items is not None
+    native_boundary = native_boundary_items[0]
+    assert native_boundary.class_base_names == full_boundary.class_base_names
+    assert native_boundary.declarations == tuple(
+        item
+        for item in full_boundary.declarations
+        if item.field_name == "projected_axis_offsets"
+    )
+    assert native_boundary.possible_uses == tuple(
+        item
+        for item in full_boundary.possible_uses
+        if item.field_name == "projected_axis_offsets"
+    )
+
+
+def test_native_report_demand_role_guarded_surface_matches_ast_view(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "roles.py"
+    module_path.write_text(
+        "class SelectedRole:\n"
+        "    selected_value: int\n"
+        "    def selected(self): return self.selected_value\n"
+        "class IgnoredRole:\n"
+        "    ignored_value: int\n"
+        "def inspect(value):\n"
+        "    if isinstance(value, SelectedRole):\n"
+        "        return value.selected_value\n"
+        "    if isinstance(value, IgnoredRole):\n"
+        "        return value.ignored_value\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    family = runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily
+    demand = runtime_detectors.CompactRoleGuardedSurfaceProjectionDemand(
+        frozenset({"SelectedRole"})
+    )
+
+    native = family.collect_demanded_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+        demand,
+    )
+    ast_view = family.collect_demanded(parsed_module, demand)
+
+    assert native == ast_view
+    assert native is not None
+    assert native[0].role_guarded_accesses == ()
+    assert dict(native[0].class_surface_members_by_type_name) == {
+        "SelectedRole": ("selected", "selected_value")
+    }
+
+
+def test_native_grouped_report_demands_match_ast_views(tmp_path: Path) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "groups.py"
+    module_path.write_text(
+        "def selected(source):\n"
+        "    payload = Payload(alpha=source.alpha, beta=source.beta, gamma=source.gamma)\n"
+        "    return {'alpha': source.alpha, 'beta': source.beta, 'gamma': source.gamma}\n"
+        "def ignored(source):\n"
+        "    payload = Payload(other_a=source.alpha, other_b=source.beta, other_c=source.gamma)\n"
+        "    return {'other_a': source.alpha, 'other_b': source.beta, 'other_c': source.gamma}\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    syntax_index = NativePythonSyntaxIndex.from_source(source_module.source)
+    config = DetectorConfig()
+    for family in (
+        runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
+        ExportDictShapeFamily,
+    ):
+        full_items = tuple(collect_family_items(parsed_module, family))
+        selected_items = tuple(
+            item for item in full_items if item.function_name == "selected"
+        )
+        demand = family.report_demand(selected_items, config)
+
+        native = family.collect_demanded_source(
+            source_module,
+            syntax_index,
+            demand,
+        )
+        ast_view = family.collect_demanded(parsed_module, demand)
+
+        assert native == ast_view
+        assert native == list(selected_items)
+
+
+def test_native_environment_projection_matches_ast_family(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "environment.py"
+    module_path.write_text(
+        "import os\n"
+        "DISABLED_VALUES = ('0', 'false', 'no', 'off')\n"
+        "def declared_environment_flag_decision(name: str) -> bool:\n"
+        "    value = os.environ.get(name)\n"
+        "    if value is None: raise ValueError(name)\n"
+        "    return value.lower() not in DISABLED_VALUES\n"
+        "def trace_enabled() -> bool:\n"
+        "    return os.getenv('TRACE', '0').lower() not in DISABLED_VALUES\n"
+        "class FeatureEnvironmentAuthority:\n"
+        "    FEATURE_ENV = 'FEATURE_FLAG'\n"
+        "    @staticmethod\n"
+        "    def enabled() -> bool:\n"
+        "        return declared_environment_flag_decision(\n"
+        "            FeatureEnvironmentAuthority.FEATURE_ENV\n"
+        "        )\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    source_module = SourceModule(
+        path=parsed_module.path,
+        module_name=parsed_module.module_name,
+        source=parsed_module.source,
+    )
+    family = environment_detectors._EnvironmentBooleanModuleProjectionFamily
+
+    native = family.collect_source(
+        source_module,
+        NativePythonSyntaxIndex.from_source(source_module.source),
+    )
+
+    assert native == collect_family_items(parsed_module, family)
+
+
+def test_source_native_projection_shard_skips_python_ast_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "registrations.py"
+    source = (
+        "REGISTRY = {}\n"
+        "class Alpha: pass\n"
+        "class Beta: pass\n"
+        "REGISTRY['alpha'] = Alpha\n"
+        "REGISTRY['beta'] = Beta\n"
+        "def export(item):\n"
+        "    projected = Projection(name=item.name, score=item.score, "
+        "label=item.label)\n"
+        "    return {'name': item.name, 'score': item.score, "
+        "'label': item.label}\n"
+    )
+    module_path.write_text(source, encoding="utf-8")
+    projection_source = analysis_module.CompactProjectionCacheSource(
+        path=module_path,
+        module_name="registrations",
+        source_signature=ast_tools_module.python_source_cache_signature(source),
+        family_cache_dir=None,
+        scan_root=package_root,
+        cache_dir=None,
+        use_parse_cache=False,
+        source_policy=ast_tools_module.PythonSourcePathPolicy(),
+    )
+
+    def unexpected_ast_parse(self, paths):
+        del self, paths
+        raise AssertionError("source-native family should bypass Python AST parsing")
+
+    monkeypatch.setattr(
+        ast_tools_module.PythonModuleRootParser,
+        "parsed_source_paths",
+        unexpected_ast_parse,
+    )
+    result = analysis_module.build_compact_projection_shard(
+        analysis_module.CompactProjectionBuildRequest(
+            source=projection_source,
+            missing_families=(
+                RegistrationShapeFamily,
+                ExportDictShapeFamily,
+                runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
+                surface_detectors.CompactDistributedBoundaryModuleProjectionFamily,
+                environment_detectors._EnvironmentBooleanModuleProjectionFamily,
+                runtime_detectors.CompactNominalBypassModuleProjectionFamily,
+            ),
+            config=DetectorConfig(),
+        )
+    )
+
+    assert [
+        (family, len(projections)) for family, projections in result.runtime_projections
+    ] == [
+        (RegistrationShapeFamily, 2),
+        (ExportDictShapeFamily, 1),
+        (runtime_detectors.RepeatedBuilderCallShapeProjectionFamily, 1),
+        (surface_detectors.CompactDistributedBoundaryModuleProjectionFamily, 1),
+        (environment_detectors._EnvironmentBooleanModuleProjectionFamily, 1),
+        (runtime_detectors.CompactNominalBypassModuleProjectionFamily, 1),
+    ]
+
+
+def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "demanded.py"
+    source = (
+        "class Request:\n"
+        "    selected_values: tuple[int, ...]\n"
+        "    projected_axis_offsets: tuple[int, ...]\n"
+        "    ignored_values: tuple[int, ...]\n"
+        "def present(request):\n"
+        "    return consume(\n"
+        "        selected_values=request.selected_values,\n"
+        "        projected_axis_offsets=request.projected_axis_offsets,\n"
+        "        ignored_values=request.ignored_values,\n"
+        "    )\n"
+    )
+    module_path.write_text(source, encoding="utf-8")
+    family_cache_dir = tmp_path / "family-cache"
+    projection_source = analysis_module.CompactProjectionCacheSource(
+        path=module_path,
+        module_name="demanded",
+        source_signature=ast_tools_module.python_source_cache_signature(source),
+        family_cache_dir=family_cache_dir,
+        scan_root=package_root,
+        cache_dir=None,
+        use_parse_cache=False,
+        source_policy=ast_tools_module.PythonSourcePathPolicy(),
+    )
+    role_family = role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily
+    boundary_family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
+
+    def unexpected_ast_parse(self, paths):
+        del self, paths
+        raise AssertionError(
+            "source demand collectors should bypass Python AST parsing"
+        )
+
+    monkeypatch.setattr(
+        ast_tools_module.PythonModuleRootParser,
+        "parsed_source_paths",
+        unexpected_ast_parse,
+    )
+    result = analysis_module.build_compact_projection_shard(
+        analysis_module.CompactProjectionBuildRequest(
+            source=projection_source,
+            missing_families=(role_family, boundary_family),
+            config=DetectorConfig(),
+            family_demands=(
+                (
+                    role_family,
+                    role_surface_detectors.CompactRoleSurfaceProjectionDemand(
+                        field_names=frozenset({"selected_values"}),
+                        generic_axis_tokens=frozenset(),
+                        generic_case_tokens=frozenset(),
+                        minimum_generic_case_count=2,
+                    ),
+                ),
+                (
+                    boundary_family,
+                    surface_detectors.CompactDistributedBoundaryProjectionDemand(
+                        frozenset({"projected_axis_offsets"})
+                    ),
+                ),
+            ),
+        )
+    )
+
+    projections = dict(result.runtime_projections)
+    role_projection = projections[role_family][0]
+    assert {item.field_name for item in role_projection.declarations} == {
+        "selected_values"
+    }
+    assert {item.field_name for item in role_projection.possible_use_sites} == {
+        "selected_values"
+    }
+    boundary_projection = projections[boundary_family][0]
+    assert {item.field_name for item in boundary_projection.declarations} == {
+        "projected_axis_offsets"
+    }
+    assert {item.field_name for item in boundary_projection.possible_uses} == {
+        "projected_axis_offsets"
+    }
+    assert family_cache_dir.exists()
+    assert list(family_cache_dir.glob("*.pickle"))
+    for family in (role_family, boundary_family):
+        assert not ast_tools_module.collected_family_cache_entry_exists_for_source_signature(
+            path=module_path,
+            module_name="demanded",
+            source_signature=projection_source.source_signature,
+            family_cache_dir=family_cache_dir,
+            family=family,
+        )
+
+
+def test_report_presence_demand_skips_context_only_single_family_facts(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "context.py"
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    family = runtime_detectors.DeclaredFieldExtractionSiteFamily
+
+    empty_demand = family.report_demand((), DetectorConfig())
+    present_demand = family.report_demand((object(),), DetectorConfig())
+
+    assert isinstance(empty_demand, ast_tools_module.CollectedFamilyPresenceDemand)
+    assert empty_demand.include_context is False
+    assert family.collect_demanded(parsed_module, empty_demand) == []
+    assert family.project_cached_demand((object(),), empty_demand) == ()
+    assert isinstance(present_demand, ast_tools_module.CollectedFamilyPresenceDemand)
+    assert present_demand.include_context is True
+    assert family.collect_demanded(parsed_module, present_demand) is None
+
+
+def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    context_path = package_root / "context.py"
+    irrelevant_path = package_root / "irrelevant.py"
+
+    def module_source(class_name: str, field_prefix: str = "") -> str:
+        return (
+            f"class {class_name}:\n"
+            "    def _shared(self, value):\n"
+            "        first = value + 1\n"
+            "        second = first * 2\n"
+            "        return second\n"
+            "    def _other(self, value):\n"
+            "        first = value - 1\n"
+            "        second = first / 2\n"
+            "        return second\n"
+            "    def build(self, source):\n"
+            f"        return Payload({field_prefix}alpha=source.alpha, "
+            f"{field_prefix}beta=source.beta, {field_prefix}gamma=source.gamma)\n"
+            "    def export(self, source):\n"
+            f"        return {{'{field_prefix}alpha': source.alpha, "
+            f"'{field_prefix}beta': source.beta, "
+            f"'{field_prefix}gamma': source.gamma}}\n"
+        )
+
+    target_path.write_text(module_source("Target"), encoding="utf-8")
+    context_path.write_text(module_source("Context"), encoding="utf-8")
+    irrelevant_path.write_text(
+        module_source("Irrelevant", "other_"),
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+    scope = AnalysisPathScope(
+        analysis_roots=(package_root,),
+        report_roots=(target_path,),
+    )
+    config = DetectorConfig()
+    family_detector_pairs = (
+        (
+            runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
+            runtime_detectors.RepeatedBuilderCallDetector(),
+        ),
+        (ExportDictShapeFamily, runtime_detectors.RepeatedExportDictDetector()),
+        (
+            systemic_detectors.InheritanceMethodShapeFamily,
+            systemic_detectors.RepeatedPrivateMethodDetector(),
+        ),
+        (
+            systemic_detectors.InheritanceMethodShapeFamily,
+            systemic_detectors.InheritanceHierarchyCandidateDetector(),
+        ),
+    )
+    for family, detector in family_detector_pairs:
+        full_items = tuple(
+            item for module in modules for item in collect_family_items(module, family)
+        )
+        target_items = tuple(
+            item
+            for item in full_items
+            if scope.includes_report_file_path(item.file_path)
+        )
+        context_items = tuple(
+            item
+            for item in full_items
+            if not scope.includes_report_file_path(item.file_path)
+        )
+        demand = family.report_demand(target_items, config)
+        demanded_items = target_items + family.project_cached_demand(
+            context_items,
+            demand,
+        )
+        full_findings = scope.filter_findings(
+            detector._findings_from_compact_projections(full_items, config)
+        )
+        demanded_findings = scope.filter_findings(
+            detector._findings_from_compact_projections(demanded_items, config)
+        )
+
+        assert full_findings
+        assert [finding.to_dict() for finding in demanded_findings] == [
+            finding.to_dict() for finding in full_findings
+        ]
+        assert len(demanded_items) < len(full_items)
+
+
+def test_cold_focused_compact_scan_derives_context_demand_from_report_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    context_path = package_root / "context.py"
+    target_path.write_text(
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class TargetRequest:\n"
+        "    shared_boundary_support: object\n"
+        "def forward_target(request):\n"
+        "    return TargetRequest(\n"
+        "        shared_boundary_support=request.shared_boundary_support,\n"
+        "    )\n"
+        "def project_target(request):\n"
+        "    header, payload = request.shared_boundary_support\n"
+        "    return header, payload\n",
+        encoding="utf-8",
+    )
+    context_path.write_text(
+        "from dataclasses import dataclass\n"
+        "from target import TargetRequest\n"
+        "@dataclass(frozen=True)\n"
+        "class ContextRequest:\n"
+        "    shared_boundary_support: object\n"
+        "def forward_context(value):\n"
+        "    return TargetRequest(shared_boundary_support=value)\n",
+        encoding="utf-8",
+    )
+    report_scope = AnalysisPathScope(
+        analysis_roots=(package_root,),
+        report_roots=(target_path,),
+    )
+    detector_types = (
+        surface_detectors.DistributedBoundaryFanoutDetector,
+        surface_detectors.BoundaryLocalWrapperCollapseDetector,
+    )
+    eager = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=tmp_path / "eager-parse-cache",
+        analysis_cache_dir=tmp_path / "eager-analysis-cache",
+        use_parse_cache=True,
+        parse_workers=1,
+        report_scope=report_scope,
+        detector_types=detector_types,
+    )
+    family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
+    original_collector = family.source_demand_collector
+    demanded_paths = []
+
+    def observed_demand_collector(source_module, syntax_index, demand):
+        demanded_paths.append(source_module.path.resolve())
+        assert original_collector is not None
+        return original_collector(source_module, syntax_index, demand)
+
+    monkeypatch.setattr(
+        family,
+        "source_demand_collector",
+        staticmethod(observed_demand_collector),
+    )
+    demanded = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=None,
+        analysis_cache_dir=None,
+        use_parse_cache=False,
+        parse_workers=1,
+        report_scope=report_scope,
+        detector_types=detector_types,
+    )
+
+    assert [finding.to_dict() for finding in demanded.findings] == [
+        finding.to_dict() for finding in eager.findings
+    ]
+    assert {finding.detector_id for finding in demanded.findings} == {
+        "distributed_boundary_fanout"
+    }
+    assert demanded_paths == [context_path.resolve()]
+
+
+def test_cold_focused_semantic_scan_omits_only_context_presentations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    context_path = package_root / "context.py"
+    target_path = package_root / "target.py"
+    context_path.write_text(
+        "class Step:\n"
+        "    pass\n"
+        "class LoadStep(Step):\n"
+        "    step_id = 'load'\n"
+        "class SaveStep(Step):\n"
+        "    step_id = 'save'\n",
+        encoding="utf-8",
+    )
+    target_path.write_text(
+        "from .context import LoadStep, SaveStep\n"
+        "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
+        encoding="utf-8",
+    )
+    report_scope = AnalysisPathScope(
+        analysis_roots=(package_root,),
+        report_roots=(target_path,),
+    )
+    detector_types = (semantic_descent_detectors.SemanticMirrorWithoutDescentDetector,)
+    eager = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=tmp_path / "eager-parse-cache",
+        analysis_cache_dir=tmp_path / "eager-analysis-cache",
+        use_parse_cache=True,
+        parse_workers=1,
+        report_scope=report_scope,
+        detector_types=detector_types,
+    )
+    family = CompactSemanticModuleProjectionFamily
+    original_collector = family.collect_demanded
+    demanded_paths: list[Path] = []
+
+    def observed_collect_demanded(cls, parsed_module, demand):
+        demanded_paths.append(parsed_module.path.resolve())
+        items = original_collector(parsed_module, demand)
+        assert items is not None
+        assert all(not item.projections for item in items)
+        return items
+
+    monkeypatch.setattr(
+        family,
+        "collect_demanded",
+        classmethod(observed_collect_demanded),
+    )
+    demanded = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=None,
+        analysis_cache_dir=None,
+        use_parse_cache=False,
+        parse_workers=1,
+        report_scope=report_scope,
+        detector_types=detector_types,
+    )
+
+    assert [finding.to_dict() for finding in demanded.findings] == [
+        finding.to_dict() for finding in eager.findings
+    ]
+    assert {finding.detector_id for finding in demanded.findings} == {
+        "semantic_mirror_without_descent"
+    }
+    assert set(demanded_paths) == {
+        (package_root / "__init__.py").resolve(),
+        context_path.resolve(),
+    }
+
+
+def test_cold_focused_role_guarded_scan_demands_only_context_role_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    context_path = package_root / "roles.py"
+    target_path = package_root / "target.py"
+    context_path.write_text(
+        "class SelectedRole:\n"
+        "    selected_value: int\n"
+        "class IgnoredRole:\n"
+        "    ignored_value: int\n",
+        encoding="utf-8",
+    )
+    target_path.write_text(
+        "from .roles import SelectedRole\n"
+        "def inspect(value):\n"
+        "    if isinstance(value, SelectedRole):\n"
+        "        return value.selected_value\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    report_scope = AnalysisPathScope(
+        analysis_roots=(package_root,),
+        report_roots=(target_path,),
+    )
+    detector_types = (runtime_detectors.RoleGuardedSurfaceAccessDetector,)
+    eager = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=tmp_path / "eager-parse-cache",
+        analysis_cache_dir=tmp_path / "eager-analysis-cache",
+        use_parse_cache=True,
+        parse_workers=1,
+        report_scope=report_scope,
+        detector_types=detector_types,
+    )
+    family = runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily
+    original_collector = family.source_demand_collector
+    demanded_paths: list[Path] = []
+
+    def observed_demand_collector(source_module, syntax_index, demand):
+        demanded_paths.append(source_module.path.resolve())
+        assert demand.role_type_names == frozenset({"SelectedRole"})
+        assert original_collector is not None
+        items = original_collector(source_module, syntax_index, demand)
+        assert items is not None
+        assert all(not item.role_guarded_accesses for item in items)
+        return items
+
+    monkeypatch.setattr(
+        family,
+        "source_demand_collector",
+        staticmethod(observed_demand_collector),
+    )
+    demanded = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=None,
+        analysis_cache_dir=None,
+        use_parse_cache=False,
+        parse_workers=1,
+        report_scope=report_scope,
+        detector_types=detector_types,
+    )
+
+    assert [finding.to_dict() for finding in demanded.findings] == [
+        finding.to_dict() for finding in eager.findings
+    ]
+    assert {finding.detector_id for finding in demanded.findings} == {
+        "role_guarded_surface_access"
+    }
+    assert demanded_paths == [context_path.resolve()]
+
+
+def test_projection_semantic_cache_reuses_detector_after_irrelevant_source_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (package_root / "roles.py").write_text(
+        "class SelectedRole:\n" "    selected_value: int\n",
+        encoding="utf-8",
+    )
+    target_path = package_root / "target.py"
+    target_path.write_text(
+        "from .roles import SelectedRole\n"
+        "def inspect(value):\n"
+        "    if isinstance(value, SelectedRole):\n"
+        "        return value.selected_value\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    unrelated_path = package_root / "unrelated.py"
+    unrelated_path.write_text("VALUE = 1\n", encoding="utf-8")
+    report_scope = AnalysisPathScope(
+        analysis_roots=(package_root,),
+        report_roots=(target_path,),
+    )
+    detector_types = (runtime_detectors.RoleGuardedSurfaceAccessDetector,)
+    first = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=tmp_path / "parse-cache",
+        analysis_cache_dir=tmp_path / "analysis-cache",
+        use_parse_cache=True,
+        parse_workers=1,
+        report_scope=report_scope,
+        detector_types=detector_types,
+    )
+    unrelated_path.write_text("# unrelated edit\nVALUE = 1\n", encoding="utf-8")
+    original_read_text = Path.read_text
+    source_text_reads: list[Path] = []
+
+    def tracked_read_text(path: Path, *args, **kwargs):
+        source_text_reads.append(path.resolve())
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", tracked_read_text)
+
+    def unexpected_detection(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError(
+            "semantic projection cache should reuse the detector shard"
+        )
+
+    monkeypatch.setattr(
+        runtime_detectors.RoleGuardedSurfaceAccessDetector,
+        "_findings_from_compact_projections",
+        unexpected_detection,
+    )
+    second = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=tmp_path / "parse-cache",
+        analysis_cache_dir=tmp_path / "analysis-cache",
+        use_parse_cache=True,
+        parse_workers=1,
+        report_scope=report_scope,
+        detector_types=detector_types,
+    )
+
+    assert second.cache_status is AnalysisCacheStatus.PARTIAL
+    assert [finding.to_dict() for finding in second.findings] == [
+        finding.to_dict() for finding in first.findings
+    ]
+    assert (package_root / "roles.py").resolve() not in source_text_reads
+
+
+def test_mixed_projection_shard_uses_only_python_ast(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "mixed.py"
+    source = (
+        "REGISTRY = {}\n"
+        "class Alpha: pass\n"
+        "REGISTRY['alpha'] = Alpha\n"
+        "def export(item):\n"
+        "    return {'name': item.name, 'score': item.score}\n"
+    )
+    module_path.write_text(source, encoding="utf-8")
+    projection_source = analysis_module.CompactProjectionCacheSource(
+        path=module_path,
+        module_name="mixed",
+        source_signature=ast_tools_module.python_source_cache_signature(source),
+        family_cache_dir=None,
+        scan_root=package_root,
+        cache_dir=None,
+        use_parse_cache=False,
+        source_policy=ast_tools_module.PythonSourcePathPolicy(),
+    )
+
+    def unexpected_native_parse(cls, source_text):
+        del cls, source_text
+        raise AssertionError("mixed shard should not build a second syntax tree")
+
+    monkeypatch.setattr(
+        NativePythonSyntaxIndex,
+        "from_source",
+        classmethod(unexpected_native_parse),
+    )
+    result = analysis_module.build_compact_projection_shard(
+        analysis_module.CompactProjectionBuildRequest(
+            source=projection_source,
+            missing_families=(
+                RegistrationShapeFamily,
+                runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+            ),
+            config=DetectorConfig(),
+        )
+    )
+
+    assert [family for family, _ in result.runtime_projections] == [
+        RegistrationShapeFamily,
+        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+    ]
+
+
 def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1699,6 +3058,7 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
         (package_root,),
         cache_dir=cache_dir,
         analysis_cache_dir=analysis_cache_dir,
+        parse_workers=2,
     )
 
     assert [finding.to_dict() for finding in cold.findings] == [
@@ -1772,6 +3132,16 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
             **bundle_kwargs
         )
     )
+    family_cache_dir = parser.collected_family_cache_dir
+    assert family_cache_dir is not None
+    marker_path = next(family_cache_dir.glob("bundle-*.complete"))
+    marker_path.write_bytes(b"complete\n")
+    assert (
+        ast_tools_module.collected_family_cache_bundle_is_complete_for_source_signature(
+            **bundle_kwargs
+        )
+    )
+    assert marker_path.read_bytes() == b"complete-v2\n"
 
     def unexpected_family_stat(**kwargs):
         del kwargs
@@ -1789,9 +3159,88 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
     )
 
 
-def test_compact_global_detector_shards_reuse_across_focused_report_targets(
+def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "context.py"
+    source = "VALUE = 1\n"
+    source_path.write_text(source, encoding="utf-8")
+    family_cache_dir = tmp_path / "collected-family"
+    family = role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily
+    demand = role_surface_detectors.CompactRoleSurfaceProjectionDemand(
+        field_names=frozenset({"selected_values"}),
+        generic_axis_tokens=frozenset(),
+        generic_case_tokens=frozenset(),
+        minimum_generic_case_count=2,
+    )
+    demand_signature = ast_tools_module.collected_family_demand_cache_signature(demand)
+    source_signature = ast_tools_module.python_source_cache_signature(source)
+    ast_tools_module.store_cached_demanded_collected_family_items_for_source_signature(
+        path=source_path,
+        module_name="context",
+        source_signature=source_signature,
+        family_cache_dir=family_cache_dir,
+        family=family,
+        demand=demand,
+        items=(),
+    )
+    bundle_kwargs = {
+        "path": source_path,
+        "module_name": "context",
+        "source_signature": source_signature,
+        "family_cache_dir": family_cache_dir,
+        "families": (family,),
+        "family_demands": ((family, demand, demand_signature),),
+    }
+    assert ast_tools_module.collected_family_demand_cache_bundle_is_complete_for_source_signature(
+        **bundle_kwargs
+    )
+
+    def unexpected_family_stat(**kwargs):
+        del kwargs
+        raise AssertionError("complete demand bundle should bypass family stat fan-out")
+
+    monkeypatch.setattr(
+        ast_tools_module,
+        "demanded_collected_family_cache_entry_exists_for_source_signature",
+        unexpected_family_stat,
+    )
+    assert ast_tools_module.collected_family_demand_cache_bundle_is_complete_for_source_signature(
+        **bundle_kwargs
+    )
+
+
+def test_compact_family_cache_rejects_zero_byte_failed_write(tmp_path: Path) -> None:
+    source_path = tmp_path / "mod.py"
+    source = "VALUE = 1\n"
+    source_path.write_text(source, encoding="utf-8")
+    family_cache_dir = tmp_path / "collected-family"
+    family_cache_dir.mkdir()
+    family = ExportDictShapeFamily
+    identity = ast_tools_module._collected_family_cache_identity_for_source_signature(
+        path=source_path,
+        module_name="mod",
+        source_signature=ast_tools_module.python_source_cache_signature(source),
+        family=family,
+    )
+    ast_tools_module._collected_family_cache_path(
+        family_cache_dir, identity
+    ).write_bytes(b"")
+
+    assert (
+        not ast_tools_module.collected_family_cache_entry_exists_for_source_signature(
+            path=source_path,
+            module_name="mod",
+            source_signature=ast_tools_module.python_source_cache_signature(source),
+            family_cache_dir=family_cache_dir,
+            family=family,
+        )
+    )
+
+
+def test_compact_global_detector_shards_partially_reuse_across_report_targets(
+    tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -1827,15 +3276,6 @@ def test_compact_global_detector_shards_reuse_across_focused_report_targets(
     )
     assert first.findings == first_scope.filter_findings(all_findings)
 
-    def unexpected_global_join(self, config):
-        del self, config
-        raise AssertionError("cross-target scan should reuse exact global shards")
-
-    monkeypatch.setattr(
-        analysis_module.BoundedCompactProjectionManifest,
-        "findings_by_detector",
-        unexpected_global_join,
-    )
     second = analyze_compact_roots_with_cache(
         (package_root,),
         cache_dir=cache_dir,
@@ -1845,7 +3285,7 @@ def test_compact_global_detector_shards_reuse_across_focused_report_targets(
 
     assert second.cache_status is AnalysisCacheStatus.PARTIAL
     assert second.findings == second_scope.filter_findings(all_findings)
-    assert second.projection_count == 0
+    assert 0 < second.projection_count < first.projection_count
 
 
 def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate(
@@ -2076,6 +3516,31 @@ def test_compact_public_support_projection_matches_legacy_reference_index(
     assert [finding.to_dict() for finding in projected_findings] == [
         finding.to_dict() for finding in legacy_findings
     ]
+    projections = type(detector).compact_module_projections(modules)
+    target_path = package_root / "_helpers.py"
+    report_scope = AnalysisPathScope(
+        analysis_roots=(package_root,), report_roots=(target_path,)
+    )
+    family = type(detector).module_projection_family
+    target_projections = tuple(
+        projection
+        for projection in projections
+        if projection.file_path == str(target_path)
+    )
+    demand = family.report_demand(target_projections, config)
+    demanded_projections = target_projections + family.project_cached_demand(
+        tuple(
+            projection
+            for projection in projections
+            if projection not in target_projections
+        ),
+        demand,
+    )
+    assert report_scope.filter_findings(
+        detector._findings_from_compact_projections(demanded_projections, config)
+    ) == report_scope.filter_findings(
+        detector._findings_from_compact_projections(projections, config)
+    )
 
 
 def test_compact_flattened_candidate_projections_match_full_ast_detection(
@@ -2226,7 +3691,15 @@ def test_compact_keyed_axis_projection_matches_legacy_ast_candidates(
         "def resolve(mode):\n"
         "    if mode == Mode.ALPHA:\n"
         "        return 'alpha'\n"
-        "    return 'beta'\n",
+        "    return 'beta'\n"
+        "\n"
+        "def resolve_nested(mode):\n"
+        "    def nested(candidate):\n"
+        "        if candidate == Mode.ALPHA:\n"
+        "            return 'alpha'\n"
+        "        if candidate == Mode.BETA:\n"
+        "            return 'beta'\n"
+        "    return nested(mode)\n",
         encoding="utf-8",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
@@ -2396,7 +3869,17 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
         "    assert type(value) is ImportedBoundary\n"
         "\n"
         "def shadowed_type(type, value):\n"
-        "    assert type(value) is ImportedBoundary\n",
+        "    assert type(value) is ImportedBoundary\n"
+        "\n"
+        "def require_nested(value):\n"
+        "    def nested(candidate):\n"
+        "        assert type(candidate) is ImportedBoundary\n"
+        "    return nested(value)\n"
+        "\n"
+        "def shadowed_outer(type, value):\n"
+        "    def nested(candidate):\n"
+        "        assert type(candidate) is ImportedBoundary\n"
+        "    return nested(value)\n",
         encoding="utf-8",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
@@ -2479,7 +3962,13 @@ def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
         "    return [AutoRegisterMeta(name, (Exporter,), body) for name, body in specs]\n"
         "\n"
         "def select_exporter(name):\n"
-        "    return Exporter.for_format(name)\n",
+        "    return Exporter.for_format(name)\n"
+        "\n"
+        "def materialize_nested(spec):\n"
+        "    def build(name, body):\n"
+        "        Exporter.for_format(name)\n"
+        "        return AutoRegisterMeta(name, (Exporter,), body)\n"
+        "    return build(*spec)\n",
         encoding="utf-8",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
@@ -3687,6 +5176,33 @@ def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
     assert accumulator.findings_by_detector(config)[type(detector)] == (
         detector._findings_for_candidates(legacy_candidates, config)
     )
+    target_path = package_root / "debug_toolbar.py"
+    report_scope = AnalysisPathScope(
+        analysis_roots=(package_root,), report_roots=(target_path,)
+    )
+    family = type(detector).module_projection_family
+    target_projections = tuple(
+        projection
+        for projection in projections
+        if any(local.file_path == str(target_path) for local in projection.locals)
+    )
+    demand = family.report_demand(target_projections, config)
+    demanded_projections = target_projections + family.project_cached_demand(
+        tuple(
+            projection
+            for projection in projections
+            if projection not in target_projections
+        ),
+        demand,
+    )
+    assert report_scope.filter_findings(
+        detector._findings_from_compact_projections(demanded_projections, config)
+    ) == report_scope.filter_findings(
+        detector._findings_from_compact_projections(projections, config)
+    )
+    assert sum(
+        len(item.authorities) + len(item.locals) for item in demanded_projections
+    ) < sum(len(item.authorities) + len(item.locals) for item in projections)
 
 
 def test_compact_public_private_delegate_context_matches_legacy_ast_candidates(
@@ -3753,6 +5269,45 @@ def test_compact_public_private_delegate_context_matches_legacy_ast_candidates(
     assert accumulator.projection_count == len(modules)
     assert len(findings[type(shell_detector)]) == 2
     assert len(findings[type(family_detector)]) == 1
+    target_path = package_root / "pipeline.py"
+    report_scope = AnalysisPathScope(
+        analysis_roots=(package_root,), report_roots=(target_path,)
+    )
+    family = type(shell_detector).module_projection_family
+    target_projections = tuple(
+        projection
+        for projection in projections
+        if projection.file_path == str(target_path)
+    )
+    demand = family.report_demand(target_projections, config)
+    demanded_projections = target_projections + family.project_cached_demand(
+        tuple(
+            projection
+            for projection in projections
+            if projection not in target_projections
+        ),
+        demand,
+    )
+    for detector in (shell_detector, family_detector):
+        assert report_scope.filter_findings(
+            detector._findings_from_compact_projections(
+                demanded_projections,
+                config,
+            )
+        ) == report_scope.filter_findings(
+            detector._findings_from_compact_projections(projections, config)
+        )
+    assert sum(
+        len(item.top_level_symbol_lines)
+        + len(item.wrappers)
+        + len(item.callsites_by_target)
+        for item in demanded_projections
+    ) < sum(
+        len(item.top_level_symbol_lines)
+        + len(item.wrappers)
+        + len(item.callsites_by_target)
+        for item in projections
+    )
 
 
 def test_carrier_reuse_detectors_share_one_compact_context(
@@ -4362,6 +5917,18 @@ def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidat
         runtime_detectors.CompactNominalBypassModuleProjectionFamily
     ]
     class_projections = groups[runtime_detectors.CompactModuleClassProjectionFamily]
+    source_module = SourceModule(
+        path=modules[0].path,
+        module_name=modules[0].module_name,
+        source=modules[0].source,
+    )
+    native_nominal_projections = (
+        runtime_detectors.CompactNominalBypassModuleProjectionFamily.collect_source(
+            source_module,
+            NativePythonSyntaxIndex.from_source(source_module.source),
+        )
+    )
+    assert tuple(native_nominal_projections or ()) == nominal_projections
 
     legacy_bypass = runtime_detectors._nominal_authority_bypass_candidates(
         list(modules)

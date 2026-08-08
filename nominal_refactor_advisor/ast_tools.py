@@ -9,6 +9,7 @@ directly.
 from __future__ import annotations
 
 import ast
+from array import array
 import copy
 from contextlib import contextmanager
 import hashlib
@@ -22,7 +23,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
-from enum import StrEnum
+from enum import Enum, StrEnum
 from fnmatch import fnmatchcase
 from functools import lru_cache
 from pathlib import Path
@@ -34,6 +35,7 @@ from metaclass_registry import AutoRegisterMeta
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .collection_algebra import sorted_tuple
 from .deadline import scan_deadline_checkpoint
+from .native_syntax import NativePythonSyntaxIndex
 from .observation_graph import (
     NominalWitnessGroup,
     ObservationCohort,
@@ -186,7 +188,21 @@ class CollectedFamilyCacheIdentity:
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
+@dataclass(frozen=True)
+class CollectedFamilyDemandCacheIdentity(CollectedFamilyCacheIdentity):
+    """A non-authoritative focused view keyed by its exact report demand."""
+
+    demand_signature: str
+
+
 collected_family_cache_schema = CollectedFamilyCacheSchema()
+
+
+@dataclass(frozen=True)
+class CollectedFamilyPresenceDemand:
+    """Whether context facts can share evidence with any report-target fact."""
+
+    include_context: bool
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -499,6 +515,16 @@ class ParsedModule:
     module: ast.Module
     source: str
     semantic_hash: str | None = None
+    family_cache_dir: Path | None = None
+
+
+@dataclass(frozen=True)
+class SourceModule:
+    """Source-only module identity available before Python AST construction."""
+
+    path: Path
+    module_name: str
+    source: str
     family_cache_dir: Path | None = None
 
 
@@ -1184,6 +1210,28 @@ class CollectedFamily(
     __skip_if_no_key__ = True
     item_type: ClassVar[type[ShapeItemT]]
     cache_payload_max_bytes: ClassVar[int | None] = None
+    source_collector: ClassVar[
+        Callable[[SourceModule, NativePythonSyntaxIndex], list[object] | None] | None
+    ] = None
+    source_demand_collector: ClassVar[
+        Callable[
+            [SourceModule, NativePythonSyntaxIndex, object],
+            list[object] | None,
+        ]
+        | None
+    ] = None
+    ast_demand_collector: ClassVar[
+        Callable[[ParsedModule, object], list[object]] | None
+    ] = None
+    report_demand_builder: ClassVar[
+        Callable[[tuple[object, ...], object], object] | None
+    ] = None
+    cached_demand_projector: ClassVar[
+        Callable[[tuple[object, ...], object], tuple[object, ...]] | None
+    ] = None
+    report_presence_predicate: ClassVar[
+        Callable[[tuple[object, ...], object], bool] | None
+    ] = None
 
     @classmethod
     def registered_families(cls) -> CollectedFamilyTypes:
@@ -1196,6 +1244,97 @@ class CollectedFamily(
     def all_registered_families(cls) -> CollectedFamilyTypes:
         """Return all concrete families reachable from descendant registry roots."""
         return REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)
+
+    @classmethod
+    def collect_source(
+        cls,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list[ShapeItemT] | None:
+        """Collect without a Python AST, or request the exact AST fallback."""
+
+        if cls.source_collector is None:
+            return None
+        items = cls.source_collector(source_module, syntax_index)
+        if items is None:
+            return None
+        return [item for item in items if isinstance(item, cls.item_type)]
+
+    @classmethod
+    def collect_demanded_source(
+        cls,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        demand: object,
+    ) -> list[ShapeItemT] | None:
+        """Collect an exact demand view without persisting it as a full family."""
+
+        if isinstance(demand, CollectedFamilyPresenceDemand):
+            if not demand.include_context:
+                return []
+            return cls.collect_source(source_module, syntax_index)
+        if cls.source_demand_collector is None:
+            return None
+        items = cls.source_demand_collector(source_module, syntax_index, demand)
+        if items is None:
+            return None
+        return [item for item in items if isinstance(item, cls.item_type)]
+
+    @classmethod
+    def collect_demanded(
+        cls,
+        parsed_module: ParsedModule,
+        demand: object,
+    ) -> list[ShapeItemT] | None:
+        """Collect an exact AST demand view, or request the full-family fallback."""
+
+        if isinstance(demand, CollectedFamilyPresenceDemand):
+            return None if demand.include_context else []
+        if cls.ast_demand_collector is None:
+            return None
+        items = cls.ast_demand_collector(parsed_module, demand)
+        return [item for item in items if isinstance(item, cls.item_type)]
+
+    @classmethod
+    def report_demand(
+        cls,
+        target_items: tuple[object, ...],
+        config: object,
+    ) -> object | None:
+        """Derive context demand from complete report-target family items."""
+
+        if cls.report_demand_builder is not None:
+            return cls.report_demand_builder(target_items, config)
+        if cls.report_presence_predicate is not None:
+            return CollectedFamilyPresenceDemand(
+                include_context=cls.report_presence_predicate(target_items, config)
+            )
+        return None
+
+    @classmethod
+    def can_collect_demanded_source(cls, demand: object) -> bool:
+        if isinstance(demand, CollectedFamilyPresenceDemand):
+            return not demand.include_context or cls.source_collector is not None
+        return cls.source_demand_collector is not None
+
+    @classmethod
+    def project_cached_demand(
+        cls,
+        items: tuple[object, ...],
+        demand: object,
+    ) -> tuple[ShapeItemT, ...]:
+        """Derive the non-persistent focused view from a complete cache payload."""
+
+        if isinstance(demand, CollectedFamilyPresenceDemand):
+            return (
+                tuple(item for item in items if isinstance(item, cls.item_type))
+                if demand.include_context
+                else ()
+            )
+        if cls.cached_demand_projector is None:
+            return tuple(item for item in items if isinstance(item, cls.item_type))
+        projected = cls.cached_demand_projector(items, demand)
+        return tuple(item for item in projected if isinstance(item, cls.item_type))
 
     @classmethod
     @abstractmethod
@@ -1226,6 +1365,78 @@ def _collected_family_cache_path(
     identity: CollectedFamilyCacheIdentity,
 ) -> Path:
     return cache_dir / f"{identity.cache_token}.pickle"
+
+
+def _collected_family_content_signature_path(
+    cache_dir: Path,
+    identity: CollectedFamilyCacheIdentity,
+) -> Path:
+    return cache_dir / f"{identity.cache_token}.signature"
+
+
+def collected_family_items_content_signature(items: tuple[object, ...]) -> str:
+    payload = pickle.dumps(
+        _stable_collected_family_cache_value(items),
+        protocol=pickle.HIGHEST_PROTOCOL,
+    )
+    return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+def _stable_collected_family_cache_value(value: object) -> object:
+    if is_dataclass(value) and not isinstance(value, type):
+        return (
+            "dataclass",
+            type(value).__module__,
+            type(value).__qualname__,
+            tuple(
+                (
+                    item.name,
+                    _stable_collected_family_cache_value(getattr(value, item.name)),
+                )
+                for item in fields(value)
+            ),
+        )
+    if isinstance(value, dict):
+        pairs = tuple(
+            (
+                _stable_collected_family_cache_value(key),
+                _stable_collected_family_cache_value(item),
+            )
+            for key, item in value.items()
+        )
+        return "dict", tuple(sorted(pairs, key=repr))
+    if isinstance(value, (set, frozenset)):
+        items = tuple(_stable_collected_family_cache_value(item) for item in value)
+        return type(value).__name__, tuple(sorted(items, key=repr))
+    if isinstance(value, tuple):
+        return "tuple", tuple(
+            _stable_collected_family_cache_value(item) for item in value
+        )
+    if isinstance(value, list):
+        return "list", tuple(
+            _stable_collected_family_cache_value(item) for item in value
+        )
+    if isinstance(value, Path):
+        return "path", str(value)
+    if isinstance(value, Enum):
+        return "enum", type(value).__module__, type(value).__qualname__, value.value
+    if value is None or isinstance(value, (str, bytes, int, float, bool)):
+        return value
+    return "repr", type(value).__module__, type(value).__qualname__, repr(value)
+
+
+def _store_collected_family_content_signature(
+    cache_dir: Path,
+    identity: CollectedFamilyCacheIdentity,
+    items: tuple[object, ...],
+) -> None:
+    try:
+        _collected_family_content_signature_path(cache_dir, identity).write_text(
+            collected_family_items_content_signature(items),
+            encoding="ascii",
+        )
+    except (OSError, pickle.PickleError, TypeError, AttributeError):
+        pass
 
 
 def _load_cached_collected_family_items(
@@ -1264,6 +1475,9 @@ def _load_collected_family_cache_payload(
         return None
     if not all(isinstance(item, family.item_type) for item in payload.items):
         return None
+    signature_path = _collected_family_content_signature_path(cache_dir, identity)
+    if not signature_path.is_file():
+        _store_collected_family_content_signature(cache_dir, identity, payload.items)
     if getattr(payload, "ast_free", False) is not True:
         if retains_python_ast(payload.items):
             return None
@@ -1326,6 +1540,54 @@ def _collected_family_cache_identity_for_source_signature(
     )
 
 
+def _collected_family_demand_cache_identity_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family: type[CollectedFamily[ShapeItemT]],
+    demand: object,
+    demand_signature: str | None = None,
+) -> CollectedFamilyDemandCacheIdentity:
+    base = _collected_family_cache_identity_for_source_signature(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family=family,
+    )
+    resolved_demand_signature = (
+        demand_signature or collected_family_demand_cache_signature(demand)
+    )
+    return CollectedFamilyDemandCacheIdentity(
+        path=base.path,
+        module_name=base.module_name,
+        source_signature=base.source_signature,
+        family_module=base.family_module,
+        family_qualname=base.family_qualname,
+        item_type_module=base.item_type_module,
+        item_type_qualname=base.item_type_qualname,
+        python_version=base.python_version,
+        schema=base.schema,
+        demand_signature=resolved_demand_signature,
+    )
+
+
+def collected_family_demand_cache_signature(demand: object) -> str:
+    """Hash one immutable demand once for reuse across every source shard."""
+
+    return hashlib.blake2s(
+        repr(
+            (
+                "demand-projection-v2",
+                type(demand).__module__,
+                type(demand).__qualname__,
+                _stable_collected_family_cache_value(demand),
+            )
+        ).encode("utf-8"),
+        digest_size=16,
+    ).hexdigest()
+
+
 def collected_family_cache_entry_exists_for_source_signature(
     *,
     path: Path,
@@ -1344,7 +1606,41 @@ def collected_family_cache_entry_exists_for_source_signature(
         source_signature=source_signature,
         family=family,
     )
-    return _collected_family_cache_path(family_cache_dir, identity).is_file()
+    cache_path = _collected_family_cache_path(family_cache_dir, identity)
+    try:
+        # Opening a cache path for ``wb`` creates it before serialization or
+        # storage can fail.  A zero-byte remnant is therefore a failed write,
+        # not a valid family entry.
+        return cache_path.is_file() and cache_path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def demanded_collected_family_cache_entry_exists_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+    demand: object,
+    demand_signature: str | None = None,
+) -> bool:
+    if family_cache_dir is None:
+        return False
+    identity = _collected_family_demand_cache_identity_for_source_signature(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family=family,
+        demand=demand,
+        demand_signature=demand_signature,
+    )
+    cache_path = _collected_family_cache_path(family_cache_dir, identity)
+    try:
+        return cache_path.is_file() and cache_path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def collected_family_cache_bundle_is_complete_for_source_signature(
@@ -1359,27 +1655,17 @@ def collected_family_cache_bundle_is_complete_for_source_signature(
 
     if family_cache_dir is None:
         return False
-    bundle_payload = repr(
-        (
-            str(path.resolve()),
-            module_name,
-            source_signature,
-            (sys.version_info.major, sys.version_info.minor),
-            collected_family_cache_schema,
-            tuple(
-                (
-                    family.__module__,
-                    family.__qualname__,
-                    family.item_type.__module__,
-                    family.item_type.__qualname__,
-                )
-                for family in families
-            ),
-        )
-    ).encode("utf-8")
-    marker_token = hashlib.blake2s(bundle_payload, digest_size=16).hexdigest()
-    marker_path = family_cache_dir / f"bundle-{marker_token}.complete"
-    if marker_path.is_file():
+    family_rows = tuple(
+        _collected_family_cache_bundle_row(family) for family in families
+    )
+    marker_path = _collected_family_cache_bundle_marker_path(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family_cache_dir=family_cache_dir,
+        family_rows=family_rows,
+    )
+    if _collected_family_cache_bundle_marker_is_complete(marker_path):
         return True
     if not all(
         collected_family_cache_entry_exists_for_source_signature(
@@ -1392,12 +1678,116 @@ def collected_family_cache_bundle_is_complete_for_source_signature(
         for family in families
     ):
         return False
+    _store_collected_family_cache_bundle_marker(marker_path)
+    return True
+
+
+def collected_family_demand_cache_bundle_is_complete_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    families: tuple[type[CollectedFamily], ...],
+    family_demands: tuple[tuple[type[CollectedFamily], object, str], ...],
+) -> bool:
+    """Use one marker for a complete mixture of full and demanded families."""
+
+    if family_cache_dir is None:
+        return False
+    demands_by_family = {
+        family: (demand, demand_signature)
+        for family, demand, demand_signature in family_demands
+    }
+    family_rows = tuple(
+        (
+            *_collected_family_cache_bundle_row(family),
+            demands_by_family.get(family, (None, ""))[1],
+        )
+        for family in families
+    )
+    marker_path = _collected_family_cache_bundle_marker_path(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family_cache_dir=family_cache_dir,
+        family_rows=family_rows,
+    )
+    if _collected_family_cache_bundle_marker_is_complete(marker_path):
+        return True
+    for family in families:
+        demanded = demands_by_family.get(family)
+        if demanded is None:
+            exists = collected_family_cache_entry_exists_for_source_signature(
+                path=path,
+                module_name=module_name,
+                source_signature=source_signature,
+                family_cache_dir=family_cache_dir,
+                family=family,
+            )
+        else:
+            demand, demand_signature = demanded
+            exists = demanded_collected_family_cache_entry_exists_for_source_signature(
+                path=path,
+                module_name=module_name,
+                source_signature=source_signature,
+                family_cache_dir=family_cache_dir,
+                family=family,
+                demand=demand,
+                demand_signature=demand_signature,
+            )
+        if not exists:
+            return False
+    _store_collected_family_cache_bundle_marker(marker_path)
+    return True
+
+
+def _collected_family_cache_bundle_row(
+    family: type[CollectedFamily],
+) -> tuple[str, str, str, str]:
+    return (
+        family.__module__,
+        family.__qualname__,
+        family.item_type.__module__,
+        family.item_type.__qualname__,
+    )
+
+
+def _collected_family_cache_bundle_marker_path(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path,
+    family_rows: tuple[tuple[str, ...], ...],
+) -> Path:
+    bundle_payload = repr(
+        (
+            str(path.resolve()),
+            module_name,
+            source_signature,
+            (sys.version_info.major, sys.version_info.minor),
+            collected_family_cache_schema,
+            family_rows,
+        )
+    ).encode("utf-8")
+    marker_token = hashlib.blake2s(bundle_payload, digest_size=16).hexdigest()
+    return family_cache_dir / f"bundle-{marker_token}.complete"
+
+
+def _collected_family_cache_bundle_marker_is_complete(marker_path: Path) -> bool:
     try:
-        family_cache_dir.mkdir(parents=True, exist_ok=True)
-        marker_path.write_bytes(b"complete\n")
+        return marker_path.read_bytes() == b"complete-v2\n"
+    except OSError:
+        return False
+
+
+def _store_collected_family_cache_bundle_marker(marker_path: Path) -> None:
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_bytes(b"complete-v2\n")
     except OSError:
         pass
-    return True
 
 
 def load_cached_collected_family_items_for_source_signature(
@@ -1425,15 +1815,163 @@ def load_cached_collected_family_items_for_source_signature(
     )
 
 
+def load_cached_collected_family_content_signature_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+) -> str | None:
+    """Read a lightweight semantic signature without opening the family payload."""
+
+    if family_cache_dir is None:
+        return None
+    identity = _collected_family_cache_identity_for_source_signature(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family=family,
+    )
+    try:
+        signature = _collected_family_content_signature_path(
+            family_cache_dir,
+            identity,
+        ).read_text(encoding="ascii")
+    except OSError:
+        return None
+    return signature if len(signature) == 32 else None
+
+
+def load_cached_demanded_collected_family_items_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+    demand: object,
+    demand_signature: str | None = None,
+) -> tuple[ShapeItemT, ...] | None:
+    if family_cache_dir is None:
+        return None
+    identity = _collected_family_demand_cache_identity_for_source_signature(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family=family,
+        demand=demand,
+        demand_signature=demand_signature,
+    )
+    return _load_collected_family_cache_payload(
+        family_cache_dir,
+        identity,
+        family,
+    )
+
+
+def load_cached_demanded_collected_family_content_signature_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+    demand: object,
+    demand_signature: str | None = None,
+) -> str | None:
+    if family_cache_dir is None:
+        return None
+    identity = _collected_family_demand_cache_identity_for_source_signature(
+        path=path,
+        module_name=module_name,
+        source_signature=source_signature,
+        family=family,
+        demand=demand,
+        demand_signature=demand_signature,
+    )
+    try:
+        signature = _collected_family_content_signature_path(
+            family_cache_dir,
+            identity,
+        ).read_text(encoding="ascii")
+    except OSError:
+        return None
+    return signature if len(signature) == 32 else None
+
+
 def _store_cached_collected_family_items(
     parsed_module: ParsedModule,
     family: type[CollectedFamily[ShapeItemT]],
     items: tuple[ShapeItemT, ...],
 ) -> None:
-    cache_dir = parsed_module.family_cache_dir
+    _store_cached_collected_family_items_for_identity(
+        cache_dir=parsed_module.family_cache_dir,
+        identity=_collected_family_cache_identity(parsed_module, family),
+        family=family,
+        items=items,
+    )
+
+
+def store_cached_collected_family_items_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+    items: tuple[ShapeItemT, ...],
+) -> None:
+    """Publish source-native compact facts under the existing cache identity."""
+
+    _store_cached_collected_family_items_for_identity(
+        cache_dir=family_cache_dir,
+        identity=_collected_family_cache_identity_for_source_signature(
+            path=path,
+            module_name=module_name,
+            source_signature=source_signature,
+            family=family,
+        ),
+        family=family,
+        items=items,
+    )
+
+
+def store_cached_demanded_collected_family_items_for_source_signature(
+    *,
+    path: Path,
+    module_name: str,
+    source_signature: str,
+    family_cache_dir: Path | None,
+    family: type[CollectedFamily[ShapeItemT]],
+    demand: object,
+    items: tuple[ShapeItemT, ...],
+) -> None:
+    """Persist a focused view without publishing it as the complete family."""
+
+    _store_cached_collected_family_items_for_identity(
+        cache_dir=family_cache_dir,
+        identity=_collected_family_demand_cache_identity_for_source_signature(
+            path=path,
+            module_name=module_name,
+            source_signature=source_signature,
+            family=family,
+            demand=demand,
+        ),
+        family=family,
+        items=items,
+    )
+
+
+def _store_cached_collected_family_items_for_identity(
+    *,
+    cache_dir: Path | None,
+    identity: CollectedFamilyCacheIdentity,
+    family: type[CollectedFamily[ShapeItemT]],
+    items: tuple[ShapeItemT, ...],
+) -> None:
     if cache_dir is None or retains_python_ast(items):
         return
-    identity = _collected_family_cache_identity(parsed_module, family)
     payload = CollectedFamilyCachePayload(
         identity=identity,
         items=items,
@@ -1451,6 +1989,7 @@ def _store_cached_collected_family_items(
         cache_dir.mkdir(parents=True, exist_ok=True)
         with _collected_family_cache_path(cache_dir, identity).open("wb") as handle:
             handle.write(payload_bytes)
+        _store_collected_family_content_signature(cache_dir, identity, items)
     except (OSError, pickle.PickleError, TypeError, AttributeError):
         return
 
@@ -2092,8 +2631,175 @@ def _name_family(names: set[str] | frozenset[str]) -> AstNameFamily:
     return AstNameFamily(frozenset(names))
 
 
+@dataclass(frozen=True)
+class LexicalSyntaxScope:
+    """Interned lexical owner state shared by every node in one scope."""
+
+    names: tuple[str, ...] = ()
+    class_names: tuple[str, ...] = ()
+    function_names: tuple[str, ...] = ()
+    function_node_indices: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class ModuleSyntaxIndex:
+    """One module traversal authority shared by syntax-derived detector views."""
+
+    module: ast.Module
+    depth_first_nodes: tuple[ast.AST, ...]
+    breadth_first_nodes: tuple[ast.AST, ...]
+    parent_indices: array
+    parent_field_names: tuple[str | None, ...]
+    depths: array
+    scope_ids: array
+    executable_function_indices: array
+    node_indices_by_type: dict[type[ast.AST], array]
+    scopes: tuple[LexicalSyntaxScope, ...]
+    named_functions: tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]
+
+    @classmethod
+    def build(cls, module: ast.Module) -> "ModuleSyntaxIndex":
+        nodes: list[ast.AST] = []
+        parent_indices = array("i")
+        parent_field_names: list[str | None] = []
+        depths = array("I")
+        scope_ids = array("I")
+        executable_function_indices = array("i")
+        node_indices_by_type: dict[type[ast.AST], array] = {}
+        scopes = [LexicalSyntaxScope()]
+        named_functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+        nodes_by_depth: list[list[ast.AST]] = []
+        stack: list[tuple[ast.AST, int, str | None, int, int, int]] = [
+            (module, -1, None, 0, 0, -1)
+        ]
+        while stack:
+            (
+                node,
+                parent_index,
+                parent_field,
+                scope_id,
+                depth,
+                executable_function_index,
+            ) = stack.pop()
+            node_index = len(nodes)
+            scope = scopes[scope_id]
+            nodes.append(node)
+            node_indices_by_type.setdefault(type(node), array("I")).append(node_index)
+            if depth == len(nodes_by_depth):
+                nodes_by_depth.append([])
+            nodes_by_depth[depth].append(node)
+            parent_indices.append(parent_index)
+            parent_field_names.append(parent_field)
+            depths.append(depth)
+            scope_ids.append(scope_id)
+            executable_function_indices.append(executable_function_index)
+
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                named_functions.append(
+                    (".".join((*scope.class_names, node.name)), node)
+                )
+
+            child_scope_id = scope_id
+            if isinstance(node, ast.ClassDef):
+                child_scope_id = len(scopes)
+                scopes.append(
+                    LexicalSyntaxScope(
+                        names=(*scope.names, node.name),
+                        class_names=(*scope.class_names, node.name),
+                        function_names=scope.function_names,
+                        function_node_indices=scope.function_node_indices,
+                    )
+                )
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                child_scope_id = len(scopes)
+                scopes.append(
+                    LexicalSyntaxScope(
+                        names=(*scope.names, node.name),
+                        class_names=scope.class_names,
+                        function_names=(*scope.function_names, node.name),
+                        function_node_indices=(
+                            *scope.function_node_indices,
+                            node_index,
+                        ),
+                    )
+                )
+            children: list[tuple[ast.AST, str, int]] = []
+            for field_name, value in ast.iter_fields(node):
+                field_executable_function_index = (
+                    -1
+                    if isinstance(
+                        node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+                    )
+                    else executable_function_index
+                )
+                if isinstance(value, ast.AST):
+                    children.append(
+                        (value, field_name, field_executable_function_index)
+                    )
+                elif isinstance(value, list):
+                    for item_index, item in enumerate(value):
+                        if not isinstance(item, ast.AST):
+                            continue
+                        item_executable_function_index = (
+                            node_index
+                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and field_name == "body"
+                            and not (
+                                item_index == 0
+                                and isinstance(item, ast.Expr)
+                                and isinstance(item.value, ast.Constant)
+                                and isinstance(item.value.value, str)
+                            )
+                            else field_executable_function_index
+                        )
+                        children.append(
+                            (
+                                item,
+                                field_name,
+                                item_executable_function_index,
+                            )
+                        )
+            stack.extend(
+                (
+                    child,
+                    node_index,
+                    field_name,
+                    child_scope_id,
+                    depth + 1,
+                    child_executable_function_index,
+                )
+                for child, field_name, child_executable_function_index in reversed(
+                    children
+                )
+            )
+        return cls(
+            module=module,
+            depth_first_nodes=tuple(nodes),
+            breadth_first_nodes=tuple(
+                node for level_nodes in nodes_by_depth for node in level_nodes
+            ),
+            parent_indices=parent_indices,
+            parent_field_names=tuple(parent_field_names),
+            depths=depths,
+            scope_ids=scope_ids,
+            executable_function_indices=executable_function_indices,
+            node_indices_by_type=node_indices_by_type,
+            scopes=tuple(scopes),
+            named_functions=tuple(named_functions),
+        )
+
+
+@lru_cache(maxsize=32768)
+def module_syntax_index(module: ast.Module) -> ModuleSyntaxIndex:
+    """Return the single syntax traversal authority for one live module AST."""
+
+    return ModuleSyntaxIndex.build(module)
+
+
 @lru_cache(maxsize=32768)
 def _walk_nodes(node: ast.AST) -> tuple[ast.AST, ...]:
+    if isinstance(node, ast.Module):
+        return module_syntax_index(node).breadth_first_nodes
     return tuple(ast.walk(node))
 
 
@@ -2112,6 +2818,15 @@ def walk_function_body_nodes(
             continue
         stack.extend(reversed(tuple(ast.iter_child_nodes(node))))
     return tuple(nodes)
+
+
+@lru_cache(maxsize=32768)
+def named_function_nodes(
+    module: ast.Module,
+) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
+    """Return one shared class-qualified function traversal for a module AST."""
+
+    return module_syntax_index(module).named_functions
 
 
 def active_path_descends_through(
@@ -2171,37 +2886,21 @@ def _node_display_name(node: ast.AST) -> str:
 def _collect_all_scoped_observations(
     parsed_module: ParsedModule,
 ) -> tuple[ScopedAstObservation, ...]:
-    observations: list[ScopedAstObservation] = []
-
-    class Visitor(ClassFunctionStackNodeVisitor):
-        def _record(self, node: ast.AST) -> None:
-            if "lineno" not in node._attributes:
-                return
-            observations.append(
-                ScopedAstObservation(
-                    node=node,
-                    class_name=self.current_class_name,
-                    function_name=self.current_function_name,
-                )
-            )
-
-        def before_visit_class(self, node: ast.ClassDef) -> None:
-            self._record(node)
-
-        def before_visit_function(
-            self, node: ast.FunctionDef | ast.AsyncFunctionDef
-        ) -> None:
-            self._record(node)
-
-        def generic_visit(self, node: ast.AST) -> None:
-            if not isinstance(
-                node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-            ):
-                self._record(node)
-            super().generic_visit(node)
-
-    Visitor().visit(parsed_module.module)
-    return tuple(observations)
+    index = module_syntax_index(parsed_module.module)
+    return tuple(
+        ScopedAstObservation(
+            node=node,
+            class_name=(scope.class_names[-1] if scope.class_names else None),
+            function_name=(scope.function_names[-1] if scope.function_names else None),
+        )
+        for node, scope_id in zip(
+            index.depth_first_nodes,
+            index.scope_ids,
+            strict=True,
+        )
+        for scope in (index.scopes[scope_id],)
+        if "lineno" in node._attributes
+    )
 
 
 @lru_cache(maxsize=None)

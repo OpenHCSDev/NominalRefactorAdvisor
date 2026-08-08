@@ -143,7 +143,9 @@ from ..ast_tools import (
     NumericLiteralDispatchObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
     collect_family_items,
+    named_function_nodes,
     structural_ast_hash,
+    walk_function_body_nodes,
     _walk_nodes,
     _builder_call_shape,
     _module_class_names,
@@ -3502,25 +3504,7 @@ def _residual_closed_axis_indirection_candidates(
 def _iter_named_functions(
     module: ParsedModule,
 ) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
-    functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            functions.append((".".join((*self.class_stack, node.name)), node))
-            self.generic_visit(node)
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-    Visitor().visit(module.module)
-    return tuple(functions)
+    return named_function_nodes(module.module)
 
 
 NamedFunctionCandidateT = TypeVar("NamedFunctionCandidateT")
@@ -3589,34 +3573,20 @@ def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape,
     shapes: list[BuilderCallShape] = []
     module_class_names = _module_class_names(module)
 
-    class CallVisitor(ast.NodeVisitor):
-        def __init__(self, class_name: str | None, function_name: str | None) -> None:
-            self.class_name = class_name
-            self.function_name = function_name
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            return
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-        visit_ClassDef = visit_FunctionDef
-
-        def visit_Call(self, node: ast.Call) -> None:
+    for qualname, function in _iter_named_functions(module):
+        owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
+        for node in walk_function_body_nodes(function):
+            if not isinstance(node, ast.Call):
+                continue
             shape = _builder_call_shape(
                 module,
                 node,
-                self.class_name,
-                self.function_name,
+                owner_name,
+                function.name,
                 module_class_names,
             )
             if shape is not None:
                 shapes.append(shape)
-            self.generic_visit(node)
-
-    for qualname, function in _iter_named_functions(module):
-        owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
-        visitor = CallVisitor(owner_name, function.name)
-        for statement in _trim_docstring_body(function.body):
-            visitor.visit(statement)
     return tuple(shapes)
 
 

@@ -1435,6 +1435,99 @@ class CompactAvailableAbstractionReuseModuleProjectionFamily(
         ]
 
 
+@dataclass(frozen=True)
+class CompactAvailableAbstractionReuseProjectionDemand:
+    """Target signatures that can participate in one report-scoped candidate."""
+
+    authorities: tuple[AbstractionAuthoritySignature, ...]
+    locals: tuple[LocalImplementationSignature, ...]
+
+
+def _available_abstraction_reuse_projection_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactAvailableAbstractionReuseProjectionDemand:
+    del config
+    projections = tuple(
+        item
+        for item in target_items
+        if isinstance(item, CompactAvailableAbstractionReuseModuleProjection)
+    )
+    return CompactAvailableAbstractionReuseProjectionDemand(
+        authorities=tuple(
+            authority
+            for projection in projections
+            for authority in projection.authorities
+        ),
+        locals=tuple(
+            local for projection in projections for local in projection.locals
+        ),
+    )
+
+
+def _project_available_abstraction_reuse_demand(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactAvailableAbstractionReuseProjectionDemand):
+        return items
+    projected: list[CompactAvailableAbstractionReuseModuleProjection] = []
+    for item in items:
+        if not isinstance(item, CompactAvailableAbstractionReuseModuleProjection):
+            continue
+        authorities = tuple(
+            authority
+            for authority in item.authorities
+            if any(
+                _reimplements_authority(local, authority) is not None
+                for local in demand.locals
+            )
+        )
+        locals = tuple(
+            local
+            for local in item.locals
+            if any(
+                _reimplements_authority(local, authority) is not None
+                for authority in demand.authorities
+            )
+        )
+        if authorities or locals:
+            projected.append(
+                CompactAvailableAbstractionReuseModuleProjection(
+                    authorities=authorities,
+                    locals=locals,
+                )
+            )
+    return tuple(projected)
+
+
+def _collect_available_abstraction_reuse_ast_demand(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[object]:
+    return list(
+        _project_available_abstraction_reuse_demand(
+            tuple(
+                CompactAvailableAbstractionReuseModuleProjectionFamily.collect(
+                    parsed_module
+                )
+            ),
+            demand,
+        )
+    )
+
+
+CompactAvailableAbstractionReuseModuleProjectionFamily.report_demand_builder = (
+    staticmethod(_available_abstraction_reuse_projection_demand)
+)
+CompactAvailableAbstractionReuseModuleProjectionFamily.ast_demand_collector = (
+    staticmethod(_collect_available_abstraction_reuse_ast_demand)
+)
+CompactAvailableAbstractionReuseModuleProjectionFamily.cached_demand_projector = (
+    staticmethod(_project_available_abstraction_reuse_demand)
+)
+
+
 def _top_level_package(module_name: str) -> str:
     return module_name.split(".", 1)[0]
 

@@ -20,6 +20,8 @@ from ..candidate_collection_semantics import (
     named_function_loop_components,
 )
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
+from ..ast_tools import SourceModule
+from ..native_syntax import NativePythonSyntaxIndex
 from ..product_record_schema import (
     ProductRecordDeclaredNameExtractor,
     ProductRecordSchemaCallKind,
@@ -7305,6 +7307,13 @@ class SubclassTraversalSiteFamily(CollectedFamily[SubclassTraversalSite]):
     """Persist compact subclass-walker facts for repository-wide grouping."""
 
     item_type = SubclassTraversalSite
+    report_presence_predicate = staticmethod(lambda items, config: bool(items))
+    source_collector = staticmethod(
+        lambda source_module, syntax_index: _native_subclass_traversal_sites(
+            source_module,
+            syntax_index,
+        )
+    )
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[SubclassTraversalSite]:
@@ -7321,6 +7330,42 @@ class SubclassTraversalSiteFamily(CollectedFamily[SubclassTraversalSite]):
             )
             is not None
         ]
+
+
+def _native_subclass_traversal_sites(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[SubclassTraversalSite] | None:
+    """Project subclass walkers from native-selected function fragments."""
+
+    if not syntax_index.is_complete:
+        return None
+    parsed_module = ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=[], type_ignores=[]),
+        source=source_module.source,
+    )
+    sites: list[SubclassTraversalSite] = []
+    try:
+        for function_node in sorted(
+            syntax_index.common_captures().get("function", ()),
+            key=lambda node: (node.start_byte, -node.end_byte),
+        ):
+            if b"__subclasses__" not in syntax_index.source_for(function_node):
+                continue
+            function = syntax_index.function_for(function_node)
+            site = SUBCLASS_TRAVERSAL_PROFILE.site(
+                parsed_module,
+                syntax_index.class_qualified_function_name(function_node),
+                function,
+            )
+            if site is not None:
+                sites.append(site)
+        return sites
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
 
 
 def _declarative_family_boilerplate_groups(
@@ -10970,7 +11015,18 @@ def _function_wrapper_candidates(
 def _wrapper_chain_candidates(
     module: ParsedModule,
 ) -> tuple[WrapperChainCandidate, ...]:
-    candidates = _function_wrapper_candidates(module)
+    return _wrapper_chain_candidates_from_function_candidates(
+        str(module.path),
+        _function_wrapper_candidates(module),
+    )
+
+
+def _wrapper_chain_candidates_from_function_candidates(
+    file_path: str,
+    candidates: tuple[FunctionWrapperCandidate, ...],
+) -> tuple[WrapperChainCandidate, ...]:
+    """Join already-projected wrapper facts into the canonical local chains."""
+
     if len(candidates) < 2:
         return ()
     by_symbol = {candidate.qualname: candidate for candidate in candidates}
@@ -10999,7 +11055,7 @@ def _wrapper_chain_candidates(
             continue
         chains.append(
             WrapperChainCandidate(
-                file_path=str(module.path),
+                file_path=file_path,
                 wrappers=tuple(chain),
                 leaf_delegate_symbol=current.delegate_symbol,
             )

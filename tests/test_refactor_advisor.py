@@ -4375,6 +4375,9 @@ def test_coordinate_view_confusability_keeps_nonclique_failure_geometry() -> Non
 
     graph = square.confusability_graph((("x",), ("y",)))
 
+    assert square.confusability_components((("x",), ("y",))) == (
+        ("00", "01", "10", "11"),
+    )
     assert graph.edge_count == 4
     assert graph.edge_objects == (
         ("00", "01"),

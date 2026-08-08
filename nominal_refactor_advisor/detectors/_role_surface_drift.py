@@ -10,7 +10,13 @@ from functools import lru_cache
 from types import EllipsisType
 from typing import Iterable, Sequence, cast
 
-from ..ast_tools import BuiltinCallName, CollectedFamily, active_path_descends_through
+from ..ast_tools import (
+    BuiltinCallName,
+    CollectedFamily,
+    ParsedModule,
+    SourceModule,
+    active_path_descends_through,
+)
 from ..class_index import (
     ClassFamilyIndex,
     CompactClassFamilyIndex,
@@ -21,6 +27,7 @@ from ..class_index import (
 from ..export_tools import PublicExportPolicy, derive_public_exports
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
+from ..native_syntax import NativePythonSyntaxIndex
 from ._base import *
 from ._helpers import *
 
@@ -869,12 +876,12 @@ def _generic_role_case_table_candidates_from_sites(
             for projection in projections
         )
     )
-    graph = axis_system.confusability_graph(
+    components = axis_system.confusability_components(
         (("broad_semantic_axis_token", "context_kinds"),)
     )
 
     candidates: list[GenericRoleCaseTableCandidate] = []
-    for component in graph.connected_components:
+    for component in components:
         unique_sites = tuple(dict.fromkeys(projection.site for projection in component))
         if len(unique_sites) < config.min_generic_role_case_table_owners:
             continue
@@ -1275,11 +1282,451 @@ def _role_surface_use_sites(
     return tuple(visitor.use_sites)
 
 
+_NATIVE_ROLE_SURFACE_ATTRIBUTE_QUERY = """
+(attribute attribute: (identifier) @field) @attribute
+"""
+_NATIVE_ROLE_SURFACE_STATEMENT_QUERY = """
+(expression_statement) @statement
+"""
+
+
+def _native_role_surface_direct_class(
+    node: object,
+) -> object | None:
+    """Return the native class directly owning one statement/function."""
+
+    parent = getattr(node, "parent", None)
+    if parent is not None and parent.type == "decorated_definition":
+        parent = parent.parent
+    if parent is None or parent.type != "block":
+        return None
+    owner = parent.parent
+    return owner if owner is not None and owner.type == "class_definition" else None
+
+
+def _native_role_surface_module(
+    source_module: SourceModule,
+) -> ParsedModule:
+    return ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=[], type_ignores=[]),
+        source=source_module.source,
+        family_cache_dir=source_module.family_cache_dir,
+    )
+
+
+def _native_role_surface_declarations(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    field_names: frozenset[str],
+) -> tuple[RoleSurfaceDeclaration, ...]:
+    """Collect only declarations that can join a report-target field."""
+
+    declarations: list[RoleSurfaceDeclaration] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_field(class_name: str, field_name: str, line: int) -> None:
+        key = (class_name, field_name)
+        if key in seen or field_name not in field_names:
+            return
+        seen.add(key)
+        surface_tokens = ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(field_name)
+        role_tokens = ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(field_name)
+        if field_name.startswith("_") or len(surface_tokens) < 2 or not role_tokens:
+            return
+        declarations.append(
+            RoleSurfaceDeclaration(
+                file_path=str(source_module.path),
+                class_name=class_name,
+                field_name=field_name,
+                line=line,
+                surface_tokens=surface_tokens,
+                role_tokens=role_tokens,
+            )
+        )
+
+    for statement_node in syntax_index.captures(
+        _NATIVE_ROLE_SURFACE_STATEMENT_QUERY
+    ).get("statement", ()):
+        class_node = _native_role_surface_direct_class(statement_node)
+        if class_node is None:
+            continue
+        statement_source = syntax_index.source_for(statement_node).decode("utf-8")
+        if not any(field_name in statement_source for field_name in field_names):
+            continue
+        statement = syntax_index.statement_for(statement_node)
+        if isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            add_field(
+                syntax_index.declared_name(class_node),
+                statement.target.id,
+                statement.lineno,
+            )
+        elif isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    add_field(
+                        syntax_index.declared_name(class_node),
+                        target.id,
+                        statement.lineno,
+                    )
+
+    for function_node in syntax_index.common_captures().get("function", ()):
+        class_node = syntax_index.direct_enclosing_class(function_node)
+        if (
+            class_node is None
+            or syntax_index.declared_name(function_node) != "__init__"
+        ):
+            continue
+        function_source = syntax_index.source_for(function_node).decode("utf-8")
+        if not any(field_name in function_source for field_name in field_names):
+            continue
+        function = syntax_index.function_for(function_node)
+        for child in _walk_nodes(function):
+            if isinstance(child, ast.Assign):
+                targets = child.targets
+            elif isinstance(child, ast.AnnAssign):
+                targets = (child.target,)
+            else:
+                continue
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    add_field(
+                        syntax_index.declared_name(class_node),
+                        target.attr,
+                        child.lineno,
+                    )
+    return tuple(declarations)
+
+
+def _native_role_surface_use_sites(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    field_names: frozenset[str],
+) -> tuple[RoleSurfaceUseSite, ...]:
+    """Replay only enclosing roots that contain a demanded attribute."""
+
+    root_functions: set[object] = set()
+    root_statements: set[object] = set()
+    for attribute in syntax_index.captures(_NATIVE_ROLE_SURFACE_ATTRIBUTE_QUERY).get(
+        "attribute", ()
+    ):
+        field_node = attribute.child_by_field_name("attribute")
+        if (
+            field_node is None
+            or syntax_index.source_for(field_node).decode("utf-8") not in field_names
+        ):
+            continue
+        scopes = syntax_index.named_scope_nodes(attribute)
+        root_function = next(
+            (scope for scope in scopes if scope.type == "function_definition"),
+            None,
+        )
+        if root_function is not None:
+            root_functions.add(root_function)
+            continue
+        current = attribute
+        while current.parent is not None:
+            parent = current.parent
+            if parent == syntax_index.tree.root_node:
+                break
+            if (
+                parent.type == "block"
+                and parent.parent is not None
+                and parent.parent.type == "class_definition"
+            ):
+                break
+            current = parent
+        root_statements.add(current)
+
+    use_sites: list[RoleSurfaceUseSite] = []
+    for function_node in sorted(
+        root_functions,
+        key=lambda node: (node.start_byte, -node.end_byte),
+    ):
+        visitor = _RoleSurfaceUseVisitor(str(source_module.path), field_names)
+        scopes = syntax_index.named_scope_nodes(function_node)
+        visitor.class_stack.extend(
+            syntax_index.declared_name(scope)
+            for scope in scopes
+            if scope.type == "class_definition"
+        )
+        visitor.function_stack.extend(
+            syntax_index.declared_name(scope)
+            for scope in scopes
+            if scope.type == "function_definition"
+        )
+        visitor.visit(syntax_index.function_for(function_node))
+        use_sites.extend(visitor.use_sites)
+    for statement_node in sorted(
+        root_statements,
+        key=lambda node: (node.start_byte, -node.end_byte),
+    ):
+        visitor = _RoleSurfaceUseVisitor(str(source_module.path), field_names)
+        visitor.class_stack.extend(
+            syntax_index.declared_name(scope)
+            for scope in syntax_index.named_scope_nodes(statement_node)
+            if scope.type == "class_definition"
+        )
+        visitor.visit(syntax_index.statement_for(statement_node))
+        use_sites.extend(visitor.use_sites)
+    return tuple(use_sites)
+
+
+@dataclass(frozen=True)
+class CompactRoleSurfaceProjectionDemand:
+    """Report-target keys that can participate in either global role join."""
+
+    field_names: frozenset[str]
+    generic_axis_tokens: frozenset[str]
+    generic_case_tokens: frozenset[str]
+    minimum_generic_case_count: int
+
+
+def _role_surface_report_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactRoleSurfaceProjectionDemand:
+    if not isinstance(config, DetectorConfig):
+        raise TypeError("role-surface report demand requires DetectorConfig")
+    projections = tuple(
+        item
+        for item in target_items
+        if isinstance(item, CompactRoleSurfaceModuleProjection)
+    )
+    return CompactRoleSurfaceProjectionDemand(
+        field_names=frozenset(
+            fact.field_name
+            for projection in projections
+            for fact in (*projection.declarations, *projection.possible_use_sites)
+        ),
+        generic_axis_tokens=frozenset(
+            token
+            for projection in projections
+            for site in projection.generic_role_case_table_sites
+            for token in site.broad_semantic_axis_tokens
+        ),
+        generic_case_tokens=frozenset(
+            token
+            for projection in projections
+            for site in projection.generic_role_case_table_sites
+            for token in site.case_tokens
+        ),
+        minimum_generic_case_count=config.min_generic_role_case_table_cases,
+    )
+
+
+def _cached_role_surface_demand_projection(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactRoleSurfaceProjectionDemand):
+        raise TypeError("role-surface projection demand has the wrong authority type")
+    return tuple(
+        CompactRoleSurfaceModuleProjection(
+            declarations=tuple(
+                fact
+                for fact in item.declarations
+                if fact.field_name in demand.field_names
+            ),
+            possible_use_sites=tuple(
+                fact
+                for fact in item.possible_use_sites
+                if fact.field_name in demand.field_names
+            ),
+            generic_role_case_table_sites=tuple(
+                site
+                for site in item.generic_role_case_table_sites
+                if set(site.broad_semantic_axis_tokens)
+                & set(demand.generic_axis_tokens)
+                and len(set(site.case_tokens) & set(demand.generic_case_tokens))
+                >= demand.minimum_generic_case_count
+            ),
+        )
+        for item in items
+        if isinstance(item, CompactRoleSurfaceModuleProjection)
+    )
+
+
+def _native_demanded_role_surface_projection(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    *,
+    field_names: frozenset[str],
+    generic_axis_tokens: frozenset[str],
+    generic_case_tokens: frozenset[str] = frozenset(),
+    minimum_generic_case_count: int = 2,
+) -> CompactRoleSurfaceModuleProjection | None:
+    """Project exact report-correlated role facts without a module AST."""
+
+    if not syntax_index.is_complete:
+        return None
+    source_text = source_module.source
+    local_field_names = frozenset(
+        field_name for field_name in field_names if field_name in source_text
+    )
+    has_field_demand = bool(local_field_names)
+    module_axis_source = " ".join(source_module.path.with_suffix("").parts).casefold()
+    folded_source = source_text.casefold()
+    has_generic_demand = bool(generic_axis_tokens) and any(
+        token in folded_source or token in module_axis_source
+        for token in generic_axis_tokens
+    )
+    if has_generic_demand and generic_case_tokens:
+        has_generic_demand = (
+            sum(token in folded_source for token in generic_case_tokens)
+            >= minimum_generic_case_count
+        )
+    generic_sites: list[GenericRoleCaseTableSite] = []
+    if has_generic_demand:
+        module = _native_role_surface_module(source_module)
+        for class_node in syntax_index.common_captures().get("class", ()):
+            root_source = syntax_index.source_for(class_node).decode("utf-8").casefold()
+            if not any(
+                token in root_source or token in module_axis_source
+                for token in generic_axis_tokens
+            ):
+                continue
+            if (
+                generic_case_tokens
+                and sum(token in root_source for token in generic_case_tokens)
+                < minimum_generic_case_count
+            ):
+                continue
+            root = syntax_index.class_for(class_node)
+            site = _generic_role_case_table_site(
+                module=module,
+                owner_symbol=root.name,
+                owner_name=root.name,
+                line=root.lineno,
+                root=root,
+                minimum_case_count=1,
+            )
+            if site is not None and set(site.broad_semantic_axis_tokens) & set(
+                generic_axis_tokens
+            ):
+                generic_sites.append(site)
+        for function_node in syntax_index.top_level_declarations("function"):
+            root_source = (
+                syntax_index.source_for(function_node).decode("utf-8").casefold()
+            )
+            if not any(
+                token in root_source or token in module_axis_source
+                for token in generic_axis_tokens
+            ):
+                continue
+            if (
+                generic_case_tokens
+                and sum(token in root_source for token in generic_case_tokens)
+                < minimum_generic_case_count
+            ):
+                continue
+            root = syntax_index.function_for(function_node)
+            site = _generic_role_case_table_site(
+                module=module,
+                owner_symbol=root.name,
+                owner_name=root.name,
+                line=root.lineno,
+                root=root,
+                minimum_case_count=1,
+            )
+            if site is not None and set(site.broad_semantic_axis_tokens) & set(
+                generic_axis_tokens
+            ):
+                generic_sites.append(site)
+    return CompactRoleSurfaceModuleProjection(
+        declarations=(
+            _native_role_surface_declarations(
+                source_module,
+                syntax_index,
+                local_field_names,
+            )
+            if has_field_demand
+            else ()
+        ),
+        possible_use_sites=(
+            _native_role_surface_use_sites(
+                source_module,
+                syntax_index,
+                local_field_names,
+            )
+            if has_field_demand
+            else ()
+        ),
+        generic_role_case_table_sites=tuple(
+            sorted(generic_sites, key=lambda item: (item.file_path, item.line))
+        ),
+    )
+
+
+def _native_demanded_role_surface_projection_items(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[CompactRoleSurfaceModuleProjection] | None:
+    if not isinstance(demand, CompactRoleSurfaceProjectionDemand):
+        raise TypeError("role-surface projection demand has the wrong authority type")
+    projection = _native_demanded_role_surface_projection(
+        source_module,
+        syntax_index,
+        field_names=demand.field_names,
+        generic_axis_tokens=demand.generic_axis_tokens,
+        generic_case_tokens=demand.generic_case_tokens,
+        minimum_generic_case_count=demand.minimum_generic_case_count,
+    )
+    return None if projection is None else [projection]
+
+
+def _ast_demanded_role_surface_projection_items(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[CompactRoleSurfaceModuleProjection]:
+    if not isinstance(demand, CompactRoleSurfaceProjectionDemand):
+        raise TypeError("role-surface projection demand has the wrong authority type")
+    return [
+        CompactRoleSurfaceModuleProjection(
+            declarations=tuple(
+                declaration
+                for declaration in _role_surface_class_field_declarations(parsed_module)
+                if declaration.field_name in demand.field_names
+            ),
+            possible_use_sites=_role_surface_use_sites(
+                parsed_module,
+                demand.field_names,
+            ),
+            generic_role_case_table_sites=tuple(
+                site
+                for site in _generic_role_case_table_sites_with_minimum(
+                    parsed_module,
+                    1,
+                )
+                if set(site.broad_semantic_axis_tokens)
+                & set(demand.generic_axis_tokens)
+                and len(set(site.case_tokens) & set(demand.generic_case_tokens))
+                >= demand.minimum_generic_case_count
+            ),
+        )
+    ]
+
+
 class CompactRoleSurfaceModuleProjectionFamily(
     CollectedFamily[CompactRoleSurfaceModuleProjection]
 ):
     item_type = CompactRoleSurfaceModuleProjection
     cache_payload_max_bytes = 1_000_000
+    source_demand_collector = staticmethod(
+        _native_demanded_role_surface_projection_items
+    )
+    ast_demand_collector = staticmethod(_ast_demanded_role_surface_projection_items)
+    report_demand_builder = staticmethod(_role_surface_report_demand)
+    cached_demand_projector = staticmethod(_cached_role_surface_demand_projection)
 
     @classmethod
     def collect(

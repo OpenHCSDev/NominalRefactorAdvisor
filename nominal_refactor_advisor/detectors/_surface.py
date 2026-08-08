@@ -8,12 +8,15 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from ..ast_tools import active_path_descends_through
+from tree_sitter import Node
+
+from ..ast_tools import SourceModule, active_path_descends_through
 from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactNominalWrapperAuthority,
 )
+from ..native_syntax import NativePythonSyntaxIndex
 from ._base import *
 from ._helpers import *
 from ._helpers import (
@@ -1708,24 +1711,524 @@ def _distributed_boundary_uses(
     return tuple(visitor.uses)
 
 
-class CompactDistributedBoundaryModuleProjectionFamily(
-    CollectedFamily[CompactDistributedBoundaryModuleProjection]
-):
-    """Collect the reusable per-module half of the global boundary join."""
+_NATIVE_DISTRIBUTED_BOUNDARY_QUERY = """
+(keyword_argument) @keyword
+(attribute) @attribute
+"""
 
-    item_type = CompactDistributedBoundaryModuleProjection
-    cache_payload_max_bytes = 1_000_000
 
-    @classmethod
-    def collect(
-        cls,
-        parsed_module: ParsedModule,
-    ) -> list[CompactDistributedBoundaryModuleProjection]:
-        del cls
+def _native_boundary_owner_symbol(
+    syntax_index: NativePythonSyntaxIndex,
+    node: Node,
+) -> str:
+    scopes = syntax_index.named_scope_nodes(node)
+    decorator_definitions: list[Node] = []
+    current = node.parent
+    while current is not None:
+        if current.type == "decorated_definition":
+            definition = next(
+                (
+                    child
+                    for child in current.named_children
+                    if child.type in {"class_definition", "function_definition"}
+                ),
+                None,
+            )
+            if definition is not None and not (
+                definition.start_byte <= node.start_byte
+                and node.end_byte <= definition.end_byte
+            ):
+                decorator_definitions.append(definition)
+        current = current.parent
+    return (
+        ".".join(
+            (
+                *(
+                    syntax_index.declared_name(scope)
+                    for scope in scopes
+                    if scope.type == "class_definition"
+                ),
+                *(
+                    syntax_index.declared_name(definition)
+                    for definition in reversed(decorator_definitions)
+                    if definition.type == "class_definition"
+                ),
+                *(
+                    syntax_index.declared_name(scope)
+                    for scope in scopes
+                    if scope.type == "function_definition"
+                ),
+                *(
+                    syntax_index.declared_name(definition)
+                    for definition in reversed(decorator_definitions)
+                    if definition.type == "function_definition"
+                ),
+            )
+        )
+        or "<module>"
+    )
+
+
+def _native_boundary_call_display_name(
+    syntax_index: NativePythonSyntaxIndex,
+    call: Node,
+) -> str:
+    function = call.child_by_field_name("function")
+    if function is None:
+        return "<call>"
+    if function.type == "identifier":
+        return syntax_index.source_for(function).decode("utf-8")
+    if function.type == "attribute":
+        attribute = function.child_by_field_name("attribute")
+        if attribute is not None:
+            return syntax_index.source_for(attribute).decode("utf-8")
+    return ast.unparse(syntax_index.expression_for(function))
+
+
+def _native_enclosing_call(node: Node) -> Node | None:
+    current = node.parent
+    while current is not None:
+        if current.type == "call":
+            return current
+        if current.type in {
+            "class_definition",
+            "function_definition",
+            "module",
+        }:
+            return None
+        current = current.parent
+    return None
+
+
+def _native_assignment_targets(
+    syntax_index: NativePythonSyntaxIndex,
+    assignment: Node,
+) -> tuple[ast.AST, ...]:
+    statement_node = assignment.parent
+    if statement_node is None or statement_node.type != "expression_statement":
+        return ()
+    statement = syntax_index.statement_for(statement_node)
+    if isinstance(statement, ast.Assign):
+        return tuple(statement.targets)
+    if isinstance(statement, ast.AnnAssign):
+        return (statement.target,)
+    return ()
+
+
+def _native_projection_context_tokens(
+    syntax_index: NativePythonSyntaxIndex,
+    attribute: Node,
+) -> tuple[str, ...]:
+    current = attribute.parent
+    while current is not None:
+        if current.type == "assignment":
+            value = current.child_by_field_name("right")
+            if value is not None and (
+                value.start_byte <= attribute.start_byte
+                and attribute.end_byte <= value.end_byte
+            ):
+                return _boundary_target_tokens(
+                    _native_assignment_targets(syntax_index, current)
+                )
+        elif current.type == "subscript":
+            value = current.child_by_field_name("value")
+            subscript = current.child_by_field_name("subscript")
+            if (
+                value is not None
+                and subscript is not None
+                and value.start_byte <= attribute.start_byte
+                and attribute.end_byte <= value.end_byte
+            ):
+                parsed_subscript = syntax_index.expression_for(current)
+                if not isinstance(parsed_subscript, ast.Subscript):
+                    raise TypeError("native subscript did not parse as ast.Subscript")
+                return _boundary_node_tokens(parsed_subscript.slice)
+        if current.type in {
+            "class_definition",
+            "function_definition",
+            "module",
+        }:
+            break
+        current = current.parent
+    return ()
+
+
+def _native_direct_assignment_class(
+    assignment: Node,
+) -> Node | None:
+    statement = assignment.parent
+    if statement is None or statement.type != "expression_statement":
+        return None
+    block = statement.parent
+    if block is None or block.type != "block":
+        return None
+    owner = block.parent
+    return owner if owner is not None and owner.type == "class_definition" else None
+
+
+def _native_enclosing_init_classes(
+    syntax_index: NativePythonSyntaxIndex,
+    assignment: Node,
+) -> tuple[Node, ...]:
+    classes: list[Node] = []
+    current = assignment.parent
+    while current is not None:
+        if (
+            current.type == "function_definition"
+            and syntax_index.declared_name(current) == "__init__"
+        ):
+            class_node = syntax_index.direct_enclosing_class(current)
+            if class_node is not None:
+                classes.append(class_node)
+        current = current.parent
+    return tuple(classes)
+
+
+def _native_distributed_boundary_projection(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    field_names: frozenset[str] | None = None,
+    class_base_names_override: tuple[tuple[str, tuple[str, ...]], ...] | None = None,
+    field_name_cores: frozenset[tuple[str, ...]] = frozenset(),
+) -> list[CompactDistributedBoundaryModuleProjection] | None:
+    """Project distributed-boundary facts from one shared native syntax tree."""
+
+    if not syntax_index.is_complete:
+        return None
+    try:
+        if field_names is not None:
+            field_names = frozenset(
+                field_name
+                for field_name in field_names
+                if field_name in source_module.source
+            )
+
+        def includes_field_name(field_name: str) -> bool:
+            return (
+                field_names is None
+                or field_name in field_names
+                or _boundary_core_semantic_tokens(field_name) in field_name_cores
+            )
+
+        if (
+            field_names is not None
+            and class_base_names_override is not None
+            and not field_names
+            and not field_name_cores
+        ):
+            return [
+                CompactDistributedBoundaryModuleProjection(
+                    file_path=str(source_module.path),
+                    declarations=(),
+                    class_base_names=class_base_names_override,
+                    possible_uses=(),
+                )
+            ]
+        declaration_rows: list[tuple[int, str, str, bool]] = []
+        seen_declarations: set[tuple[str, str]] = set()
+
+        def add_declaration(
+            line: int,
+            class_name: str,
+            field_name: str,
+            is_class_field: bool,
+        ) -> None:
+            if not includes_field_name(field_name):
+                return
+            if (
+                field_name.startswith("_")
+                or len(_boundary_identifier_tokens(field_name)) < 2
+            ):
+                return
+            key = (class_name, field_name)
+            if key in seen_declarations:
+                return
+            seen_declarations.add(key)
+            declaration_rows.append((line, class_name, field_name, is_class_field))
+
+        assignments = tuple(
+            assignment
+            for assignment in syntax_index.common_captures().get("assignment", ())
+            if assignment.parent is not None
+            and assignment.parent.type == "expression_statement"
+        )
+        for assignment in sorted(
+            assignments,
+            key=lambda node: (node.start_byte, -node.end_byte),
+        ):
+            targets = _native_assignment_targets(syntax_index, assignment)
+            direct_class = _native_direct_assignment_class(assignment)
+            if direct_class is not None:
+                class_name = syntax_index.declared_name(direct_class)
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        add_declaration(
+                            target.lineno,
+                            class_name,
+                            target.id,
+                            True,
+                        )
+            for init_class in _native_enclosing_init_classes(
+                syntax_index,
+                assignment,
+            ):
+                class_name = syntax_index.declared_name(init_class)
+                for target in targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                    ):
+                        add_declaration(
+                            target.lineno,
+                            class_name,
+                            target.attr,
+                            False,
+                        )
+
+        class_base_names: list[tuple[str, tuple[str, ...]]] = []
+        if class_base_names_override is not None:
+            class_base_names.extend(class_base_names_override)
+        else:
+            for class_node in sorted(
+                syntax_index.common_captures().get("class", ()),
+                key=lambda node: (node.start_byte, -node.end_byte),
+            ):
+                superclasses = class_node.child_by_field_name("superclasses")
+                bases = (
+                    ()
+                    if superclasses is None
+                    else tuple(
+                        syntax_index.expression_for(child)
+                        for child in superclasses.named_children
+                        if child.type != "keyword_argument"
+                    )
+                )
+                class_base_names.append(
+                    (
+                        syntax_index.declared_name(class_node),
+                        sorted_tuple(
+                            {
+                                base_name
+                                for base in bases
+                                if (base_name := _ast_terminal_name(base)) is not None
+                            }
+                        ),
+                    )
+                )
+
+        uses: list[CompactDistributedBoundaryUseFact] = []
+        seen_uses: set[tuple[str, int, str, str, tuple[str, ...]]] = set()
+
+        def add_use(
+            node: Node,
+            field_name: str,
+            use_kind: str,
+            context_tokens: tuple[str, ...],
+        ) -> None:
+            tokens = tuple(
+                sorted(token for token in set(context_tokens) if token != field_name)
+            )
+            if not tokens:
+                return
+            line = node.start_point.row + 1
+            symbol = _native_boundary_owner_symbol(syntax_index, node)
+            key = (field_name, line, symbol, use_kind, tokens)
+            if key in seen_uses:
+                return
+            seen_uses.add(key)
+            uses.append(
+                CompactDistributedBoundaryUseFact(
+                    line=line,
+                    symbol=symbol,
+                    field_name=field_name,
+                    use_kind=use_kind,
+                    context_tokens=tokens,
+                )
+            )
+
+        captures = syntax_index.captures(_NATIVE_DISTRIBUTED_BOUNDARY_QUERY)
+        for keyword in captures.get("keyword", ()):
+            name_node = keyword.child_by_field_name("name")
+            value = keyword.child_by_field_name("value")
+            if name_node is None or value is None:
+                continue
+            field_name = syntax_index.source_for(name_node).decode("utf-8")
+            if not includes_field_name(field_name):
+                continue
+            if (
+                field_name.startswith("_")
+                or len(_boundary_identifier_tokens(field_name)) < 2
+            ):
+                continue
+            call = _native_enclosing_call(keyword)
+            add_use(
+                keyword,
+                field_name,
+                "keyword_forwarded",
+                (
+                    *_boundary_identifier_tokens(
+                        _native_boundary_call_display_name(syntax_index, call)
+                        if call is not None
+                        else "<call>"
+                    ),
+                    *_boundary_node_tokens(syntax_index.expression_for(value)),
+                ),
+            )
+        for attribute in captures.get("attribute", ()):
+            name_node = attribute.child_by_field_name("attribute")
+            if name_node is None:
+                continue
+            field_name = syntax_index.source_for(name_node).decode("utf-8")
+            if not includes_field_name(field_name):
+                continue
+            if (
+                field_name.startswith("_")
+                or len(_boundary_identifier_tokens(field_name)) < 2
+            ):
+                continue
+            context_tokens = _native_projection_context_tokens(
+                syntax_index,
+                attribute,
+            )
+            if context_tokens:
+                add_use(attribute, field_name, "projected", context_tokens)
+
         return [
             CompactDistributedBoundaryModuleProjection(
-                file_path=str(parsed_module.path),
+                file_path=str(source_module.path),
                 declarations=tuple(
+                    CompactDistributedBoundaryDeclarationFact(
+                        line=line,
+                        class_name=class_name,
+                        field_name=field_name,
+                        is_class_field=is_class_field,
+                    )
+                    for line, class_name, field_name, is_class_field in sorted(
+                        declaration_rows,
+                        key=lambda row: (row[0], row[1], row[2], not row[3]),
+                    )
+                ),
+                class_base_names=tuple(
+                    sorted(class_base_names, key=lambda item: (item[0], item[1]))
+                ),
+                possible_uses=tuple(
+                    sorted(
+                        uses,
+                        key=lambda use: (
+                            use.line,
+                            use.symbol,
+                            use.field_name,
+                            use.use_kind,
+                            use.context_tokens,
+                        ),
+                    )
+                ),
+            )
+        ]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
+@dataclass(frozen=True)
+class CompactDistributedBoundaryProjectionDemand:
+    """Field names capable of producing evidence in the report target."""
+
+    field_names: frozenset[str]
+    field_name_cores: frozenset[tuple[str, ...]] = frozenset()
+
+    def includes_field_name(self, field_name: str) -> bool:
+        return field_name in self.field_names or (
+            _boundary_core_semantic_tokens(field_name) in self.field_name_cores
+        )
+
+
+def _distributed_boundary_report_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactDistributedBoundaryProjectionDemand:
+    if not isinstance(config, DetectorConfig):
+        raise TypeError("distributed-boundary report demand requires DetectorConfig")
+    del config
+    projections = tuple(
+        item
+        for item in target_items
+        if isinstance(item, CompactDistributedBoundaryModuleProjection)
+    )
+    field_names = frozenset(
+        fact.field_name
+        for projection in projections
+        for fact in (*projection.declarations, *projection.possible_uses)
+    )
+    return CompactDistributedBoundaryProjectionDemand(
+        field_names=field_names,
+        field_name_cores=frozenset(
+            core
+            for field_name in field_names
+            if (core := _boundary_core_semantic_tokens(field_name))
+        ),
+    )
+
+
+def _cached_distributed_boundary_demand_projection(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactDistributedBoundaryProjectionDemand):
+        raise TypeError(
+            "distributed-boundary projection demand has the wrong authority type"
+        )
+    return tuple(
+        CompactDistributedBoundaryModuleProjection(
+            file_path=item.file_path,
+            declarations=tuple(
+                fact
+                for fact in item.declarations
+                if demand.includes_field_name(fact.field_name)
+            ),
+            class_base_names=item.class_base_names,
+            possible_uses=tuple(
+                fact
+                for fact in item.possible_uses
+                if demand.includes_field_name(fact.field_name)
+            ),
+        )
+        for item in items
+        if isinstance(item, CompactDistributedBoundaryModuleProjection)
+    )
+
+
+def _native_demanded_distributed_boundary_projection(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[CompactDistributedBoundaryModuleProjection] | None:
+    if not isinstance(demand, CompactDistributedBoundaryProjectionDemand):
+        raise TypeError(
+            "distributed-boundary projection demand has the wrong authority type"
+        )
+    return _native_distributed_boundary_projection(
+        source_module,
+        syntax_index,
+        demand.field_names,
+        field_name_cores=demand.field_name_cores,
+    )
+
+
+def _ast_distributed_boundary_projection(
+    parsed_module: ParsedModule,
+    demand: CompactDistributedBoundaryProjectionDemand | None,
+) -> CompactDistributedBoundaryModuleProjection:
+    declarations = tuple(
+        declaration
+        for declaration in _distributed_boundary_declarations(parsed_module)
+        if demand is None or demand.includes_field_name(declaration.field_name)
+    )
+    return CompactDistributedBoundaryModuleProjection(
+        file_path=str(parsed_module.path),
+        declarations=tuple(
+            sorted(
+                (
                     CompactDistributedBoundaryDeclarationFact(
                         line=declaration.line,
                         class_name=declaration.class_name,
@@ -1735,9 +2238,19 @@ class CompactDistributedBoundaryModuleProjectionFamily(
                             ClassFieldBoundaryDeclaration,
                         ),
                     )
-                    for declaration in _distributed_boundary_declarations(parsed_module)
+                    for declaration in declarations
                 ),
-                class_base_names=tuple(
+                key=lambda declaration: (
+                    declaration.line,
+                    declaration.class_name,
+                    declaration.field_name,
+                    not declaration.is_class_field,
+                ),
+            )
+        ),
+        class_base_names=tuple(
+            sorted(
+                (
                     (
                         node.name,
                         CLASS_NODE_AUTHORITY.declared_base_names(node),
@@ -1745,7 +2258,12 @@ class CompactDistributedBoundaryModuleProjectionFamily(
                     for node in _walk_nodes(parsed_module.module)
                     if isinstance(node, ast.ClassDef)
                 ),
-                possible_uses=tuple(
+                key=lambda item: (item[0], item[1]),
+            )
+        ),
+        possible_uses=tuple(
+            sorted(
+                (
                     CompactDistributedBoundaryUseFact(
                         line=use_site.line,
                         symbol=use_site.symbol,
@@ -1753,10 +2271,59 @@ class CompactDistributedBoundaryModuleProjectionFamily(
                         use_kind=use_site.use_kind,
                         context_tokens=use_site.context_tokens,
                     )
-                    for use_site in _distributed_boundary_uses(parsed_module, None)
+                    for use_site in _distributed_boundary_uses(
+                        parsed_module,
+                        None,
+                    )
+                    if demand is None or demand.includes_field_name(use_site.field_name)
+                ),
+                key=lambda use: (
+                    use.line,
+                    use.symbol,
+                    use.field_name,
+                    use.use_kind,
+                    use.context_tokens,
                 ),
             )
-        ]
+        ),
+    )
+
+
+def _ast_demanded_distributed_boundary_projection(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[CompactDistributedBoundaryModuleProjection]:
+    if not isinstance(demand, CompactDistributedBoundaryProjectionDemand):
+        raise TypeError(
+            "distributed-boundary projection demand has the wrong authority type"
+        )
+    return [_ast_distributed_boundary_projection(parsed_module, demand)]
+
+
+class CompactDistributedBoundaryModuleProjectionFamily(
+    CollectedFamily[CompactDistributedBoundaryModuleProjection]
+):
+    """Collect the reusable per-module half of the global boundary join."""
+
+    item_type = CompactDistributedBoundaryModuleProjection
+    cache_payload_max_bytes = 1_000_000
+    source_collector = staticmethod(_native_distributed_boundary_projection)
+    source_demand_collector = staticmethod(
+        _native_demanded_distributed_boundary_projection
+    )
+    ast_demand_collector = staticmethod(_ast_demanded_distributed_boundary_projection)
+    report_demand_builder = staticmethod(_distributed_boundary_report_demand)
+    cached_demand_projector = staticmethod(
+        _cached_distributed_boundary_demand_projection
+    )
+
+    @classmethod
+    def collect(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[CompactDistributedBoundaryModuleProjection]:
+        del cls
+        return [_ast_distributed_boundary_projection(parsed_module, None)]
 
 
 def _distributed_boundary_fanout_candidates_from_facts(

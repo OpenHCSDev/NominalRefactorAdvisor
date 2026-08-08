@@ -15,6 +15,7 @@ import zlib
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
+from heapq import merge
 from pathlib import Path
 
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
@@ -23,6 +24,8 @@ from .ast_tools import (
     CollectedFamily,
     ParsedModule,
     _walk_nodes,
+    module_syntax_index,
+    named_function_nodes,
 )
 from .collection_algebra import sorted_tuple
 from .constructor_algebra import ConstructorParameterField
@@ -595,16 +598,91 @@ def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     return aliases
 
 
+@dataclass(frozen=True)
+class CompactClassProjectionDemand:
+    """Target-correlated filters for expensive class-family facets."""
+
+    abc_method_names: frozenset[str]
+    abc_declaration_signatures: frozenset[str]
+
+
+def _class_report_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactClassProjectionDemand:
+    del config
+    projections = tuple(
+        item for item in target_items if isinstance(item, CompactModuleClassProjection)
+    )
+    return CompactClassProjectionDemand(
+        abc_method_names=frozenset(
+            method.method_name
+            for projection in projections
+            for method in projection.abc_optimizer_methods
+        ),
+        abc_declaration_signatures=frozenset(
+            declaration.signature
+            for projection in projections
+            for declaration in projection.abc_optimizer_class_declarations
+        ),
+    )
+
+
+def _cached_class_demand_projection(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactClassProjectionDemand):
+        raise TypeError("class projection demand has the wrong authority type")
+    return tuple(
+        replace(
+            item,
+            abc_optimizer_methods=tuple(
+                method
+                for method in item.abc_optimizer_methods
+                if method.method_name in demand.abc_method_names
+            ),
+            abc_optimizer_class_declarations=tuple(
+                declaration
+                for declaration in item.abc_optimizer_class_declarations
+                if declaration.signature in demand.abc_declaration_signatures
+            ),
+        )
+        for item in items
+        if isinstance(item, CompactModuleClassProjection)
+    )
+
+
 class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
     """Persist class/import facts needed by the global inheritance graph."""
 
     item_type = CompactModuleClassProjection
     cache_payload_max_bytes = 3_000_000
+    report_demand_builder = staticmethod(_class_report_demand)
+    cached_demand_projector = staticmethod(_cached_class_demand_projection)
 
     @classmethod
     def collect(
         cls,
         parsed_module: ParsedModule,
+    ) -> list[CompactModuleClassProjection]:
+        return cls._collect(parsed_module, None)
+
+    @classmethod
+    def collect_demanded(
+        cls,
+        parsed_module: ParsedModule,
+        demand: object,
+    ) -> list[CompactModuleClassProjection] | None:
+        if not isinstance(demand, CompactClassProjectionDemand):
+            raise TypeError("class projection demand has the wrong authority type")
+        return cls._collect(parsed_module, demand)
+
+    @classmethod
+    def _collect(
+        cls,
+        parsed_module: ParsedModule,
+        demand: CompactClassProjectionDemand | None,
     ) -> list[CompactModuleClassProjection]:
         del cls
         file_path = str(parsed_module.path)
@@ -636,7 +714,14 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         (
             abc_optimizer_methods,
             abc_optimizer_class_declarations,
-        ) = _compact_abc_optimizer_facts(parsed_module, indexed_class_nodes)
+        ) = _compact_abc_optimizer_facts(
+            parsed_module,
+            indexed_class_nodes,
+            method_names=(None if demand is None else demand.abc_method_names),
+            declaration_signatures=(
+                None if demand is None else demand.abc_declaration_signatures
+            ),
+        )
         carrier_class_facts, carrier_base_edges = _compact_carrier_class_facts(
             all_class_nodes,
             carrier_field_type_maps,
@@ -1815,6 +1900,9 @@ def _compact_abc_optimizer_class_declaration(
 def _compact_abc_optimizer_facts(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
+    *,
+    method_names: frozenset[str] | None = None,
+    declaration_signatures: frozenset[str] | None = None,
 ) -> tuple[
     tuple[CompactABCOptimizerMethod, ...],
     tuple[CompactABCOptimizerClassDeclaration, ...],
@@ -1828,6 +1916,7 @@ def _compact_abc_optimizer_facts(
                 _compact_abc_optimizer_method(class_symbol, statement)
                 for statement in node.body
                 if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and (method_names is None or statement.name in method_names)
             )
         seen_signatures: set[str] = set()
         for statement in _trim_leading_docstring(list(node.body)):
@@ -1835,7 +1924,14 @@ def _compact_abc_optimizer_facts(
                 class_symbol,
                 statement,
             )
-            if declaration is None or declaration.signature in seen_signatures:
+            if (
+                declaration is None
+                or declaration.signature in seen_signatures
+                or (
+                    declaration_signatures is not None
+                    and declaration.signature not in declaration_signatures
+                )
+            ):
                 continue
             seen_signatures.add(declaration.signature)
             declarations.append(declaration)
@@ -2320,49 +2416,7 @@ def _compact_keyed_table_axes(
 def _compact_closed_axis_branch_functions(
     parsed_module: ParsedModule,
 ) -> tuple[CompactClosedAxisBranchFunction, ...]:
-    facts: list[CompactClosedAxisBranchFunction] = []
-    for qualname, function in _named_functions(parsed_module.module):
-        branch_site_counts: dict[str, int] = defaultdict(int)
-        case_names_by_key: dict[str, set[str]] = defaultdict(set)
-        for subnode in _non_nested_function_subnodes(function):
-            if isinstance(subnode, ast.If):
-                refs = _enum_member_refs_by_key_type(subnode.test)
-                for key_type_name, case_names in refs.items():
-                    branch_site_counts[key_type_name] += 1
-                    case_names_by_key[key_type_name].update(case_names)
-            elif isinstance(subnode, ast.Match):
-                refs_by_key: dict[str, set[str]] = defaultdict(set)
-                for case in subnode.cases:
-                    for key_type_name, case_names in _enum_member_refs_by_key_type(
-                        case.pattern
-                    ).items():
-                        refs_by_key[key_type_name].update(case_names)
-                    if case.guard is not None:
-                        for key_type_name, case_names in _enum_member_refs_by_key_type(
-                            case.guard
-                        ).items():
-                            refs_by_key[key_type_name].update(case_names)
-                for key_type_name, case_names in refs_by_key.items():
-                    branch_site_counts[key_type_name] += 1
-                    case_names_by_key[key_type_name].update(case_names)
-        axes = tuple(
-            CompactClosedAxisBranchFact(
-                key_type_name=key_type_name,
-                branch_site_count=branch_site_count,
-                case_names=sorted_tuple(case_names_by_key[key_type_name]),
-            )
-            for key_type_name, branch_site_count in sorted(branch_site_counts.items())
-        )
-        if axes:
-            facts.append(
-                CompactClosedAxisBranchFunction(
-                    file_path=str(parsed_module.path),
-                    line=function.lineno,
-                    qualname=qualname,
-                    axes=axes,
-                )
-            )
-    return tuple(facts)
+    return _compact_class_syntax_facets(parsed_module).closed_axis_branch_functions
 
 
 def _compact_manual_selector_axes(
@@ -2452,92 +2506,7 @@ def _compact_manual_selector_axes(
 def _compact_exact_type_guards(
     parsed_module: ParsedModule,
 ) -> tuple[CompactExactTypeGuard, ...]:
-    guards: list[CompactExactTypeGuard] = []
-    module_bindings = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-        parsed_module.module.body
-    )
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.scope: list[str] = []
-            self.scope_bindings: list[frozenset[str]] = [module_bindings]
-            self.callable_depth = 0
-
-        @property
-        def qualname(self) -> str:
-            return ".".join(self.scope) if self.scope else "<module>"
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.scope.append(node.name)
-            self.generic_visit(node)
-            self.scope.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self._visit_callable(node)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self._visit_callable(node)
-
-        def _visit_callable(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-            self.scope.append(node.name)
-            self.scope_bindings.append(
-                LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
-                | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
-            )
-            self.callable_depth += 1
-            self.generic_visit(node)
-            self.callable_depth -= 1
-            self.scope_bindings.pop()
-            self.scope.pop()
-
-        def visit_If(self, node: ast.If) -> None:
-            predicate = _exact_type_predicate(node.test)
-            if predicate is not None and self.callable_depth:
-                _, _, matches_exact_type_when_true, _ = predicate
-                rejects_descendants = (
-                    not matches_exact_type_when_true and _fail_loud_block(node.body)
-                ) or (matches_exact_type_when_true and _fail_loud_block(node.orelse))
-                if rejects_descendants:
-                    self._append_guard(node, predicate)
-            self.generic_visit(node)
-
-        def visit_Assert(self, node: ast.Assert) -> None:
-            predicate = _exact_type_predicate(node.test)
-            if predicate is not None and predicate[2] and self.callable_depth:
-                self._append_guard(node, predicate)
-            self.generic_visit(node)
-
-        def _append_guard(
-            self,
-            node: ast.If | ast.Assert,
-            predicate: tuple[ast.AST, ast.AST, bool, str],
-        ) -> None:
-            if any("type" in bindings for bindings in self.scope_bindings):
-                return
-            subject, type_reference, matches_exact_type_when_true, expression = (
-                predicate
-            )
-            reference_node = ClassSymbolResolutionAuthority.reference_node(
-                type_reference
-            )
-            parts = ATTRIBUTE_CHAIN_AUTHORITY.project(reference_node)
-            if parts is None:
-                return
-            guards.append(
-                CompactExactTypeGuard(
-                    file_path=str(parsed_module.path),
-                    line=node.lineno,
-                    qualname=self.qualname,
-                    subject_expression=ast.unparse(subject),
-                    type_reference_expression=ast.unparse(type_reference),
-                    type_reference_parts=parts,
-                    matches_exact_type_when_true=matches_exact_type_when_true,
-                    expression=expression,
-                )
-            )
-
-    Visitor().visit(parsed_module.module)
-    return tuple(guards)
+    return _compact_class_syntax_facets(parsed_module).exact_type_guards
 
 
 def _exact_type_predicate(
@@ -2612,46 +2581,7 @@ def _fail_loud_block(statements: list[ast.stmt]) -> bool:
 def _named_functions(
     module: ast.Module,
 ) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
-    functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            functions.append((".".join((*self.class_stack, node.name)), node))
-            self.generic_visit(node)
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-    Visitor().visit(module)
-    return tuple(functions)
-
-
-def _non_nested_function_subnodes(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[ast.AST, ...]:
-    nodes: list[ast.AST] = []
-
-    class Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            return
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def generic_visit(self, node: ast.AST) -> None:
-            nodes.append(node)
-            super().generic_visit(node)
-
-    visitor = Visitor()
-    for statement in function.body:
-        visitor.visit(statement)
-    return tuple(nodes)
+    return named_function_nodes(module)
 
 
 def _enum_member_refs_by_key_type(node: ast.AST) -> dict[str, tuple[str, ...]]:
@@ -3023,100 +2953,41 @@ class _CompactAutoRegisterFunctionReferenceBuilder:
     qualname: str
     node: ast.FunctionDef | ast.AsyncFunctionDef
     receiver_attribute_refs: set[tuple[str, str]]
+    referenced_symbols: set[str]
     calls_autoregister_meta: bool = False
 
 
-def _compact_autoregister_function_references(
-    parsed_module: ParsedModule,
+@dataclass(frozen=True)
+class _CompactClassSyntaxFacets:
+    """Class-family views derived together from the shared module traversal."""
+
+    autoregister_function_references: tuple[CompactAutoRegisterFunctionReference, ...]
+    autoregister_reference_index: CompactAutoRegisterReferenceIndex | None
+    closed_axis_branch_functions: tuple[CompactClosedAxisBranchFunction, ...]
+    exact_type_guards: tuple[CompactExactTypeGuard, ...]
+
+
+def _compact_autoregister_reference_projection(
+    builders: tuple[_CompactAutoRegisterFunctionReferenceBuilder, ...],
 ) -> tuple[
     tuple[CompactAutoRegisterFunctionReference, ...],
     CompactAutoRegisterReferenceIndex | None,
 ]:
-    file_path = str(parsed_module.path)
-    if file_path.startswith("tests/") or "/tests/" in file_path:
-        return (), None
-    builders: list[_CompactAutoRegisterFunctionReferenceBuilder] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-            self.active_functions: list[
-                _CompactAutoRegisterFunctionReferenceBuilder
-            ] = []
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-        def visit_FunctionDef(
-            self, node: ast.FunctionDef | ast.AsyncFunctionDef
-        ) -> None:
-            builder = _CompactAutoRegisterFunctionReferenceBuilder(
-                qualname=".".join((*self.class_stack, node.name)),
-                node=node,
-                receiver_attribute_refs=set(),
-            )
-            builders.append(builder)
-            self.active_functions.append(builder)
-            self.generic_visit(node)
-            self.active_functions.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            if isinstance(node.value, ast.Name):
-                reference = (node.value.id, node.attr)
-                for builder in self.active_functions:
-                    builder.receiver_attribute_refs.add(reference)
-            self.generic_visit(node)
-
-        def visit_Call(self, node: ast.Call) -> None:
-            if _terminal_reference_name(node.func) == "AutoRegisterMeta":
-                for builder in self.active_functions:
-                    builder.calls_autoregister_meta = True
-            self.generic_visit(node)
-
-    Visitor().visit(parsed_module.module)
-    references: list[CompactAutoRegisterFunctionReference] = []
-    for builder in builders:
-        if builder.calls_autoregister_meta:
-            referenced_symbols = {
-                symbol
-                for subnode in ast.walk(builder.node)
-                for symbol in (
-                    (
-                        subnode.id
-                        if isinstance(subnode, ast.Name)
-                        else (
-                            subnode.value
-                            if isinstance(subnode, ast.Constant)
-                            and isinstance(subnode.value, str)
-                            else (
-                                subnode.attr
-                                if isinstance(subnode, ast.Attribute)
-                                else None
-                            )
-                        )
-                    ),
-                )
-                if symbol is not None
-            }
-            references.append(
-                CompactAutoRegisterFunctionReference(
-                    qualname=builder.qualname,
-                    referenced_symbols=sorted_tuple(referenced_symbols),
-                    calls_autoregister_meta=builder.calls_autoregister_meta,
-                    receiver_attribute_refs=sorted_tuple(
-                        builder.receiver_attribute_refs
-                    ),
-                )
-            )
+    references = tuple(
+        CompactAutoRegisterFunctionReference(
+            qualname=builder.qualname,
+            referenced_symbols=sorted_tuple(builder.referenced_symbols),
+            calls_autoregister_meta=True,
+            receiver_attribute_refs=sorted_tuple(builder.receiver_attribute_refs),
+        )
+        for builder in builders
+        if builder.calls_autoregister_meta
+    )
     consumer_builders = tuple(
         builder for builder in builders if builder.receiver_attribute_refs
     )
     if not consumer_builders:
-        return tuple(references), None
+        return references, None
     receiver_names = sorted_tuple(
         {
             receiver_name
@@ -3133,7 +3004,7 @@ def _compact_autoregister_function_references(
     )
     receiver_indexes = {name: index for index, name in enumerate(receiver_names)}
     attribute_indexes = {name: index for index, name in enumerate(attribute_names)}
-    return tuple(references), CompactAutoRegisterReferenceIndex(
+    return references, CompactAutoRegisterReferenceIndex(
         function_qualnames=tuple(builder.qualname for builder in consumer_builders),
         receiver_names=receiver_names,
         attribute_names=attribute_names,
@@ -3152,6 +3023,243 @@ def _compact_autoregister_function_references(
             )
         ),
     )
+
+
+@lru_cache(maxsize=None)
+def _compact_class_syntax_facets(
+    parsed_module: ParsedModule,
+) -> _CompactClassSyntaxFacets:
+    syntax_index = module_syntax_index(parsed_module.module)
+    file_path = str(parsed_module.path)
+    collect_autoregister = not (
+        file_path.startswith("tests/") or "/tests/" in file_path
+    )
+    builders_by_function_id = (
+        {
+            id(function): _CompactAutoRegisterFunctionReferenceBuilder(
+                qualname=qualname,
+                node=function,
+                receiver_attribute_refs=set(),
+                referenced_symbols=set(),
+            )
+            for qualname, function in syntax_index.named_functions
+        }
+        if collect_autoregister
+        else {}
+    )
+    function_bindings_by_id = {
+        id(function): LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
+        | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+        for _qualname, function in syntax_index.named_functions
+    }
+    module_binds_type = "type" in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        parsed_module.module.body
+    )
+    active_function_ids_by_scope = tuple(
+        tuple(
+            id(syntax_index.depth_first_nodes[function_index])
+            for function_index in scope.function_node_indices
+        )
+        for scope in syntax_index.scopes
+    )
+    active_builders_by_scope = tuple(
+        (
+            tuple(
+                builders_by_function_id[function_id]
+                for function_id in active_function_ids
+            )
+            if builders_by_function_id
+            else ()
+        )
+        for active_function_ids in active_function_ids_by_scope
+    )
+    scope_binds_type = tuple(
+        module_binds_type
+        or any(
+            "type" in function_bindings_by_id[function_id]
+            for function_id in active_function_ids
+        )
+        for active_function_ids in active_function_ids_by_scope
+    )
+    scope_qualnames = tuple(".".join(scope.names) for scope in syntax_index.scopes)
+    branch_site_counts_by_function_id: dict[int, dict[str, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
+    case_names_by_function_and_key: dict[int, dict[str, set[str]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
+    exact_type_guards: list[CompactExactTypeGuard] = []
+    indices_by_type = syntax_index.node_indices_by_type
+
+    if builders_by_function_id:
+        for node_index in indices_by_type.get(ast.Attribute, ()):
+            node = syntax_index.depth_first_nodes[node_index]
+            if not isinstance(node.value, ast.Name):
+                continue
+            receiver_reference = (node.value.id, node.attr)
+            for builder in active_builders_by_scope[syntax_index.scope_ids[node_index]]:
+                builder.receiver_attribute_refs.add(receiver_reference)
+        for node_index in indices_by_type.get(ast.Call, ()):
+            node = syntax_index.depth_first_nodes[node_index]
+            if _terminal_reference_name(node.func) != "AutoRegisterMeta":
+                continue
+            for builder in active_builders_by_scope[syntax_index.scope_ids[node_index]]:
+                builder.calls_autoregister_meta = True
+
+    for node_index in indices_by_type.get(ast.If, ()):
+        active_function_ids = active_function_ids_by_scope[
+            syntax_index.scope_ids[node_index]
+        ]
+        if not active_function_ids:
+            continue
+        active_function_id = active_function_ids[-1]
+        node = syntax_index.depth_first_nodes[node_index]
+        for key_type_name, case_names in _enum_member_refs_by_key_type(
+            node.test
+        ).items():
+            branch_site_counts_by_function_id[active_function_id][key_type_name] += 1
+            case_names_by_function_and_key[active_function_id][key_type_name].update(
+                case_names
+            )
+
+    for node_index in indices_by_type.get(ast.Match, ()):
+        active_function_ids = active_function_ids_by_scope[
+            syntax_index.scope_ids[node_index]
+        ]
+        if not active_function_ids:
+            continue
+        active_function_id = active_function_ids[-1]
+        node = syntax_index.depth_first_nodes[node_index]
+        refs_by_key: dict[str, set[str]] = defaultdict(set)
+        for case in node.cases:
+            for key_type_name, case_names in _enum_member_refs_by_key_type(
+                case.pattern
+            ).items():
+                refs_by_key[key_type_name].update(case_names)
+            if case.guard is not None:
+                for key_type_name, case_names in _enum_member_refs_by_key_type(
+                    case.guard
+                ).items():
+                    refs_by_key[key_type_name].update(case_names)
+        for key_type_name, case_names in refs_by_key.items():
+            branch_site_counts_by_function_id[active_function_id][key_type_name] += 1
+            case_names_by_function_and_key[active_function_id][key_type_name].update(
+                case_names
+            )
+
+    for node_index in merge(
+        indices_by_type.get(ast.If, ()),
+        indices_by_type.get(ast.Assert, ()),
+    ):
+        scope_id = syntax_index.scope_ids[node_index]
+        if not active_function_ids_by_scope[scope_id]:
+            continue
+        node = syntax_index.depth_first_nodes[node_index]
+        predicate = _exact_type_predicate(node.test)
+        if predicate is None:
+            continue
+        if isinstance(node, ast.If):
+            matches_exact_type_when_true = predicate[2]
+            rejects_descendants = (
+                not matches_exact_type_when_true and _fail_loud_block(node.body)
+            ) or (matches_exact_type_when_true and _fail_loud_block(node.orelse))
+            if not rejects_descendants:
+                continue
+        elif not predicate[2]:
+            continue
+        if scope_binds_type[scope_id]:
+            continue
+        subject, type_reference, matches_exact_type_when_true, expression = predicate
+        reference_node = ClassSymbolResolutionAuthority.reference_node(type_reference)
+        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(reference_node)
+        if parts is None:
+            continue
+        exact_type_guards.append(
+            CompactExactTypeGuard(
+                file_path=file_path,
+                line=node.lineno,
+                qualname=scope_qualnames[scope_id],
+                subject_expression=ast.unparse(subject),
+                type_reference_expression=ast.unparse(type_reference),
+                type_reference_parts=parts,
+                matches_exact_type_when_true=matches_exact_type_when_true,
+                expression=expression,
+            )
+        )
+
+    builders = (
+        tuple(
+            builders_by_function_id[id(function)]
+            for _qualname, function in syntax_index.named_functions
+        )
+        if collect_autoregister
+        else ()
+    )
+    for builder in builders:
+        if not builder.calls_autoregister_meta:
+            continue
+        builder.referenced_symbols.update(
+            symbol
+            for subnode in ast.walk(builder.node)
+            for symbol in (
+                (
+                    subnode.id
+                    if isinstance(subnode, ast.Name)
+                    else (
+                        subnode.value
+                        if isinstance(subnode, ast.Constant)
+                        and isinstance(subnode.value, str)
+                        else (
+                            subnode.attr if isinstance(subnode, ast.Attribute) else None
+                        )
+                    )
+                ),
+            )
+            if symbol is not None
+        )
+    autoregister_references, autoregister_index = (
+        _compact_autoregister_reference_projection(builders)
+    )
+    closed_axis_functions: list[CompactClosedAxisBranchFunction] = []
+    for qualname, function in syntax_index.named_functions:
+        function_id = id(function)
+        axes = tuple(
+            CompactClosedAxisBranchFact(
+                key_type_name=key_type_name,
+                branch_site_count=branch_site_count,
+                case_names=sorted_tuple(
+                    case_names_by_function_and_key[function_id][key_type_name]
+                ),
+            )
+            for key_type_name, branch_site_count in sorted(
+                branch_site_counts_by_function_id[function_id].items()
+            )
+        )
+        if axes:
+            closed_axis_functions.append(
+                CompactClosedAxisBranchFunction(
+                    file_path=file_path,
+                    line=function.lineno,
+                    qualname=qualname,
+                    axes=axes,
+                )
+            )
+    return _CompactClassSyntaxFacets(
+        autoregister_function_references=autoregister_references,
+        autoregister_reference_index=autoregister_index,
+        closed_axis_branch_functions=tuple(closed_axis_functions),
+        exact_type_guards=tuple(exact_type_guards),
+    )
+
+
+def _compact_autoregister_function_references(
+    parsed_module: ParsedModule,
+) -> tuple[
+    tuple[CompactAutoRegisterFunctionReference, ...],
+    CompactAutoRegisterReferenceIndex | None,
+]:
+    facets = _compact_class_syntax_facets(parsed_module)
+    return facets.autoregister_function_references, facets.autoregister_reference_index
 
 
 def _registration_authority_base_name(base_name: str) -> bool:

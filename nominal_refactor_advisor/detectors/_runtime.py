@@ -12,19 +12,25 @@ import hashlib
 import os
 import re
 import tempfile
+from collections import defaultdict
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property, lru_cache
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
+
+from tree_sitter import Node
 
 from ..ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
+    SourceModule,
     collect_family_items,
+    module_syntax_index,
     walk_function_body_nodes,
 )
+from ..native_syntax import NativePythonSyntaxIndex
 from ..class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -57,6 +63,12 @@ from ..semantic_algebra import DispatchAxisExpression, ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..semantic_identity import SemanticRoleIdentityToken
 from ..source_index import build_source_index, build_source_index_artifacts
+from ..source_index import (
+    STABLE_ID_AUTHORITY,
+    AstTargetDigest,
+    AstTargetNodeKind,
+    SourceIndex,
+)
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import *
 from ._base import (
@@ -69,6 +81,7 @@ from ._helpers import (
     _autoregister_meta_rent_candidates,
     _projection_helper_groups,
     _semantic_inheritance_family_ssot_candidates,
+    _wrapper_chain_candidates_from_function_candidates,
 )
 
 
@@ -1850,8 +1863,33 @@ class FormalBoundaryStringRegistryAuthority:
     def module_constants(
         module: ParsedModule,
     ) -> tuple[FormalBoundaryStringRegistryConstant, ...]:
+        statements = tuple(
+            statement
+            for statement in module.module.body
+            if isinstance(statement, (ast.Assign, ast.AnnAssign))
+        )
+        constants = FormalBoundaryStringRegistryAuthority.constants_from_statements(
+            statements
+        )
+        calls = tuple(
+            node
+            for node in ast.walk(module.module)
+            if isinstance(node, ast.Call)
+            and _is_formal_boundary_literal_registry_call(node)
+        )
+        if not FormalBoundaryStringRegistryAuthority.has_formal_boundary_consumer(
+            calls,
+            constants,
+        ):
+            return ()
+        return constants
+
+    @staticmethod
+    def constants_from_statements(
+        statements: Sequence[ast.stmt],
+    ) -> tuple[FormalBoundaryStringRegistryConstant, ...]:
         constants: list[FormalBoundaryStringRegistryConstant] = []
-        for statement in module.module.body:
+        for statement in statements:
             assignment_targets: tuple[ast.AST, ...]
             assignment_value: ast.AST | None
             if isinstance(statement, ast.Assign):
@@ -1877,16 +1915,11 @@ class FormalBoundaryStringRegistryAuthority:
                                 line=statement.lineno,
                             )
                         )
-        if not FormalBoundaryStringRegistryAuthority.has_formal_boundary_consumer(
-            module,
-            tuple(constants),
-        ):
-            return ()
         return tuple(constants)
 
     @staticmethod
     def has_formal_boundary_consumer(
-        module: ParsedModule,
+        calls: Sequence[ast.Call],
         constants: tuple[FormalBoundaryStringRegistryConstant, ...],
     ) -> bool:
         constant_names = frozenset(constant.target_name for constant in constants)
@@ -1897,9 +1930,7 @@ class FormalBoundaryStringRegistryAuthority:
                 node,
                 constant_names,
             )
-            for node in ast.walk(module.module)
-            if isinstance(node, ast.Call)
-            and _is_formal_boundary_literal_registry_call(node)
+            for node in calls
         )
 
     @staticmethod
@@ -2334,6 +2365,15 @@ class FormalBoundaryPythonStringConstantFamily(
     """Persist compact Python-side formal-boundary constant facts."""
 
     item_type = FormalBoundaryPythonStringConstant
+    report_presence_predicate = staticmethod(lambda items, config: bool(items))
+    source_collector = staticmethod(
+        lambda source_module, syntax_index: (
+            _native_formal_boundary_python_string_constants(
+                source_module,
+                syntax_index,
+            )
+        )
+    )
 
     @classmethod
     def collect(
@@ -2352,6 +2392,79 @@ class FormalBoundaryPythonStringConstantFamily(
                 parsed_module
             )
         ]
+
+
+def _native_formal_boundary_python_string_constants(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[FormalBoundaryPythonStringConstant] | None:
+    """Collect formal-boundary constants from native-selected fragments."""
+
+    if not syntax_index.is_complete:
+        return None
+    try:
+        statements = tuple(
+            syntax_index.statement_for(node)
+            for node in syntax_index.top_level_assignment_statements()
+            if (
+                (statement_source := syntax_index.source_for(node).decode("utf-8"))
+                and any(
+                    token in statement_source.lower()
+                    for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+                )
+                and any(
+                    token in statement_source.lower()
+                    for token in _FORMAL_BOUNDARY_STRING_ID_TOKENS
+                )
+            )
+        )
+        constants = FormalBoundaryStringRegistryAuthority.constants_from_statements(
+            statements
+        )
+        if not constants:
+            return []
+        constant_names = frozenset(constant.target_name for constant in constants)
+        calls: list[ast.Call] = []
+        for call_node in sorted(
+            syntax_index.common_captures().get("call", ()),
+            key=lambda node: (node.start_byte, -node.end_byte),
+        ):
+            function = call_node.child_by_field_name("function")
+            if function is None:
+                continue
+            function_source = syntax_index.source_for(function).decode("utf-8").lower()
+            if not any(
+                token in function_source
+                for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+            ):
+                continue
+            expression = syntax_index.expression_for(call_node)
+            if not isinstance(expression, ast.Call):
+                return None
+            if _is_formal_boundary_literal_registry_call(
+                expression
+            ) and FormalBoundaryStringRegistryAuthority.call_consumes_constant(
+                expression,
+                constant_names,
+            ):
+                calls.append(expression)
+                break
+        if not FormalBoundaryStringRegistryAuthority.has_formal_boundary_consumer(
+            calls,
+            constants,
+        ):
+            return []
+        return [
+            FormalBoundaryPythonStringConstant(
+                file_path=str(source_module.path),
+                target_name=constant.target_name,
+                value=constant.value,
+                line=constant.line,
+            )
+            for constant in constants
+        ]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
 
 
 FormalBoundaryStringConstantRecord: TypeAlias = FormalBoundaryPythonStringConstant
@@ -2691,8 +2804,21 @@ class GeneratedBoundarySemanticConstantAuthority:
         module: ParsedModule,
     ) -> tuple[GeneratedBoundarySemanticConstantSite, ...]:
         generated_boundary = cls.module_is_generated_boundary(module)
+        return cls.sites_from_statements(
+            str(module.path),
+            module.module.body,
+            generated_boundary,
+        )
+
+    @classmethod
+    def sites_from_statements(
+        cls,
+        file_path: str,
+        statements: Sequence[ast.stmt],
+        generated_boundary: bool,
+    ) -> tuple[GeneratedBoundarySemanticConstantSite, ...]:
         sites: list[GeneratedBoundarySemanticConstantSite] = []
-        for statement in module.module.body:
+        for statement in statements:
             assignment_targets: tuple[ast.AST, ...]
             assignment_value: ast.AST | None
             if isinstance(statement, ast.Assign):
@@ -2715,7 +2841,7 @@ class GeneratedBoundarySemanticConstantAuthority:
                     continue
                 sites.append(
                     GeneratedBoundarySemanticConstantSite(
-                        file_path=str(module.path),
+                        file_path=file_path,
                         target_name=target.id,
                         value=value,
                         line=statement.lineno,
@@ -2730,9 +2856,21 @@ class GeneratedBoundarySemanticConstantAuthority:
 
     @staticmethod
     def module_is_generated_boundary(module: ParsedModule) -> bool:
+        return GeneratedBoundarySemanticConstantAuthority.source_is_generated_boundary(
+            module.module_name,
+            module.path,
+            module.source,
+        )
+
+    @staticmethod
+    def source_is_generated_boundary(
+        module_name: str,
+        path: Path,
+        source: str,
+    ) -> bool:
         path_tokens = frozenset(
             token
-            for part in (*module.module_name.split("."), module.path.stem)
+            for part in (*module_name.split("."), path.stem)
             for token in _runtime_semantic_identifier_tokens(part)
         )
         if path_tokens & _GENERATED_BOUNDARY_TOKENS:
@@ -2743,7 +2881,7 @@ class GeneratedBoundarySemanticConstantAuthority:
                 frozenset(_runtime_semantic_identifier_tokens(line))
                 & _GENERATED_BOUNDARY_TOKENS
             )
-            for line in module.source.splitlines()[:8]
+            for line in source.splitlines()[:8]
         )
 
     @staticmethod
@@ -2799,6 +2937,15 @@ class GeneratedBoundarySemanticConstantSiteFamily(
     """Persist compact module facts used by the generated-boundary detector."""
 
     item_type = GeneratedBoundarySemanticConstantSite
+    report_presence_predicate = staticmethod(lambda items, config: bool(items))
+    source_collector = staticmethod(
+        lambda source_module, syntax_index: (
+            _native_generated_boundary_semantic_constant_sites(
+                source_module,
+                syntax_index,
+            )
+        )
+    )
 
     @classmethod
     def collect(
@@ -2809,6 +2956,62 @@ class GeneratedBoundarySemanticConstantSiteFamily(
         return list(
             GeneratedBoundarySemanticConstantAuthority.module_sites(parsed_module)
         )
+
+
+def _native_generated_boundary_semantic_constant_sites(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[GeneratedBoundarySemanticConstantSite] | None:
+    """Collect top-level semantic constants from native-selected assignments."""
+
+    if not syntax_index.is_complete:
+        return None
+    try:
+        statements = tuple(
+            syntax_index.statement_for(node)
+            for node in syntax_index.top_level_assignment_statements()
+            if _native_assignment_may_declare_semantic_constant(
+                syntax_index,
+                node,
+            )
+        )
+        generated_boundary = (
+            GeneratedBoundarySemanticConstantAuthority.source_is_generated_boundary(
+                source_module.module_name,
+                source_module.path,
+                source_module.source,
+            )
+        )
+        return list(
+            GeneratedBoundarySemanticConstantAuthority.sites_from_statements(
+                str(source_module.path),
+                statements,
+                generated_boundary,
+            )
+        )
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
+def _native_assignment_may_declare_semantic_constant(
+    syntax_index: NativePythonSyntaxIndex,
+    statement: Node,
+) -> bool:
+    """Cheap necessary filter for uppercase named assignment targets."""
+
+    pending = list(statement.named_children)
+    while pending:
+        node = pending.pop()
+        if node.type == "assignment":
+            target = node.child_by_field_name("left")
+            if target is not None and target.type == "identifier":
+                name = syntax_index.source_for(target).decode("utf-8")
+                if GeneratedBoundarySemanticConstantAuthority.is_semantic_constant_name(
+                    name
+                ):
+                    return True
+        pending.extend(node.named_children)
+    return False
 
 
 class GeneratedBoundarySemanticConstantMirrorDetector(
@@ -3353,6 +3556,7 @@ def _isinstance_family_scatter_candidates_from_named_functions(
                 (subnode.lineno, ast.unparse(subnode), type_names)
             )
         for subject_expression, sites in sorted(grouped.items()):
+            sites.sort(key=lambda item: (item[0], item[1], item[2]))
             unique_type_names = sorted_tuple(
                 {
                     type_name
@@ -3689,10 +3893,281 @@ class CompactRoleGuardedSurfaceModuleProjection:
     role_guarded_accesses: tuple[CompactRoleGuardedAccessFact, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CompactRoleGuardedSurfaceProjectionDemand:
+    """Role declarations needed to resolve report-local guarded accesses."""
+
+    role_type_names: frozenset[str]
+
+
+def _role_guarded_surface_report_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactRoleGuardedSurfaceProjectionDemand:
+    del config
+    return CompactRoleGuardedSurfaceProjectionDemand(
+        role_type_names=frozenset(
+            access.role_type_name
+            for item in target_items
+            if isinstance(item, CompactRoleGuardedSurfaceModuleProjection)
+            for access in item.role_guarded_accesses
+        )
+    )
+
+
+def _cached_role_guarded_surface_demand_projection(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand):
+        raise TypeError("role-guarded demand has the wrong authority type")
+    return tuple(
+        CompactRoleGuardedSurfaceModuleProjection(
+            class_surface_members_by_type_name=tuple(
+                (name, members)
+                for name, members in item.class_surface_members_by_type_name
+                if name in demand.role_type_names
+            ),
+            role_guarded_accesses=(),
+        )
+        for item in items
+        if isinstance(item, CompactRoleGuardedSurfaceModuleProjection)
+    )
+
+
+_NATIVE_ROLE_GUARDED_AST_LIKE_NODE_TYPES = frozenset(
+    {
+        "function_definition",
+        "class_definition",
+        "if_statement",
+        "elif_clause",
+        "for_statement",
+        "while_statement",
+        "try_statement",
+        "with_statement",
+        "match_statement",
+        "return_statement",
+        "expression_statement",
+        "assignment",
+        "augmented_assignment",
+        "assert_statement",
+        "raise_statement",
+        "delete_statement",
+    }
+)
+
+
+def _native_role_guarded_surface_projection(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[CompactRoleGuardedSurfaceModuleProjection] | None:
+    """Project role guards from native syntax, with exact AST fallback."""
+
+    if not syntax_index.is_complete:
+        return None
+    captures = syntax_index.common_captures()
+    try:
+        surfaces: dict[str, set[str]] = defaultdict(set)
+        for syntax_node in captures.get("class", ()):
+            statement = syntax_index.statement_for(syntax_node)
+            if not isinstance(statement, ast.ClassDef):
+                return None
+            members = _declared_class_surface_members(statement)
+            if not members:
+                continue
+            surfaces[statement.name].update(members)
+            surfaces[f"{source_module.module_name}.{statement.name}"].update(members)
+
+        function_order: list[tuple[int, int, str]] = []
+        for function in sorted(
+            captures.get("function", ()),
+            key=lambda node: node.start_byte,
+        ):
+            class_names = tuple(
+                syntax_index.declared_name(scope)
+                for scope in syntax_index.named_scope_nodes(function)
+                if scope.type == "class_definition"
+            )
+            qualname = ".".join((*class_names, syntax_index.declared_name(function)))
+            function_order.append((function.start_byte, function.end_byte, qualname))
+
+        observations_by_function: dict[
+            tuple[int, int],
+            list[
+                tuple[
+                    int,
+                    int,
+                    int,
+                    tuple[tuple[str, str, str], ...],
+                    dict[str, tuple[str, ...]],
+                ]
+            ],
+        ] = defaultdict(list)
+        conditional_nodes = (
+            *captures.get("if", ()),
+            *captures.get("elif", ()),
+        )
+        for ordinal, syntax_node in enumerate(
+            sorted(conditional_nodes, key=lambda node: node.start_byte),
+            start=1,
+        ):
+            if b"isinstance" not in syntax_index.source_for(syntax_node):
+                continue
+            statement = syntax_index.statement_for(syntax_node, elif_as_if=True)
+            if not isinstance(statement, ast.If):
+                return None
+            bindings = _isinstance_guard_bindings(statement.test)
+            if not bindings:
+                continue
+            accessed_by_subject = _accessed_members_by_subject_expression(
+                statement.body,
+                frozenset(subject for subject, _, _ in bindings),
+            )
+            active_functions = tuple(
+                scope
+                for scope in syntax_index.named_scope_nodes(syntax_node)
+                if scope.type == "function_definition"
+            )
+            current = syntax_node.parent
+            relative_depth = 0
+            depth_by_function: dict[tuple[int, int], int] = {}
+            while current is not None:
+                if current.type in _NATIVE_ROLE_GUARDED_AST_LIKE_NODE_TYPES:
+                    relative_depth += 1
+                if current.type == "function_definition":
+                    depth_by_function[current.start_byte, current.end_byte] = (
+                        relative_depth
+                    )
+                current = current.parent
+            for function in active_functions:
+                function_key = (function.start_byte, function.end_byte)
+                observations_by_function[function_key].append(
+                    (
+                        depth_by_function[function_key],
+                        ordinal,
+                        statement.lineno,
+                        bindings,
+                        accessed_by_subject,
+                    )
+                )
+
+        facts = tuple(
+            CompactRoleGuardedAccessFact(
+                file_path=str(source_module.path),
+                line=line,
+                qualname=qualname,
+                subject_expression=subject_expression,
+                role_type_name=type_name,
+                guard_expression=guard_expression,
+                accessed_members=accessed_by_subject.get(subject_expression, ()),
+            )
+            for start_byte, end_byte, qualname in function_order
+            for _, _, line, bindings, accessed_by_subject in sorted(
+                observations_by_function.get((start_byte, end_byte), ()),
+                key=lambda item: (item[0], item[1]),
+            )
+            for subject_expression, type_name, guard_expression in bindings
+        )
+        return [
+            CompactRoleGuardedSurfaceModuleProjection(
+                class_surface_members_by_type_name=tuple(
+                    sorted(
+                        (name, tuple(sorted(members)))
+                        for name, members in surfaces.items()
+                    )
+                ),
+                role_guarded_accesses=facts,
+            )
+        ]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
+def _native_demanded_role_guarded_surface_projection(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[CompactRoleGuardedSurfaceModuleProjection] | None:
+    """Retain only context declarations that can resolve report-local guards."""
+
+    if not isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand):
+        raise TypeError("role-guarded demand has the wrong authority type")
+    if not syntax_index.is_complete:
+        return None
+    if not demand.role_type_names:
+        return [CompactRoleGuardedSurfaceModuleProjection((), ())]
+    try:
+        surfaces: dict[str, set[str]] = defaultdict(set)
+        for syntax_node in syntax_index.common_captures().get("class", ()):
+            simple_name = syntax_index.declared_name(syntax_node)
+            names = (simple_name, f"{source_module.module_name}.{simple_name}")
+            if not demand.role_type_names.intersection(names):
+                continue
+            statement = syntax_index.statement_for(syntax_node)
+            if not isinstance(statement, ast.ClassDef):
+                return None
+            members = _declared_class_surface_members(statement)
+            for name in names:
+                if name in demand.role_type_names and members:
+                    surfaces[name].update(members)
+        return [
+            CompactRoleGuardedSurfaceModuleProjection(
+                class_surface_members_by_type_name=tuple(
+                    sorted(
+                        (name, tuple(sorted(members)))
+                        for name, members in surfaces.items()
+                    )
+                ),
+                role_guarded_accesses=(),
+            )
+        ]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
+def _ast_demanded_role_guarded_surface_projection(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[CompactRoleGuardedSurfaceModuleProjection]:
+    if not isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand):
+        raise TypeError("role-guarded demand has the wrong authority type")
+    surfaces: dict[str, set[str]] = defaultdict(set)
+    if demand.role_type_names:
+        for node in ast.walk(parsed_module.module):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            names = (node.name, f"{parsed_module.module_name}.{node.name}")
+            if not demand.role_type_names.intersection(names):
+                continue
+            members = _declared_class_surface_members(node)
+            for name in names:
+                if name in demand.role_type_names and members:
+                    surfaces[name].update(members)
+    return [
+        CompactRoleGuardedSurfaceModuleProjection(
+            class_surface_members_by_type_name=tuple(
+                sorted(
+                    (name, tuple(sorted(members))) for name, members in surfaces.items()
+                )
+            ),
+            role_guarded_accesses=(),
+        )
+    ]
+
+
 class CompactRoleGuardedSurfaceModuleProjectionFamily(
     CollectedFamily[CompactRoleGuardedSurfaceModuleProjection]
 ):
     item_type = CompactRoleGuardedSurfaceModuleProjection
+    source_collector = staticmethod(_native_role_guarded_surface_projection)
+    source_demand_collector = staticmethod(
+        _native_demanded_role_guarded_surface_projection
+    )
+    ast_demand_collector = staticmethod(_ast_demanded_role_guarded_surface_projection)
+    report_demand_builder = staticmethod(_role_guarded_surface_report_demand)
+    cached_demand_projector = staticmethod(
+        _cached_role_guarded_surface_demand_projection
+    )
 
     @classmethod
     def collect(
@@ -4905,16 +5380,235 @@ class MirroredConstructorValidationDetector(PerModuleIssueDetector):
         return findings
 
 
+def _native_call_terminal_name(
+    syntax_index: NativePythonSyntaxIndex,
+    call: Node,
+) -> str | None:
+    function = call.child_by_field_name("function")
+    if function is None:
+        return None
+    if function.type == "identifier":
+        return syntax_index.source_for(function).decode("utf-8")
+    if function.type == "attribute":
+        attribute = function.child_by_field_name("attribute")
+        if attribute is not None:
+            return syntax_index.source_for(attribute).decode("utf-8")
+    return None
+
+
+def _native_call_may_be_builder(
+    syntax_index: NativePythonSyntaxIndex,
+    call: Node,
+) -> bool:
+    arguments = call.child_by_field_name("arguments")
+    if arguments is None:
+        return False
+    if any(child.type == "keyword_argument" for child in arguments.named_children):
+        return True
+    terminal_name = _native_call_terminal_name(syntax_index, call)
+    return bool(
+        arguments.named_children
+        and terminal_name is not None
+        and terminal_name.startswith(("for_", "from_", "with_"))
+    )
+
+
+def _native_repeated_builder_call_shapes(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[BuilderCallShape] | None:
+    """Project normalized builder calls from native-selected expressions."""
+
+    if not syntax_index.is_complete:
+        return None
+    try:
+        captures = syntax_index.common_captures()
+        module_class_names = frozenset(
+            syntax_index.declared_name(node) for node in captures.get("class", ())
+        )
+        functions = tuple(
+            sorted(
+                captures.get("function", ()),
+                key=lambda node: (node.start_byte, -node.end_byte),
+            )
+        )
+        calls_by_function: dict[Node, list[Node]] = defaultdict(list)
+        for call in captures.get("call", ()):
+            if not _native_call_may_be_builder(syntax_index, call):
+                continue
+            scopes = syntax_index.named_scope_nodes(call)
+            if not scopes or scopes[-1].type != "function_definition":
+                continue
+            function = scopes[-1]
+            body = function.child_by_field_name("body")
+            if body is None or not (
+                body.start_byte <= call.start_byte and call.end_byte <= body.end_byte
+            ):
+                continue
+            if any(
+                ancestor.type == "decorator"
+                for ancestor in _native_ancestors_until(call, function)
+            ):
+                continue
+            calls_by_function[function].append(call)
+
+        parsed_module = ParsedModule(
+            path=source_module.path,
+            module_name=source_module.module_name,
+            is_package_init=source_module.path.name == "__init__.py",
+            module=ast.Module(body=[], type_ignores=[]),
+            source=source_module.source,
+        )
+        shapes: list[BuilderCallShape] = []
+        for function in functions:
+            class_name = (
+                ".".join(
+                    syntax_index.declared_name(scope)
+                    for scope in syntax_index.named_scope_nodes(function)
+                    if scope.type == "class_definition"
+                )
+                or None
+            )
+            function_name = syntax_index.declared_name(function)
+            for call in sorted(
+                calls_by_function.get(function, ()),
+                key=lambda node: (node.start_byte, -node.end_byte),
+            ):
+                expression = syntax_index.expression_for(call)
+                shape = _builder_call_shape(
+                    parsed_module,
+                    expression,
+                    class_name,
+                    function_name,
+                    module_class_names,
+                )
+                if shape is not None:
+                    shapes.append(shape)
+        return sorted(shapes, key=_builder_call_projection_sort_key)
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
+def _native_ancestors_until(node: Node, boundary: Node) -> tuple[Node, ...]:
+    ancestors: list[Node] = []
+    current = node.parent
+    while current is not None and current != boundary:
+        ancestors.append(current)
+        current = current.parent
+    return tuple(ancestors)
+
+
+def _builder_call_projection_sort_key(
+    shape: BuilderCallShape,
+) -> tuple[str, int, str, tuple[str, ...], tuple[str, ...]]:
+    """Canonical family order independent of parser traversal details."""
+
+    return (
+        shape.file_path,
+        shape.lineno,
+        shape.symbol,
+        shape.field_names,
+        shape.value_fingerprint,
+    )
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderCallProjectionDemand:
+    """Group keys capable of producing a finding with report-target evidence."""
+
+    exact_mapping_keys: frozenset[tuple[str, tuple[str, ...], tuple[str, ...]]]
+    owner_family_keys: frozenset[tuple[str, str]]
+
+
+def _repeated_builder_call_projection_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> RepeatedBuilderCallProjectionDemand:
+    del config
+    target_builders = tuple(
+        item for item in target_items if isinstance(item, BuilderCallShape)
+    )
+    return RepeatedBuilderCallProjectionDemand(
+        exact_mapping_keys=frozenset(
+            (builder.callee_name, builder.field_names, builder.value_fingerprint)
+            for builder in target_builders
+        ),
+        owner_family_keys=frozenset(
+            (builder.owner_prefix, builder.callee_name) for builder in target_builders
+        ),
+    )
+
+
+def _repeated_builder_call_is_demanded(
+    builder: BuilderCallShape,
+    demand: RepeatedBuilderCallProjectionDemand,
+) -> bool:
+    return bool(
+        (
+            builder.callee_name,
+            builder.field_names,
+            builder.value_fingerprint,
+        )
+        in demand.exact_mapping_keys
+        or (builder.owner_prefix, builder.callee_name) in demand.owner_family_keys
+    )
+
+
+def _project_repeated_builder_call_demand(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
+        return items
+    return tuple(
+        item
+        for item in items
+        if isinstance(item, BuilderCallShape)
+        and _repeated_builder_call_is_demanded(item, demand)
+    )
+
+
+def _collect_repeated_builder_call_ast_demand(
+    module: ParsedModule,
+    demand: object,
+) -> list[object]:
+    return list(
+        _project_repeated_builder_call_demand(
+            tuple(_module_builder_call_shapes(module)),
+            demand,
+        )
+    )
+
+
+def _collect_repeated_builder_call_source_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    builders = _native_repeated_builder_call_shapes(source_module, syntax_index)
+    if builders is None:
+        return None
+    return list(_project_repeated_builder_call_demand(tuple(builders), demand))
+
+
 class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]):
     """Persist normalized builder calls for repository-wide grouping."""
 
     item_type = BuilderCallShape
     cache_payload_max_bytes = 3_000_000
+    source_collector = staticmethod(_native_repeated_builder_call_shapes)
+    source_demand_collector = staticmethod(_collect_repeated_builder_call_source_demand)
+    ast_demand_collector = staticmethod(_collect_repeated_builder_call_ast_demand)
+    report_demand_builder = staticmethod(_repeated_builder_call_projection_demand)
+    cached_demand_projector = staticmethod(_project_repeated_builder_call_demand)
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[BuilderCallShape]:
         del cls
-        return list(_module_builder_call_shapes(parsed_module))
+        return sorted(
+            _module_builder_call_shapes(parsed_module),
+            key=_builder_call_projection_sort_key,
+        )
 
 
 class RepeatedBuilderCallDetector(
@@ -5158,10 +5852,76 @@ def _declared_field_extraction_sites(
     return tuple(sites)
 
 
+def _native_declared_field_extraction_sites(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[DeclaredFieldExtractionSite] | None:
+    """Derive declared-field call sites from the shared native call stream."""
+
+    if not syntax_index.is_complete:
+        return None
+    parsed_module = ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=[], type_ignores=[]),
+        source=source_module.source,
+    )
+    sites: list[DeclaredFieldExtractionSite] = []
+    try:
+        calls = sorted(
+            syntax_index.common_captures().get("call", ()),
+            key=lambda node: (node.start_byte, -node.end_byte),
+        )
+        for call in calls:
+            callee_name = _native_call_terminal_name(syntax_index, call)
+            if callee_name is None:
+                continue
+            tokens = frozenset(_runtime_semantic_identifier_tokens(callee_name))
+            if not _DECLARED_FIELD_EXTRACTION_REQUIRED_TOKENS <= tokens or not (
+                tokens & _DECLARED_FIELD_EXTRACTION_PAYLOAD_TOKENS
+            ):
+                continue
+            expression = syntax_index.expression_for(call)
+            if not isinstance(expression, ast.Call):
+                return None
+            scopes = syntax_index.named_scope_nodes(call)
+            owner_symbol = (
+                ".".join(
+                    (
+                        *(
+                            syntax_index.declared_name(scope)
+                            for scope in scopes
+                            if scope.type == "class_definition"
+                        ),
+                        *(
+                            syntax_index.declared_name(scope)
+                            for scope in scopes
+                            if scope.type == "function_definition"
+                        ),
+                    )
+                )
+                or "<module>"
+            )
+            site = _declared_field_extraction_site(
+                parsed_module,
+                expression,
+                owner_symbol,
+                len(sites),
+            )
+            if site is not None:
+                sites.append(site)
+        return sites
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
 class DeclaredFieldExtractionSiteFamily(CollectedFamily[DeclaredFieldExtractionSite]):
     """Persist declared-field extraction facts for global factorization."""
 
     item_type = DeclaredFieldExtractionSite
+    report_presence_predicate = staticmethod(lambda items, config: bool(items))
+    source_collector = staticmethod(_native_declared_field_extraction_sites)
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[DeclaredFieldExtractionSite]:
@@ -8899,8 +9659,6 @@ def _private_reference_module_index(
         int,
         list[tuple[int, int, ast.Call]],
     ] = defaultdict(list)
-    visited_node_count = 0
-    traversal_ordinal = 0
 
     def symbol_name(node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
@@ -8911,23 +9669,76 @@ def _private_reference_module_index(
             return node.value
         return None
 
-    def visit(
-        node: ast.AST,
-        *,
-        counted_function_ids: tuple[int, ...] = (),
-        reference_function_id: int | None = None,
-        class_stack: tuple[str, ...] = (),
-        active_role_functions: tuple[tuple[int, str, int], ...] = (),
-        depth: int = 0,
-        scope_stack: tuple[str, ...] = (),
-        public_declaration_name: str | None = None,
-    ) -> None:
-        nonlocal traversal_ordinal, visited_node_count
-        visited_node_count += 1
-        traversal_ordinal += 1
-        node_ordinal = traversal_ordinal
-        if visited_node_count % 2048 == 0:
+    syntax_index = module_syntax_index(module_node)
+    named_role_functions.extend(
+        (id(function), qualname) for qualname, function in syntax_index.named_functions
+    )
+    named_function_nodes_by_id.update(
+        (id(function), function) for _, function in syntax_index.named_functions
+    )
+    scope_function_ids = tuple(
+        tuple(
+            id(syntax_index.depth_first_nodes[function_index])
+            for function_index in scope.function_node_indices
+        )
+        for scope in syntax_index.scopes
+    )
+    counted_function_ids_by_scope = tuple(
+        tuple(
+            function_id
+            for function_id in function_ids
+            if function_id in surface_qualnames_by_id
+        )
+        for function_ids in scope_function_ids
+    )
+    active_role_functions_by_scope = tuple(
+        tuple(
+            (function_id, syntax_index.depths[function_index])
+            for function_id, function_index in zip(
+                function_ids,
+                scope.function_node_indices,
+                strict=True,
+            )
+        )
+        for function_ids, scope in zip(
+            scope_function_ids,
+            syntax_index.scopes,
+            strict=True,
+        )
+    )
+    scope_symbols = tuple(
+        ".".join(scope.names) if scope.names else "<module>"
+        for scope in syntax_index.scopes
+    )
+    public_declaration_names_by_scope = tuple(
+        (
+            scope.names[0]
+            if scope.names and scope.names[0] in public_declaration_names
+            else None
+        )
+        for scope in syntax_index.scopes
+    )
+    surface_function_ids_by_index = {
+        function_index: function_id
+        for function_index, function_id in (
+            (function_index, id(syntax_index.depth_first_nodes[function_index]))
+            for scope in syntax_index.scopes
+            for function_index in scope.function_node_indices[-1:]
+        )
+        if function_id in surface_qualnames_by_id
+    }
+
+    for node_index, node in enumerate(syntax_index.depth_first_nodes):
+        node_ordinal = node_index + 1
+        if node_ordinal % 2048 == 0:
             scan_deadline_checkpoint("contextual_private_reference_index")
+        scope_id = syntax_index.scope_ids[node_index]
+        scope = syntax_index.scopes[scope_id]
+        counted_function_ids = counted_function_ids_by_scope[scope_id]
+        executable_function_index = syntax_index.executable_function_indices[node_index]
+        reference_function_id = surface_function_ids_by_index.get(
+            executable_function_index
+        )
         name = symbol_name(node)
         if name is not None:
             total_counts[name] += 1
@@ -8941,8 +9752,10 @@ def _private_reference_module_index(
             else node.attr if isinstance(node, ast.Attribute) else None
         )
         if reference_name is not None:
-            scope_symbol = ".".join(scope_stack) if scope_stack else "<module>"
-            reference_sites_by_symbol[reference_name].add((node.lineno, scope_symbol))
+            reference_sites_by_symbol[reference_name].add(
+                (node.lineno, scope_symbols[scope_id])
+            )
+            public_declaration_name = public_declaration_names_by_scope[scope_id]
             if (
                 public_declaration_name is not None
                 and reference_name in public_declaration_names
@@ -8952,6 +9765,7 @@ def _private_reference_module_index(
                     reference_name
                 )
 
+        active_role_functions = active_role_functions_by_scope[scope_id]
         if isinstance(node, ast.If) and active_role_functions:
             bindings = _isinstance_guard_bindings(node.test)
             if bindings:
@@ -8959,10 +9773,10 @@ def _private_reference_module_index(
                     node.body,
                     frozenset(subject for subject, _, _ in bindings),
                 )
-                for function_id, _, function_depth in active_role_functions:
+                for function_id, function_depth in active_role_functions:
                     role_observations_by_function_id[function_id].append(
                         (
-                            depth - function_depth,
+                            syntax_index.depths[node_index] - function_depth,
                             node_ordinal,
                             node.lineno,
                             bindings,
@@ -8976,120 +9790,22 @@ def _private_reference_module_index(
             and not node.keywords
             and _ast_terminal_name(node.func) == "isinstance"
         ):
-            for function_id, _, function_depth in active_role_functions:
+            for function_id, function_depth in active_role_functions:
                 isinstance_calls_by_function_id[function_id].append(
-                    (depth - function_depth, node_ordinal, node)
+                    (
+                        syntax_index.depths[node_index] - function_depth,
+                        node_ordinal,
+                        node,
+                    )
                 )
 
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            function_id = id(node)
-            named_function_nodes_by_id[function_id] = node
-            qualname = ".".join((*class_stack, node.name))
-            nested_scope_stack = (*scope_stack, node.name)
-            nested_public_declaration_name = public_declaration_name
-            if not scope_stack and node.name in public_declaration_names:
-                nested_public_declaration_name = node.name
-            named_role_functions.append((function_id, qualname))
-            nested_role_functions = (
-                *active_role_functions,
-                (function_id, qualname, depth),
-            )
-            is_surface_function = function_id in surface_qualnames_by_id
-            nested_counted_ids = (
-                (*counted_function_ids, function_id)
-                if is_surface_function
-                else counted_function_ids
-            )
-            for field_name, value in ast.iter_fields(node):
-                if field_name == "body":
-                    body = _trim_docstring_body(value)
-                    omitted_prefix_count = len(value) - len(body)
-                    for statement in value[:omitted_prefix_count]:
-                        visit(
-                            statement,
-                            counted_function_ids=nested_counted_ids,
-                            class_stack=class_stack,
-                            active_role_functions=nested_role_functions,
-                            depth=depth + 1,
-                            scope_stack=nested_scope_stack,
-                            public_declaration_name=nested_public_declaration_name,
-                        )
-                    for statement in body:
-                        visit(
-                            statement,
-                            counted_function_ids=nested_counted_ids,
-                            reference_function_id=(
-                                function_id if is_surface_function else None
-                            ),
-                            class_stack=class_stack,
-                            active_role_functions=nested_role_functions,
-                            depth=depth + 1,
-                            scope_stack=nested_scope_stack,
-                            public_declaration_name=nested_public_declaration_name,
-                        )
-                    continue
-                if isinstance(value, ast.AST):
-                    visit(
-                        value,
-                        counted_function_ids=nested_counted_ids,
-                        class_stack=class_stack,
-                        active_role_functions=nested_role_functions,
-                        depth=depth + 1,
-                        scope_stack=nested_scope_stack,
-                        public_declaration_name=nested_public_declaration_name,
-                    )
-                elif isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, ast.AST):
-                            visit(
-                                item,
-                                counted_function_ids=nested_counted_ids,
-                                class_stack=class_stack,
-                                active_role_functions=nested_role_functions,
-                                depth=depth + 1,
-                                scope_stack=nested_scope_stack,
-                                public_declaration_name=(
-                                    nested_public_declaration_name
-                                ),
-                            )
-            return
-
         if isinstance(node, ast.ClassDef):
-            nested_scope_stack = (*scope_stack, node.name)
-            nested_public_declaration_name = public_declaration_name
-            if not scope_stack and node.name in public_declaration_names:
-                nested_public_declaration_name = node.name
             declared_members = _declared_class_surface_members(node)
             if declared_members:
                 class_surface_members_by_type_name[node.name].update(declared_members)
                 class_surface_members_by_type_name[f"{module_name}.{node.name}"].update(
                     declared_members
                 )
-            for child in ast.iter_child_nodes(node):
-                visit(
-                    child,
-                    counted_function_ids=counted_function_ids,
-                    class_stack=(*class_stack, node.name),
-                    active_role_functions=active_role_functions,
-                    depth=depth + 1,
-                    scope_stack=nested_scope_stack,
-                    public_declaration_name=nested_public_declaration_name,
-                )
-            return
-
-        for child in ast.iter_child_nodes(node):
-            visit(
-                child,
-                counted_function_ids=counted_function_ids,
-                reference_function_id=reference_function_id,
-                class_stack=class_stack,
-                active_role_functions=active_role_functions,
-                depth=depth + 1,
-                scope_stack=scope_stack,
-                public_declaration_name=public_declaration_name,
-            )
-
-    visit(module_node)
     module_semantic_digest = semantic_hash or _stable_text_digest(
         ast.dump(module_node, include_attributes=False)
     )
@@ -9671,6 +10387,11 @@ class CompactPrivateReferenceModuleProjectionFamily(
     CollectedFamily[CompactPrivateReferenceModuleProjection]
 ):
     item_type = CompactPrivateReferenceModuleProjection
+    # Private-helper findings can connect a target caller to a context helper
+    # through a transitive call graph.  Its measured collection cost is below
+    # one aggregate CPU second, so retain the eager graph until a correlated
+    # closure demand demonstrates material survivor collapse.
+    report_presence_predicate = staticmethod(lambda items, config: True)
 
     @classmethod
     def collect(
@@ -12395,20 +13116,20 @@ def _public_method_template_owner(qualname: str, function_name: str) -> str | No
     return qualname.rsplit(".", 1)[0]
 
 
+@dataclass(frozen=True)
+class _CrossClassMethodTemplateSurface:
+    owner_name: str
+    qualname: str
+    method_name: str
+    line: int
+    parameter_count: int
+    body: tuple[ast.stmt, ...]
+
+
 def _cross_class_small_method_template_candidates(
     module: ParsedModule,
 ) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
-    coarse_groups: dict[
-        tuple[str, int, tuple[type[ast.stmt], ...]],
-        list[
-            tuple[
-                str,
-                str,
-                ast.FunctionDef | ast.AsyncFunctionDef,
-                tuple[ast.stmt, ...],
-            ]
-        ],
-    ] = defaultdict(list)
+    surfaces = []
     for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         owner_name = _public_method_template_owner(qualname, function.name)
         if owner_name is None:
@@ -12418,18 +13139,46 @@ def _cross_class_small_method_template_candidates(
         body = _trimmed_function_body(function)
         if not 1 <= len(body) <= 8:
             continue
-        parameter_count = len(function.args.args) + len(function.args.kwonlyargs)
+        surfaces.append(
+            _CrossClassMethodTemplateSurface(
+                owner_name=owner_name,
+                qualname=qualname,
+                method_name=function.name,
+                line=function.lineno,
+                parameter_count=(
+                    len(function.args.args) + len(function.args.kwonlyargs)
+                ),
+                body=body,
+            )
+        )
+    return _cross_class_small_method_template_candidates_from_surfaces(
+        str(module.path),
+        tuple(surfaces),
+    )
+
+
+def _cross_class_small_method_template_candidates_from_surfaces(
+    file_path: str,
+    surfaces: tuple[_CrossClassMethodTemplateSurface, ...],
+) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
+    """Group exact method surfaces from either AST or native source facts."""
+
+    coarse_groups: dict[
+        tuple[str, int, tuple[type[ast.stmt], ...]],
+        list[_CrossClassMethodTemplateSurface],
+    ] = defaultdict(list)
+    for surface in surfaces:
         coarse_groups[
             (
-                function.name,
-                parameter_count,
-                tuple(type(statement) for statement in body),
+                surface.method_name,
+                surface.parameter_count,
+                tuple(type(statement) for statement in surface.body),
             )
-        ].append((owner_name, qualname, function, body))
+        ].append(surface)
 
     grouped: dict[
         tuple[str, int, tuple[str, ...]],
-        list[tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]],
+        list[_CrossClassMethodTemplateSurface],
     ] = defaultdict(list)
     for (
         method_name,
@@ -12438,25 +13187,28 @@ def _cross_class_small_method_template_candidates(
     ), coarse_functions in coarse_groups.items():
         if len(coarse_functions) < 2:
             continue
-        for owner_name, qualname, function, body in coarse_functions:
+        for surface in coarse_functions:
             key = (
                 method_name,
                 parameter_count,
-                _normalized_cross_class_method_template(body),
+                _normalized_cross_class_method_template(surface.body),
             )
-            grouped[key].append((owner_name, qualname, function))
+            grouped[key].append(surface)
 
     candidates: list[CrossClassSmallMethodTemplateCandidate] = []
-    for (method_name, parameter_count, template), functions in grouped.items():
-        owner_names = sorted_tuple({owner_name for owner_name, _, _ in functions})
+    for (method_name, parameter_count, template), grouped_surfaces in grouped.items():
+        owner_names = sorted_tuple({surface.owner_name for surface in grouped_surfaces})
         if len(owner_names) < 2:
             continue
-        ordered = sorted_tuple(functions, key=lambda item: (item[2].lineno, item[1]))
-        method_names = tuple(qualname for _, qualname, _ in ordered)
-        line_numbers = tuple(function.lineno for _, _, function in ordered)
+        ordered = sorted_tuple(
+            grouped_surfaces,
+            key=lambda surface: (surface.line, surface.qualname),
+        )
+        method_names = tuple(surface.qualname for surface in ordered)
+        line_numbers = tuple(surface.line for surface in ordered)
         candidates.append(
             CrossClassSmallMethodTemplateCandidate(
-                file_path=str(module.path),
+                file_path=file_path,
                 line=line_numbers[0],
                 owner_name=", ".join(owner_names),
                 method_names=method_names,
@@ -12767,12 +13519,573 @@ def _cancelable_composition_signals_for_module(
     )
 
 
+_NATIVE_NOMINAL_BYPASS_QUERY = """
+(attribute) @attribute
+(return_statement) @return
+"""
+
+
+def _native_trimmed_function_statements(
+    syntax_index: NativePythonSyntaxIndex,
+    function_node: Node,
+) -> tuple[Node, ...]:
+    body = function_node.child_by_field_name("body")
+    if body is None:
+        return ()
+    statements = tuple(
+        child for child in body.named_children if child.type != "comment"
+    )
+    if not statements or statements[0].type != "expression_statement":
+        return statements
+    expression_children = statements[0].named_children
+    if expression_children and expression_children[0].type in {
+        "concatenated_string",
+        "string",
+    }:
+        return statements[1:]
+    return statements
+
+
+def _native_unwrapped_expression(node: Node | None) -> Node | None:
+    while (
+        node is not None
+        and node.type == "parenthesized_expression"
+        and len(node.named_children) == 1
+    ):
+        node = node.named_children[0]
+    return node
+
+
+def _native_surface_function(
+    syntax_index: NativePythonSyntaxIndex,
+    function_node: Node,
+) -> bool:
+    statement_node = (
+        function_node.parent
+        if function_node.parent is not None
+        and function_node.parent.type == "decorated_definition"
+        else function_node
+    )
+    if statement_node.parent == syntax_index.tree.root_node:
+        return True
+    if syntax_index.direct_enclosing_class(function_node) is None:
+        return False
+    return not any(
+        scope.type == "function_definition"
+        for scope in syntax_index.named_scope_nodes(function_node)
+    )
+
+
+def _native_function_decorators(
+    syntax_index: NativePythonSyntaxIndex,
+    function_node: Node,
+    cache: dict[Node, tuple[ast.expr, ...]],
+) -> tuple[ast.expr, ...]:
+    cached = cache.get(function_node)
+    if cached is not None:
+        return cached
+    decorated = function_node.parent
+    if decorated is None or decorated.type != "decorated_definition":
+        cache[function_node] = ()
+        return ()
+    decorator_sources = tuple(
+        syntax_index.source_for(child).decode("utf-8")
+        for child in decorated.named_children
+        if child.type == "decorator"
+    )
+    if not decorator_sources:
+        cache[function_node] = ()
+        return ()
+    parsed = ast.parse("\n".join((*decorator_sources, "def _native(): pass")))
+    function = parsed.body[-1]
+    if not isinstance(function, ast.FunctionDef):
+        raise TypeError("native decorators did not parse on a function")
+    decorators = tuple(function.decorator_list)
+    cache[function_node] = decorators
+    return decorators
+
+
+def _native_function_stub(
+    syntax_index: NativePythonSyntaxIndex,
+    function_node: Node,
+    body: tuple[ast.stmt, ...],
+    decorators: tuple[ast.expr, ...] = (),
+) -> _RuntimeFunctionNode:
+    function_type: type[ast.FunctionDef] | type[ast.AsyncFunctionDef] = (
+        ast.AsyncFunctionDef
+        if syntax_index.source_for(function_node).lstrip().startswith(b"async ")
+        else ast.FunctionDef
+    )
+    function = function_type(
+        name=syntax_index.declared_name(function_node),
+        args=syntax_index.arguments_for(function_node),
+        body=list(body),
+        decorator_list=list(decorators),
+        returns=None,
+        type_comment=None,
+    )
+    function.lineno = function_node.start_point.row + 1
+    function.end_lineno = function_node.end_point.row + 1
+    return function
+
+
+def _native_nominal_bypass_module_identity(
+    source_module: SourceModule,
+) -> ParsedModule:
+    return ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=[], type_ignores=[]),
+        source=source_module.source,
+    )
+
+
+def _native_isinstance_scatter_candidates(
+    module: ParsedModule,
+    syntax_index: NativePythonSyntaxIndex,
+    function_nodes: tuple[Node, ...],
+) -> tuple[IsinstanceFamilyScatterCandidate, ...]:
+    calls_by_function: dict[Node, list[ast.Call]] = defaultdict(list)
+    function_node_set = set(function_nodes)
+    for call_node in syntax_index.common_captures().get("call", ()):
+        called = call_node.child_by_field_name("function")
+        if called is None:
+            continue
+        terminal = (
+            called
+            if called.type == "identifier"
+            else called.child_by_field_name("attribute")
+        )
+        if terminal is None or syntax_index.source_for(terminal) != b"isinstance":
+            continue
+        call = syntax_index.expression_for(call_node)
+        if not isinstance(call, ast.Call):
+            raise TypeError("native call expression did not parse as a call")
+        if len(call.args) != 2 or call.keywords:
+            continue
+        for function_node in syntax_index.enclosing_function_nodes(call_node):
+            if function_node in function_node_set:
+                calls_by_function[function_node].append(call)
+    named_functions = tuple(
+        (
+            syntax_index.class_qualified_function_name(function_node),
+            _native_function_stub(
+                syntax_index,
+                function_node,
+                tuple(ast.Expr(value=call) for call in calls),
+            ),
+        )
+        for function_node, calls in calls_by_function.items()
+    )
+    return _isinstance_family_scatter_candidates_from_named_functions(
+        module,
+        named_functions,
+    )
+
+
+def _native_cross_class_template_candidates(
+    module: ParsedModule,
+    syntax_index: NativePythonSyntaxIndex,
+    function_nodes: tuple[Node, ...],
+    decorators_by_function: dict[Node, tuple[ast.expr, ...]],
+) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
+    preliminary_groups: dict[tuple[str, int], list[tuple[Node, tuple[Node, ...]]]] = (
+        defaultdict(list)
+    )
+    for function_node in function_nodes:
+        if not _native_surface_function(syntax_index, function_node):
+            continue
+        qualname = syntax_index.class_qualified_function_name(function_node)
+        method_name = syntax_index.declared_name(function_node)
+        if _public_method_template_owner(qualname, method_name) is None:
+            continue
+        decorators = _native_function_decorators(
+            syntax_index,
+            function_node,
+            decorators_by_function,
+        )
+        if not all(
+            _decorator_simple_name(decorator) in _CLASSLEVEL_METHOD_DECORATORS
+            for decorator in decorators
+        ):
+            continue
+        statements = _native_trimmed_function_statements(
+            syntax_index,
+            function_node,
+        )
+        if 1 <= len(statements) <= 8:
+            preliminary_groups[method_name, len(statements)].append(
+                (function_node, statements)
+            )
+
+    surfaces: list[_CrossClassMethodTemplateSurface] = []
+    for grouped_functions in preliminary_groups.values():
+        owner_names = {
+            syntax_index.class_qualified_function_name(function_node).rsplit(".", 1)[0]
+            for function_node, _statements in grouped_functions
+        }
+        if len(owner_names) < 2:
+            continue
+        for function_node, statement_nodes in grouped_functions:
+            qualname = syntax_index.class_qualified_function_name(function_node)
+            arguments = syntax_index.arguments_for(function_node)
+            surfaces.append(
+                _CrossClassMethodTemplateSurface(
+                    owner_name=qualname.rsplit(".", 1)[0],
+                    qualname=qualname,
+                    method_name=syntax_index.declared_name(function_node),
+                    line=function_node.start_point.row + 1,
+                    parameter_count=len(arguments.args) + len(arguments.kwonlyargs),
+                    body=tuple(
+                        syntax_index.statement_for(statement)
+                        for statement in statement_nodes
+                    ),
+                )
+            )
+    return _cross_class_small_method_template_candidates_from_surfaces(
+        str(module.path),
+        tuple(surfaces),
+    )
+
+
+def _native_wrapper_or_composition_body(
+    syntax_index: NativePythonSyntaxIndex,
+    function_node: Node,
+    *,
+    trim_docstring: bool,
+) -> tuple[ast.stmt, ...] | None:
+    body = function_node.child_by_field_name("body")
+    statements = (
+        _native_trimmed_function_statements(syntax_index, function_node)
+        if trim_docstring
+        else (
+            ()
+            if body is None
+            else tuple(
+                child for child in body.named_children if child.type != "comment"
+            )
+        )
+    )
+    if len(statements) == 1 and statements[0].type == "return_statement":
+        returned = statements[0].named_children
+        returned_value = _native_unwrapped_expression(returned[0] if returned else None)
+        if returned_value is None or returned_value.type != "call":
+            return None
+    elif (
+        len(statements) == 2
+        and statements[0].type == "expression_statement"
+        and statements[1].type == "return_statement"
+    ):
+        assignment_children = statements[0].named_children
+        assignment = assignment_children[0] if assignment_children else None
+        assigned_value = _native_unwrapped_expression(
+            None if assignment is None else assignment.child_by_field_name("right")
+        )
+        if (
+            assignment is None
+            or assignment.type != "assignment"
+            or assigned_value is None
+            or assigned_value.type != "call"
+            or not statements[1].named_children
+        ):
+            return None
+    else:
+        return None
+    return tuple(syntax_index.statement_for(statement) for statement in statements)
+
+
+def _native_composition_signal(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    function_node: Node,
+    function: _RuntimeFunctionNode,
+) -> CancelableCompositionSignal | None:
+    file_path = source_module.path.as_posix()
+    qualname = syntax_index.fully_qualified_function_name(function_node)
+    node_kind = (
+        AstTargetNodeKind.METHOD
+        if any(
+            scope.type == "class_definition"
+            for scope in syntax_index.named_scope_nodes(function_node)
+        )
+        else AstTargetNodeKind.FUNCTION
+    )
+    line = function_node.start_point.row + 1
+    end_line = function_node.end_point.row + 1
+    target = AstTargetDigest(
+        target_id=STABLE_ID_AUTHORITY.ast_target_id(
+            file_path=file_path,
+            node_kind=node_kind,
+            qualname=qualname,
+            line=line,
+            end_line=end_line,
+        ),
+        file_id=STABLE_ID_AUTHORITY.file_id(file_path),
+        file_path=file_path,
+        node_type=node_kind.value,
+        name=syntax_index.declared_name(function_node),
+        qualname=qualname,
+        line=line,
+        end_line=end_line,
+    )
+    return CancelableCompositionSignalTargetAuthority(
+        SourceIndex(ast_targets=(target,)),
+        target,
+        function,
+    ).signal()
+
+
+def _native_wrapper_chains_and_composition_signals(
+    source_module: SourceModule,
+    module: ParsedModule,
+    syntax_index: NativePythonSyntaxIndex,
+    function_nodes: tuple[Node, ...],
+) -> tuple[
+    tuple[WrapperChainCandidate, ...],
+    tuple[CancelableCompositionSignal, ...],
+]:
+    wrappers: list[FunctionWrapperCandidate] = []
+    signals: list[CancelableCompositionSignal] = []
+    for function_node in function_nodes:
+        composition_body = _native_wrapper_or_composition_body(
+            syntax_index,
+            function_node,
+            trim_docstring=False,
+        )
+        if composition_body is not None:
+            composition_function = _native_function_stub(
+                syntax_index,
+                function_node,
+                composition_body,
+            )
+            signal = _native_composition_signal(
+                source_module,
+                syntax_index,
+                function_node,
+                composition_function,
+            )
+            if signal is not None:
+                signals.append(signal)
+        if _native_surface_function(syntax_index, function_node):
+            wrapper_body = _native_wrapper_or_composition_body(
+                syntax_index,
+                function_node,
+                trim_docstring=True,
+            )
+            if wrapper_body is not None:
+                wrapper_function = _native_function_stub(
+                    syntax_index,
+                    function_node,
+                    wrapper_body,
+                )
+                wrapper = _function_wrapper_candidate(
+                    module,
+                    syntax_index.class_qualified_function_name(function_node),
+                    wrapper_function,
+                )
+                if wrapper is not None:
+                    wrappers.append(wrapper)
+    wrapper_candidates = sorted_tuple(
+        wrappers,
+        key=lambda item: (item.file_path, item.lineno, item.qualname),
+    )
+    return (
+        _wrapper_chain_candidates_from_function_candidates(
+            str(source_module.path),
+            wrapper_candidates,
+        ),
+        sorted_tuple(
+            signals,
+            key=lambda item: (
+                -item.load_bearing_score,
+                item.file_path,
+                item.line,
+                item.qualname,
+            ),
+        ),
+    )
+
+
+def _native_variant_method_surfaces(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    function_nodes: tuple[Node, ...],
+    decorators_by_function: dict[Node, tuple[ast.expr, ...]],
+) -> tuple[_VariantMethodSurface, ...]:
+    captures = syntax_index.captures(_NATIVE_NOMINAL_BYPASS_QUERY)
+    attributes_by_function: dict[Node, list[tuple[str, str]]] = defaultdict(list)
+    returned_calls_by_function: dict[Node, list[Node]] = defaultdict(list)
+    function_node_set = set(function_nodes)
+    for attribute in captures.get("attribute", ()):
+        owner = attribute.child_by_field_name("object")
+        field_node = attribute.child_by_field_name("attribute")
+        if owner is None or owner.type != "identifier" or field_node is None:
+            continue
+        owner_name = syntax_index.source_for(owner).decode("utf-8")
+        field_name = syntax_index.source_for(field_node).decode("utf-8")
+        for function_node in syntax_index.enclosing_function_nodes(attribute):
+            if function_node in function_node_set:
+                attributes_by_function[function_node].append((owner_name, field_name))
+    for return_node in captures.get("return", ()):
+        returned = return_node.named_children
+        returned_value = _native_unwrapped_expression(returned[0] if returned else None)
+        if returned_value is None or returned_value.type != "call":
+            continue
+        for function_node in syntax_index.enclosing_function_nodes(return_node):
+            if function_node in function_node_set:
+                returned_calls_by_function[function_node].append(returned_value)
+
+    abstract_classes: set[Node] = set()
+    for function_node in function_nodes:
+        owner = syntax_index.direct_enclosing_class(function_node)
+        if owner is None:
+            continue
+        decorators = _native_function_decorators(
+            syntax_index,
+            function_node,
+            decorators_by_function,
+        )
+        if any(
+            _decorator_simple_name(decorator) == "abstractmethod"
+            for decorator in decorators
+        ):
+            abstract_classes.add(owner)
+
+    class_header_by_node: dict[Node, ast.ClassDef] = {}
+    surfaces: list[_VariantMethodSurface] = []
+    for function_node in function_nodes:
+        class_node = syntax_index.direct_enclosing_class(function_node)
+        if class_node is None:
+            continue
+        if _is_private_symbol_name(syntax_index.declared_name(class_node)):
+            continue
+        method_name = syntax_index.declared_name(function_node)
+        if _is_private_symbol_name(method_name) or method_name.startswith("__"):
+            continue
+        decorators = _native_function_decorators(
+            syntax_index,
+            function_node,
+            decorators_by_function,
+        )
+        if not all(
+            _decorator_simple_name(decorator) in _CLASSLEVEL_METHOD_DECORATORS
+            for decorator in decorators
+        ):
+            continue
+        statement_nodes = _native_trimmed_function_statements(
+            syntax_index,
+            function_node,
+        )
+        if len(statement_nodes) > 8:
+            continue
+        if len(SemanticTokenAuthority.identifier_tokens(method_name)) < 2:
+            continue
+        arguments = syntax_index.arguments_for(function_node)
+        parameter_names = {
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            )
+            if argument.arg not in {"cls", "self"}
+        }
+        fields_by_parameter: dict[str, set[str]] = defaultdict(set)
+        for owner_name, field_name in attributes_by_function.get(function_node, ()):
+            if owner_name in parameter_names:
+                fields_by_parameter[owner_name].add(field_name)
+        if not any(len(fields) >= 2 for fields in fields_by_parameter.values()):
+            continue
+        if len(returned_calls_by_function.get(function_node, ())) != 1:
+            continue
+        body = tuple(
+            syntax_index.statement_for(statement) for statement in statement_nodes
+        )
+        function = _native_function_stub(
+            syntax_index,
+            function_node,
+            body,
+            decorators,
+        )
+        class_header = class_header_by_node.get(class_node)
+        if class_header is None:
+            class_header = syntax_index.class_header_for(class_node)
+            class_header_by_node[class_node] = class_header
+        base_names = CLASS_NODE_AUTHORITY.declared_base_names(class_header)
+        surface = _variant_method_surface_from_owner_facts(
+            file_path=str(source_module.path),
+            owner_class_name=syntax_index.declared_name(class_node),
+            owner_line=class_node.start_point.row + 1,
+            owner_is_abstract=(
+                class_node in abstract_classes
+                or bool({"ABC", "ABCMeta"} & set(base_names))
+            ),
+            owner_base_names=base_names,
+            method=function,
+        )
+        if surface is not None:
+            surfaces.append(surface)
+    return sorted_tuple(
+        surfaces,
+        key=lambda item: (item.file_path, item.owner_line, item.line),
+    )
+
+
+def _native_nominal_bypass_projection(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> list[CompactNominalBypassModuleProjection] | None:
+    if not syntax_index.is_complete:
+        return None
+    try:
+        module = _native_nominal_bypass_module_identity(source_module)
+        function_nodes = syntax_index.common_captures().get("function", ())
+        decorators_by_function: dict[Node, tuple[ast.expr, ...]] = {}
+        wrapper_chains, composition_signals = (
+            _native_wrapper_chains_and_composition_signals(
+                source_module,
+                module,
+                syntax_index,
+                function_nodes,
+            )
+        )
+        return [
+            CompactNominalBypassModuleProjection(
+                module_name=source_module.module_name,
+                file_path=str(source_module.path),
+                isinstance_scatters=_native_isinstance_scatter_candidates(
+                    module,
+                    syntax_index,
+                    function_nodes,
+                ),
+                repeated_templates=_native_cross_class_template_candidates(
+                    module,
+                    syntax_index,
+                    function_nodes,
+                    decorators_by_function,
+                ),
+                wrapper_chains=wrapper_chains,
+                composition_signals=composition_signals,
+                variant_method_surfaces=_native_variant_method_surfaces(
+                    source_module,
+                    syntax_index,
+                    function_nodes,
+                    decorators_by_function,
+                ),
+            )
+        ]
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
 class CompactNominalBypassModuleProjectionFamily(
     CollectedFamily[CompactNominalBypassModuleProjection]
 ):
     """Persist local nominal-bypass facts for exact repository-wide joins."""
 
     item_type = CompactNominalBypassModuleProjection
+    source_collector = staticmethod(_native_nominal_bypass_projection)
 
     @classmethod
     def collect(
@@ -12797,6 +14110,79 @@ class CompactNominalBypassModuleProjectionFamily(
                 variant_method_surfaces=_variant_method_surfaces(parsed_module),
             )
         ]
+
+
+@dataclass(frozen=True)
+class CompactNominalBypassProjectionDemand:
+    """Retain contextual dispatch facts but omit context-local variant families."""
+
+    include_context_dispatch: bool = True
+
+
+def _nominal_bypass_projection_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactNominalBypassProjectionDemand:
+    del target_items, config
+    return CompactNominalBypassProjectionDemand()
+
+
+def _project_nominal_bypass_demand(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactNominalBypassProjectionDemand):
+        return items
+    projected: list[CompactNominalBypassModuleProjection] = []
+    for item in items:
+        if not isinstance(item, CompactNominalBypassModuleProjection):
+            continue
+        if not item.isinstance_scatters and not item.repeated_templates:
+            continue
+        projected.append(
+            replace(
+                item,
+                variant_method_surfaces=(),
+            )
+        )
+    return tuple(projected)
+
+
+def _collect_nominal_bypass_source_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    projections = _native_nominal_bypass_projection(source_module, syntax_index)
+    if projections is None:
+        return None
+    return list(_project_nominal_bypass_demand(tuple(projections), demand))
+
+
+def _collect_nominal_bypass_ast_demand(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[object]:
+    return list(
+        _project_nominal_bypass_demand(
+            tuple(CompactNominalBypassModuleProjectionFamily.collect(parsed_module)),
+            demand,
+        )
+    )
+
+
+CompactNominalBypassModuleProjectionFamily.report_demand_builder = staticmethod(
+    _nominal_bypass_projection_demand
+)
+CompactNominalBypassModuleProjectionFamily.source_demand_collector = staticmethod(
+    _collect_nominal_bypass_source_demand
+)
+CompactNominalBypassModuleProjectionFamily.ast_demand_collector = staticmethod(
+    _collect_nominal_bypass_ast_demand
+)
+CompactNominalBypassModuleProjectionFamily.cached_demand_projector = staticmethod(
+    _project_nominal_bypass_demand
+)
 
 
 class RelatedCompositionSignalsAuthority:
@@ -13359,6 +14745,27 @@ def _variant_method_surface(
     class_node: ast.ClassDef,
     method: _RuntimeFunctionNode,
 ) -> _VariantMethodSurface | None:
+    return _variant_method_surface_from_owner_facts(
+        file_path=str(module.path),
+        owner_class_name=class_node.name,
+        owner_line=class_node.lineno,
+        owner_is_abstract=CLASS_NODE_AUTHORITY.is_abstract(class_node),
+        owner_base_names=CLASS_NODE_AUTHORITY.declared_base_names(class_node),
+        method=method,
+    )
+
+
+def _variant_method_surface_from_owner_facts(
+    *,
+    file_path: str,
+    owner_class_name: str,
+    owner_line: int,
+    owner_is_abstract: bool,
+    owner_base_names: tuple[str, ...],
+    method: _RuntimeFunctionNode,
+) -> _VariantMethodSurface | None:
+    """Project one method using the canonical body semantics and owner facts."""
+
     if _is_private_symbol_name(method.name) or method.name.startswith("__"):
         return None
     if not _has_only_nominal_method_decorators(method):
@@ -13379,12 +14786,12 @@ def _variant_method_surface(
     if statement_count > 8:
         return None
     return _VariantMethodSurface(
-        file_path=str(module.path),
-        owner_class_name=class_node.name,
-        owner_line=class_node.lineno,
-        owner_is_abstract=CLASS_NODE_AUTHORITY.is_abstract(class_node),
-        owner_base_names=CLASS_NODE_AUTHORITY.declared_base_names(class_node),
-        qualname=f"{class_node.name}.{method.name}",
+        file_path=file_path,
+        owner_class_name=owner_class_name,
+        owner_line=owner_line,
+        owner_is_abstract=owner_is_abstract,
+        owner_base_names=owner_base_names,
+        qualname=f"{owner_class_name}.{method.name}",
         method_name=method.name,
         line=method.lineno,
         statement_count=max(1, statement_count),
@@ -14927,6 +16334,128 @@ class CompactPublicApiPrivateDelegateModuleProjectionFamily(
     ) -> list[PublicApiPrivateDelegateModuleFacts]:
         del cls
         return [_public_api_private_delegate_module_facts(parsed_module)]
+
+
+@dataclass(frozen=True)
+class CompactPublicApiPrivateDelegateProjectionDemand:
+    """Wrapper symbols connected to report-target wrappers or call sites."""
+
+    target_symbols: frozenset[str]
+
+
+def _public_api_private_delegate_projection_demand(
+    target_items: tuple[object, ...],
+    config: object,
+) -> CompactPublicApiPrivateDelegateProjectionDemand:
+    del config
+    projections = tuple(
+        item
+        for item in target_items
+        if isinstance(item, PublicApiPrivateDelegateModuleFacts)
+    )
+    return CompactPublicApiPrivateDelegateProjectionDemand(
+        target_symbols=frozenset(
+            (
+                *(
+                    f"{projection.module_name}.{wrapper.qualname}"
+                    for projection in projections
+                    for wrapper in projection.wrappers
+                ),
+                *(
+                    target
+                    for projection in projections
+                    for target, _callsites in projection.callsites_by_target
+                ),
+            )
+        )
+    )
+
+
+def _delegate_demand_symbols_match(left: str, right: str) -> bool:
+    return bool(
+        left == right or left.endswith(f".{right}") or right.endswith(f".{left}")
+    )
+
+
+def _project_public_api_private_delegate_demand(
+    items: tuple[object, ...],
+    demand: object,
+) -> tuple[object, ...]:
+    if not isinstance(demand, CompactPublicApiPrivateDelegateProjectionDemand):
+        return items
+    projections = tuple(
+        item for item in items if isinstance(item, PublicApiPrivateDelegateModuleFacts)
+    )
+    relevant_symbols = set(demand.target_symbols)
+    for projection in projections:
+        for wrapper in projection.wrappers:
+            wrapper_symbol = f"{projection.module_name}.{wrapper.qualname}"
+            if any(
+                _delegate_demand_symbols_match(wrapper_symbol, target_symbol)
+                for target_symbol in demand.target_symbols
+            ):
+                relevant_symbols.add(wrapper_symbol)
+    projected: list[PublicApiPrivateDelegateModuleFacts] = []
+    for projection in projections:
+        wrappers = tuple(
+            wrapper
+            for wrapper in projection.wrappers
+            if any(
+                _delegate_demand_symbols_match(
+                    f"{projection.module_name}.{wrapper.qualname}",
+                    symbol,
+                )
+                for symbol in relevant_symbols
+            )
+        )
+        callsites_by_target = tuple(
+            (target, callsites)
+            for target, callsites in projection.callsites_by_target
+            if any(
+                _delegate_demand_symbols_match(target, symbol)
+                for symbol in relevant_symbols
+            )
+        )
+        if wrappers or callsites_by_target:
+            projected.append(
+                PublicApiPrivateDelegateModuleFacts(
+                    file_path=projection.file_path,
+                    module_name=projection.module_name,
+                    top_level_symbol_lines=(
+                        projection.top_level_symbol_lines if wrappers else ()
+                    ),
+                    wrappers=wrappers,
+                    callsites_by_target=callsites_by_target,
+                )
+            )
+    return tuple(projected)
+
+
+def _collect_public_api_private_delegate_ast_demand(
+    parsed_module: ParsedModule,
+    demand: object,
+) -> list[object]:
+    return list(
+        _project_public_api_private_delegate_demand(
+            tuple(
+                CompactPublicApiPrivateDelegateModuleProjectionFamily.collect(
+                    parsed_module
+                )
+            ),
+            demand,
+        )
+    )
+
+
+CompactPublicApiPrivateDelegateModuleProjectionFamily.report_demand_builder = (
+    staticmethod(_public_api_private_delegate_projection_demand)
+)
+CompactPublicApiPrivateDelegateModuleProjectionFamily.ast_demand_collector = (
+    staticmethod(_collect_public_api_private_delegate_ast_demand)
+)
+CompactPublicApiPrivateDelegateModuleProjectionFamily.cached_demand_projector = (
+    staticmethod(_project_public_api_private_delegate_demand)
+)
 
 
 @dataclass(frozen=True)
