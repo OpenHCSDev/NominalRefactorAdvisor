@@ -2508,3 +2508,17 @@ independent native traversals and fragment parsers.  The semantic collector and
 profiling hook were removed.  Do not resume the all-native route without first
 introducing one shared native event/index authority or a detector-level target
 witness selector that avoids constructing these families at all.
+
+Target-only detector evaluation itself is cheap and sparse: it takes about 9ms
+over all 69 compact global detectors, activating only carrier composition on
+DQDock and four detectors on OpenHCS.  Adding the five detector types observed
+to create target-anchored findings from context (carrier composition, guarded
+role access, role surface, generic role cases, and distributed boundary)
+preserves every stable ID: DQDock returns all 12 findings in 12.53 seconds and
+OpenHCS all 45 in 14.38 seconds, including their per-module findings.  This is
+a measured approximately 2x cold bound, not a promoted selector.  It remains
+unsound as a generic rule because other duplicate/group detectors, including
+inheritance-method consumers, can be empty on the target alone yet acquire a
+target-anchored candidate after context is joined.  Production promotion needs
+detector-declared candidate-seed/promotion contracts with a conservative
+default, not a roster of the five outputs observed in these two reports.
