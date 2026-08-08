@@ -1155,7 +1155,11 @@ class BoundedCompactProjectionManifest:
         for projection in projections:
             if CompactGlobalProjectionAccumulator._retains_ast(projection):
                 raise TypeError(f"{family.__name__} runtime projection retains an AST")
-        self.runtime_projections[family, str(path.resolve())] = projections
+        key = family, str(path.resolve())
+        self.runtime_projections[key] = projections
+        self._source_projection_signatures[key] = (
+            collected_family_items_content_signature(projections)
+        )
 
     def cache_entry_exists(
         self,
@@ -1217,9 +1221,8 @@ class BoundedCompactProjectionManifest:
         for source in self.sources:
             demand = self.family_demands.get(family)
             is_context_demand = self._is_context_demand_source(source, demand)
-            source_projections = self.runtime_projections.get(
-                (family, source.resolved_path_text)
-            )
+            source_key = family, source.resolved_path_text
+            source_projections = self.runtime_projections.get(source_key)
             demanded_cache_hit = False
             if source_projections is None and is_context_demand:
                 source_projections = (
@@ -1251,13 +1254,12 @@ class BoundedCompactProjectionManifest:
                     tuple(source_projections),
                     demand,
                 )
-            source_signature = collected_family_items_content_signature(
-                tuple(source_projections)
-            )
-            self._source_projection_signatures[
-                family,
-                source.resolved_path_text,
-            ] = source_signature
+            source_signature = self._source_projection_signatures.get(source_key)
+            if source_signature is None:
+                source_signature = collected_family_items_content_signature(
+                    tuple(source_projections)
+                )
+                self._source_projection_signatures[source_key] = source_signature
             source_signatures.append(source_signature)
             # Persisted family payloads are syntax-free by the cache write
             # contract. Runtime values and repairs are checked at their insertion
@@ -1343,6 +1345,7 @@ class BoundedCompactProjectionManifest:
                 )
             if signature is None:
                 return None
+            self._source_projection_signatures[key] = signature
             source_signatures.append(signature)
         combined = self._combined_projection_signature(
             family,
