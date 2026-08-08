@@ -360,6 +360,95 @@ def test_module_detector_shard_cache_reuses_exact_focused_findings(
     assert FocusedShardDetector.call_count == 1
 
 
+def test_module_detector_cache_reuses_unchanged_implementation_bundle(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    calls = {"stable": 0, "first": 0, "second": 0}
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Bundle cache",
+        why="Bundle cache",
+        capability_gap="Bundle cache",
+        relation_context="Bundle cache",
+    )
+
+    def finding(detector_id: str, module) -> RefactorFinding:
+        return finding_spec.build(
+            detector_id,
+            detector_id,
+            (SourceLocation(str(module.path), 1, detector_id),),
+        )
+
+    class StableBundleDetector(PerModuleIssueDetector):
+        detector_id = "stable_bundle_detector"
+
+        def _findings_for_module(self, module, config):
+            del config
+            calls["stable"] += 1
+            return [finding(self.detector_id, module)]
+
+    class FirstChangingBundleDetector(PerModuleIssueDetector):
+        detector_id = "first_changing_bundle_detector"
+
+        def _findings_for_module(self, module, config):
+            del config
+            calls["first"] += 1
+            return [finding(self.detector_id, module)]
+
+    class SecondChangingBundleDetector(PerModuleIssueDetector):
+        detector_id = "second_changing_bundle_detector"
+
+        def _findings_for_module(self, module, config):
+            del config
+            calls["second"] += 1
+            return [finding(self.detector_id, module)]
+
+    StableBundleDetector.__module__ = "test_stable_detector_bundle"
+    FirstChangingBundleDetector.__module__ = "test_changing_detector_bundle_v1"
+    SecondChangingBundleDetector.__module__ = "test_changing_detector_bundle_v2"
+    registered_test_detectors = (
+        StableBundleDetector,
+        FirstChangingBundleDetector,
+        SecondChangingBundleDetector,
+    )
+    arguments = {
+        "module": module,
+        "config": DetectorConfig(),
+        "presentation_roots": (package_root,),
+        "analysis_cache_dir": tmp_path / "analysis-cache",
+    }
+
+    try:
+        cold = analyze_module_detector_types_with_cache(
+            detector_types=(StableBundleDetector, FirstChangingBundleDetector),
+            **arguments,
+        )
+        partial = analyze_module_detector_types_with_cache(
+            detector_types=(StableBundleDetector, SecondChangingBundleDetector),
+            **arguments,
+        )
+    finally:
+        for registry_key, detector_type in tuple(IssueDetector.__registry__.items()):
+            if detector_type in registered_test_detectors:
+                del IssueDetector.__registry__[registry_key]
+
+    assert cold.cache_status is AnalysisCacheStatus.MISS
+    assert partial.cache_status is AnalysisCacheStatus.PARTIAL
+    assert calls == {"stable": 1, "first": 1, "second": 1}
+    assert {item.detector_id for item in cold.findings} == {
+        "stable_bundle_detector",
+        "first_changing_bundle_detector",
+    }
+    assert {item.detector_id for item in partial.findings} == {
+        "stable_bundle_detector",
+        "second_changing_bundle_detector",
+    }
+
+
 def test_semantic_graph_cache_treats_truncated_payload_as_miss(
     tmp_path: Path,
 ) -> None:

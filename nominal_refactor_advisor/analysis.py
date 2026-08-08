@@ -26,9 +26,11 @@ from .analysis_cache import (
     AnalysisFindingCache,
     AnalysisLatestPointerPolicy,
     ContextualModuleAnalysisCacheIdentity,
+    DetectorRegistrySignature,
     GlobalDetectorAnalysisCacheIdentity,
     GlobalModuleContextSignature,
-    PerModuleAnalysisCacheIdentity,
+    PerModuleAnalysisCacheFamilyIdentity,
+    PerModuleDetectorFindingBundle,
     SourceFileSignatureCache,
 )
 from .ast_tools import (
@@ -333,13 +335,16 @@ class PerModuleDetectorShardWorkerState:
 
     modules: tuple[ParsedModule, ...]
     config: DetectorConfig
-    detector_types: tuple[type[IssueDetector], ...]
 
-    def detect_module_index(self, module_index: int) -> list[RefactorFinding]:
+    def detect_task(
+        self,
+        task: tuple[int, tuple[type[IssueDetector], ...]],
+    ) -> list[RefactorFinding]:
+        module_index, detector_types = task
         return analyze_detector_types(
             [self.modules[module_index]],
             self.config,
-            detector_types=self.detector_types,
+            detector_types=detector_types,
             analysis_workers=1,
         )
 
@@ -357,14 +362,14 @@ def initialize_per_module_detector_shard_worker(
 
 
 def detect_per_module_shard_with_active_state(
-    module_index: int,
+    task: tuple[int, tuple[type[IssueDetector], ...]],
 ) -> list[RefactorFinding]:
     """Run per-module detector classes for one parsed module in a worker."""
 
     state = per_module_detector_shard_worker_state
     if state is None:
         raise RuntimeError("per-module shard worker state has not been initialized")
-    return state.detect_module_index(module_index)
+    return state.detect_task(task)
 
 
 @dataclass(frozen=True)
@@ -579,6 +584,114 @@ class DetectorTypePartition:
             for detector_type in self.context_dependent_detector_types
             if detector_type not in compact_detector_types
         )
+
+
+@dataclass(frozen=True)
+class PerModuleDetectorBundle:
+    """One implementation-module validity unit for local detector caching."""
+
+    detector_types: tuple[type[IssueDetector], ...]
+    detector_registry: DetectorRegistrySignature
+    detector_ids: frozenset[str]
+
+    def finding_bundle(
+        self,
+        findings: Iterable[RefactorFinding],
+    ) -> PerModuleDetectorFindingBundle:
+        return PerModuleDetectorFindingBundle(
+            detector_registry=self.detector_registry,
+            findings=tuple(
+                finding
+                for finding in findings
+                if finding.detector_id in self.detector_ids
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PerModuleDetectorBundlePlan:
+    """Derive local cache lookups, reruns, and merged storage from one roster."""
+
+    bundles: tuple[PerModuleDetectorBundle, ...]
+
+    @classmethod
+    def from_detector_types(
+        cls,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> "PerModuleDetectorBundlePlan":
+        grouped: dict[str, list[type[IssueDetector]]] = {}
+        for detector_type in detector_types:
+            grouped.setdefault(detector_type.__module__, []).append(detector_type)
+        return cls(
+            tuple(
+                PerModuleDetectorBundle(
+                    detector_types=tuple(group),
+                    detector_registry=DetectorRegistrySignature.from_detector_types(
+                        tuple(group)
+                    ),
+                    detector_ids=frozenset(
+                        detector_id
+                        for detector_type in group
+                        for detector_id in (detector_type.effective_detector_id(),)
+                        if detector_id is not None
+                    ),
+                )
+                for group in grouped.values()
+            )
+        )
+
+    @property
+    def detector_registries(self) -> tuple[DetectorRegistrySignature, ...]:
+        return tuple(bundle.detector_registry for bundle in self.bundles)
+
+    def missing_detector_types(
+        self,
+        cached_findings_by_bundle: tuple[
+            tuple[RefactorFinding, ...] | None,
+            ...,
+        ],
+    ) -> tuple[type[IssueDetector], ...]:
+        return tuple(
+            detector_type
+            for bundle, cached_findings in zip(
+                self.bundles,
+                cached_findings_by_bundle,
+                strict=True,
+            )
+            if cached_findings is None
+            for detector_type in bundle.detector_types
+        )
+
+    def merged_finding_bundles(
+        self,
+        cached_findings_by_bundle: tuple[
+            tuple[RefactorFinding, ...] | None,
+            ...,
+        ],
+        new_findings: Iterable[RefactorFinding],
+    ) -> tuple[PerModuleDetectorFindingBundle, ...]:
+        materialized_new_findings = tuple(new_findings)
+        return tuple(
+            (
+                bundle.finding_bundle(materialized_new_findings)
+                if cached_findings is None
+                else PerModuleDetectorFindingBundle(
+                    bundle.detector_registry,
+                    cached_findings,
+                )
+            )
+            for bundle, cached_findings in zip(
+                self.bundles,
+                cached_findings_by_bundle,
+                strict=True,
+            )
+        )
+
+    @staticmethod
+    def findings(
+        bundles: Iterable[PerModuleDetectorFindingBundle],
+    ) -> list[RefactorFinding]:
+        return [finding for bundle in bundles for finding in bundle.findings]
 
 
 @dataclass
@@ -1878,7 +1991,14 @@ def analyze_compact_roots_with_cache(
     local_analysis_seconds = 0.0
     local_cache_hit_count = 0
     build_requests: list[CompactProjectionBuildRequest] = []
-    local_identity_by_path: dict[Path, PerModuleAnalysisCacheIdentity] = {}
+    detector_bundle_plan = PerModuleDetectorBundlePlan.from_detector_types(
+        partition.per_module_detector_types
+    )
+    local_identity_by_path: dict[Path, PerModuleAnalysisCacheFamilyIdentity] = {}
+    local_cached_findings_by_path: dict[
+        Path,
+        tuple[tuple[RefactorFinding, ...] | None, ...],
+    ] = {}
     source_path_set = {path.resolve() for path in source_paths}
     streamed_paths: set[Path] = set()
     for root in roots:
@@ -1943,19 +2063,22 @@ def analyze_compact_roots_with_cache(
                     if source is None:
                         source = path.read_text(encoding="utf-8")
                     local_semantic_hash = semantic_python_source_hash(source)
-                local_identity = PerModuleAnalysisCacheIdentity.from_source(
+                local_identity = PerModuleAnalysisCacheFamilyIdentity.from_source(
                     path=path,
                     module_name=module_identity.import_name,
                     is_package_init=module_identity.is_package_init,
                     semantic_hash=local_semantic_hash,
                     config=config,
-                    detector_types=partition.per_module_detector_types,
                     presentation_roots=roots,
                 )
-                local_cache_lookup = analysis_cache.load(local_identity)
-                if local_cache_lookup.status is AnalysisCacheStatus.HIT:
-                    local_cache_hit_count += 1
-                    local_findings.extend(local_cache_lookup.findings)
+                local_cache_lookup = analysis_cache.load_per_module_detector_bundles(
+                    local_identity,
+                    detector_bundle_plan.detector_registries,
+                )
+                for cached_findings in local_cache_lookup.findings_by_bundle:
+                    if cached_findings is not None:
+                        local_cache_hit_count += 1
+                        local_findings.extend(cached_findings)
 
             missing_families: tuple[type[CollectedFamily], ...] = ()
             if projection_manifest.projection_families and not (
@@ -1981,14 +2104,22 @@ def analyze_compact_roots_with_cache(
             if local_cache_miss:
                 if local_identity is None:
                     raise RuntimeError("local cache identity disappeared")
-                local_identity_by_path[path.resolve()] = local_identity
+                normalized_local_path = path.resolve()
+                local_identity_by_path[normalized_local_path] = local_identity
+                local_cached_findings_by_path[normalized_local_path] = (
+                    local_cache_lookup.findings_by_bundle
+                )
             build_requests.append(
                 CompactProjectionBuildRequest(
                     source=projection_source,
                     missing_families=missing_families,
                     config=config,
                     local_detector_types=(
-                        partition.per_module_detector_types if local_cache_miss else ()
+                        detector_bundle_plan.missing_detector_types(
+                            local_cache_lookup.findings_by_bundle
+                        )
+                        if local_cache_miss
+                        else ()
                     ),
                     family_demands=(
                         ()
@@ -2057,7 +2188,14 @@ def analyze_compact_roots_with_cache(
         if local_identity is not None:
             module_findings = list(result.local_findings)
             local_findings.extend(module_findings)
-            analysis_cache.store(local_identity, module_findings)
+            cached_findings_by_bundle = local_cached_findings_by_path[normalized_path]
+            analysis_cache.store_per_module_detector_bundles(
+                local_identity,
+                detector_bundle_plan.merged_finding_bundles(
+                    cached_findings_by_bundle,
+                    module_findings,
+                ),
+            )
         projection_signatures = dict(result.runtime_projection_signatures)
         for family, projections in result.runtime_projections:
             projection_manifest.add_runtime(
@@ -2959,25 +3097,48 @@ def analyze_module_detector_types_with_cache(
     """Analyze one per-module shard through its exact persistent identity."""
 
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
-    identity = PerModuleAnalysisCacheIdentity.from_module(
+    identity = PerModuleAnalysisCacheFamilyIdentity.from_module(
         module,
         config,
-        detector_types,
         presentation_roots,
     )
-    cache_lookup = analysis_cache.load(identity)
+    detector_bundle_plan = PerModuleDetectorBundlePlan.from_detector_types(
+        detector_types
+    )
+    cache_lookup = analysis_cache.load_per_module_detector_bundles(
+        identity,
+        detector_bundle_plan.detector_registries,
+    )
     if cache_lookup.status is AnalysisCacheStatus.HIT:
         return IncrementalAnalysisResult(
-            list(cache_lookup.findings),
+            [
+                finding
+                for bundle_findings in cache_lookup.findings_by_bundle
+                if bundle_findings is not None
+                for finding in bundle_findings
+            ],
             AnalysisCacheStatus.HIT,
         )
-    findings = analyze_detector_types(
+    new_findings = analyze_detector_types(
         [module],
         config,
-        detector_types=detector_types,
+        detector_types=detector_bundle_plan.missing_detector_types(
+            cache_lookup.findings_by_bundle
+        ),
         analysis_workers=1,
     )
-    analysis_cache.store(identity, findings)
+    finding_bundles = detector_bundle_plan.merged_finding_bundles(
+        cache_lookup.findings_by_bundle,
+        new_findings,
+    )
+    analysis_cache.store_per_module_detector_bundles(
+        identity,
+        finding_bundles,
+    )
+    findings = SortedFindingsAuthority.sort(
+        detector_bundle_plan.findings(finding_bundles),
+        detector_types=detector_types,
+    )
     return IncrementalAnalysisResult(findings, cache_lookup.status)
 
 
@@ -3066,28 +3227,55 @@ class IncrementalAnalysisCacheResolver:
         findings: list[RefactorFinding] = []
         hit_count = 0
         missing_modules: list[ParsedModule] = []
-        missing_identities: list[PerModuleAnalysisCacheIdentity] = []
+        missing_identities: list[PerModuleAnalysisCacheFamilyIdentity] = []
+        missing_cached_findings: list[
+            tuple[tuple[RefactorFinding, ...] | None, ...]
+        ] = []
+        detector_bundle_plan = PerModuleDetectorBundlePlan.from_detector_types(
+            self._detector_partition.per_module_detector_types
+        )
+        missing_detector_types_by_module: list[tuple[type[IssueDetector], ...]] = []
         for module in self._local_detector_modules():
-            identity = PerModuleAnalysisCacheIdentity.from_module(
+            identity = PerModuleAnalysisCacheFamilyIdentity.from_module(
                 module,
                 self._config,
-                self._detector_partition.per_module_detector_types,
                 self._cache_identity.presentation_roots,
             )
-            cache_lookup = self._analysis_cache.load(identity)
+            cache_lookup = self._analysis_cache.load_per_module_detector_bundles(
+                identity,
+                detector_bundle_plan.detector_registries,
+            )
+            for cached_findings in cache_lookup.findings_by_bundle:
+                if cached_findings is not None:
+                    hit_count += 1
+                    findings.extend(cached_findings)
             if cache_lookup.status is AnalysisCacheStatus.HIT:
-                hit_count += 1
-                findings.extend(cache_lookup.findings)
                 continue
             missing_modules.append(module)
             missing_identities.append(identity)
+            missing_cached_findings.append(cache_lookup.findings_by_bundle)
+            missing_detector_types_by_module.append(
+                detector_bundle_plan.missing_detector_types(
+                    cache_lookup.findings_by_bundle
+                )
+            )
 
-        for identity, module_findings in zip(
+        for identity, cached_findings_by_bundle, module_findings in zip(
             missing_identities,
-            self._missing_per_module_findings(missing_modules),
+            missing_cached_findings,
+            self._missing_per_module_findings(
+                missing_modules,
+                missing_detector_types_by_module,
+            ),
             strict=True,
         ):
-            self._analysis_cache.store(identity, module_findings)
+            self._analysis_cache.store_per_module_detector_bundles(
+                identity,
+                detector_bundle_plan.merged_finding_bundles(
+                    cached_findings_by_bundle,
+                    module_findings,
+                ),
+            )
             findings.extend(module_findings)
 
         cache_status = (
@@ -3098,6 +3286,7 @@ class IncrementalAnalysisCacheResolver:
     def _missing_per_module_findings(
         self,
         missing_modules: list[ParsedModule],
+        detector_types_by_module: list[tuple[type[IssueDetector], ...]],
     ) -> list[list[RefactorFinding]]:
         if not missing_modules:
             return []
@@ -3109,8 +3298,8 @@ class IncrementalAnalysisCacheResolver:
             state = PerModuleDetectorShardWorkerState(
                 modules=tuple(missing_modules),
                 config=self._config,
-                detector_types=self._detector_partition.per_module_detector_types,
             )
+            tasks = tuple(enumerate(detector_types_by_module))
             with ProcessPoolExecutor(
                 max_workers=worker_plan.effective_worker_count,
                 mp_context=_analysis_process_pool_mp_context(),
@@ -3120,17 +3309,21 @@ class IncrementalAnalysisCacheResolver:
                 return list(
                     executor.map(
                         detect_per_module_shard_with_active_state,
-                        range(len(missing_modules)),
+                        tasks,
                         chunksize=worker_plan.process_map_chunksize,
                     )
                 )
         findings_by_module: list[list[RefactorFinding]] = []
-        for module in missing_modules:
+        for module, detector_types in zip(
+            missing_modules,
+            detector_types_by_module,
+            strict=True,
+        ):
             findings_by_module.append(
                 analyze_detector_types(
                     [module],
                     self._config,
-                    detector_types=self._detector_partition.per_module_detector_types,
+                    detector_types=detector_types,
                     analysis_workers=1,
                     semantic_descent_source=self._semantic_descent_source,
                 )

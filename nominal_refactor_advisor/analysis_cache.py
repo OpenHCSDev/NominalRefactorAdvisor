@@ -87,6 +87,14 @@ class AnalysisCacheLookup:
     findings: tuple[RefactorFinding, ...]
 
 
+@dataclass(frozen=True)
+class PerModuleDetectorBundleLookup:
+    """Aligned detector-bundle results loaded from one module cache container."""
+
+    status: AnalysisCacheStatus
+    findings_by_bundle: tuple[tuple[RefactorFinding, ...] | None, ...]
+
+
 def analysis_cache_lookup(
     status: AnalysisCacheStatus,
     findings: tuple[RefactorFinding, ...] = (),
@@ -760,19 +768,29 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
 
 
 @dataclass(frozen=True, kw_only=True)
-class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
-    """Invalidation identity for one module's per-module detector findings."""
+class PerModuleAnalysisCacheFamilyIdentity:
+    """Stable container identity for independently valid local detector bundles."""
 
+    config: DetectorConfigSignature
+    python_version: tuple[int, int]
     source_file: ModuleSourceSignature
+    presentation_roots: tuple[str, ...] = field(
+        default=(),
+        compare=False,
+        repr=False,
+    )
+    engine: AnalysisEngineSignature = field(
+        default_factory=AnalysisEngineSignature.current
+    )
+    schema: AnalysisCacheSchema = analysis_cache_schema
 
     @classmethod
     def from_module(
         cls,
         module: ParsedModule,
         config: DetectorConfig,
-        detector_types: tuple[type[IssueDetector], ...],
         presentation_roots: tuple[Path | str, ...] = (),
-    ) -> "PerModuleAnalysisCacheIdentity":
+    ) -> "PerModuleAnalysisCacheFamilyIdentity":
         effective_roots = (
             presentation_roots
             if presentation_roots
@@ -780,9 +798,6 @@ class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
         )
         return cls(
             config=detector_config_signature(config),
-            detector_registry=DetectorRegistrySignature.from_detector_types(
-                detector_types
-            ),
             python_version=(sys.version_info.major, sys.version_info.minor),
             source_file=ModuleSourceSignature.from_module(module, effective_roots),
             presentation_roots=presentation_root_texts(effective_roots),
@@ -797,11 +812,8 @@ class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
         is_package_init: bool,
         semantic_hash: str,
         config: DetectorConfig,
-        detector_types: tuple[type[IssueDetector], ...],
         presentation_roots: tuple[Path | str, ...] = (),
-    ) -> "PerModuleAnalysisCacheIdentity":
-        """Build an exact local-shard identity without materializing an AST."""
-
+    ) -> "PerModuleAnalysisCacheFamilyIdentity":
         effective_roots = (
             presentation_roots
             if presentation_roots
@@ -809,9 +821,6 @@ class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
         )
         return cls(
             config=detector_config_signature(config),
-            detector_registry=DetectorRegistrySignature.from_detector_types(
-                detector_types
-            ),
             python_version=(sys.version_info.major, sys.version_info.minor),
             source_file=ModuleSourceSignature(
                 path=checkout_relative_path(path, effective_roots),
@@ -928,7 +937,6 @@ class GlobalDetectorFamilyAnalysisCacheIdentity(AnalysisCacheEntryContext):
 
 AnalysisCacheEntryIdentity: TypeAlias = (
     AnalysisCacheIdentity
-    | PerModuleAnalysisCacheIdentity
     | ContextualModuleAnalysisCacheIdentity
     | GlobalDetectorAnalysisCacheIdentity
     | GlobalDetectorFamilyAnalysisCacheIdentity
@@ -1060,6 +1068,59 @@ class AnalysisFindingCacheChunkStreamHeader:
 
 
 @dataclass(frozen=True)
+class PerModuleDetectorFindingBundle(FindingCachePayloadValidationMixin):
+    """Findings owned by one independently invalidated detector-module bundle."""
+
+    detector_registry: DetectorRegistrySignature
+    findings: tuple[RefactorFinding, ...]
+
+
+@dataclass(frozen=True)
+class PerModuleDetectorFindingCachePayload:
+    """All current detector bundles for one exact source-module identity."""
+
+    identity: PerModuleAnalysisCacheFamilyIdentity
+    bundles: tuple[PerModuleDetectorFindingBundle, ...]
+
+    def lookup(
+        self,
+        requested_identity: PerModuleAnalysisCacheFamilyIdentity,
+        requested_registries: tuple[DetectorRegistrySignature, ...],
+    ) -> PerModuleDetectorBundleLookup:
+        if self.identity != requested_identity:
+            return PerModuleDetectorBundleLookup(
+                AnalysisCacheStatus.MISS,
+                tuple(None for _registry in requested_registries),
+            )
+        bundles_by_registry = {
+            bundle.detector_registry: bundle for bundle in self.bundles
+        }
+        aligned_findings: list[tuple[RefactorFinding, ...] | None] = []
+        hit_count = 0
+        for registry in requested_registries:
+            bundle = bundles_by_registry.get(registry)
+            if bundle is None or not bundle.has_valid_findings:
+                aligned_findings.append(None)
+                continue
+            hit_count += 1
+            aligned_findings.append(
+                _rebase_findings(
+                    bundle.findings,
+                    self.identity.presentation_roots,
+                    requested_identity.presentation_roots,
+                )
+            )
+        status = (
+            AnalysisCacheStatus.HIT
+            if hit_count == len(requested_registries)
+            else AnalysisCacheStatus.PARTIAL
+            if hit_count
+            else AnalysisCacheStatus.MISS
+        )
+        return PerModuleDetectorBundleLookup(status, tuple(aligned_findings))
+
+
+@dataclass(frozen=True)
 class AnalysisPartialFindingCachePayload(FindingCachePayloadValidationMixin):
     """Persisted evidence-local partial finding-cache payload."""
 
@@ -1141,6 +1202,7 @@ class AnalysisLatestFindingCachePayload(FindingCachePayloadValidationMixin):
 SerializableAnalysisCachePayload: TypeAlias = (
     AnalysisCachePayload
     | AnalysisFindingCacheEntryPayload
+    | PerModuleDetectorFindingCachePayload
     | AnalysisPartialFindingCachePayload
     | AnalysisLatestFindingCachePayload
 )
@@ -1176,6 +1238,14 @@ class AnalysisCacheStorage:
 
     def entry_path(self, identity: AnalysisCacheEntryIdentity) -> Path:
         return self.cache_file_path(f"{identity.cache_token}.pickle")
+
+    def per_module_detector_bundle_path(
+        self,
+        identity: PerModuleAnalysisCacheFamilyIdentity,
+    ) -> Path:
+        return self.cache_file_path(
+            f"{identity.cache_token}.per-module-detectors.pickle"
+        )
 
     def latest_path(self, family_identity: AnalysisCacheFamilyIdentity) -> Path:
         return self.cache_file_path(f"latest-{family_identity.cache_token}.pickle")
@@ -1222,6 +1292,7 @@ class AnalysisCacheStorage:
             (
                 dict,
                 AnalysisFindingCacheEntryPayload,
+                PerModuleDetectorFindingCachePayload,
                 AnalysisPartialFindingCachePayload,
                 AnalysisLatestFindingCachePayload,
             ),
@@ -1654,6 +1725,67 @@ class AnalysisFindingCache:
             return payload.lookup(identity)
         except CacheCheckoutPathError:
             return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+
+    def load_per_module_detector_bundles(
+        self,
+        identity: PerModuleAnalysisCacheFamilyIdentity,
+        detector_registries: tuple[DetectorRegistrySignature, ...],
+    ) -> PerModuleDetectorBundleLookup:
+        """Load independently valid detector bundles from one module container."""
+
+        storage = self.storage()
+        if storage is None:
+            return PerModuleDetectorBundleLookup(
+                AnalysisCacheStatus.DISABLED,
+                tuple(None for _registry in detector_registries),
+            )
+        payload = storage.load_serializable_payload(
+            storage.per_module_detector_bundle_path(identity)
+        ).payload
+        if not isinstance(payload, PerModuleDetectorFindingCachePayload):
+            return PerModuleDetectorBundleLookup(
+                AnalysisCacheStatus.MISS,
+                tuple(None for _registry in detector_registries),
+            )
+        try:
+            return payload.lookup(identity, detector_registries)
+        except CacheCheckoutPathError:
+            return PerModuleDetectorBundleLookup(
+                AnalysisCacheStatus.MISS,
+                tuple(None for _registry in detector_registries),
+            )
+
+    def store_per_module_detector_bundles(
+        self,
+        identity: PerModuleAnalysisCacheFamilyIdentity,
+        bundles: tuple[PerModuleDetectorFindingBundle, ...],
+    ) -> None:
+        """Atomically publish one source module's current detector bundles."""
+
+        storage = self.storage()
+        if storage is None:
+            return
+        try:
+            rebased_bundles = tuple(
+                PerModuleDetectorFindingBundle(
+                    detector_registry=bundle.detector_registry,
+                    findings=_rebase_findings(
+                        CachedFindingPayloadShape.require_findings(
+                            list(bundle.findings),
+                            cache_surface=PerModuleDetectorFindingCachePayload.__name__,
+                        ),
+                        identity.presentation_roots,
+                        identity.presentation_roots,
+                    ),
+                )
+                for bundle in bundles
+            )
+            storage.store_serializable_payload_atomic(
+                storage.per_module_detector_bundle_path(identity),
+                PerModuleDetectorFindingCachePayload(identity, rebased_bundles),
+            )
+        except (OSError, CacheCheckoutPathError):
+            return
 
     def store_chunks(
         self,
