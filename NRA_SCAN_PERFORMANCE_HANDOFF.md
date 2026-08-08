@@ -2366,3 +2366,36 @@ file takes the AST fallback) and all 1,244 OpenHCS production paths.  The next
 step is to derive this core directly instead of feeding sparse AST stubs back
 through the complete class collector, then wire it only behind declared target
 witness contracts and measure the full cold scan.
+
+### 2026-08-08 native-core and live-cache admission results
+
+The direct native core route was implemented in a disposable production-shaped
+prototype and rejected before promotion.  It exactly matched the demanded
+cached class payload on all 919 applicable DQDock context files, with the known
+incomplete-grammar generated file taking the AST fallback, but cost 13.511
+aggregate CPU seconds versus 14.891 for the existing class collector.  Since
+other residual families still require the Python AST, the maximum preparation
+payoff was only about 1.4 seconds; even adding the measured 2.5-second join
+closure cannot bridge the cold target.  The class-family patch was removed.
+
+A full saved-frontier locality inventory reinforces detector-level witnesses
+but also rules out target-only detector selection.  DQDock's report has four
+global detector contributors: carrier composition is target-local, while role
+surface, generic role tables, and distributed boundary require context.
+OpenHCS has four contextual global contributors (carrier composition, role
+guarded access, role surface, and distributed boundary), but evaluating only
+the target both misses valid stable IDs and creates false positives, including
+a semantic-inheritance finding suppressed by the complete repository graph.
+Any production selector therefore needs explicit context-promotion contracts;
+"run what fires locally" is unsound.
+
+The reported six-minute live DQDock regression is no longer reproducible.  On
+the current checkout, an exact cache-disabled focused scan completes all 252
+detectors with the same 12 findings in 31.186 internal seconds (25.231
+preparation and 5.955 analysis), restoring the historical approximately
+30-second cold behavior.  The first normal run into the benchmark cache takes
+33.632 seconds and publishes the exact aggregate.  An immediate unchanged run
+is an aggregate cache hit at 0.599 second.  Together with the earlier
+one-context-file frozen DQDock replay at 2.54 seconds and OpenHCS replay at 2.24
+seconds, this satisfies the few-second normal edit-loop target; exact cold
+preparation remains a separate structural optimization problem.
