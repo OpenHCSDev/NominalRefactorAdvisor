@@ -2619,6 +2619,31 @@ def test_private_reference_report_demand_skips_context_without_target_candidate(
     assert context_items[0].functions
 
 
+def test_public_bare_support_empty_demand_skips_context_collection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    source_path = package_root / "_support.py"
+    source = "def reusable_helper(value):\n    return value\n"
+    source_path.write_text(source, encoding="utf-8")
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    demand = systemic_detectors.PublicBareSupportProjectionDemand(
+        function_names=frozenset()
+    )
+    family = systemic_detectors.PublicBareSupportModuleProjectionFamily
+
+    assert family.collect_demanded(parsed_module, demand) == []
+    assert (
+        family.collect_demanded_source(
+            SourceModule(source_path, "_support", source),
+            NativePythonSyntaxIndex.from_source(source),
+            demand,
+        )
+        == []
+    )
+
+
 def test_native_definition_headers_preserve_decorators_lines_and_full_span() -> None:
     source = (
         "class Outer:\n"

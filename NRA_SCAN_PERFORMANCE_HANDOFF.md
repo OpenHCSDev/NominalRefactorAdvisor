@@ -2434,3 +2434,12 @@ re-import the complete detector registry.  Two repeated exact DQDock runs take
 seconds with all 45 findings.  Non-Linux platforms retain their default process
 context.  This is a cross-repository cold improvement, but not the final
 orders-of-magnitude result; residual demanded AST families remain dominant.
+
+An attempted native inheritance-method collector was rejected despite exact
+DQDock parity: reparsing all target-compatible method fragments costs 15.38
+aggregate seconds versus 4.78 for the single module AST pass.  The production
+route was removed.  Conversely, an empty public-bare-support target demand now
+short-circuits before its full visitor; the DQDock target has no such support
+definition, and the next exact run completed in 23.21 seconds with the same 12
+findings.  This is retained as demand-contract cleanup, not claimed as the
+dominant solution.

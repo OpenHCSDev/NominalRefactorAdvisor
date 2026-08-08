@@ -6160,6 +6160,11 @@ def _collect_public_bare_support_ast_demand(
     parsed_module: ParsedModule,
     demand: object,
 ) -> list[object]:
+    if (
+        isinstance(demand, PublicBareSupportProjectionDemand)
+        and not demand.function_names
+    ):
+        return []
     return list(
         _project_public_bare_support_demand(
             tuple(PublicBareSupportModuleProjectionFamily.collect(parsed_module)),
@@ -6168,11 +6173,25 @@ def _collect_public_bare_support_ast_demand(
     )
 
 
+def _collect_public_bare_support_source_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    del source_module, syntax_index
+    if not isinstance(demand, PublicBareSupportProjectionDemand):
+        raise TypeError("public-bare-support demand has the wrong authority type")
+    return [] if not demand.function_names else None
+
+
 PublicBareSupportModuleProjectionFamily.report_demand_builder = staticmethod(
     _public_bare_support_projection_demand
 )
 PublicBareSupportModuleProjectionFamily.ast_demand_collector = staticmethod(
     _collect_public_bare_support_ast_demand
+)
+PublicBareSupportModuleProjectionFamily.source_demand_collector = staticmethod(
+    _collect_public_bare_support_source_demand
 )
 PublicBareSupportModuleProjectionFamily.cached_demand_projector = staticmethod(
     _project_public_bare_support_demand
