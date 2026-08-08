@@ -1429,14 +1429,16 @@ def _store_collected_family_content_signature(
     cache_dir: Path,
     identity: CollectedFamilyCacheIdentity,
     items: tuple[object, ...],
-) -> None:
+) -> str | None:
     try:
+        signature = collected_family_items_content_signature(items)
         _collected_family_content_signature_path(cache_dir, identity).write_text(
-            collected_family_items_content_signature(items),
+            signature,
             encoding="ascii",
         )
+        return signature
     except (OSError, pickle.PickleError, TypeError, AttributeError):
-        pass
+        return None
 
 
 def _load_cached_collected_family_items(
@@ -1922,10 +1924,10 @@ def store_cached_collected_family_items_for_source_signature(
     family_cache_dir: Path | None,
     family: type[CollectedFamily[ShapeItemT]],
     items: tuple[ShapeItemT, ...],
-) -> None:
+) -> str | None:
     """Publish source-native compact facts under the existing cache identity."""
 
-    _store_cached_collected_family_items_for_identity(
+    return _store_cached_collected_family_items_for_identity(
         cache_dir=family_cache_dir,
         identity=_collected_family_cache_identity_for_source_signature(
             path=path,
@@ -1947,10 +1949,10 @@ def store_cached_demanded_collected_family_items_for_source_signature(
     family: type[CollectedFamily[ShapeItemT]],
     demand: object,
     items: tuple[ShapeItemT, ...],
-) -> None:
+) -> str | None:
     """Persist a focused view without publishing it as the complete family."""
 
-    _store_cached_collected_family_items_for_identity(
+    return _store_cached_collected_family_items_for_identity(
         cache_dir=family_cache_dir,
         identity=_collected_family_demand_cache_identity_for_source_signature(
             path=path,
@@ -1970,9 +1972,9 @@ def _store_cached_collected_family_items_for_identity(
     identity: CollectedFamilyCacheIdentity,
     family: type[CollectedFamily[ShapeItemT]],
     items: tuple[ShapeItemT, ...],
-) -> None:
+) -> str | None:
     if cache_dir is None or retains_python_ast(items):
-        return
+        return None
     payload = CollectedFamilyCachePayload(
         identity=identity,
         items=items,
@@ -1986,13 +1988,13 @@ def _store_cached_collected_family_items_for_identity(
             else identity.schema.max_payload_bytes
         )
         if len(payload_bytes) > payload_max_bytes:
-            return
+            return None
         cache_dir.mkdir(parents=True, exist_ok=True)
         with _collected_family_cache_path(cache_dir, identity).open("wb") as handle:
             handle.write(payload_bytes)
-        _store_collected_family_content_signature(cache_dir, identity, items)
+        return _store_collected_family_content_signature(cache_dir, identity, items)
     except (OSError, pickle.PickleError, TypeError, AttributeError):
-        return
+        return None
 
 
 @lru_cache(maxsize=None)

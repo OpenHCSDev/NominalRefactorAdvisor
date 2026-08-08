@@ -880,6 +880,7 @@ class CompactProjectionBuildRequest:
     config: DetectorConfig
     local_detector_types: tuple[type[IssueDetector], ...] = ()
     family_demands: tuple[tuple[type[CollectedFamily], object], ...] = ()
+    bundle_families: tuple[type[CollectedFamily], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -888,6 +889,8 @@ class CompactProjectionBuildResult:
 
     path: Path
     runtime_projections: tuple[tuple[type[CollectedFamily], tuple[object, ...]], ...]
+    runtime_projection_signatures: tuple[tuple[type[CollectedFamily], str], ...]
+    cache_bundle_complete: bool
     local_findings: tuple[RefactorFinding, ...]
     local_analysis_seconds: float
     total_seconds: float
@@ -908,6 +911,17 @@ def build_compact_projection_shard(
         source_policy=source.source_policy,
     )
     runtime_projections: list[tuple[type[CollectedFamily], tuple[object, ...]]] = []
+    runtime_projection_signatures: list[tuple[type[CollectedFamily], str]] = []
+
+    def add_runtime_projection(
+        family: type[CollectedFamily],
+        projections: tuple[object, ...],
+        signature: str | None,
+    ) -> None:
+        runtime_projections.append((family, projections))
+        if signature is not None:
+            runtime_projection_signatures.append((family, signature))
+
     local_findings: tuple[RefactorFinding, ...] = ()
     local_analysis_seconds = 0.0
     ast_families = list(request.missing_families)
@@ -926,7 +940,18 @@ def build_compact_projection_shard(
         )
         if projections is None:
             continue
-        runtime_projections.append((family, tuple(projections)))
+        add_runtime_projection(
+            family,
+            tuple(projections),
+            load_cached_demanded_collected_family_content_signature_for_source_signature(
+                path=source.path,
+                module_name=source.module_name,
+                source_signature=source.source_signature,
+                family_cache_dir=source.family_cache_dir,
+                family=family,
+                demand=demand,
+            ),
+        )
         ast_families.remove(family)
     # A mixed shard still needs the Python AST.  Do not pay for a second native
     # parse until source coverage can replace that shard's AST construction.
@@ -980,16 +1005,18 @@ def build_compact_projection_shard(
                         f"{family.__name__} source projection retains an AST"
                     )
                 if family not in demand_by_family:
-                    store_cached_collected_family_items_for_source_signature(
-                        path=source.path,
-                        module_name=source.module_name,
-                        source_signature=source.source_signature,
-                        family_cache_dir=source.family_cache_dir,
-                        family=family,
-                        items=projections,
+                    projection_signature = (
+                        store_cached_collected_family_items_for_source_signature(
+                            path=source.path,
+                            module_name=source.module_name,
+                            source_signature=source.source_signature,
+                            family_cache_dir=source.family_cache_dir,
+                            family=family,
+                            items=projections,
+                        )
                     )
                 else:
-                    store_cached_demanded_collected_family_items_for_source_signature(
+                    projection_signature = store_cached_demanded_collected_family_items_for_source_signature(
                         path=source.path,
                         module_name=source.module_name,
                         source_signature=source.source_signature,
@@ -998,7 +1025,7 @@ def build_compact_projection_shard(
                         demand=demand,
                         items=projections,
                     )
-                runtime_projections.append((family, projections))
+                add_runtime_projection(family, projections, projection_signature)
                 ast_families.remove(family)
     if ast_families or request.local_detector_types:
         modules = parser.parsed_source_paths((source.path,))
@@ -1040,31 +1067,48 @@ def build_compact_projection_shard(
             # The family cache remains the authority for later scans.  Keep the
             # value already constructed by this worker for the current join so
             # the parent does not immediately reopen every newly written file.
-            runtime_projections.append((family, projections))
             if family in demand_by_family:
-                store_cached_demanded_collected_family_items_for_source_signature(
-                    path=source.path,
-                    module_name=source.module_name,
-                    source_signature=source.source_signature,
-                    family_cache_dir=source.family_cache_dir,
-                    family=family,
-                    demand=demand,
-                    items=projections,
+                projection_signature = (
+                    store_cached_demanded_collected_family_items_for_source_signature(
+                        path=source.path,
+                        module_name=source.module_name,
+                        source_signature=source.source_signature,
+                        family_cache_dir=source.family_cache_dir,
+                        family=family,
+                        demand=demand,
+                        items=projections,
+                    )
                 )
             else:
-                store_cached_collected_family_items_for_source_signature(
-                    path=source.path,
-                    module_name=source.module_name,
-                    source_signature=source.source_signature,
-                    family_cache_dir=source.family_cache_dir,
-                    family=family,
-                    items=projections,
+                projection_signature = (
+                    store_cached_collected_family_items_for_source_signature(
+                        path=source.path,
+                        module_name=source.module_name,
+                        source_signature=source.source_signature,
+                        family_cache_dir=source.family_cache_dir,
+                        family=family,
+                        items=projections,
+                    )
                 )
+            add_runtime_projection(family, projections, projection_signature)
         del module
+    cache_bundle_complete = bool(
+        request.bundle_families
+        and not request.family_demands
+        and collected_family_cache_bundle_is_complete_for_source_signature(
+            path=source.path,
+            module_name=source.module_name,
+            source_signature=source.source_signature,
+            family_cache_dir=source.family_cache_dir,
+            families=request.bundle_families,
+        )
+    )
     release_module_analysis_memory(collect_cycles=False)
     return CompactProjectionBuildResult(
         path=source.path,
         runtime_projections=tuple(runtime_projections),
+        runtime_projection_signatures=tuple(runtime_projection_signatures),
+        cache_bundle_complete=cache_bundle_complete,
         local_findings=local_findings,
         local_analysis_seconds=local_analysis_seconds,
         total_seconds=perf_counter() - started,
@@ -1151,6 +1195,7 @@ class BoundedCompactProjectionManifest:
         family: type[CollectedFamily],
         path: Path,
         projections: tuple[object, ...],
+        projection_signature: str | None = None,
     ) -> None:
         for projection in projections:
             if CompactGlobalProjectionAccumulator._retains_ast(projection):
@@ -1158,7 +1203,9 @@ class BoundedCompactProjectionManifest:
         key = family, str(path.resolve())
         self.runtime_projections[key] = projections
         self._source_projection_signatures[key] = (
-            collected_family_items_content_signature(projections)
+            projection_signature
+            if projection_signature is not None
+            else collected_family_items_content_signature(projections)
         )
 
     def cache_entry_exists(
@@ -1879,6 +1926,7 @@ def analyze_compact_roots_with_cache(
                             if family in report_family_demands
                         )
                     ),
+                    bundle_families=projection_manifest.projection_families,
                 )
             )
 
@@ -1936,14 +1984,16 @@ def analyze_compact_roots_with_cache(
             module_findings = list(result.local_findings)
             local_findings.extend(module_findings)
             analysis_cache.store(local_identity, module_findings)
+        projection_signatures = dict(result.runtime_projection_signatures)
         for family, projections in result.runtime_projections:
             projection_manifest.add_runtime(
                 family,
                 result.path,
                 projections,
+                projection_signatures.get(family),
             )
         projection_source = source_by_path.get(normalized_path)
-        if projection_source is not None:
+        if projection_source is not None and not result.cache_bundle_complete:
             projection_manifest.cache_bundle_is_complete(projection_source)
     gc.collect()
     preparation_seconds = perf_counter() - started - local_analysis_seconds

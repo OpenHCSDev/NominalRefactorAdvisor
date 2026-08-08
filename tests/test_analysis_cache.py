@@ -3414,6 +3414,10 @@ def test_mixed_projection_shard_uses_only_python_ast(
                 runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
             ),
             config=DetectorConfig(),
+            bundle_families=(
+                RegistrationShapeFamily,
+                runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+            ),
         )
     )
 
@@ -3421,6 +3425,11 @@ def test_mixed_projection_shard_uses_only_python_ast(
         RegistrationShapeFamily,
         runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
     ]
+    assert result.cache_bundle_complete
+    assert dict(result.runtime_projection_signatures) == {
+        family: ast_tools_module.collected_family_items_content_signature(projections)
+        for family, projections in result.runtime_projections
+    }
     assert (
         ast_tools_module.load_cached_collected_family_content_signature_for_source_signature(
             path=module_path,
