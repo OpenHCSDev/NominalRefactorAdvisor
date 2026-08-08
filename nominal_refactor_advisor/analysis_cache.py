@@ -20,6 +20,7 @@ from .ast_tools import (
     ParsedModule,
     PythonSourcePathPolicy,
     python_source_paths_for_roots,
+    semantic_python_source_hash,
     structural_ast_hash,
 )
 from .cache_checkout import (
@@ -56,7 +57,7 @@ analysis_cache_schema = AnalysisCacheSchema()
 class SourceFileSignatureCacheSchema:
     """Nominal schema identity for persisted source-content signature entries."""
 
-    version: int = 2
+    version: int = 3
 
 
 source_file_signature_cache_schema = SourceFileSignatureCacheSchema()
@@ -297,6 +298,7 @@ class CachedSourceFileSignature:
     mtime_ns: int
     size: int
     source_hash: str
+    semantic_hash: str | None = None
 
     @classmethod
     def from_path(
@@ -1492,6 +1494,42 @@ class SourceFileSignatureCache:
         self.entries_by_path[cache_key] = updated_signature
         self._dirty = True
         return updated_signature.source_file_signature()
+
+    def semantic_source_hash(
+        self,
+        path: Path,
+        *,
+        source: str | None = None,
+    ) -> str:
+        """Return the comment-insensitive hash behind local detector shards."""
+
+        path_stat = path.stat()
+        cache_key = str(lexical_absolute_path(path))
+        cached_signature = self.entries_by_path.get(cache_key)
+        if (
+            cached_signature is not None
+            and cached_signature.matches(path, path_stat)
+            and cached_signature.semantic_hash is not None
+        ):
+            return cached_signature.semantic_hash
+        if source is None:
+            source = path.read_text(encoding="utf-8")
+        semantic_hash = semantic_python_source_hash(source)
+        source_hash = (
+            cached_signature.source_hash
+            if cached_signature is not None
+            and cached_signature.matches(path, path_stat)
+            else hashlib.blake2s(source.encode("utf-8"), digest_size=16).hexdigest()
+        )
+        self.entries_by_path[cache_key] = CachedSourceFileSignature(
+            path=cache_key,
+            mtime_ns=path_stat.st_mtime_ns,
+            size=path_stat.st_size,
+            source_hash=source_hash,
+            semantic_hash=semantic_hash,
+        )
+        self._dirty = True
+        return semantic_hash
 
     @property
     def entries_by_path(self) -> dict[str, CachedSourceFileSignature]:

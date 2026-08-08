@@ -6959,6 +6959,33 @@ def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(
     assert read_paths == [second_path.resolve()]
 
 
+def test_source_signature_cache_reuses_lazy_semantic_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "mod.py"
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    cache = AnalysisFindingCache(tmp_path / "analysis")
+    source_cache = cache.source_signature_cache()
+    assert source_cache is not None
+    source_cache.source_file_signatures((module_path,))
+    expected_hash = source_cache.semantic_source_hash(module_path)
+    source_cache.store_if_dirty()
+
+    def unexpected_semantic_hash(_source: str) -> str:
+        raise AssertionError("unchanged semantic source should not be rehashed")
+
+    monkeypatch.setattr(
+        analysis_cache_module,
+        "semantic_python_source_hash",
+        unexpected_semantic_hash,
+    )
+    warm_source_cache = cache.source_signature_cache()
+    assert warm_source_cache is not None
+
+    assert warm_source_cache.semantic_source_hash(module_path) == expected_hash
+
+
 def test_changed_path_root_assignment_returns_absolute_owner_for_relative_root(
     tmp_path: Path,
     monkeypatch,

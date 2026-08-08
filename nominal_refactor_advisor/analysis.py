@@ -1802,13 +1802,20 @@ def analyze_compact_roots_with_cache(
             local_identity = None
             local_cache_lookup = None
             if include_local_findings and partition.per_module_detector_types:
-                if source is None:
-                    source = path.read_text(encoding="utf-8")
+                if source_signature_cache is not None:
+                    local_semantic_hash = source_signature_cache.semantic_source_hash(
+                        path,
+                        source=source,
+                    )
+                else:
+                    if source is None:
+                        source = path.read_text(encoding="utf-8")
+                    local_semantic_hash = semantic_python_source_hash(source)
                 local_identity = PerModuleAnalysisCacheIdentity.from_source(
                     path=path,
                     module_name=module_identity.import_name,
                     is_package_init=module_identity.is_package_init,
-                    semantic_hash=semantic_python_source_hash(source),
+                    semantic_hash=local_semantic_hash,
                     config=config,
                     detector_types=partition.per_module_detector_types,
                     presentation_roots=roots,
@@ -1862,6 +1869,9 @@ def analyze_compact_roots_with_cache(
                     ),
                 )
             )
+
+    if source_signature_cache is not None:
+        source_signature_cache.store_if_dirty()
 
     build_results: list[CompactProjectionBuildResult] = []
     build_started = perf_counter()
