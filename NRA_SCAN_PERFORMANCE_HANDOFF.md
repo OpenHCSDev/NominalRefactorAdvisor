@@ -2293,3 +2293,50 @@ that currently build a complete AST before projecting it, sharing each module's
 native syntax index across consumers.  Measure that route first on saved
 frontiers, and promote only if its preparation-time collapse can plausibly
 bridge the remaining cold gap.
+
+## 2026-08-08 cold report-boundary reassessment
+
+The production-scope profile was rerun with the CLI's exact no-tests policy;
+an earlier standalone probe accidentally used the library default and included
+test trees, so its private-reference attribution is not a production baseline.
+The corrected frozen DQDock inventory is 920 paths.  A sequential demanded
+replay takes 85.843 seconds: 11.840 parsing and 74.003 family collection.
+Class projection is the largest family at 14.891 aggregate seconds, followed by
+role surface at 7.503, nominal bypass at 5.646, distributed boundary at 5.607,
+export dictionaries at 5.441, and repeated builders at 5.146.  Twelve workers
+return the unchanged 12-finding report in repeated 26.66--27.25 second wall
+runs, with approximately 19.7--20.3 seconds of preparation and 5.3--6.3 seconds
+of analysis.
+
+The proposed mixed native-plus-AST route failed its admission gate again under
+that exact production policy.  On the 48 largest modules, existing demanded
+native collectors plus their shared parse cost 11.492 aggregate seconds versus
+10.447 for the equivalent AST collectors, and native role/builder projections
+had 13 object mismatches.  No mixed production path was enabled.  A second
+prototype replaced 919 unit process-pool receipts with 12 size-balanced batches;
+it returned the same findings in 26.81 seconds wall, indistinguishable from and
+slightly slower than the unit-shard baseline, so it was removed.  Broader eager
+class-facet presence pruning similarly returned the same findings in 26.70
+seconds and was removed rather than adding a manually synchronized facet roster
+without an end-to-end win.
+
+Private-reference report demand now has one retained exact proof: when the
+target contributes no private function fact, context cannot create a
+report-scoped private-function candidate, so its context graph is empty.  This
+applies to the DQDock target and is covered by a positive context fixture.
+DQDock still returns all 12 findings, and OpenHCS still returns all 45 findings
+across its 15 observed detector IDs in 24.77 seconds wall.  The change is useful
+contract groundwork but moved DQDock wall time by only about 0.6 second, within
+run noise, and is not claimed as the cold solution.
+
+The join profile makes the remaining architecture requirement explicit.  Of
+the 12 DQDock findings, context contributes only distributed-boundary, generic
+role-table, and role-surface findings; the carrier-composition finding is target
+local.  OpenHCS likewise has a broad local report but only role-guarded access,
+distributed boundary, and role-surface findings need repository context.  Yet
+the cold path constructs all 25 families for all 69 compact global detectors.
+The next viable route is detector-level target-witness authority: stage complete
+target facts, prove which detector candidates can place evidence in the report,
+and construct native/class-header context only for those witnesses.  Defaults
+must remain conservative until each detector declares its witness; a hardcoded
+DQDock four-detector shortcut is not an exact production solution.

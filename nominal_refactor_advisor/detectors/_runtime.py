@@ -10387,11 +10387,18 @@ class CompactPrivateReferenceModuleProjectionFamily(
     CollectedFamily[CompactPrivateReferenceModuleProjection]
 ):
     item_type = CompactPrivateReferenceModuleProjection
-    # Private-helper findings can connect a target caller to a context helper
-    # through a transitive call graph.  Its measured collection cost is below
-    # one aggregate CPU second, so retain the eager graph until a correlated
-    # closure demand demonstrates material survivor collapse.
-    report_presence_predicate = staticmethod(lambda items, config: True)
+    # Every private-reference finding is anchored by a private function fact.
+    # Context can change reference counts, callers, and placement for a target
+    # function, but it cannot create a report-scoped candidate when the target
+    # contributes no private function.  Avoid building the otherwise eager
+    # repository reference graph in that exact empty-target case.
+    report_presence_predicate = staticmethod(
+        lambda items, config: any(
+            projection.functions
+            for projection in items
+            if isinstance(projection, CompactPrivateReferenceModuleProjection)
+        )
+    )
 
     @classmethod
     def collect(

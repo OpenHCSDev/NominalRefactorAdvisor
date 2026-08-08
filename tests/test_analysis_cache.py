@@ -2587,6 +2587,38 @@ def test_report_presence_demand_skips_context_only_single_family_facts(
     assert family.collect_demanded(parsed_module, present_demand) is None
 
 
+def test_private_reference_report_demand_skips_context_without_target_candidate(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    context_path = package_root / "context.py"
+    target_path.write_text("def public():\n    return 1\n", encoding="utf-8")
+    context_path.write_text(
+        "def _context_helper(value):\n"
+        "    first = value + 1\n"
+        "    second = first * 2\n"
+        "    return second\n",
+        encoding="utf-8",
+    )
+    modules = {
+        module.path.name: module
+        for module in parse_python_modules(package_root, use_parse_cache=False)
+    }
+    family = runtime_detectors.CompactPrivateReferenceModuleProjectionFamily
+    target_items = tuple(family.collect(modules["target.py"]))
+    context_items = tuple(family.collect(modules["context.py"]))
+
+    demand = family.report_demand(target_items, DetectorConfig())
+
+    assert isinstance(demand, ast_tools_module.CollectedFamilyPresenceDemand)
+    assert demand.include_context is False
+    assert family.collect_demanded(modules["context.py"], demand) == []
+    assert family.project_cached_demand(context_items, demand) == ()
+    assert context_items[0].functions
+
+
 def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
     tmp_path: Path,
 ) -> None:
