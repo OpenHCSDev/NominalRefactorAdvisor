@@ -1196,11 +1196,188 @@ def _collect_inheritance_method_shape_ast_demand(
     )
 
 
+@lru_cache(maxsize=32)
+def _inheritance_method_coarse_signatures(
+    fiber_keys: frozenset[_MethodShapeFiberKey],
+) -> dict[tuple[bool, int], tuple[tuple[str, tuple[str, ...], int], ...]]:
+    grouped: dict[tuple[bool, int], set[tuple[str, tuple[str, ...], int]]] = (
+        defaultdict(set)
+    )
+    for is_private, param_count, fingerprint in fiber_keys:
+        normalized = ast.literal_eval(fingerprint)
+        grouped[is_private, int(param_count)].add(
+            (
+                normalized[0],
+                tuple(statement[0] for statement in normalized[3]),
+                len(normalized[4]),
+            )
+        )
+    return {key: tuple(sorted(signatures)) for key, signatures in grouped.items()}
+
+
+def _native_possible_ast_statement_kinds(node: object) -> frozenset[str] | None:
+    node_type = node.type
+    exact = {
+        "return_statement": "Return",
+        "if_statement": "If",
+        "while_statement": "While",
+        "raise_statement": "Raise",
+        "assert_statement": "Assert",
+        "delete_statement": "Delete",
+        "pass_statement": "Pass",
+        "break_statement": "Break",
+        "continue_statement": "Continue",
+        "import_statement": "Import",
+        "import_from_statement": "ImportFrom",
+        "future_import_statement": "ImportFrom",
+        "global_statement": "Global",
+        "nonlocal_statement": "Nonlocal",
+        "match_statement": "Match",
+        "type_alias_statement": "TypeAlias",
+    }
+    if node_type in exact:
+        return frozenset((exact[node_type],))
+    if node_type == "for_statement":
+        return frozenset(("For", "AsyncFor"))
+    if node_type == "with_statement":
+        return frozenset(("With", "AsyncWith"))
+    if node_type == "try_statement":
+        return frozenset(("Try", "TryStar"))
+    if node_type == "function_definition":
+        return frozenset(("FunctionDef", "AsyncFunctionDef"))
+    if node_type == "class_definition":
+        return frozenset(("ClassDef",))
+    if node_type == "decorated_definition":
+        definition_types = {
+            child.type for child in node.named_children if child.type != "decorator"
+        }
+        kinds: set[str] = set()
+        if "function_definition" in definition_types:
+            kinds.update(("FunctionDef", "AsyncFunctionDef"))
+        if "class_definition" in definition_types:
+            kinds.add("ClassDef")
+        return frozenset(kinds) if kinds else None
+    if node_type != "expression_statement":
+        return None
+    first_child = next(iter(node.named_children), None)
+    if first_child is None:
+        return frozenset(("Expr",))
+    if first_child.type == "assignment":
+        return frozenset(("Assign", "AnnAssign"))
+    if first_child.type == "augmented_assignment":
+        return frozenset(("AugAssign",))
+    return frozenset(("Expr",))
+
+
+def _native_function_matches_inheritance_coarse_signature(
+    syntax_index: NativePythonSyntaxIndex,
+    function_node: object,
+    signatures: tuple[tuple[str, tuple[str, ...], int], ...],
+) -> bool:
+    body = function_node.child_by_field_name("body")
+    statements = tuple(
+        child
+        for child in (() if body is None else body.named_children)
+        if child.type != "comment"
+    )
+    decorated = function_node.parent
+    decorator_count = (
+        sum(child.type == "decorator" for child in decorated.named_children)
+        if decorated is not None and decorated.type == "decorated_definition"
+        else 0
+    )
+    function_kind = (
+        "AsyncFunctionDef"
+        if syntax_index.source_for(function_node).lstrip().startswith(b"async ")
+        else "FunctionDef"
+    )
+    for expected_kind, expected_statements, expected_decorators in signatures:
+        if (
+            expected_kind != function_kind
+            or expected_decorators != decorator_count
+            or len(expected_statements) != len(statements)
+        ):
+            continue
+        if all(
+            possible_kinds is None or expected in possible_kinds
+            for expected, possible_kinds in zip(
+                expected_statements,
+                map(_native_possible_ast_statement_kinds, statements),
+                strict=True,
+            )
+        ):
+            return True
+    return False
+
+
+def _collect_inheritance_method_shape_source_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    if not isinstance(demand, InheritanceMethodShapeProjectionDemand):
+        raise TypeError("inheritance-method demand has the wrong authority type")
+    if not syntax_index.is_complete:
+        return None
+    coarse_signatures = _inheritance_method_coarse_signatures(demand.fiber_keys)
+    if not coarse_signatures:
+        return []
+    shapes: list[MethodShape] = []
+    for function_node in sorted(
+        syntax_index.common_captures().get("function", ()),
+        key=lambda node: (node.start_byte, -node.end_byte),
+    ):
+        if syntax_index.direct_enclosing_class(function_node) is None:
+            continue
+        method_name = syntax_index.declared_name(function_node)
+        arguments = syntax_index.arguments_for(function_node)
+        signatures = coarse_signatures.get(
+            (_is_private_symbol_name(method_name), len(arguments.args))
+        )
+        if (
+            signatures is None
+            or not _native_function_matches_inheritance_coarse_signature(
+                syntax_index,
+                function_node,
+                signatures,
+            )
+        ):
+            continue
+        method = syntax_index.function_for(function_node)
+        class_name = ".".join(
+            syntax_index.declared_name(scope)
+            for scope in syntax_index.named_scope_nodes(function_node)
+            if scope.type == "class_definition"
+        )
+        shape = MethodShape(
+            file_path=str(source_module.path),
+            class_name=class_name,
+            method_name=method.name,
+            lineno=method.lineno,
+            statement_count=len(method.body),
+            is_private=_is_private_symbol_name(method.name),
+            param_count=len(method.args.args),
+            decorators=tuple(
+                ast.unparse(decorator) for decorator in method.decorator_list
+            ),
+            fingerprint_value=fingerprint_function(method),
+            statement_texts_value=tuple(
+                ast.unparse(statement) for statement in method.body
+            ),
+        )
+        if _compact_method_shape_fiber_key(shape) in demand.fiber_keys:
+            shapes.append(shape)
+    return list(shapes)
+
+
 InheritanceMethodShapeFamily.report_demand_builder = staticmethod(
     _inheritance_method_shape_projection_demand
 )
 InheritanceMethodShapeFamily.ast_demand_collector = staticmethod(
     _collect_inheritance_method_shape_ast_demand
+)
+InheritanceMethodShapeFamily.source_demand_collector = staticmethod(
+    _collect_inheritance_method_shape_source_demand
 )
 InheritanceMethodShapeFamily.cached_demand_projector = staticmethod(
     _project_inheritance_method_shape_demand

@@ -2743,6 +2743,64 @@ def test_report_class_header_core_safety_is_detector_declared() -> None:
         role_surface_detectors.RoleSurfaceDriftDetector.compact_report_class_header_core_safe
         is True
     )
+
+
+def test_native_inheritance_method_demand_matches_cached_fibers(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    context_path = package_root / "context.py"
+    target_path.write_text(
+        "class Target:\n"
+        "    def project(self, value):\n"
+        "        normalized = value + 1\n"
+        "        return normalized\n"
+        "\n"
+        "    @classmethod\n"
+        "    async def choose(cls, value):\n"
+        "        if value:\n"
+        "            return value\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    context_source = (
+        "class Context:\n"
+        "    def normalize(self, item):\n"
+        "        result = item + 1\n"
+        "        return result\n"
+        "\n"
+        "    @classmethod\n"
+        "    async def select(cls, item):\n"
+        "        if item:\n"
+        "            return item\n"
+        "        return None\n"
+        "\n"
+        "    def unrelated(self, item):\n"
+        "        for value in item:\n"
+        "            print(value)\n"
+    )
+    context_path.write_text(context_source, encoding="utf-8")
+    modules = {
+        module.path.name: module
+        for module in parse_python_modules(package_root, use_parse_cache=False)
+    }
+    family = systemic_detectors.InheritanceMethodShapeFamily
+    target_items = tuple(family.collect(modules["target.py"]))
+    context_items = tuple(family.collect(modules["context.py"]))
+    demand = family.report_demand(target_items, DetectorConfig())
+
+    expected = family.project_cached_demand(context_items, demand)
+    actual = family.collect_demanded_source(
+        SourceModule(context_path, "context", context_source),
+        NativePythonSyntaxIndex.from_source(context_source),
+        demand,
+    )
+
+    assert actual is not None
+    assert tuple(actual) == expected
+    assert [item.method_name for item in actual] == ["normalize", "select"]
     assert (
         abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_report_class_header_core_safe
         is False
