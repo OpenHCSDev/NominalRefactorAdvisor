@@ -2340,3 +2340,29 @@ target facts, prove which detector candidates can place evidence in the report,
 and construct native/class-header context only for those witnesses.  Defaults
 must remain conservative until each detector declares its witness; a hardcoded
 DQDock four-detector shortcut is not an exact production solution.
+
+### Class-core frontier admission evidence
+
+A saved-frontier prototype now gives the witness route a cross-repository
+structural admission result.  It seeds a class closure with target classes,
+classes owning demanded role declarations or enclosing demanded role uses, and
+all of their ancestors.  DQDock's context class graph falls from 16,933 to
+1,033 classes and OpenHCS falls from 6,285 to 766.  Replaying all class and role
+detectors on those closures preserves the exact stable target finding IDs in
+both repositories.  The 34-detector DQDock class join falls from 2.591 seconds
+to 0.065 second; the corresponding pruned role join is 0.022 second.  OpenHCS
+pruned class and role joins take 0.058 and 0.029 second.  These are local replay
+numbers, not yet end-to-end production claims.
+
+An intentionally minimal class identity/base projection failed correctness: it
+created an OpenHCS semantic-inheritance false positive.  Retaining direct class
+assignments, method signatures and decorators, registration metadata, and class
+span while removing four body-derived facets restores the exact DQDock and
+OpenHCS reports.  The native header authority needed for this representation
+now preserves decorated nested class and async-function headers plus canonical
+AST line spans.  A whole-inventory parity replay matches every cached canonical
+header projection on all 920 DQDock production paths (one incomplete-grammar
+file takes the AST fallback) and all 1,244 OpenHCS production paths.  The next
+step is to derive this core directly instead of feeding sparse AST stubs back
+through the complete class collector, then wire it only behind declared target
+witness contracts and measure the full cold scan.

@@ -83,6 +83,14 @@ class NativePythonSyntaxIndex:
         repr=False,
         compare=False,
     )
+    _function_headers_by_node: dict[Node, ast.FunctionDef | ast.AsyncFunctionDef] = (
+        field(
+            default_factory=dict,
+            init=False,
+            repr=False,
+            compare=False,
+        )
+    )
 
     @classmethod
     def from_source(cls, source: str) -> "NativePythonSyntaxIndex":
@@ -320,25 +328,80 @@ class NativePythonSyntaxIndex:
         cached = self._class_headers_by_node.get(node)
         if cached is not None:
             return cached
-        body = node.child_by_field_name("body")
-        if body is None:
-            raise ValueError("class definition has no body")
-        header = self.source_bytes[node.start_byte : body.start_byte].decode("utf-8")
-        source = f"{header}pass"
-        if node.start_point.column:
-            source = "if True:\n" + " " * node.start_point.column + source
-            wrapper = ast.parse(source).body[0]
-            if not isinstance(wrapper, ast.If) or not wrapper.body:
-                raise TypeError("class header wrapper did not parse as an if block")
-            class_node = wrapper.body[0]
-            ast.increment_lineno(class_node, node.start_point.row - 1)
-        else:
-            class_node = ast.parse(source).body[0]
-            ast.increment_lineno(class_node, node.start_point.row)
+        class_node = self._definition_header_for(node)
         if not isinstance(class_node, ast.ClassDef):
             raise TypeError("class header did not parse as a class")
+        class_node.end_lineno = self._definition_end_lineno(node)
         self._class_headers_by_node[node] = class_node
         return class_node
+
+    def function_header_for(
+        self,
+        node: Node,
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        """Parse one function signature/decorator header with a stub body."""
+
+        cached = self._function_headers_by_node.get(node)
+        if cached is not None:
+            return cached
+        function_node = self._definition_header_for(node)
+        if not isinstance(function_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            raise TypeError("function header did not parse as a function")
+        function_node.end_lineno = self._definition_end_lineno(node)
+        self._function_headers_by_node[node] = function_node
+        return function_node
+
+    def _definition_header_for(self, node: Node) -> ast.stmt:
+        body = node.child_by_field_name("body")
+        if body is None:
+            raise ValueError(f"{node.type} has no body")
+        statement_node = (
+            node.parent
+            if node.parent is not None and node.parent.type == "decorated_definition"
+            else node
+        )
+        header = self.source_bytes[statement_node.start_byte : body.start_byte].decode(
+            "utf-8"
+        )
+        source = f"{header}pass"
+        if statement_node.start_point.column:
+            source = "if True:\n" + " " * statement_node.start_point.column + source
+            wrapper = ast.parse(source).body[0]
+            if not isinstance(wrapper, ast.If) or not wrapper.body:
+                raise TypeError(
+                    "definition header wrapper did not parse as an if block"
+                )
+            definition = wrapper.body[0]
+            ast.increment_lineno(definition, statement_node.start_point.row - 1)
+            return definition
+        definition = ast.parse(source).body[0]
+        ast.increment_lineno(definition, statement_node.start_point.row)
+        return definition
+
+    @staticmethod
+    def _definition_end_lineno(node: Node) -> int:
+        """Match Python AST spans without walking an entire definition body.
+
+        Tree-sitter includes trailing comments in a definition's extent while
+        ``ast`` ends at the final syntax token. Follow only the rightmost
+        non-comment branch so compact header extraction preserves the canonical
+        AST line without paying a body-sized traversal.
+        """
+
+        current = node
+        while current.children:
+            child = next(
+                (
+                    candidate
+                    for candidate in reversed(current.children)
+                    if candidate.type != "comment"
+                ),
+                None,
+            )
+            if child is None:
+                break
+            current = child
+        return current.end_point.row + 1
 
     @staticmethod
     def direct_enclosing_class(node: Node) -> Node | None:

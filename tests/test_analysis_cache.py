@@ -2619,6 +2619,46 @@ def test_private_reference_report_demand_skips_context_without_target_candidate(
     assert context_items[0].functions
 
 
+def test_native_definition_headers_preserve_decorators_lines_and_full_span() -> None:
+    source = (
+        "class Outer:\n"
+        "    @dataclass(frozen=True)\n"
+        "    class Inner(Base, metaclass=RegistryMeta):\n"
+        "        @classmethod\n"
+        "        @abstractmethod\n"
+        "        async def choose(cls, value: int) -> str:\n"
+        "            return str(value)\n"
+        "        # The canonical AST span excludes trailing comments.\n"
+        "    # The enclosing class span excludes them too.\n"
+    )
+    syntax_index = NativePythonSyntaxIndex.from_source(source)
+    classes = syntax_index.common_captures()["class"]
+    functions = syntax_index.common_captures()["function"]
+    inner = next(
+        node for node in classes if syntax_index.declared_name(node) == "Inner"
+    )
+    choose = next(
+        node for node in functions if syntax_index.declared_name(node) == "choose"
+    )
+
+    class_header = syntax_index.class_header_for(inner)
+    function_header = syntax_index.function_header_for(choose)
+
+    assert class_header.lineno == 3
+    assert class_header.end_lineno == 7
+    assert ast.unparse(class_header.decorator_list[0]) == "dataclass(frozen=True)"
+    assert [ast.unparse(base) for base in class_header.bases] == ["Base"]
+    assert ast.unparse(class_header.keywords[0].value) == "RegistryMeta"
+    assert function_header.lineno == 6
+    assert function_header.end_lineno == 7
+    assert [ast.unparse(item) for item in function_header.decorator_list] == [
+        "classmethod",
+        "abstractmethod",
+    ]
+    assert function_header.args.args[-1].annotation is not None
+    assert isinstance(function_header, ast.AsyncFunctionDef)
+
+
 def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
     tmp_path: Path,
 ) -> None:
