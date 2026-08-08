@@ -3385,11 +3385,12 @@ def test_mixed_projection_shard_uses_only_python_ast(
         "    return {'name': item.name, 'score': item.score}\n"
     )
     module_path.write_text(source, encoding="utf-8")
+    family_cache_dir = tmp_path / "family-cache"
     projection_source = analysis_module.CompactProjectionCacheSource(
         path=module_path,
         module_name="mixed",
         source_signature=ast_tools_module.python_source_cache_signature(source),
-        family_cache_dir=None,
+        family_cache_dir=family_cache_dir,
         scan_root=package_root,
         cache_dir=None,
         use_parse_cache=False,
@@ -3420,6 +3421,16 @@ def test_mixed_projection_shard_uses_only_python_ast(
         RegistrationShapeFamily,
         runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
     ]
+    assert (
+        ast_tools_module.load_cached_collected_family_content_signature_for_source_signature(
+            path=module_path,
+            module_name="mixed",
+            source_signature=projection_source.source_signature,
+            family_cache_dir=family_cache_dir,
+            family=runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+        )
+        is not None
+    )
 
 
 def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
@@ -3529,7 +3540,7 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
             **bundle_kwargs
         )
     )
-    assert marker_path.read_bytes() == b"complete-v2\n"
+    assert marker_path.read_bytes() == b"complete-v3\n"
 
     def unexpected_family_stat(**kwargs):
         del kwargs

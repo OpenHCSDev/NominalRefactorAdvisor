@@ -6671,12 +6671,9 @@ def _compact_descendant_key_values(
 
 def _compact_matched_latent_roster_key_attr(
     roster: CompactLatentRosterObservation,
-    descendants: tuple[CompactIndexedClass, ...],
+    key_values_by_attr: tuple[tuple[str, tuple[str, ...]], ...],
 ) -> tuple[str, tuple[float, tuple[str, ...], str | None]] | None:
-    for key_attr_name in _compact_semantic_key_attr_names(descendants):
-        key_values = _compact_descendant_key_values(descendants, key_attr_name)
-        if len(key_values) < 2:
-            continue
+    for key_attr_name, key_values in key_values_by_attr:
         match = LATENT_ROSTER_PROJECTION_AUTHORITY.match(
             roster.member_names, key_values, roster.roster_name
         )
@@ -6708,6 +6705,17 @@ def _compact_latent_implementation_roster_candidates(
         concrete_simple_names = sorted_tuple(
             descendant.simple_name for descendant in descendants
         )
+        key_values_by_attr = tuple(
+            (key_attr_name, key_values)
+            for key_attr_name in _compact_semantic_key_attr_names(descendants)
+            if len(
+                key_values := _compact_descendant_key_values(
+                    descendants,
+                    key_attr_name,
+                )
+            )
+            >= 2
+        )
         for roster in context.latent_rosters:
             key_attr_name: str | None = None
             match = LATENT_ROSTER_PROJECTION_AUTHORITY.match(
@@ -6720,7 +6728,10 @@ def _compact_latent_implementation_roster_candidates(
                 roster.roster_name,
             )
             if match is None:
-                key_match = _compact_matched_latent_roster_key_attr(roster, descendants)
+                key_match = _compact_matched_latent_roster_key_attr(
+                    roster,
+                    key_values_by_attr,
+                )
                 if key_match is not None:
                     key_attr_name, match = key_match
             if match is None:

@@ -1051,6 +1051,15 @@ def build_compact_projection_shard(
                     demand=demand,
                     items=projections,
                 )
+            else:
+                store_cached_collected_family_items_for_source_signature(
+                    path=source.path,
+                    module_name=source.module_name,
+                    source_signature=source.source_signature,
+                    family_cache_dir=source.family_cache_dir,
+                    family=family,
+                    items=projections,
+                )
         del module
     release_module_analysis_memory(collect_cycles=False)
     return CompactProjectionBuildResult(

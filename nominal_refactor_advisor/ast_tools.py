@@ -1763,6 +1763,7 @@ def _collected_family_cache_bundle_marker_path(
 ) -> Path:
     bundle_payload = repr(
         (
+            "collected-family-bundle-v3",
             str(path.resolve()),
             module_name,
             source_signature,
@@ -1777,7 +1778,7 @@ def _collected_family_cache_bundle_marker_path(
 
 def _collected_family_cache_bundle_marker_is_complete(marker_path: Path) -> bool:
     try:
-        return marker_path.read_bytes() == b"complete-v2\n"
+        return marker_path.read_bytes() == b"complete-v3\n"
     except OSError:
         return False
 
@@ -1785,7 +1786,7 @@ def _collected_family_cache_bundle_marker_is_complete(marker_path: Path) -> bool
 def _store_collected_family_cache_bundle_marker(marker_path: Path) -> None:
     try:
         marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.write_bytes(b"complete-v2\n")
+        marker_path.write_bytes(b"complete-v3\n")
     except OSError:
         pass
 
