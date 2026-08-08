@@ -2538,3 +2538,22 @@ preparation, 6.03 analysis).  Semantic work was not on the mixed worker pool's
 critical path, while the extra preflight join was.  The production prototype
 was removed.  Resume only as part of a shared-event collector or after the
 detector candidate-seed contracts remove the competing dominant families.
+
+An exact one-sided native fingerprint screen was tested for the dominant
+inheritance-method promotion query.  In addition to the existing privacy,
+arity, function-kind, statement-kind, and decorator gate, it compared counts
+of fingerprint-preserved calls, attributes, subscripts, comprehensions,
+lambdas, awaits, conditional expressions, and named expressions.  The vector
+matched all 72 DQDock target methods and reduced 7,189 coarse DQDock context
+candidates to zero; full cached-frontier replay had no mismatches across 919
+DQDock and 1,243 OpenHCS context files (one known incomplete-grammar fallback
+on DQDock).  Despite eliminating every fragment parse on the representative
+frontiers, the exact fresh-cache DQDock scan remained 23.31 seconds with all 12
+findings, versus the 23.18-second control.  The source collector is dormant
+inside the still-mixed AST shard, so strengthening it cannot affect the cold
+critical path.  Removing the two inheritance consumers outright also failed
+as an architectural proxy (30.89 seconds) because it changed the remaining
+shard composition rather than eliminating the repeated-family traversal.  The
+feature screen and threshold patch were removed.  Do not further optimize an
+individual source collector until detector selection or a shared AST/native
+event authority removes that family from the mixed shard.
