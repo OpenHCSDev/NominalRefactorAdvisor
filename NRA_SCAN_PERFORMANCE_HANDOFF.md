@@ -2469,3 +2469,16 @@ DQDock and 0.31 on OpenHCS; including the already-shared native parse gives
 2.94 and 1.96 seconds.  This collector is another necessary all-native
 dependency.  It does not activate mixed dispatch or change the current cold
 wall time until the final demanded AST families are eliminated.
+
+The public-API/private-delegate family also has an exact hybrid source demand
+path.  A simple terminal-name gate was rejected because it retained 841 of 919
+DQDock context files and 1,022 of 1,243 OpenHCS files.  The promoted structural
+path resolves top-level imports and demanded external call chains directly from
+the shared native tree.  Wrapper classification still falls back to the full
+AST whenever a module declares a function whose name could match a demanded
+wrapper, because its abstract-hook exclusion depends on complete local
+inheritance.  Full cached-frontier replay has zero mismatches while requiring
+fallback for only 130 DQDock files (including the known grammar fallback) and
+92 OpenHCS files.  Native projection beyond the shared parse costs 0.62 and
+0.82 aggregate seconds respectively.  This preserves the single AST authority
+for wrapper semantics while sharply reducing the future residual AST frontier.

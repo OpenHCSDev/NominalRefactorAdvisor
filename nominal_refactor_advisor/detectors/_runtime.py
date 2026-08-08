@@ -16487,11 +16487,182 @@ def _collect_public_api_private_delegate_ast_demand(
     )
 
 
+def _native_attribute_chain(
+    syntax_index: NativePythonSyntaxIndex,
+    node: Node | None,
+) -> tuple[str, ...] | None:
+    if node is None:
+        return None
+    if node.type == "identifier":
+        return (syntax_index.source_for(node).decode("utf-8"),)
+    if node.type == "parenthesized_expression":
+        children = node.named_children
+        return (
+            _native_attribute_chain(syntax_index, children[0])
+            if len(children) == 1
+            else None
+        )
+    if node.type != "attribute":
+        return None
+    owner = _native_attribute_chain(
+        syntax_index,
+        node.child_by_field_name("object"),
+    )
+    attribute = node.child_by_field_name("attribute")
+    if owner is None or attribute is None:
+        return None
+    return (*owner, syntax_index.source_for(attribute).decode("utf-8"))
+
+
+def _native_import_aliases_for_delegate_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> dict[str, str]:
+    import_statements = tuple(
+        syntax_index.statement_for(node)
+        for node in syntax_index.tree.root_node.named_children
+        if node.type in {"import_statement", "import_from_statement"}
+    )
+    import_module = ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=list(import_statements), type_ignores=[]),
+        source=source_module.source,
+    )
+    from ..class_index import _module_import_aliases
+
+    return _module_import_aliases(import_module)
+
+
+def _native_delegate_callsite_symbol(
+    syntax_index: NativePythonSyntaxIndex,
+    call_node: Node,
+) -> str:
+    scopes = list(syntax_index.named_scope_nodes(call_node))
+    current = call_node.parent
+    while current is not None:
+        if current.type == "decorator":
+            decorated = current.parent
+            if decorated is not None and decorated.type == "decorated_definition":
+                definition = next(
+                    (
+                        child
+                        for child in decorated.named_children
+                        if child.type in {"class_definition", "function_definition"}
+                    ),
+                    None,
+                )
+                if definition is not None:
+                    scopes.append(definition)
+            break
+        current = current.parent
+    function_name = next(
+        (
+            syntax_index.declared_name(scope)
+            for scope in reversed(scopes)
+            if scope.type == "function_definition"
+        ),
+        "<module>",
+    )
+    class_name = next(
+        (
+            syntax_index.declared_name(scope)
+            for scope in reversed(scopes)
+            if scope.type == "class_definition"
+        ),
+        None,
+    )
+    owner = function_name if class_name is None else f"{class_name}.{function_name}"
+    return f"{owner}:call"
+
+
+def _collect_public_api_private_delegate_source_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    if not isinstance(demand, CompactPublicApiPrivateDelegateProjectionDemand):
+        raise TypeError("public-delegate demand has the wrong authority type")
+    if not syntax_index.is_complete:
+        return None
+    terminal_names = frozenset(
+        symbol.rsplit(".", 1)[-1] for symbol in demand.target_symbols
+    )
+    if any(
+        syntax_index.declared_name(function) in terminal_names
+        for function in syntax_index.common_captures().get("function", ())
+    ):
+        # Wrapper classification depends on complete local inheritance.  Keep
+        # the exact AST authority for the small possible-wrapper frontier.
+        return None
+    import_aliases = _native_import_aliases_for_delegate_demand(
+        source_module,
+        syntax_index,
+    )
+    callsites_by_target: dict[str, set[ResolvedExternalCallsite]] = defaultdict(set)
+    for call in syntax_index.common_captures().get("call", ()):
+        parts = _native_attribute_chain(
+            syntax_index,
+            call.child_by_field_name("function"),
+        )
+        if parts is None:
+            continue
+        first, *rest = parts
+        alias_target = import_aliases.get(first)
+        if alias_target is None:
+            continue
+        target = ".".join((alias_target, *rest)) if rest else alias_target
+        if not any(
+            _delegate_demand_symbols_match(target, symbol)
+            for symbol in demand.target_symbols
+        ):
+            continue
+        callsites_by_target[target].add(
+            ResolvedExternalCallsite(
+                module_name=source_module.module_name,
+                location=SourceLocation(
+                    str(source_module.path),
+                    call.start_point.row + 1,
+                    _native_delegate_callsite_symbol(syntax_index, call),
+                ),
+            )
+        )
+    if not callsites_by_target:
+        return []
+    return [
+        PublicApiPrivateDelegateModuleFacts(
+            file_path=str(source_module.path),
+            module_name=source_module.module_name,
+            top_level_symbol_lines=(),
+            wrappers=(),
+            callsites_by_target=tuple(
+                (
+                    target,
+                    sorted_tuple(
+                        callsites,
+                        key=lambda item: (
+                            item.location.file_path,
+                            item.location.line,
+                            item.location.symbol,
+                            item.module_name,
+                        ),
+                    ),
+                )
+                for target, callsites in sorted(callsites_by_target.items())
+            ),
+        )
+    ]
+
+
 CompactPublicApiPrivateDelegateModuleProjectionFamily.report_demand_builder = (
     staticmethod(_public_api_private_delegate_projection_demand)
 )
 CompactPublicApiPrivateDelegateModuleProjectionFamily.ast_demand_collector = (
     staticmethod(_collect_public_api_private_delegate_ast_demand)
+)
+CompactPublicApiPrivateDelegateModuleProjectionFamily.source_demand_collector = (
+    staticmethod(_collect_public_api_private_delegate_source_demand)
 )
 CompactPublicApiPrivateDelegateModuleProjectionFamily.cached_demand_projector = (
     staticmethod(_project_public_api_private_delegate_demand)

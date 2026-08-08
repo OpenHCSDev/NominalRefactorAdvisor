@@ -2847,6 +2847,79 @@ def test_native_remaining_systemic_demand_matches_selected_references(
     assert actual[0].reference_summaries_by_symbol == (
         ("PipelineService", 2, ("<module>", "Consumer.run")),
     )
+
+
+def test_native_public_delegate_demand_matches_imported_callsites(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    context_path = package_root / "context.py"
+    target_path.write_text(
+        "from pkg.library import public_api\n"
+        "\n"
+        "result = public_api()\n",
+        encoding="utf-8",
+    )
+    context_source = (
+        "from pkg.library import public_api as invoke\n"
+        "\n"
+        "class Runner:\n"
+        "    def run(self):\n"
+        "        return invoke()\n"
+    )
+    context_path.write_text(context_source, encoding="utf-8")
+    modules = {
+        module.path.name: module
+        for module in parse_python_modules(package_root, use_parse_cache=False)
+    }
+    family = runtime_detectors.CompactPublicApiPrivateDelegateModuleProjectionFamily
+    target_items = tuple(family.collect(modules["target.py"]))
+    context_items = tuple(family.collect(modules["context.py"]))
+    demand = family.report_demand(target_items, DetectorConfig())
+
+    expected = family.project_cached_demand(context_items, demand)
+    actual = family.collect_demanded_source(
+        SourceModule(context_path, "context", context_source),
+        NativePythonSyntaxIndex.from_source(context_source),
+        demand,
+    )
+
+    assert actual is not None
+    assert tuple(actual) == expected
+    assert actual[0].callsites_by_target[0][0] == "pkg.library.public_api"
+    assert actual[0].callsites_by_target[0][1][0].location.symbol == "Runner.run:call"
+
+
+def test_native_public_delegate_demand_falls_back_for_possible_wrapper(
+    tmp_path: Path,
+) -> None:
+    target_source = "from pkg.library import public_api\nresult = public_api()\n"
+    context_source = "def public_api(value):\n    return value\n"
+    target_path = tmp_path / "target.py"
+    context_path = tmp_path / "context.py"
+    target_path.write_text(target_source, encoding="utf-8")
+    context_path.write_text(context_source, encoding="utf-8")
+    target_module = next(
+        module
+        for module in parse_python_modules(tmp_path, use_parse_cache=False)
+        if module.path == target_path
+    )
+    family = runtime_detectors.CompactPublicApiPrivateDelegateModuleProjectionFamily
+    demand = family.report_demand(
+        tuple(family.collect(target_module)),
+        DetectorConfig(),
+    )
+
+    assert (
+        family.collect_demanded_source(
+            SourceModule(context_path, "context", context_source),
+            NativePythonSyntaxIndex.from_source(context_source),
+            demand,
+        )
+        is None
+    )
     assert (
         abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_report_class_header_core_safe
         is False
