@@ -287,6 +287,11 @@ def _collect_remaining_systemic_ast_demand(
     parsed_module: ParsedModule,
     demand: object,
 ) -> list[object]:
+    if (
+        isinstance(demand, CompactRemainingSystemicProjectionDemand)
+        and not any(name in parsed_module.source for name in demand.infrastructure_names)
+    ):
+        return []
     return list(
         _project_remaining_systemic_demand(
             tuple(
@@ -6375,7 +6380,10 @@ def _collect_public_bare_support_ast_demand(
 ) -> list[object]:
     if (
         isinstance(demand, PublicBareSupportProjectionDemand)
-        and not demand.function_names
+        and (
+            not demand.function_names
+            or not any(name in parsed_module.source for name in demand.function_names)
+        )
     ):
         return []
     return list(

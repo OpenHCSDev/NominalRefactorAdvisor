@@ -1690,27 +1690,56 @@ def _ast_demanded_role_surface_projection_items(
 ) -> list[CompactRoleSurfaceModuleProjection]:
     if not isinstance(demand, CompactRoleSurfaceProjectionDemand):
         raise TypeError("role-surface projection demand has the wrong authority type")
+    local_field_names = frozenset(
+        field_name
+        for field_name in demand.field_names
+        if field_name in parsed_module.source
+    )
+    module_axis_source = " ".join(
+        parsed_module.path.with_suffix("").parts
+    ).casefold()
+    folded_source = parsed_module.source.casefold()
+    has_generic_demand = bool(demand.generic_axis_tokens) and any(
+        token in folded_source or token in module_axis_source
+        for token in demand.generic_axis_tokens
+    )
+    if has_generic_demand and demand.generic_case_tokens:
+        has_generic_demand = (
+            sum(token in folded_source for token in demand.generic_case_tokens)
+            >= demand.minimum_generic_case_count
+        )
     return [
         CompactRoleSurfaceModuleProjection(
-            declarations=tuple(
-                declaration
-                for declaration in _role_surface_class_field_declarations(parsed_module)
-                if declaration.field_name in demand.field_names
-            ),
-            possible_use_sites=_role_surface_use_sites(
-                parsed_module,
-                demand.field_names,
-            ),
-            generic_role_case_table_sites=tuple(
-                site
-                for site in _generic_role_case_table_sites_with_minimum(
-                    parsed_module,
-                    1,
+            declarations=(
+                tuple(
+                    declaration
+                    for declaration in _role_surface_class_field_declarations(
+                        parsed_module
+                    )
+                    if declaration.field_name in local_field_names
                 )
-                if set(site.broad_semantic_axis_tokens)
-                & set(demand.generic_axis_tokens)
-                and len(set(site.case_tokens) & set(demand.generic_case_tokens))
-                >= demand.minimum_generic_case_count
+                if local_field_names
+                else ()
+            ),
+            possible_use_sites=(
+                _role_surface_use_sites(parsed_module, local_field_names)
+                if local_field_names
+                else ()
+            ),
+            generic_role_case_table_sites=(
+                tuple(
+                    site
+                    for site in _generic_role_case_table_sites_with_minimum(
+                        parsed_module,
+                        1,
+                    )
+                    if set(site.broad_semantic_axis_tokens)
+                    & set(demand.generic_axis_tokens)
+                    and len(set(site.case_tokens) & set(demand.generic_case_tokens))
+                    >= demand.minimum_generic_case_count
+                )
+                if has_generic_demand
+                else ()
             ),
         )
     ]

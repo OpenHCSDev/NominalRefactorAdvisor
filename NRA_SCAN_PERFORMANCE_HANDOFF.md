@@ -2557,3 +2557,36 @@ shard composition rather than eliminating the repeated-family traversal.  The
 feature screen and threshold patch were removed.  Do not further optimize an
 individual source collector until detector selection or a shared AST/native
 event authority removes that family from the mixed shard.
+
+### 2026-08-08 demanded-AST source gates
+
+The retained mixed-AST path now applies exact one-sided source gates before six
+target-demanded context collectors.  Role-surface declarations and uses run
+only when a demanded field is present, generic role tables run only when their
+demanded axis and minimum case-token count are possible, and role-guarded class
+surfaces run only when a demanded role name is present.  Remaining-systemic,
+public-bare-support, and public/private-delegate visitors likewise return
+immediately when no demanded terminal name occurs.  These checks only reject
+modules that cannot produce an item accepted by the existing cached-demand
+projector; they do not introduce a second projection authority.
+
+The nominal-bypass AST demand collector now derives its accepted dispatch
+seeds first.  If a context module has neither an `isinstance` scatter nor a
+repeated cross-class method template, it no longer constructs wrapper chains,
+composition signals, or context-local variant surfaces that the demand
+projector would discard.  If a seed is present, the same existing collectors
+construct the ancillary evidence.  A focused regression test makes that
+consumer ordering explicit.
+
+Two fresh-cache DQDock runs preserve all 12 stable findings at 21.86 and 21.55
+seconds wall, versus the retained 23.18-second control.  A fresh OpenHCS run
+preserves all 45 findings at 21.33 seconds, versus the retained approximately
+22.09-second control.  This is a repeatable cross-repository critical-path
+cleanup, but only a roughly 3--7% cold improvement and not the final structural
+solution.  The target-witness selector remains the measured stronger route.
+
+A raw demanded-callee screen for repeated builders was rejected without a
+production patch.  The DQDock target demands 39 callee names, including broad
+tokens such as `any`, `values`, and `cls`; at least one occurs in 843 of 919
+context files and 32.0 of 32.15 MB of context source.  It cannot collapse the
+frontier enough to affect the remaining cold gap.

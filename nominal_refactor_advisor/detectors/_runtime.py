@@ -4132,7 +4132,12 @@ def _ast_demanded_role_guarded_surface_projection(
     if not isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand):
         raise TypeError("role-guarded demand has the wrong authority type")
     surfaces: dict[str, set[str]] = defaultdict(set)
-    if demand.role_type_names:
+    demanded_simple_names = frozenset(
+        name.rsplit(".", 1)[-1] for name in demand.role_type_names
+    )
+    if demand.role_type_names and any(
+        name in parsed_module.source for name in demanded_simple_names
+    ):
         for node in ast.walk(parsed_module.module):
             if not isinstance(node, ast.ClassDef):
                 continue
@@ -14203,12 +14208,29 @@ def _collect_nominal_bypass_ast_demand(
     parsed_module: ParsedModule,
     demand: object,
 ) -> list[object]:
-    return list(
-        _project_nominal_bypass_demand(
-            tuple(CompactNominalBypassModuleProjectionFamily.collect(parsed_module)),
-            demand,
-        )
+    if not isinstance(demand, CompactNominalBypassProjectionDemand):
+        raise TypeError("nominal-bypass demand has the wrong authority type")
+    isinstance_scatters = (
+        _compact_isinstance_family_scatter_candidates(parsed_module)
+        if "isinstance" in parsed_module.source
+        else ()
     )
+    repeated_templates = _cross_class_small_method_template_candidates(parsed_module)
+    if not isinstance_scatters and not repeated_templates:
+        return []
+    return [
+        CompactNominalBypassModuleProjection(
+            module_name=parsed_module.module_name,
+            file_path=str(parsed_module.path),
+            isinstance_scatters=isinstance_scatters,
+            repeated_templates=repeated_templates,
+            wrapper_chains=_wrapper_chain_candidates(parsed_module),
+            composition_signals=_cancelable_composition_signals_for_module(
+                parsed_module
+            ),
+            variant_method_surfaces=(),
+        )
+    ]
 
 
 CompactNominalBypassModuleProjectionFamily.report_demand_builder = staticmethod(
@@ -16475,6 +16497,12 @@ def _collect_public_api_private_delegate_ast_demand(
     parsed_module: ParsedModule,
     demand: object,
 ) -> list[object]:
+    if isinstance(demand, CompactPublicApiPrivateDelegateProjectionDemand):
+        terminal_names = frozenset(
+            symbol.rsplit(".", 1)[-1] for symbol in demand.target_symbols
+        )
+        if not any(name in parsed_module.source for name in terminal_names):
+            return []
     return list(
         _project_public_api_private_delegate_demand(
             tuple(

@@ -6241,6 +6241,49 @@ def test_role_surface_projection_reuses_visitor_traversal_and_active_path(
     assert all(isinstance(root, ast.Name) for root in walked_roots)
 
 
+def test_nominal_bypass_ast_demand_skips_context_without_dispatch_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "context.py"
+    module_path.write_text(
+        "def unrelated(value):\n"
+        "    return value + 1\n",
+        encoding="utf-8",
+    )
+    module = parse_python_modules(tmp_path, use_parse_cache=False)[0]
+
+    def unexpected_collection(
+        *_args: object, **_kwargs: object
+    ) -> tuple[object, ...]:
+        raise AssertionError("context-only ancillary facets must not be collected")
+
+    monkeypatch.setattr(
+        runtime_detectors,
+        "_wrapper_chain_candidates",
+        unexpected_collection,
+    )
+    monkeypatch.setattr(
+        runtime_detectors,
+        "_cancelable_composition_signals_for_module",
+        unexpected_collection,
+    )
+    monkeypatch.setattr(
+        runtime_detectors,
+        "_variant_method_surfaces",
+        unexpected_collection,
+    )
+
+    actual = (
+        runtime_detectors.CompactNominalBypassModuleProjectionFamily.collect_demanded(
+            module,
+            runtime_detectors.CompactNominalBypassProjectionDemand(),
+        )
+    )
+
+    assert actual == []
+
+
 def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
