@@ -670,8 +670,17 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     @classmethod
     def registered_detector_types(cls) -> tuple[type["IssueDetector"], ...]:
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
+        return cls._ordered_registered_detector_types(tuple(detector_registry.values()))
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _ordered_registered_detector_types(
+        detector_types: tuple[type["IssueDetector"], ...],
+    ) -> tuple[type["IssueDetector"], ...]:
+        """Sort one immutable registry roster once per process."""
+
         return sorted_tuple(
-            detector_registry.values(),
+            detector_types,
             key=lambda item: (
                 item.detector_priority,
                 item.__module__,
@@ -697,14 +706,16 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def ssot_authority_detector_ids(cls) -> frozenset[str]:
-        return cls._detector_ids_for_role(
-            lambda detector_type: detector_type.ssot_authority_boundary
+        return cls._detector_ids_for_role_attribute(
+            cls.registered_detector_types(),
+            "ssot_authority_boundary",
         )
 
     @classmethod
     def semantic_mirror_detector_ids(cls) -> frozenset[str]:
-        return cls._detector_ids_for_role(
-            lambda detector_type: detector_type.semantic_mirror_role
+        return cls._detector_ids_for_role_attribute(
+            cls.registered_detector_types(),
+            "semantic_mirror_role",
         )
 
     @classmethod
@@ -716,16 +727,17 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
             if detector_id is not None and detector_type.semantic_mirror_role
         }
 
-    @classmethod
-    def _detector_ids_for_role(
-        cls,
-        role_predicate: Callable[[type["IssueDetector"]], bool],
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _detector_ids_for_role_attribute(
+        detector_types: tuple[type["IssueDetector"], ...],
+        role_attribute: str,
     ) -> frozenset[str]:
         return frozenset(
             detector_id
-            for detector_type in cls.registered_detector_types()
+            for detector_type in detector_types
             for detector_id in (detector_type.effective_detector_id(),)
-            if detector_id is not None and role_predicate(detector_type)
+            if detector_id is not None and bool(getattr(detector_type, role_attribute))
         )
 
     @classmethod

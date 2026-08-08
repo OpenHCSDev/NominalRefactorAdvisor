@@ -5865,6 +5865,13 @@ def _main_without_deadline() -> int:
                 default_detector_types_for_analysis()
             ).ast_retaining_context_detector_types
         ):
+            requested_compact_semantic_graph = (
+                json_payload_profile.sections.semantic_descent_graph
+            )
+            if requested_compact_semantic_graph:
+                cached_semantic_descent_graph = (
+                    semantic_descent_cache_context.cached_graph()
+                )
             compact_result = analyze_compact_roots_with_cache(
                 roots,
                 config,
@@ -5875,15 +5882,17 @@ def _main_without_deadline() -> int:
                 source_policy=source_policy,
                 report_scope=path_scope,
                 include_semantic_descent_graph=(
-                    json_payload_profile.sections.semantic_descent_graph
+                    requested_compact_semantic_graph
+                    and cached_semantic_descent_graph is None
                 ),
             )
             modules = []
             findings = compact_result.findings
-            cached_semantic_descent_graph = compact_result.semantic_descent_graph
-            if cached_semantic_descent_graph is not None:
+            built_semantic_descent_graph = compact_result.semantic_descent_graph
+            if built_semantic_descent_graph is not None:
+                cached_semantic_descent_graph = built_semantic_descent_graph
                 semantic_descent_cache_context.store_exact_graph(
-                    cached_semantic_descent_graph
+                    built_semantic_descent_graph
                 )
             parse_seconds = round(compact_result.preparation_seconds, 3)
             analysis_seconds = round(compact_result.analysis_seconds, 3)

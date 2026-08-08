@@ -6,6 +6,7 @@ import hashlib
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import cached_property
 
 from .codemod import (
     CodemodActionability,
@@ -175,6 +176,25 @@ class DescentCertificateFindingAuthority:
 
     graph: SemanticDescentGraph
 
+    @cached_property
+    def certificates_by_projection_id(
+        self,
+    ) -> dict[str, tuple[DescentCertificate, ...]]:
+        grouped: dict[str, list[DescentCertificate]] = defaultdict(list)
+        for certificate in self.graph.certificates:
+            grouped[certificate.edge.projection_id].append(certificate)
+        return {
+            projection_id: tuple(certificates)
+            for projection_id, certificates in grouped.items()
+        }
+
+    @cached_property
+    def certificate_rank_by_identity(self) -> dict[int, int]:
+        return {
+            id(certificate): rank
+            for rank, certificate in enumerate(self.graph.certificates)
+        }
+
     def certificate_for_finding(
         self,
         finding: RefactorFinding,
@@ -188,13 +208,28 @@ class DescentCertificateFindingAuthority:
         self,
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[DescentCertificate, ...]:
-        projection_ids = frozenset(
-            semantic_descent_finding_projection_id(finding) for finding in findings
+        projection_ids = tuple(
+            dict.fromkeys(
+                semantic_descent_finding_projection_id(finding) for finding in findings
+            )
         )
-        return tuple(
+        certificates = tuple(
             certificate
-            for certificate in self.graph.certificates
-            if certificate.edge.projection_id in projection_ids
+            for projection_id in projection_ids
+            for certificate in self.certificates_by_projection_id.get(
+                projection_id,
+                (),
+            )
+        )
+        if len(projection_ids) < 2:
+            return certificates
+        return tuple(
+            sorted(
+                certificates,
+                key=lambda certificate: self.certificate_rank_by_identity[
+                    id(certificate)
+                ],
+            )
         )
 
     def authority_label_for_finding(self, finding: RefactorFinding) -> str:
@@ -331,15 +366,20 @@ class SemanticRefactorFindingGroupAuthority:
     def groups(
         self,
         findings: tuple[RefactorFinding, ...],
+        *,
+        certificate_authority: DescentCertificateFindingAuthority | None = None,
     ) -> tuple[tuple[RefactorFinding, ...], ...]:
-        certificate_authority = DescentCertificateFindingAuthority(
-            self.finding_descent_graph
+        active_certificate_authority = (
+            certificate_authority
+            or DescentCertificateFindingAuthority(self.finding_descent_graph)
         )
         groups: dict[SemanticRefactorFindingGroupKey, list[RefactorFinding]] = (
             defaultdict(list)
         )
         for finding in findings:
-            groups[certificate_authority.group_key_for_finding(finding)].append(finding)
+            groups[active_certificate_authority.group_key_for_finding(finding)].append(
+                finding
+            )
         return tuple(tuple(group) for group in groups.values())
 
 
@@ -440,9 +480,7 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             group_key=SemanticRefactorFindingGroupKey(
                 priority_tier=target.priority_tier,
                 authority_label=claim.claimed_symbol,
-                descent_path=cls.descent_path_for_detectors(
-                    target.detector_ids
-                ),
+                descent_path=cls.descent_path_for_detectors(target.detector_ids),
             ),
             label=claim.claimed_symbol,
             authority_candidates=(claim.claimed_symbol,),
@@ -488,24 +526,28 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         findings: tuple[RefactorFinding, ...],
         *,
         finding_descent_graph: SemanticDescentGraph,
+        certificate_authority: DescentCertificateFindingAuthority | None = None,
     ) -> "SemanticRefactorGateWorkItem":
         first_finding = findings[0]
-        certificate_authority = DescentCertificateFindingAuthority(
-            finding_descent_graph
+        active_certificate_authority = (
+            certificate_authority
+            or DescentCertificateFindingAuthority(finding_descent_graph)
         )
         authority_candidates = _unique_strings(
-            certificate_authority.authority_label_for_finding(finding)
+            active_certificate_authority.authority_label_for_finding(finding)
             for finding in findings
         )
         evidence_symbols = _unique_strings(
             location.symbol for finding in findings for location in finding.evidence
         )
         evidence_locations = tuple(
-            dict.fromkeys(location for finding in findings for location in finding.evidence)
+            dict.fromkeys(
+                location for finding in findings for location in finding.evidence
+            )
         )
         detector_ids = _unique_strings(finding.detector_id for finding in findings)
-        certificates = certificate_authority.certificates_for_findings(findings)
-        group_key = certificate_authority.group_key_for_finding(first_finding)
+        certificates = active_certificate_authority.certificates_for_findings(findings)
+        group_key = active_certificate_authority.group_key_for_finding(first_finding)
         label = first_finding.title
         if len(findings) > 1:
             label = f"{label} ({len(findings)} raw signals)"
@@ -524,10 +566,14 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
                 removed_count=len(findings),
             ),
             certificate_count=len(certificates),
-            matched_fact_count=certificate_authority.matched_fact_count(certificates),
-            authority_kinds=certificate_authority.authority_kinds(certificates),
-            projection_kinds=certificate_authority.projection_kinds(certificates),
-            authority_claims=certificate_authority.authority_claims_for_findings(
+            matched_fact_count=active_certificate_authority.matched_fact_count(
+                certificates
+            ),
+            authority_kinds=active_certificate_authority.authority_kinds(certificates),
+            projection_kinds=active_certificate_authority.projection_kinds(
+                certificates
+            ),
+            authority_claims=active_certificate_authority.authority_claims_for_findings(
                 findings
             ),
             agent_action=(
@@ -608,7 +654,9 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
     def priority_rank(self) -> tuple[int, int, int, int, int, int, str]:
         return (
             int(not detector_ids_have_semantic_mirror_role(self.detector_ids)),
-            int(not priority_tier_has_ssot_authority_role(self.group_key.priority_tier)),
+            int(
+                not priority_tier_has_ssot_authority_role(self.group_key.priority_tier)
+            ),
             -self.matched_fact_count,
             -self.certificate_count,
             -self.removal_prediction.removed_count,
@@ -920,6 +968,9 @@ class SemanticRefactorGateReport(SemanticRecord):
         finding_group_authority = SemanticRefactorFindingGroupAuthority(
             finding_descent_graph
         )
+        certificate_authority = DescentCertificateFindingAuthority(
+            finding_descent_graph
+        )
         items = (
             *(
                 SemanticRefactorGateWorkItem.from_authority_target(target)
@@ -929,8 +980,12 @@ class SemanticRefactorGateReport(SemanticRecord):
                 SemanticRefactorGateWorkItem.from_ssot_finding_group(
                     group,
                     finding_descent_graph=finding_descent_graph,
+                    certificate_authority=certificate_authority,
                 )
-                for group in finding_group_authority.groups(ssot_findings)
+                for group in finding_group_authority.groups(
+                    ssot_findings,
+                    certificate_authority=certificate_authority,
+                )
             ),
         )
         return tuple(sorted(items, key=lambda item: item.priority_rank))

@@ -3029,6 +3029,36 @@ def rebase_semantic_descent_graph(
         raise CacheCheckoutPathError(
             "semantic graph cache has no admitted presentation roots"
         )
+    if source_roots == target_roots:
+        # Exact-cache publication and lookup do not relocate the graph.  Keep
+        # path admission validation, but perform it once per distinct path and
+        # retain the already immutable graph instead of rebuilding tens of
+        # thousands of duplicate source-bearing records.
+        file_paths = {
+            location.file_path
+            for location in (
+                *(authority.location for authority in graph.authorities),
+                *(fact.location for fact in graph.facts),
+                *(projection.location for projection in graph.projections),
+            )
+            if location.file_path
+        }
+        if graph.class_index is not None:
+            file_paths.update(
+                indexed_class.file_path
+                for indexed_class in graph.class_index.classes_by_symbol.values()
+                if indexed_class.file_path
+            )
+            file_paths.update(
+                file_path
+                for file_path, _qualname in (
+                    graph.class_index.symbols_by_file_and_qualname
+                )
+                if file_path
+            )
+        for file_path in file_paths:
+            checkout_relative_path(file_path, source_roots)
+        return graph
     return replace(
         graph,
         authorities=tuple(

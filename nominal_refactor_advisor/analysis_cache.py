@@ -505,6 +505,7 @@ class DetectorRegistrySignature:
         return cls.from_detector_types(IssueDetector.registered_detector_types())
 
     @classmethod
+    @lru_cache(maxsize=None)
     def from_detector_types(
         cls,
         detector_types: tuple[type[IssueDetector], ...],
@@ -968,6 +969,19 @@ def _rebase_findings(
     target_roots: tuple[str, ...],
 ) -> tuple[RefactorFinding, ...]:
     """Validate and relocate every concrete evidence path in cached findings."""
+
+    if source_roots == target_roots:
+        # Exact-cache reads and writes are overwhelmingly same-checkout.  Keep
+        # the safety boundary, but validate each distinct path once instead of
+        # resolving the roots and rebuilding every repeated evidence record.
+        for file_path in {
+            location.file_path
+            for finding in findings
+            for location in finding.evidence
+            if location.file_path
+        }:
+            checkout_relative_path(file_path, source_roots)
+        return findings
 
     rebased_findings: list[RefactorFinding] = []
     for finding in findings:
