@@ -33,6 +33,7 @@ from .analysis_cache import (
 )
 from .ast_tools import (
     CollectedFamily,
+    CollectedFamilyContentSignatureIndex,
     CollectedFamilyPresenceDemand,
     ParsedModule,
     PythonModulePathIdentity,
@@ -1145,6 +1146,9 @@ class BoundedCompactProjectionManifest:
         init=False,
         repr=False,
     )
+    _content_signature_indexes: dict[Path, CollectedFamilyContentSignatureIndex] = (
+        field(default_factory=dict, init=False, repr=False)
+    )
 
     def add_source(self, source: CompactProjectionCacheSource) -> None:
         self.sources.append(source)
@@ -1193,20 +1197,83 @@ class BoundedCompactProjectionManifest:
     def add_runtime(
         self,
         family: type[CollectedFamily],
-        path: Path,
+        source: CompactProjectionCacheSource,
         projections: tuple[object, ...],
         projection_signature: str | None = None,
     ) -> None:
         for projection in projections:
             if CompactGlobalProjectionAccumulator._retains_ast(projection):
                 raise TypeError(f"{family.__name__} runtime projection retains an AST")
-        key = family, str(path.resolve())
+        key = family, source.resolved_path_text
         self.runtime_projections[key] = projections
-        self._source_projection_signatures[key] = (
+        signature = (
             projection_signature
             if projection_signature is not None
             else collected_family_items_content_signature(projections)
         )
+        self._source_projection_signatures[key] = signature
+        self._record_content_signature(source, family, signature)
+
+    def _content_signature_index(
+        self,
+        source: CompactProjectionCacheSource,
+    ) -> CollectedFamilyContentSignatureIndex | None:
+        cache_dir = source.family_cache_dir
+        if cache_dir is None:
+            return None
+        index = self._content_signature_indexes.get(cache_dir)
+        if index is None:
+            index = CollectedFamilyContentSignatureIndex.load(cache_dir)
+            self._content_signature_indexes[cache_dir] = index
+        return index
+
+    def _content_signature_demand(
+        self,
+        source: CompactProjectionCacheSource,
+        family: type[CollectedFamily],
+    ) -> str | None:
+        demand = self.family_demands.get(family)
+        if demand is None or not self._is_context_demand_source(source, demand):
+            return None
+        return self._demand_signature(family)
+
+    def _indexed_content_signature(
+        self,
+        source: CompactProjectionCacheSource,
+        family: type[CollectedFamily],
+    ) -> str | None:
+        index = self._content_signature_index(source)
+        if index is None:
+            return None
+        return index.lookup(
+            path_text=source.resolved_path_text,
+            module_name=source.module_name,
+            source_signature=source.source_signature,
+            family=family,
+            demand_signature=self._content_signature_demand(source, family),
+        )
+
+    def _record_content_signature(
+        self,
+        source: CompactProjectionCacheSource,
+        family: type[CollectedFamily],
+        signature: str,
+    ) -> None:
+        index = self._content_signature_index(source)
+        if index is None:
+            return
+        index.record(
+            path_text=source.resolved_path_text,
+            module_name=source.module_name,
+            source_signature=source.source_signature,
+            family=family,
+            content_signature=signature,
+            demand_signature=self._content_signature_demand(source, family),
+        )
+
+    def store_content_signature_indexes(self) -> None:
+        for index in self._content_signature_indexes.values():
+            index.store_if_dirty()
 
     def cache_entry_exists(
         self,
@@ -1303,10 +1370,13 @@ class BoundedCompactProjectionManifest:
                 )
             source_signature = self._source_projection_signatures.get(source_key)
             if source_signature is None:
+                source_signature = self._indexed_content_signature(source, family)
+            if source_signature is None:
                 source_signature = collected_family_items_content_signature(
                     tuple(source_projections)
                 )
-                self._source_projection_signatures[source_key] = source_signature
+            self._source_projection_signatures[source_key] = source_signature
+            self._record_content_signature(source, family, source_signature)
             source_signatures.append(source_signature)
             # Persisted family payloads are syntax-free by the cache write
             # contract. Runtime values and repairs are checked at their insertion
@@ -1356,6 +1426,8 @@ class BoundedCompactProjectionManifest:
         for source in self.sources:
             key = family, source.resolved_path_text
             signature = self._source_projection_signatures.get(key)
+            if signature is None:
+                signature = self._indexed_content_signature(source, family)
             is_context_demand = self._is_context_demand_source(source, demand)
             if (
                 signature is None
@@ -1393,6 +1465,7 @@ class BoundedCompactProjectionManifest:
             if signature is None:
                 return None
             self._source_projection_signatures[key] = signature
+            self._record_content_signature(source, family, signature)
             source_signatures.append(signature)
         combined = self._combined_projection_signature(
             family,
@@ -1979,6 +2052,7 @@ def analyze_compact_roots_with_cache(
     }
     for result in build_results:
         normalized_path = result.path.resolve()
+        projection_source = source_by_path[normalized_path]
         local_identity = local_identity_by_path.get(normalized_path)
         if local_identity is not None:
             module_findings = list(result.local_findings)
@@ -1988,12 +2062,11 @@ def analyze_compact_roots_with_cache(
         for family, projections in result.runtime_projections:
             projection_manifest.add_runtime(
                 family,
-                result.path,
+                projection_source,
                 projections,
                 projection_signatures.get(family),
             )
-        projection_source = source_by_path.get(normalized_path)
-        if projection_source is not None and not result.cache_bundle_complete:
+        if not result.cache_bundle_complete:
             projection_manifest.cache_bundle_is_complete(projection_source)
     gc.collect()
     preparation_seconds = perf_counter() - started - local_analysis_seconds
@@ -2152,6 +2225,7 @@ def analyze_compact_roots_with_cache(
             ),
         )
     analysis_seconds = local_analysis_seconds + perf_counter() - join_started
+    projection_manifest.store_content_signature_indexes()
     analysis_cache.store(cache_identity, findings)
     cache_status = (
         AnalysisCacheStatus.HIT

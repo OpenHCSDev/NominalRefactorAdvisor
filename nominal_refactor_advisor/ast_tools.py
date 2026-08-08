@@ -169,6 +169,37 @@ class CollectedFamilyCacheSchema:
 
 
 @dataclass(frozen=True)
+class CollectedFamilyContentSignatureIndexSchema:
+    """Schema for the derived, consolidated family-signature lookup."""
+
+    version: int = 1
+
+
+CollectedFamilyContentSignatureIndexKey: TypeAlias = tuple[
+    str,
+    str,
+    str,
+    str,
+    str,
+    str,
+    str,
+]
+
+
+@dataclass(frozen=True)
+class CollectedFamilyContentSignatureIndexPayload:
+    """Derived view of the latest content signature for each source family."""
+
+    schema: CollectedFamilyContentSignatureIndexSchema
+    family_cache_schema: CollectedFamilyCacheSchema
+    python_version: tuple[int, int]
+    entries: tuple[
+        tuple[CollectedFamilyContentSignatureIndexKey, str, str],
+        ...,
+    ]
+
+
+@dataclass(frozen=True)
 class CollectedFamilyCacheIdentity:
     """Invalidation identity for one collected family in one parsed module."""
 
@@ -196,6 +227,143 @@ class CollectedFamilyDemandCacheIdentity(CollectedFamilyCacheIdentity):
 
 
 collected_family_cache_schema = CollectedFamilyCacheSchema()
+collected_family_content_signature_index_schema = (
+    CollectedFamilyContentSignatureIndexSchema()
+)
+
+
+class CollectedFamilyContentSignatureIndex:
+    """One-read derived view over per-source family signature receipts."""
+
+    _file_name = "content-signature-index-v1.pickle"
+
+    def __init__(
+        self,
+        cache_dir: Path,
+        entries: dict[CollectedFamilyContentSignatureIndexKey, tuple[str, str]],
+    ) -> None:
+        self.cache_dir = cache_dir
+        self._entries = entries
+        self._dirty = False
+
+    @classmethod
+    def load(cls, cache_dir: Path) -> "CollectedFamilyContentSignatureIndex":
+        entries: dict[CollectedFamilyContentSignatureIndexKey, tuple[str, str]] = {}
+        try:
+            with (cache_dir / cls._file_name).open("rb") as handle:
+                payload = pickle.load(handle)
+        except (
+            FileNotFoundError,
+            OSError,
+            pickle.PickleError,
+            EOFError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            ImportError,
+        ):
+            payload = None
+        if (
+            isinstance(payload, CollectedFamilyContentSignatureIndexPayload)
+            and payload.schema == collected_family_content_signature_index_schema
+            and payload.family_cache_schema == collected_family_cache_schema
+            and payload.python_version
+            == (sys.version_info.major, sys.version_info.minor)
+        ):
+            for key, source_signature, content_signature in payload.entries:
+                if (
+                    isinstance(key, tuple)
+                    and len(key) == 7
+                    and all(isinstance(part, str) for part in key)
+                    and isinstance(source_signature, str)
+                    and isinstance(content_signature, str)
+                ):
+                    entries[key] = (source_signature, content_signature)
+        return cls(cache_dir, entries)
+
+    @staticmethod
+    def _key(
+        *,
+        path_text: str,
+        module_name: str,
+        family: type["CollectedFamily[object]"],
+        demand_signature: str | None,
+    ) -> CollectedFamilyContentSignatureIndexKey:
+        return (
+            path_text,
+            module_name,
+            family.__module__,
+            family.__qualname__,
+            family.item_type.__module__,
+            family.item_type.__qualname__,
+            demand_signature or "",
+        )
+
+    def lookup(
+        self,
+        *,
+        path_text: str,
+        module_name: str,
+        source_signature: str,
+        family: type["CollectedFamily[object]"],
+        demand_signature: str | None = None,
+    ) -> str | None:
+        entry = self._entries.get(
+            self._key(
+                path_text=path_text,
+                module_name=module_name,
+                family=family,
+                demand_signature=demand_signature,
+            )
+        )
+        if entry is None or entry[0] != source_signature:
+            return None
+        return entry[1]
+
+    def record(
+        self,
+        *,
+        path_text: str,
+        module_name: str,
+        source_signature: str,
+        family: type["CollectedFamily[object]"],
+        content_signature: str,
+        demand_signature: str | None = None,
+    ) -> None:
+        key = self._key(
+            path_text=path_text,
+            module_name=module_name,
+            family=family,
+            demand_signature=demand_signature,
+        )
+        entry = source_signature, content_signature
+        if self._entries.get(key) == entry:
+            return
+        self._entries[key] = entry
+        self._dirty = True
+
+    def store_if_dirty(self) -> None:
+        if not self._dirty:
+            return
+        payload = CollectedFamilyContentSignatureIndexPayload(
+            schema=collected_family_content_signature_index_schema,
+            family_cache_schema=collected_family_cache_schema,
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            entries=tuple(
+                (key, *entry) for key, entry in sorted(self._entries.items())
+            ),
+        )
+        temp_path = self.cache_dir / f".{self._file_name}.{os.getpid()}.tmp"
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            with temp_path.open("wb") as handle:
+                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.cache_dir / self._file_name)
+            self._dirty = False
+        except (OSError, pickle.PickleError, TypeError, AttributeError):
+            temp_path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)

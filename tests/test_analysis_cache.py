@@ -3495,6 +3495,84 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
     assert warm.projection_count == 0
 
 
+def test_compact_incremental_analysis_reuses_consolidated_family_signatures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "generated_policy.py").write_text(
+        "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        encoding="utf-8",
+    )
+    runtime_path = package_root / "runtime.py"
+    runtime_source = "POLICY_PROFILE_ID = 'axis_policy_profile'\n"
+    runtime_path.write_text(runtime_source, encoding="utf-8")
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    analysis_cache_dir = tmp_path / ".nra-cache" / "analysis"
+
+    cold = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+    )
+    signature_index_path = (
+        cache_dir / "collected-family" / "content-signature-index-v1.pickle"
+    )
+    assert signature_index_path.is_file()
+
+    runtime_path.write_text(
+        f"{runtime_source}# comment-only edit\n",
+        encoding="utf-8",
+    )
+
+    def unexpected_individual_signature_load(**kwargs):
+        del kwargs
+        raise AssertionError(
+            "consolidated index should cover unchanged source families"
+        )
+
+    monkeypatch.setattr(
+        analysis_module,
+        "load_cached_collected_family_content_signature_for_source_signature",
+        unexpected_individual_signature_load,
+    )
+    incremental = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+    )
+
+    assert incremental.cache_status is AnalysisCacheStatus.PARTIAL
+    assert incremental.findings == cold.findings
+
+
+def test_collected_family_content_signature_index_rejects_stale_source(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "collected-family"
+    index = ast_tools_module.CollectedFamilyContentSignatureIndex.load(cache_dir)
+    index.record(
+        path_text="/checkout/pkg/mod.py",
+        module_name="pkg.mod",
+        source_signature="source-v1",
+        family=RegistrationShapeFamily,
+        content_signature="content-v1",
+    )
+    index.store_if_dirty()
+
+    reloaded = ast_tools_module.CollectedFamilyContentSignatureIndex.load(cache_dir)
+    lookup_kwargs = {
+        "path_text": "/checkout/pkg/mod.py",
+        "module_name": "pkg.mod",
+        "family": RegistrationShapeFamily,
+    }
+    assert (
+        reloaded.lookup(source_signature="source-v1", **lookup_kwargs) == "content-v1"
+    )
+    assert reloaded.lookup(source_signature="source-v2", **lookup_kwargs) is None
+
+
 def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
