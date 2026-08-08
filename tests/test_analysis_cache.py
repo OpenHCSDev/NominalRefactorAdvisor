@@ -6624,6 +6624,47 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     assert list(consumed_streams[0]) == expected_findings
 
 
+def test_compact_analysis_returns_semantic_graph_on_cold_and_aggregate_hits(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text(
+        "class Handler:\n"
+        "    pass\n\n"
+        "class AlphaHandler(Handler):\n"
+        "    handler_id = 'alpha'\n\n"
+        "class BetaHandler(Handler):\n"
+        "    handler_id = 'beta'\n\n"
+        "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / "cache"
+    analysis_cache_dir = tmp_path / "analysis"
+    detector_types = (semantic_descent_detectors.SemanticMirrorWithoutDescentDetector,)
+
+    cold = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        detector_types=detector_types,
+        include_semantic_descent_graph=True,
+    )
+    warm = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        detector_types=detector_types,
+        include_semantic_descent_graph=True,
+    )
+
+    assert cold.semantic_descent_graph is not None
+    assert cold.semantic_descent_graph.certificates
+    assert warm.cache_status is AnalysisCacheStatus.HIT
+    assert warm.semantic_descent_graph == cold.semantic_descent_graph
+    assert warm.findings == cold.findings
+
+
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
     partition = DetectorTypePartition.from_detector_types(
         default_detector_types_for_analysis()

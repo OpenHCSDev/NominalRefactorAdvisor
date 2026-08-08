@@ -25,6 +25,7 @@ from nominal_refactor_advisor.analysis import (
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     SortedFindingsAuthority,
+    _analysis_process_pool_mp_context,
     analyze_modules,
     analyze_modules_with_cache,
     analyze_paths,
@@ -8022,6 +8023,16 @@ def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> 
     assert single_file_plan.uses_process_pool is True
     assert small_work_plan.effective_worker_count == 1
     assert small_work_plan.uses_process_pool is False
+
+
+def test_analysis_process_pool_uses_copy_on_write_on_linux() -> None:
+    context = _analysis_process_pool_mp_context()
+
+    if sys.platform.startswith("linux"):
+        assert context is not None
+        assert context.get_start_method() == "fork"
+    else:
+        assert context is None
 
 
 def test_reference_count_index_caches_requested_symbol_only(tmp_path: Path) -> None:
@@ -21664,7 +21675,9 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     )
 
     assert third_result.returncode == 0, third_result.stderr
-    assert third_timing["parse_seconds"] == 0.0
+    # Compact analysis rebuilds only the changed file's projection families;
+    # that bounded preparation is now reported as parse time.
+    assert float(third_timing["parse_seconds"]) < 1.0
     assert third_timing["analysis_cache_status"] == "partial"
     assert third_graph_payload["active_graph_source"] in {
         "repository",

@@ -69,6 +69,7 @@ from .cache_paths import (
 from .cache_checkout import absolute_checkout_path
 from .class_index import (
     CompactClassProjectionDemand,
+    CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
 from .detectors import (
@@ -92,12 +93,15 @@ from .models import RefactorFinding, RefactorPlan
 from .native_syntax import NativePythonSyntaxIndex
 from .planner import build_refactor_plans
 from .semantic_descent import (
+    CompactSemanticModuleProjection,
+    CompactSemanticModuleProjectionFamily,
     SemanticDescentGraph,
     SemanticDescentGraphCache,
     SemanticDescentGraphCacheFamilyIdentity,
     SemanticDescentGraphCacheIdentity,
     SemanticDescentGraphCacheLookup,
     SemanticDescentModuleSignature,
+    build_compact_semantic_descent_graph,
     build_semantic_descent_graph,
 )
 
@@ -283,16 +287,16 @@ class DetectorAnalysisWorkerState:
 detector_analysis_worker_state: DetectorAnalysisWorkerState | None = None
 
 
-def _compact_projection_build_mp_context() -> (
-    multiprocessing.context.BaseContext | None
-):
-    """Use copy-on-write workers for the cold compact build on Linux.
+def _analysis_process_pool_mp_context() -> multiprocessing.context.BaseContext | None:
+    """Use copy-on-write workers for AST-heavy analysis pools on Linux.
 
     Python 3.14 defaults process pools to forkserver, making every cold worker
-    import the full detector registry again.  This pool is created before any
-    analyzer threads and receives immutable requests, so Linux fork preserves
-    the existing isolation while sharing the imported analysis authority.
-    Other platforms retain their supported default start method.
+    import the full detector registry again and deserialize its own copy of the
+    parsed repository.  Analysis pools receive immutable state and are created
+    only after earlier parser pools have closed, so Linux fork preserves the
+    existing isolation while sharing both the imported detector authority and
+    the read-only AST graph.  Other platforms retain their supported default
+    start method.
     """
 
     return (
@@ -396,6 +400,7 @@ class DetectorTypeShardRunner:
         if self.worker_plan.uses_process_pool:
             with ProcessPoolExecutor(
                 max_workers=self.worker_plan.effective_worker_count,
+                mp_context=_analysis_process_pool_mp_context(),
                 initializer=initialize_detector_analysis_worker,
                 initargs=(self.worker_state,),
             ) as executor:
@@ -1062,6 +1067,7 @@ class BoundedCompactProjectionManifest:
     """Load compact families only for the repository join currently running."""
 
     detector_types: tuple[type[IssueDetector], ...]
+    required_families: tuple[type[CollectedFamily], ...] = ()
     sources: list[CompactProjectionCacheSource] = field(default_factory=list)
     runtime_projections: dict[tuple[type[CollectedFamily], str], tuple[object, ...]] = (
         field(default_factory=dict)
@@ -1115,6 +1121,11 @@ class BoundedCompactProjectionManifest:
     def projection_families(self) -> tuple[type[CollectedFamily], ...]:
         families: list[type[CollectedFamily]] = []
         seen: set[type[CollectedFamily]] = set()
+        for family in self.required_families:
+            if family in seen:
+                continue
+            seen.add(family)
+            families.append(family)
         for detector_type in self.detector_types:
             compact_type = cast(
                 type[CompactModuleProjectionDetectorMixin], detector_type
@@ -1511,6 +1522,7 @@ class CompactPathAnalysisResult:
     preparation_seconds: float
     analysis_seconds: float
     projection_count: int
+    semantic_descent_graph: SemanticDescentGraph | None = None
 
 
 def analyze_compact_roots_with_cache(
@@ -1524,6 +1536,7 @@ def analyze_compact_roots_with_cache(
     source_policy: PythonSourcePathPolicy | None = None,
     report_scope: AnalysisPathScope | None = None,
     detector_types: tuple[type[IssueDetector], ...] | None = None,
+    include_semantic_descent_graph: bool = False,
 ) -> CompactPathAnalysisResult:
     """Run the complete detector set while retaining only compact global facts."""
 
@@ -1575,7 +1588,10 @@ def analyze_compact_roots_with_cache(
         report_roots=report_roots,
     ).cache_identity()
     aggregate_lookup = analysis_cache.load(cache_identity)
-    if aggregate_lookup.status is AnalysisCacheStatus.HIT:
+    if (
+        aggregate_lookup.status is AnalysisCacheStatus.HIT
+        and not include_semantic_descent_graph
+    ):
         return CompactPathAnalysisResult(
             findings=list(aggregate_lookup.findings),
             cache_status=AnalysisCacheStatus.HIT,
@@ -1624,24 +1640,33 @@ def analyze_compact_roots_with_cache(
             if finding_is_in_report_scope(finding)
         )
 
-    for detector_type in partition.compact_global_detector_types:
-        detector_identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
-            config,
-            detector_type,
-            detector_context_signature,
-            roots,
-        )
-        global_identity_by_detector[detector_type] = detector_identity
-        detector_lookup = analysis_cache.load(detector_identity)
-        if detector_lookup.status is AnalysisCacheStatus.HIT:
-            global_cache_hit_count += 1
-            extend_report_findings(detector_lookup.findings)
-        else:
-            missing_global_detector_types.append(detector_type)
-        del detector_lookup
+    if aggregate_lookup.status is not AnalysisCacheStatus.HIT:
+        for detector_type in partition.compact_global_detector_types:
+            detector_identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
+                config,
+                detector_type,
+                detector_context_signature,
+                roots,
+            )
+            global_identity_by_detector[detector_type] = detector_identity
+            detector_lookup = analysis_cache.load(detector_identity)
+            if detector_lookup.status is AnalysisCacheStatus.HIT:
+                global_cache_hit_count += 1
+                extend_report_findings(detector_lookup.findings)
+            else:
+                missing_global_detector_types.append(detector_type)
+            del detector_lookup
 
     projection_manifest = BoundedCompactProjectionManifest(
-        tuple(missing_global_detector_types)
+        tuple(missing_global_detector_types),
+        required_families=(
+            (
+                CompactSemanticModuleProjectionFamily,
+                CompactModuleClassProjectionFamily,
+            )
+            if include_semantic_descent_graph
+            else ()
+        ),
     )
     report_family_demands: dict[type[CollectedFamily], object] = {}
     demand_families = tuple(
@@ -1687,6 +1712,12 @@ def analyze_compact_roots_with_cache(
             )
             if demand is not None:
                 report_family_demands[family] = demand
+        if include_semantic_descent_graph:
+            # The JSON repository graph is a full-context consumer.  Its exact
+            # compact authority needs every semantic presentation and complete
+            # class supplement, not the report-focused detector views.
+            report_family_demands.pop(CompactSemanticModuleProjectionFamily, None)
+            report_family_demands.pop(CompactModuleClassProjectionFamily, None)
         class_consumers = tuple(
             detector_type
             for detector_type in missing_global_detector_types
@@ -1735,11 +1766,17 @@ def analyze_compact_roots_with_cache(
                 continue
             streamed_paths.add(normalized_path)
             include_local_findings = (
-                report_scope is None
-                or not report_scope.has_report_filter
-                or report_scope.includes_report_path(path)
+                aggregate_lookup.status is not AnalysisCacheStatus.HIT
+                and (
+                    report_scope is None
+                    or not report_scope.has_report_filter
+                    or report_scope.includes_report_path(path)
+                )
             )
-            if not missing_global_detector_types and not include_local_findings:
+            if (
+                not projection_manifest.projection_families
+                and not include_local_findings
+            ):
                 continue
             source: str | None = None
             source_signature = source_signature_by_path.get(normalized_path)
@@ -1760,7 +1797,7 @@ def analyze_compact_roots_with_cache(
                 use_parse_cache=use_parse_cache,
                 source_policy=active_source_policy,
             )
-            if missing_global_detector_types:
+            if projection_manifest.projection_families:
                 projection_manifest.add_source(projection_source)
             local_identity = None
             local_cache_lookup = None
@@ -1782,7 +1819,7 @@ def analyze_compact_roots_with_cache(
                     local_findings.extend(local_cache_lookup.findings)
 
             missing_families: tuple[type[CollectedFamily], ...] = ()
-            if missing_global_detector_types and not (
+            if projection_manifest.projection_families and not (
                 projection_manifest.cache_bundle_is_complete(projection_source)
             ):
                 missing_families = tuple(
@@ -1843,7 +1880,7 @@ def analyze_compact_roots_with_cache(
     if worker_plan.uses_process_pool:
         with ProcessPoolExecutor(
             max_workers=worker_plan.effective_worker_count,
-            mp_context=_compact_projection_build_mp_context(),
+            mp_context=_analysis_process_pool_mp_context(),
         ) as executor:
             build_results = list(
                 executor.map(
@@ -2013,24 +2050,48 @@ def analyze_compact_roots_with_cache(
             detector_type_filter=filter_projection_cached_detector_types,
             retain_findings=False,
         )
-    findings = SortedFindingsAuthority.sort(
-        [
-            *local_findings,
-            *global_findings,
-        ],
-        detector_types=detector_types,
+    findings = (
+        list(aggregate_lookup.findings)
+        if aggregate_lookup.status is AnalysisCacheStatus.HIT
+        else SortedFindingsAuthority.sort(
+            [
+                *local_findings,
+                *global_findings,
+            ],
+            detector_types=detector_types,
+        )
     )
     if report_scope is not None and report_scope.has_report_filter:
         findings = report_scope.filter_findings(findings)
+    semantic_descent_graph = None
+    if include_semantic_descent_graph:
+        semantic_descent_graph = build_compact_semantic_descent_graph(
+            cast(
+                tuple[CompactSemanticModuleProjection, ...],
+                projection_manifest.projections_for_family(
+                    CompactSemanticModuleProjectionFamily
+                ),
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projection_manifest.projections_for_family(
+                    CompactModuleClassProjectionFamily
+                ),
+            ),
+        )
     analysis_seconds = local_analysis_seconds + perf_counter() - join_started
     analysis_cache.store(cache_identity, findings)
     cache_status = (
-        AnalysisCacheStatus.DISABLED
-        if aggregate_lookup.status is AnalysisCacheStatus.DISABLED
+        AnalysisCacheStatus.HIT
+        if aggregate_lookup.status is AnalysisCacheStatus.HIT
         else (
-            AnalysisCacheStatus.PARTIAL
-            if local_cache_hit_count or global_cache_hit_count
-            else AnalysisCacheStatus.MISS
+            AnalysisCacheStatus.DISABLED
+            if aggregate_lookup.status is AnalysisCacheStatus.DISABLED
+            else (
+                AnalysisCacheStatus.PARTIAL
+                if local_cache_hit_count or global_cache_hit_count
+                else AnalysisCacheStatus.MISS
+            )
         )
     )
     return CompactPathAnalysisResult(
@@ -2040,6 +2101,7 @@ def analyze_compact_roots_with_cache(
         preparation_seconds=preparation_seconds,
         analysis_seconds=analysis_seconds,
         projection_count=projection_manifest.projection_count,
+        semantic_descent_graph=semantic_descent_graph,
     )
 
 
@@ -2331,14 +2393,35 @@ class SemanticDescentGraphCacheContext:
         cache = self.graph_cache()
         if cache is None or not self.roots:
             return None
-        lookup = self._latest_compatible_lookup(cache, self.root_identity())
+        current_identity = self.root_identity()
+        lookup = self._latest_compatible_lookup(cache, current_identity)
         graph = lookup.graph
         identity = getattr(lookup, "identity", None)
+        if (
+            graph is not None
+            and graph.class_index is None
+            and isinstance(identity, SemanticDescentGraphCacheIdentity)
+            and identity.cache_token != current_identity.cache_token
+        ):
+            # Compact graphs are exact immutable repository views.  They do
+            # not retain the AST-backed class index required to overlay a
+            # changed module, so never advertise one as a predecessor graph.
+            return None
         if graph is not None and isinstance(
             identity, SemanticDescentGraphCacheIdentity
         ):
             self._loaded_graphs_by_token[identity.cache_token] = graph
         return graph
+
+    def store_exact_graph(self, graph: SemanticDescentGraph) -> None:
+        """Publish one exact graph without claiming incremental overlay support."""
+
+        cache = self.graph_cache()
+        if cache is None or not self.roots:
+            return
+        identity = self.root_identity()
+        cache.store(identity, graph)
+        self._loaded_graphs_by_token[identity.cache_token] = graph
 
     def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
         cached_graph = self.cached_graph()
@@ -2366,7 +2449,11 @@ class SemanticDescentGraphCacheContext:
             current_signatures_by_path = {
                 signature.path: signature for signature in identity.modules
             }
-            if previous_signatures_by_path.keys() <= current_signatures_by_path.keys():
+            if (
+                latest_graph.class_index is not None
+                and previous_signatures_by_path.keys()
+                <= current_signatures_by_path.keys()
+            ):
                 module_signatures = tuple(
                     SemanticDescentModuleSignature.from_module(module, self.roots)
                     for module in modules
@@ -2880,6 +2967,7 @@ class IncrementalAnalysisCacheResolver:
             )
             with ProcessPoolExecutor(
                 max_workers=worker_plan.effective_worker_count,
+                mp_context=_analysis_process_pool_mp_context(),
                 initializer=initialize_per_module_detector_shard_worker,
                 initargs=(state,),
             ) as executor:

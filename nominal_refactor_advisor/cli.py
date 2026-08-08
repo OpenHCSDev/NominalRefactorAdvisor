@@ -974,6 +974,16 @@ class JsonPayloadSections:
             and not self.default_impact_ranking
         )
 
+    @property
+    def compact_analysis_compatible(self) -> bool:
+        """Whether every requested section has an AST-free production source."""
+
+        return (
+            not self.source_index
+            and not self.needs_observation_graph
+            and not self.finding_recipe_plan
+        )
+
 
 @dataclass(frozen=True)
 class JsonPayloadSourceSnapshotDemand:
@@ -5847,7 +5857,7 @@ def _main_without_deadline() -> int:
             )
         elif (
             args.json
-            and json_payload_profile.sections.lightweight_status_payload
+            and json_payload_profile.sections.compact_analysis_compatible
             and not preparse_cache_policy.parsed_modules_required
             and codemod_scan_query_mode.needs_analysis
             and not codemod_requested
@@ -5864,9 +5874,17 @@ def _main_without_deadline() -> int:
                 parse_workers=args.parse_workers,
                 source_policy=source_policy,
                 report_scope=path_scope,
+                include_semantic_descent_graph=(
+                    json_payload_profile.sections.semantic_descent_graph
+                ),
             )
             modules = []
             findings = compact_result.findings
+            cached_semantic_descent_graph = compact_result.semantic_descent_graph
+            if cached_semantic_descent_graph is not None:
+                semantic_descent_cache_context.store_exact_graph(
+                    cached_semantic_descent_graph
+                )
             parse_seconds = round(compact_result.preparation_seconds, 3)
             analysis_seconds = round(compact_result.analysis_seconds, 3)
             analysis_cache_status = compact_result.cache_status
