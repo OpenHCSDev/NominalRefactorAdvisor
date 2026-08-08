@@ -2920,6 +2920,55 @@ def test_native_public_delegate_demand_falls_back_for_possible_wrapper(
         )
         is None
     )
+
+
+def test_native_available_abstraction_demand_matches_structural_overlap(
+    tmp_path: Path,
+) -> None:
+    shared_root = tmp_path / "pkg" / "shared"
+    feature_root = tmp_path / "pkg" / "feature"
+    shared_root.mkdir(parents=True)
+    feature_root.mkdir(parents=True)
+    target_path = shared_root / "target.py"
+    context_path = feature_root / "context.py"
+    shared_body = (
+        "    value = Builder()\n"
+        "    value.configure()\n"
+        "    value.prepare()\n"
+        "    value.execute()\n"
+        "    value.finish()\n"
+        "    value.publish()\n"
+        "    return value\n"
+    )
+    target_source = "def buildAuthority():\n" + shared_body
+    context_source = "def assemble_locally():\n" + shared_body
+    target_path.write_text(target_source, encoding="utf-8")
+    context_path.write_text(context_source, encoding="utf-8")
+    modules = {
+        module.path: module
+        for module in parse_python_modules(tmp_path, use_parse_cache=False)
+    }
+    family = (
+        abstraction_reuse_detectors.CompactAvailableAbstractionReuseModuleProjectionFamily
+    )
+    target_items = tuple(family.collect(modules[target_path]))
+    context_items = tuple(family.collect(modules[context_path]))
+    demand = family.report_demand(target_items, DetectorConfig())
+
+    expected = family.project_cached_demand(context_items, demand)
+    actual = family.collect_demanded_source(
+        SourceModule(
+            context_path,
+            modules[context_path].module_name,
+            context_source,
+        ),
+        NativePythonSyntaxIndex.from_source(context_source),
+        demand,
+    )
+
+    assert expected
+    assert actual is not None
+    assert tuple(actual) == expected
     assert (
         abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_report_class_header_core_safe
         is False

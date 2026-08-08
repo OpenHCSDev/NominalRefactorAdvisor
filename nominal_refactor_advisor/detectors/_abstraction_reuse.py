@@ -10,7 +10,9 @@ from itertools import combinations
 from pathlib import Path
 from typing import ClassVar, Iterable, Sequence
 
-from ..ast_tools import CollectedFamily
+from tree_sitter import Node
+
+from ..ast_tools import CollectedFamily, SourceModule
 from ..class_index import (
     ATTRIBUTE_CHAIN_AUTHORITY,
     ClassSymbolResolutionAuthority,
@@ -26,6 +28,7 @@ from ..class_index import (
 from ..collection_algebra import sorted_tuple
 from ..constructor_algebra import ConstructorParameterField
 from ..models import MappingMetrics
+from ..native_syntax import NativePythonSyntaxIndex
 from ..patterns import PatternId
 from ..semantic_identity import SemanticRoleIdentityToken
 from ..taxonomy import CapabilityTag, ObservationTag
@@ -1517,11 +1520,378 @@ def _collect_available_abstraction_reuse_ast_demand(
     )
 
 
+def _native_capability_terminal_name(
+    syntax_index: NativePythonSyntaxIndex,
+    node: Node | None,
+) -> str | None:
+    if node is None:
+        return None
+    if node.type == "identifier":
+        return syntax_index.source_for(node).decode("utf-8")
+    if node.type == "attribute":
+        attribute = node.child_by_field_name("attribute")
+        return (
+            None
+            if attribute is None
+            else syntax_index.source_for(attribute).decode("utf-8")
+        )
+    if node.type == "subscript":
+        return _native_capability_terminal_name(
+            syntax_index,
+            node.child_by_field_name("value"),
+        )
+    return None
+
+
+def _native_capability_store_atoms(
+    syntax_index: NativePythonSyntaxIndex,
+    node: Node | None,
+) -> set[str]:
+    if node is None:
+        return set()
+    if node.type in {"identifier", "attribute", "subscript"}:
+        name = _native_capability_terminal_name(syntax_index, node)
+        return set() if name is None else {f"store:{name}"}
+    if node.type in {
+        "tuple",
+        "list",
+        "pattern_list",
+        "tuple_pattern",
+        "list_pattern",
+    }:
+        return set().union(
+            *(
+                _native_capability_store_atoms(syntax_index, child)
+                for child in node.named_children
+            )
+        )
+    return set()
+
+
+def _native_capability_high_signal_atoms(
+    syntax_index: NativePythonSyntaxIndex,
+    function_node: Node,
+) -> frozenset[str]:
+    """Project the exact high-signal subset used by the overlap gate."""
+
+    atoms: set[str] = set()
+    stack = [function_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.named_children)
+        if node.type == "call":
+            function = node.child_by_field_name("function")
+            name = _native_capability_terminal_name(syntax_index, function)
+            if name and name[:1].isupper():
+                atoms.add(f"construct:{name}")
+            if function is not None and function.type == "attribute":
+                atoms.add(f"method:{name}")
+                if name == "connect":
+                    signal_name = _native_capability_terminal_name(
+                        syntax_index,
+                        function.child_by_field_name("object"),
+                    )
+                    if signal_name:
+                        atoms.add(f"signal:{signal_name}.connect")
+            continue
+        if node.type in {"assignment", "augmented_assignment"}:
+            atoms.update(
+                _native_capability_store_atoms(
+                    syntax_index,
+                    node.child_by_field_name("left"),
+                )
+            )
+        elif node.type == "for_statement":
+            atoms.add("control:for")
+        elif node.type == "if_statement":
+            atoms.add("control:if")
+        elif node.type == "try_statement":
+            atoms.add("control:try")
+    return frozenset(atoms)
+
+
+def _native_available_abstraction_imported_names(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> frozenset[str]:
+    statements = [
+        syntax_index.statement_for(node)
+        for node in syntax_index.tree.root_node.named_children
+        if node.type in {"import_statement", "import_from_statement"}
+    ]
+    module = ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=statements, type_ignores=[]),
+        source=source_module.source,
+    )
+    return frozenset(_imported_local_names(module))
+
+
+def _collect_available_abstraction_reuse_source_demand(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    if not isinstance(demand, CompactAvailableAbstractionReuseProjectionDemand):
+        raise TypeError("available-abstraction demand has the wrong authority type")
+    if not syntax_index.is_complete:
+        return None
+    imported_names = _native_available_abstraction_imported_names(
+        source_module,
+        syntax_index,
+    )
+    module_stub = ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=[], type_ignores=[]),
+        source=source_module.source,
+    )
+    shared_path_authority = _is_shared_authority_location(module_stub)
+    package_name = source_module.module_name.split(".", 1)[0]
+    available_target_authorities = tuple(
+        authority
+        for authority in demand.authorities
+        if authority.name in imported_names
+        or (
+            authority.shared_path_authority
+            and authority.module_name.split(".", 1)[0] == package_name
+        )
+    )
+    target_local_imports = frozenset(
+        name for local in demand.locals for name in local.imported_names
+    )
+    shared_context_authority = shared_path_authority and any(
+        local.module_name.split(".", 1)[0] == package_name
+        for local in demand.locals
+    )
+    functions = tuple(
+        sorted(
+            syntax_index.common_captures().get("function", ()),
+            key=lambda node: (node.start_byte, -node.end_byte),
+        )
+    )
+    parsed_functions: dict[Node, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+
+    def parsed_function(node: Node) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        function = parsed_functions.get(node)
+        if function is None:
+            function = syntax_index.function_for(node)
+            parsed_functions[node] = function
+        return function
+
+    locals_: list[LocalImplementationSignature] = []
+    authorities: list[AbstractionAuthoritySignature] = []
+    for function_node in functions:
+        scopes = syntax_index.named_scope_nodes(function_node)
+        if any(scope.type == "function_definition" for scope in scopes):
+            continue
+        direct_class = syntax_index.direct_enclosing_class(function_node)
+        top_level = function_node.parent == syntax_index.tree.root_node or (
+            function_node.parent is not None
+            and function_node.parent.type == "decorated_definition"
+            and function_node.parent.parent == syntax_index.tree.root_node
+        )
+        if not top_level and direct_class is None:
+            continue
+        declared_name = syntax_index.declared_name(function_node)
+        possible_authority = (
+            top_level
+            and _public_name(declared_name)
+            and _looks_like_reusable_authority_name(declared_name)
+            and (shared_context_authority or declared_name in target_local_imports)
+        )
+        if not available_target_authorities and not possible_authority:
+            continue
+        coarse_atoms = _native_capability_high_signal_atoms(
+            syntax_index,
+            function_node,
+        )
+        class_names = tuple(
+            syntax_index.declared_name(scope)
+            for scope in scopes
+            if scope.type == "class_definition"
+        )
+        symbol = ".".join((*class_names, declared_name))
+        coarse_local = LocalImplementationSignature(
+            file_path=str(source_module.path),
+            line=function_node.start_point.row + 1,
+            module_name=source_module.module_name,
+            signature=CapabilitySignature(coarse_atoms, frozenset()),
+            symbol=symbol,
+            imported_names=imported_names,
+        )
+        can_be_local = len(coarse_atoms) >= _MIN_LOCAL_ATOMS and any(
+            _reimplements_authority_from_atoms(
+                coarse_local,
+                authority,
+                coarse_atoms,
+                authority.signature.high_signal_atoms,
+            )
+            is not None
+            for authority in available_target_authorities
+        )
+        coarse_authority = AbstractionAuthoritySignature(
+            file_path=str(source_module.path),
+            line=function_node.start_point.row + 1,
+            module_name=source_module.module_name,
+            signature=CapabilitySignature(coarse_atoms, frozenset()),
+            symbol=declared_name,
+            name=declared_name,
+            shared_path_authority=shared_path_authority,
+        )
+        can_be_authority = (
+            possible_authority
+            and _MIN_AUTHORITY_ATOMS
+            <= len(coarse_atoms)
+            <= _MAX_FOCUSED_AUTHORITY_ATOMS
+            and any(
+                _reimplements_authority_from_atoms(
+                    local,
+                    coarse_authority,
+                    local.signature.high_signal_atoms,
+                    coarse_atoms,
+                )
+                is not None
+                for local in demand.locals
+            )
+        )
+        if not can_be_local and not can_be_authority:
+            continue
+        function = parsed_function(function_node)
+        signature = _signature_for_node(function)
+        if can_be_local and len(signature.high_signal_atoms) >= _MIN_LOCAL_ATOMS:
+            locals_.append(
+                LocalImplementationSignature(
+                    file_path=str(source_module.path),
+                    line=function.lineno,
+                    module_name=source_module.module_name,
+                    signature=signature,
+                    symbol=symbol,
+                    imported_names=imported_names,
+                )
+            )
+        if (
+            can_be_authority
+            and _MIN_AUTHORITY_ATOMS
+            <= len(signature.high_signal_atoms)
+            <= _MAX_FOCUSED_AUTHORITY_ATOMS
+        ):
+            authorities.append(
+                AbstractionAuthoritySignature(
+                    file_path=str(source_module.path),
+                    line=function.lineno,
+                    module_name=source_module.module_name,
+                    signature=signature,
+                    symbol=declared_name,
+                    name=declared_name,
+                    shared_path_authority=shared_path_authority,
+                )
+            )
+    for class_node in syntax_index.top_level_declarations("class"):
+        name = syntax_index.declared_name(class_node)
+        if (
+            not _public_name(name)
+            or not _looks_like_reusable_authority_name(name)
+            or (not shared_context_authority and name not in target_local_imports)
+        ):
+            continue
+        method_nodes = tuple(
+            function
+            for function in functions
+            if syntax_index.direct_enclosing_class(function) == class_node
+        )
+        coarse_atoms = frozenset().union(
+            *(
+                _native_capability_high_signal_atoms(syntax_index, method)
+                for method in method_nodes
+            )
+        )
+        coarse_authority = AbstractionAuthoritySignature(
+            file_path=str(source_module.path),
+            line=class_node.start_point.row + 1,
+            module_name=source_module.module_name,
+            signature=CapabilitySignature(coarse_atoms, frozenset()),
+            symbol=name,
+            name=name,
+            shared_path_authority=shared_path_authority,
+        )
+        if not (
+            _MIN_AUTHORITY_ATOMS
+            <= len(coarse_atoms)
+            <= _MAX_FOCUSED_AUTHORITY_ATOMS
+            and any(
+                _reimplements_authority_from_atoms(
+                    local,
+                    coarse_authority,
+                    local.signature.high_signal_atoms,
+                    coarse_atoms,
+                )
+                is not None
+                for local in demand.locals
+            )
+        ):
+            continue
+        atoms: set[str] = set()
+        call_names: set[str] = set()
+        for method in method_nodes:
+            signature = _signature_for_node(parsed_function(method))
+            atoms.update(signature.atoms)
+            call_names.update(signature.call_names)
+        signature = CapabilitySignature(frozenset(atoms), frozenset(call_names))
+        if not (
+            _MIN_AUTHORITY_ATOMS
+            <= len(signature.high_signal_atoms)
+            <= _MAX_FOCUSED_AUTHORITY_ATOMS
+        ):
+            continue
+        authorities.append(
+            AbstractionAuthoritySignature(
+                file_path=str(source_module.path),
+                line=class_node.start_point.row + 1,
+                module_name=source_module.module_name,
+                signature=signature,
+                symbol=name,
+                name=name,
+                shared_path_authority=shared_path_authority,
+            )
+        )
+    projected = _project_available_abstraction_reuse_demand(
+        (
+            CompactAvailableAbstractionReuseModuleProjection(
+                authorities=sorted_tuple(
+                    authorities,
+                    key=lambda authority: (
+                        authority.file_path,
+                        authority.line,
+                        authority.name,
+                    ),
+                ),
+                locals=sorted_tuple(
+                    locals_,
+                    key=lambda local: (
+                        local.file_path,
+                        local.line,
+                        local.symbol,
+                    ),
+                ),
+            ),
+        ),
+        demand,
+    )
+    return list(projected)
+
+
 CompactAvailableAbstractionReuseModuleProjectionFamily.report_demand_builder = (
     staticmethod(_available_abstraction_reuse_projection_demand)
 )
 CompactAvailableAbstractionReuseModuleProjectionFamily.ast_demand_collector = (
     staticmethod(_collect_available_abstraction_reuse_ast_demand)
+)
+CompactAvailableAbstractionReuseModuleProjectionFamily.source_demand_collector = (
+    staticmethod(_collect_available_abstraction_reuse_source_demand)
 )
 CompactAvailableAbstractionReuseModuleProjectionFamily.cached_demand_projector = (
     staticmethod(_project_available_abstraction_reuse_demand)

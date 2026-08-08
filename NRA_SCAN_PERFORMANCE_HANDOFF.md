@@ -2482,3 +2482,15 @@ fallback for only 130 DQDock files (including the known grammar fallback) and
 92 OpenHCS files.  Native projection beyond the shared parse costs 0.62 and
 0.82 aggregate seconds respectively.  This preserves the single AST authority
 for wrapper semantics while sharply reducing the future residual AST frontier.
+
+The available-abstraction family now gates context through actual visibility
+before inspecting capabilities: a target authority must be imported or live in
+a shared same-package path, and a context authority must likewise be visible to
+a target local.  Only then does the native tree derive the exact high-signal
+atom subset used by the detector's overlap threshold; a complete function
+fragment is parsed only if that proof can pass.  The ungated exact-fragment
+prototype was rejected at 17.8 seconds on DQDock and 12.8 on OpenHCS.  The
+visibility-plus-atom route has zero full-inventory mismatches and needs no
+fragment parses on either representative frontier.  It costs 3.53 and 2.80
+aggregate seconds including the shared native parse, approximately 0.6--0.8
+seconds of incremental family work.
