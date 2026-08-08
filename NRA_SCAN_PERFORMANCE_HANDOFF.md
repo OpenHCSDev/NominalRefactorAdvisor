@@ -2522,3 +2522,19 @@ inheritance-method consumers, can be empty on the target alone yet acquire a
 target-anchored candidate after context is joined.  Production promotion needs
 detector-declared candidate-seed/promotion contracts with a conservative
 default, not a roster of the five outputs observed in these two reports.
+
+A target-correlated semantic negative preflight was also prototyped and
+rejected after the end-to-end admission gate.  It retained every context enum
+or dataclass with at least two target-token facts, every autoregistration
+authority, and the initial target-named materializers; omitted materializer
+facts can only add a preflight edge, so an empty preflight is an exact negative
+and a non-empty result can fall back to the full family.  Representative replay
+collapsed DQDock supplements from 14,476 to 261 and OpenHCS from 5,885 to 403,
+and isolated semantic collection fell from 10.19 to 4.29 aggregate seconds and
+from 7.79 to 3.52 respectively.  Nevertheless, the exact fresh-cache DQDock
+scan took 24.44 seconds (16.83 preparation, 7.53 analysis, all 12 findings),
+versus a same-machine detached `040a1f3` control at 23.18 seconds (17.07
+preparation, 6.03 analysis).  Semantic work was not on the mixed worker pool's
+critical path, while the extra preflight join was.  The production prototype
+was removed.  Resume only as part of a shared-event collector or after the
+detector candidate-seed contracts remove the competing dominant families.
