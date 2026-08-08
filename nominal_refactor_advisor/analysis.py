@@ -10,6 +10,7 @@ from enum import StrEnum
 from functools import cached_property
 import gc
 import hashlib
+import multiprocessing
 import os
 from pathlib import Path
 import sys
@@ -280,6 +281,25 @@ class DetectorAnalysisWorkerState:
 
 
 detector_analysis_worker_state: DetectorAnalysisWorkerState | None = None
+
+
+def _compact_projection_build_mp_context() -> (
+    multiprocessing.context.BaseContext | None
+):
+    """Use copy-on-write workers for the cold compact build on Linux.
+
+    Python 3.14 defaults process pools to forkserver, making every cold worker
+    import the full detector registry again.  This pool is created before any
+    analyzer threads and receives immutable requests, so Linux fork preserves
+    the existing isolation while sharing the imported analysis authority.
+    Other platforms retain their supported default start method.
+    """
+
+    return (
+        multiprocessing.get_context("fork")
+        if sys.platform.startswith("linux")
+        else None
+    )
 
 
 def initialize_detector_analysis_worker(
@@ -1823,6 +1843,7 @@ def analyze_compact_roots_with_cache(
     if worker_plan.uses_process_pool:
         with ProcessPoolExecutor(
             max_workers=worker_plan.effective_worker_count,
+            mp_context=_compact_projection_build_mp_context(),
         ) as executor:
             build_results = list(
                 executor.map(

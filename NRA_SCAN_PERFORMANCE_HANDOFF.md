@@ -2425,3 +2425,12 @@ also exposes latent repeated-builder and inheritance candidates on DQDock; the
 exact six-global-detector replay takes 12.21 seconds.  The remaining work is to
 make those detector witness contracts explicit and accelerate their demanded
 context collectors, rather than hardcode the four observed detector names.
+
+The cold compact-build pool now uses an explicit copy-on-write start method on
+Linux.  Python 3.14 otherwise defaults to forkserver and makes every worker
+re-import the complete detector registry.  Two repeated exact DQDock runs take
+23.63 and 24.59 internal seconds with all 12 findings, versus the corrected
+26.66--27.25-second frozen baseline.  OpenHCS improves from 25.70 to 22.09
+seconds with all 45 findings.  Non-Linux platforms retain their default process
+context.  This is a cross-repository cold improvement, but not the final
+orders-of-magnitude result; residual demanded AST families remain dominant.
