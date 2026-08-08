@@ -1955,6 +1955,7 @@ class AvailableCarrierReuseDetector(_CompactAvailableCarrierReuseDetectorBase):
 
 
 class CarrierCompositionRetreatDetector(_CompactCarrierCompositionRetreatDetectorBase):
+    compact_report_class_header_core_safe = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Carrier-valued dataclass field masks semantic inheritance",

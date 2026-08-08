@@ -989,6 +989,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
 
     module_projection_family: ClassVar[type[CollectedFamily]]
     compact_shared_context_builder: ClassVar[Callable[..., object] | None] = None
+    compact_report_class_header_core_safe: ClassVar[bool] = False
 
     @classmethod
     def compact_projection_families(

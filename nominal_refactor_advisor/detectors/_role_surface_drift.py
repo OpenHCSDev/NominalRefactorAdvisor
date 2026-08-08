@@ -1998,6 +1998,7 @@ class RoleSurfaceDriftDetector(
     compact_shared_group_context_builder = staticmethod(
         compact_class_index_from_projection_groups
     )
+    compact_report_class_header_core_safe = True
     ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_WITNESS_CARRIER,

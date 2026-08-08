@@ -9,11 +9,12 @@ reliably from the local AST.
 from __future__ import annotations
 
 import ast
+import copy
 import pickle
 import re
 import zlib
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import MISSING, dataclass, fields, replace
 from functools import cached_property, lru_cache
 from heapq import merge
 from pathlib import Path
@@ -23,12 +24,14 @@ from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     CollectedFamily,
     ParsedModule,
+    SourceModule,
     _walk_nodes,
     module_syntax_index,
     named_function_nodes,
 )
 from .collection_algebra import sorted_tuple
 from .constructor_algebra import ConstructorParameterField
+from .native_syntax import NativePythonSyntaxIndex
 
 
 @dataclass(frozen=True)
@@ -604,6 +607,7 @@ class CompactClassProjectionDemand:
 
     abc_method_names: frozenset[str]
     abc_declaration_signatures: frozenset[str]
+    header_core_only: bool = False
 
 
 def _class_report_demand(
@@ -634,7 +638,7 @@ def _cached_class_demand_projection(
 ) -> tuple[object, ...]:
     if not isinstance(demand, CompactClassProjectionDemand):
         raise TypeError("class projection demand has the wrong authority type")
-    return tuple(
+    projected = tuple(
         replace(
             item,
             abc_optimizer_methods=tuple(
@@ -651,6 +655,254 @@ def _cached_class_demand_projection(
         for item in items
         if isinstance(item, CompactModuleClassProjection)
     )
+    if not demand.header_core_only:
+        return projected
+    return tuple(_class_header_core_projection(item) for item in projected)
+
+
+def _defaulted_dataclass_fields(
+    item_type: type,
+    preserved_names: frozenset[str],
+) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for item in fields(item_type):
+        if item.name in preserved_names:
+            continue
+        if item.default is not MISSING:
+            values[item.name] = item.default
+        elif item.default_factory is not MISSING:
+            values[item.name] = item.default_factory()
+        else:
+            raise TypeError(f"{item_type.__name__}.{item.name} has no default")
+    return values
+
+
+_CLASS_HEADER_CORE_CLASS_DEFAULTS = _defaulted_dataclass_fields(
+    CompactIndexedClass,
+    frozenset(
+        {
+            "symbol",
+            "module_name",
+            "qualname",
+            "simple_name",
+            "file_path",
+            "line",
+            "declared_base_names",
+            "base_reference_parts",
+            "is_final",
+            "resolved_base_symbols",
+        }
+    ),
+)
+_CLASS_HEADER_CORE_MODULE_DEFAULTS = _defaulted_dataclass_fields(
+    CompactModuleClassProjection,
+    frozenset({"module_name", "file_path", "import_aliases", "classes"}),
+)
+
+
+def _class_header_core_projection(
+    item: CompactModuleClassProjection,
+) -> CompactModuleClassProjection:
+    return replace(
+        item,
+        classes=tuple(
+            replace(indexed_class, **_CLASS_HEADER_CORE_CLASS_DEFAULTS)
+            for indexed_class in item.classes
+        ),
+        **_CLASS_HEADER_CORE_MODULE_DEFAULTS,
+    )
+
+
+def _native_definition_child(node: object, definition_type: str) -> object | None:
+    node_type = getattr(node, "type", None)
+    if node_type == definition_type:
+        return node
+    if node_type != "decorated_definition":
+        return None
+    return next(
+        (
+            child
+            for child in getattr(node, "named_children", ())
+            if child.type == definition_type
+        ),
+        None,
+    )
+
+
+def _native_sparse_class_header(
+    syntax_index: NativePythonSyntaxIndex,
+    node: object,
+) -> ast.ClassDef:
+    class_node = copy.deepcopy(syntax_index.class_header_for(node))
+    body_node = node.child_by_field_name("body")
+    body: list[ast.stmt] = []
+    if body_node is not None:
+        for child in body_node.named_children:
+            nested = _native_definition_child(child, "class_definition")
+            if nested is not None:
+                body.append(_native_sparse_class_header(syntax_index, nested))
+                continue
+            function = _native_definition_child(child, "function_definition")
+            if function is not None:
+                continue
+            if child.type != "expression_statement":
+                continue
+    if body:
+        class_node.body = body
+    return class_node
+
+
+def _native_class_header_module(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+) -> ParsedModule | None:
+    if not syntax_index.is_complete:
+        return None
+    body: list[ast.stmt] = []
+    for child in syntax_index.tree.root_node.named_children:
+        class_node = _native_definition_child(child, "class_definition")
+        if class_node is not None:
+            body.append(_native_sparse_class_header(syntax_index, class_node))
+        elif child.type in {
+            "future_import_statement",
+            "import_statement",
+            "import_from_statement",
+        }:
+            body.append(copy.deepcopy(syntax_index.statement_for(child)))
+    return ParsedModule(
+        path=source_module.path,
+        module_name=source_module.module_name,
+        is_package_init=source_module.path.name == "__init__.py",
+        module=ast.Module(body=body, type_ignores=[]),
+        source=source_module.source,
+        family_cache_dir=source_module.family_cache_dir,
+    )
+
+
+def _collect_demanded_class_projection_from_source(
+    source_module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    demand: object,
+) -> list[object] | None:
+    if not isinstance(demand, CompactClassProjectionDemand):
+        raise TypeError("class projection demand has the wrong authority type")
+    if not demand.header_core_only:
+        return None
+    parsed_module = _native_class_header_module(source_module, syntax_index)
+    if parsed_module is None:
+        return None
+    return CompactModuleClassProjectionFamily._collect_header_core(parsed_module)
+
+
+def _compact_indexed_classes(
+    parsed_module: ParsedModule,
+    indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
+    *,
+    include_body_facets: bool,
+) -> tuple[CompactIndexedClass, ...]:
+    file_path = str(parsed_module.path)
+    return tuple(
+        CompactIndexedClass(
+            symbol=f"{parsed_module.module_name}.{qualname}",
+            module_name=parsed_module.module_name,
+            qualname=qualname,
+            simple_name=qualname.rsplit(".", 1)[-1],
+            file_path=file_path,
+            line=node.lineno,
+            declared_base_names=tuple(
+                declared_name
+                for base in node.bases
+                if (
+                    declared_name := ClassSymbolResolutionAuthority.declared_base_name(
+                        base
+                    )
+                )
+                is not None
+            ),
+            base_reference_parts=tuple(
+                parts
+                for base in node.bases
+                if (
+                    parts := ATTRIBUTE_CHAIN_AUTHORITY.project(
+                        ClassSymbolResolutionAuthority.reference_node(base)
+                    )
+                )
+                is not None
+            ),
+            direct_assignment_expressions=tuple(
+                (target_name, ast.unparse(value) if value is not None else None)
+                for target_name, value in direct_assignments.items()
+            ),
+            direct_assignment_lines=tuple(_direct_class_assignment_lines(node)),
+            direct_constant_string_assignments=tuple(
+                sorted(
+                    (name, value.value)
+                    for name, value in direct_assignments.items()
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str)
+                )
+            ),
+            direct_non_none_assignment_names=sorted_tuple(
+                name
+                for name, value in direct_assignments.items()
+                if not (isinstance(value, ast.Constant) and value.value is None)
+            ),
+            metaclass_names=tuple(
+                terminal_name
+                for keyword in node.keywords
+                if keyword.arg == "metaclass"
+                if (terminal_name := _terminal_reference_name(keyword.value))
+                is not None
+            ),
+            keyed_family_key_type_name=_keyed_family_key_type_name(node),
+            is_final=any(
+                (isinstance(decorator, ast.Name) and decorator.id == "final")
+                or (isinstance(decorator, ast.Attribute) and decorator.attr == "final")
+                for decorator in node.decorator_list
+            ),
+            end_line=node.end_lineno,
+            method_names=tuple(
+                statement.name
+                for statement in node.body
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ),
+            abstract_method_names=sorted_tuple(
+                statement.name
+                for statement in node.body
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                if any(
+                    _terminal_reference_name(decorator) == "abstractmethod"
+                    for decorator in statement.decorator_list
+                )
+            ),
+            is_abstract=_is_abstract_class(node),
+            is_dataclass=_is_dataclass_class(node),
+            declares_autoregister_meta=_declares_autoregister_meta(node),
+            is_registration_authority=_is_registration_authority(node),
+            autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
+                parsed_module,
+                node,
+            ),
+            autoregister_key_extractor_name=_autoregister_key_extractor_name(node),
+            autoregister_registry_projection_names=(
+                _autoregister_registry_projection_names(node)
+                if include_body_facets
+                else ()
+            ),
+            keyed_registry_lookup_method_names=(
+                _keyed_registry_lookup_method_names(node) if include_body_facets else ()
+            ),
+            keyed_registry_reverse_lookup_method_names=(
+                _keyed_registry_reverse_lookup_method_names(node)
+                if include_body_facets
+                else ()
+            ),
+            predicate_selected_methods=(
+                _compact_predicate_selected_methods(node) if include_body_facets else ()
+            ),
+        )
+        for qualname, node in indexed_class_nodes
+        for direct_assignments in (_direct_class_assignments(node),)
+    )
 
 
 class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
@@ -660,6 +912,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     cache_payload_max_bytes = 3_000_000
     report_demand_builder = staticmethod(_class_report_demand)
     cached_demand_projector = staticmethod(_cached_class_demand_projection)
+    source_demand_collector = staticmethod(
+        _collect_demanded_class_projection_from_source
+    )
 
     @classmethod
     def collect(
@@ -676,7 +931,33 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> list[CompactModuleClassProjection] | None:
         if not isinstance(demand, CompactClassProjectionDemand):
             raise TypeError("class projection demand has the wrong authority type")
+        if demand.header_core_only:
+            return cls._collect_header_core(parsed_module)
         return cls._collect(parsed_module, demand)
+
+    @classmethod
+    def _collect_header_core(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list[CompactModuleClassProjection]:
+        del cls
+        indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
+        return [
+            _class_header_core_projection(
+                CompactModuleClassProjection(
+                    module_name=parsed_module.module_name,
+                    file_path=str(parsed_module.path),
+                    import_aliases=tuple(
+                        sorted(_module_import_aliases(parsed_module).items())
+                    ),
+                    classes=_compact_indexed_classes(
+                        parsed_module,
+                        indexed_class_nodes,
+                        include_body_facets=False,
+                    ),
+                )
+            )
+        ]
 
     @classmethod
     def _collect(
@@ -740,105 +1021,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             all_class_nodes,
             nominal_field_type_maps,
         )
-        classes = tuple(
-            CompactIndexedClass(
-                symbol=f"{parsed_module.module_name}.{qualname}",
-                module_name=parsed_module.module_name,
-                qualname=qualname,
-                simple_name=qualname.rsplit(".", 1)[-1],
-                file_path=file_path,
-                line=node.lineno,
-                declared_base_names=tuple(
-                    declared_name
-                    for base in node.bases
-                    if (
-                        declared_name := ClassSymbolResolutionAuthority.declared_base_name(
-                            base
-                        )
-                    )
-                    is not None
-                ),
-                base_reference_parts=tuple(
-                    parts
-                    for base in node.bases
-                    if (
-                        parts := ATTRIBUTE_CHAIN_AUTHORITY.project(
-                            ClassSymbolResolutionAuthority.reference_node(base)
-                        )
-                    )
-                    is not None
-                ),
-                direct_assignment_expressions=tuple(
-                    (target_name, ast.unparse(value) if value is not None else None)
-                    for target_name, value in direct_assignments.items()
-                ),
-                direct_assignment_lines=tuple(_direct_class_assignment_lines(node)),
-                direct_constant_string_assignments=tuple(
-                    sorted(
-                        (name, value.value)
-                        for name, value in direct_assignments.items()
-                        if isinstance(value, ast.Constant)
-                        and isinstance(value.value, str)
-                    )
-                ),
-                direct_non_none_assignment_names=sorted_tuple(
-                    name
-                    for name, value in direct_assignments.items()
-                    if not (isinstance(value, ast.Constant) and value.value is None)
-                ),
-                metaclass_names=tuple(
-                    terminal_name
-                    for keyword in node.keywords
-                    if keyword.arg == "metaclass"
-                    if (terminal_name := _terminal_reference_name(keyword.value))
-                    is not None
-                ),
-                keyed_family_key_type_name=_keyed_family_key_type_name(node),
-                is_final=any(
-                    (isinstance(decorator, ast.Name) and decorator.id == "final")
-                    or (
-                        isinstance(decorator, ast.Attribute)
-                        and decorator.attr == "final"
-                    )
-                    for decorator in node.decorator_list
-                ),
-                end_line=node.end_lineno,
-                method_names=tuple(
-                    statement.name
-                    for statement in node.body
-                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                ),
-                abstract_method_names=sorted_tuple(
-                    statement.name
-                    for statement in node.body
-                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    if any(
-                        _terminal_reference_name(decorator) == "abstractmethod"
-                        for decorator in statement.decorator_list
-                    )
-                ),
-                is_abstract=_is_abstract_class(node),
-                is_dataclass=_is_dataclass_class(node),
-                declares_autoregister_meta=_declares_autoregister_meta(node),
-                is_registration_authority=_is_registration_authority(node),
-                autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
-                    parsed_module,
-                    node,
-                ),
-                autoregister_key_extractor_name=_autoregister_key_extractor_name(node),
-                autoregister_registry_projection_names=_autoregister_registry_projection_names(
-                    node
-                ),
-                keyed_registry_lookup_method_names=_keyed_registry_lookup_method_names(
-                    node
-                ),
-                keyed_registry_reverse_lookup_method_names=_keyed_registry_reverse_lookup_method_names(
-                    node
-                ),
-                predicate_selected_methods=_compact_predicate_selected_methods(node),
-            )
-            for qualname, node in indexed_class_nodes
-            for direct_assignments in (_direct_class_assignments(node),)
+        classes = _compact_indexed_classes(
+            parsed_module,
+            indexed_class_nodes,
+            include_body_facets=True,
         )
         return [
             CompactModuleClassProjection(

@@ -2659,6 +2659,71 @@ def test_native_definition_headers_preserve_decorators_lines_and_full_span() -> 
     assert isinstance(function_header, ast.AsyncFunctionDef)
 
 
+def test_native_class_header_core_matches_cached_minimal_projection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    source_path = package_root / "mod.py"
+    source = (
+        "from __future__ import annotations\n"
+        "from support import Parent as ImportedParent\n"
+        "\n"
+        "@final\n"
+        "class Child(ImportedParent):\n"
+        "    registry_key = 'child'\n"
+        "\n"
+        "    @classmethod\n"
+        "    def select(cls, value: int) -> str:\n"
+        "        cls.__registry__[value] = cls\n"
+        "        return str(value)\n"
+        "\n"
+        "    class Nested(ImportedParent):\n"
+        "        pass\n"
+    )
+    source_path.write_text(source, encoding="utf-8")
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    family = class_index_module.CompactModuleClassProjectionFamily
+    demand = class_index_module.CompactClassProjectionDemand(
+        abc_method_names=frozenset(),
+        abc_declaration_signatures=frozenset(),
+        header_core_only=True,
+    )
+    full_items = tuple(family.collect(parsed_module))
+    expected = family.project_cached_demand(full_items, demand)
+    actual = family.collect_demanded_source(
+        SourceModule(source_path, "mod", source),
+        NativePythonSyntaxIndex.from_source(source),
+        demand,
+    )
+
+    assert actual is not None
+    assert tuple(actual) == expected
+    assert [item.qualname for item in actual[0].classes] == ["Child", "Child.Nested"]
+    child = actual[0].classes[0]
+    assert child.declared_base_names == ("ImportedParent",)
+    assert child.is_final is True
+    assert child.direct_assignment_expressions == ()
+    assert child.method_names == ()
+    assert actual[0].carrier_class_facts == ()
+    assert dict(actual[0].import_aliases)["ImportedParent"] == "support.Parent"
+
+
+def test_report_class_header_core_safety_is_detector_declared() -> None:
+    assert (
+        abstraction_reuse_detectors.CarrierCompositionRetreatDetector.compact_report_class_header_core_safe
+        is True
+    )
+    assert (
+        role_surface_detectors.RoleSurfaceDriftDetector.compact_report_class_header_core_safe
+        is True
+    )
+    assert (
+        abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_report_class_header_core_safe
+        is False
+    )
+
+
 def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
     tmp_path: Path,
 ) -> None:

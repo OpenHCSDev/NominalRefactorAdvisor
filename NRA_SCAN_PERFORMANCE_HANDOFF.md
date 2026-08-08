@@ -2399,3 +2399,29 @@ is an aggregate cache hit at 0.599 second.  Together with the earlier
 one-context-file frozen DQDock replay at 2.54 seconds and OpenHCS replay at 2.24
 seconds, this satisfies the few-second normal edit-loop target; exact cold
 preparation remains a separate structural optimization problem.
+
+### 2026-08-08 detector-safe minimal class core
+
+The earlier native-core rejection applied only to running the generic class
+demand beside the still-eager detector surface.  A detector-declared core now
+provides the necessary dependency for the stronger target-witness route.
+Carrier composition and role-surface drift explicitly declare that context
+needs only class identity, imports, and base edges; the report target retains
+its complete class projection.  All other class consumers remain conservative.
+The core schema is derived from dataclass defaults rather than a manually
+synchronized facet roster, and native collection matches the same view derived
+from a complete cached projection.  Whole-inventory parity is exact on all 919
+applicable DQDock context files (one grammar fallback) in 4.69 aggregate
+seconds and all 1,244 OpenHCS production files in 2.86 aggregate seconds.
+
+On empty temporary caches, an oracle containing only the global detectors that
+actually contribute target findings returns all 12 DQDock findings in 7.68
+seconds wall (6.38 preparation, 1.29 analysis), versus 31.19 seconds for the
+complete cold surface.  The equivalent OpenHCS oracle returns all 45 findings
+in 7.14 seconds (6.26 preparation, 0.86 analysis).  This is an architectural
+upper bound, not yet a production selector: selecting only observed outputs is
+circular and therefore cannot be promoted.  A relaxed target-witness replay
+also exposes latent repeated-builder and inheritance candidates on DQDock; the
+exact six-global-detector replay takes 12.21 seconds.  The remaining work is to
+make those detector witness contracts explicit and accelerate their demanded
+context collectors, rather than hardcode the four observed detector names.

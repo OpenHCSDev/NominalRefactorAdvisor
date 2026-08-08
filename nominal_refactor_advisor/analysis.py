@@ -66,6 +66,10 @@ from .cache_paths import (
     semantic_descent_cache_sibling,
 )
 from .cache_checkout import absolute_checkout_path
+from .class_index import (
+    CompactClassProjectionDemand,
+    CompactModuleClassProjectionFamily,
+)
 from .detectors import (
     CompactClassRepositoryContext,
     CompactFindingStream,
@@ -1663,6 +1667,27 @@ def analyze_compact_roots_with_cache(
             )
             if demand is not None:
                 report_family_demands[family] = demand
+        class_consumers = tuple(
+            detector_type
+            for detector_type in missing_global_detector_types
+            if CompactModuleClassProjectionFamily
+            in cast(
+                type[CompactModuleProjectionDetectorMixin], detector_type
+            ).compact_projection_families()
+        )
+        class_demand = report_family_demands.get(CompactModuleClassProjectionFamily)
+        if (
+            class_consumers
+            and isinstance(class_demand, CompactClassProjectionDemand)
+            and all(
+                detector_type.compact_report_class_header_core_safe
+                for detector_type in class_consumers
+            )
+        ):
+            report_family_demands[CompactModuleClassProjectionFamily] = replace(
+                class_demand,
+                header_core_only=True,
+            )
         release_module_analysis_memory(collect_cycles=False)
     projection_manifest.family_demands = report_family_demands
     projection_manifest.report_scope = report_scope
