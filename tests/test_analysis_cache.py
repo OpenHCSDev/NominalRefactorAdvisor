@@ -2743,6 +2743,10 @@ def test_report_class_header_core_safety_is_detector_declared() -> None:
         role_surface_detectors.RoleSurfaceDriftDetector.compact_report_class_header_core_safe
         is True
     )
+    assert (
+        abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_report_class_header_core_safe
+        is False
+    )
 
 
 def test_native_inheritance_method_demand_matches_cached_fibers(
@@ -2969,10 +2973,6 @@ def test_native_available_abstraction_demand_matches_structural_overlap(
     assert expected
     assert actual is not None
     assert tuple(actual) == expected
-    assert (
-        abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_report_class_header_core_safe
-        is False
-    )
 
 
 def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(

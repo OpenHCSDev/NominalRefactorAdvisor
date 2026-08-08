@@ -2494,3 +2494,17 @@ visibility-plus-atom route has zero full-inventory mismatches and needs no
 fragment parses on either representative frontier.  It costs 3.53 and 2.80
 aggregate seconds including the shared native parse, approximately 0.6--0.8
 seconds of incremental family work.
+
+A native semantic-supplement collector was then prototyped as the final
+DQDock AST-family dependency.  It had zero mismatches across 14,359 DQDock and
+5,853 OpenHCS class supplements, but the decisive composed scan invalidated the
+all-native premise: DQDock remained exact at 12 findings yet regressed from
+approximately 23.21 to 24.77 seconds wall (17.88 preparation, 5.85 analysis).
+Per-family worker profiling showed why: inheritance fragment reconstruction
+cost 37.64 aggregate CPU seconds, while distributed boundary, nominal bypass,
+role surface, repeated builders, and semantic supplements each added roughly
+7.3--11.0 seconds.  The route replaced one shared AST traversal with several
+independent native traversals and fragment parsers.  The semantic collector and
+profiling hook were removed.  Do not resume the all-native route without first
+introducing one shared native event/index authority or a detector-level target
+witness selector that avoids constructing these families at all.
