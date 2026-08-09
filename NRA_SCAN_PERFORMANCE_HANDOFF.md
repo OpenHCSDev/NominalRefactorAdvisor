@@ -1,5 +1,33 @@
 # NRA scan-performance handoff
 
+## 2026-08-08 reported-seed witness checkpoint
+
+Sixteen additional detector contracts now identify the raw projection fact that
+must occur in the report target because it is the location emitted as finding
+evidence.  The covered facts are manual and latent rosters, AutoRegisterMeta
+roots, predicate-selector roots, repeated keyed-family roots, keyed registry
+axis roots, manual registry projection surfaces, and keyed/manual/branch axis
+sites.  Context may supply descendants, registry cases, consumers, or the
+opposite side of a join, but it cannot make a context-only reported seed land
+inside the target.  Target-only detection remains the override for every
+negative witness.
+
+Together with demanded-presence witnesses, the DQDock preflight now rejects
+31 of 69 compact global detectors, versus 8 at the first witness checkpoint.
+The remaining 38 include 25 relational class consumers for which a target
+class can be secondary evidence; those require a cheap context relation index
+rather than another raw-presence predicate.  DQDock remains exact at 12
+findings across all 252 detectors in 19.758 internal / 20.833 wall seconds.
+OpenHCS remains exact at 45 findings across all 252 in 14.292 internal / 15.316
+wall seconds.  The analysis-cache suite passes all 148 tests.
+
+As predicted by the class-family critical path, this large selector reduction
+does not yet materially change DQDock cold runtime because the remaining class
+consumers still require the same broad projection.  Treat these contracts as
+the exact front half of the dominant fix.  The next route is a shared cheap
+class/header relation preflight for the 38 survivors; do not add more raw seed
+predicates where secondary target evidence remains possible.
+
 ## 2026-08-08 demanded-presence witness checkpoint
 
 Detector selection now consumes the existing family demand authority before

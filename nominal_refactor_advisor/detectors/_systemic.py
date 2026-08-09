@@ -3365,11 +3365,92 @@ def _compact_keyed_family_axis_specs_from_context(
     )
 
 
+def _target_has_keyed_family_axis_root(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """A keyed-family report names one of the roots that owns the axis."""
+
+    del config
+    return any(
+        indexed_class.keyed_family_key_type_name is not None
+        and "registry_key_attr" in indexed_class.assignments_by_name
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+        for indexed_class in projection.classes
+    )
+
+
+def _target_has_manual_selector_axis(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    del config
+    return any(
+        projection.manual_selector_axes
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+    )
+
+
+def _target_has_closed_axis_branch(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    del config
+    return any(
+        projection.closed_axis_branch_functions
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+    )
+
+
+def _target_has_keyed_table_axis(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    del config
+    return any(
+        projection.keyed_table_axes
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+    )
+
+
+def _target_has_axis_shadow_evidence(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    return _target_has_keyed_family_axis_root(
+        projections_by_family, config
+    ) or _target_has_manual_selector_axis(projections_by_family, config)
+
+
+def _target_has_residual_axis_evidence(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    return _target_has_keyed_family_axis_root(
+        projections_by_family, config
+    ) or _target_has_closed_axis_branch(projections_by_family, config)
+
+
 class CompactCrossModuleAxisShadowFamilyCandidateBase(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     CrossModuleCollectorCandidateDetector[CrossModuleAxisShadowFamilyCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_axis_shadow_evidence
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
     def _findings_from_compact_projections(
@@ -3429,6 +3510,9 @@ class ResidualClosedAxisBranchingDetector(
     CrossModuleCollectorCandidateDetector[ResidualClosedAxisBranchingCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_residual_axis_evidence
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
@@ -3503,6 +3587,9 @@ class ParallelKeyedAxisFamilyDetector(
     CrossModuleCollectorCandidateDetector[ParallelKeyedAxisFamilyCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_keyed_family_axis_root
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
     registry_normal_form_policy = RegistryNormalFormPolicy(
         stage_order=50,
@@ -3592,6 +3679,9 @@ class CompactParallelKeyedTableAxisCandidateBase(
     CrossModuleCollectorCandidateDetector[ParallelKeyedTableAxisCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_keyed_table_axis
+    )
 
     def _findings_from_compact_projections(
         self,
@@ -3651,6 +3741,9 @@ class ParallelKeyedTableAndFamilyDetector(
     CrossModuleCollectorCandidateDetector[ParallelKeyedTableAndFamilyCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_keyed_table_axis
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
     registry_normal_form_policy = RegistryNormalFormPolicy(
         stage_order=30,
@@ -4552,11 +4645,30 @@ def _compact_repeated_keyed_family_candidates(
     )
 
 
+def _target_has_repeated_keyed_family_root(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """Repeated-keyed-family evidence consists exclusively of its roots."""
+
+    del config
+    return any(
+        projection.repeated_keyed_family_roots
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+    )
+
+
 class RepeatedKeyedFamilyDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[RepeatedKeyedFamilyCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_repeated_keyed_family_root
+    )
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Repeated keyed family scaffolding should collapse into one typed metaclass-registry base",
@@ -5105,6 +5217,43 @@ def _compact_registry_projection_policy_authority_candidates(
     )
 
 
+def _target_has_keyed_registry_axis_root(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """Registry-axis findings are anchored at the class that owns the axis."""
+
+    del config
+    return any(
+        indexed_class.keyed_family_key_type_name is not None
+        and _compact_string_literal(
+            indexed_class.assignments_by_name.get("registry_key_attr")
+        )
+        is not None
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+        for indexed_class in projection.classes
+    )
+
+
+def _target_has_named_registry_projection_surface(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """Projection findings report their manual surface, not the joined registry."""
+
+    del config
+    return any(
+        projection.named_projection_surfaces
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+    )
+
+
 class _CompactPrematureRegistryInfrastructureDetectorBase(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[
@@ -5112,6 +5261,9 @@ class _CompactPrematureRegistryInfrastructureDetectorBase(
     ],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_keyed_registry_axis_root
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
     def _findings_from_compact_projections(
@@ -5143,6 +5295,9 @@ class _CompactNonInjectiveTypeRegistryDetectorBase(
     ConfiguredCrossModuleCollectorCandidateDetector[NonInjectiveTypeRegistryCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_keyed_registry_axis_root
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
     def _findings_from_compact_projections(
@@ -5174,6 +5329,9 @@ class _CompactInjectiveTypeRegistryDetectorBase(
     ConfiguredCrossModuleCollectorCandidateDetector[InjectiveTypeRegistryCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_keyed_registry_axis_root
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
     def _findings_from_compact_projections(
@@ -5205,6 +5363,9 @@ class _CompactRegistryProjectionSurfaceDetectorBase(
     ConfiguredCrossModuleCollectorCandidateDetector[RegistryProjectionSurfaceCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_named_registry_projection_surface
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
     def _findings_from_compact_projections(
@@ -5239,6 +5400,9 @@ class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
     ],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_named_registry_projection_surface
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
     def _findings_from_compact_projections(

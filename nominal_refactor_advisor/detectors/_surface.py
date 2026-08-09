@@ -218,10 +218,29 @@ def _compact_first_nominal_class_locations(
     return locations
 
 
+def _target_has_manual_family_roster(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """Manual-family findings report the roster owner, never a joined leaf."""
+
+    del config
+    return any(
+        projection.manual_family_rosters
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+    )
+
+
 class ManualFamilyRosterDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection], IssueDetector
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_manual_family_roster
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,

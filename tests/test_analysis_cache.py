@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import importlib.util
 import os
 from pathlib import Path
@@ -3077,6 +3078,126 @@ def test_private_reference_witness_skips_companion_class_context(
 
     assert result.findings == []
     assert collected_paths == [target_path.resolve()]
+
+
+def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> None:
+    family = class_index_module.CompactModuleClassProjectionFamily
+    empty_projection = class_index_module.CompactModuleClassProjection(
+        module_name="pkg.target",
+        file_path="/repo/pkg/target.py",
+        import_aliases=(),
+        classes=(),
+    )
+    base_class = class_index_module.CompactIndexedClass(
+        symbol="pkg.target.Root",
+        module_name="pkg.target",
+        qualname="Root",
+        simple_name="Root",
+        file_path="/repo/pkg/target.py",
+        line=1,
+        declared_base_names=(),
+        base_reference_parts=(),
+    )
+    autoregister_projection = replace(
+        empty_projection,
+        classes=(replace(base_class, declares_autoregister_meta=True),),
+    )
+    predicate_projection = replace(
+        empty_projection,
+        classes=(
+            replace(
+                base_class,
+                direct_assignment_expressions=(("_registered_types", "[]"),),
+                predicate_selected_methods=((2, "select", "matches", "context"),),
+            ),
+        ),
+    )
+    keyed_registry_projection = replace(
+        empty_projection,
+        classes=(
+            replace(
+                base_class,
+                direct_assignment_expressions=(
+                    ("registry_key_attr", "'kind'"),
+                ),
+                keyed_family_key_type_name="Kind",
+            ),
+        ),
+    )
+    detector_projection_pairs = (
+        (
+            runtime_detectors.ManualConcreteSubclassRosterDetector,
+            replace(empty_projection, manual_subclass_roster_roots=(object(),)),
+        ),
+        (
+            runtime_detectors.LatentImplementationRosterDetector,
+            replace(empty_projection, latent_rosters=(object(),)),
+        ),
+        (runtime_detectors.AutoRegisterMetaUnderRentedDetector, autoregister_projection),
+        (
+            runtime_detectors.PredicateSelectedConcreteFamilyDetector,
+            predicate_projection,
+        ),
+        (
+            surface_detectors.ManualFamilyRosterDetector,
+            replace(empty_projection, manual_family_rosters=(object(),)),
+        ),
+        (
+            systemic_detectors.RepeatedKeyedFamilyDetector,
+            replace(empty_projection, repeated_keyed_family_roots=(object(),)),
+        ),
+        (
+            systemic_detectors.CrossModuleAxisShadowFamilyDetector,
+            replace(empty_projection, manual_selector_axes=(object(),)),
+        ),
+        (
+            systemic_detectors.ResidualClosedAxisBranchingDetector,
+            replace(empty_projection, closed_axis_branch_functions=(object(),)),
+        ),
+        (
+            systemic_detectors.ParallelKeyedAxisFamilyDetector,
+            keyed_registry_projection,
+        ),
+        (
+            systemic_detectors.ParallelKeyedTableAxisDetector,
+            replace(empty_projection, keyed_table_axes=(object(),)),
+        ),
+        (
+            systemic_detectors.ParallelKeyedTableAndFamilyDetector,
+            replace(empty_projection, keyed_table_axes=(object(),)),
+        ),
+        (
+            systemic_detectors.NonInjectiveTypeRegistryDetector,
+            keyed_registry_projection,
+        ),
+        (
+            systemic_detectors.InjectiveTypeRegistryDetector,
+            keyed_registry_projection,
+        ),
+        (
+            systemic_detectors.PrematureRegistryInfrastructureDetector,
+            keyed_registry_projection,
+        ),
+        (
+            systemic_detectors.RegistryProjectionSurfaceDetector,
+            replace(empty_projection, named_projection_surfaces=(object(),)),
+        ),
+        (
+            systemic_detectors.RegistryProjectionPolicyAuthorityDetector,
+            replace(empty_projection, named_projection_surfaces=(object(),)),
+        ),
+    )
+    config = DetectorConfig()
+
+    for detector_type, anchored_projection in detector_projection_pairs:
+        assert not detector_type.compact_report_context_can_promote(
+            {family: (empty_projection,)},
+            config,
+        )
+        assert detector_type.compact_report_context_can_promote(
+            {family: (anchored_projection,)},
+            config,
+        )
 
 
 def test_public_bare_support_empty_demand_skips_context_collection(

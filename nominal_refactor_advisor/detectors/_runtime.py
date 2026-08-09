@@ -6334,6 +6334,73 @@ class ManualClassRegistrationDetector(
         )
 
 
+def _target_has_manual_subclass_roster_root(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """A roster finding reports the root that owns the roster, not its leaves."""
+
+    del config
+    return any(
+        projection.manual_subclass_roster_roots
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+    )
+
+
+def _target_has_latent_roster(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """A latent-roster finding is anchored at the roster declaration itself."""
+
+    del config
+    return any(
+        projection.latent_rosters
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+    )
+
+
+def _target_has_autoregister_meta_root(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """Under-rent evidence is always the class that declares AutoRegisterMeta."""
+
+    del config
+    return any(
+        indexed_class.declares_autoregister_meta
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+        for indexed_class in projection.classes
+    )
+
+
+def _target_has_predicate_selected_root(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    config: DetectorConfig,
+) -> bool:
+    """Predicate-family evidence is located on its selector root."""
+
+    del config
+    return any(
+        indexed_class.predicate_selected_methods
+        and "_registered_types" in indexed_class.assignments_by_name
+        for projection in projections_by_family.get(
+            CompactModuleClassProjectionFamily, ()
+        )
+        if isinstance(projection, CompactModuleClassProjection)
+        for indexed_class in projection.classes
+    )
+
+
 class ManualConcreteSubclassRosterDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     ConfiguredCrossModuleCollectorCandidateDetector[
@@ -6341,6 +6408,9 @@ class ManualConcreteSubclassRosterDetector(
     ],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_manual_subclass_roster_root
+    )
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual concrete-subclass roster should become a metaclass-registry base",
@@ -6451,6 +6521,9 @@ class LatentImplementationRosterDetector(
     ],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_latent_roster
+    )
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual implementation enumeration should derive from the ABC registry",
@@ -7490,6 +7563,9 @@ class AutoRegisterMetaUnderRentedDetector(
     ConfiguredCrossModuleCollectorCandidateDetector[AutoRegisterMetaRentCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_autoregister_meta_root
+    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
@@ -7587,6 +7663,9 @@ class PredicateSelectedConcreteFamilyDetector(
     ],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_predicate_selected_root
+    )
     compact_shared_context_builder = _compact_concrete_family_context
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
