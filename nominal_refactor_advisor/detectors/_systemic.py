@@ -7972,6 +7972,7 @@ class CompactDataclassNamespaceCliMirrorCandidateBase(
     CrossModuleCollectorCandidateDetector[DataclassNamespaceCliMirrorCandidate],
 ):
     module_projection_family = _DataclassNamespaceCliModuleProjectionFamily
+    compact_report_context_requires_target_projection = True
 
     def _findings_from_compact_projections(
         self,

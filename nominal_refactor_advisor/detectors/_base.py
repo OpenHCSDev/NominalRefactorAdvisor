@@ -992,6 +992,10 @@ class ContextualGlobalCacheContract(ABC):
 
 
 CompactProjectionItemT = TypeVar("CompactProjectionItemT")
+CompactReportContextPromotionPredicate: TypeAlias = Callable[
+    [dict[type[CollectedFamily], tuple[object, ...]], DetectorConfig],
+    bool,
+]
 CompactDerivedContextT = TypeVar("CompactDerivedContextT")
 
 
@@ -1066,12 +1070,34 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     module_projection_family: ClassVar[type[CollectedFamily]]
     compact_shared_context_builder: ClassVar[Callable[..., object] | None] = None
     compact_report_class_header_core_safe: ClassVar[bool] = False
+    compact_report_context_promotion_predicate: ClassVar[
+        CompactReportContextPromotionPredicate | None
+    ] = None
+    compact_report_context_requires_target_projection: ClassVar[bool] = False
 
     @classmethod
     def compact_projection_families(
         cls,
     ) -> tuple[type[CollectedFamily], ...]:
         return (cls.module_projection_family,)
+
+    @classmethod
+    def compact_report_context_can_promote(
+        cls,
+        target_projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> bool:
+        """Conservatively admit context unless an exact witness rejects it."""
+
+        predicate = cls.compact_report_context_promotion_predicate
+        if predicate is not None:
+            return predicate(target_projections_by_family, config)
+        if cls.compact_report_context_requires_target_projection:
+            return any(
+                target_projections_by_family.get(family, ())
+                for family in cls.compact_projection_families()
+            )
+        return True
 
     @classmethod
     def compact_module_projection_groups(

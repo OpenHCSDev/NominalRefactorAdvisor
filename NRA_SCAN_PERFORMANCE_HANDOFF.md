@@ -2631,3 +2631,33 @@ report evidence from context, and construct demanded context only for those
 detectors.  The default must remain conservative until each detector authority
 declares its seed/promotion contract; an observed DQDock/OpenHCS detector roster
 is not a sound selector.
+
+### 2026-08-08 detector-declared target witnesses
+
+The report-filter preflight now has a conservative detector-level promotion
+authority.  Complete target projections are staged once for the selected
+detectors.  A detector may declare that context cannot promote report evidence
+unless the target contributes at least one item from one of its projection
+families; undeclared detectors continue through the existing full-context path.
+Only an explicit negative witness is evaluated target-only, and any unexpected
+target finding overrides the negative so that complete context can still
+validate, suppress, or enrich it.
+
+Nine exact raw-candidate contracts are promoted in the first increment:
+formal-boundary string registries, generated-boundary semantic constants,
+declared-field extraction fanout, repeated export dictionaries, manual class
+registration, export-policy predicates, registry-traversal substrates,
+support-prelude module families, and dataclass/namespace/CLI mirrors.  Saved
+complete-frontier replay across DQDock and OpenHCS found no case where a
+negative witness concealed a report finding.  On each representative target,
+seven of these context groups were rejected before context extraction; the
+remaining contracts had target projections and stayed conservative.
+
+The focused analysis-cache suite passes 146 tests, including negative and
+positive witness regressions.  The full suite passes 1,055 tests and retains
+the established semantic-graph lazy-load failure; that failure reproduces
+unchanged in isolation.  This increment establishes the sound selection
+authority needed for the dominant fix.  It is not yet claimed as a material
+cold-runtime win: the remaining expensive class, role, semantic, and systemic
+families need detector-specific candidate-seed contracts before another
+end-to-end benchmark is warranted.

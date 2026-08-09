@@ -2742,6 +2742,7 @@ class FormalBoundaryExternalStringRegistryMirrorDetector(
     SemanticMirrorIssueDetector,
 ):
     module_projection_family = FormalBoundaryPythonStringConstantFamily
+    compact_report_context_requires_target_projection = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Formal-boundary string registries should not be mirrored across sources",
@@ -3036,6 +3037,7 @@ class GeneratedBoundarySemanticConstantMirrorDetector(
     SemanticMirrorIssueDetector,
 ):
     module_projection_family = GeneratedBoundarySemanticConstantSiteFamily
+    compact_report_context_requires_target_projection = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Generated semantic constants should not be mirrored in runtime code",
@@ -5956,6 +5958,7 @@ class DeclaredFieldExtractionFanoutDetector(
     FlattenedModuleCollectorCandidateDetector[DeclaredFieldExtractionSite],
 ):
     module_projection_family = DeclaredFieldExtractionSiteFamily
+    compact_report_context_requires_target_projection = True
     ssot_authority_boundary = True
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -6197,6 +6200,7 @@ class RepeatedExportDictDetector(
     ]
 ):
     module_projection_family = ExportDictShapeFamily
+    compact_report_context_requires_target_projection = True
     detector_id = "repeated_export_dicts"
     ssot_authority_boundary = True
     observation_kind = ObservationKind.EXPORT_DICT
@@ -6259,6 +6263,7 @@ class ManualClassRegistrationDetector(
     CompactGroupedShapeIssueDetector[RegistrationShape, str]
 ):
     module_projection_family = RegistrationShapeFamily
+    compact_report_context_requires_target_projection = True
     finding_spec = certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual class registration should become metaclass-registry AutoRegisterMeta",

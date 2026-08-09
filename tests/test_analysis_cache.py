@@ -2902,6 +2902,84 @@ def test_report_presence_demand_skips_context_only_single_family_facts(
     assert family.collect_demanded(parsed_module, present_demand) is None
 
 
+def test_report_context_witness_skips_detector_without_target_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    target_path.write_text("VALUE = 1\n", encoding="utf-8")
+    (package_root / "generated.py").write_text(
+        "# generated from policy schema\nPOLICY_ID = 'shared'\n",
+        encoding="utf-8",
+    )
+    (package_root / "runtime.py").write_text(
+        "POLICY_ID = 'shared'\n",
+        encoding="utf-8",
+    )
+    family = runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily
+    original_collect = family.collect.__func__
+    collected_paths: list[Path] = []
+
+    def observed_collect(cls, parsed_module):
+        collected_paths.append(parsed_module.path.resolve())
+        return original_collect(cls, parsed_module)
+
+    monkeypatch.setattr(family, "collect", classmethod(observed_collect))
+    result = analyze_compact_roots_with_cache(
+        (package_root,),
+        use_parse_cache=False,
+        analysis_cache_dir=None,
+        parse_workers=1,
+        report_scope=AnalysisPathScope(
+            analysis_roots=(package_root,),
+            report_roots=(target_path,),
+        ),
+        detector_types=(
+            runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector,
+        ),
+    )
+
+    assert result.findings == []
+    assert collected_paths == [target_path.resolve()]
+
+
+def test_report_context_witness_retains_context_promotion_for_target_projection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    target_path.write_text("POLICY_ID = 'shared'\n", encoding="utf-8")
+    (package_root / "generated.py").write_text(
+        "# generated from policy schema\nPOLICY_ID = 'shared'\n",
+        encoding="utf-8",
+    )
+    result = analyze_compact_roots_with_cache(
+        (package_root,),
+        use_parse_cache=False,
+        analysis_cache_dir=None,
+        parse_workers=1,
+        report_scope=AnalysisPathScope(
+            analysis_roots=(package_root,),
+            report_roots=(target_path,),
+        ),
+        detector_types=(
+            runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector,
+        ),
+    )
+
+    assert {finding.detector_id for finding in result.findings} == {
+        "generated_boundary_semantic_constant_mirror"
+    }
+    assert any(
+        evidence.file_path == str(target_path)
+        for finding in result.findings
+        for evidence in finding.evidence
+    )
+
+
 def test_private_reference_report_demand_skips_context_without_target_candidate(
     tmp_path: Path,
 ) -> None:

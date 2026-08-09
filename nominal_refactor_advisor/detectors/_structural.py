@@ -1984,6 +1984,7 @@ class ExportPolicyPredicateDetector(
     IssueDetector,
 ):
     module_projection_family = ExportPolicyPredicateCandidateFamily
+    compact_report_context_requires_target_projection = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated derived-surface policy predicates should collapse into one declarative policy",
@@ -2190,6 +2191,7 @@ class RegistryTraversalSubstrateDetector(
     IssueDetector,
 ):
     module_projection_family = SubclassTraversalSiteFamily
+    compact_report_context_requires_target_projection = True
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Repeated subclass-family traversal should collapse into one discovery substrate",
@@ -3000,6 +3002,7 @@ class SupportPreludeModuleFamilyDetector(
     IssueDetector,
 ):
     module_projection_family = SupportPreludeModuleFactFamily
+    compact_report_context_requires_target_projection = True
     finding_spec = finding_spec_template(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Support-prelude module families should have a manifest authority",

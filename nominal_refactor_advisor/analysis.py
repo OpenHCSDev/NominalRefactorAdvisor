@@ -1967,8 +1967,9 @@ def analyze_compact_roots_with_cache(
         or family.report_presence_predicate is not None
     )
     if demand_families and report_scope is not None and report_scope.has_report_filter:
+        target_families = projection_manifest.projection_families
         target_items_by_family: dict[type[CollectedFamily], list[object]] = {
-            family: [] for family in demand_families
+            family: [] for family in target_families
         }
         demanded_target_paths: set[Path] = set()
         source_path_set = {path.resolve() for path in source_paths}
@@ -1991,11 +1992,55 @@ def analyze_compact_roots_with_cache(
             )
             demanded_target_paths.update(path.resolve() for path in target_paths)
             for module in parser.parsed_source_paths(target_paths):
-                for family in demand_families:
+                for family in target_families:
                     target_items_by_family[family].extend(
                         collect_family_items(module, family)
                     )
                 del module
+        target_projections_by_family = {
+            family: tuple(items) for family, items in target_items_by_family.items()
+        }
+        if missing_global_detector_types:
+            context_promotion_by_detector = {
+                detector_type: cast(
+                    type[CompactModuleProjectionDetectorMixin], detector_type
+                ).compact_report_context_can_promote(
+                    target_projections_by_family,
+                    config,
+                )
+                for detector_type in missing_global_detector_types
+            }
+            negative_witness_types = tuple(
+                detector_type
+                for detector_type in missing_global_detector_types
+                if not context_promotion_by_detector[detector_type]
+            )
+            # A target-only positive must retain the detector because complete
+            # context can validate, suppress, or enrich it.  Evaluate only
+            # explicit negative witnesses: conservative and positive contracts
+            # proceed directly to the existing semantic-cache lookup.
+            target_findings_by_detector = (
+                _compact_findings_by_detector(
+                    negative_witness_types,
+                    target_projections_by_family,
+                    config,
+                )
+                if negative_witness_types
+                else {}
+            )
+            missing_global_detector_types = [
+                detector_type
+                for detector_type in missing_global_detector_types
+                if context_promotion_by_detector[detector_type]
+                or target_findings_by_detector.get(detector_type)
+            ]
+            projection_manifest.detector_types = tuple(missing_global_detector_types)
+            demand_families = tuple(
+                family
+                for family in projection_manifest.projection_families
+                if family.report_demand_builder is not None
+                or family.report_presence_predicate is not None
+            )
         for family in demand_families:
             demand = family.report_demand(
                 tuple(target_items_by_family[family]),
