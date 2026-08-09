@@ -1,5 +1,46 @@
 # NRA scan-performance handoff
 
+## 2026-08-08 shared demanded-event checkpoint
+
+The report-witness experiment reached a measured ceiling and was stopped.
+DQDock and OpenHCS each have only eight context modules that can be rejected
+by the current target contracts; 61 of 69 globals still survive because a
+detector can anchor its report through secondary class, function, or use-site
+evidence even when its primary candidate is context-only.  Extending
+target-only flags therefore cannot plausibly close a minutes-scale cold gap.
+
+The retained route reuses the existing ``ModuleSyntaxIndex`` as the single AST
+event authority for context demand.  Semantic construction uses, role-surface
+attributes, and distributed-boundary keywords/attributes now derive from its
+typed node positions, lexical scopes, and parent index instead of starting
+independent whole-tree visitors.  Repeated-builder demand rejects unrelated
+callee names before fingerprinting.  Inheritance demand uses indexed direct
+methods and cheap function/statement/decorator signatures before computing the
+exact fingerprint.  Generic-role demand applies its target axis/case token
+gate before visiting each class or top-level function.  The obsolete
+distributed-boundary visitor has been removed; native fragment collection
+still retains the role-surface visitor as its separate source parser consumer.
+
+Exact replay across all 920 selected DQDock modules produced zero mismatches
+for semantic, role-surface, and distributed-boundary projections.  Their
+aggregate process CPU changed from 2.986 to 0.445 seconds, 4.155 to 0.939
+seconds, and 5.382 to 2.367 seconds respectively.  On the 40 largest modules,
+demanded repeated-builder extraction changed from 1.741 to 0.213 CPU seconds.
+Inheritance full collection is intentionally not promoted as a standalone
+index builder: it is slower when charged for constructing the index itself.
+With the production-preceding class projection having already built that
+authority, a representative exact demand replay took 0.879 CPU seconds on
+DQDock and 0.323 on OpenHCS, with zero mismatches.  Full old/new inheritance
+projection also matched exactly on both repositories' 40 largest modules.
+
+These are empirical local CPU and parity gates, not a new cold wall-clock
+claim.  The host load was above 160 during this checkpoint, so external cold
+timings are deferred until contention subsides.  The complete analysis-cache
+suite passes all 146 tests.  The next decisive gate is a fresh complete
+demanded-family profile followed by exact DQDock/OpenHCS CLI replay on a
+healthy host; retain additional conversions only when that end-to-end profile
+shows a material transfer.
+
 ## 2026-08-08 demand and join reassessment checkpoint
 
 The live DQDock production inventory and the read-only benchmark snapshot are

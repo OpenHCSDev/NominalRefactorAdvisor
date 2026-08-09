@@ -5596,9 +5596,14 @@ def _collect_repeated_builder_call_ast_demand(
     module: ParsedModule,
     demand: object,
 ) -> list[object]:
+    if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
+        raise TypeError("repeated-builder demand has the wrong authority type")
+    callee_names = frozenset(
+        callee_name for callee_name, *_remainder in demand.exact_mapping_keys
+    ) | frozenset(callee_name for _owner_name, callee_name in demand.owner_family_keys)
     return list(
         _project_repeated_builder_call_demand(
-            tuple(_module_builder_call_shapes(module)),
+            tuple(_module_builder_call_shapes(module, callee_names)),
             demand,
         )
     )

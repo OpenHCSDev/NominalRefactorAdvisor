@@ -3713,7 +3713,10 @@ def _collect_configured_named_function_candidates(
 
 
 @lru_cache(maxsize=None)
-def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
+def _module_builder_call_shapes(
+    module: ParsedModule,
+    callee_names: frozenset[str] | None = None,
+) -> tuple[BuilderCallShape, ...]:
     shapes: list[BuilderCallShape] = []
     module_class_names = _module_class_names(module)
 
@@ -3721,6 +3724,11 @@ def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape,
         owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
         for node in walk_function_body_nodes(function):
             if not isinstance(node, ast.Call):
+                continue
+            if (
+                callee_names is not None
+                and _ast_terminal_name(node.func) not in callee_names
+            ):
                 continue
             shape = _builder_call_shape(
                 module,

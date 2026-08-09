@@ -18,7 +18,7 @@ from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
 )
-from ..ast_tools import SourceModule, fingerprint_function
+from ..ast_tools import SourceModule, fingerprint_function, module_syntax_index
 from ..class_index import CompactNamedProjectionSurface
 from ..native_syntax import NativePythonSyntaxIndex
 
@@ -1062,45 +1062,60 @@ def _closed_axis_conversion_matrix_compression_certificate(
 def _inheritance_method_shapes(
     module: ParsedModule,
     min_statement_count: int,
+    fiber_keys: frozenset[_MethodShapeFiberKey] | None = None,
 ) -> tuple[MethodShape, ...]:
     shapes: list[MethodShape] = []
-    class_stack: list[str] = []
-
-    class Visitor(ast.NodeVisitor):
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            class_stack.append(node.name)
-            for statement in node.body:
-                self.visit(statement)
-            class_stack.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if not class_stack:
-                return
-            if len(node.body) < min_statement_count:
-                return
-            class_name = ".".join(class_stack)
-            shapes.append(
-                MethodShape(
-                    file_path=str(module.path),
-                    class_name=class_name,
-                    method_name=node.name,
-                    lineno=node.lineno,
-                    statement_count=len(node.body),
-                    is_private=_is_private_symbol_name(node.name),
-                    param_count=len(node.args.args),
-                    decorators=tuple(
-                        ast.unparse(decorator) for decorator in node.decorator_list
-                    ),
-                    fingerprint_value=fingerprint_function(node),
-                    statement_texts_value=tuple(
-                        ast.unparse(statement) for statement in node.body
-                    ),
-                )
+    coarse_signatures = (
+        None
+        if fiber_keys is None
+        else _inheritance_method_coarse_signatures(fiber_keys)
+    )
+    syntax_index = module_syntax_index(module.module)
+    function_indices = sorted(
+        (
+            *syntax_index.node_indices_by_type.get(ast.FunctionDef, ()),
+            *syntax_index.node_indices_by_type.get(ast.AsyncFunctionDef, ()),
+        )
+    )
+    for node_index in function_indices:
+        node = syntax_index.depth_first_nodes[node_index]
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
+        if not scope.class_names or scope.function_names:
+            continue
+        if len(node.body) < min_statement_count:
+            continue
+        if coarse_signatures is not None:
+            signatures = coarse_signatures.get(
+                (_is_private_symbol_name(node.name), len(node.args.args))
             )
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-    Visitor().visit(module.module)
+            if (
+                signatures is None
+                or not _ast_function_matches_inheritance_coarse_signature(
+                    node,
+                    signatures,
+                )
+            ):
+                continue
+        shapes.append(
+            MethodShape(
+                file_path=str(module.path),
+                class_name=".".join(scope.class_names),
+                method_name=node.name,
+                lineno=node.lineno,
+                statement_count=len(node.body),
+                is_private=_is_private_symbol_name(node.name),
+                param_count=len(node.args.args),
+                decorators=tuple(
+                    ast.unparse(decorator) for decorator in node.decorator_list
+                ),
+                fingerprint_value=fingerprint_function(node),
+                statement_texts_value=tuple(
+                    ast.unparse(statement) for statement in node.body
+                ),
+            )
+        )
     return tuple(shapes)
 
 
@@ -1230,9 +1245,17 @@ def _collect_inheritance_method_shape_ast_demand(
     parsed_module: ParsedModule,
     demand: object,
 ) -> list[object]:
+    if not isinstance(demand, InheritanceMethodShapeProjectionDemand):
+        raise TypeError("inheritance-method demand has the wrong authority type")
     return list(
         _project_inheritance_method_shape_demand(
-            tuple(_inheritance_method_shapes(parsed_module, 0)),
+            tuple(
+                _inheritance_method_shapes(
+                    parsed_module,
+                    0,
+                    demand.fiber_keys,
+                )
+            ),
             demand,
         )
     )
@@ -1309,6 +1332,20 @@ def _native_possible_ast_statement_kinds(node: object) -> frozenset[str] | None:
     if first_child.type == "augmented_assignment":
         return frozenset(("AugAssign",))
     return frozenset(("Expr",))
+
+
+def _ast_function_matches_inheritance_coarse_signature(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    signatures: tuple[tuple[str, tuple[str, ...], int], ...],
+) -> bool:
+    function_kind = type(function).__name__
+    statement_kinds = tuple(type(statement).__name__ for statement in function.body)
+    return any(
+        expected_kind == function_kind
+        and expected_statements == statement_kinds
+        and expected_decorators == len(function.decorator_list)
+        for expected_kind, expected_statements, expected_decorators in signatures
+    )
 
 
 def _native_function_matches_inheritance_coarse_signature(

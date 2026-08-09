@@ -2828,6 +2828,18 @@ class ModuleSyntaxIndex:
     scopes: tuple[LexicalSyntaxScope, ...]
     named_functions: tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]
 
+    def ancestor_nodes(self, node_index: int) -> tuple[ast.AST, ...]:
+        """Return the root-to-parent path for one indexed syntax event."""
+
+        ancestor_indices: list[int] = []
+        current_index = self.parent_indices[node_index]
+        while current_index >= 0:
+            ancestor_indices.append(current_index)
+            current_index = self.parent_indices[current_index]
+        return tuple(
+            self.depth_first_nodes[index] for index in reversed(ancestor_indices)
+        )
+
     @classmethod
     def build(cls, module: ast.Module) -> "ModuleSyntaxIndex":
         nodes: list[ast.AST] = []

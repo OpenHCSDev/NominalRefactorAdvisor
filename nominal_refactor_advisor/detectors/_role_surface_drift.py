@@ -16,6 +16,7 @@ from ..ast_tools import (
     ParsedModule,
     SourceModule,
     active_path_descends_through,
+    module_syntax_index,
 )
 from ..class_index import (
     ClassFamilyIndex,
@@ -770,8 +771,14 @@ def _generic_role_case_table_site(
 def _generic_role_case_table_sites_with_minimum(
     module: ParsedModule,
     minimum_case_count: int,
+    *,
+    demanded_axis_tokens: frozenset[str] = frozenset(),
+    demanded_case_tokens: frozenset[str] = frozenset(),
+    demanded_case_count: int = 0,
 ) -> tuple[GenericRoleCaseTableSite, ...]:
     sites: list[GenericRoleCaseTableSite] = []
+    source_lines = module.source.splitlines(keepends=True)
+    module_axis_source = " ".join(module.path.with_suffix("").parts).casefold()
     top_level_functions = {
         statement
         for statement in module.module.body
@@ -779,6 +786,25 @@ def _generic_role_case_table_sites_with_minimum(
     }
     for node in _walk_nodes(module.module):
         site: GenericRoleCaseTableSite | None = None
+        is_site_root = isinstance(node, ast.ClassDef) or (
+            node in top_level_functions
+            and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+        if not is_site_root:
+            continue
+        if demanded_axis_tokens or demanded_case_tokens:
+            end_line = node.end_lineno or node.lineno
+            root_source = "".join(source_lines[node.lineno - 1 : end_line]).casefold()
+            if demanded_axis_tokens and not any(
+                token in root_source or token in module_axis_source
+                for token in demanded_axis_tokens
+            ):
+                continue
+            if demanded_case_tokens and (
+                sum(token in root_source for token in demanded_case_tokens)
+                < demanded_case_count
+            ):
+                continue
         if isinstance(node, ast.ClassDef):
             site = _generic_role_case_table_site(
                 module=module,
@@ -788,9 +814,7 @@ def _generic_role_case_table_sites_with_minimum(
                 root=node,
                 minimum_case_count=minimum_case_count,
             )
-        elif node in top_level_functions and isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
+        else:
             site = _generic_role_case_table_site(
                 module=module,
                 owner_symbol=node.name,
@@ -1199,87 +1223,140 @@ class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
         self.generic_visit(node)
 
     def _use_site_for_attribute(self, node: ast.Attribute) -> RoleSurfaceUseSite | None:
-        parents = self.node_stack[:-1]
-        context_tokens: set[str] = set()
-        operation_kind: str | None = None
-
-        for parent_index in range(len(parents) - 1, -1, -1):
-            parent = parents[parent_index]
-            if isinstance(parent, ast.Subscript) and active_path_descends_through(
-                parents, parent_index, parent.value, node
-            ):
-                operation_kind = _ROLE_SURFACE_OPERATION_INDEXED
-                context_tokens.update(
-                    ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.slice)
-                )
-                break
-            if isinstance(parent, ast.For) and active_path_descends_through(
-                parents, parent_index, parent.iter, node
-            ):
-                operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
-                context_tokens.update(
-                    ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
-                )
-                break
-            if isinstance(parent, ast.comprehension) and active_path_descends_through(
-                parents, parent_index, parent.iter, node
-            ):
-                operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
-                context_tokens.update(
-                    ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
-                )
-                break
-            if isinstance(parent, ast.keyword) and active_path_descends_through(
-                parents, parent_index, parent.value, node
-            ):
-                operation_kind = _ROLE_SURFACE_OPERATION_KEYWORD_FORWARDED
-                if parent.arg is not None:
-                    context_tokens.update(
-                        ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(parent.arg)
-                    )
-                break
-            if isinstance(parent, ast.Call):
-                call_name = _role_surface_call_name(parent)
-                if call_name in _ROLE_SURFACE_DRIFT_ITERATION_CALLS:
-                    if call_name == "len":
-                        operation_kind = _ROLE_SURFACE_OPERATION_COUNTED
-                    else:
-                        operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
-                    break
-
-        assigned_tokens = _role_surface_assignment_target_tokens(parents, node)
-        if assigned_tokens and operation_kind is None:
-            context_tokens.update(assigned_tokens)
-            operation_kind = _ROLE_SURFACE_OPERATION_ASSIGNED_FROM
-
-        if operation_kind not in _ROLE_SURFACE_DRIFT_STRUCTURAL_OPERATIONS:
-            return None
-
-        context_tokens = {
-            token
-            for token in context_tokens
-            if token not in _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS
-            and token not in _ROLE_SURFACE_PRESENTATION_CONTEXT_TOKENS
-        }
-        if not context_tokens:
-            return None
-        return RoleSurfaceUseSite(
+        return _role_surface_use_site_for_attribute(
+            node,
+            parents=self.node_stack[:-1],
             file_path=self.file_path,
-            line=node.lineno,
             symbol=self.qualname,
-            field_name=node.attr,
-            operation_kind=operation_kind,
-            context_tokens=tuple(sorted(context_tokens)),
+            field_names=self.field_names,
         )
+
+
+def _role_surface_use_site_for_attribute(
+    node: ast.Attribute,
+    *,
+    parents: Sequence[ast.AST],
+    file_path: str,
+    symbol: str,
+    field_names: frozenset[str] | None,
+) -> RoleSurfaceUseSite | None:
+    if field_names is not None:
+        if node.attr not in field_names:
+            return None
+    else:
+        surface_tokens = ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(node.attr)
+        if (
+            node.attr.startswith("_")
+            or len(surface_tokens) < 2
+            or not ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(node.attr)
+        ):
+            return None
+    context_tokens: set[str] = set()
+    operation_kind: str | None = None
+
+    for parent_index in range(len(parents) - 1, -1, -1):
+        parent = parents[parent_index]
+        if isinstance(parent, ast.Subscript) and active_path_descends_through(
+            parents, parent_index, parent.value, node
+        ):
+            operation_kind = _ROLE_SURFACE_OPERATION_INDEXED
+            context_tokens.update(
+                ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.slice)
+            )
+            break
+        if isinstance(parent, ast.For) and active_path_descends_through(
+            parents, parent_index, parent.iter, node
+        ):
+            operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
+            context_tokens.update(
+                ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
+            )
+            break
+        if isinstance(parent, ast.comprehension) and active_path_descends_through(
+            parents, parent_index, parent.iter, node
+        ):
+            operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
+            context_tokens.update(
+                ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
+            )
+            break
+        if isinstance(parent, ast.keyword) and active_path_descends_through(
+            parents, parent_index, parent.value, node
+        ):
+            operation_kind = _ROLE_SURFACE_OPERATION_KEYWORD_FORWARDED
+            if parent.arg is not None:
+                context_tokens.update(
+                    ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(parent.arg)
+                )
+            break
+        if isinstance(parent, ast.Call):
+            call_name = _role_surface_call_name(parent)
+            if call_name in _ROLE_SURFACE_DRIFT_ITERATION_CALLS:
+                if call_name == "len":
+                    operation_kind = _ROLE_SURFACE_OPERATION_COUNTED
+                else:
+                    operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
+                break
+
+    assigned_tokens = _role_surface_assignment_target_tokens(parents, node)
+    if assigned_tokens and operation_kind is None:
+        context_tokens.update(assigned_tokens)
+        operation_kind = _ROLE_SURFACE_OPERATION_ASSIGNED_FROM
+
+    if operation_kind not in _ROLE_SURFACE_DRIFT_STRUCTURAL_OPERATIONS:
+        return None
+
+    context_tokens = {
+        token
+        for token in context_tokens
+        if token not in _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS
+        and token not in _ROLE_SURFACE_PRESENTATION_CONTEXT_TOKENS
+    }
+    if not context_tokens:
+        return None
+    return RoleSurfaceUseSite(
+        file_path=file_path,
+        line=node.lineno,
+        symbol=symbol,
+        field_name=node.attr,
+        operation_kind=operation_kind,
+        context_tokens=tuple(sorted(context_tokens)),
+    )
 
 
 def _role_surface_use_sites(
     module: ParsedModule,
     field_names: frozenset[str] | None,
 ) -> tuple[RoleSurfaceUseSite, ...]:
-    visitor = _RoleSurfaceUseVisitor(str(module.path), field_names)
-    visitor.visit(module.module)
-    return tuple(visitor.use_sites)
+    syntax_index = module_syntax_index(module.module)
+    use_sites: list[RoleSurfaceUseSite] = []
+    seen: set[tuple[str, int, str, str, tuple[str, ...]]] = set()
+    for node_index in syntax_index.node_indices_by_type.get(ast.Attribute, ()):
+        node = syntax_index.depth_first_nodes[node_index]
+        if not isinstance(node, ast.Attribute):
+            continue
+        scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
+        use_site = _role_surface_use_site_for_attribute(
+            node,
+            parents=syntax_index.ancestor_nodes(node_index),
+            file_path=str(module.path),
+            symbol=".".join((*scope.class_names, *scope.function_names)) or "<module>",
+            field_names=field_names,
+        )
+        if use_site is None:
+            continue
+        key = (
+            use_site.field_name,
+            use_site.line,
+            use_site.symbol,
+            use_site.operation_kind,
+            use_site.context_tokens,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        use_sites.append(use_site)
+    return tuple(use_sites)
 
 
 _NATIVE_ROLE_SURFACE_ATTRIBUTE_QUERY = """
@@ -1732,6 +1809,9 @@ def _ast_demanded_role_surface_projection_items(
                     for site in _generic_role_case_table_sites_with_minimum(
                         parsed_module,
                         1,
+                        demanded_axis_tokens=demand.generic_axis_tokens,
+                        demanded_case_tokens=demand.generic_case_tokens,
+                        demanded_case_count=demand.minimum_generic_case_count,
                     )
                     if set(site.broad_semantic_axis_tokens)
                     & set(demand.generic_axis_tokens)

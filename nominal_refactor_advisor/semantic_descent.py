@@ -34,6 +34,7 @@ from .ast_tools import (
     ParsedModule,
     PythonModulePathIdentity,
     PythonSourcePathPolicy,
+    module_syntax_index,
     python_module_path_identities_for_roots,
 )
 from . import class_index as class_index_module
@@ -3958,6 +3959,60 @@ def _compact_semantic_class_supplement(
     )
 
 
+def _compact_semantic_class_supplements_from_syntax_index(
+    parsed_module: ParsedModule,
+) -> tuple[CompactSemanticClassSupplement, ...]:
+    """Derive context-only supplements from the shared module event index."""
+
+    indexed_class_nodes = _semantic_indexed_class_nodes(list(parsed_module.module.body))
+    if not indexed_class_nodes:
+        return ()
+    class_ids_by_direct_method_id: dict[int, tuple[int, ...]] = {}
+    for _qualname, class_node in indexed_class_nodes:
+        for statement in class_node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            class_ids_by_direct_method_id[id(statement)] = (
+                *class_ids_by_direct_method_id.get(id(statement), ()),
+                id(class_node),
+            )
+
+    constructed_type_names_by_class_id: dict[int, set[str]] = {}
+    syntax_index = module_syntax_index(parsed_module.module)
+    for node_index in syntax_index.node_indices_by_type.get(ast.Call, ()):
+        call = syntax_index.depth_first_nodes[node_index]
+        if not isinstance(call, ast.Call):
+            continue
+        type_names = PresentationAuthorityConstructionCollector.construction_type_names(
+            call
+        )
+        if not type_names:
+            continue
+        scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
+        for function_node_index in scope.function_node_indices:
+            function = syntax_index.depth_first_nodes[function_node_index]
+            for class_id in class_ids_by_direct_method_id.get(id(function), ()):
+                constructed_type_names_by_class_id.setdefault(class_id, set()).update(
+                    type_names
+                )
+
+    return tuple(
+        supplement
+        for qualname, class_node in indexed_class_nodes
+        if (
+            supplement := _compact_semantic_class_supplement(
+                parsed_module,
+                qualname,
+                class_node,
+                constructed_type_names=constructed_type_names_by_class_id.get(
+                    id(class_node), ()
+                ),
+            )
+        )
+        is not None
+    )
+
+
 class CompactSemanticModuleProjectionFamily(
     CollectedFamily[CompactSemanticModuleProjection]
 ):
@@ -3996,25 +4051,27 @@ class CompactSemanticModuleProjectionFamily(
         include_presentations: bool,
     ) -> list[CompactSemanticModuleProjection]:
         del cls
-        visitor = _ProjectionVisitor(
-            parsed_module,
-            None,
-            include_presentations=include_presentations,
-        )
-        visitor.visit(parsed_module.module)
+        visitor = None
+        if include_presentations:
+            visitor = _ProjectionVisitor(parsed_module, None)
+            visitor.visit(parsed_module.module)
         return [
             CompactSemanticModuleProjection(
                 module_name=parsed_module.module_name,
                 file_path=str(parsed_module.path),
                 projections=sorted_tuple(
-                    visitor.projections,
+                    (() if visitor is None else visitor.projections),
                     key=lambda item: (
                         item.location.file_path,
                         item.location.line,
                         item.label,
                     ),
                 ),
-                class_supplements=visitor.class_supplements,
+                class_supplements=(
+                    _compact_semantic_class_supplements_from_syntax_index(parsed_module)
+                    if visitor is None
+                    else visitor.class_supplements
+                ),
             )
         ]
 

@@ -10,7 +10,7 @@ from functools import lru_cache
 
 from tree_sitter import Node
 
-from ..ast_tools import SourceModule, active_path_descends_through
+from ..ast_tools import SourceModule, active_path_descends_through, module_syntax_index
 from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -1577,138 +1577,162 @@ def _active_distributed_boundary_declarations(
     )
 
 
-class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
-    def __init__(
-        self,
-        file_path: str,
-        field_names: frozenset[str] | None,
-    ) -> None:
-        super().__init__()
-        self.file_path = file_path
-        self.field_names = field_names
-        self.node_stack: list[ast.AST] = []
-        self.uses: list[DistributedBoundaryUse] = []
-        self._seen: set[tuple[str, int, str, str, tuple[str, ...]]] = set()
+def _distributed_boundary_field_is_included(
+    field_name: str | None,
+    field_names: frozenset[str] | None,
+) -> bool:
+    if field_name is None:
+        return False
+    if field_names is not None:
+        return field_name in field_names
+    return (
+        not field_name.startswith("_")
+        and len(_boundary_identifier_tokens(field_name)) >= 2
+    )
 
-    def _includes_field_name(self, field_name: str | None) -> bool:
-        if field_name is None:
-            return False
-        if self.field_names is not None:
-            return field_name in self.field_names
-        return (
-            not field_name.startswith("_")
-            and len(_boundary_identifier_tokens(field_name)) >= 2
-        )
 
-    def visit(self, node: ast.AST) -> None:
-        self.node_stack.append(node)
-        try:
-            super().visit(node)
-        finally:
-            self.node_stack.pop()
+def _distributed_boundary_use(
+    *,
+    file_path: str,
+    line: int,
+    symbol: str,
+    field_name: str,
+    use_kind: str,
+    context_tokens: tuple[str, ...],
+) -> DistributedBoundaryUse | None:
+    tokens = tuple(
+        sorted(token for token in set(context_tokens) if token != field_name)
+    )
+    if not tokens:
+        return None
+    return DistributedBoundaryUse(
+        file_path=file_path,
+        line=line,
+        symbol=symbol,
+        field_name=field_name,
+        use_kind=use_kind,
+        context_tokens=tokens,
+    )
 
-    def _record(
-        self,
-        *,
-        line: int,
-        field_name: str,
-        use_kind: str,
-        context_tokens: tuple[str, ...],
-    ) -> None:
-        tokens = tuple(
-            sorted(token for token in set(context_tokens) if token != field_name)
-        )
-        if not tokens:
-            return
-        key = (field_name, line, self.qualname, use_kind, tokens)
-        if key in self._seen:
-            return
-        self._seen.add(key)
-        self.uses.append(
-            DistributedBoundaryUse(
-                file_path=self.file_path,
-                line=line,
-                symbol=self.qualname,
-                field_name=field_name,
-                use_kind=use_kind,
-                context_tokens=tokens,
+
+def _distributed_boundary_keyword_use(
+    node: ast.keyword,
+    *,
+    parents: Sequence[ast.AST],
+    file_path: str,
+    symbol: str,
+    field_names: frozenset[str] | None,
+) -> DistributedBoundaryUse | None:
+    if not _distributed_boundary_field_is_included(node.arg, field_names):
+        return None
+    call_node = next(
+        (parent for parent in reversed(parents) if isinstance(parent, ast.Call)),
+        None,
+    )
+    return _distributed_boundary_use(
+        file_path=file_path,
+        line=node.lineno,
+        symbol=symbol,
+        field_name=cast(str, node.arg),
+        use_kind="keyword_forwarded",
+        context_tokens=(
+            *_boundary_identifier_tokens(_boundary_call_display_name(call_node)),
+            *_boundary_node_tokens(node.value),
+        ),
+    )
+
+
+def _distributed_boundary_attribute_use(
+    node: ast.Attribute,
+    *,
+    parents: Sequence[ast.AST],
+    file_path: str,
+    symbol: str,
+    field_names: frozenset[str] | None,
+) -> DistributedBoundaryUse | None:
+    if not _distributed_boundary_field_is_included(node.attr, field_names):
+        return None
+    projection_tokens: tuple[str, ...] = ()
+    for parent_index in range(len(parents) - 1, -1, -1):
+        parent = parents[parent_index]
+        if isinstance(parent, ast.Assign) and active_path_descends_through(
+            parents,
+            parent_index,
+            parent.value,
+            node,
+        ):
+            projection_tokens = _boundary_target_tokens(parent.targets)
+            break
+        if (
+            isinstance(parent, ast.AnnAssign)
+            and parent.value is not None
+            and active_path_descends_through(
+                parents,
+                parent_index,
+                parent.value,
+                node,
             )
-        )
-
-    def visit_keyword(self, node: ast.keyword) -> None:
-        if self._includes_field_name(node.arg):
-            call_node = next(
-                (
-                    parent
-                    for parent in reversed(self.node_stack[:-1])
-                    if isinstance(parent, ast.Call)
-                ),
-                None,
-            )
-            self._record(
-                line=node.lineno,
-                field_name=cast(str, node.arg),
-                use_kind="keyword_forwarded",
-                context_tokens=(
-                    *_boundary_identifier_tokens(
-                        _boundary_call_display_name(call_node)
-                    ),
-                    *_boundary_node_tokens(node.value),
-                ),
-            )
-        self.generic_visit(node)
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        if self._includes_field_name(node.attr):
-            projection_tokens: tuple[str, ...] = ()
-            parents = self.node_stack[:-1]
-            for parent_index in range(len(parents) - 1, -1, -1):
-                parent = parents[parent_index]
-                if isinstance(parent, ast.Assign) and active_path_descends_through(
-                    parents,
-                    parent_index,
-                    parent.value,
-                    node,
-                ):
-                    projection_tokens = _boundary_target_tokens(parent.targets)
-                    break
-                if (
-                    isinstance(parent, ast.AnnAssign)
-                    and parent.value is not None
-                    and active_path_descends_through(
-                        parents,
-                        parent_index,
-                        parent.value,
-                        node,
-                    )
-                ):
-                    projection_tokens = _boundary_target_tokens((parent.target,))
-                    break
-                if isinstance(parent, ast.Subscript) and active_path_descends_through(
-                    parents,
-                    parent_index,
-                    parent.value,
-                    node,
-                ):
-                    projection_tokens = _boundary_node_tokens(parent.slice)
-                    break
-            if projection_tokens:
-                self._record(
-                    line=node.lineno,
-                    field_name=node.attr,
-                    use_kind="projected",
-                    context_tokens=projection_tokens,
-                )
-        self.generic_visit(node)
+        ):
+            projection_tokens = _boundary_target_tokens((parent.target,))
+            break
+        if isinstance(parent, ast.Subscript) and active_path_descends_through(
+            parents,
+            parent_index,
+            parent.value,
+            node,
+        ):
+            projection_tokens = _boundary_node_tokens(parent.slice)
+            break
+    if not projection_tokens:
+        return None
+    return _distributed_boundary_use(
+        file_path=file_path,
+        line=node.lineno,
+        symbol=symbol,
+        field_name=node.attr,
+        use_kind="projected",
+        context_tokens=projection_tokens,
+    )
 
 
 def _distributed_boundary_uses(
     module: ParsedModule,
     field_names: frozenset[str] | None,
 ) -> tuple[DistributedBoundaryUse, ...]:
-    visitor = _DistributedBoundaryUseVisitor(str(module.path), field_names)
-    visitor.visit(module.module)
-    return tuple(visitor.uses)
+    syntax_index = module_syntax_index(module.module)
+    uses: list[DistributedBoundaryUse] = []
+    seen: set[tuple[str, int, str, str, tuple[str, ...]]] = set()
+    for node_type, projector in (
+        (ast.keyword, _distributed_boundary_keyword_use),
+        (ast.Attribute, _distributed_boundary_attribute_use),
+    ):
+        for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
+            node = syntax_index.depth_first_nodes[node_index]
+            if not isinstance(node, node_type):
+                continue
+            scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
+            use = projector(
+                node,
+                parents=syntax_index.ancestor_nodes(node_index),
+                file_path=str(module.path),
+                symbol=".".join((*scope.class_names, *scope.function_names))
+                or "<module>",
+                field_names=field_names,
+            )
+            if use is None:
+                continue
+            key = (
+                use.field_name,
+                use.line,
+                use.symbol,
+                use.use_kind,
+                use.context_tokens,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            uses.append(use)
+    return tuple(uses)
 
 
 _NATIVE_DISTRIBUTED_BOUNDARY_QUERY = """

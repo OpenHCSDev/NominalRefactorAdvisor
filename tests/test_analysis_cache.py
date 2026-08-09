@@ -2064,6 +2064,16 @@ def test_native_builder_projection_matches_canonical_ast_family(
     )
 
     assert native == collect_family_items(parsed_module, family)
+    full_items = tuple(family.collect(parsed_module))
+    target_items = tuple(
+        item for item in full_items if item.callee_name == "from_value"
+    )
+    demand = family.report_demand(target_items, DetectorConfig())
+
+    assert demand is not None
+    assert tuple(family.collect_demanded(parsed_module, demand) or ()) == (
+        family.project_cached_demand(full_items, demand)
+    )
 
 
 def test_native_role_guarded_projection_matches_shared_ast_index(
@@ -3198,6 +3208,9 @@ def test_native_inheritance_method_demand_matches_cached_fibers(
     assert actual is not None
     assert tuple(actual) == expected
     assert [item.method_name for item in actual] == ["normalize", "select"]
+    assert tuple(family.collect_demanded(modules["context.py"], demand) or ()) == (
+        expected
+    )
 
 
 def test_native_remaining_systemic_demand_matches_selected_references(
