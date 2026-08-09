@@ -1,5 +1,51 @@
 # NRA scan-performance handoff
 
+## 2026-08-09 incremental reuse and receipt-ceiling checkpoint
+
+The existing cache architecture already satisfies the requested few-second
+incremental endpoint on a frozen DQDock source snapshot.  A fresh exact scan of
+the snapshot reported the expected 12 findings in 18.441 internal seconds
+(15.352 preparation, 3.089 analysis).  After documentation-only edits to three
+non-target modules, the next scan preserved all stable finding IDs in 0.403
+internal seconds and 1.27 seconds wall.  Adding a real module-level constant to
+each of those three files likewise preserved every stable ID in 0.410 internal
+seconds and 1.28 seconds wall.  Both changed-file runs were
+``focused_cache_partial`` results: 183 evidence-local detectors were analyzed
+and 69 global detectors were omitted under the existing changed-file reuse
+policy.  These measurements prove the latency and observed-report gates, not a
+complete global reanalysis.  An unchanged live-DQDock rerun was an aggregate
+cache hit in 0.590 internal seconds.  No cache implementation change is
+warranted from this evidence.
+
+The stronger cold candidate-receipt tier failed its end-to-end admission gate.
+Running all 31 surviving non-reporting detectors whose demanded families have
+native collectors as one shared native-only frontier returned no DQDock
+findings, but still took 25.624 seconds wall (23.176 preparation, 2.393 join).
+That is slower than the 18--24 second production path, so exact native family
+construction cannot serve as the receipt layer and no code was retained.
+
+A much cheaper lexical negative-receipt prototype measured the useful ceiling.
+Mandatory target-demand identifiers rejected 1,340 of 1,343 DQDock modules for
+remaining-systemic facts and 1,342 for the target export-dict group; weaker
+exact-name receipts rejected 174 repeated-builder and 116 public-delegate
+modules.  On a frozen snapshot, applying those four receipts before their AST
+family collectors preserved the matching API control's complete 13-finding
+stable-ID roster and changed wall time from 26.358 to 21.333 seconds.  This is
+promising receipt infrastructure evidence, but it is still a seconds-scale
+family-local ceiling while semantic and class families force every module
+through syntax preparation.  It was therefore not promoted.
+
+An attempted field-name receipt for role and distributed families was
+invalidated immediately: exact names do not preserve the normalized token-core
+correlations admitted by those families, and the replay changed stable IDs
+despite retaining a similar count.  Do not revive independent exact-name
+filtering for those projections.  The next cold route remains detector-level:
+derive correlated candidate receipts from each detector's actual target
+evidence authority, reject whole detector/family shards, and only then reuse a
+shared lexical/native catalog.  A receipt batch must remove the semantic
+consumer and all non-reporting full-class consumers together before it can
+plausibly activate the measured roughly four-second demanded frontier.
+
 ## 2026-08-09 exact report-demand context checkpoint
 
 The compact report-admission authority now asks each custom family demand
