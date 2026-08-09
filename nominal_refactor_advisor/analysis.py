@@ -1853,7 +1853,7 @@ def analyze_compact_roots_with_cache(
         source_signature_cache=source_signature_cache,
         source_paths=tuple(source_paths),
     ).cache_identity()
-    global_context_signature = global_context_identity.cache_token
+    global_context_signature = global_context_identity.source_context_token
     detector_context_signature = (
         report_scope.focused_context_signature(global_context_signature)
         if report_scope is not None and report_scope.has_report_filter

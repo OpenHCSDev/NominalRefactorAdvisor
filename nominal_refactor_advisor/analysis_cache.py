@@ -299,6 +299,35 @@ class AnalysisEngineSignature:
 
 
 @dataclass(frozen=True)
+class DetectorSemanticEngineSignature(AnalysisEngineSignature):
+    """Shared finding semantics independent of orchestration and persistence."""
+
+    @staticmethod
+    def module_names() -> tuple[str, ...]:
+        return (
+            "nominal_refactor_advisor.annotation_semantics",
+            "nominal_refactor_advisor.assignment_projection",
+            "nominal_refactor_advisor.ast_tools",
+            "nominal_refactor_advisor.candidate_collection_semantics",
+            "nominal_refactor_advisor.class_index",
+            "nominal_refactor_advisor.constructor_algebra",
+            "nominal_refactor_advisor.detectors._base",
+            "nominal_refactor_advisor.detectors._helpers",
+            "nominal_refactor_advisor.models",
+            "nominal_refactor_advisor.name_algebra",
+            "nominal_refactor_advisor.observation_families",
+            "nominal_refactor_advisor.observation_graph",
+            "nominal_refactor_advisor.registry_normal_form",
+            "nominal_refactor_advisor.semantic_algebra",
+            "nominal_refactor_advisor.semantic_descent",
+            "nominal_refactor_advisor.semantic_inspection",
+            "nominal_refactor_advisor.semantic_match",
+            "nominal_refactor_advisor.semantic_shape_algebra",
+            "nominal_refactor_advisor.source_index",
+        )
+
+
+@dataclass(frozen=True)
 class CachedSourceFileSignature:
     """Content hash cached under a stable filesystem stat identity."""
 
@@ -688,6 +717,13 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             payload += repr(self.report_filter_roots).encode("utf-8")
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
+    @property
+    def source_context_token(self) -> str:
+        """Repository source-set identity independent of scan orchestration."""
+
+        payload = repr((self.roots, self.source_files)).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
 
 @dataclass(frozen=True, kw_only=True)
 class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
@@ -779,8 +815,8 @@ class PerModuleAnalysisCacheFamilyIdentity:
         compare=False,
         repr=False,
     )
-    engine: AnalysisEngineSignature = field(
-        default_factory=AnalysisEngineSignature.current
+    engine: DetectorSemanticEngineSignature = field(
+        default_factory=DetectorSemanticEngineSignature.current
     )
     schema: AnalysisCacheSchema = analysis_cache_schema
 
@@ -843,6 +879,9 @@ class ContextualModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
 
     source_file: ModuleSourceSignature
     context_signature: str
+    engine: DetectorSemanticEngineSignature = field(
+        default_factory=DetectorSemanticEngineSignature.current
+    )
 
     @classmethod
     def from_module_context(
@@ -880,6 +919,9 @@ class GlobalDetectorAnalysisCacheIdentity(AnalysisCacheEntryContext):
     """Invalidation identity for one global detector keyed by semantic context."""
 
     context_signature: str
+    engine: DetectorSemanticEngineSignature = field(
+        default_factory=DetectorSemanticEngineSignature.current
+    )
 
     @classmethod
     def from_global_context(
@@ -910,6 +952,9 @@ class GlobalDetectorFamilyAnalysisCacheIdentity(AnalysisCacheEntryContext):
     """Report-independent output identity for one exact global detector family."""
 
     context_signature: str
+    engine: DetectorSemanticEngineSignature = field(
+        default_factory=DetectorSemanticEngineSignature.current
+    )
 
     @classmethod
     def from_global_context(
