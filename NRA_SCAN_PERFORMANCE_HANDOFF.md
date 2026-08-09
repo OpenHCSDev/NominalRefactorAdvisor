@@ -35,6 +35,27 @@ cache DQDock and OpenHCS gates.  The end-to-end route must include the second
 source read or eliminate it through reuse; the isolated 1.037-second preflight
 does not make that overhead free.
 
+The subsequent end-to-end ceiling gate invalidates this as the dominant cold
+route.  A disposable fork-inherited monkeypatch replaced the demanded class
+projection with the saved 265-path full / 654-path header-core frontier inside
+the otherwise normal cache-disabled DQDock scan.  It preserved all twelve
+findings and completed in 17.968 seconds wall (15.325 preparation and 2.593
+analysis), versus the preceding production result around 20.5 seconds.  The
+real native preflight would add 1.037 seconds before that scan, so the plausible
+net gain is only about 1.5 seconds.  An isolated apples-to-apples class stage
+likewise changed from 3.315 seconds wall for full extraction to 2.564 seconds
+for the mixed frontier; adding a separate header pass makes that stage slower
+unless its result is reused.
+
+Do not implement or formalize the heuristic selector for this ceiling.  Even a
+perfect selector/reuse implementation cannot turn the measured preparation
+remainder into an order-scale improvement.  The useful result is narrower: a
+shared class relation receipt is cheap enough to serve detector-level negative
+witnesses.  The next route must use such receipts to eliminate entire surviving
+detector/family shards before demanded extraction.  Thinning one family while
+the other twelve surviving families still parse the same context is another
+local minimum.
+
 ## 2026-08-08 class-demand consumer checkpoint
 
 The class demand authority now omits the AutoRegister function/reference graph
