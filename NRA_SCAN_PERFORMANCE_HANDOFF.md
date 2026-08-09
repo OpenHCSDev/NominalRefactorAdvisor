@@ -1,5 +1,40 @@
 # NRA scan-performance handoff
 
+## 2026-08-08 relational class-preflight admission checkpoint
+
+The proposed two-stage class route now has a production-shaped latency gate.
+Collecting the existing native class-header core across the current 920-file
+DQDock production inventory with twelve workers takes 1.037 seconds wall and
+7.825 aggregate CPU seconds for 16,855 live classes.  This is cheap enough to
+precede the dominant demanded-family shard rather than merely moving the cold
+cost.  It also confirms that the earlier 4.69-second saved replay was aggregate
+collector work, not the wall-clock cost of a shared parallel preflight.
+
+A saved-frontier relation prototype starts with the complete report-target
+class projection, builds the header inheritance graph, closes the target's
+undirected inheritance components, and retains additional context modules with
+target-correlated class-name, base-name, field, method, or exact-type-guard
+evidence.  DQDock retains full demanded class projections for 265 of 919
+context modules and reduces the other 654 to the derived header-core view.  A
+complete replay of all 38 surviving compact global detectors preserves the
+same twelve target findings and stable IDs.  OpenHCS retains 181 of 1,243
+context modules and likewise preserves all 27 contextual global findings; its
+other eighteen focused findings are module-local and do not consume this
+frontier.
+
+These cross-repository results are empirical-strength and latency admission
+evidence, not yet a correctness proof or a production optimization.  The
+inheritance closure is structurally exact, but the current field/method overlap
+clauses are heuristic necessary-condition candidates.  Do not promote the
+prototype merely because the two saved reports match.  Inventory each of the
+25 surviving class consumers, derive its relation key from the detector's
+nominal candidate authority, and union those derived views into the one class
+demand authority.  Only then stage the header pass, choose full-versus-core
+context demand per path, reuse the staged header result, and run fresh empty-
+cache DQDock and OpenHCS gates.  The end-to-end route must include the second
+source read or eliminate it through reuse; the isolated 1.037-second preflight
+does not make that overhead free.
+
 ## 2026-08-08 class-demand consumer checkpoint
 
 The class demand authority now omits the AutoRegister function/reference graph
