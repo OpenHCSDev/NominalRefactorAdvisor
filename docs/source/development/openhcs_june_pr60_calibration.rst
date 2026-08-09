@@ -205,29 +205,35 @@ The exact snapshots were then replayed with the remaining 251 detectors:
      - Change
    * - runtime-owner parent ``4bc91c242``
      - 7,558
-     - 7,328
-     - -230
+     - 7,287
+     - -271
    * - runtime-owner cutover ``ccfef5f6d``
      - 7,142
-     - 6,931
-     - -211
+     - 6,888
+     - -254
    * - compiler-cleanup parent ``1398c8662``
      - 7,115
-     - 6,913
-     - -202
+     - 6,868
+     - -247
    * - compiler cleanup ``5e8812ee8``
      - 7,247
-     - 7,064
-     - -183
+     - 7,021
+     - -226
    * - current OpenHCS package
      - 7,691
-     - 7,487
-     - -204
+     - 7,443
+     - -248
 
 The cleanup deltas remain directionally inconsistent: the runtime cutover is
-``-397`` after calibration, while the known-good compiler cleanup is ``+151``.
+``-399`` after calibration, while the known-good compiler cleanup is ``+153``.
 This confirms that raw count cannot become the optimization target merely by
 removing two noisy rules.
+
+These are production CLI ``exact_compact_global`` results.  A legacy AST API
+replay produced 7,487 findings on the current package, 44 more than the exact
+compact path.  That result was rejected rather than mixed into this table.  AST
+and compact projection parity is a separate correctness gate; calibration must
+name one analysis authority and keep it fixed across snapshots.
 
 Using the same primary-location attribution as the initial deleted-surface
 experiment, the runtime cutover's deleted files retain 622 findings and the
@@ -298,14 +304,14 @@ Current Noise Shape
 -------------------
 
 After the first precision correction, the current package's six largest
-detector families account for 4,235 of 7,487 raw findings (56.6%):
+detector families account for 4,206 of 7,443 raw findings (56.5%):
 
-- opaque object annotations: 1,747
-- semantic mirrors: 886
-- distributed boundary fanout: 505
+- opaque object annotations: 1,742
+- semantic mirrors: 872
+- distributed boundary fanout: 502
 - non-nominal private helpers: 407
-- unclassified runtime fallbacks: 376
-- role-surface drift: 314
+- unclassified runtime fallbacks: 371
+- role-surface drift: 312
 
 Direct reflective builtin findings fall from 299 to 184, and the 133 current
 composition-retreat findings disappear with the invalid detector authority.
