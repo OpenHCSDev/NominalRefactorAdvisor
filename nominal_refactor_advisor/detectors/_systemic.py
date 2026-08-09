@@ -10,7 +10,7 @@ import ast
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cached_property, lru_cache
 import re
 
 from ..semantic_algebra import ObjectFamilyShape
@@ -1062,14 +1062,10 @@ def _closed_axis_conversion_matrix_compression_certificate(
 def _inheritance_method_shapes(
     module: ParsedModule,
     min_statement_count: int,
-    fiber_keys: frozenset[_MethodShapeFiberKey] | None = None,
+    demand: InheritanceMethodShapeProjectionDemand | None = None,
 ) -> tuple[MethodShape, ...]:
     shapes: list[MethodShape] = []
-    coarse_signatures = (
-        None
-        if fiber_keys is None
-        else _inheritance_method_coarse_signatures(fiber_keys)
-    )
+    coarse_signatures = None if demand is None else demand.coarse_signatures
     syntax_index = module_syntax_index(module.module)
     function_indices = sorted(
         (
@@ -1212,19 +1208,31 @@ class InheritanceMethodShapeProjectionDemand:
 
     fiber_keys: frozenset[_MethodShapeFiberKey]
 
+    @cached_property
+    def coarse_signatures(
+        self,
+    ) -> dict[tuple[bool, int], tuple[tuple[str, tuple[str, ...], int], ...]]:
+        """Derive the reusable cheap screen once for the complete context shard."""
+
+        return _inheritance_method_coarse_signatures(self.fiber_keys)
+
 
 def _inheritance_method_shape_projection_demand(
     target_items: tuple[object, ...],
     config: object,
 ) -> InheritanceMethodShapeProjectionDemand:
     del config
-    return InheritanceMethodShapeProjectionDemand(
+    demand = InheritanceMethodShapeProjectionDemand(
         fiber_keys=frozenset(
             _compact_method_shape_fiber_key(item)
             for item in target_items
             if isinstance(item, MethodShape)
         )
     )
+    # Build the derived view before worker requests pickle the demand.  It is
+    # intentionally not a dataclass field or a second cache identity authority.
+    demand.coarse_signatures
+    return demand
 
 
 def _project_inheritance_method_shape_demand(
@@ -1253,7 +1261,7 @@ def _collect_inheritance_method_shape_ast_demand(
                 _inheritance_method_shapes(
                     parsed_module,
                     0,
-                    demand.fiber_keys,
+                    demand,
                 )
             ),
             demand,

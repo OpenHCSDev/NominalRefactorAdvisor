@@ -41,6 +41,19 @@ demanded-family profile followed by exact DQDock/OpenHCS CLI replay on a
 healthy host; retain additional conversions only when that end-to-end profile
 shows a material transfer.
 
+The first complete single-process profile immediately exposed and corrected a
+bad interaction in the inheritance prototype.  Per-module memory cleanup
+clears global LRU caches, so deriving target coarse signatures through an LRU
+repeated 37,679 ``literal_eval`` calls and charged 31.3 profiled seconds to a
+view that should be constant for the complete context shard.  The fiber keys
+remain the sole demand identity; their coarse-signature view is now derived
+once on that demand instance before worker requests are serialized.  A replay
+that explicitly clears both relevant global caches between each of the 40
+largest DQDock modules retains the view, matches all 401 demanded methods
+exactly, and takes 0.459 process-CPU seconds.  A regression test makes any
+per-worker signature rebuild fail.  Do not interpret or compare the remaining
+family totals from the invalidated profile until a corrected profile is run.
+
 ## 2026-08-08 demand and join reassessment checkpoint
 
 The live DQDock production inventory and the read-only benchmark snapshot are

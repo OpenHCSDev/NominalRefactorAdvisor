@@ -3154,6 +3154,7 @@ def test_report_class_header_core_safety_is_detector_declared() -> None:
 
 def test_native_inheritance_method_demand_matches_cached_fibers(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -3208,6 +3209,18 @@ def test_native_inheritance_method_demand_matches_cached_fibers(
     assert actual is not None
     assert tuple(actual) == expected
     assert [item.method_name for item in actual] == ["normalize", "select"]
+    assert "coarse_signatures" in demand.__dict__
+
+    def unexpected_signature_rebuild(
+        _fiber_keys: frozenset[object],
+    ) -> dict[object, object]:
+        raise AssertionError("worker demand must retain its derived signature view")
+
+    monkeypatch.setattr(
+        systemic_detectors,
+        "_inheritance_method_coarse_signatures",
+        unexpected_signature_rebuild,
+    )
     assert tuple(family.collect_demanded(modules["context.py"], demand) or ()) == (
         expected
     )
