@@ -1074,9 +1074,10 @@ def build_compact_projection_shard(
         for detector_type in request.local_detector_types
         if issubclass(detector_type, SourceLocalIssueDetectorMixin)
     )
-    # A source-local detector and compact families share one native parse. A
-    # detector that cannot answer exactly remains on the AST fallback below.
-    source_native_shard = bool(source_local_detector_types) or (
+    # Keep family extraction on its measured authority for mixed shards. A
+    # source-local detector may share the native syntax tree, but it must not
+    # implicitly switch every projection family onto the rejected hybrid path.
+    source_native_family_shard = (
         bool(ast_families)
         and not request.local_detector_types
         and all(
@@ -1087,6 +1088,9 @@ def build_compact_projection_shard(
             )
             for family in ast_families
         )
+    )
+    source_native_shard = bool(source_local_detector_types) or (
+        source_native_family_shard
     )
     if source_native_shard:
         try:
@@ -1128,50 +1132,51 @@ def build_compact_projection_shard(
                 local_findings = tuple(native_findings)
                 fallback_local_detector_types = tuple(fallback_types)
                 local_analysis_seconds = perf_counter() - local_started
-            for family in tuple(ast_families):
-                demand = demand_by_family.get(family)
-                projections_list = (
-                    family.collect_demanded_source(
-                        source_module,
-                        syntax_index,
-                        demand,
+            if source_native_family_shard:
+                for family in tuple(ast_families):
+                    demand = demand_by_family.get(family)
+                    projections_list = (
+                        family.collect_demanded_source(
+                            source_module,
+                            syntax_index,
+                            demand,
+                        )
+                        if family in demand_by_family
+                        else family.collect_source(source_module, syntax_index)
                     )
-                    if family in demand_by_family
-                    else family.collect_source(source_module, syntax_index)
-                )
-                if projections_list is None:
-                    continue
-                projections = tuple(projections_list)
-                if any(
-                    CompactGlobalProjectionAccumulator._retains_ast(projection)
-                    for projection in projections
-                ):
-                    raise TypeError(
-                        f"{family.__name__} source projection retains an AST"
-                    )
-                if family not in demand_by_family:
-                    projection_signature = (
-                        store_cached_collected_family_items_for_source_signature(
+                    if projections_list is None:
+                        continue
+                    projections = tuple(projections_list)
+                    if any(
+                        CompactGlobalProjectionAccumulator._retains_ast(projection)
+                        for projection in projections
+                    ):
+                        raise TypeError(
+                            f"{family.__name__} source projection retains an AST"
+                        )
+                    if family not in demand_by_family:
+                        projection_signature = (
+                            store_cached_collected_family_items_for_source_signature(
+                                path=source.path,
+                                module_name=source.module_name,
+                                source_signature=source.source_signature,
+                                family_cache_dir=source.family_cache_dir,
+                                family=family,
+                                items=projections,
+                            )
+                        )
+                    else:
+                        projection_signature = store_cached_demanded_collected_family_items_for_source_signature(
                             path=source.path,
                             module_name=source.module_name,
                             source_signature=source.source_signature,
                             family_cache_dir=source.family_cache_dir,
                             family=family,
+                            demand=demand,
                             items=projections,
                         )
-                    )
-                else:
-                    projection_signature = store_cached_demanded_collected_family_items_for_source_signature(
-                        path=source.path,
-                        module_name=source.module_name,
-                        source_signature=source.source_signature,
-                        family_cache_dir=source.family_cache_dir,
-                        family=family,
-                        demand=demand,
-                        items=projections,
-                    )
-                add_runtime_projection(family, projections, projection_signature)
-                ast_families.remove(family)
+                    add_runtime_projection(family, projections, projection_signature)
+                    ast_families.remove(family)
     if ast_families or fallback_local_detector_types:
         modules = parser.parsed_source_paths((source.path,))
     else:

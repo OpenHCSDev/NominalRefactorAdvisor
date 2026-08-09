@@ -2736,6 +2736,53 @@ def test_source_local_detector_requests_ast_fallback_for_lexical_binding(
     ]
 
 
+def test_source_local_detector_does_not_switch_mixed_families_to_native(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "mixed.py"
+    source = "REGISTRY = {}\nclass Alpha: pass\nREGISTRY['alpha'] = Alpha\n"
+    module_path.write_text(source, encoding="utf-8")
+
+    def unexpected_source_family(cls, source_module, syntax_index):
+        del cls, source_module, syntax_index
+        raise AssertionError("mixed projection families must retain their AST path")
+
+    monkeypatch.setattr(
+        RegistrationShapeFamily,
+        "collect_source",
+        classmethod(unexpected_source_family),
+    )
+    result = analysis_module.build_compact_projection_shard(
+        analysis_module.CompactProjectionBuildRequest(
+            source=analysis_module.CompactProjectionCacheSource(
+                path=module_path,
+                module_name="mixed",
+                source_signature=ast_tools_module.python_source_cache_signature(source),
+                family_cache_dir=None,
+                scan_root=package_root,
+                cache_dir=None,
+                use_parse_cache=False,
+                source_policy=ast_tools_module.PythonSourcePathPolicy(),
+            ),
+            missing_families=(
+                RegistrationShapeFamily,
+                runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+            ),
+            config=DetectorConfig(),
+            local_detector_types=(reflection_detectors.BuiltinLocalsCallDetector,),
+        )
+    )
+
+    assert [family for family, _items in result.runtime_projections] == [
+        RegistrationShapeFamily,
+        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+    ]
+    assert result.local_findings == ()
+
+
 def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
