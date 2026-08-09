@@ -54,6 +54,19 @@ exactly, and takes 0.459 process-CPU seconds.  A regression test makes any
 per-worker signature rebuild fail.  Do not interpret or compare the remaining
 family totals from the invalidated profile until a corrected profile is run.
 
+The corrected production gate preserves the complete reports on both
+representative repositories.  Cache-disabled DQDock completes all 252
+detectors with the expected 12 findings in 23.311 seconds wall / 22.224
+internal (18.914 preparation, 3.310 analysis).  OpenHCS completes all 252 with
+the expected 45 findings in 18.170 seconds wall / 17.145 internal (15.132
+preparation, 2.013 analysis).  The DQDock result is close to the retained
+21.55--21.86-second healthy baseline; OpenHCS is below its retained 21.33-second
+gate.  Host load was still approximately 170, so these individual walls are
+correctness and gross-regression gates rather than a controlled speedup claim.
+The full suite has 1,055 passes and only the established lazy semantic-graph
+cache failure, which reproduces in isolation; the corrected analysis-cache
+suite passes all 146 tests.
+
 ## 2026-08-08 demand and join reassessment checkpoint
 
 The live DQDock production inventory and the read-only benchmark snapshot are
