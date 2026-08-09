@@ -5413,6 +5413,252 @@ class MirroredConstructorValidationDetector(PerModuleIssueDetector):
         return findings
 
 
+_MONOLITHIC_CONSTRUCTOR_METHOD_NAMES = frozenset(("__init__", "__post_init__"))
+_MONOLITHIC_CONSTRUCTOR_MIN_PREDICATES = 8
+_MONOLITHIC_CONSTRUCTOR_MIN_FIELDS = 3
+_MONOLITHIC_CONSTRUCTOR_MIN_INVARIANT_KINDS = 4
+_INVARIANT_REFINEMENT_CALL_NAMES = frozenset(("isinstance", "issubclass", "type"))
+_INVARIANT_CARDINALITY_CALL_NAMES = frozenset(("len", "set"))
+_INVARIANT_QUANTIFIER_CALL_NAMES = frozenset(("all", "any"))
+_INVARIANT_NORMALIZATION_METHOD_NAMES = frozenset(
+    ("absolute", "canonicalize", "lower", "normalize", "resolve", "upper")
+)
+_NON_VALUE_REFERENCE_NAMES = frozenset(
+    (
+        "all",
+        "any",
+        "bool",
+        "bytes",
+        "dict",
+        "float",
+        "frozenset",
+        "int",
+        "len",
+        "list",
+        "set",
+        "str",
+        "tuple",
+        "type",
+    )
+)
+
+
+def _flatten_boolean_operator(
+    node: ast.AST,
+    operator_type: type[ast.boolop],
+) -> tuple[ast.AST, ...]:
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, operator_type):
+        return tuple(
+            predicate
+            for value in node.values
+            for predicate in _flatten_boolean_operator(value, operator_type)
+        )
+    return (node,)
+
+
+def _failed_constructor_invariant_predicates(node: ast.AST) -> tuple[ast.AST, ...]:
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return _flatten_boolean_operator(node, ast.Or)
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.Not)
+        and isinstance(node.operand, ast.BoolOp)
+        and isinstance(node.operand.op, ast.And)
+    ):
+        return _flatten_boolean_operator(node.operand, ast.And)
+    return ()
+
+
+def _call_terminal_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _self_attribute_names(node: ast.AST) -> frozenset[str]:
+    return frozenset(
+        child.attr
+        for child in ast.walk(node)
+        if isinstance(child, ast.Attribute)
+        and isinstance(child.value, ast.Name)
+        and child.value.id == "self"
+    )
+
+
+def _value_reference_names(node: ast.AST) -> frozenset[str]:
+    if isinstance(node, ast.Name):
+        return (
+            frozenset()
+            if node.id in _NON_VALUE_REFERENCE_NAMES
+            else frozenset((node.id,))
+        )
+    if isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name) and node.value.id == "self":
+            return frozenset((f"self.{node.attr}",))
+        return _value_reference_names(node.value)
+    if isinstance(node, ast.Call):
+        return frozenset(
+            reference
+            for argument in (*tuple(node.args), *tuple(node.keywords))
+            for reference in _value_reference_names(
+                argument.value if isinstance(argument, ast.keyword) else argument
+            )
+        )
+    if isinstance(node, ast.Constant):
+        return frozenset()
+    return frozenset(
+        reference
+        for child in ast.iter_child_nodes(node)
+        for reference in _value_reference_names(child)
+    )
+
+
+def _compare_has_distinct_value_authorities(node: ast.Compare) -> bool:
+    operands = (node.left, *tuple(node.comparators))
+    reference_sets = tuple(_value_reference_names(operand) for operand in operands)
+    return any(
+        left_references and right_references and left_references != right_references
+        for left_references, right_references in zip(reference_sets, reference_sets[1:])
+    )
+
+
+def _constructor_invariant_kinds(
+    predicates: tuple[ast.AST, ...],
+) -> frozenset[str]:
+    kinds: set[str] = set()
+    for predicate in predicates:
+        descendants = tuple(ast.walk(predicate))
+        call_names = frozenset(
+            call_name
+            for descendant in descendants
+            if isinstance(descendant, ast.Call)
+            for call_name in (_call_terminal_name(descendant),)
+            if call_name is not None
+        )
+        if call_names & _INVARIANT_REFINEMENT_CALL_NAMES:
+            kinds.add("runtime representation")
+        if call_names & _INVARIANT_CARDINALITY_CALL_NAMES or isinstance(
+            predicate, ast.UnaryOp
+        ):
+            kinds.add("cardinality")
+        if call_names & _INVARIANT_QUANTIFIER_CALL_NAMES:
+            kinds.add("quantified members")
+        if call_names & _INVARIANT_NORMALIZATION_METHOD_NAMES:
+            kinds.add("normalization")
+        if any(
+            isinstance(
+                descendant, (ast.DictComp, ast.GeneratorExp, ast.ListComp, ast.SetComp)
+            )
+            for descendant in descendants
+        ):
+            kinds.add("derived projection")
+        if any(
+            isinstance(descendant, ast.Compare)
+            and _compare_has_distinct_value_authorities(descendant)
+            for descendant in descendants
+        ):
+            kinds.add("cross-value relation")
+    return frozenset(kinds)
+
+
+def _single_fail_loud_raise(body: Sequence[ast.stmt]) -> ast.Raise | None:
+    return body[0] if len(body) == 1 and isinstance(body[0], ast.Raise) else None
+
+
+class MonolithicConstructorInvariantDetector(PerModuleIssueDetector):
+    ssot_authority_boundary = True
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Monolithic constructor invariant should move into validated nominal values",
+        "One constructor failure guard combines representation, normalization, collection, and relational rules across several fields. The record now owns several independent refinement authorities behind one anonymous Boolean and one failure path, making those contracts difficult to reuse, type-check, or diagnose independently.",
+        "field-owned validated nominal values with only cross-field residue on the aggregate record",
+        "one fail-loud constructor guard combines many heterogeneous predicates across several record fields",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        detector = self
+
+        class Visitor(ClassFunctionStackNodeVisitor):
+            traverse_class_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+            traverse_function_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+
+            def visit_If(self, node: ast.If) -> None:
+                if (
+                    self.current_class_name is None
+                    or self.current_function_name
+                    not in _MONOLITHIC_CONSTRUCTOR_METHOD_NAMES
+                    or _single_fail_loud_raise(node.body) is None
+                ):
+                    self.generic_visit(node)
+                    return
+                predicates = _failed_constructor_invariant_predicates(node.test)
+                field_names = _self_attribute_names(node.test)
+                invariant_kinds = _constructor_invariant_kinds(predicates)
+                if (
+                    len(predicates) < _MONOLITHIC_CONSTRUCTOR_MIN_PREDICATES
+                    or len(field_names) < _MONOLITHIC_CONSTRUCTOR_MIN_FIELDS
+                    or len(invariant_kinds)
+                    < _MONOLITHIC_CONSTRUCTOR_MIN_INVARIANT_KINDS
+                ):
+                    self.generic_visit(node)
+                    return
+                qualname = self.qualname
+                field_summary = ", ".join(sorted(field_names))
+                kind_summary = ", ".join(sorted(invariant_kinds))
+                findings.append(
+                    detector.build_finding(
+                        (
+                            f"`{qualname}` merges {len(predicates)} failed predicates "
+                            f"across fields {field_summary} and invariant kinds "
+                            f"{kind_summary} into one constructor failure."
+                        ),
+                        (
+                            SourceLocation(
+                                str(module.path),
+                                node.lineno,
+                                qualname,
+                            ),
+                        ),
+                        scaffold=(
+                            "@dataclass(frozen=True)\n"
+                            "class ValidatedField:\n"
+                            "    value: object\n\n"
+                            "    @classmethod\n"
+                            "    def parse(cls, value):\n"
+                            "        # Own representation and local invariants here.\n"
+                            "        ...\n\n"
+                            "@dataclass(frozen=True)\n"
+                            "class AggregateRecord:\n"
+                            "    field: ValidatedField\n\n"
+                            "    def __post_init__(self):\n"
+                            "        # Keep only aggregate cross-field invariants here.\n"
+                            "        ..."
+                        ),
+                        codemod_patch=(
+                            f"# Split the heterogeneous guard in `{qualname}` by semantic authority.\n"
+                            "# Move representation, normalization, and member rules into validated field types; retain only irreducible cross-field relations on the aggregate.\n"
+                            "# Give each remaining failure a typed or specific diagnostic instead of one anonymous Boolean failure."
+                        ),
+                    )
+                )
+                self.generic_visit(node)
+
+        Visitor().visit(module.module)
+        return findings
+
+
 def _native_call_terminal_name(
     syntax_index: NativePythonSyntaxIndex,
     call: Node,
