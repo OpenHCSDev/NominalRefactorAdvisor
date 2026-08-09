@@ -245,6 +245,66 @@ composition findings and 25 of 29 reflection findings while preserving the
 ``available_carrier_reuse``, ``isinstance_family_scatter``, private-authority,
 and wrapper-lattice signals.
 
+Correlation-Preserving Mirror Correction
+-----------------------------------------
+
+The next dominant false-positive family came from decomposing shared class
+facts independently.  Under multiple inheritance, one concrete class can be a
+fact of several crosscutting families.  A projection containing three concrete
+classes therefore matched every ancestor family even when its name and source
+carried no relationship to most of them.  That loses the correlation between a
+projection's nominal purpose and the authority it could actually descend from.
+
+For example, ``AVAILABLE_MEMORY_TYPES`` correctly mirrored ``MemoryType`` but
+also matched the unrelated ``RuntimeTestingRegistryBase``.  One
+``CELLPROFILER_MEASUREMENT_DIALECT`` projection independently matched artifact,
+callable-ABI, settings, table, and feature-owner families through the same
+three concrete modules.
+
+Class-family mirrors now require nominal name affinity or an explicit qualified
+authority reference when every matched fact is reused across multiple
+authorities.  A current-tree prototype rejected 307 of 886 legacy AST mirror
+edges.  Most were ``__all__`` projections, generic ``if@...`` branches, and
+crosscutting family matches.  On the two cleanup parents it rejected seven of
+20 and seven of 23 primary-location deleted-file mirrors respectively; all 14
+were generic strategy/mixin matches, while the specific schema, result,
+artifact, identity, and alias mirrors survived.
+
+The production compact path gives the final calibrated snapshots:
+
+.. list-table:: Final exact compact replay
+   :header-rows: 1
+
+   * - Snapshot
+     - Original
+     - After false-positive retirement
+     - After correlated mirror policy
+   * - runtime-owner parent ``4bc91c242``
+     - 7,558
+     - 7,287
+     - 6,999
+   * - runtime-owner cutover ``ccfef5f6d``
+     - 7,142
+     - 6,888
+     - 6,657
+   * - compiler-cleanup parent ``1398c8662``
+     - 7,115
+     - 6,868
+     - 6,639
+   * - compiler cleanup ``5e8812ee8``
+     - 7,247
+     - 7,021
+     - 6,735
+   * - current OpenHCS package
+     - 7,691
+     - 7,443
+     - 7,144
+
+Current semantic mirrors fall from 872 to 573, a 34.3% reduction.  The runtime
+cutover remains a clear reduction at ``-342``.  The compiler cleanup still
+increases the raw count, but by 96 rather than 132; that surviving contradiction
+is useful evidence that a count target would still reward the wrong behavior.
+
 Initial Detector Labels
 -----------------------
 
@@ -292,10 +352,10 @@ Confirmed or likely noise
 - ``typing_protocol_contract`` assumes every ``Protocol`` should be an ABC.
   Structural protocols can be the correct typed dependency boundary; nominal
   replacement requires identity, lifecycle, or shared implementation evidence.
-- ``semantic_mirror_without_descent`` contains real mirrors, but it is
-  under-represented in both PR #60 deleted surfaces and also produces unrelated
-  cross-family matches.  For example, ``AVAILABLE_MEMORY_TYPES`` correctly
-  matches ``MemoryType`` but also matches an unrelated runtime-testing base.
+- Unconstrained ``semantic_mirror_without_descent`` contained real mirrors but
+  also produced unrelated cross-family matches.  The correlated-family policy
+  removes the demonstrated runtime-testing and generic-mixin cases; the 573
+  survivors remain a mixed review surface rather than 573 independent tasks.
 - broad helper, branch-count, role-token, and identical-small-method detectors
   often describe size or lexical similarity without proving a shared semantic
   authority.  They should be supporting evidence, not independent work items.
@@ -303,11 +363,11 @@ Confirmed or likely noise
 Current Noise Shape
 -------------------
 
-After the first precision correction, the current package's six largest
-detector families account for 4,206 of 7,443 raw findings (56.5%):
+After both precision corrections, the current package's six largest detector
+families account for 3,907 of 7,144 raw findings (54.7%):
 
 - opaque object annotations: 1,742
-- semantic mirrors: 872
+- semantic mirrors: 573
 - distributed boundary fanout: 502
 - non-nominal private helpers: 407
 - unclassified runtime fallbacks: 371
@@ -321,10 +381,11 @@ review list.  Raw findings are an evidence substrate.  A useful work queue must
 require stronger correlations, exclude disproved premises, and rank against
 historically validated authority moves.
 
-Next Calibration Gates
-----------------------
+Calibration Limits And Next Gates
+---------------------------------
 
-Before declaring the study complete:
+The study supports the taxonomy and precision corrections above.  Further
+promotion from evidence substrate to an automatic work queue should still:
 
 1. Score more June/July corrective commits, including declaration-owned MCP,
    source provenance, enum/config ownership, and extracted-owner changes.
