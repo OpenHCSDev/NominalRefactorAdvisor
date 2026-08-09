@@ -607,6 +607,7 @@ class CompactClassProjectionDemand:
 
     abc_method_names: frozenset[str]
     abc_declaration_signatures: frozenset[str]
+    include_autoregister_references: bool = True
     header_core_only: bool = False
 
 
@@ -629,6 +630,18 @@ def _class_report_demand(
             for projection in projections
             for declaration in projection.abc_optimizer_class_declarations
         ),
+        include_autoregister_references=any(
+            projection.named_projection_surfaces
+            or any(
+                indexed_class.declares_autoregister_meta
+                or (
+                    indexed_class.keyed_family_key_type_name is not None
+                    and "registry_key_attr" in indexed_class.assignments_by_name
+                )
+                for indexed_class in projection.classes
+            )
+            for projection in projections
+        ),
     )
 
 
@@ -650,6 +663,16 @@ def _cached_class_demand_projection(
                 declaration
                 for declaration in item.abc_optimizer_class_declarations
                 if declaration.signature in demand.abc_declaration_signatures
+            ),
+            autoregister_function_references=(
+                item.autoregister_function_references
+                if demand.include_autoregister_references
+                else ()
+            ),
+            autoregister_reference_index=(
+                item.autoregister_reference_index
+                if demand.include_autoregister_references
+                else None
             ),
         )
         for item in items
@@ -967,10 +990,14 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> list[CompactModuleClassProjection]:
         del cls
         file_path = str(parsed_module.path)
-        (
-            autoregister_function_references,
-            autoregister_reference_index,
-        ) = _compact_autoregister_function_references(parsed_module)
+        if demand is None or demand.include_autoregister_references:
+            (
+                autoregister_function_references,
+                autoregister_reference_index,
+            ) = _compact_autoregister_function_references(parsed_module)
+        else:
+            autoregister_function_references = ()
+            autoregister_reference_index = None
         indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
         all_class_nodes = tuple(
             node

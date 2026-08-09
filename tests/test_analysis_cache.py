@@ -3200,6 +3200,68 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         )
 
 
+def test_class_demand_omits_unreportable_autoregister_reference_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    context_path = package_root / "context.py"
+    context_path.write_text(
+        "class ContextRegistry(metaclass=AutoRegisterMeta):\n"
+        "    pass\n\n"
+        "def consume():\n"
+        "    return ContextRegistry.__registry__\n",
+        encoding="utf-8",
+    )
+    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    family = class_index_module.CompactModuleClassProjectionFamily
+    empty_target = class_index_module.CompactModuleClassProjection(
+        module_name="pkg.target",
+        file_path=str(package_root / "target.py"),
+        import_aliases=(),
+        classes=(),
+    )
+    demand = family.report_demand((empty_target,), DetectorConfig())
+
+    assert isinstance(demand, class_index_module.CompactClassProjectionDemand)
+    assert demand.include_autoregister_references is False
+
+    def unexpected_autoregister_graph(_parsed_module):
+        raise AssertionError("empty report demand must omit the reference graph")
+
+    monkeypatch.setattr(
+        class_index_module,
+        "_compact_autoregister_function_references",
+        unexpected_autoregister_graph,
+    )
+    demanded = family.collect_demanded(parsed_module, demand)
+
+    assert demanded is not None
+    assert demanded[0].autoregister_function_references == ()
+    assert demanded[0].autoregister_reference_index is None
+
+    target_root = class_index_module.CompactIndexedClass(
+        symbol="pkg.target.TargetRegistry",
+        module_name="pkg.target",
+        qualname="TargetRegistry",
+        simple_name="TargetRegistry",
+        file_path=str(package_root / "target.py"),
+        line=1,
+        declared_base_names=(),
+        base_reference_parts=(),
+        declares_autoregister_meta=True,
+    )
+    positive_demand = family.report_demand(
+        (replace(empty_target, classes=(target_root,)),),
+        DetectorConfig(),
+    )
+    assert isinstance(
+        positive_demand, class_index_module.CompactClassProjectionDemand
+    )
+    assert positive_demand.include_autoregister_references is True
+
+
 def test_public_bare_support_empty_demand_skips_context_collection(
     tmp_path: Path,
 ) -> None:

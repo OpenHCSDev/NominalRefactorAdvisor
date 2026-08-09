@@ -1,5 +1,28 @@
 # NRA scan-performance handoff
 
+## 2026-08-08 class-demand consumer checkpoint
+
+The class demand authority now omits the AutoRegister function/reference graph
+when the report target has no AutoRegisterMeta root, keyed registry-axis root,
+or manual registry projection surface.  The condition is derived from the same
+target facts used by the promoted detector witnesses.  Complete scans and
+targets that can report those detectors retain the graph; cached complete
+class projections are reduced to the identical demanded view.
+
+DQDock's target takes the empty-graph path and preserves all 12 findings across
+252 detectors.  Its measured run changed from 19.758 to 19.361 internal
+seconds, only about 0.4 second; this confirms the earlier AutoRegister graph
+ceiling because the shared syntax index remains required by other surviving
+families.  OpenHCS's target has a reportable registry seed, correctly retains
+the graph, and preserves all 45 findings across 252 detectors.  The focused
+analysis-cache suite passes all 149 tests.
+
+This is a valid consumer-driven projection reduction, not the dominant cold
+fix.  Do not extend class facet flags one at a time: their measured ceiling is
+seconds while the target gap remains an order larger.  Continue with the
+shared relational preflight needed to eliminate broad class-family consumers
+as a group.
+
 ## 2026-08-08 reported-seed witness checkpoint
 
 Sixteen additional detector contracts now identify the raw projection fact that
