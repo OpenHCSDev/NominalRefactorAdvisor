@@ -46,6 +46,7 @@ Conceptual Background
    openhcs_focused_pr_notes
    openhcs_diff_evolution_case_studies
    openhcs_detour_case_studies
+   openhcs_june_pr60_calibration
    dna_case_study
    systematic_refactoring_framework
    refactoring_principles
