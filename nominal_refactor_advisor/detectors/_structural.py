@@ -759,7 +759,10 @@ def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
     return "SharedFieldsBase"
 
 
-class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]):
+class RepeatedFieldFamilyDetector(
+    SourceSignalGatedIssueDetectorMixin,
+    CandidateFindingDetector[FieldFamilyCandidate],
+):
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Repeated field family indicates underleveraged inheritance",
@@ -769,6 +772,16 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
         _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
+
+    @classmethod
+    def source_may_contain_finding(
+        cls,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> bool:
+        del cls, module, config
+        return len(syntax_index.common_captures().get("class", ())) >= 2
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig

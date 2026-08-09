@@ -11,6 +11,7 @@ from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
+import re
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import (
@@ -1495,7 +1496,10 @@ _SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(
 )
 
 
-class TypingProtocolContractDetector(PerModuleIssueDetector):
+class TypingProtocolContractDetector(
+    SourceSignalGatedIssueDetectorMixin,
+    PerModuleIssueDetector,
+):
     detector_priority = -20
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -1506,6 +1510,16 @@ class TypingProtocolContractDetector(PerModuleIssueDetector):
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_VIRTUAL_MEMBERSHIP_CAPABILITY_TAGS,
         _CLASS_FAMILY_RUNTIME_MEMBERSHIP_OBSERVATION_TAGS,
     )
+
+    @classmethod
+    def source_may_contain_finding(
+        cls,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> bool:
+        del cls, syntax_index, config
+        return "Protocol" in module.source or "runtime_checkable" in module.source
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -1729,7 +1743,10 @@ class InheritanceHierarchyCandidateDetector(
         return findings
 
 
-class OrchestrationHubDetector(CandidateFindingDetector[FunctionProfile]):
+class OrchestrationHubDetector(
+    SourceSignalGatedIssueDetectorMixin,
+    CandidateFindingDetector[FunctionProfile],
+):
     finding_spec = high_confidence_spec(
         PatternId.STAGED_ORCHESTRATION,
         "Oversized orchestration hub",
@@ -1738,6 +1755,20 @@ class OrchestrationHubDetector(CandidateFindingDetector[FunctionProfile]):
         "one owner centralizes many operational phases and helper families",
         _SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
+
+    @classmethod
+    def source_may_contain_finding(
+        cls,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> bool:
+        del cls, module
+        return any(
+            function.end_point.row - function.start_point.row + 1
+            >= config.min_orchestration_function_lines
+            for function in syntax_index.common_captures().get("function", ())
+        )
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
@@ -6086,6 +6117,7 @@ def _effect_step_payoff_scaffold(candidate: EffectStepAmortizationCandidate) -> 
 
 
 class EffectStepAmortizationDetector(
+    SourceSignalGatedIssueDetectorMixin,
     ConfiguredModuleCollectorCandidateDetector[EffectStepAmortizationCandidate]
 ):
     finding_spec = finding_spec_template(
@@ -6097,6 +6129,20 @@ class EffectStepAmortizationDetector(
         _SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _PREDICATE_CHAIN_NORMALIZED_AST_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
+
+    @classmethod
+    def source_may_contain_finding(
+        cls,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> bool:
+        del cls, syntax_index, config
+        source = module.source
+        if source.count("return") < 2 or "None" not in source:
+            return False
+        guard_call_names = (*_SEMANTIC_MATCH_HELPER_NAMES, "isinstance")
+        return sum(source.count(name) for name in guard_call_names) >= 3
 
     def _finding_for_candidate(
         self, payoff_candidate: EffectStepAmortizationCandidate
@@ -6159,6 +6205,10 @@ declare_candidate_rule_detector(
         callee_family_count=1,
     ),
     candidate_collector=_effect_step_implementation_leak_candidates,
+    source_candidate_collector=lambda module, syntax_index, config: (
+        None if "Step" in module.source else ()
+    ),
+    detector_base=SourceModuleCollectorCandidateDetector,
 )
 
 
@@ -6972,6 +7022,16 @@ declare_candidate_rule_detector(
     ),
     detector_priority=-13,
     candidate_collector=_tuple_index_semantic_opacity_candidates,
+    source_candidate_collector=lambda module, syntax_index, config: (
+        None
+        if any(
+            token in module.source
+            for token in _TUPLE_INDEX_OPACITY_CARRIER_CALLS
+        )
+        and re.search(r"\[[^\]]*\d[^\]]*\]", module.source) is not None
+        else ()
+    ),
+    detector_base=SourceModuleCollectorCandidateDetector,
 )
 
 

@@ -126,6 +126,7 @@ from ..ast_tools import (
     MethodShape,
     MethodShapeFamily,
     ParsedModule,
+    SourceModule,
     ProjectionHelperShape,
     ProjectionHelperObservationFamily,
     RegistrationShape,
@@ -150,6 +151,7 @@ from ..ast_tools import (
     _builder_call_shape,
     _module_class_names,
 )
+from ..native_syntax import NativePythonSyntaxIndex
 from ..class_index import (
     ClassFamilyIndex,
     CompactClassFamilyIndex,
@@ -749,7 +751,14 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     def detect(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        findings = self._collect_findings(modules, config)
+        return self._normalize_findings(self._collect_findings(modules, config), config)
+
+    @staticmethod
+    def _normalize_findings(
+        findings: list[RefactorFinding], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        """Apply the common detector output contract to one finding stream."""
+
         if config.excluded_pattern_ids:
             findings = [
                 f for f in findings if f.pattern_id not in config.excluded_pattern_ids
@@ -823,6 +832,61 @@ class PerModuleIssueDetector(IssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         raise NotImplementedError
+
+
+class SourceLocalIssueDetectorMixin(ABC):
+    """Exact source-only producer under an existing local detector authority.
+
+    Returning ``None`` requests the ordinary Python-AST implementation for the
+    current source. This keeps migration incremental without creating a second
+    detector registry or weakening findings on unsupported syntax.
+    """
+
+    def detect_source(
+        self,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding] | None:
+        findings = self._findings_for_source(module, syntax_index, config)
+        if findings is None:
+            return None
+        if not isinstance(self, IssueDetector):
+            raise TypeError("source-local detector mixin requires IssueDetector")
+        return self._normalize_findings(findings, config)
+
+    @abstractmethod
+    def _findings_for_source(
+        self,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding] | None:
+        raise NotImplementedError
+
+
+class SourceSignalGatedIssueDetectorMixin(SourceLocalIssueDetectorMixin, ABC):
+    """Skip an AST detector when a cheap source observation proves absence."""
+
+    @classmethod
+    @abstractmethod
+    def source_may_contain_finding(
+        cls,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> bool:
+        raise NotImplementedError
+
+    def _findings_for_source(
+        self,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding] | None:
+        if type(self).source_may_contain_finding(module, syntax_index, config):
+            return None
+        return []
 
 
 class PerModuleSemanticMirrorIssueDetector(
@@ -1555,6 +1619,10 @@ ModuleCandidateCollector = Callable[[ParsedModule], Sequence[CandidateItemT]]
 ConfiguredModuleCandidateCollector = Callable[
     [ParsedModule, DetectorConfig], Sequence[CandidateItemT]
 ]
+SourceModuleCandidateCollector = Callable[
+    [SourceModule, NativePythonSyntaxIndex, DetectorConfig],
+    Sequence[CandidateItemT] | None,
+]
 CrossModuleCandidateCollector = Callable[
     [Sequence[ParsedModule]], Sequence[CandidateItemT]
 ]
@@ -1671,6 +1739,32 @@ class ConfiguredModuleCollectorCandidateDetector(
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         return type(self).candidate_collector(module, config)
+
+
+class SourceModuleCollectorCandidateDetector(
+    SourceLocalIssueDetectorMixin,
+    ModuleCollectorCandidateDetector[CandidateItemT],
+    Generic[CandidateItemT],
+    ABC,
+):
+    """Module candidate detector with an exact shared-source fast path."""
+
+    source_candidate_collector: ClassVar[
+        SourceModuleCandidateCollector[CandidateItemT]
+    ]
+
+    def _findings_for_source(
+        self,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding] | None:
+        candidates = type(self).source_candidate_collector(
+            module, syntax_index, config
+        )
+        if candidates is None:
+            return None
+        return [self._finding_for_candidate(candidate) for candidate in candidates]
 
 
 class CrossModuleCandidateDetector(
@@ -1874,6 +1968,9 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
     detector_name: str | None = None
     detector_base: type[IssueDetector] = ModuleCollectorCandidateDetector
     candidate_collector: DetectorCollector[CandidateItemT] | None = None
+    source_candidate_collector: SourceModuleCandidateCollector[CandidateItemT] | None = (
+        None
+    )
     detector_priority: int | None = None
     registry_normal_form_policy: RegistryNormalFormPolicy | None = None
 
@@ -1897,6 +1994,7 @@ class DetectorDeclarationOptionKwargs(TypedDict, Generic[CandidateItemT], total=
     detector_name: str | None
     detector_base: type[IssueDetector]
     candidate_collector: DetectorCollector[CandidateItemT]
+    source_candidate_collector: SourceModuleCandidateCollector[CandidateItemT]
     detector_priority: int | None
     registry_normal_form_policy: RegistryNormalFormPolicy | None
 
@@ -1907,6 +2005,7 @@ DetectorNamespaceValue: TypeAlias = (
     | FindingSpec
     | CandidateFindingRenderer[CandidateItemT]
     | DetectorCollector[CandidateItemT]
+    | SourceModuleCandidateCollector[CandidateItemT]
     | RegistryNormalFormPolicy
     | type[IssueDetector]
 )
@@ -1955,6 +2054,7 @@ class DetectorDeclaration(Generic[CandidateItemT]):
         | FindingSpec
         | CandidateFindingRenderer[CandidateItemT]
         | DetectorCollector[CandidateItemT]
+        | SourceModuleCandidateCollector[CandidateItemT]
         | RegistryNormalFormPolicy,
     ]:
         namespace: dict[
@@ -1964,6 +2064,7 @@ class DetectorDeclaration(Generic[CandidateItemT]):
             | FindingSpec
             | CandidateFindingRenderer[CandidateItemT]
             | DetectorCollector[CandidateItemT]
+            | SourceModuleCandidateCollector[CandidateItemT]
             | RegistryNormalFormPolicy,
         ] = {
             "__module__": module_name,
@@ -1973,6 +2074,10 @@ class DetectorDeclaration(Generic[CandidateItemT]):
         }
         if self.options.candidate_collector is not None:
             namespace["candidate_collector"] = self.options.candidate_collector
+        if self.options.source_candidate_collector is not None:
+            namespace["source_candidate_collector"] = (
+                self.options.source_candidate_collector
+            )
         if self.options.detector_priority is not None:
             namespace["detector_priority"] = self.options.detector_priority
         if self.options.registry_normal_form_policy is not None:

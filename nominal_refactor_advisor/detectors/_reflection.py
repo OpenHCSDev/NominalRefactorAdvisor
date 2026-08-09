@@ -46,6 +46,10 @@ _UPPERCASE_SEMANTIC_DECLARATION_CALLS = frozenset(
         "list",
     )
 )
+_NATIVE_BARE_OR_ATTRIBUTE_CALL_QUERY = """
+(call function: (identifier) @callee) @call
+(call function: (attribute attribute: (identifier) @attribute)) @call
+"""
 
 
 def _direct_reflection_call_name(node: ast.Call) -> str | None:
@@ -241,6 +245,62 @@ def _direct_reflective_builtin_call_candidates(
     return tuple(candidates)
 
 
+def _source_direct_reflective_builtin_call_candidates(
+    module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    config: DetectorConfig,
+) -> tuple[DirectReflectiveBuiltinCallCandidate, ...] | None:
+    del config
+    if not syntax_index.is_complete:
+        return None
+    sites_by_owner: dict[str, list[tuple[int, str]]] = {}
+    calls = syntax_index.captures(_NATIVE_BARE_OR_ATTRIBUTE_CALL_QUERY).get("call", ())
+    for call in sorted(calls, key=lambda node: node.start_byte):
+        function = call.child_by_field_name("function")
+        if function is None:
+            continue
+        builtin_name: str | None = None
+        if function.type == "identifier":
+            name = syntax_index.source_for(function).decode("utf-8")
+            if name in _DIRECT_REFLECTION_BUILTINS:
+                builtin_name = name
+        elif function.type == "attribute":
+            attribute = function.child_by_field_name("attribute")
+            if attribute is not None:
+                name = syntax_index.source_for(attribute).decode("utf-8")
+                if name in _DIRECT_REFLECTION_DUNDER_METHODS:
+                    builtin_name = ast.unparse(syntax_index.expression_for(function))
+        if builtin_name is None:
+            continue
+        scopes = syntax_index.named_scope_nodes(call)
+        owner = _direct_reflection_owner(
+            tuple(
+                syntax_index.declared_name(scope)
+                for scope in scopes
+                if scope.type == "class_definition"
+            ),
+            tuple(
+                syntax_index.declared_name(scope)
+                for scope in scopes
+                if scope.type == "function_definition"
+            ),
+        )
+        sites_by_owner.setdefault(owner, []).append(
+            (call.start_point.row + 1, builtin_name)
+        )
+    return tuple(
+        DirectReflectiveBuiltinCallCandidate(
+            owner=owner,
+            builtin_names=tuple(sorted({name for _line, name in sites})),
+            evidence=tuple(
+                SourceLocation(str(module.path), line, f"{owner}:{builtin_name}")
+                for line, builtin_name in sites
+            ),
+        )
+        for owner, sites in sorted(sites_by_owner.items())
+    )
+
+
 declare_candidate_rule_detector(
     DirectReflectiveBuiltinCallCandidate,
     high_confidence_certified_spec(
@@ -282,6 +342,8 @@ declare_candidate_rule_detector(
         probe_site_count=len(candidate.evidence)
     ),
     candidate_collector=_direct_reflective_builtin_call_candidates,
+    source_candidate_collector=_source_direct_reflective_builtin_call_candidates,
+    detector_base=SourceModuleCollectorCandidateDetector,
 )
 
 
@@ -347,6 +409,23 @@ def _builtin_locals_call_candidates(
     return tuple(candidates)
 
 
+def _source_builtin_locals_call_candidates(
+    module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    config: DetectorConfig,
+) -> tuple[BuiltinLocalsCallCandidate, ...] | None:
+    del module, config
+    if not syntax_index.is_complete:
+        return None
+    captures = syntax_index.captures(_NATIVE_BARE_OR_ATTRIBUTE_CALL_QUERY)
+    if any(
+        syntax_index.source_for(callee) == b"locals"
+        for callee in captures.get("callee", ())
+    ):
+        return None
+    return ()
+
+
 declare_candidate_rule_detector(
     BuiltinLocalsCallCandidate,
     high_confidence_certified_spec(
@@ -374,6 +453,8 @@ declare_candidate_rule_detector(
     ),
     metrics=lambda candidate: ProbeCountMetrics(probe_site_count=len(candidate.evidence)),
     candidate_collector=_builtin_locals_call_candidates,
+    source_candidate_collector=_source_builtin_locals_call_candidates,
+    detector_base=SourceModuleCollectorCandidateDetector,
 )
 
 
@@ -419,6 +500,49 @@ def _direct_reflective_attribute_hook_candidates(
     return tuple(candidates)
 
 
+def _source_direct_reflective_attribute_hook_candidates(
+    module: SourceModule,
+    syntax_index: NativePythonSyntaxIndex,
+    config: DetectorConfig,
+) -> tuple[DirectReflectiveAttributeHookCandidate, ...] | None:
+    del config
+    if not syntax_index.is_complete:
+        return None
+    sites_by_owner: dict[str, list[tuple[int, str]]] = {}
+    functions = syntax_index.common_captures().get("function", ())
+    for function in sorted(functions, key=lambda node: node.start_byte):
+        hook_name = syntax_index.declared_name(function)
+        if hook_name not in _DIRECT_REFLECTION_ATTRIBUTE_HOOKS:
+            continue
+        scopes = syntax_index.named_scope_nodes(function)
+        owner = _direct_reflection_owner(
+            tuple(
+                syntax_index.declared_name(scope)
+                for scope in scopes
+                if scope.type == "class_definition"
+            ),
+            tuple(
+                syntax_index.declared_name(scope)
+                for scope in scopes
+                if scope.type == "function_definition"
+            ),
+        )
+        sites_by_owner.setdefault(owner, []).append(
+            (function.start_point.row + 1, hook_name)
+        )
+    return tuple(
+        DirectReflectiveAttributeHookCandidate(
+            owner=owner,
+            hook_names=tuple(sorted({name for _line, name in sites})),
+            evidence=tuple(
+                SourceLocation(str(module.path), line, f"{owner}:{hook_name}")
+                for line, hook_name in sites
+            ),
+        )
+        for owner, sites in sorted(sites_by_owner.items())
+    )
+
+
 declare_candidate_rule_detector(
     DirectReflectiveAttributeHookCandidate,
     high_confidence_certified_spec(
@@ -461,4 +585,6 @@ declare_candidate_rule_detector(
         probe_site_count=len(candidate.evidence)
     ),
     candidate_collector=_direct_reflective_attribute_hook_candidates,
+    source_candidate_collector=_source_direct_reflective_attribute_hook_candidates,
+    detector_base=SourceModuleCollectorCandidateDetector,
 )

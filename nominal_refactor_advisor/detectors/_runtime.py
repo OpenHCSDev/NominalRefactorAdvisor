@@ -2035,7 +2035,10 @@ class FormalBoundaryLiteralRegistryCallVisitor(ClassFunctionStackNodeVisitor):
         )
 
 
-class FormalBoundaryLiteralRegistryMirrorDetector(PerModuleSemanticMirrorIssueDetector):
+class FormalBoundaryLiteralRegistryMirrorDetector(
+    SourceSignalGatedIssueDetectorMixin,
+    PerModuleSemanticMirrorIssueDetector,
+):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Formal-boundary literal registries should be derived",
@@ -2045,6 +2048,20 @@ class FormalBoundaryLiteralRegistryMirrorDetector(PerModuleSemanticMirrorIssueDe
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
+
+    @classmethod
+    def source_may_contain_finding(
+        cls,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> bool:
+        del cls, syntax_index, config
+        source = module.source.lower()
+        return any(
+            token in source
+            for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+        )
 
     def _module_string_registry_findings(
         self,

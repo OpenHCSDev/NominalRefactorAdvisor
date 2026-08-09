@@ -85,6 +85,7 @@ from .detectors import (
     DetectorCacheGranularity,
     DetectorConfig,
     IssueDetector,
+    SourceLocalIssueDetectorMixin,
     SemanticDescentGraphIssueDetector,
     compact_class_index_from_projection_groups,
     default_detectors,
@@ -1038,6 +1039,7 @@ def build_compact_projection_shard(
 
     local_findings: tuple[RefactorFinding, ...] = ()
     local_analysis_seconds = 0.0
+    fallback_local_detector_types = request.local_detector_types
     ast_families = list(request.missing_families)
     demand_by_family = dict(request.family_demands)
     for family in tuple(ast_families):
@@ -1067,9 +1069,14 @@ def build_compact_projection_shard(
             ),
         )
         ast_families.remove(family)
-    # A mixed shard still needs the Python AST.  Do not pay for a second native
-    # parse until source coverage can replace that shard's AST construction.
-    source_native_shard = (
+    source_local_detector_types = tuple(
+        detector_type
+        for detector_type in request.local_detector_types
+        if issubclass(detector_type, SourceLocalIssueDetectorMixin)
+    )
+    # A source-local detector and compact families share one native parse. A
+    # detector that cannot answer exactly remains on the AST fallback below.
+    source_native_shard = bool(source_local_detector_types) or (
         bool(ast_families)
         and not request.local_detector_types
         and all(
@@ -1097,6 +1104,30 @@ def build_compact_projection_shard(
                 family_cache_dir=source.family_cache_dir,
             )
             syntax_index = NativePythonSyntaxIndex.from_source(source_text)
+            if syntax_index.is_complete and source_local_detector_types:
+                local_started = perf_counter()
+                native_findings: list[RefactorFinding] = []
+                fallback_types: list[type[IssueDetector]] = [
+                    detector_type
+                    for detector_type in request.local_detector_types
+                    if detector_type not in source_local_detector_types
+                ]
+                for detector_type in source_local_detector_types:
+                    detector = detector_type()
+                    if not isinstance(detector, SourceLocalIssueDetectorMixin):
+                        raise TypeError(
+                            f"{detector_type.__name__} lost its source-local contract"
+                        )
+                    detector_findings = detector.detect_source(
+                        source_module, syntax_index, request.config
+                    )
+                    if detector_findings is None:
+                        fallback_types.append(detector_type)
+                    else:
+                        native_findings.extend(detector_findings)
+                local_findings = tuple(native_findings)
+                fallback_local_detector_types = tuple(fallback_types)
+                local_analysis_seconds = perf_counter() - local_started
             for family in tuple(ast_families):
                 demand = demand_by_family.get(family)
                 projections_list = (
@@ -1141,22 +1172,25 @@ def build_compact_projection_shard(
                     )
                 add_runtime_projection(family, projections, projection_signature)
                 ast_families.remove(family)
-    if ast_families or request.local_detector_types:
+    if ast_families or fallback_local_detector_types:
         modules = parser.parsed_source_paths((source.path,))
     else:
         modules = ()
     for module in modules:
-        if request.local_detector_types:
+        if fallback_local_detector_types:
             local_started = perf_counter()
             local_findings = tuple(
-                analyze_detector_types(
-                    [module],
-                    request.config,
-                    detector_types=request.local_detector_types,
-                    analysis_workers=1,
+                (
+                    *local_findings,
+                    *analyze_detector_types(
+                        [module],
+                        request.config,
+                        detector_types=fallback_local_detector_types,
+                        analysis_workers=1,
+                    ),
                 )
             )
-            local_analysis_seconds = perf_counter() - local_started
+            local_analysis_seconds += perf_counter() - local_started
         for family in ast_families:
             demand = demand_by_family.get(family)
             demanded_projections = (
@@ -1206,6 +1240,13 @@ def build_compact_projection_shard(
                 )
             add_runtime_projection(family, projections, projection_signature)
         del module
+    if local_findings:
+        local_findings = tuple(
+            SortedFindingsAuthority.sort(
+                local_findings,
+                detector_types=request.local_detector_types,
+            )
+        )
     cache_bundle_complete = bool(
         request.bundle_families
         and not request.family_demands

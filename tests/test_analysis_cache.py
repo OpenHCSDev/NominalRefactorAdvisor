@@ -78,6 +78,7 @@ from nominal_refactor_advisor.detectors import (
     SemanticDescentGraphIssueDetector,
 )
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
+from nominal_refactor_advisor.detectors import _reflection as reflection_detectors
 from nominal_refactor_advisor.detectors import (
     _abstraction_reuse as abstraction_reuse_detectors,
 )
@@ -2649,6 +2650,89 @@ def test_source_native_projection_shard_skips_python_ast_construction(
         (surface_detectors.CompactDistributedBoundaryModuleProjectionFamily, 1),
         (environment_detectors._EnvironmentBooleanModuleProjectionFamily, 1),
         (runtime_detectors.CompactNominalBypassModuleProjectionFamily, 1),
+    ]
+
+
+def test_source_local_detector_shard_skips_python_ast_when_exact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "reflection.py"
+    source = (
+        "class Adapter:\n"
+        "    def __getattr__(self, name):\n"
+        "        return getattr(self.values, name)\n"
+    )
+    module_path.write_text(source, encoding="utf-8")
+    projection_source = analysis_module.CompactProjectionCacheSource(
+        path=module_path,
+        module_name="reflection",
+        source_signature=ast_tools_module.python_source_cache_signature(source),
+        family_cache_dir=None,
+        scan_root=package_root,
+        cache_dir=None,
+        use_parse_cache=False,
+        source_policy=ast_tools_module.PythonSourcePathPolicy(),
+    )
+
+    def unexpected_ast_parse(self, paths):
+        del self, paths
+        raise AssertionError("exact source-local detectors should bypass Python AST")
+
+    monkeypatch.setattr(
+        ast_tools_module.PythonModuleRootParser,
+        "parsed_source_paths",
+        unexpected_ast_parse,
+    )
+    result = analysis_module.build_compact_projection_shard(
+        analysis_module.CompactProjectionBuildRequest(
+            source=projection_source,
+            missing_families=(),
+            config=DetectorConfig(),
+            local_detector_types=(
+                reflection_detectors.DirectReflectiveBuiltinCallDetector,
+                reflection_detectors.BuiltinLocalsCallDetector,
+                reflection_detectors.DirectReflectiveAttributeHookDetector,
+            ),
+        )
+    )
+
+    assert [finding.detector_id for finding in result.local_findings] == [
+        "direct_reflective_builtin_call",
+        "direct_reflective_attribute_hook",
+    ]
+
+
+def test_source_local_detector_requests_ast_fallback_for_lexical_binding(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "reflection.py"
+    source = "def capture(value):\n    return locals()\n"
+    module_path.write_text(source, encoding="utf-8")
+    result = analysis_module.build_compact_projection_shard(
+        analysis_module.CompactProjectionBuildRequest(
+            source=analysis_module.CompactProjectionCacheSource(
+                path=module_path,
+                module_name="reflection",
+                source_signature=ast_tools_module.python_source_cache_signature(source),
+                family_cache_dir=None,
+                scan_root=package_root,
+                cache_dir=None,
+                use_parse_cache=False,
+                source_policy=ast_tools_module.PythonSourcePathPolicy(),
+            ),
+            missing_families=(),
+            config=DetectorConfig(),
+            local_detector_types=(reflection_detectors.BuiltinLocalsCallDetector,),
+        )
+    )
+
+    assert [finding.detector_id for finding in result.local_findings] == [
+        "builtin_locals_call"
     ]
 
 
