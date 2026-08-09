@@ -1382,6 +1382,20 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
         context: "SemanticMirrorResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
+        if (
+            context.fact_specificity.matched_facts_are_reused_roles(
+                candidate.matched_facts
+            )
+            and not context.projection_semantics.has_authority_affinity(
+                candidate.projection,
+                candidate.authority,
+            )
+            and not context.projection_semantics.has_qualified_authority_reference(
+                candidate.projection,
+                candidate.authority,
+            )
+        ):
+            return False
         return not (
             candidate.projection.kind is PresentationProjectionKind.BRANCH_LITERAL
             and candidate.match.fact_count <= 2

@@ -517,6 +517,43 @@ def test_semantic_mirror_detector_reports_authority_and_projection(
     )
 
 
+def test_class_family_mirror_requires_affinity_for_reused_crosscutting_facts(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "class SerializerAdapter:\n"
+        "    pass\n"
+        "\n"
+        "class RenderAdapter:\n"
+        "    pass\n"
+        "\n"
+        "class CsvAdapter(SerializerAdapter, RenderAdapter):\n"
+        "    adapter_id = 'csv'\n"
+        "\n"
+        "class JsonAdapter(SerializerAdapter, RenderAdapter):\n"
+        "    adapter_id = 'json'\n"
+        "\n"
+        "SERIALIZER_ADAPTER_TABLE = {'csv': CsvAdapter, 'json': JsonAdapter}\n",
+    )
+
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(
+            parse_python_modules(tmp_path),
+            DetectorConfig(),
+        )
+    )
+    mirror_titles = {
+        finding.title
+        for finding in findings
+        if finding.metrics.plan_registry_name == "SERIALIZER_ADAPTER_TABLE"
+    }
+
+    assert mirror_titles == {
+        "`SERIALIZER_ADAPTER_TABLE` mirrors `SerializerAdapter`"
+    }
+
+
 def test_semantic_mirror_focused_collection_filters_before_rendering(
     tmp_path: Path,
     monkeypatch,
