@@ -63,6 +63,27 @@ def _direct_reflection_call_name(node: ast.Call) -> str | None:
     return None
 
 
+def _is_static_self_attribute_write(node: ast.Call) -> bool:
+    """Return whether ``object.__setattr__`` writes one statically named self field.
+
+    Frozen dataclasses use this exact form to validate or normalize a field in
+    ``__post_init__``.  The receiver and attribute are both statically named,
+    so this is not runtime recovery from a partial structural view.
+    """
+
+    return bool(
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "object"
+        and node.func.attr == "__setattr__"
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "self"
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    )
+
+
 def _direct_reflection_owner(
     class_stack: Sequence[str],
     function_stack: Sequence[str],
@@ -221,7 +242,7 @@ def _direct_reflective_builtin_call_candidates(
     class Visitor(ClassFunctionStackNodeVisitor):
         def visit_Call(self, node: ast.Call) -> None:
             builtin_name = _direct_reflection_call_name(node)
-            if builtin_name is not None:
+            if builtin_name is not None and not _is_static_self_attribute_write(node):
                 owner = _direct_reflection_owner(
                     self.class_stack,
                     self.function_stack,
@@ -271,6 +292,11 @@ def _source_direct_reflective_builtin_call_candidates(
                 if name in _DIRECT_REFLECTION_DUNDER_METHODS:
                     builtin_name = ast.unparse(syntax_index.expression_for(function))
         if builtin_name is None:
+            continue
+        parsed_call = syntax_index.expression_for(call)
+        if isinstance(parsed_call, ast.Call) and _is_static_self_attribute_write(
+            parsed_call
+        ):
             continue
         scopes = syntax_index.named_scope_nodes(call)
         owner = _direct_reflection_owner(

@@ -14,16 +14,9 @@ from tree_sitter import Node
 
 from ..ast_tools import CollectedFamily, SourceModule
 from ..class_index import (
-    ATTRIBUTE_CHAIN_AUTHORITY,
-    ClassSymbolResolutionAuthority,
     CompactCarrierClassFact,
-    CompactClassFamilyIndex,
-    CompactClassReferenceResolver,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
-    ModuleClassReferenceResolver,
-    build_class_family_index,
-    build_compact_class_family_index,
 )
 from ..collection_algebra import sorted_tuple
 from ..constructor_algebra import ConstructorParameterField
@@ -172,12 +165,6 @@ class AvailableCarrierReuseCandidate:
     authority: CarrierSurface
     shared_roles: tuple[str, ...]
     shared_field_names: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class CarrierCompositionRetreatCandidate(CarrierBase):
-    field_name: str
-    carrier_type_name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,243 +560,6 @@ def _carrier_surfaces_with_ancestors(
             ),
             key=lambda surface: (surface.file_path, surface.line, surface.class_name),
         )
-    )
-
-
-def _is_dataclass_class(node: ast.ClassDef) -> bool:
-    for decorator in node.decorator_list:
-        if isinstance(decorator, ast.Name) and decorator.id == "dataclass":
-            return True
-        if isinstance(decorator, ast.Call):
-            func = decorator.func
-            if isinstance(func, ast.Name) and func.id == "dataclass":
-                return True
-    return False
-
-
-def _direct_annotation_reference(annotation_text: str) -> ast.AST | None:
-    try:
-        annotation = ast.parse(annotation_text, mode="eval").body
-    except SyntaxError:
-        return None
-    if not isinstance(annotation, ast.Constant) or not isinstance(
-        annotation.value, str
-    ):
-        return annotation
-    try:
-        return ast.parse(annotation.value, mode="eval").body
-    except SyntaxError:
-        return None
-
-
-def _resolved_inheritable_carrier_type_name(
-    resolver: ModuleClassReferenceResolver,
-    annotation_text: str,
-) -> str | None:
-    annotation = _direct_annotation_reference(annotation_text)
-    if annotation is None:
-        return None
-    symbol = resolver.symbol_for_reference(annotation)
-    if symbol is None:
-        return None
-    indexed_class = resolver.class_index.class_for(symbol)
-    if (
-        indexed_class is None
-        or not _looks_like_reusable_carrier_name(indexed_class.simple_name)
-        or indexed_class.is_final
-    ):
-        return None
-    return ast.unparse(annotation)
-
-
-def _carrier_composition_retreat_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[CarrierCompositionRetreatCandidate, ...]:
-    class_index = build_class_family_index(list(modules))
-    resolver_by_module_name = {
-        module.module_name: ModuleClassReferenceResolver(module, class_index)
-        for module in modules
-    }
-    base_lookup: dict[str, set[str]] = defaultdict(set)
-    class_nodes: list[tuple[ParsedModule, ast.ClassDef]] = []
-    for module in modules:
-        for node in ast.walk(module.module):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            class_nodes.append((module, node))
-            base_lookup[node.name].update(
-                HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node)
-            )
-    ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
-
-    candidates: list[CarrierCompositionRetreatCandidate] = []
-    for module, node in class_nodes:
-        if not _public_name(node.name) or not _is_dataclass_class(node):
-            continue
-        base_names = tuple(sorted(base_lookup[node.name]))
-        inherited_names = set(base_names) | set(ancestor_names_by_class[node.name])
-        for field_name, annotation_text in _carrier_field_type_map(node):
-            carrier_type_name = _resolved_inheritable_carrier_type_name(
-                resolver_by_module_name[module.module_name],
-                annotation_text,
-            )
-            if carrier_type_name is None:
-                continue
-            if carrier_type_name == node.name or carrier_type_name in inherited_names:
-                continue
-            candidates.append(
-                CarrierCompositionRetreatCandidate(
-                    file_path=str(module.path),
-                    module_name=module.module_name,
-                    line=node.lineno,
-                    class_name=node.name,
-                    field_name=field_name,
-                    carrier_type_name=carrier_type_name,
-                    base_names=base_names,
-                    nominal_ancestor_names=(ancestor_names_by_class[node.name]),
-                )
-            )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.class_name,
-            candidate.field_name,
-            candidate.carrier_type_name,
-        ),
-    )
-
-
-def _compact_carrier_base_lookup(
-    projections: tuple[CompactModuleClassProjection, ...],
-) -> dict[str, set[str]]:
-    base_lookup: dict[str, set[str]] = defaultdict(set)
-    for projection in projections:
-        for class_name, base_names in projection.carrier_base_edges:
-            base_lookup[class_name].update(base_names)
-        for fact in projection.carrier_class_facts:
-            base_lookup[fact.class_name]
-    return base_lookup
-
-
-def _compact_carrier_annotation_symbol(
-    projection: CompactModuleClassProjection,
-    resolver: CompactClassReferenceResolver,
-    annotation: ast.AST,
-) -> str | None:
-    if isinstance(annotation, ast.Call):
-        reference = ClassSymbolResolutionAuthority.reference_node(annotation.func)
-        reference_parts = ATTRIBUTE_CHAIN_AUTHORITY.project(reference)
-        if reference_parts is None:
-            return None
-        return resolver.symbol_for(
-            module_name=projection.module_name,
-            reference_parts=reference_parts,
-            allow_unique_unqualified=False,
-        )
-    if isinstance(annotation, ast.Name):
-        constructor_reference = dict(projection.carrier_constructor_assignments).get(
-            annotation.id
-        )
-        if constructor_reference is not None:
-            constructor_symbol = resolver.symbol_for(
-                module_name=projection.module_name,
-                reference_parts=constructor_reference,
-                allow_unique_unqualified=False,
-            )
-            if constructor_symbol is not None:
-                return constructor_symbol
-    reference = ClassSymbolResolutionAuthority.reference_node(annotation)
-    reference_parts = ATTRIBUTE_CHAIN_AUTHORITY.project(reference)
-    if reference_parts is None:
-        return None
-    return resolver.symbol_for(
-        module_name=projection.module_name,
-        reference_parts=reference_parts,
-        allow_unique_unqualified=False,
-    )
-
-
-def _compact_resolved_inheritable_carrier_type_name(
-    projection: CompactModuleClassProjection,
-    resolver: CompactClassReferenceResolver,
-    class_index: CompactClassFamilyIndex,
-    annotation_text: str,
-) -> str | None:
-    annotation = _direct_annotation_reference(annotation_text)
-    if annotation is None:
-        return None
-    symbol = _compact_carrier_annotation_symbol(projection, resolver, annotation)
-    if symbol is None:
-        return None
-    indexed_class = class_index.class_for(symbol)
-    if (
-        indexed_class is None
-        or not _looks_like_reusable_carrier_name(indexed_class.simple_name)
-        or indexed_class.is_final
-    ):
-        return None
-    return ast.unparse(annotation)
-
-
-def _compact_carrier_composition_retreat_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-    class_index: CompactClassFamilyIndex,
-) -> tuple[CarrierCompositionRetreatCandidate, ...]:
-    resolver = CompactClassReferenceResolver.from_index(projections, class_index)
-    base_lookup = _compact_carrier_base_lookup(projections)
-    ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
-    candidates: list[CarrierCompositionRetreatCandidate] = []
-    for projection in projections:
-        for fact in projection.carrier_class_facts:
-            if (
-                not _public_name(fact.class_name)
-                or not fact.is_dataclass
-                or not fact.field_type_map
-            ):
-                continue
-            base_names = tuple(sorted(base_lookup[fact.class_name]))
-            inherited_names = set(base_names) | set(
-                ancestor_names_by_class[fact.class_name]
-            )
-            for field_name, annotation_text in fact.field_type_map:
-                carrier_type_name = _compact_resolved_inheritable_carrier_type_name(
-                    projection,
-                    resolver,
-                    class_index,
-                    annotation_text,
-                )
-                if carrier_type_name is None:
-                    continue
-                if (
-                    carrier_type_name == fact.class_name
-                    or carrier_type_name in inherited_names
-                ):
-                    continue
-                candidates.append(
-                    CarrierCompositionRetreatCandidate(
-                        file_path=projection.file_path,
-                        module_name=projection.module_name,
-                        line=fact.line,
-                        class_name=fact.class_name,
-                        field_name=field_name,
-                        carrier_type_name=carrier_type_name,
-                        base_names=base_names,
-                        nominal_ancestor_names=(
-                            ancestor_names_by_class[fact.class_name]
-                        ),
-                    )
-                )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.class_name,
-            candidate.field_name,
-            candidate.carrier_type_name,
-        ),
     )
 
 
@@ -2173,24 +1923,16 @@ class AvailableAbstractionReuseDetector(
 @dataclass(frozen=True)
 class CompactCarrierReuseContext:
     available_candidates: tuple[AvailableCarrierReuseCandidate, ...]
-    composition_candidates: tuple[CarrierCompositionRetreatCandidate, ...]
     parallel_candidates: tuple[ParallelPrimitiveCarrierCandidate, ...]
 
 
 def _compact_carrier_reuse_context(
     projections: tuple[CompactModuleClassProjection, ...],
     config: DetectorConfig,
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
 ) -> CompactCarrierReuseContext:
     del config
-    if class_index is None:
-        class_index = build_compact_class_family_index(projections)
     return CompactCarrierReuseContext(
         available_candidates=_compact_available_carrier_reuse_candidates(projections),
-        composition_candidates=_compact_carrier_composition_retreat_candidates(
-            projections, class_index
-        ),
         parallel_candidates=_compact_parallel_primitive_carrier_candidates(projections),
     )
 
@@ -2226,11 +1968,7 @@ class _CompactCarrierReuseDetectorBase(
             repository = require_compact_class_repository_context(context)
             carrier_context = repository.cached(
                 _compact_carrier_reuse_context,
-                lambda: _compact_carrier_reuse_context(
-                    projections,
-                    config,
-                    class_index=repository.class_index,
-                ),
+                lambda: _compact_carrier_reuse_context(projections, config),
             )
         return self._findings_for_candidates(
             getattr(carrier_context, type(self).compact_candidate_attribute),
@@ -2240,10 +1978,6 @@ class _CompactCarrierReuseDetectorBase(
 
 class _CompactAvailableCarrierReuseDetectorBase(_CompactCarrierReuseDetectorBase):
     compact_candidate_attribute = "available_candidates"
-
-
-class _CompactCarrierCompositionRetreatDetectorBase(_CompactCarrierReuseDetectorBase):
-    compact_candidate_attribute = "composition_candidates"
 
 
 class _CompactParallelPrimitiveCarrierDetectorBase(_CompactCarrierReuseDetectorBase):
@@ -2318,74 +2052,6 @@ class AvailableCarrierReuseDetector(_CompactAvailableCarrierReuseDetectorBase):
                         identity_field_names=tuple(
                             candidate.shared_field_names or candidate.shared_roles
                         ),
-                    ),
-                )
-            )
-        return findings
-
-
-class CarrierCompositionRetreatDetector(_CompactCarrierCompositionRetreatDetectorBase):
-    compact_report_class_header_core_safe = True
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Carrier-valued dataclass field masks semantic inheritance",
-        "A dataclass stores a nominal carrier/boundary/state/context as a regular field while not inheriting it. That is usually a retreat from load-bearing nominal identity: downstream code must unpack a composed object instead of relying on the type lattice.",
-        "inheritance-compatible nominal boundary instead of carrier composition",
-        "dataclass field annotation references a semantic carrier outside the inheritance closure",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.KEYWORD_MAPPING,
-        ),
-    )
-
-    candidate_collector = staticmethod(_carrier_composition_retreat_candidates)
-
-    def _findings_for_candidates(
-        self,
-        candidates: Sequence[CarrierCompositionRetreatCandidate],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        findings: list[RefactorFinding] = []
-        for candidate in candidates:
-            findings.append(
-                self.build_finding(
-                    (
-                        f"`{candidate.class_name}.{candidate.field_name}` stores "
-                        f"`{candidate.carrier_type_name}` as a field instead of "
-                        "inheriting it."
-                    ),
-                    (
-                        SourceLocation(
-                            candidate.file_path,
-                            candidate.line,
-                            f"{candidate.class_name}.{candidate.field_name}",
-                        ),
-                    ),
-                    scaffold=(
-                        f"class {candidate.class_name}({candidate.carrier_type_name}, ...):\n"
-                        "    # keep only genuine local residue here\n"
-                        "    ..."
-                    ),
-                    codemod_patch=(
-                        f"# Replace `{candidate.field_name}: {candidate.carrier_type_name}` "
-                        f"on `{candidate.class_name}` with direct inheritance from "
-                        f"`{candidate.carrier_type_name}`.\n"
-                        "# If dataclass frozen/mutable settings block inheritance, normalize "
-                        "the carrier family configuration instead of hiding the carrier behind "
-                        "a composed field."
-                    ),
-                    metrics=MappingMetrics.from_field_names(
-                        mapping_site_count=1,
-                        mapping_name="carrier_composition_retreat",
-                        field_names=(candidate.field_name,),
-                        source_name=candidate.carrier_type_name,
-                        identity_field_names=(candidate.field_name,),
                     ),
                 )
             )

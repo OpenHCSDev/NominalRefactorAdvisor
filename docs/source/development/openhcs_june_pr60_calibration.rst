@@ -178,6 +178,67 @@ NRA is directionally enriched on the known-bad surfaces, but 1.29--1.42x is
 far too weak for a high-confidence work queue.  Detector-specific enrichment
 is much more useful than the aggregate.
 
+First Precision Correction
+--------------------------
+
+The first calibration pass made two changes supported by source inventory and
+the cleanup labels:
+
+- ``carrier_composition_retreat`` was removed, including its compact and AST
+  collection substrate.  A carrier-valued field proves a has-a relationship,
+  not the is-a relationship required to recommend inheritance.
+- ``direct_reflective_builtin_call`` now excludes only
+  ``object.__setattr__(self, "static_field", value)``.  It continues to report
+  dynamic field names and writes to foreign receivers.  Of the 297 current
+  OpenHCS ``object.__setattr__`` sites, 285 have that static-self form; 289 are
+  in dataclass contexts, 277 are in ``__post_init__``, and only seven target a
+  foreign receiver.
+
+The exact snapshots were then replayed with the remaining 251 detectors:
+
+.. list-table:: Snapshot replay after the first precision correction
+   :header-rows: 1
+
+   * - Snapshot
+     - Before
+     - After
+     - Change
+   * - runtime-owner parent ``4bc91c242``
+     - 7,558
+     - 7,328
+     - -230
+   * - runtime-owner cutover ``ccfef5f6d``
+     - 7,142
+     - 6,931
+     - -211
+   * - compiler-cleanup parent ``1398c8662``
+     - 7,115
+     - 6,913
+     - -202
+   * - compiler cleanup ``5e8812ee8``
+     - 7,247
+     - 7,064
+     - -183
+   * - current OpenHCS package
+     - 7,691
+     - 7,487
+     - -204
+
+The cleanup deltas remain directionally inconsistent: the runtime cutover is
+``-397`` after calibration, while the known-good compiler cleanup is ``+151``.
+This confirms that raw count cannot become the optimization target merely by
+removing two noisy rules.
+
+Using the same primary-location attribution as the initial deleted-surface
+experiment, the runtime cutover's deleted files retain 622 findings and the
+compiler cleanup's deleted files retain 351.  Their aggregate enrichment falls
+to 1.35x and 1.21x respectively because the removed noise was itself
+concentrated on dataclass-heavy compatibility code.  This is a precision win,
+not an enrichment win: the compiler deletion loses all eight unsound
+composition findings and 25 of 29 reflection findings while preserving the
+``available_carrier_reuse``, ``isinstance_family_scatter``, private-authority,
+and wrapper-lattice signals.
+
 Initial Detector Labels
 -----------------------
 
@@ -236,15 +297,18 @@ Confirmed or likely noise
 Current Noise Shape
 -------------------
 
-The current package's six largest detector families account for 4,206 of 7,691
-raw findings (54.7%):
+After the first precision correction, the current package's six largest
+detector families account for 4,235 of 7,487 raw findings (56.6%):
 
-- opaque object annotations: 1,742
-- semantic mirrors: 872
-- distributed boundary fanout: 502
+- opaque object annotations: 1,747
+- semantic mirrors: 886
+- distributed boundary fanout: 505
 - non-nominal private helpers: 407
-- unclassified runtime fallbacks: 371
-- role-surface drift: 312
+- unclassified runtime fallbacks: 376
+- role-surface drift: 314
+
+Direct reflective builtin findings fall from 299 to 184, and the 133 current
+composition-retreat findings disappear with the invalid detector authority.
 
 This explains why the 11,263-finding whole-repository result is not a usable
 review list.  Raw findings are an evidence substrate.  A useful work queue must
@@ -259,10 +323,8 @@ Before declaring the study complete:
 1. Score more June/July corrective commits, including declaration-owned MCP,
    source provenance, enum/config ownership, and extracted-owner changes.
 2. Add matched retained controls so deletion enrichment is not the only label.
-3. Remove or constrain the disproved composition and frozen-dataclass
-   reflection rules, then rerun the exact PR #60 snapshots.
-4. Measure whether the revised work queue ranks the historically deleted
+3. Measure whether the revised work queue ranks the historically deleted
    surfaces ahead of retained production code; do not optimize raw count.
-5. Promote only detector combinations whose survivor set is small enough for a
+4. Promote only detector combinations whose survivor set is small enough for a
    maintainer to inspect and whose remediation agrees with the surviving
    architecture.

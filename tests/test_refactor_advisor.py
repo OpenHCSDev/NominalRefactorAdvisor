@@ -4222,7 +4222,6 @@ EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID = "available_abstraction_reuse"
 AVAILABLE_CARRIER_REUSE_DETECTOR_ID = "available_carrier_reuse"
-CARRIER_COMPOSITION_RETREAT_DETECTOR_ID = "carrier_composition_retreat"
 PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID = "parallel_primitive_carrier"
 FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 FAIL_SOFT_FALLBACK_DETECTOR_ID = "fail_soft_fallback"
@@ -6318,9 +6317,7 @@ class FindingBuildContext:
     )
 
 
-def test_carrier_composition_retreat_flags_composed_semantic_carrier(
-    tmp_path: Path,
-) -> None:
+def test_typed_carrier_composition_does_not_imply_inheritance(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "sample.py",
@@ -6341,279 +6338,8 @@ class RepairRequest:
     )
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        item
-        for item in findings
-        if item.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-    )
-
-    assert "RepairRequest.progress_emitter" in finding.summary
-    assert "ProgressEmitterCarrier" in finding.summary
-    assert "direct inheritance" in (finding.codemod_patch or "")
-
-
-def test_carrier_composition_retreat_allows_inherited_semantic_carrier(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "sample.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class ProgressEmitterCarrier:
-    emit_progress_payload: object
-
-
-@dataclass(frozen=True)
-class RepairRequest(ProgressEmitterCarrier):
-    pose_index: int
-""",
-    )
-
-    findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-        for finding in findings
-    )
-
-
-def test_carrier_composition_retreat_ignores_collection_element_specs(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "sample.py",
-        """
-from dataclasses import dataclass
-from collections.abc import Iterable
-
-
-@dataclass(frozen=True)
-class ObjectiveFrontierStartSpec:
-    score: float
-
-
-@dataclass(frozen=True)
-class FrontierRequest:
-    objective_frontier_start_specs: Iterable[ObjectiveFrontierStartSpec]
-    pose_index: int
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-        for finding in findings
-    )
-
-
-def test_carrier_composition_retreat_ignores_union_type_alias(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "sample.py",
-        """
-from dataclasses import dataclass
-from typing import TypeAlias
-
-import jax.numpy as jnp
-import numpy as np
-
-
-LeanRuntimeArrayValue: TypeAlias = np.ndarray | jnp.ndarray
-
-
-@dataclass(frozen=True)
-class ModelApproximationScoreBatch:
-    scores: LeanRuntimeArrayValue
-    score_count: int
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-        and "ModelApproximationScoreBatch.scores" in finding.summary
-        for finding in findings
-    )
-
-
-def test_carrier_composition_retreat_ignores_non_class_alias(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "sample.py",
-        """
-from dataclasses import dataclass
-from typing import TypeAlias
-
-
-OpaqueScoreValue: TypeAlias = float
-
-
-@dataclass(frozen=True)
-class ScoreRequest:
-    score: OpaqueScoreValue
-    pose_index: int
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-        and "ScoreRequest.score" in finding.summary
-        for finding in findings
-    )
-
-
-def test_carrier_composition_retreat_ignores_final_class_authority(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "sample.py",
-        """
-from dataclasses import dataclass
-from typing import final
-
-
-@final
-@dataclass(frozen=True)
-class ProgressEmitterCarrier:
-    emit_progress_payload: object
-
-
-@dataclass(frozen=True)
-class RepairRequest:
-    progress_emitter: ProgressEmitterCarrier
-    pose_index: int
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-        and "RepairRequest.progress_emitter" in finding.summary
-        for finding in findings
-    )
-
-
-def test_carrier_composition_retreat_resolves_imported_class_authority(
-    tmp_path: Path,
-) -> None:
-    _write_module(tmp_path, "pkg/__init__.py", "")
-    _write_module(
-        tmp_path,
-        "pkg/carriers.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class ProgressEmitterCarrier:
-    emit_progress_payload: object
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/requests.py",
-        """
-from dataclasses import dataclass
-
-from .carriers import ProgressEmitterCarrier
-
-
-@dataclass(frozen=True)
-class RepairRequest:
-    progress_emitter: ProgressEmitterCarrier
-    pose_index: int
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-        and "RepairRequest.progress_emitter" in finding.summary
-        for finding in findings
-    )
-
-
-def test_carrier_composition_retreat_preserves_aliased_inheritable_authority(
-    tmp_path: Path,
-) -> None:
-    _write_module(tmp_path, "pkg/__init__.py", "")
-    _write_module(
-        tmp_path,
-        "pkg/carriers.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class ProgressEmitterCarrier:
-    emit_progress_payload: object
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/requests.py",
-        """
-from dataclasses import dataclass
-
-from .carriers import ProgressEmitterCarrier as Emitter
-
-
-@dataclass(frozen=True)
-class RepairRequest:
-    progress_emitter: Emitter
-    pose_index: int
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    finding = next(
-        item
-        for item in findings
-        if item.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-        and "RepairRequest.progress_emitter" in item.summary
-    )
-
-    assert "`Emitter`" in finding.summary
-    assert "class RepairRequest(Emitter, ...):" in (finding.scaffold or "")
-
-
-def test_carrier_composition_retreat_preserves_forward_referenced_authority(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "sample.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class RepairRequest:
-    progress_emitter: "ProgressEmitterCarrier"
-    pose_index: int
-
-
-@dataclass(frozen=True)
-class ProgressEmitterCarrier:
-    emit_progress_payload: object
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
-        and "RepairRequest.progress_emitter" in finding.summary
-        and "ProgressEmitterCarrier" in finding.summary
+        finding.detector_id == "carrier_composition_retreat"
         for finding in findings
     )
 
@@ -6782,6 +6508,48 @@ class RuntimeAdapter:
         finding.detector_id == "builtin_locals_call"
         for finding in analyze_path(tmp_path)
     )
+
+
+def test_direct_reflection_ignores_declared_frozen_dataclass_field_writes(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_contract.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RuntimeContract:
+    value: int
+
+    def __post_init__(self):
+        object.__setattr__(self, "value", int(self.value))
+
+    def write_dynamic_field(self, field_name, value):
+        object.__setattr__(self, field_name, value)
+
+
+def rewrite_foreign_contract(contract, value):
+    object.__setattr__(contract, "value", value)
+""",
+    )
+
+    reflection_findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "direct_reflective_builtin_call"
+    )
+
+    assert not any(
+        "RuntimeContract.__post_init__" in item.summary for item in reflection_findings
+    )
+    assert any(
+        "RuntimeContract.write_dynamic_field" in item.summary
+        for item in reflection_findings
+    )
+    assert any("rewrite_foreign_contract" in item.summary for item in reflection_findings)
 
 
 def test_detects_builtin_locals_calls(tmp_path: Path) -> None:

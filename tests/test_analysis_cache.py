@@ -3414,10 +3414,6 @@ def test_native_class_header_core_matches_cached_minimal_projection(
 
 def test_report_class_header_core_safety_is_detector_declared() -> None:
     assert (
-        abstraction_reuse_detectors.CarrierCompositionRetreatDetector.compact_report_class_header_core_safe
-        is True
-    )
-    assert (
         role_surface_detectors.RoleSurfaceDriftDetector.compact_report_class_header_core_safe
         is True
     )
@@ -5369,7 +5365,6 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
     )
     detector_types = (
         structural_detectors.ClassLevelInheritanceOptimizationDetector,
-        abstraction_reuse_detectors.CarrierCompositionRetreatDetector,
         runtime_detectors.ManualConcreteSubclassRosterDetector,
         runtime_detectors.LatentImplementationRosterDetector,
         runtime_detectors.SemanticInheritanceFamilySSOTDetector,
@@ -5398,7 +5393,6 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
         counting_builder,
     )
     for module in (
-        abstraction_reuse_detectors,
         helper_detectors,
         runtime_detectors,
         systemic_detectors,
@@ -6222,13 +6216,6 @@ def test_compact_carrier_reuse_candidates_match_legacy_ast_candidates(
             abstraction_reuse_detectors._available_carrier_reuse_candidates(modules),
         ),
         (
-            abstraction_reuse_detectors.CarrierCompositionRetreatDetector,
-            context.composition_candidates,
-            abstraction_reuse_detectors._carrier_composition_retreat_candidates(
-                modules
-            ),
-        ),
-        (
             abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector,
             context.parallel_candidates,
             abstraction_reuse_detectors._parallel_primitive_carrier_candidates(
@@ -6498,7 +6485,6 @@ def test_carrier_reuse_detectors_share_one_compact_context(
     _write_compact_carrier_reuse_fixture(package_root)
     detector_types = (
         abstraction_reuse_detectors.AvailableCarrierReuseDetector,
-        abstraction_reuse_detectors.CarrierCompositionRetreatDetector,
         abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector,
     )
     calls = 0
@@ -7602,9 +7588,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert abstraction_reuse_detectors.AvailableCarrierReuseDetector in (
         partition.compact_global_detector_types
     )
-    assert abstraction_reuse_detectors.CarrierCompositionRetreatDetector in (
-        partition.compact_global_detector_types
-    )
     assert abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector in (
         partition.compact_global_detector_types
     )
@@ -7662,7 +7645,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.UnderAmortizedInfrastructureDetector in (
         partition.compact_global_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 69
+    assert len(partition.compact_global_detector_types) == 68
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert len(partition.per_module_detector_types) == 183
 
