@@ -2826,6 +2826,25 @@ def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
     )
     role_family = role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily
     boundary_family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
+    role_demand = role_surface_detectors.CompactRoleSurfaceProjectionDemand(
+        field_names=frozenset({"selected_values"}),
+        generic_axis_tokens=frozenset(),
+        generic_case_tokens=frozenset(),
+        minimum_generic_case_count=2,
+    )
+    boundary_demand = surface_detectors.CompactDistributedBoundaryProjectionDemand(
+        frozenset({"projected_axis_offsets"})
+    )
+    demand_signatures = (
+        (
+            role_family,
+            ast_tools_module.collected_family_demand_cache_signature(role_demand),
+        ),
+        (
+            boundary_family,
+            ast_tools_module.collected_family_demand_cache_signature(boundary_demand),
+        ),
+    )
 
     def unexpected_ast_parse(self, paths):
         del self, paths
@@ -2838,28 +2857,25 @@ def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
         "parsed_source_paths",
         unexpected_ast_parse,
     )
+
+    def unexpected_demand_signature(_demand: object) -> str:
+        raise AssertionError("worker must reuse the staged demand signature")
+
+    monkeypatch.setattr(
+        ast_tools_module,
+        "collected_family_demand_cache_signature",
+        unexpected_demand_signature,
+    )
     result = analysis_module.build_compact_projection_shard(
         analysis_module.CompactProjectionBuildRequest(
             source=projection_source,
             missing_families=(role_family, boundary_family),
             config=DetectorConfig(),
             family_demands=(
-                (
-                    role_family,
-                    role_surface_detectors.CompactRoleSurfaceProjectionDemand(
-                        field_names=frozenset({"selected_values"}),
-                        generic_axis_tokens=frozenset(),
-                        generic_case_tokens=frozenset(),
-                        minimum_generic_case_count=2,
-                    ),
-                ),
-                (
-                    boundary_family,
-                    surface_detectors.CompactDistributedBoundaryProjectionDemand(
-                        frozenset({"projected_axis_offsets"})
-                    ),
-                ),
+                (role_family, role_demand),
+                (boundary_family, boundary_demand),
             ),
+            family_demand_signatures=demand_signatures,
         )
     )
 

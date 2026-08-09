@@ -2095,6 +2095,8 @@ def store_cached_collected_family_items_for_source_signature(
 ) -> str | None:
     """Publish source-native compact facts under the existing cache identity."""
 
+    if family_cache_dir is None:
+        return None
     return _store_cached_collected_family_items_for_identity(
         cache_dir=family_cache_dir,
         identity=_collected_family_cache_identity_for_source_signature(
@@ -2117,9 +2119,12 @@ def store_cached_demanded_collected_family_items_for_source_signature(
     family: type[CollectedFamily[ShapeItemT]],
     demand: object,
     items: tuple[ShapeItemT, ...],
+    demand_signature: str | None = None,
 ) -> str | None:
     """Persist a focused view without publishing it as the complete family."""
 
+    if family_cache_dir is None:
+        return None
     return _store_cached_collected_family_items_for_identity(
         cache_dir=family_cache_dir,
         identity=_collected_family_demand_cache_identity_for_source_signature(
@@ -2128,6 +2133,7 @@ def store_cached_demanded_collected_family_items_for_source_signature(
             source_signature=source_signature,
             family=family,
             demand=demand,
+            demand_signature=demand_signature,
         ),
         family=family,
         items=items,

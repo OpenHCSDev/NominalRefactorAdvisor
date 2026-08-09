@@ -995,6 +995,7 @@ class CompactProjectionBuildRequest:
     config: DetectorConfig
     local_detector_types: tuple[type[IssueDetector], ...] = ()
     family_demands: tuple[tuple[type[CollectedFamily], object], ...] = ()
+    family_demand_signatures: tuple[tuple[type[CollectedFamily], str], ...] = ()
     bundle_families: tuple[type[CollectedFamily], ...] = ()
 
 
@@ -1042,6 +1043,7 @@ def build_compact_projection_shard(
     fallback_local_detector_types = request.local_detector_types
     ast_families = list(request.missing_families)
     demand_by_family = dict(request.family_demands)
+    demand_signature_by_family = dict(request.family_demand_signatures)
     for family in tuple(ast_families):
         demand = demand_by_family.get(family)
         if demand is None:
@@ -1053,6 +1055,7 @@ def build_compact_projection_shard(
             family_cache_dir=source.family_cache_dir,
             family=family,
             demand=demand,
+            demand_signature=demand_signature_by_family.get(family),
         )
         if projections is None:
             continue
@@ -1066,6 +1069,7 @@ def build_compact_projection_shard(
                 family_cache_dir=source.family_cache_dir,
                 family=family,
                 demand=demand,
+                demand_signature=demand_signature_by_family.get(family),
             ),
         )
         ast_families.remove(family)
@@ -1174,6 +1178,7 @@ def build_compact_projection_shard(
                             family=family,
                             demand=demand,
                             items=projections,
+                            demand_signature=demand_signature_by_family.get(family),
                         )
                     add_runtime_projection(family, projections, projection_signature)
                     ast_families.remove(family)
@@ -1230,6 +1235,7 @@ def build_compact_projection_shard(
                         family=family,
                         demand=demand,
                         items=projections,
+                        demand_signature=demand_signature_by_family.get(family),
                     )
                 )
             else:
@@ -2217,6 +2223,15 @@ def analyze_compact_roots_with_cache(
                         if include_local_findings
                         else tuple(
                             (family, report_family_demands[family])
+                            for family in missing_families
+                            if family in report_family_demands
+                        )
+                    ),
+                    family_demand_signatures=(
+                        ()
+                        if include_local_findings
+                        else tuple(
+                            (family, projection_manifest._demand_signature(family))
                             for family in missing_families
                             if family in report_family_demands
                         )

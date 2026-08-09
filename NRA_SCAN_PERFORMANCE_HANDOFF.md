@@ -1,5 +1,42 @@
 # NRA scan-performance handoff
 
+## 2026-08-08 cache-policy and staged-demand-signature checkpoint
+
+A corrected one-worker DQDock profile puts 38.0 of 74.6 process-CPU seconds
+inside demanded-family extraction.  Class projection is the largest single
+family at 15.2 seconds, but two follow-up experiments rejected the apparent
+local fixes: disabling eager AutoRegister graph construction saved at most
+2.4 seconds because most attributed time belongs to the shared syntax index,
+and a header-only class core is unsafe for 39 of the 41 live class-family
+consumers.  The slowest individual modules are only 2.0--2.4 seconds, so there
+is no exceptional shard tail to isolate.  More class/index micro-optimization
+cannot plausibly bridge the remaining order-scale target.
+
+The retained change moves cache policy ahead of cache identity construction:
+cache-disabled source stores now return before hashing family and demand
+identities.  Cache-enabled workers receive each demand signature staged once
+by the parent scan and reuse it for load, content-signature, native-store, and
+AST-store operations.  This removes about 15,600 pointless identity builds on
+a DQDock ``--no-cache`` scan without introducing a second cache authority.
+
+Against a same-host detached control at ``87879ba``, two DQDock no-cache runs
+changed from 24.101/24.125 seconds wall (22.967/22.742 internal) to
+20.826/20.533 seconds wall (19.622/19.486 internal), roughly a 15% controlled
+cold improvement.  A fresh empty-cache scan completes in 23.308 seconds wall
+and 21.346 internal; its unchanged follow-up completes in 1.546 seconds wall
+and 0.582 internal.  OpenHCS no-cache completes in 15.938 seconds wall and
+14.907 internal versus the retained 18.170/17.145 gate.  DQDock retains all
+12 expected findings across 252 detectors and OpenHCS retains all 45.  The
+analysis-cache suite passes all 146 tests, including a regression that makes
+worker-side demand-signature reconstruction fail.
+
+This is a material transferable gain, not the requested order-of-magnitude
+collapse.  The next architectural gate is a detector-declared candidate-seed
+contract or a shared demanded-event bundle that can avoid constructing entire
+unused families.  It must demonstrate exact survivor collapse on saved
+DQDock and OpenHCS artifacts before production wiring; further local class
+header or syntax-index polishing is rejected by the measured ceiling above.
+
 ## 2026-08-08 shared demanded-event checkpoint
 
 The report-witness experiment reached a measured ceiling and was stopped.
