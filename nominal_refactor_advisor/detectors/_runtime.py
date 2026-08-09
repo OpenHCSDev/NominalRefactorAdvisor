@@ -11189,6 +11189,13 @@ class PrivateReferenceContextualDetector(
 ):
     """Candidate detector backed by one repo-wide private-reference context."""
 
+    # Every private-reference candidate requires a target private-function fact.
+    # The class-family supplement used by NonNominalPrivateHelperDetector cannot
+    # create that mandatory anchor when the private-reference demand is empty.
+    compact_report_candidate_anchor_families = (
+        CompactPrivateReferenceModuleProjectionFamily,
+    )
+
     @classmethod
     def context_signature(
         cls, modules: tuple[ParsedModule, ...], config: DetectorConfig

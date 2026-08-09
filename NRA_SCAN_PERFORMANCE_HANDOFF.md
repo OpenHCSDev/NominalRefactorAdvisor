@@ -1,5 +1,32 @@
 # NRA scan-performance handoff
 
+## 2026-08-08 demanded-presence witness checkpoint
+
+Detector selection now consumes the existing family demand authority before
+constructing context.  A single-family detector whose exact presence demand
+says context is empty is rejected through the established negative-witness
+path; an unexpected target-only finding still overrides that rejection.  The
+private-reference detector base declares its private-function family as a
+mandatory candidate anchor, so the multi-family non-nominal-helper detector
+cannot keep class context alive when the target has no private function.
+
+On the DQDock target this raises exact preflight rejection from 8 to 16 of 69
+compact global detectors without a repository-specific roster.  The saved
+919-path demanded frontier confirms why this is infrastructure rather than the
+endpoint: available-abstraction, private-reference, spec-axis, validate-shape,
+and several presence families all retain zero context items, but broad class,
+semantic, role, builder, inheritance, and delegate families still survive.
+DQDock preserves 12 findings across all 252 detectors in 21.35 seconds wall
+under the current host load.  OpenHCS preserves 45 findings across all 252 in
+15.175 internal / 16.194 wall seconds, versus the preceding 15.938 internal
+gate.  The analysis-cache suite passes all 147 tests.
+
+This checkpoint is a dependency of detector-declared candidate seeding and is
+not claimed as a material DQDock cold improvement.  Fifty-three DQDock global
+detectors still survive, so the next admission gate must correlate the broad
+class/semantic candidate seeds or eliminate their shared construction; more
+empty-family handling cannot reach the order-scale target.
+
 ## 2026-08-08 cache-policy and staged-demand-signature checkpoint
 
 A corrected one-worker DQDock profile puts 38.0 of 74.6 process-CPU seconds

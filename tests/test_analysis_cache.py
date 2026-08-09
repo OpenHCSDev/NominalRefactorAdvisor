@@ -3038,6 +3038,47 @@ def test_private_reference_report_demand_skips_context_without_target_candidate(
     assert context_items[0].functions
 
 
+def test_private_reference_witness_skips_companion_class_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    target_path = package_root / "target.py"
+    context_path = package_root / "context.py"
+    target_path.write_text("def public():\n    return 1\n", encoding="utf-8")
+    context_path.write_text(
+        "class ContextOwner:\n"
+        "    pass\n\n"
+        "def _context_helper(value):\n"
+        "    return value + 1\n",
+        encoding="utf-8",
+    )
+    family = class_index_module.CompactModuleClassProjectionFamily
+    original_collect = family.collect.__func__
+    collected_paths: list[Path] = []
+
+    def observed_collect(cls, parsed_module):
+        collected_paths.append(parsed_module.path.resolve())
+        return original_collect(cls, parsed_module)
+
+    monkeypatch.setattr(family, "collect", classmethod(observed_collect))
+    result = analyze_compact_roots_with_cache(
+        (package_root,),
+        use_parse_cache=False,
+        analysis_cache_dir=None,
+        parse_workers=1,
+        report_scope=AnalysisPathScope(
+            analysis_roots=(package_root,),
+            report_roots=(target_path,),
+        ),
+        detector_types=(runtime_detectors.NonNominalPrivateHelperDetector,),
+    )
+
+    assert result.findings == []
+    assert collected_paths == [target_path.resolve()]
+
+
 def test_public_bare_support_empty_demand_skips_context_collection(
     tmp_path: Path,
 ) -> None:

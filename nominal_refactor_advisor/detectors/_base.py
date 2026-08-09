@@ -108,6 +108,7 @@ from ..ast_tools import (
     ClassMarkerObservationFamily,
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
+    CollectedFamilyPresenceDemand,
     ConfigDispatchObservation,
     FieldObservation,
     FieldObservationFamily,
@@ -1092,10 +1093,32 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         predicate = cls.compact_report_context_promotion_predicate
         if predicate is not None:
             return predicate(target_projections_by_family, config)
+        families = cls.compact_projection_families()
+        if len(families) == 1:
+            family = families[0]
+            demand = family.report_demand(
+                target_projections_by_family.get(family, ()),
+                config,
+            )
+            if (
+                isinstance(demand, CollectedFamilyPresenceDemand)
+                and not demand.include_context
+            ):
+                return False
+        for family in getattr(cls, "compact_report_candidate_anchor_families", ()):
+            demand = family.report_demand(
+                target_projections_by_family.get(family, ()),
+                config,
+            )
+            if (
+                isinstance(demand, CollectedFamilyPresenceDemand)
+                and not demand.include_context
+            ):
+                return False
         if cls.compact_report_context_requires_target_projection:
             return any(
                 target_projections_by_family.get(family, ())
-                for family in cls.compact_projection_families()
+                for family in families
             )
         return True
 
