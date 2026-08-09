@@ -2590,3 +2590,44 @@ production patch.  The DQDock target demands 39 callee names, including broad
 tokens such as `any`, `values`, and `cls`; at least one occurs in 843 of 919
 context files and 32.0 of 32.15 MB of context source.  It cannot collapse the
 frontier enough to affect the remaining cold gap.
+
+### 2026-08-08 extraction-engine and join-ceiling audit
+
+Two broader execution-engine prototypes were measured after the demanded-AST
+checkpoint and rejected at their end-to-end admission gates.  First, the full
+18,000-line detector helper module was compiled with Cython rather than
+selecting another local function.  Runtime annotation enforcement initially
+rejected a legitimate `defaultdict`; rebuilding with annotation typing disabled
+restored Python-compatible behavior.  On the twelve largest production
+DQDock modules, the compiled and Python engines both produced 457 findings
+with digest
+`c9dc95bdff648a869904d72f26e582cfdd3f17956e205f80cec2475672787834`.
+The compiled engine took 37.167 CPU seconds versus 36.893 for Python, a 0.7%
+regression.  No generated C or binary artifact was promoted.
+
+Second, call-level profiling showed that effect-step and tuple-index detectors
+created a synthetic `ast.Module` per named function, accounting for 12,220 of
+12,232 rich `ModuleSyntaxIndex` constructions in the representative replay.
+Both detectors were temporarily derived from the existing bounded function-body
+traversal authority instead.  The exact 457-finding digest remained unchanged,
+but CPU moved only from 36.893 to 35.234 seconds, a 4.5% reduction.  Profiler
+dispatch counts had greatly overstated its physical payoff, so the prototype
+was reverted rather than retained as another seconds-only local optimization.
+
+The repository join was also decomposed by its 28 authoritative projection-
+family groups over the saved 920-path DQDock frontier.  Loading retained 77,804
+facts; independently evaluating every compact-global group produced 9,566
+global findings in 8.615 aggregate CPU seconds.  The complete class group was
+largest at 2.806 seconds, followed by semantic-mirror descent at 2.264, role
+surface at 0.745, remaining-systemic at 0.637, and nominal bypass at 0.541.
+Even a zero-overhead parallel join therefore cannot remove the dominant cold
+extraction/local-detector term or produce an orders-of-magnitude endpoint.
+
+These results reject whole-helper compilation, repeated-function traversal,
+and global-join scheduling as the next production routes.  The strongest
+remaining measured architecture is still detector-declared target witnesses:
+stage complete target facts, prove which detector candidate seeds can promote
+report evidence from context, and construct demanded context only for those
+detectors.  The default must remain conservative until each detector authority
+declares its seed/promotion contract; an observed DQDock/OpenHCS detector roster
+is not a sound selector.
