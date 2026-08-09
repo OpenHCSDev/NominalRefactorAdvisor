@@ -6606,6 +6606,12 @@ def _public_bare_support_projection_demand(
     )
 
 
+def _public_bare_support_demand_includes_context(demand: object) -> bool:
+    return isinstance(demand, PublicBareSupportProjectionDemand) and bool(
+        demand.function_names
+    )
+
+
 def _project_public_bare_support_demand(
     items: tuple[object, ...],
     demand: object,
@@ -6666,6 +6672,9 @@ def _collect_public_bare_support_source_demand(
 
 PublicBareSupportModuleProjectionFamily.report_demand_builder = staticmethod(
     _public_bare_support_projection_demand
+)
+PublicBareSupportModuleProjectionFamily.report_demand_context_predicate = staticmethod(
+    _public_bare_support_demand_includes_context
 )
 PublicBareSupportModuleProjectionFamily.ast_demand_collector = staticmethod(
     _collect_public_bare_support_ast_demand

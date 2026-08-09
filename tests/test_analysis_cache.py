@@ -3200,6 +3200,41 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         )
 
 
+def test_custom_empty_report_demands_reject_context_promotion() -> None:
+    config = DetectorConfig()
+    role_family = runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily
+    role_projection = runtime_detectors.CompactRoleGuardedSurfaceModuleProjection(
+        class_surface_members_by_type_name=(),
+        role_guarded_accesses=(),
+    )
+    support_family = systemic_detectors.PublicBareSupportModuleProjectionFamily
+    support_projection = systemic_detectors.PublicBareSupportModuleProjection(
+        file_path="target.py",
+        module_role=None,
+        definitions=(),
+        reference_counts=(),
+    )
+
+    assert not runtime_detectors.RoleGuardedSurfaceAccessDetector.compact_report_context_can_promote(
+        {role_family: (role_projection,)},
+        config,
+    )
+    assert not systemic_detectors.PublicBareSupportFunctionDetector.compact_report_context_can_promote(
+        {support_family: (support_projection,)},
+        config,
+    )
+    assert role_family.report_demand_includes_context(
+        runtime_detectors.CompactRoleGuardedSurfaceProjectionDemand(
+            role_type_names=frozenset({"Role"})
+        )
+    )
+    assert support_family.report_demand_includes_context(
+        systemic_detectors.PublicBareSupportProjectionDemand(
+            function_names=frozenset({"support_value"})
+        )
+    )
+
+
 def test_class_demand_omits_unreportable_autoregister_reference_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

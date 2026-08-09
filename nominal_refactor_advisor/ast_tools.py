@@ -1400,6 +1400,9 @@ class CollectedFamily(
     report_presence_predicate: ClassVar[
         Callable[[tuple[object, ...], object], bool] | None
     ] = None
+    report_demand_context_predicate: ClassVar[
+        Callable[[object], bool] | None
+    ] = None
 
     @classmethod
     def registered_families(cls) -> CollectedFamilyTypes:
@@ -1478,6 +1481,15 @@ class CollectedFamily(
                 include_context=cls.report_presence_predicate(target_items, config)
             )
         return None
+
+    @classmethod
+    def report_demand_includes_context(cls, demand: object) -> bool:
+        """Return whether one exact report demand can consume context facts."""
+
+        if isinstance(demand, CollectedFamilyPresenceDemand):
+            return demand.include_context
+        predicate = cls.report_demand_context_predicate
+        return True if predicate is None else predicate(demand)
 
     @classmethod
     def can_collect_demanded_source(cls, demand: object) -> bool:

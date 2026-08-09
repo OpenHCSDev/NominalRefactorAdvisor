@@ -1,5 +1,46 @@
 # NRA scan-performance handoff
 
+## 2026-08-09 exact report-demand context checkpoint
+
+The compact report-admission authority now asks each custom family demand
+whether it can consume context facts.  This closes a selector gap where only
+the generic presence demand could reject context promotion.  Role-guarded
+surface access now requires a non-empty target role-name demand, and public
+bare support now requires a non-empty target function-name demand.  On the
+current DQDock target these exact negative witnesses reject two more global
+detector families before context collection.  The focused analysis-cache suite
+passes all 150 tests.
+
+The cross-repository no-cache gates preserve all expected output: DQDock
+reports 12 findings across the complete 252-detector registry in 24.039
+internal seconds (18.412 preparation, 5.627 analysis), and OpenHCS reports 45
+in 14.519 seconds (12.788 preparation, 1.731 analysis).  Host load remained
+above 160, so these are correctness gates and cost attribution rather than
+stable speed comparisons.  The selector change is intentionally not claimed
+as a material cold improvement; syntax preparation remains dominant.
+
+A saved-artifact prototype also tested the stronger apparent route: replace
+the semantic family with an exact native supplement and combine it with the
+previous 265-full / 654-header-only DQDock class frontier so every surviving
+family can dispatch without unconditional full AST collection.  The semantic
+supplement matched all 919 grammar-valid DQDock modules and all 1,244 OpenHCS
+modules.  Composition nevertheless regressed DQDock to 22.260 seconds wall
+(19.647 preparation, 2.564 analysis), because the nominal/native passes and
+the remaining class work overlap the cost they were meant to replace.  No
+prototype code was retained.
+
+The decisive production frontier is now detector-level candidate admission,
+not another family-local extractor.  Of the 38 compact global detectors that
+survived before this checkpoint, only four produce target findings on the
+saved DQDock report: one carrier, two role-surface, one generic-role, and eight
+distributed-boundary findings.  The other 34 can produce context-only facts
+but no target result.  The next route should derive exact target candidate
+receipts from each detector's nominal report-demand authority and use their
+union to reject entire family shards before syntax extraction.  Replay those
+receipts against the saved DQDock and OpenHCS frontiers first; promote only a
+receipt set whose survivor collapse can plausibly remove most of the remaining
+preparation cost.
+
 ## 2026-08-08 relational class-preflight admission checkpoint
 
 The proposed two-stage class route now has a production-shaped latency gate.

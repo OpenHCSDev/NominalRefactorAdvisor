@@ -3934,6 +3934,12 @@ def _role_guarded_surface_report_demand(
     )
 
 
+def _role_guarded_surface_demand_includes_context(demand: object) -> bool:
+    return isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand) and bool(
+        demand.role_type_names
+    )
+
+
 def _cached_role_guarded_surface_demand_projection(
     items: tuple[object, ...],
     demand: object,
@@ -4189,6 +4195,9 @@ class CompactRoleGuardedSurfaceModuleProjectionFamily(
     )
     ast_demand_collector = staticmethod(_ast_demanded_role_guarded_surface_projection)
     report_demand_builder = staticmethod(_role_guarded_surface_report_demand)
+    report_demand_context_predicate = staticmethod(
+        _role_guarded_surface_demand_includes_context
+    )
     cached_demand_projector = staticmethod(
         _cached_role_guarded_surface_demand_projection
     )

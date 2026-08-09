@@ -1100,9 +1100,8 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
                 target_projections_by_family.get(family, ()),
                 config,
             )
-            if (
-                isinstance(demand, CollectedFamilyPresenceDemand)
-                and not demand.include_context
+            if demand is not None and not family.report_demand_includes_context(
+                demand
             ):
                 return False
         for family in getattr(cls, "compact_report_candidate_anchor_families", ()):
@@ -1110,9 +1109,8 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
                 target_projections_by_family.get(family, ()),
                 config,
             )
-            if (
-                isinstance(demand, CollectedFamilyPresenceDemand)
-                and not demand.include_context
+            if demand is not None and not family.report_demand_includes_context(
+                demand
             ):
                 return False
         if cls.compact_report_context_requires_target_projection:
