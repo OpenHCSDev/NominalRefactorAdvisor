@@ -56,6 +56,7 @@ from ..class_index import (
     CompactIndexedClass,
     CompactModuleClassProjection,
     build_compact_class_family_index,
+    has_complete_concrete_mro_composite,
 )
 from ..taxonomy import LabeledStrEnum
 
@@ -4127,6 +4128,11 @@ def _semantic_inheritance_family_ssot_candidates(
             )
         )
         if len(concrete_descendants) < minimum_leaf_count:
+            continue
+        if has_complete_concrete_mro_composite(
+            class_index.children_by_symbol.get(indexed_class.symbol, ()),
+            concrete_descendants,
+        ):
             continue
         if _all_concrete_descendants_have_intermediate_autoregister_authority(
             class_index, indexed_class, concrete_descendants

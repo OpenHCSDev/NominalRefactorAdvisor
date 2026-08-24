@@ -152,6 +152,27 @@ class CompactIndexedClass:
         return replace(self, resolved_base_symbols=resolved_base_symbols)
 
 
+def has_complete_concrete_mro_composite(
+    direct_child_symbols: tuple[str, ...],
+    concrete_descendants: tuple[IndexedClass, ...]
+    | tuple[CompactIndexedClass, ...],
+) -> bool:
+    """Return whether one descendant composes every concrete root branch."""
+
+    concrete_descendant_symbols = {
+        descendant.symbol for descendant in concrete_descendants
+    }
+    concrete_branch_symbols = concrete_descendant_symbols.intersection(
+        direct_child_symbols
+    )
+    if len(concrete_branch_symbols) < 2:
+        return False
+    return any(
+        concrete_branch_symbols.issubset(descendant.resolved_base_symbols)
+        for descendant in concrete_descendants
+    )
+
+
 @dataclass(frozen=True)
 class CompactModuleClassProjection:
     """One module's class declarations and import aliases, without its AST."""

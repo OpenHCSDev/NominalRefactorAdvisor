@@ -19749,6 +19749,22 @@ def test_ignores_direct_dataclass_product_family_for_membership_ssot(
     )
 
 
+def test_ignores_complete_mro_composite_for_membership_ssot(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/gallery.py",
+        '\nclass GalleryScenarioCatalog:\n    @classmethod\n    def scenarios(cls):\n        return tuple(\n            owner.scenario\n            for owner in cls.__mro__\n            if "scenario" in owner.__dict__\n        )\n\n\nclass OverviewGalleryScenarioCatalog(GalleryScenarioCatalog):\n    scenario = "overview"\n\n\nclass EditorGalleryScenarioCatalog(GalleryScenarioCatalog):\n    scenario = "editor"\n\n\nclass OpenHCSGalleryScenarioCatalog(\n    OverviewGalleryScenarioCatalog,\n    EditorGalleryScenarioCatalog,\n):\n    pass\n',
+    )
+
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        and "GalleryScenarioCatalog" in finding.summary
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_inherited_autoregister_config_boilerplate(
     tmp_path: Path,
 ) -> None:

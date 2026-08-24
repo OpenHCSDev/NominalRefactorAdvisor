@@ -43,6 +43,7 @@ from ..class_index import (
     ModuleClassReferenceResolver,
     build_class_family_index,
     build_compact_class_family_index,
+    has_complete_concrete_mro_composite,
 )
 from ..codemod import (
     CancelableCompositionSignal,
@@ -7364,6 +7365,11 @@ def _compact_semantic_inheritance_family_ssot_candidates(
             continue
         concrete_descendants = _compact_concrete_descendants(class_index, indexed_class)
         if len(concrete_descendants) < minimum_leaf_count:
+            continue
+        if has_complete_concrete_mro_composite(
+            class_index.children_by_symbol.get(indexed_class.symbol, ()),
+            concrete_descendants,
+        ):
             continue
         if _compact_descendants_have_intermediate_autoregister_authority(
             class_index, indexed_class, concrete_descendants
