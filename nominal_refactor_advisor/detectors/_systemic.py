@@ -19,7 +19,7 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..ast_tools import SourceModule, fingerprint_function, module_syntax_index
-from ..class_index import CompactNamedProjectionSurface
+from ..class_index import CompactNamedProjectionSurface, CompactSortedKeyCall
 from ..native_syntax import NativePythonSyntaxIndex
 
 from ._base import *
@@ -4199,7 +4199,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
             ({"cls", root_name} & frozenset(call.registry_owner_names))
             and (axis_name_set & frozenset(call.key_attribute_names))
             for projection in projections
-            for call in projection.registry_order_calls
+            for call in projection.sorted_key_calls
         )
 
 
@@ -4207,6 +4207,188 @@ def _class_order_axis_label(axis_names: tuple[str, ...]) -> str:
     if len(axis_names) == 1:
         return f"`{axis_names[0]}`"
     return " / ".join(f"`{axis_name}`" for axis_name in axis_names)
+
+
+class NominalInstanceExplicitOrderingDetector(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    IssueDetector,
+):
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(compact_class_repository_context)
+    detector_id = "nominal_instance_explicit_ordering"
+    finding_spec = high_confidence_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Nominal declaration catalog uses explicit ordering instead of MRO",
+        "An abstract nominal value family carries a `priority`, `precedence`, `rank`, or `order` instance field, while class-owned declarations supply that field and a consumer sorts by it. The field is a second ordering authority beside the inheritance graph. Give each declaration one nominal catalog node and derive the sequence from its MRO.",
+        "MRO-owned sequence for nominal declaration catalogs",
+        "class-owned instances of an abstract family supply an explicit ordering axis consumed by sorted(..., key=...)",
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+            CapabilityTag.PROVENANCE,
+        ),
+        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        return self._findings_from_class_index(
+            projections,
+            build_compact_class_family_index(projections),
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        return self._findings_from_class_index(
+            projections,
+            require_compact_class_repository_context(context).class_index,
+        )
+
+    def _findings_from_class_index(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        class_index: CompactClassFamilyIndex,
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        indexed_classes = tuple(class_index.classes_by_symbol.values())
+        sorted_key_calls = tuple(
+            call for projection in projections for call in projection.sorted_key_calls
+        )
+        for family_root in sorted(indexed_classes, key=lambda item: item.symbol):
+            if not family_root.is_abstract or family_root.declares_autoregister_meta:
+                continue
+            root_axis_lines = {
+                axis_name: line
+                for axis_name, line in family_root.assignment_lines_by_name.items()
+                if axis_name in _EXPLICIT_CLASS_ORDER_AXIS_NAMES
+            }
+            if not root_axis_lines:
+                continue
+            descendant_names = frozenset(
+                descendant.simple_name
+                for symbol in class_index.descendant_symbols(family_root.symbol)
+                if (descendant := class_index.class_for(symbol)) is not None
+            )
+            if len(descendant_names) < 2:
+                continue
+            axis_evidence = {
+                axis_name: self._axis_evidence(
+                    axis_name,
+                    descendant_names,
+                    indexed_classes,
+                    sorted_key_calls,
+                )
+                for axis_name in root_axis_lines
+            }
+            active_axes = tuple(
+                axis_name
+                for axis_name, evidence in axis_evidence.items()
+                if evidence is not None
+            )
+            if not active_axes:
+                continue
+            evidence_sites = tuple(
+                location
+                for axis_name in active_axes
+                for location in axis_evidence[axis_name] or ()
+            )
+            axis_label = _class_order_axis_label(active_axes)
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{family_root.simple_name}` declarations are sequenced "
+                        f"through explicit {axis_label} instance values."
+                    ),
+                    (
+                        SourceLocation(
+                            family_root.file_path,
+                            family_root.line,
+                            family_root.simple_name,
+                        ),
+                        *(
+                            SourceLocation(
+                                family_root.file_path,
+                                root_axis_lines[axis_name],
+                                axis_name,
+                            )
+                            for axis_name in active_axes
+                        ),
+                        *evidence_sites[:6],
+                    ),
+                    scaffold=(
+                        "class FirstDeclarationCatalog(CatalogBase):\n"
+                        "    declaration = FirstDeclaration(...)\n\n"
+                        "class SecondDeclarationCatalog(CatalogBase):\n"
+                        "    declaration = SecondDeclaration(...)\n\n"
+                        "class CompleteCatalog(\n"
+                        "    FirstDeclarationCatalog, SecondDeclarationCatalog\n"
+                        "):\n"
+                        "    pass\n\n"
+                        "# Traverse CompleteCatalog.__mro__ directly."
+                    ),
+                    codemod_patch=(
+                        f"# Delete the {axis_label} field and its constructor arguments from `{family_root.simple_name}` declarations.\n"
+                        "# Give each declaration one catalog node and derive the sequence solely from the catalog MRO."
+                    ),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(evidence_sites),
+                        field_count=len(evidence_sites),
+                        mapping_name=family_root.simple_name,
+                        field_names=active_axes,
+                    ),
+                )
+            )
+        return findings
+
+    @staticmethod
+    def _axis_evidence(
+        axis_name: str,
+        descendant_names: frozenset[str],
+        indexed_classes: tuple[CompactIndexedClass, ...],
+        sorted_key_calls: tuple[CompactSortedKeyCall, ...],
+    ) -> tuple[SourceLocation, ...] | None:
+        constructions = tuple(
+            (owner, construction)
+            for owner in indexed_classes
+            for construction in owner.direct_value_constructions
+            if construction.constructor_name in descendant_names
+            and axis_name in construction.keyword_names
+        )
+        if len(constructions) < 2:
+            return None
+        declaration_files = frozenset(owner.file_path for owner, _ in constructions)
+        matching_calls = tuple(
+            call
+            for call in sorted_key_calls
+            if axis_name in call.key_attribute_names
+            and call.file_path in declaration_files
+        )
+        if not matching_calls:
+            return None
+        return (
+            *(
+                SourceLocation(
+                    owner.file_path,
+                    construction.line,
+                    f"{owner.simple_name}.{construction.assigned_name}",
+                )
+                for owner, construction in constructions[:4]
+            ),
+            SourceLocation(
+                matching_calls[0].file_path,
+                matching_calls[0].line,
+                f"sorted(..., key=...{axis_name})",
+            ),
+        )
 
 
 class EnumKeyedTableClassAxisShadowDetector(

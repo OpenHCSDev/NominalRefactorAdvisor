@@ -17179,6 +17179,7 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
         projections=(),
         mirror_edges=(),
         certificates=(),
+        class_index=build_class_family_index(parse_python_modules(package_root)),
     )
     SemanticDescentGraphCache(semantic_cache_dir).store(
         SemanticDescentGraphCacheIdentity.from_roots((package_root,)),
@@ -17213,7 +17214,10 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
 
     assert context.latest_graph is None
     lazy_source = context.analysis_source.with_latest_cached_graph()
-    assert lazy_source.cached_graph == cached_graph
+    assert lazy_source.cached_graph is not None
+    assert lazy_source.cached_graph.authorities == cached_graph.authorities
+    assert lazy_source.cached_graph.class_index is not None
+    assert set(lazy_source.cached_graph.class_index.classes_by_symbol) == {"mod.Alpha"}
     assert lazy_source.graph_for_modules([]) is lazy_source.cached_graph
 
 
@@ -19866,6 +19870,45 @@ def test_detects_autoregister_family_priority_axis_ordering(
     assert "MRO" in finding.title
     assert "__subclasses__" in (finding.scaffold or "")
     assert "Delete the `priority` class axis" in (finding.codemod_patch or "")
+
+
+def test_detects_nominal_instance_catalog_ordering_outside_autoregister(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/gallery.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass GalleryScenarioABC(ABC):\n    order: int\n    label: str\n\n    @abstractmethod\n    def render(self):\n        raise NotImplementedError\n\n\nclass StillGalleryScenario(GalleryScenarioABC):\n    def render(self):\n        return self.label\n\n\nclass MotionGalleryScenario(GalleryScenarioABC):\n    def render(self):\n        return self.label\n\n\nclass GalleryCatalog:\n    still = StillGalleryScenario(order=10, label="Still")\n    motion = MotionGalleryScenario(order=20, label="Motion")\n\n    @classmethod\n    def scenarios(cls):\n        declarations = tuple(\n            value\n            for owner_type in cls.__mro__\n            for value in owner_type.__dict__.values()\n            if isinstance(value, GalleryScenarioABC)\n        )\n        return tuple(sorted(declarations, key=lambda scenario: scenario.order))\n',
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "nominal_instance_explicit_ordering"
+    )
+
+    assert "GalleryScenarioABC" in finding.summary
+    assert "`order`" in finding.summary
+    assert "MRO" in finding.title
+    assert "FirstDeclarationCatalog" in (finding.scaffold or "")
+    assert "derive the sequence solely from the catalog MRO" in (
+        finding.codemod_patch or ""
+    )
+
+
+def test_nominal_instance_ordering_ignores_non_nominal_value_rows(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/results.py",
+        '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass RankedResult:\n    rank: int\n    label: str\n\n\nclass Results:\n    first = RankedResult(rank=2, label="first")\n    second = RankedResult(rank=1, label="second")\n\n    @classmethod\n    def ranked(cls):\n        return sorted((cls.first, cls.second), key=lambda result: result.rank)\n',
+    )
+
+    assert not any(
+        finding.detector_id == "nominal_instance_explicit_ordering"
+        for finding in analyze_path(tmp_path)
+    )
 
 
 def test_detects_autoregister_family_precedence_axis_ordering(

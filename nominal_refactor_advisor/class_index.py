@@ -90,6 +90,16 @@ class IndexedClass:
 
 
 @dataclass(frozen=True)
+class CompactClassValueConstruction:
+    """One class-owned construction of a nominal value declaration."""
+
+    assigned_name: str
+    constructor_name: str
+    keyword_names: tuple[str, ...]
+    line: int
+
+
+@dataclass(frozen=True)
 class CompactIndexedClass:
     """AST-free class declaration used to reconstruct inheritance globally."""
 
@@ -103,6 +113,7 @@ class CompactIndexedClass:
     base_reference_parts: tuple[tuple[str, ...], ...]
     direct_assignment_expressions: tuple[tuple[str, str | None], ...] = ()
     direct_assignment_lines: tuple[tuple[str, int], ...] = ()
+    direct_value_constructions: tuple[CompactClassValueConstruction, ...] = ()
     direct_constant_string_assignments: tuple[tuple[str, str], ...] = ()
     direct_non_none_assignment_names: tuple[str, ...] = ()
     metaclass_names: tuple[str, ...] = ()
@@ -149,7 +160,7 @@ class CompactModuleClassProjection:
     file_path: str
     import_aliases: tuple[tuple[str, str], ...]
     classes: tuple[CompactIndexedClass, ...]
-    registry_order_calls: tuple["CompactRegistryOrderCall", ...] = ()
+    sorted_key_calls: tuple["CompactSortedKeyCall", ...] = ()
     keyed_table_axes: tuple["CompactKeyedTableAxis", ...] = ()
     closed_axis_branch_functions: tuple["CompactClosedAxisBranchFunction", ...] = ()
     manual_selector_axes: tuple["CompactManualSelectorAxis", ...] = ()
@@ -346,7 +357,11 @@ class CompactRepeatedKeyedFamilyRoot:
 
 
 @dataclass(frozen=True)
-class CompactRegistryOrderCall:
+class CompactSortedKeyCall:
+    """One sorted call and the semantic attributes used by its key."""
+
+    file_path: str
+    line: int
     registry_owner_names: tuple[str, ...]
     key_attribute_names: tuple[str, ...]
 
@@ -857,6 +872,9 @@ def _compact_indexed_classes(
                 for target_name, value in direct_assignments.items()
             ),
             direct_assignment_lines=tuple(_direct_class_assignment_lines(node)),
+            direct_value_constructions=_compact_class_value_constructions(
+                direct_assignments
+            ),
             direct_constant_string_assignments=tuple(
                 sorted(
                     (name, value.value)
@@ -1061,9 +1079,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     sorted(_module_import_aliases(parsed_module).items())
                 ),
                 classes=classes,
-                registry_order_calls=_compact_registry_order_calls(
-                    parsed_module.module
-                ),
+                sorted_key_calls=_compact_sorted_key_calls(parsed_module),
                 keyed_table_axes=_compact_keyed_table_axes(parsed_module),
                 closed_axis_branch_functions=_compact_closed_axis_branch_functions(
                     parsed_module
@@ -3578,11 +3594,29 @@ def _direct_class_assignment_lines(node: ast.ClassDef) -> list[tuple[str, int]]:
     return lines
 
 
-def _compact_registry_order_calls(
-    module: ast.Module,
-) -> tuple[CompactRegistryOrderCall, ...]:
-    calls: list[CompactRegistryOrderCall] = []
-    for node in _walk_nodes(module):
+def _compact_class_value_constructions(
+    direct_assignments: dict[str, ast.expr | None],
+) -> tuple[CompactClassValueConstruction, ...]:
+    return tuple(
+        CompactClassValueConstruction(
+            assigned_name=assigned_name,
+            constructor_name=constructor_name,
+            keyword_names=sorted_tuple(
+                keyword.arg for keyword in value.keywords if keyword.arg is not None
+            ),
+            line=value.lineno,
+        )
+        for assigned_name, value in direct_assignments.items()
+        if isinstance(value, ast.Call)
+        if (constructor_name := _terminal_reference_name(value.func)) is not None
+    )
+
+
+def _compact_sorted_key_calls(
+    parsed_module: ParsedModule,
+) -> tuple[CompactSortedKeyCall, ...]:
+    calls: list[CompactSortedKeyCall] = []
+    for node in _walk_nodes(parsed_module.module):
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -3599,8 +3633,6 @@ def _compact_registry_order_calls(
                 and isinstance(child.value, ast.Name)
             }
         )
-        if not registry_owner_names:
-            continue
         key_attribute_names: set[str] = set()
         for keyword in node.keywords:
             if keyword.arg != "key" or keyword.value is None:
@@ -3625,7 +3657,9 @@ def _compact_registry_order_calls(
                 )
         if key_attribute_names:
             calls.append(
-                CompactRegistryOrderCall(
+                CompactSortedKeyCall(
+                    file_path=str(parsed_module.path),
+                    line=node.lineno,
                     registry_owner_names=registry_owner_names,
                     key_attribute_names=sorted_tuple(key_attribute_names),
                 )

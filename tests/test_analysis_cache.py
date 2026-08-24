@@ -7477,6 +7477,9 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector in (
         partition.compact_global_detector_types
     )
+    assert systemic_detectors.NominalInstanceExplicitOrderingDetector in (
+        partition.compact_global_detector_types
+    )
     assert runtime_detectors.DeadEmbeddedStaticPayloadDetector in (
         partition.compact_global_detector_types
     )
@@ -7648,7 +7651,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 68
+    assert len(partition.compact_global_detector_types) == 69
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert len(partition.per_module_detector_types) == 184
 
