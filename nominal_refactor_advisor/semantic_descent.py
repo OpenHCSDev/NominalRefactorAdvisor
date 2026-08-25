@@ -1383,6 +1383,17 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
+            candidate.projection.kind is PresentationProjectionKind.CALL_LITERAL
+            and context.dataclass_descent.projection_constructs_any_dataclass_authority(
+                candidate.projection,
+            )
+            and not context.projection_semantics.has_matched_class_reference(
+                candidate.projection,
+                candidate.matched_facts,
+            )
+        ):
+            return False
+        if (
             context.fact_specificity.matched_facts_are_reused_roles(
                 candidate.matched_facts
             )
@@ -1465,15 +1476,16 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
             )
         ):
             return False
+        if candidate.projection.kind is PresentationProjectionKind.CALL_LITERAL and (
+            context.dataclass_descent.projection_constructs_distinct_dataclass_authority(
+                candidate.projection,
+                candidate.authority,
+            )
+        ):
+            return False
         if (
-            (
-                context.dataclass_descent.projection_constructs_unrelated_dataclass_authority(
-                    candidate.projection,
-                    candidate.authority,
-                )
-                or context.dataclass_descent.projection_materializes_any_dataclass_authority(
-                    candidate.projection,
-                )
+            context.dataclass_descent.projection_materializes_any_dataclass_authority(
+                candidate.projection,
             )
             and not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
@@ -1494,9 +1506,20 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
                 or context.dataclass_descent.projection_materializes_any_dataclass_authority(
                     candidate.projection,
                 )
-                or context.dataclass_descent.projection_constructs_unrelated_dataclass_authority(
-                    candidate.projection,
-                    candidate.authority,
+                or (
+                    candidate.projection.kind is PresentationProjectionKind.CALL_LITERAL
+                    and context.dataclass_descent.projection_constructs_distinct_dataclass_authority(
+                        candidate.projection,
+                        candidate.authority,
+                    )
+                )
+                or (
+                    candidate.projection.kind
+                    is not PresentationProjectionKind.CALL_LITERAL
+                    and context.dataclass_descent.projection_constructs_name_unrelated_dataclass_authority(
+                        candidate.projection,
+                        candidate.authority,
+                    )
                 )
             )
         )
@@ -4725,6 +4748,21 @@ class ProjectionSemanticAuthority:
         )
 
     @staticmethod
+    def has_matched_class_reference(
+        projection: PresentationProjection,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> bool:
+        """Return whether a projection names one of the matched family leaves."""
+
+        referenced_class_names = frozenset(
+            symbol.rpartition(".")[2] for symbol in projection.class_symbols
+        )
+        return any(
+            fact.location.symbol.rpartition(".")[2] in referenced_class_names
+            for fact in matched_facts
+        )
+
+    @staticmethod
     def enum_branch_has_case_syntax(
         projection: PresentationProjection,
         matched_tokens: frozenset[str],
@@ -4805,46 +4843,16 @@ class ProjectionClassSymbolLineageIndex:
 
 @dataclass(frozen=True)
 class DataclassAuthorityNameAffinity:
-    """Conservative name affinity between dataclass schema authorities."""
+    """Specific shared role identity between two dataclass authorities."""
 
     left: SemanticAuthority
     right: SemanticAuthority
 
-    @cached_property
-    def left_tokens(self) -> frozenset[str]:
-        return self.specific_tokens(self.left.name)
-
-    @cached_property
-    def right_tokens(self) -> frozenset[str]:
-        return self.specific_tokens(self.right.name)
-
     def has_affinity(self) -> bool:
-        return bool(self.left_tokens & self.right_tokens)
-
-    @classmethod
-    def specific_tokens(cls, raw_name: str) -> frozenset[str]:
-        return frozenset(
-            token
-            for token in NormalizeNameProjection.token_set(raw_name)
-            if token not in cls.weak_tokens()
-        )
-
-    @staticmethod
-    def weak_tokens() -> frozenset[str]:
-        return SemanticRoleIdentityToken.authority_affinity_weak_values() | frozenset(
-            (
-                "candidate",
-                "count",
-                "file",
-                "line",
-                "path",
-                "range",
-                "replacement",
-                "run",
-                "source",
-                "span",
-            )
-        )
+        weak_tokens = SemanticRoleIdentityToken.authority_affinity_weak_values()
+        left_tokens = NormalizeNameProjection.token_set(self.left.name) - weak_tokens
+        right_tokens = NormalizeNameProjection.token_set(self.right.name) - weak_tokens
+        return bool(left_tokens & right_tokens)
 
 
 @dataclass(frozen=True)
@@ -5245,14 +5253,34 @@ class DataclassProjectionDescentAuthority:
     ) -> bool:
         return bool(self.constructed_dataclass_authorities(projection))
 
-    def projection_constructs_unrelated_dataclass_authority(
+    def projection_constructs_distinct_dataclass_authority(
         self,
         projection: PresentationProjection,
         authority: SemanticAuthority,
     ) -> bool:
+        """Return whether a nominal construction targets another schema.
+
+        A direct dataclass construction already has a nominal output authority.
+        Similar names do not turn its keyword arguments into a projection of a
+        sibling schema; any such relationship belongs on the declarations, not
+        on the constructor call.
+        """
+
+        return bool(
+            self.constructed_dataclass_authority_ids(projection)
+            - {authority.authority_id}
+        )
+
+    def projection_constructs_name_unrelated_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> bool:
+        """Return whether a collection constructs a different semantic role."""
+
         return any(
-            constructed_authority.authority_id == authority.authority_id
-            or not DataclassAuthorityNameAffinity(
+            constructed_authority.authority_id != authority.authority_id
+            and not DataclassAuthorityNameAffinity(
                 constructed_authority,
                 authority,
             ).has_affinity()
@@ -5290,41 +5318,16 @@ class DataclassProjectionDescentAuthority:
         self,
         projection: PresentationProjection,
     ) -> frozenset[str]:
-        """Resolve construction descent without scanning every dataclass.
+        """Resolve nominal constructor targets independent of omitted defaults."""
 
-        The previous formulation asked every dataclass authority whether every
-        owner construction descended to it.  The construction resolver already
-        owns the inverse relation, so accumulate field evidence only for the
-        authority ids reached by each construction and then apply the identical
-        per-construction-or-union token coverage rule.
-        """
-
-        accumulated_field_tokens: dict[str, set[str]] = {}
-        directly_covered_authority_ids: set[str] = set()
-        for construction in projection.owner_constructions:
-            construction_field_tokens = frozenset(construction.field_tokens)
-            descended_dataclass_authority_ids = (
-                self.construction_resolver.descended_authority_ids_for_construction_type(
+        return frozenset().union(
+            *(
+                self.construction_resolver.authority_ids_for_constructed_type_name(
                     construction.type_name
                 )
                 & self.dataclass_authority_ids
+                for construction in projection.owner_constructions
             )
-            for authority_id in descended_dataclass_authority_ids:
-                matched_tokens = self.fact_tokens_for_authority(authority_id)
-                if not matched_tokens:
-                    continue
-                accumulated_field_tokens.setdefault(authority_id, set()).update(
-                    construction_field_tokens
-                )
-                if matched_tokens <= construction_field_tokens:
-                    directly_covered_authority_ids.add(authority_id)
-
-        return frozenset(
-            authority_id
-            for authority_id, descended_field_tokens in accumulated_field_tokens.items()
-            if authority_id in directly_covered_authority_ids
-            or self.fact_tokens_for_authority(authority_id)
-            <= frozenset(descended_field_tokens)
         )
 
     def projection_owner_constructs_dataclass_authority(

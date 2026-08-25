@@ -549,9 +549,7 @@ def test_class_family_mirror_requires_affinity_for_reused_crosscutting_facts(
         if finding.metrics.plan_registry_name == "SERIALIZER_ADAPTER_TABLE"
     }
 
-    assert mirror_titles == {
-        "`SERIALIZER_ADAPTER_TABLE` mirrors `SerializerAdapter`"
-    }
+    assert mirror_titles == {"`SERIALIZER_ADAPTER_TABLE` mirrors `SerializerAdapter`"}
 
 
 def test_semantic_mirror_focused_collection_filters_before_rendering(
@@ -4345,6 +4343,66 @@ def test_semantic_descent_treats_direct_dataclass_construction_as_sibling_descen
     )
     assert not any(
         certificate.edge.authority_id == blank_line_authority.authority_id
+        for certificate in graph.certificates
+    )
+
+
+def test_semantic_descent_treats_nominal_record_construction_as_complete_descent(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "class RuntimeHandler:\n"
+        "    @classmethod\n"
+        "    def category_prefixes(cls):\n"
+        "        return ()\n"
+        "\n"
+        "class CropHandler(RuntimeHandler):\n"
+        "    pass\n"
+        "\n"
+        "class ImageHandler(RuntimeHandler):\n"
+        "    pass\n"
+        "\n"
+        "class ObjectHandler(RuntimeHandler):\n"
+        "    pass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RuntimeDialect:\n"
+        "    category_prefixes_provider: object\n"
+        "    feature_part_aliases: object\n"
+        "    feature_part_aliases_provider: object\n"
+        "    qualifier_tokens: frozenset[str]\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RuntimeLookupDialect:\n"
+        "    category_prefixes_provider: object\n"
+        "    feature_part_aliases: object\n"
+        "    feature_part_aliases_provider: object\n"
+        "\n"
+        "RUNTIME_LOOKUP_DIALECT = RuntimeLookupDialect(\n"
+        "    category_prefixes_provider=RuntimeHandler.category_prefixes,\n"
+        "    feature_part_aliases={},\n"
+        "    feature_part_aliases_provider=RuntimeHandler.category_prefixes,\n"
+        ")\n"
+        "RUNTIME_DIALECT = RuntimeDialect(\n"
+        "    category_prefixes_provider=RuntimeHandler.category_prefixes,\n"
+        "    feature_part_aliases={},\n"
+        "    feature_part_aliases_provider=RuntimeHandler.category_prefixes,\n"
+        "    qualifier_tokens=frozenset({'crop', 'image', 'object'}),\n"
+        ")\n",
+    )
+
+    graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+
+    nominal_record_projection_labels = {
+        "RUNTIME_DIALECT",
+        "RUNTIME_LOOKUP_DIALECT",
+    }
+    assert not any(
+        graph.projection_catalog.projection_for_edge(certificate.edge).label
+        in nominal_record_projection_labels
         for certificate in graph.certificates
     )
 
