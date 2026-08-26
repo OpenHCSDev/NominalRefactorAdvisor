@@ -6308,6 +6308,14 @@ class CliScanDeadlineRequest:
             return
         print(str(error), file=sys.stderr)
 
+    def terminate_process(self, error: ScanDeadlineExceeded) -> None:
+        """Publish the incomplete result and terminate without unwinding workers."""
+
+        self.emit_timeout(error)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(124)
+
 
 def main(*, hard_exit_on_deadline: bool = False) -> int:
     """Run the CLI under the declared absolute scan wall-clock budget."""
@@ -6317,20 +6325,15 @@ def main(*, hard_exit_on_deadline: bool = False) -> int:
         return _main_without_deadline()
     deadline = ScanDeadline.start(request.budget_seconds)
     try:
-        with enforce_scan_deadline(deadline):
+        with enforce_scan_deadline(
+            deadline,
+            hard_timeout=(request.terminate_process if hard_exit_on_deadline else None),
+        ):
             return _main_without_deadline()
     except ScanDeadlineExceeded as error:
-        request.emit_timeout(error)
         if hard_exit_on_deadline:
-            # Large scans can retain millions of AST objects.  Returning through
-            # normal interpreter teardown after a deadline may spend many more
-            # seconds recursively releasing that graph, leaving callers with a
-            # live CPU-bound PID after the incomplete result was already emitted.
-            # The process entrypoint has no recoverable state at this boundary;
-            # flush the declared result and terminate without teardown latency.
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(124)
+            request.terminate_process(error)
+        request.emit_timeout(error)
         return 124
 
 

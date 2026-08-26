@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ast
 import json
-from pathlib import Path
+import signal
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -344,6 +346,27 @@ def test_process_cli_hard_exits_after_publishing_deadline_payload(
         "budget_seconds": 1.0,
         "elapsed_seconds": pytest.approx(error.elapsed_seconds, abs=0.001),
     }
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "setitimer"),
+    reason="hard wall-clock signals are unavailable on this platform",
+)
+def test_hard_deadline_terminates_at_signal_boundary() -> None:
+    deadline = ScanDeadline.start(0.01)
+    deadline.stage = "process_pool_wait"
+    observed_errors: list[ScanDeadlineExceeded] = []
+
+    def terminate(error: ScanDeadlineExceeded) -> None:
+        observed_errors.append(error)
+        raise SystemExit(124)
+
+    with pytest.raises(SystemExit, match="124"):
+        with enforce_scan_deadline(deadline, hard_timeout=terminate):
+            time.sleep(1.0)
+
+    assert len(observed_errors) == 1
+    assert observed_errors[0].stage == "process_pool_wait"
 
 
 def test_repository_semantic_signature_changes_for_contextual_source_edit(

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import signal
 import threading
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from time import monotonic
-from typing import Iterator
 
 
 class ScanDeadlineExceeded(TimeoutError):
@@ -65,7 +65,11 @@ def scan_deadline_checkpoint(stage: str) -> None:
 
 
 @contextmanager
-def enforce_scan_deadline(deadline: ScanDeadline) -> Iterator[None]:
+def enforce_scan_deadline(
+    deadline: ScanDeadline,
+    *,
+    hard_timeout: Callable[[ScanDeadlineExceeded], None] | None = None,
+) -> Iterator[None]:
     """Activate cooperative checks plus a hard main-thread wall timer."""
 
     token = _ACTIVE_SCAN_DEADLINE.set(deadline)
@@ -79,7 +83,12 @@ def enforce_scan_deadline(deadline: ScanDeadline) -> Iterator[None]:
         previous_handler = signal.getsignal(signal.SIGALRM)
 
         def deadline_handler(_signum: int, _frame: object) -> None:
-            raise ScanDeadlineExceeded(deadline)
+            error = ScanDeadlineExceeded(deadline)
+            if hard_timeout is not None:
+                # Process entrypoints terminate here, before unwinding an
+                # active ProcessPoolExecutor and racing its manager thread.
+                hard_timeout(error)
+            raise error
 
         signal.signal(signal.SIGALRM, deadline_handler)
         signal.setitimer(signal.ITIMER_REAL, deadline.remaining_seconds)
