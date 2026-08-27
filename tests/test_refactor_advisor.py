@@ -5553,6 +5553,110 @@ def test_execution_plan_groups_findings_by_weighted_graph(
     assert grouped_class.first_codemod_hint
 
 
+def test_planning_similarity_requires_concrete_source_authority(
+    tmp_path: Path,
+) -> None:
+    context_spec = _finding_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Collapse threaded context",
+        "Repeated threaded parameters should have one authority.",
+        "single authoritative context",
+        "shared parameter fanout",
+    )
+    mapping_capability = (CapabilityTag.AUTHORITATIVE_MAPPING,)
+    findings = [
+        context_spec.build(
+            "threaded_a",
+            "alpha context fanout",
+            (SourceLocation(str(tmp_path / "pkg/runtime/a.py"), 10, "Alpha.run"),),
+            capability_tags=mapping_capability,
+        ),
+        context_spec.build(
+            "threaded_b",
+            "beta context fanout",
+            (SourceLocation(str(tmp_path / "pkg/runtime/b.py"), 10, "Beta.run"),),
+            capability_tags=mapping_capability,
+        ),
+    ]
+
+    plans = build_refactor_plans(findings, tmp_path)
+    execution_plan = build_refactor_execution_plan(findings, tmp_path)
+
+    assert len(plans) == 2
+    assert execution_plan.edges == ()
+    assert execution_plan.connected_component_count == 2
+
+
+def test_shared_symbol_root_can_anchor_cross_file_execution_relation(
+    tmp_path: Path,
+) -> None:
+    context_spec = _finding_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Collapse threaded context",
+        "Repeated threaded parameters should have one authority.",
+        "single authoritative context",
+        "shared parameter fanout",
+    )
+    mapping_capability = (CapabilityTag.AUTHORITATIVE_MAPPING,)
+    findings = [
+        context_spec.build(
+            "threaded_a",
+            "first shared context surface",
+            (SourceLocation(str(tmp_path / "pkg/a.py"), 10, "Shared.run"),),
+            capability_tags=mapping_capability,
+        ),
+        context_spec.build(
+            "threaded_b",
+            "second shared context surface",
+            (SourceLocation(str(tmp_path / "pkg/b.py"), 10, "Shared.stop"),),
+            capability_tags=mapping_capability,
+        ),
+    ]
+
+    execution_plan = build_refactor_execution_plan(findings, tmp_path)
+
+    assert len(execution_plan.edges) == 1
+    assert "shared symbol roots: Shared" in execution_plan.edges[0].reasons
+
+
+def test_subsystem_plan_follows_multi_file_evidence_bridge(tmp_path: Path) -> None:
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Derive repeated projection",
+        "Repeated projections should descend to one authority.",
+        "one projection authority",
+        "shared source evidence",
+    )
+    shared_path = tmp_path / "pkg/shared.py"
+    findings = [
+        spec.build(
+            "projection_a",
+            "first multi-file projection",
+            (
+                SourceLocation(str(tmp_path / "pkg/a.py"), 1, "Alpha"),
+                SourceLocation(str(shared_path), 2, "Shared.alpha"),
+            ),
+        ),
+        spec.build(
+            "projection_b",
+            "second multi-file projection",
+            (
+                SourceLocation(str(shared_path), 3, "Shared.beta"),
+                SourceLocation(str(tmp_path / "pkg/b.py"), 4, "Beta"),
+            ),
+        ),
+    ]
+
+    plans = build_refactor_plans(findings, tmp_path)
+
+    assert len(plans) == 1
+    assert {location.file_path for location in plans[0].evidence} == {
+        str(tmp_path / "pkg/a.py"),
+        str(shared_path),
+        str(tmp_path / "pkg/b.py"),
+    }
+
+
 def test_execution_plan_splits_weak_bridges_by_semantic_axis(
     tmp_path: Path,
 ) -> None:
@@ -21058,7 +21162,14 @@ def test_focused_loop_cold_analysis_requires_implicit_lightweight_context() -> N
     assert not replace(base_policy, requires_full_analysis=True).enabled
 
 
-def test_json_payload_loop_compacts_execution_plan_edges(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "payload_profile",
+    (JsonPayloadProfile.agent, JsonPayloadProfile.loop),
+)
+def test_json_payload_profiles_compact_execution_plan_edges(
+    tmp_path: Path,
+    payload_profile: JsonPayloadProfile,
+) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
@@ -21088,7 +21199,7 @@ def test_json_payload_loop_compacts_execution_plan_edges(tmp_path: Path) -> None
         plans=[],
         modules=modules,
         execution_plan=execution_plan,
-        payload_sections=JsonPayloadProfile.loop.sections,
+        payload_sections=payload_profile.sections,
     ).to_dict()
     execution_plan_payload = cast(dict[str, object], payload["execution_plan"])
 

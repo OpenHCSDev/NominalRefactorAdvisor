@@ -171,7 +171,7 @@ class AnalysisExecutionPlanCacheIdentity:
     root: str
     report_filter_roots: tuple[str, ...]
     projection_kind: str
-    projection_schema_version: int = 3
+    projection_schema_version: int = 4
     schema: AnalysisCacheSchema = analysis_cache_schema
 
     @classmethod

@@ -919,24 +919,44 @@ class JsonFindingPayloadProjection:
         return []
 
 
-class JsonExecutionPlanPayloadProjection:
-    """Project execution plans at the detail level promised by the JSON profile."""
+def _full_execution_plan_projection(
+    report: RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection,
+) -> RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection:
+    return report
 
-    @classmethod
-    def payload(
+
+def _count_only_execution_plan_projection(
+    report: RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection,
+) -> RefactorExecutionPlanLoopProjection:
+    if isinstance(report, RefactorExecutionPlanLoopProjection):
+        return report
+    return RefactorExecutionPlanLoopProjection.from_report(report)
+
+
+class JsonExecutionPlanPayloadMode(Enum):
+    """Declaration-owned execution-plan projection for one JSON profile."""
+
+    FULL = ("full", _full_execution_plan_projection)
+    COUNT_ONLY = ("count_only", _count_only_execution_plan_projection)
+
+    def __new__(
         cls,
-        execution_plan: (
-            RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection
-        ),
-        sections: "JsonPayloadSections",
-    ) -> JsonObject:
-        if isinstance(execution_plan, RefactorExecutionPlanLoopProjection):
-            return execution_plan.to_dict()
-        if sections.lightweight_status_payload:
-            return RefactorExecutionPlanLoopProjection.from_report(
-                execution_plan
-            ).to_dict()
-        return execution_plan.to_dict()
+        value: str,
+        projector: Callable[
+            [RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection],
+            RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection,
+        ],
+    ) -> "JsonExecutionPlanPayloadMode":
+        member = object.__new__(cls)
+        member._value_ = value
+        member._projector = projector
+        return member
+
+    def project(
+        self,
+        report: RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection,
+    ) -> RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection:
+        return self._projector(report)
 
 
 @dataclass(frozen=True)
@@ -953,6 +973,9 @@ class JsonPayloadSections:
     finding_recipe_plan: bool = True
     payload_timing: bool = False
     default_impact_ranking: bool = True
+    execution_plan_payload_mode: JsonExecutionPlanPayloadMode = (
+        JsonExecutionPlanPayloadMode.FULL
+    )
 
     @property
     def needs_observation_graph(self) -> bool:
@@ -1022,6 +1045,7 @@ class JsonPayloadProfile(Enum):
         finding_recipe_plan=False,
         payload_timing=True,
         default_impact_ranking=False,
+        execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
     summary = JsonPayloadSections(
         source_index=False,
@@ -1033,6 +1057,7 @@ class JsonPayloadProfile(Enum):
         finding_recipe_plan=False,
         payload_timing=True,
         default_impact_ranking=False,
+        execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
     loop = JsonPayloadSections(
         finding_payload_mode=JsonFindingPayloadMode.counts_only,
@@ -1045,6 +1070,7 @@ class JsonPayloadProfile(Enum):
         finding_recipe_plan=False,
         payload_timing=True,
         default_impact_ranking=False,
+        execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
 
     @classmethod
@@ -1519,10 +1545,9 @@ class JsonPayloadBuilder:
         if self.change_budget is not None:
             payload["change_budget"] = self.change_budget.to_dict()
         if self.execution_plan is not None:
-            payload["execution_plan"] = JsonExecutionPlanPayloadProjection.payload(
-                self.execution_plan,
-                sections,
-            )
+            payload["execution_plan"] = sections.execution_plan_payload_mode.project(
+                self.execution_plan
+            ).to_dict()
         codemod_candidates = self.codemod_candidates
         if self.impact_ranking is not None:
             payload["impact_ranking"] = self.impact_ranking.to_dict()
@@ -5956,15 +5981,17 @@ def _main_without_deadline() -> int:
             plans = build_refactor_plans(findings, root)
         if args.include_execution_plan or args.plans_only:
             execution_plan_cache = AnalysisFindingCache(analysis_cache_dir)
-            cache_loop_projection = (
-                args.json and json_payload_profile.sections.lightweight_status_payload
+            execution_plan_payload_mode = (
+                json_payload_profile.sections.execution_plan_payload_mode
+                if args.json
+                else JsonExecutionPlanPayloadMode.FULL
             )
             execution_plan_cache_identity = (
                 AnalysisExecutionPlanCacheIdentity.from_analysis_identity(
                     analysis_cache_identity,
                     root,
                     path_scope.report_roots,
-                    projection_kind=("loop" if cache_loop_projection else "full"),
+                    projection_kind=execution_plan_payload_mode.value,
                 )
                 if analysis_cache_identity is not None
                 else None
@@ -5981,12 +6008,8 @@ def _main_without_deadline() -> int:
                 execution_plan = execution_plan_lookup.plan
             else:
                 execution_plan_report = build_refactor_execution_plan(findings, root)
-                execution_plan = (
-                    RefactorExecutionPlanLoopProjection.from_report(
-                        execution_plan_report
-                    )
-                    if cache_loop_projection
-                    else execution_plan_report
+                execution_plan = execution_plan_payload_mode.project(
+                    execution_plan_report
                 )
                 if execution_plan_cache_identity is not None:
                     execution_plan_cache.store_execution_plan(

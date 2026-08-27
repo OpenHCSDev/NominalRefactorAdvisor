@@ -7,8 +7,10 @@ pattern-aware plans suitable for long-running maintenance work.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from enum import Enum
 from functools import cache
 import hashlib
 from itertools import combinations
@@ -17,6 +19,7 @@ from pathlib import Path
 from typing import Callable, ClassVar, Generic, Hashable, Sequence, TypeVar
 
 from .collection_algebra import sorted_tuple
+from .deadline import scan_deadline_checkpoint
 from .detectors import IssueDetector
 from .factorization import RefactorMove, RefactorPhase, RefactorTrajectorySearch
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
@@ -45,7 +48,6 @@ from .taxonomy import (
     ConfidenceLevel,
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
-    ObservationTag,
 )
 
 
@@ -855,6 +857,11 @@ class PatternCatalog:
         pattern = PATTERN_SPECS.get(pattern_id)
         return () if pattern is None else pattern.synergy_with
 
+    def patterns_are_synergistic(self, left: PatternId, right: PatternId) -> bool:
+        """Project the symmetric relation from declaration-owned pattern rows."""
+
+        return right in self.synergy_with(left) or left in self.synergy_with(right)
+
     def plan_step_builder(self, pattern_id: PatternId) -> PatternPlanStepBuilder | None:
         pattern = PATTERN_SPECS.get(pattern_id)
         if pattern is None or pattern.plan_step_builder_id is None:
@@ -928,9 +935,10 @@ def build_refactor_execution_plan(
 
     Findings are observation vertices. Edges are weighted by shared evidence,
     shared capabilities, pattern synergy, directory locality, and shared symbol
-    roots. Weakly connected components are then partitioned by their semantic
-    execution axis so agents can refactor a whole bug class without allowing
-    transitive locality bridges to swallow unrelated batches.
+    roots, and require a concrete shared file or symbol-root authority. Findings
+    are partitioned by their semantic execution axis so agents can refactor a
+    whole bug class without allowing transitive locality bridges to swallow
+    unrelated batches.
     """
 
     if not findings:
@@ -943,10 +951,7 @@ def build_refactor_execution_plan(
         )
     finding_tuple = tuple(findings)
     relation_graph = _FindingRelationGraph.from_findings(finding_tuple, root)
-    clusters = ExecutionPartitionPlanner(root).clusters(
-        findings,
-        relation_graph=relation_graph,
-    )
+    clusters = ExecutionPartitionPlanner(root).clusters(findings)
     class_inputs = [
         ExecutionClassInputAuthority(cluster, root, relation_graph).input()
         for cluster in clusters
@@ -1028,16 +1033,20 @@ def build_refactor_execution_plan_from_groups(
 def _cluster_findings(
     findings: list[RefactorFinding],
     root: Path,
-    relation_graph: _FindingRelationGraph | None = None,
 ) -> list[_FindingCluster]:
+    """Join findings only through concrete, shared source evidence.
+
+    Capability tags, pattern synergy, and directory locality describe useful
+    supporting similarity, but none proves that two findings belong to one
+    subsystem plan. A shared evidence file is the source-backed authority for
+    that composition; multi-file findings naturally bridge their own evidence
+    cohort without a repository-wide all-pairs graph.
+    """
+
     if not findings:
         return []
-
-    graph = relation_graph or _FindingRelationGraph.from_findings(tuple(findings), root)
-    finding_index_by_id = {
-        finding.stable_id: index for index, finding in enumerate(findings)
-    }
     parents = list(range(len(findings)))
+    component_sizes = [1] * len(findings)
 
     def find(index: int) -> int:
         while parents[index] != index:
@@ -1048,14 +1057,20 @@ def _cluster_findings(
     def union(left: int, right: int) -> None:
         left_root = find(left)
         right_root = find(right)
-        if left_root != right_root:
-            parents[right_root] = left_root
+        if left_root == right_root:
+            return
+        if component_sizes[left_root] < component_sizes[right_root]:
+            left_root, right_root = right_root, left_root
+        parents[right_root] = left_root
+        component_sizes[left_root] += component_sizes[right_root]
 
-    for edge in graph.edges:
-        left_index = finding_index_by_id.get(edge.left_finding_id)
-        right_index = finding_index_by_id.get(edge.right_finding_id)
-        if left_index is not None and right_index is not None:
-            union(left_index, right_index)
+    first_finding_index_by_path: dict[Path, int] = {}
+    for finding_index, finding in enumerate(findings):
+        if finding_index % 1024 == 0:
+            scan_deadline_checkpoint("refactor_plan_evidence_partition")
+        for path in _evidence_paths(finding):
+            first_index = first_finding_index_by_path.setdefault(path, finding_index)
+            union(first_index, finding_index)
 
     grouped: dict[int, list[RefactorFinding]] = defaultdict(list)
     for index, finding in enumerate(findings):
@@ -1081,6 +1096,45 @@ def _cluster_findings(
 class _FindingRelation:
     weight: int
     reasons: tuple[str, ...]
+    authority: "_FindingRelationAuthority"
+
+    @property
+    def is_execution_edge(self) -> bool:
+        return self.weight >= 3 and self.authority.is_proven
+
+
+@dataclass(frozen=True)
+class _FindingRelationAuthority:
+    """Concrete shared source identity required by an execution edge."""
+
+    shared_paths: frozenset[Path]
+    shared_symbol_roots: frozenset[str]
+
+    @property
+    def is_proven(self) -> bool:
+        return bool(self.shared_paths or self.shared_symbol_roots)
+
+    @classmethod
+    def between(
+        cls,
+        left: "_FindingRelationFacts",
+        right: "_FindingRelationFacts",
+    ) -> "_FindingRelationAuthority":
+        return cls(
+            shared_paths=left.paths & right.paths,
+            shared_symbol_roots=left.symbol_roots & right.symbol_roots,
+        )
+
+
+class _FindingRelationAuthorityAxis(Enum):
+    EVIDENCE_PATH = "evidence_path"
+    SYMBOL_ROOT = "symbol_root"
+
+
+@dataclass(frozen=True)
+class _FindingRelationAuthorityKey:
+    axis: _FindingRelationAuthorityAxis
+    value: Path | str
 
 
 @dataclass(frozen=True)
@@ -1114,7 +1168,8 @@ class _FindingRelationFacts:
     def relation_to(self, right: "_FindingRelationFacts") -> _FindingRelation:
         score = 0
         reasons: list[str] = []
-        shared_paths = self.paths & right.paths
+        authority = _FindingRelationAuthority.between(self, right)
+        shared_paths = authority.shared_paths
         if shared_paths:
             score += 3
             reasons.append(
@@ -1134,22 +1189,82 @@ class _FindingRelationFacts:
             )
         left_pattern = self.finding.pattern_id
         right_pattern = right.finding.pattern_id
-        if _patterns_are_synergistic(left_pattern, right_pattern):
+        if PATTERN_CATALOG.patterns_are_synergistic(left_pattern, right_pattern):
             score += 1
             reasons.append(
                 f"synergistic patterns {left_pattern.value}/{right_pattern.value}"
             )
-        shared_roots = self.symbol_roots & right.symbol_roots
+        shared_roots = authority.shared_symbol_roots
         if shared_roots:
             score += 1
             reasons.append("shared symbol roots: " + ", ".join(sorted(shared_roots)))
-        return _FindingRelation(weight=score, reasons=tuple(reasons))
+        return _FindingRelation(
+            weight=score,
+            reasons=tuple(reasons),
+            authority=authority,
+        )
+
+    def authority_keys(self) -> tuple[_FindingRelationAuthorityKey, ...]:
+        return (
+            *(
+                _FindingRelationAuthorityKey(
+                    _FindingRelationAuthorityAxis.EVIDENCE_PATH,
+                    path,
+                )
+                for path in sorted(self.paths)
+            ),
+            *(
+                _FindingRelationAuthorityKey(
+                    _FindingRelationAuthorityAxis.SYMBOL_ROOT,
+                    root,
+                )
+                for root in sorted(self.symbol_roots)
+            ),
+        )
 
     def common_dir_depth(self, right: "_FindingRelationFacts") -> int:
         shared_prefixes = self.relative_parent_prefixes & right.relative_parent_prefixes
         if not shared_prefixes:
             return 0
         return max(len(prefix) for prefix in shared_prefixes)
+
+
+@dataclass(frozen=True)
+class _FindingRelationCandidateIndex:
+    """Exact candidate projection from the execution-edge authority contract."""
+
+    facts: tuple[_FindingRelationFacts, ...]
+    fact_indices_by_authority_key: dict[
+        _FindingRelationAuthorityKey,
+        tuple[int, ...],
+    ]
+
+    @classmethod
+    def from_facts(
+        cls,
+        facts: tuple[_FindingRelationFacts, ...],
+    ) -> "_FindingRelationCandidateIndex":
+        mutable_index: dict[_FindingRelationAuthorityKey, list[int]] = defaultdict(list)
+        for fact_index, fact in enumerate(facts):
+            for authority_key in fact.authority_keys():
+                mutable_index[authority_key].append(fact_index)
+        return cls(
+            facts=facts,
+            fact_indices_by_authority_key={
+                key: tuple(indices) for key, indices in mutable_index.items()
+            },
+        )
+
+    def fact_pairs(
+        self,
+    ) -> Iterator[tuple[_FindingRelationFacts, _FindingRelationFacts]]:
+        pair_indices = {
+            pair
+            for fact_indices in self.fact_indices_by_authority_key.values()
+            for pair in combinations(fact_indices, 2)
+        }
+        for left_index, right_index in pair_indices:
+            yield self.facts[left_index], self.facts[right_index]
 
 
 @dataclass(frozen=True)
@@ -1162,13 +1277,18 @@ class _FindingRelationGraph:
     def from_findings(
         cls, findings: tuple[RefactorFinding, ...], root: Path
     ) -> "_FindingRelationGraph":
+        scan_deadline_checkpoint("refactor_execution_relation_facts")
         facts = tuple(
             _FindingRelationFacts.from_finding(finding, root) for finding in findings
         )
+        scan_deadline_checkpoint("refactor_execution_relation_candidates")
+        candidate_index = _FindingRelationCandidateIndex.from_facts(facts)
         edges = []
-        for left, right in combinations(facts, 2):
+        for pair_index, (left, right) in enumerate(candidate_index.fact_pairs()):
+            if pair_index % 4096 == 0:
+                scan_deadline_checkpoint("refactor_execution_relation_edges")
             relation = left.relation_to(right)
-            if relation.weight < 3:
+            if not relation.is_execution_edge:
                 continue
             left_id, right_id = sorted((left.stable_id, right.stable_id))
             edges.append(
@@ -1318,25 +1438,22 @@ class ExecutionPartitionAxis(SemanticRecord):
 
 @dataclass(frozen=True)
 class ExecutionPartitionPlanner(SemanticRecord):
-    """Refine weak graph components into executable semantic work batches."""
+    """Partition findings into executable batches by their nominal work axis."""
 
     root: Path
 
     def clusters(
         self,
         findings: list[RefactorFinding],
-        *,
-        relation_graph: _FindingRelationGraph | None = None,
     ) -> list[_FindingCluster]:
-        execution_clusters: list[_FindingCluster] = []
-        for cluster in _cluster_findings(
-            findings,
-            self.root,
-            relation_graph=relation_graph,
-        ):
-            execution_clusters.extend(self.partition_cluster(cluster))
+        grouped: dict[ExecutionPartitionAxis, list[RefactorFinding]] = defaultdict(list)
+        for finding in findings:
+            grouped[self.axis_for(finding)].append(finding)
         return sorted(
-            execution_clusters,
+            (
+                self.cluster_for_axis(axis, group_findings)
+                for axis, group_findings in grouped.items()
+            ),
             key=lambda cluster: (cluster.subsystem, len(cluster.findings)),
         )
 
@@ -1349,24 +1466,30 @@ class ExecutionPartitionPlanner(SemanticRecord):
         if len(grouped) <= 1:
             return (cluster,)
         return tuple(
-            _FindingCluster(
-                subsystem=axis.subsystem_label,
-                findings=tuple(
-                    sorted(
-                        group_findings,
-                        key=lambda finding: (
-                            finding.pattern_id,
-                            finding.title,
-                            finding.stable_id,
-                        ),
-                    )
-                ),
-                evidence=_FINDING_PROJECTION.combined_evidence(tuple(group_findings)),
-            )
+            self.cluster_for_axis(axis, group_findings)
             for axis, group_findings in sorted(
                 grouped.items(),
                 key=lambda item: item[0].sort_key,
             )
+        )
+
+    @staticmethod
+    def cluster_for_axis(
+        axis: ExecutionPartitionAxis,
+        findings: Sequence[RefactorFinding],
+    ) -> _FindingCluster:
+        finding_tuple = sorted_tuple(
+            findings,
+            key=lambda finding: (
+                finding.pattern_id,
+                finding.title,
+                finding.stable_id,
+            ),
+        )
+        return _FindingCluster(
+            subsystem=axis.subsystem_label,
+            findings=finding_tuple,
+            evidence=_FINDING_PROJECTION.combined_evidence(finding_tuple),
         )
 
     def axis_for(self, finding: RefactorFinding) -> ExecutionPartitionAxis:
@@ -1382,12 +1505,6 @@ class ExecutionPartitionPlanner(SemanticRecord):
         if not paths:
             return Path(self.root.name)
         return paths[0]
-
-
-def _patterns_are_synergistic(left: PatternId, right: PatternId) -> bool:
-    return right in PATTERN_CATALOG.synergy_with(
-        left
-    ) or left in PATTERN_CATALOG.synergy_with(right)
 
 
 def _symbol_roots(finding: RefactorFinding) -> set[str]:
@@ -1819,15 +1936,19 @@ def _build_escape_trajectories(
 def _trajectory_moves_from_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[RefactorMove, ...]:
+    present_patterns = frozenset(finding.pattern_id for finding in findings)
     return tuple(
-        (_TrajectoryMoveFactory(finding, findings).build() for finding in findings)
+        (
+            _TrajectoryMoveFactory(finding, present_patterns).build()
+            for finding in findings
+        )
     )
 
 
 @dataclass(frozen=True)
 class _TrajectoryMoveFactory:
     finding: RefactorFinding
-    cluster_findings: tuple[RefactorFinding, ...]
+    present_patterns: frozenset[PatternId]
 
     def build(self) -> RefactorMove:
         return RefactorMove(
@@ -1876,7 +1997,10 @@ class _TrajectoryMoveFactory:
 
     @property
     def prerequisites(self) -> frozenset[Hashable]:
-        return _trajectory_prerequisites(self.finding.pattern_id, self.cluster_findings)
+        return _trajectory_prerequisites(
+            self.finding.pattern_id,
+            self.present_patterns,
+        )
 
     @property
     def unlocks(self) -> frozenset[Hashable]:
@@ -1903,9 +2027,9 @@ class _TrajectoryMoveFactory:
 
 
 def _trajectory_prerequisites(
-    pattern_id: PatternId, findings: tuple[RefactorFinding, ...]
+    pattern_id: PatternId,
+    present_patterns: frozenset[PatternId],
 ) -> frozenset[Hashable]:
-    present_patterns = frozenset((finding.pattern_id for finding in findings))
     return frozenset(
         (
             dependency
