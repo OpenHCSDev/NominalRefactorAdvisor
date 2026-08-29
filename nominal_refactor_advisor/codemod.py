@@ -7346,7 +7346,7 @@ class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
     attribute_owner_expressions: tuple[str, ...] = ()
 
     @classmethod
-    def carrier_projection_payload_bindings(cls) -> OperationPayloadBindings:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         return PayloadBindingSet.from_field_codecs(
             class_name=StringPayloadValueCodec(),
             field_projection_pairs=StringArrayPayloadValueCodec(),
@@ -7369,7 +7369,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        return super().carrier_projection_payload_bindings() + (
+        return super().payload_bindings() + (
             PayloadBindingSet.from_field_codecs(
                 carrier_field_declaration=StringPayloadValueCodec(),
             )
@@ -7708,7 +7708,7 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        return super().carrier_projection_payload_bindings() + (
+        return super().payload_bindings() + (
             PayloadBindingSet.from_field_codecs(
                 carrier_source=StringPayloadValueCodec(),
                 carrier_field_declarations=StringArrayPayloadValueCodec(),
@@ -9607,19 +9607,11 @@ class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
     )
 
     @classmethod
-    def destination_path_payload_binding(cls) -> PayloadBinding:
-        return PayloadBinding(
-            field_name="destination_path",
-            constructor_argument_name="destination_path",
-            codec=StringPayloadValueCodec(),
-        )
-
-    @classmethod
-    def replacement_import_payload_binding(cls) -> PayloadBinding:
-        return PayloadBinding(
-            field_name="replacement_import",
-            constructor_argument_name="replacement_import",
-            codec=ReplacementImportPayloadValueCodec(),
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            destination_path=StringPayloadValueCodec(),
+            replacement_import=ReplacementImportPayloadValueCodec(),
         )
 
 
@@ -9629,15 +9621,6 @@ class MoveSymbolToModuleOperation(
     ModuleSymbolMoveOperation,
 ):
     """Move one module-level class or function into another existing module."""
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return PayloadBindingSet(
-            (
-                cls.destination_path_payload_binding(),
-                cls.replacement_import_payload_binding(),
-            )
-        )
 
     def source_edits_for_target_node(
         self,
@@ -9679,12 +9662,7 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
     def payload_bindings(cls) -> OperationPayloadBindings:
         return PayloadBindingSet.from_field_codecs(
             symbol_qualnames=StringArrayPayloadValueCodec(),
-        ) + PayloadBindingSet(
-            (
-                cls.destination_path_payload_binding(),
-                cls.replacement_import_payload_binding(),
-            )
-        )
+        ) + super().payload_bindings()
 
     def dependency_report(
         self,
