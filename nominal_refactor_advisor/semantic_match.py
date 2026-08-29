@@ -21,23 +21,47 @@ AstA = TypeVar("AstA", bound=ast.AST)
 AstB = TypeVar("AstB", bound=ast.AST)
 AstC = TypeVar("AstC", bound=ast.AST)
 OwnerT = TypeVar("OwnerT", bound=ast.AST)
-StepT = TypeVar("StepT", bound="RegisteredEffectStep")
 RuleT = TypeVar("RuleT", bound="AstPredicateRule[Any, ast.AST, Any]")
 
 
-class EffectStep(ABC, Generic[T, U], metaclass=AutoRegisterMeta):
+class EffectStep(ABC, Generic[T, U]):
     """Nominal stage in a typed semantic matching effect pipeline."""
 
-    __registry__: ClassVar[dict[str, type["EffectStep[Any, Any]"]]] = {}
-    __registry_key__ = "step_id"
-    __skip_if_no_key__ = True
-
-    step_id: ClassVar[str | None] = None
-    registration_order: ClassVar[int] = 0
+    source_name_suffix: ClassVar[str] = "Step"
 
     @abstractmethod
     def apply(self, value: T) -> U | None:
         raise NotImplementedError
+
+    @classmethod
+    def family_types(cls) -> tuple[type["EffectStep[Any, Any]"], ...]:
+        """Return the loaded nominal family rooted at this declaration."""
+
+        family: list[type[EffectStep[Any, Any]]] = [cls]
+        seen: set[type[EffectStep[Any, Any]]] = {cls}
+        pending = list(cls.__subclasses__())
+        while pending:
+            member = pending.pop(0)
+            pending.extend(member.__subclasses__())
+            if member in seen:
+                continue
+            seen.add(member)
+            family.append(member)
+        return tuple(family)
+
+    @classmethod
+    def declares_source_member(
+        cls,
+        *,
+        class_name: str,
+        declared_base_names: Sequence[str],
+    ) -> bool:
+        """Recognize source declarations belonging to this nominal family."""
+
+        family_type_names = frozenset(member.__name__ for member in cls.family_types())
+        return class_name.endswith(cls.source_name_suffix) or bool(
+            family_type_names.intersection(declared_base_names)
+        )
 
 
 class EffectCarrier(ABC, Generic[T]):
@@ -78,25 +102,7 @@ class EffectCarrier(ABC, Generic[T]):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
-class FirstSuccessfulEffectStep(EffectStep[T, U]):
-    """Choice step: run sibling projections and return the first success."""
-
-    steps: Sequence[EffectStep[T, U]]
-
-    def apply(self, value: T) -> U | None:
-        for step in self.steps:
-            result = step.apply(value)
-            if result is not None:
-                return result
-        return None
-
-
-class RegisteredEffectStep(EffectStep[Any, Any]):
-    """Metaclass-registered effect step with declarative sequencing."""
-
-
-class GuardedEffectStep(RegisteredEffectStep, Generic[T, U]):
+class GuardedEffectStep(EffectStep[T, U], Generic[T, U]):
     """Template-method effect step: shared optional flow, small semantic hooks."""
 
     def apply(self, value: T) -> U | None:
@@ -113,7 +119,7 @@ class GuardedEffectStep(RegisteredEffectStep, Generic[T, U]):
         raise NotImplementedError
 
 
-class AstTypedEffectStep(RegisteredEffectStep, Generic[AstT, U]):
+class AstTypedEffectStep(EffectStep[ast.AST, U], Generic[AstT, U]):
     """Template-method effect step that owns AST type narrowing."""
 
     node_type: ClassVar[type[AstT]]
@@ -196,53 +202,6 @@ class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
     @abstractmethod
     def project_compare(self, left: ast.AST, right: ast.AST) -> U | None:
         raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class EffectStepClassFamilyAuthority:
-    """Own runtime and AST-declaration identity for EffectStep roots."""
-
-    root_type: type[EffectStep[Any, Any]]
-    suffix: str = "Step"
-
-    @property
-    def family_type_names(self) -> frozenset[str]:
-        return frozenset(member_type.__name__ for member_type in self.family_types())
-
-    def family_types(self) -> tuple[type[EffectStep[Any, Any]], ...]:
-        family_types: list[type[EffectStep[Any, Any]]] = []
-        seen: set[type[EffectStep[Any, Any]]] = set()
-
-        def append_member(member_type: type[EffectStep[Any, Any]]) -> None:
-            if member_type in seen:
-                return
-            seen.add(member_type)
-            family_types.append(member_type)
-
-        registry = cast(
-            dict[str, type[EffectStep[Any, Any]]], self.root_type.__registry__
-        )
-        for registered_type in registry.values():
-            for ancestor in reversed(registered_type.__mro__):
-                if (
-                    isinstance(ancestor, type)
-                    and issubclass(ancestor, self.root_type)
-                ):
-                    append_member(cast(type[EffectStep[Any, Any]], ancestor))
-        return tuple(family_types)
-
-    def declares_member(
-        self,
-        *,
-        class_name: str,
-        declared_base_names: Sequence[str],
-    ) -> bool:
-        return class_name.endswith(self.suffix) or bool(
-            self.family_type_names.intersection(declared_base_names)
-        )
-
-
-effect_step_class_family_authority = EffectStepClassFamilyAuthority(EffectStep)
 
 
 @dataclass(frozen=True)
@@ -350,25 +309,6 @@ class _AttributeCallArgumentStep(
         return AttributeCallMatch(
             value.call, value.attribute, value.owner, argument.argument
         )
-
-
-@lru_cache(maxsize=None)
-def registered_effect_steps(step_base: type[StepT]) -> tuple[StepT, ...]:
-    registry = cast(dict[str, type[StepT]], step_base.__registry__)
-    return tuple(
-        (
-            step_type()
-            for step_type in sorted(
-                (
-                    registered_type
-                    for registered_type in registry.values()
-                    if issubclass(registered_type, step_base)
-                    and registered_type is not step_base
-                ),
-                key=lambda item: item.registration_order,
-            )
-        )
-    )
 
 
 @lru_cache(maxsize=None)

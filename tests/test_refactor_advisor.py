@@ -272,7 +272,6 @@ from nominal_refactor_advisor.scan_prediction import (
 from nominal_refactor_advisor.semantic_match import (
     EffectStep,
     Maybe,
-    effect_step_class_family_authority,
 )
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
@@ -4940,23 +4939,22 @@ def test_maybe_binds_nominal_effect_steps() -> None:
     )
 
 
-def test_effect_step_family_authority_derives_root_names() -> None:
-    assert effect_step_class_family_authority.family_type_names >= {
+def test_effect_step_declaration_derives_loaded_family_names() -> None:
+    assert {member.__name__ for member in EffectStep.family_types()} >= {
         "EffectStep",
         "GuardedEffectStep",
         "AstTypedEffectStep",
-        "RegisteredEffectStep",
         "SingleCompareEffectStep",
     }
-    assert effect_step_class_family_authority.declares_member(
+    assert EffectStep.declares_source_member(
         class_name="CallProjection",
         declared_base_names=("GuardedEffectStep",),
     )
-    assert effect_step_class_family_authority.declares_member(
+    assert EffectStep.declares_source_member(
         class_name="ExternalNamedStep",
         declared_base_names=(),
     )
-    assert not effect_step_class_family_authority.declares_member(
+    assert not EffectStep.declares_source_member(
         class_name="ProjectionPolicy",
         declared_base_names=("ABC",),
     )

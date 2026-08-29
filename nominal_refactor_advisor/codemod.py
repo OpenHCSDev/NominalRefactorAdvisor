@@ -116,11 +116,8 @@ from .semantic_descent import (
     semantic_descent_finding_projection_id,
 )
 from .semantic_match import (
-    FirstSuccessfulEffectStep,
     Maybe,
-    RegisteredEffectStep,
     as_ast,
-    registered_effect_steps,
     single_item,
 )
 from .source_index import (
@@ -26886,367 +26883,6 @@ class FunctionParameterProjection:
         )
 
 
-@dataclass(frozen=True)
-class LocalRoleCaseExtractionRequest:
-    """Input bundle for registered role-case extraction strategies."""
-
-    builder: "LocalRoleCaseLogicMappingRecipeBuilder"
-    source_path: str
-    node: ast.FunctionDef
-
-
-class LocalRoleCaseExtractionStrategy(RegisteredEffectStep, ABC):
-    """Registered matcher for one local role-case extraction shape."""
-
-    __registry__: ClassVar[dict[str, type["LocalRoleCaseExtractionStrategy"]]] = {}
-
-    def apply(
-        self,
-        value: LocalRoleCaseExtractionRequest,
-    ) -> LocalRoleCaseExtraction | None:
-        return self.extraction(
-            value.builder,
-            value.source_path,
-            value.node,
-        )
-
-    @abstractmethod
-    def extraction(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-    ) -> LocalRoleCaseExtraction | None:
-        raise NotImplementedError
-
-
-class LocalRoleCaseBodyExtractionStrategy(LocalRoleCaseExtractionStrategy, ABC):
-    """Template method for strategies that first match the semantic body."""
-
-    exact_body_length: ClassVar[int | None] = None
-    minimum_body_length: ClassVar[int] = 0
-
-    def extraction(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-    ) -> LocalRoleCaseExtraction | None:
-        return (
-            Maybe.of(builder.semantic_body(node))
-            .filter(self.accepts_body)
-            .project(
-                lambda body: self.extraction_from_body(
-                    builder,
-                    source_path,
-                    node,
-                    body,
-                )
-            )
-            .unwrap_or_none()
-        )
-
-    def accepts_body(self, body: tuple[ast.stmt, ...]) -> bool:
-        if self.exact_body_length is not None:
-            return len(body) == self.exact_body_length
-        return len(body) >= self.minimum_body_length
-
-    @abstractmethod
-    def extraction_from_body(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-        body: tuple[ast.stmt, ...],
-    ) -> LocalRoleCaseExtraction | None:
-        raise NotImplementedError
-
-
-class LocalRoleCaseMappingExtractionStrategy(LocalRoleCaseBodyExtractionStrategy):
-    """Extract a local string-keyed mapping lookup into an authority."""
-
-    step_id = "mapping"
-    registration_order = 10
-    exact_body_length = 2
-
-    def extraction_from_body(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-        body: tuple[ast.stmt, ...],
-    ) -> LocalRoleCaseAuthorityExtraction | None:
-        assignment, return_statement = body
-        returned = as_ast(return_statement, ast.Return)
-        mapping_name, items = builder.mapping_assignment_items(source_path, assignment)
-        lookup = AxisIndexedMappingLookupProjection.axis_name(
-            returned.value if returned is not None else None,
-            mapping_name or "",
-        )
-        return (
-            Maybe.of(mapping_name)
-            .filter(lambda _mapping_name: bool(items))
-            .combine(
-                lambda _mapping_name: lookup, lambda name, axis_name: (name, axis_name)
-            )
-            .filter(lambda row: row[1] in FunctionParameterProjection.all_names(node))
-            .map(
-                lambda row: LocalRoleCaseAuthorityExtraction(
-                    mapping_name=row[0],
-                    axis_name=row[1],
-                    items=items,
-                    owner_function_name=node.name,
-                )
-            )
-            .unwrap_or_none()
-        )
-
-
-class LocalRoleCaseBranchExtractionStrategy(LocalRoleCaseBodyExtractionStrategy):
-    """Extract ordered literal-return branches into a role-case authority."""
-
-    step_id = "branch"
-    registration_order = 20
-    minimum_body_length = 2
-
-    def extraction_from_body(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-        body: tuple[ast.stmt, ...],
-    ) -> LocalRoleCaseBranchAuthorityExtraction | None:
-        return (
-            Maybe.of(builder.suffix_branch_slice(body))
-            .project(
-                lambda branch_slice: self.extraction_from_slice(
-                    builder, source_path, node, body, branch_slice
-                )
-            )
-            .unwrap_or_none()
-        )
-
-    def extraction_from_slice(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-        body: tuple[ast.stmt, ...],
-        branch_slice: tuple[int, int],
-    ) -> LocalRoleCaseBranchAuthorityExtraction | None:
-        branch_start, branch_stop = branch_slice
-        source_segments = builder.source_segments_for(source_path)
-        branch_statements = body[branch_start:branch_stop]
-        default_statement = as_ast(body[branch_stop], ast.Return)
-        parameter_name = single_item(FunctionParameterProjection.public_names(node))
-        prelude_source = builder.prelude_source(source_segments, body[:branch_start])
-        default_source = builder.node_source(
-            source_segments,
-            default_statement.value if default_statement is not None else None,
-        )
-        items = self.branch_items(
-            builder, source_segments, branch_statements, parameter_name
-        )
-        return (
-            Maybe.of((parameter_name, prelude_source, default_source, items))
-            .filter(
-                lambda row: row[0] is not None
-                and row[1] is not None
-                and row[2] is not None
-            )
-            .filter(lambda row: bool(row[3]))
-            .filter(lambda row: builder.branch_items_cover_finding(row[3]))
-            .map(
-                lambda row: LocalRoleCaseBranchAuthorityExtraction(
-                    items=row[3],
-                    default_source=row[2],
-                    owner_function_name=node.name,
-                    parameter_names=(row[0],),
-                    prelude_source=row[1],
-                )
-            )
-            .unwrap_or_none()
-        )
-
-    def branch_items(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_segments: SourceLineSegmentAuthority,
-        branch_statements: tuple[ast.stmt, ...],
-        parameter_name: str | None,
-    ) -> tuple[LocalRoleCaseBranchItem, ...]:
-        if parameter_name is None:
-            return ()
-        items: list[LocalRoleCaseBranchItem] = []
-        for statement in branch_statements:
-            if not isinstance(statement, ast.If) or statement.orelse:
-                return ()
-            if len(statement.body) != 1 or not isinstance(
-                statement.body[0], ast.Return
-            ):
-                return ()
-            result_source = builder.node_source(
-                source_segments, statement.body[0].value
-            )
-            if result_source is None:
-                return ()
-            condition_items = builder.branch_items_for_condition(
-                source_segments,
-                statement.test,
-                result_source,
-            )
-            if not condition_items:
-                return ()
-            if any(item.axis_name != parameter_name for item in condition_items):
-                return ()
-            items.extend(condition_items)
-        return tuple(items)
-
-
-class LocalRoleCaseAssignmentExtractionStrategy(LocalRoleCaseBodyExtractionStrategy):
-    """Extract branch-local assignments into a role-case authority."""
-
-    step_id = "assignment"
-    registration_order = 30
-    minimum_body_length = 3
-
-    def extraction_from_body(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-        body: tuple[ast.stmt, ...],
-    ) -> LocalRoleCaseAssignmentAuthorityExtraction | None:
-        branch_statement = as_ast(body[-2], ast.If)
-        source_segments = builder.source_segments_for(source_path)
-        prelude_source = builder.prelude_source(source_segments, body[:-2])
-        return_source = (
-            builder.statement_source(source_segments, body[-1])
-            if isinstance(body[-1], ast.Return)
-            else None
-        )
-        chain = (
-            builder.assignment_branch_chain(source_segments, branch_statement)
-            if branch_statement is not None
-            else None
-        )
-        return (
-            Maybe.of((prelude_source, return_source, chain))
-            .filter(
-                lambda row: row[0] is not None
-                and row[1] is not None
-                and row[2] is not None
-            )
-            .project(
-                lambda row: self.extraction_from_chain(
-                    builder, node, row[0], row[1], row[2]
-                )
-            )
-            .unwrap_or_none()
-        )
-
-    def extraction_from_chain(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        node: ast.FunctionDef,
-        prelude_source: str,
-        return_source: str,
-        chain: tuple[
-            tuple[LocalRoleCaseAssignmentItem, ...],
-            LocalRoleCaseAssignmentDefault,
-            tuple[str, ...],
-        ],
-    ) -> LocalRoleCaseAssignmentAuthorityExtraction | None:
-        items, default_item, assignment_names = chain
-        value_names = builder.assignment_value_names(
-            node,
-            builder.semantic_body(node)[:-2],
-            items,
-            default_item,
-        )
-        return (
-            Maybe.of(value_names)
-            .filter(bool)
-            .filter(lambda _value_names: builder.assignment_items_cover_finding(items))
-            .map(
-                lambda value_name_tuple: LocalRoleCaseAssignmentAuthorityExtraction(
-                    items=tuple(
-                        replace(item, value_names=value_name_tuple) for item in items
-                    ),
-                    default_item=replace(default_item, value_names=value_name_tuple),
-                    owner_function_name=node.name,
-                    assignment_names=assignment_names,
-                    value_names=value_name_tuple,
-                    return_source=return_source,
-                    prelude_source=prelude_source,
-                )
-            )
-            .unwrap_or_none()
-        )
-
-
-class LocalRoleCaseGuardExtractionStrategy(LocalRoleCaseExtractionStrategy):
-    """Extract guard-return windows into a role-case authority."""
-
-    step_id = "guard"
-    registration_order = 40
-
-    def extraction(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-    ) -> LocalRoleCaseGuardAuthorityExtraction | None:
-        body = builder.semantic_body(node)
-        return (
-            Maybe.of(LocalRoleGuardReturnWindow.from_body(body))
-            .project(
-                lambda window: self.extraction_from_window(
-                    builder, source_path, node, body, window
-                )
-            )
-            .unwrap_or_none()
-        )
-
-    def extraction_from_window(
-        self,
-        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
-        source_path: str,
-        node: ast.FunctionDef,
-        body: tuple[ast.stmt, ...],
-        window: LocalRoleGuardReturnWindow,
-    ) -> LocalRoleCaseGuardAuthorityExtraction | None:
-        source_segments = builder.source_segments_for(source_path)
-        prelude_statements = window.prelude_statements(body)
-        guard_statements = window.guard_statements(body)
-        tail_statements = window.tail_statements(body)
-        prelude_source = builder.prelude_source(source_segments, prelude_statements)
-        tail_source = builder.prelude_source(source_segments, tail_statements)
-        value_names = builder.guard_value_names(
-            source_segments,
-            node,
-            prelude_statements,
-            guard_statements,
-        )
-        items = builder.guard_items(source_segments, guard_statements, value_names)
-        return (
-            Maybe.of((prelude_source, tail_source, items))
-            .filter(lambda row: row[0] is not None and row[1] is not None)
-            .filter(lambda row: not builder.guard_delegate_names_conflict(body))
-            .filter(lambda row: len(row[2]) >= 2)
-            .map(
-                lambda row: LocalRoleCaseGuardAuthorityExtraction(
-                    items=row[2],
-                    owner_function_name=node.name,
-                    value_names=value_names,
-                    tail_source=row[1],
-                    prelude_source=row[0],
-                )
-            )
-            .unwrap_or_none()
-        )
-
-
 @dataclass(frozen=True, kw_only=True)
 class LocalRoleCaseLogicMappingRecipeBuilder(
     MappingSemanticMirrorRecipeBuilder,
@@ -27385,20 +27021,205 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
         source_path: str,
         node: ast.FunctionDef,
     ) -> LocalRoleCaseExtraction | None:
+        body = self.semantic_body(node)
+        if len(body) == 2:
+            return self.mapping_extraction(source_path, node, body)
+        if (
+            len(body) >= 3
+            and isinstance(body[-2], ast.If)
+            and body[-2].orelse
+            and isinstance(body[-1], ast.Return)
+        ):
+            return self.assignment_extraction(source_path, node, body)
+        branch_extraction = self.branch_extraction(source_path, node, body)
         return (
-            Maybe.of(
-                LocalRoleCaseExtractionRequest(
-                    builder=self,
-                    source_path=source_path,
-                    node=node,
+            branch_extraction
+            if branch_extraction is not None
+            else self.guard_extraction(source_path, node, body)
+        )
+
+    def mapping_extraction(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+    ) -> LocalRoleCaseAuthorityExtraction | None:
+        assignment, return_statement = body
+        returned = as_ast(return_statement, ast.Return)
+        mapping_name, items = self.mapping_assignment_items(source_path, assignment)
+        lookup = AxisIndexedMappingLookupProjection.axis_name(
+            returned.value if returned is not None else None,
+            mapping_name or "",
+        )
+        return (
+            Maybe.of(mapping_name)
+            .filter(lambda _mapping_name: bool(items))
+            .combine(
+                lambda _mapping_name: lookup,
+                lambda name, axis_name: (name, axis_name),
+            )
+            .filter(lambda row: row[1] in FunctionParameterProjection.all_names(node))
+            .map(
+                lambda row: LocalRoleCaseAuthorityExtraction(
+                    mapping_name=row[0],
+                    axis_name=row[1],
+                    items=items,
+                    owner_function_name=node.name,
                 )
             )
-            .project(
-                FirstSuccessfulEffectStep(
-                    registered_effect_steps(LocalRoleCaseExtractionStrategy)
-                ).apply
+            .unwrap_or_none()
+        )
+
+    def branch_extraction(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+    ) -> LocalRoleCaseBranchAuthorityExtraction | None:
+        branch_slice = self.suffix_branch_slice(body)
+        if branch_slice is None:
+            return None
+        branch_start, branch_stop = branch_slice
+        source_segments = self.source_segments_for(source_path)
+        branch_statements = body[branch_start:branch_stop]
+        default_statement = as_ast(body[branch_stop], ast.Return)
+        parameter_name = single_item(FunctionParameterProjection.public_names(node))
+        prelude_source = self.prelude_source(source_segments, body[:branch_start])
+        default_source = self.node_source(
+            source_segments,
+            default_statement.value if default_statement is not None else None,
+        )
+        items = self.branch_extraction_items(
+            source_segments,
+            branch_statements,
+            parameter_name,
+        )
+        return (
+            Maybe.of((parameter_name, prelude_source, default_source, items))
+            .filter(
+                lambda row: row[0] is not None
+                and row[1] is not None
+                and row[2] is not None
+            )
+            .filter(lambda row: bool(row[3]))
+            .filter(lambda row: self.branch_items_cover_finding(row[3]))
+            .map(
+                lambda row: LocalRoleCaseBranchAuthorityExtraction(
+                    items=row[3],
+                    default_source=row[2],
+                    owner_function_name=node.name,
+                    parameter_names=(row[0],),
+                    prelude_source=row[1],
+                )
             )
             .unwrap_or_none()
+        )
+
+    def branch_extraction_items(
+        self,
+        source_segments: SourceLineSegmentAuthority,
+        branch_statements: tuple[ast.stmt, ...],
+        parameter_name: str | None,
+    ) -> tuple[LocalRoleCaseBranchItem, ...]:
+        if parameter_name is None:
+            return ()
+        items: list[LocalRoleCaseBranchItem] = []
+        for statement in branch_statements:
+            if not isinstance(statement, ast.If) or statement.orelse:
+                return ()
+            if len(statement.body) != 1 or not isinstance(
+                statement.body[0], ast.Return
+            ):
+                return ()
+            result_source = self.node_source(
+                source_segments,
+                statement.body[0].value,
+            )
+            if result_source is None:
+                return ()
+            condition_items = self.branch_items_for_condition(
+                source_segments,
+                statement.test,
+                result_source,
+            )
+            if not condition_items:
+                return ()
+            if any(item.axis_name != parameter_name for item in condition_items):
+                return ()
+            items.extend(condition_items)
+        return tuple(items)
+
+    def assignment_extraction(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+    ) -> LocalRoleCaseAssignmentAuthorityExtraction | None:
+        branch_statement = as_ast(body[-2], ast.If)
+        source_segments = self.source_segments_for(source_path)
+        prelude_source = self.prelude_source(source_segments, body[:-2])
+        return_source = self.statement_source(source_segments, body[-1])
+        chain = (
+            self.assignment_branch_chain(source_segments, branch_statement)
+            if branch_statement is not None
+            else None
+        )
+        if prelude_source is None or return_source is None or chain is None:
+            return None
+        items, default_item, assignment_names = chain
+        value_names = self.assignment_value_names(
+            node,
+            body[:-2],
+            items,
+            default_item,
+        )
+        if not value_names or not self.assignment_items_cover_finding(items):
+            return None
+        return LocalRoleCaseAssignmentAuthorityExtraction(
+            items=tuple(replace(item, value_names=value_names) for item in items),
+            default_item=replace(default_item, value_names=value_names),
+            owner_function_name=node.name,
+            assignment_names=assignment_names,
+            value_names=value_names,
+            return_source=return_source,
+            prelude_source=prelude_source,
+        )
+
+    def guard_extraction(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+    ) -> LocalRoleCaseGuardAuthorityExtraction | None:
+        window = LocalRoleGuardReturnWindow.from_body(body)
+        if window is None:
+            return None
+        source_segments = self.source_segments_for(source_path)
+        prelude_statements = window.prelude_statements(body)
+        guard_statements = window.guard_statements(body)
+        tail_statements = window.tail_statements(body)
+        prelude_source = self.prelude_source(source_segments, prelude_statements)
+        tail_source = self.prelude_source(source_segments, tail_statements)
+        value_names = self.guard_value_names(
+            source_segments,
+            node,
+            prelude_statements,
+            guard_statements,
+        )
+        items = self.guard_items(source_segments, guard_statements, value_names)
+        if (
+            prelude_source is None
+            or tail_source is None
+            or self.guard_delegate_names_conflict(body)
+            or len(items) < 2
+        ):
+            return None
+        return LocalRoleCaseGuardAuthorityExtraction(
+            items=items,
+            owner_function_name=node.name,
+            value_names=value_names,
+            tail_source=tail_source,
+            prelude_source=prelude_source,
         )
 
     def source_segments_for(self, source_path: str) -> SourceLineSegmentAuthority:
