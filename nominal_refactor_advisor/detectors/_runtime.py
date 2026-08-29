@@ -85,7 +85,6 @@ from ._helpers import (
     _accessor_wrapper_groups,
     _autoregister_meta_rent_candidates,
     _projection_helper_groups,
-    _semantic_inheritance_family_ssot_candidates,
     _wrapper_chain_candidates_from_function_candidates,
 )
 
@@ -7436,9 +7435,7 @@ def _compact_semantic_inheritance_family_ssot_candidates(
 
 class SemanticInheritanceFamilySSOTDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[
-        SemanticInheritanceFamilySSOTCandidate
-    ],
+    CrossModuleCandidateDetector[SemanticInheritanceFamilySSOTCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
@@ -7453,7 +7450,16 @@ class SemanticInheritanceFamilySSOTDetector(
         _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
     detector_id = "semantic_inheritance_family_ssot"
-    candidate_collector = _semantic_inheritance_family_ssot_candidates
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> tuple[SemanticInheritanceFamilySSOTCandidate, ...]:
+        return _compact_semantic_inheritance_family_ssot_candidates(
+            type(self).compact_module_projections(modules),
+            config,
+        )
 
     def _findings_from_compact_projections(
         self,

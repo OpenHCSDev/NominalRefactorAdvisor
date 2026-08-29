@@ -5113,6 +5113,11 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
 def test_compact_semantic_inheritance_projection_matches_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
+    assert not hasattr(
+        helper_detectors,
+        "_semantic_inheritance_family_ssot_candidates",
+    )
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "family.py").write_text(
@@ -5137,13 +5142,19 @@ def test_compact_semantic_inheritance_projection_matches_legacy_ast_candidates(
         modules
     )
 
-    assert runtime_detectors._compact_semantic_inheritance_family_ssot_candidates(
+    candidates = runtime_detectors._compact_semantic_inheritance_family_ssot_candidates(
         projections,
         config,
-    ) == runtime_detectors._semantic_inheritance_family_ssot_candidates(
-        list(modules),
-        config,
     )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.class_name == "Exporter"
+    assert candidate.concrete_class_names == ("CsvExporter", "JsonExporter")
+    assert candidate.abstract_method_names == ("emit",)
+    assert candidate.semantic_method_names == ("emit",)
+    assert candidate.key_attr_names == ("format",)
+    assert candidate.suggested_key_attr_name == "format"
 
 
 def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
