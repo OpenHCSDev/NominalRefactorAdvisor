@@ -122,6 +122,8 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeAuthorityClaimGate,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
+    FindingRecipeSynthesisRecord,
+    FindingRecipeSynthesisStatus,
     FindingEvidenceTargetSelector,
     FindingRecipeEvaluation,
     InheritanceEdgeTargetSelector,
@@ -129,11 +131,13 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipe,
     RefactorRecipeTargetShape,
     RefactorRecipeOperation,
+    RefactorRecipeOperationCompiler,
     RefactorRecipeOperationTemplate,
     RecipeCallReplacement,
     SelectionCountExpectation,
     SourceRewriteTarget,
     SourceRewriteSimulationPayload,
+    SourceLineReplacement,
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
     apply_codemod_simulation,
@@ -3027,6 +3031,29 @@ def test_operation_compiler_coalesces_identical_line_replacements(
     assert "candidate_collector = staticmethod(_beta_candidates)" in rewritten
     assert rewritten.count("lambda item: (item.name,)") == 2
     assert "def _candidate_items(" not in rewritten
+
+
+def test_operation_compiler_rejects_conflicting_same_span_replacements() -> None:
+    replacements = (
+        SourceLineReplacement(
+            file_path="pkg/mod.py",
+            start_line=4,
+            end_line=4,
+            replacement_lines=("FIRST = 1\n",),
+        ),
+        SourceLineReplacement(
+            file_path="pkg/mod.py",
+            start_line=4,
+            end_line=4,
+            replacement_lines=("SECOND = 2\n",),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Conflicting replacements target the same source span pkg/mod.py:4-4",
+    ):
+        RefactorRecipeOperationCompiler._coalesced_replacements(replacements)
 
 
 def test_expose_global_candidate_cache_context_collapses_existing_candidate_method(
@@ -18547,6 +18574,36 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert recipe["recipe_id"] == "finding-class-codemod-plan"
     assert recipe["target_shape"] == "autoregister_class_registry"
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
+
+
+def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
+    claim = AuthorityClaim(
+        claimed_symbol="HandlerAuthority",
+        authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY.value,
+        file_path="pkg/handlers.py",
+        qualname="HandlerAuthority",
+        authority_id="handler-authority",
+    )
+    record = FindingRecipeSynthesisRecord(
+        finding_id="finding-id",
+        detector_id="manual_class_registration",
+        title="Manual registry mirrors a class family",
+        status=FindingRecipeSynthesisStatus.PLANNED,
+        scaffold="",
+        codemod_patch="",
+        summary="REGISTRY duplicates HandlerAuthority membership.",
+        capability_gap="derive the registry from HandlerAuthority",
+        evaluation=FindingRecipeEvaluation(
+            recipe=RefactorRecipe(
+                recipe_id="manual-registry-repair",
+                authority_claims=(claim,),
+            )
+        ),
+    )
+
+    document = FindingRecipeClassPlan.document_from_records((record,))
+
+    assert document.recipes[0].authority_claims == (claim,)
 
 
 def test_codemod_class_plan_groups_semantic_findings_by_authority(

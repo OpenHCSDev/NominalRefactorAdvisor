@@ -13977,7 +13977,10 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         )
         if insertion_replacement is not None:
             return insertion_replacement
-        return first
+        raise ValueError(
+            "Conflicting replacements target the same source span "
+            f"{first.file_path}:{first.start_line}-{first.end_line}"
+        )
 
     @staticmethod
     def _coalesced_content_insertion_replacement(
@@ -14202,6 +14205,37 @@ class RefactorRecipe:
     @classmethod
     def dsl_field_names(cls) -> tuple[str, ...]:
         return dataclass_payload_field_names(cls)
+
+    @classmethod
+    def compose(
+        cls,
+        recipes: Iterable["RefactorRecipe"],
+        *,
+        recipe_id: str,
+        reason: str,
+    ) -> "RefactorRecipe":
+        """Compose recipes while preserving every declared batch invariant."""
+
+        recipe_tuple = tuple(recipes)
+        if not recipe_tuple:
+            raise ValueError("At least one recipe is required for composition")
+        return cls(
+            recipe_id=recipe_id,
+            rewrites=tuple(
+                rewrite for recipe in recipe_tuple for rewrite in recipe.rewrites
+            ),
+            operations=tuple(
+                operation
+                for recipe in recipe_tuple
+                for operation in recipe.operations
+            ),
+            guard_suite=ArchitectureGuardSuite().merge(
+                *(recipe.guard_suite for recipe in recipe_tuple)
+            ),
+            reason=reason,
+            target_shape=cls.shared_target_shape(recipe_tuple),
+            authority_claims=cls.shared_authority_claims(recipe_tuple),
+        )
 
     @staticmethod
     def shared_target_shape(
@@ -16964,21 +16998,10 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             return CodemodPlanDocument()
         return CodemodPlanDocument(
             recipes=(
-                RefactorRecipe(
+                RefactorRecipe.compose(
+                    recipes,
                     recipe_id="finding-class-codemod-plan",
-                    rewrites=tuple(
-                        rewrite for recipe in recipes for rewrite in recipe.rewrites
-                    ),
-                    operations=tuple(
-                        operation
-                        for recipe in recipes
-                        for operation in recipe.operations
-                    ),
-                    guard_suite=ArchitectureGuardSuite().merge(
-                        *(recipe.guard_suite for recipe in recipes)
-                    ),
                     reason="Batch one graph-clustered smell class into one executable plan.",
-                    target_shape=RefactorRecipe.shared_target_shape(recipes),
                 ),
             )
         )
@@ -30445,20 +30468,10 @@ class FindingRecipePlanBuilder:
         if projected_recipe is not None:
             return (projected_recipe,)
         return (
-            RefactorRecipe(
+            RefactorRecipe.compose(
+                recipes,
                 recipe_id="finding-backed-codemod-plan",
-                rewrites=tuple(
-                    rewrite for recipe in recipes for rewrite in recipe.rewrites
-                ),
-                operations=tuple(
-                    operation for recipe in recipes for operation in recipe.operations
-                ),
-                authority_claims=RefactorRecipe.shared_authority_claims(recipes),
-                guard_suite=ArchitectureGuardSuite().merge(
-                    *(recipe.guard_suite for recipe in recipes)
-                ),
                 reason="Batch executable advisor findings into one source-merge pass.",
-                target_shape=RefactorRecipe.shared_target_shape(recipes),
             ),
         )
 
