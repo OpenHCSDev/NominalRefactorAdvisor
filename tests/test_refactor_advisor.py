@@ -11862,47 +11862,38 @@ def test_detects_runtime_product_record_schema(tmp_path: Path) -> None:
     assert all("dataclass" in (finding.codemod_patch or "") for finding in findings)
 
 
-def test_ignores_simple_property_alias_class_noise(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass LocalAliasMixin:\n    source_name: str\n\n    @property\n    def public_name(self) -> str:\n        return self.source_name\n",
+def test_disabled_simple_property_alias_detector_family_is_removed() -> None:
+    removed_candidate_names = (
+        "SimplePropertyAliasClassCandidate",
+        "SimplePropertyAliasMethodCandidate",
     )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "simple_property_alias_class"
-    ]
-    assert not findings
-
-
-def test_ignores_simple_property_alias_method_noise(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass LocalRecord:\n    source_name: str\n\n    def other_behavior(self):\n        return self.source_name.upper()\n\n    @property\n    def public_name(self) -> str:\n        return self.source_name\n",
+    removed_helper_names = (
+        "_PropertyMethodReturn",
+        "_SimplePropertyAliasPairStep",
+        "_ConcretePropertyMethodStep",
+        "_SinglePropertyReturnStep",
+        "_SelfAttributeReturnStep",
+        "_simple_property_alias_pair",
+        "_simple_property_alias_class_shape",
+        "_simple_property_alias_class_candidate",
+        "_simple_property_alias_class_candidates",
+        "_simple_property_alias_method_candidates",
     )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "simple_property_alias_method"
-    ]
-    assert not findings
+    detector_ids = {
+        detector_type.detector_id
+        for detector_type in default_detector_types_for_analysis()
+    }
 
-
-def test_ignores_enum_member_metadata_property_aliases(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom enum import Enum\n\nclass LocalEnum(Enum):\n    ITEM = ('item', True)\n\n    def __init__(self, label: str, enabled: bool) -> None:\n        self._value_ = label\n        self._enabled = enabled\n\n    @property\n    def enabled(self) -> bool:\n        return self._enabled\n",
+    assert all(
+        not hasattr(base_detectors, name) for name in removed_candidate_names
     )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id
-        in {"simple_property_alias_class", "simple_property_alias_method"}
-    ]
-    assert findings == []
+    assert all(
+        not hasattr(helper_detectors, name) for name in removed_helper_names
+    )
+    assert not {
+        "simple_property_alias_class",
+        "simple_property_alias_method",
+    } & detector_ids
 
 
 def test_detects_source_location_evidence_property(tmp_path: Path) -> None:

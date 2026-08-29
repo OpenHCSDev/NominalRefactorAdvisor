@@ -10737,6 +10737,16 @@ class _FunctionWrapperContext:
             ),
         )
 
+    @classmethod
+    def candidate_from_function(
+        cls,
+        module: ParsedModule,
+        qualname: str,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> FunctionWrapperCandidate | None:
+        context = cls.from_function(module, qualname, function)
+        return None if context is None else context.candidate()
+
     def candidate(self) -> FunctionWrapperCandidate | None:
         if len(self.body) == 1 and isinstance(self.body[0], ast.Return):
             delegate_call = as_ast(self.body[0].value, ast.Call)
@@ -10786,11 +10796,13 @@ def _function_wrapper_candidates(
     candidates = [
         candidate
         for qualname, function in _iter_named_functions(module)
-        for context in (
-            _FunctionWrapperContext.from_function(module, qualname, function),
+        for candidate in (
+            _FunctionWrapperContext.candidate_from_function(
+                module,
+                qualname,
+                function,
+            ),
         )
-        if context is not None
-        for candidate in (context.candidate(),)
         if candidate is not None
     ]
     return sorted_tuple(
@@ -13993,120 +14005,6 @@ def _has_semantic_forwarding_decorator(node: NamedFunctionNode) -> bool:
     )
 
 
-def _single_self_parameter_name(node: ast.FunctionDef) -> str | None:
-    if (
-        node.args.posonlyargs
-        or node.args.vararg is not None
-        or node.args.kwonlyargs
-        or (node.args.kwarg is not None)
-        or node.args.defaults
-    ):
-        return None
-    parameter = single_item(node.args.args)
-    return None if parameter is None else parameter.arg
-
-
-@dataclass(frozen=True)
-class _PropertyMethodReturn:
-    method_name: str
-    returned: ast.AST
-
-
-class _SimplePropertyAliasPairStep(RegisteredEffectStep):
-    pass
-
-
-class _ConcretePropertyMethodStep(
-    _SimplePropertyAliasPairStep,
-    GuardedEffectStep[ast.FunctionDef, ast.FunctionDef],
-):
-    step_id = "concrete_property_method"
-    registration_order = 10
-
-    def accepts(self, value: ast.FunctionDef) -> bool:
-        decorator_names = _decorator_terminal_names(value)
-        return (
-            "property" in decorator_names
-            and "abstractmethod" not in decorator_names
-            and (_single_self_parameter_name(value) == "self")
-        )
-
-    def project(self, value: ast.FunctionDef) -> ast.FunctionDef | None:
-        return value
-
-
-class _SinglePropertyReturnStep(
-    _SimplePropertyAliasPairStep,
-    GuardedEffectStep[ast.FunctionDef, _PropertyMethodReturn],
-):
-    step_id = "single_property_return"
-    registration_order = 20
-
-    def project(self, value: ast.FunctionDef) -> _PropertyMethodReturn | None:
-        returned = single_return_value(_trim_docstring_body(value.body))
-        if returned is None:
-            return None
-        return _PropertyMethodReturn(value.name, returned)
-
-
-class _SelfAttributeReturnStep(
-    _SimplePropertyAliasPairStep,
-    GuardedEffectStep[_PropertyMethodReturn, tuple[str, str]],
-):
-    step_id = "self_attribute_return"
-    registration_order = 30
-
-    def project(self, value: _PropertyMethodReturn) -> tuple[str, str] | None:
-        returned = as_ast(value.returned, ast.Attribute)
-        if returned is None or name_id(returned.value) != "self":
-            return None
-        return value.method_name, returned.attr
-
-
-def _simple_property_alias_pair(node: ast.FunctionDef) -> tuple[str, str] | None:
-    return cast(
-        tuple[str, str] | None,
-        Maybe.of(node)
-        .bind_all(registered_effect_steps(_SimplePropertyAliasPairStep))
-        .unwrap_or_none(),
-    )
-
-
-def _class_directly_inherits_enum(node: ast.ClassDef) -> bool:
-    return any(
-        base_name == "Enum" or base_name.endswith(".Enum")
-        for base_name in HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node)
-    )
-
-
-def _simple_property_alias_class_shape(
-    node: ast.ClassDef,
-) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]] | None:
-    if _class_directly_inherits_enum(node):
-        return None
-
-    alias_pairs: list[tuple[str, str]] = []
-    declared_field_names: list[str] = []
-    for statement in _trim_docstring_body(node.body):
-        if isinstance(statement, ast.Pass):
-            continue
-        if isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            declared_field_names.append(statement.target.id)
-            continue
-        if isinstance(statement, ast.FunctionDef):
-            alias_pair = _simple_property_alias_pair(statement)
-            if alias_pair is None:
-                return None
-            alias_pairs.append(alias_pair)
-            continue
-        return None
-    if not alias_pairs:
-        return None
-    return tuple(alias_pairs), tuple(declared_field_names)
-
-
 ClassShapeT = TypeVar("ClassShapeT")
 BuiltCandidateT = TypeVar("BuiltCandidateT")
 ClassShapeProjector = Callable[[ast.ClassDef], ClassShapeT | None]
@@ -14462,36 +14360,6 @@ class HelperSyntaxProjectionAuthority:
 
 
 HELPER_SYNTAX_PROJECTION_AUTHORITY = HelperSyntaxProjectionAuthority()
-
-
-def _simple_property_alias_class_candidate(
-    module: ParsedModule,
-    node: ast.ClassDef,
-    shape: tuple[tuple[tuple[str, str], ...], tuple[str, ...]],
-) -> SimplePropertyAliasClassCandidate:
-    alias_pairs, declared_field_names = shape
-    return SimplePropertyAliasClassCandidate(
-        file_path=str(module.path),
-        line=node.lineno,
-        class_name=node.name,
-        alias_pairs=alias_pairs,
-        declared_field_names=declared_field_names,
-        line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
-    )
-
-
-def _simple_property_alias_class_candidates(
-    module: ParsedModule,
-) -> tuple[SimplePropertyAliasClassCandidate, ...]:
-    del module
-    return ()
-
-
-def _simple_property_alias_method_candidates(
-    module: ParsedModule,
-) -> tuple[SimplePropertyAliasMethodCandidate, ...]:
-    del module
-    return ()
 
 
 def _self_attribute_name(node: ast.AST) -> str | None:

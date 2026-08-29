@@ -13540,19 +13540,6 @@ class AstStreamCollectorBoilerplateCandidate(FunctionLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class SimplePropertyAliasClassCandidate(ClassLineWitnessCandidate):
-    alias_pairs: tuple[tuple[str, str], ...]
-    declared_field_names: tuple[str, ...]
-    line_count: int
-
-
-@dataclass(frozen=True)
-class SimplePropertyAliasMethodCandidate(ClassMethodLineWitnessCandidate):
-    source_name: str
-    return_annotation: str | None
-
-
-@dataclass(frozen=True)
 class CollectionProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
     property_names: tuple[str, ...]
     line_numbers: tuple[int, ...]

@@ -78,6 +78,7 @@ from ._base import (
 )
 from ._helpers import *
 from ._helpers import (
+    _FunctionWrapperContext,
     _accessor_wrapper_groups,
     _autoregister_meta_rent_candidates,
     _projection_helper_groups,
@@ -14309,7 +14310,7 @@ def _native_wrapper_chains_and_composition_signals(
                     function_node,
                     wrapper_body,
                 )
-                wrapper = _function_wrapper_candidate(
+                wrapper = _FunctionWrapperContext.candidate_from_function(
                     module,
                     syntax_index.class_qualified_function_name(function_node),
                     wrapper_function,

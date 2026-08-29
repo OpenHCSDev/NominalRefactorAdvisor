@@ -7635,7 +7635,11 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     )
     assert len(partition.compact_global_detector_types) == 69
     assert len(partition.ast_retaining_context_detector_types) == 0
-    assert len(partition.per_module_detector_types) == 182
+    assert all(
+        detector_type.detector_id
+        not in {"simple_property_alias_class", "simple_property_alias_method"}
+        for detector_type in partition.per_module_detector_types
+    )
 
 
 def test_parse_cache_persists_semantic_source_hash(

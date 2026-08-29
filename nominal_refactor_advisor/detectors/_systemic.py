@@ -7755,55 +7755,6 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    SimplePropertyAliasClassCandidate,
-    high_confidence_certified_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Property alias class should use descriptor algebra",
-        "A class whose only concrete behavior is returning `self.<field>` from properties is a structural alias shell. The alias relation is the semantic object; repeated property methods re-declare descriptor mechanics instead of naming that relation directly.",
-        "typed alias-property descriptor derived from declared source and target names",
-        "class repeats property method bodies for direct field projection",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
-    ),
-    summary=lambda candidate: f"`{candidate.class_name}` defines {len(candidate.alias_pairs)} direct property alias(es) across {candidate.line_count} line(s): "
-    + ", ".join((f"{target} -> {source}" for target, source in candidate.alias_pairs)),
-    scaffold=lambda candidate: 'from nominal_refactor_advisor.descriptor_algebra import AliasProperty\n\nclass Shape:\n    target = AliasProperty[ValueType]("source")',
-    codemod_patch=lambda candidate: "# Replace direct `@property return self.<source>` alias methods with `AliasProperty[...]` descriptors so alias projection is one typed descriptor algebra.",
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=len(candidate.alias_pairs),
-        mapping_name=candidate.class_name,
-        field_names=tuple(
-            (f"{target}->{source}" for target, source in candidate.alias_pairs)
-        ),
-    ),
-    candidate_collector=_simple_property_alias_class_candidates,
-)
-
-
-declare_candidate_rule_detector(
-    SimplePropertyAliasMethodCandidate,
-    high_confidence_certified_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Direct property alias method should use descriptor algebra",
-        "A property method whose body is exactly `return self.<field>` is a descriptor relation, even when the surrounding class owns other behavior. Keeping that relation as a method repeats alias mechanics and hides the source-target projection from class declarations.",
-        "typed alias-property descriptor reused for direct field projection methods",
-        "property method repeats direct self-field alias mechanics",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
-    ),
-    summary=lambda candidate: f"`{candidate.class_name}.{candidate.method_name}` is a direct property alias to `{candidate.source_name}`.",
-    scaffold=lambda candidate: f"""from nominal_refactor_advisor.descriptor_algebra import AliasProperty\n\n{candidate.method_name} = AliasProperty[{candidate.return_annotation or 'ValueType'}]("{candidate.source_name}")""",
-    codemod_patch=lambda candidate: "# Replace the `@property return self.<source>` method with an `AliasProperty[...]` descriptor on the class body.",
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=1,
-        mapping_name=f"{candidate.class_name}.{candidate.method_name}",
-        field_names=(candidate.source_name,),
-    ),
-    candidate_collector=_simple_property_alias_method_candidates,
-)
-
-
-declare_candidate_rule_detector(
     SemanticTypeAliasCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
