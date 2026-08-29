@@ -5252,58 +5252,6 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
     assert "_findings_from_compact_context" not in type(detector).__dict__
 
 
-def test_compact_semantic_inheritance_projection_matches_legacy_ast_candidates(
-    tmp_path: Path,
-) -> None:
-    assert not hasattr(
-        helper_detectors,
-        "_semantic_inheritance_family_ssot_candidates",
-    )
-
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "family.py").write_text(
-        "from abc import ABC, abstractmethod\n"
-        "\n"
-        "class Exporter(ABC):\n"
-        "    @abstractmethod\n"
-        "    def emit(self, rows): ...\n"
-        "\n"
-        "class CsvExporter(Exporter):\n"
-        "    format = 'csv'\n"
-        "    def emit(self, rows): return rows\n"
-        "\n"
-        "class JsonExporter(Exporter):\n"
-        "    format = 'json'\n"
-        "    def emit(self, rows): return rows\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    projections = runtime_detectors.SemanticInheritanceFamilySSOTDetector.compact_module_projections(
-        modules
-    )
-
-    candidates = runtime_detectors._compact_semantic_inheritance_family_ssot_candidates(
-        projections,
-        config,
-    )
-
-    assert len(candidates) == 1
-    candidate = candidates[0]
-    assert candidate.class_name == "Exporter"
-    assert candidate.concrete_class_names == ("CsvExporter", "JsonExporter")
-    assert candidate.abstract_method_names == ("emit",)
-    assert candidate.semantic_method_names == ("emit",)
-    assert candidate.key_attr_names == ("format",)
-    assert candidate.suggested_key_attr_name == "format"
-    detector = runtime_detectors.SemanticInheritanceFamilySSOTDetector()
-    assert detector._candidate_items(list(modules), config) == candidates
-    assert "_candidate_items" not in type(detector).__dict__
-    assert "_findings_from_compact_projections" not in type(detector).__dict__
-    assert "_findings_from_compact_context" not in type(detector).__dict__
-
-
 def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
@@ -5612,7 +5560,6 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
         structural_detectors.ClassLevelInheritanceOptimizationDetector,
         runtime_detectors.ManualConcreteSubclassRosterDetector,
         runtime_detectors.LatentImplementationRosterDetector,
-        runtime_detectors.SemanticInheritanceFamilySSOTDetector,
         runtime_detectors.AutoRegisterMetaUnderRentedDetector,
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
         systemic_detectors.CrossModuleAxisShadowFamilyDetector,
@@ -6106,7 +6053,6 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
         runtime_detectors.PredicateSelectedConcreteFamilyDetector,
         runtime_detectors.ParallelMirroredLeafFamilyDetector,
         surface_detectors.ManualFamilyRosterDetector,
-        runtime_detectors.SemanticInheritanceFamilySSOTDetector,
         runtime_detectors.AutoRegisterMetaUnderRentedDetector,
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
     )
@@ -7978,9 +7924,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.ExactTypeGuardInheritanceRetreatDetector in (
         partition.compact_global_detector_types
     )
-    assert runtime_detectors.SemanticInheritanceFamilySSOTDetector in (
-        partition.compact_global_detector_types
-    )
     assert runtime_detectors.AutoRegisterMetaUnderRentedDetector in (
         partition.compact_global_detector_types
     )
@@ -8107,7 +8050,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 69
+    assert len(partition.compact_global_detector_types) == 68
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

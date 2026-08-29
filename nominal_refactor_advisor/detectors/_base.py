@@ -10762,14 +10762,6 @@ class InheritanceFamilyRentSurface(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class SemanticInheritanceFamilySSOTCandidate(InheritanceFamilyRentSurface):
-    semantic_method_names: tuple[str, ...]
-    key_attr_names: tuple[str, ...]
-    suggested_key_attr_name: str
-    line_count: int
-
-
-@dataclass(frozen=True)
 class AutoRegisterMetaRentCandidate(InheritanceFamilyRentSurface):
     dynamic_factory_symbols: tuple[str, ...]
     registry_key_attr_name: str | None

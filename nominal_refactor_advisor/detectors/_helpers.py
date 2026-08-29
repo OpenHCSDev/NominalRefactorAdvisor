@@ -1116,18 +1116,6 @@ class HelperSupportProjectionAuthority:
             else parameter_name
         )
 
-    def semantic_inheritance_membership_object_count(
-        self,
-        concrete_class_names: tuple[str, ...],
-        *,
-        semantic_method_names: tuple[str, ...],
-        abstract_method_names: tuple[str, ...],
-    ) -> int:
-        leaf_membership_objects = len(semantic_method_names) + 3
-        return len(concrete_class_names) * leaf_membership_objects + len(
-            abstract_method_names
-        )
-
     def shared_family_name(self, class_names: Sequence[str]) -> str | None:
         if not class_names:
             return None
@@ -3228,53 +3216,6 @@ def _looks_like_semantic_key_attr(name: str) -> bool:
             for suffix in _SEMANTIC_INHERITANCE_IDENTITY_ATTR_SUFFIXES
         )
     )
-
-
-def _semantic_inheritance_ssot_certificate(
-    candidate_base_name: str,
-    concrete_class_names: tuple[str, ...],
-    semantic_method_names: tuple[str, ...],
-    abstract_method_names: tuple[str, ...],
-    suggested_key_attr_name: str,
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=HELPER_SUPPORT_PROJECTION_AUTHORITY.semantic_inheritance_membership_object_count(
-            concrete_class_names,
-            semantic_method_names=semantic_method_names,
-            abstract_method_names=abstract_method_names,
-        ),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("autoregister_lineage_authority", "semantic_family_abc"),
-            per_axis_objects=("semantic_leaf_key",),
-        ),
-        semantic_axes=(
-            candidate_base_name,
-            suggested_key_attr_name,
-            *semantic_method_names,
-        ),
-        residual_object_count=len(concrete_class_names),
-        independent_source_count=len(concrete_class_names),
-    )
-
-
-def _semantic_inheritance_derived_projection_count(
-    *,
-    semantic_method_names: tuple[str, ...],
-    key_attr_names: tuple[str, ...],
-    abstract_method_names: tuple[str, ...],
-) -> int:
-    projections = 2
-    if key_attr_names:
-        projections += 1
-    if abstract_method_names:
-        projections += 1
-    if semantic_method_names:
-        projections += 1
-    return projections
-
-
-def _semantic_inheritance_rent_margin(certificate: CompressionCertificate) -> int:
-    return certificate.certified_description_length_savings
 
 
 def _is_dataclass_class(node: ast.ClassDef) -> bool:
