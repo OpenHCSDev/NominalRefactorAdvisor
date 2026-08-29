@@ -12791,13 +12791,18 @@ class EmptyLeafProductFamilyCandidate:
     evidence = ZippedSourceLocationEvidenceProperty("leaf_lines", "leaf_class_names")
 
 
+class FunctionWrapperKind(StrEnum):
+    DIRECT = "direct"
+    PROJECTION = "projection"
+
+
 @dataclass(frozen=True)
 class FunctionWrapperCandidate:
     file_path: str
     qualname: str
     lineno: int
     delegate_symbol: str
-    wrapper_kind: str
+    wrapper_kind: FunctionWrapperKind
     statement_count: int
     projected_attributes: tuple[str, ...] = ()
 

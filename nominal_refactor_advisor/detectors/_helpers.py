@@ -908,24 +908,6 @@ class HelperSupportProjectionAuthority:
         Visitor().visit(node)
         return roots
 
-    def function_wrapper_candidate_from_context(
-        self,
-        context: _FunctionWrapperContext,
-        *,
-        delegate_symbol: str,
-        wrapper_kind: str,
-        projected_attributes: tuple[str, ...] = (),
-    ) -> FunctionWrapperCandidate:
-        return FunctionWrapperCandidate(
-            file_path=str(context.module.path),
-            qualname=context.qualname,
-            lineno=context.function.lineno,
-            delegate_symbol=delegate_symbol,
-            wrapper_kind=wrapper_kind,
-            statement_count=len(context.body),
-            projected_attributes=projected_attributes,
-        )
-
     def detector_payoff_missing_guard_names(
         self, action_text: str, guard_text: str
     ) -> tuple[str, ...]:
@@ -10733,150 +10715,69 @@ class _FunctionWrapperContext:
     class_name: str | None
     allowed_roots: set[str]
 
-
-@dataclass(frozen=True)
-class _ProjectionDelegateContext:
-    projection: _ProjectionWrapperCall
-    delegate_symbol: str
-
-
-@dataclass(frozen=True)
-class _ProjectionWrapperCall:
-    bound_name: str
-    delegate_call: ast.Call
-    returned_value: ast.AST
-
-
-class _FunctionWrapperStep(RegisteredEffectStep):
-    pass
-
-
-class _DirectFunctionWrapperStep(
-    _FunctionWrapperStep,
-    GuardedEffectStep[_FunctionWrapperContext, FunctionWrapperCandidate],
-):
-    step_id = "direct_function_wrapper"
-    registration_order = 10
-
-    def project(
-        self, value: _FunctionWrapperContext
-    ) -> FunctionWrapperCandidate | None:
-        return (
-            Maybe.of(_single_returned_wrapper_call(value.body))
-            .project(
-                lambda returned_call: TRANSPORT_PROJECTION_AUTHORITY.transported_delegate_symbol(
-                    returned_call,
-                    class_name=value.class_name,
-                    allowed_roots=value.allowed_roots,
-                )
-            )
-            .map(
-                lambda delegate_symbol: HELPER_SUPPORT_PROJECTION_AUTHORITY.function_wrapper_candidate_from_context(
-                    value, delegate_symbol=delegate_symbol, wrapper_kind="direct"
-                )
-            )
-            .unwrap_or_none()
-        )
-
-
-class _ProjectionFunctionWrapperStep(
-    _FunctionWrapperStep,
-    GuardedEffectStep[_FunctionWrapperContext, FunctionWrapperCandidate],
-):
-    step_id = "projection_function_wrapper"
-    registration_order = 20
-
-    def project(
-        self, value: _FunctionWrapperContext
-    ) -> FunctionWrapperCandidate | None:
-        return (
-            Maybe.of(_projection_wrapper_call(value.body))
-            .combine(
-                lambda projection: TRANSPORT_PROJECTION_AUTHORITY.transported_delegate_symbol(
-                    projection.delegate_call,
-                    class_name=value.class_name,
-                    allowed_roots=value.allowed_roots,
-                ),
-                lambda projection, delegate_symbol: _ProjectionDelegateContext(
-                    projection=projection,
-                    delegate_symbol=delegate_symbol,
-                ),
-            )
-            .combine(
-                lambda context: _projected_attribute_names(
-                    context.projection.returned_value,
-                    bound_name=context.projection.bound_name,
-                ),
-                lambda context, projected_attributes: HELPER_SUPPORT_PROJECTION_AUTHORITY.function_wrapper_candidate_from_context(
-                    value,
-                    delegate_symbol=context.delegate_symbol,
-                    wrapper_kind="projection",
-                    projected_attributes=projected_attributes,
-                ),
-            )
-            .unwrap_or_none()
-        )
-
-
-def _function_wrapper_context(
-    module: ParsedModule,
-    qualname: str,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> _FunctionWrapperContext | None:
-    body = _trim_docstring_body(function.body)
-    if not body:
-        return None
-    return _FunctionWrapperContext(
-        module=module,
-        qualname=qualname,
-        function=function,
-        body=body,
-        class_name=qualname.rsplit(".", 1)[0] if "." in qualname else None,
-        allowed_roots=(
-            _FunctionSignatureView(function).parameter_names
-            | _IMPLICIT_METHOD_PARAMETER_NAMES
-        ),
-    )
-
-
-def _single_returned_wrapper_call(body: list[ast.stmt]) -> ast.Call | None:
-    returned = single_ast(body, ast.Return)
-    return as_ast(returned.value if returned else None, ast.Call)
-
-
-def _projection_wrapper_call(body: list[ast.stmt]) -> _ProjectionWrapperCall | None:
-    return (
-        Maybe.of(ast_sequence(body, ast.Assign, ast.Return))
-        .combine(
-            lambda statements: named_call_assignment(statements[0]),
-            lambda statements, assignment: (
-                _ProjectionWrapperCall(
-                    bound_name=assignment.target_name,
-                    delegate_call=assignment.call,
-                    returned_value=statements[1].value,
-                )
-                if statements[1].value is not None
-                else None
+    @classmethod
+    def from_function(
+        cls,
+        module: ParsedModule,
+        qualname: str,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "_FunctionWrapperContext | None":
+        body = _trim_docstring_body(function.body)
+        if not body:
+            return None
+        return cls(
+            module=module,
+            qualname=qualname,
+            function=function,
+            body=body,
+            class_name=qualname.rsplit(".", 1)[0] if "." in qualname else None,
+            allowed_roots=(
+                _FunctionSignatureView(function).parameter_names
+                | _IMPLICIT_METHOD_PARAMETER_NAMES
             ),
         )
-        .unwrap_or_none()
-    )
 
-
-def _function_wrapper_candidate(
-    module: ParsedModule,
-    qualname: str,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> FunctionWrapperCandidate | None:
-    context = _function_wrapper_context(module, qualname, function)
-    if context is None:
-        return None
-    return cast(
-        FunctionWrapperCandidate | None,
-        Maybe.of(context)
-        .bind(FirstSuccessfulEffectStep(registered_effect_steps(_FunctionWrapperStep)))
-        .unwrap_or_none(),
-    )
+    def candidate(self) -> FunctionWrapperCandidate | None:
+        if len(self.body) == 1 and isinstance(self.body[0], ast.Return):
+            delegate_call = as_ast(self.body[0].value, ast.Call)
+            projected_attributes: tuple[str, ...] = ()
+            wrapper_kind = FunctionWrapperKind.DIRECT
+        else:
+            statements = ast_sequence(self.body, ast.Assign, ast.Return)
+            if statements is None:
+                return None
+            assignment = named_call_assignment(statements[0])
+            returned_value = statements[1].value
+            if assignment is None or returned_value is None:
+                return None
+            delegate_call = assignment.call
+            projected_attributes = _projected_attribute_names(
+                returned_value,
+                bound_name=assignment.target_name,
+            )
+            if projected_attributes is None:
+                return None
+            wrapper_kind = FunctionWrapperKind.PROJECTION
+        if delegate_call is None:
+            return None
+        delegate_symbol = (
+            TRANSPORT_PROJECTION_AUTHORITY.transported_delegate_symbol(
+                delegate_call,
+                class_name=self.class_name,
+                allowed_roots=self.allowed_roots,
+            )
+        )
+        if delegate_symbol is None:
+            return None
+        return FunctionWrapperCandidate(
+            file_path=str(self.module.path),
+            qualname=self.qualname,
+            lineno=self.function.lineno,
+            delegate_symbol=delegate_symbol,
+            wrapper_kind=wrapper_kind,
+            statement_count=len(self.body),
+            projected_attributes=projected_attributes,
+        )
 
 
 def _function_wrapper_candidates(
@@ -10885,7 +10786,11 @@ def _function_wrapper_candidates(
     candidates = [
         candidate
         for qualname, function in _iter_named_functions(module)
-        for candidate in (_function_wrapper_candidate(module, qualname, function),)
+        for context in (
+            _FunctionWrapperContext.from_function(module, qualname, function),
+        )
+        if context is not None
+        for candidate in (context.candidate(),)
         if candidate is not None
     ]
     return sorted_tuple(
@@ -11222,7 +11127,6 @@ def _fail_soft_pipeline_family(
     if helper_names & {
         "_call_chain_transport_values",
         "transported_delegate_symbol",
-        "function_wrapper_candidate_from_context",
     }:
         return (
             "transport_projection_matcher",
