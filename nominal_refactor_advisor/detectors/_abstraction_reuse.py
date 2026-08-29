@@ -26,13 +26,12 @@ from ..semantic_identity import SemanticRoleIdentityToken
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     DetectorConfig,
-    IssueDetector,
     ParsedModule,
     RefactorFinding,
     SourceLocation,
     high_confidence_spec,
     CompactContextCandidateDetector,
-    CompactModuleProjectionDetectorMixin,
+    CompactProjectionCandidateDetector,
     compact_class_repository_context,
     require_compact_class_repository_context,
 )
@@ -1603,10 +1602,10 @@ def _compact_available_abstraction_reuse_candidates(
 
 
 class AvailableAbstractionReuseDetector(
-    CompactModuleProjectionDetectorMixin[
-        CompactAvailableAbstractionReuseModuleProjection
+    CompactProjectionCandidateDetector[
+        CompactAvailableAbstractionReuseModuleProjection,
+        AvailableAbstractionReuseCandidate,
     ],
-    IssueDetector,
 ):
     module_projection_family = CompactAvailableAbstractionReuseModuleProjectionFamily
     finding_spec = high_confidence_spec(
@@ -1623,15 +1622,13 @@ class AvailableAbstractionReuseDetector(
         (ObservationTag.NORMALIZED_AST, ObservationTag.METHOD_ROLE),
     )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactAvailableAbstractionReuseModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _compact_available_abstraction_reuse_candidates(projections),
-            config,
-        )
+    ) -> Sequence[AvailableAbstractionReuseCandidate]:
+        del config
+        return _compact_available_abstraction_reuse_candidates(projections)
 
     def _findings_for_candidates(
         self,

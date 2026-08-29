@@ -9073,61 +9073,6 @@ PUBLIC_BARE_SUPPORT_FUNCTION_FAMILY_AUTHORITY = (
 )
 
 
-def _public_bare_support_function_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[PublicBareSupportFunctionCandidate, ...]:
-    reference_sites = LOCAL_SYMBOL_REFERENCE_SITES.reference_sites(modules)
-    candidates: list[PublicBareSupportFunctionCandidate] = []
-    for module in modules:
-        module_path = str(module.path)
-        module_role = _private_module_role(module_path)
-        if module_role is None:
-            continue
-        functions = tuple(
-            (
-                statement
-                for statement in module.module.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and _is_public_bare_support_function_name(statement.name)
-            )
-        )
-        if not functions:
-            continue
-        functions_by_family: dict[tuple[str, str], list[ast.FunctionDef]] = defaultdict(
-            list
-        )
-        for function in functions:
-            functions_by_family[
-                PUBLIC_BARE_SUPPORT_FUNCTION_FAMILY_AUTHORITY.family(function.name)
-            ].append(function)
-        for (semantic_family, recommended_owner), family_functions in sorted(
-            functions_by_family.items()
-        ):
-            function_names = sorted_tuple(
-                (function.name for function in family_functions)
-            )
-            external_reference_count = sum(
-                (
-                    1
-                    for name in function_names
-                    for site in reference_sites.get(name, set())
-                    if site.file_path != module_path
-                )
-            )
-            candidates.append(
-                PublicBareSupportFunctionCandidate(
-                    file_path=module_path,
-                    line=min((function.lineno for function in family_functions)),
-                    function_names=function_names,
-                    module_role=module_role,
-                    semantic_family=semantic_family,
-                    recommended_owner=recommended_owner,
-                    external_reference_count=external_reference_count,
-                )
-            )
-    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line))
-
-
 _FACADE_ONLY_AUTHORITY_SUFFIXES = (
     "Authority",
     "Facade",
@@ -11768,29 +11713,6 @@ def _zipped_source_location_evidence_property_candidates(
     )
 
 
-def _top_level_helper_definitions(
-    module: ParsedModule,
-) -> tuple[tuple[str, int], ...]:
-    return tuple(
-        (
-            (node.name, node.lineno)
-            for node in module.module.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        )
-    )
-
-
-def _private_helper_shadow_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[PrivateHelperShadowCandidate, ...]:
-    return _private_helper_shadow_candidates_from_definition_facts(
-        tuple(
-            (str(module.path), _top_level_helper_definitions(module))
-            for module in modules
-        )
-    )
-
-
 def _private_helper_shadow_candidates_from_definition_facts(
     definitions_by_file: Sequence[tuple[str, tuple[tuple[str, int], ...]]],
 ) -> tuple[PrivateHelperShadowCandidate, ...]:
@@ -12644,58 +12566,6 @@ def _cli_argument_spec_fields(
         if field_names:
             specs.append((binding.name, binding.line, field_names))
     return tuple(specs)
-
-
-def _dataclass_namespace_cli_mirror_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[DataclassNamespaceCliMirrorCandidate, ...]:
-    cli_specs = tuple(
-        (
-            (module, spec_name, spec_line, field_names)
-            for module in modules
-            for spec_name, spec_line, field_names in _cli_argument_spec_fields(module)
-        )
-    )
-    candidates: list[DataclassNamespaceCliMirrorCandidate] = []
-    for module in modules:
-        for node in module.module.body:
-            if not isinstance(node, ast.ClassDef):
-                continue
-            dataclass_fields = _dataclass_config_field_names(node)
-            if not dataclass_fields:
-                continue
-            namespace_assignment = _from_namespace_keyword_names(node)
-            if namespace_assignment is None:
-                continue
-            from_namespace_line, namespace_fields = namespace_assignment
-            mirrored_fields = tuple(
-                (name for name in namespace_fields if name in dataclass_fields)
-            )
-            if len(mirrored_fields) < 4:
-                continue
-            for spec_module, spec_name, spec_line, cli_field_names in cli_specs:
-                mirrored_cli_fields = tuple(
-                    (name for name in cli_field_names if name in dataclass_fields)
-                )
-                shared_fields = tuple(
-                    (name for name in mirrored_fields if name in mirrored_cli_fields)
-                )
-                if len(shared_fields) < 4:
-                    continue
-                candidates.append(
-                    DataclassNamespaceCliMirrorCandidate(
-                        file_path=str(module.path),
-                        line=node.lineno,
-                        class_name=node.name,
-                        argument_spec_name=spec_name,
-                        field_names=mirrored_fields,
-                        cli_field_names=mirrored_cli_fields,
-                        from_namespace_line=from_namespace_line,
-                        argument_spec_file_path=str(spec_module.path),
-                        argument_spec_line=spec_line,
-                    )
-                )
-    return tuple(candidates)
 
 
 _SEMANTIC_TAG_KEYWORDS = frozenset({"capability_tags", "observation_tags"})

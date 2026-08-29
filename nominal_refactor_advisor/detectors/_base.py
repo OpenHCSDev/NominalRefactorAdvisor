@@ -1932,22 +1932,21 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
 CompactCandidateContextT = TypeVar("CompactCandidateContextT")
 
 
-class CompactContextCandidateDetector(
+class CompactProjectionCandidateDetector(
     CompactModuleProjectionDetectorMixin[CompactProjectionItemT],
     CrossModuleCandidateDetector[CandidateItemT],
-    Generic[CompactProjectionItemT, CompactCandidateContextT, CandidateItemT],
+    Generic[CompactProjectionItemT, CandidateItemT],
     ABC,
 ):
-    """Candidate detector with one typed context across direct and cached paths."""
+    """Candidate detector derived exclusively from one compact fact family."""
 
     def _candidate_items(
         self,
         modules: list[ParsedModule],
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
-        projections = type(self).compact_module_projections(modules)
-        return self._candidates_from_compact_context(
-            type(self)._compact_context_from_projections(projections, config),
+        return self._candidates_from_compact_projections(
+            type(self).compact_module_projections(modules),
             config,
         )
 
@@ -1957,10 +1956,33 @@ class CompactContextCandidateDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
-            self._candidates_from_compact_context(
-                type(self)._compact_context_from_projections(projections, config),
-                config,
-            ),
+            self._candidates_from_compact_projections(projections, config),
+            config,
+        )
+
+    @abstractmethod
+    def _candidates_from_compact_projections(
+        self,
+        projections: tuple[CompactProjectionItemT, ...],
+        config: DetectorConfig,
+    ) -> Sequence[CandidateItemT]:
+        raise NotImplementedError
+
+
+class CompactContextCandidateDetector(
+    CompactProjectionCandidateDetector[CompactProjectionItemT, CandidateItemT],
+    Generic[CompactProjectionItemT, CompactCandidateContextT, CandidateItemT],
+    ABC,
+):
+    """Candidate detector with one typed context across direct and cached paths."""
+
+    def _candidates_from_compact_projections(
+        self,
+        projections: tuple[CompactProjectionItemT, ...],
+        config: DetectorConfig,
+    ) -> Sequence[CandidateItemT]:
+        return self._candidates_from_compact_context(
+            type(self)._compact_context_from_projections(projections, config),
             config,
         )
 

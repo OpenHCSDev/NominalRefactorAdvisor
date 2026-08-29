@@ -6777,8 +6777,10 @@ def _public_bare_support_function_candidates_from_projections(
 
 
 class PublicBareSupportFunctionDetector(
-    CompactModuleProjectionDetectorMixin[PublicBareSupportModuleProjection],
-    CrossModuleCollectorCandidateDetector[PublicBareSupportFunctionCandidate],
+    CompactProjectionCandidateDetector[
+        PublicBareSupportModuleProjection,
+        PublicBareSupportFunctionCandidate,
+    ],
 ):
     module_projection_family = PublicBareSupportModuleProjectionFamily
     finding_spec = finding_spec_template(
@@ -6822,15 +6824,13 @@ class PublicBareSupportFunctionDetector(
             ),
         )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[PublicBareSupportModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _public_bare_support_function_candidates_from_projections(projections),
-            config,
-        )
+    ) -> Sequence[PublicBareSupportFunctionCandidate]:
+        del config
+        return _public_bare_support_function_candidates_from_projections(projections)
 
 
 declare_candidate_rule_detector(
@@ -7748,24 +7748,24 @@ declare_candidate_rule_detector(
 
 
 class CompactPrivateHelperShadowCandidateBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector[PrivateHelperShadowCandidate],
+    CompactProjectionCandidateDetector[
+        CompactModuleClassProjection,
+        PrivateHelperShadowCandidate,
+    ],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _private_helper_shadow_candidates_from_definition_facts(
-                tuple(
-                    (projection.file_path, projection.top_level_definitions)
-                    for projection in projections
-                )
-            ),
-            config,
+    ) -> Sequence[PrivateHelperShadowCandidate]:
+        del config
+        return _private_helper_shadow_candidates_from_definition_facts(
+            tuple(
+                (projection.file_path, projection.top_level_definitions)
+                for projection in projections
+            )
         )
 
 
@@ -7792,7 +7792,6 @@ declare_candidate_rule_detector(
     ),
     detector_base=CompactPrivateHelperShadowCandidateBase,
     detector_name="PrivateHelperShadowDetector",
-    candidate_collector=_private_helper_shadow_candidates,
 )
 
 
@@ -8177,20 +8176,22 @@ class DerivedMetricCountBoilerplateDetector(
 
 
 class CompactDataclassNamespaceCliMirrorCandidateBase(
-    CompactModuleProjectionDetectorMixin[_DataclassNamespaceCliModuleProjection],
-    CrossModuleCollectorCandidateDetector[DataclassNamespaceCliMirrorCandidate],
+    CompactProjectionCandidateDetector[
+        _DataclassNamespaceCliModuleProjection,
+        DataclassNamespaceCliMirrorCandidate,
+    ],
 ):
     module_projection_family = _DataclassNamespaceCliModuleProjectionFamily
     compact_report_context_requires_target_projection = True
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[_DataclassNamespaceCliModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _dataclass_namespace_cli_mirror_candidates_from_projections(projections),
-            config,
+    ) -> Sequence[DataclassNamespaceCliMirrorCandidate]:
+        del config
+        return _dataclass_namespace_cli_mirror_candidates_from_projections(
+            projections
         )
 
 
@@ -8228,7 +8229,6 @@ declare_candidate_rule_detector(
         source_name=candidate.argument_spec_name,
     ),
     detector_base=CompactDataclassNamespaceCliMirrorCandidateBase,
-    candidate_collector=_dataclass_namespace_cli_mirror_candidates,
 )
 
 

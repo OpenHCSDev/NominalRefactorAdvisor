@@ -4740,7 +4740,7 @@ def test_compact_private_reference_detectors_match_legacy_ast_candidates(
         ]
 
 
-def test_compact_public_support_projection_matches_legacy_reference_index(
+def test_compact_public_support_projection_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -4764,20 +4764,26 @@ def test_compact_public_support_projection_matches_legacy_reference_index(
     config = DetectorConfig()
     modules = parse_python_modules(package_root, use_parse_cache=False)
     detector = detector_type()
-    legacy_findings = detector._findings_for_candidates(
-        systemic_detectors._public_bare_support_function_candidates(modules),
-        config,
+    projections = type(detector).compact_module_projections(modules)
+    candidates = systemic_detectors._public_bare_support_function_candidates_from_projections(
+        projections
     )
+    assert len(candidates) == 1
+    assert candidates[0].function_names == ("enum_member_ref", "parameter_names")
+    assert candidates[0].external_reference_count == 1
+    assert detector._candidate_items(modules, config) == candidates
+    assert not hasattr(
+        systemic_detectors,
+        "_public_bare_support_function_candidates",
+    )
+    assert "candidate_collector" not in detector_type.__dict__
     projected_findings = accumulate_compact_global_projections_for_roots(
         (package_root,),
         (detector_type,),
         use_parse_cache=False,
     ).findings_by_detector(config)[detector_type]
 
-    assert [finding.to_dict() for finding in projected_findings] == [
-        finding.to_dict() for finding in legacy_findings
-    ]
-    projections = type(detector).compact_module_projections(modules)
+    assert projected_findings == detector._findings_for_candidates(candidates, config)
     target_path = package_root / "_helpers.py"
     report_scope = AnalysisPathScope(
         analysis_roots=(package_root,), report_roots=(target_path,)
@@ -5017,7 +5023,7 @@ def test_compact_keyed_axis_projection_matches_legacy_ast_candidates(
     ) == systemic_detectors._cross_module_axis_shadow_family_candidates(modules)
 
 
-def test_compact_top_level_definitions_match_private_helper_legacy_candidates(
+def test_compact_top_level_definitions_preserve_private_helper_shadow_semantics(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -5046,12 +5052,25 @@ def test_compact_top_level_definitions_match_private_helper_legacy_candidates(
         )
     )
 
-    assert compact_candidates == systemic_detectors._private_helper_shadow_candidates(
-        modules
+    assert len(compact_candidates) == 2
+    assert {
+        (candidate.private_name, candidate.public_name)
+        for candidate in compact_candidates
+    } == {("_Catalog", "Catalog"), ("_normalize", "normalize")}
+    assert (
+        systemic_detectors.PrivateHelperShadowDetector()._candidate_items(
+            modules,
+            DetectorConfig(),
+        )
+        == compact_candidates
+    )
+    assert not hasattr(systemic_detectors, "_private_helper_shadow_candidates")
+    assert "candidate_collector" not in (
+        systemic_detectors.PrivateHelperShadowDetector.__dict__
     )
 
 
-def test_compact_dataclass_cli_projection_matches_legacy_ast_candidates(
+def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -5090,11 +5109,28 @@ def test_compact_dataclass_cli_projection_matches_legacy_ast_candidates(
         modules
     )
 
-    assert (
+    candidates = (
         systemic_detectors._dataclass_namespace_cli_mirror_candidates_from_projections(
             projections
         )
-        == systemic_detectors._dataclass_namespace_cli_mirror_candidates(modules)
+    )
+    assert len(candidates) == 1
+    assert candidates[0].class_name == "RunConfig"
+    assert candidates[0].field_names == ("alpha", "beta", "gamma", "delta")
+    assert candidates[0].cli_field_names == ("alpha", "beta", "gamma", "delta")
+    assert (
+        systemic_detectors.DataclassNamespaceCliMirrorDetector()._candidate_items(
+            modules,
+            DetectorConfig(),
+        )
+        == candidates
+    )
+    assert not hasattr(
+        systemic_detectors,
+        "_dataclass_namespace_cli_mirror_candidates",
+    )
+    assert "candidate_collector" not in (
+        systemic_detectors.DataclassNamespaceCliMirrorDetector.__dict__
     )
 
 
