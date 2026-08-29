@@ -89,6 +89,40 @@ def test_semantic_authority_mirror_policy_registry_covers_authority_kinds() -> N
     )
 
 
+def test_semantic_authority_selection_is_one_mro_owned_fallback_chain() -> None:
+    provider_types = (
+        semantic_descent_module.SemanticAuthorityProvider,
+        semantic_descent_module.DataclassSemanticAuthorityProvider,
+        semantic_descent_module.ClassFamilySemanticAuthorityProvider,
+    )
+
+    assert semantic_descent_module.SemanticAuthorityProvider.__mro__[:3] == provider_types
+    assert not hasattr(
+        semantic_descent_module,
+        "CompactSemanticAuthorityBuilder",
+    )
+    assert all(
+        not hasattr(provider_type, "provider_order")
+        and not hasattr(provider_type, "__registry__")
+        for provider_type in provider_types
+    )
+    assert (
+        semantic_descent_module.SemanticAuthorityBuildContext.__abstractmethods__
+        == {
+            "aliases_for",
+            "supplement_for",
+        }
+    )
+    assert issubclass(
+        semantic_descent_module.AstSemanticAuthorityBuildContext,
+        semantic_descent_module.SemanticAuthorityBuildContext,
+    )
+    assert issubclass(
+        semantic_descent_module.CompactSemanticAuthorityBuildContext,
+        semantic_descent_module.SemanticAuthorityBuildContext,
+    )
+
+
 def test_fact_token_index_reuses_facts_in_deterministic_reference_order() -> None:
     later_fact = semantic_descent_module.SemanticFact(
         fact_id="beta:item",

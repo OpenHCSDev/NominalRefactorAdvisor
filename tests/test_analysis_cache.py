@@ -3404,6 +3404,17 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     assert child.method_names == ()
     assert actual[0].carrier_class_facts == ()
     assert dict(actual[0].import_aliases)["ImportedParent"] == "support.Parent"
+    assert class_index_module.CompactIndexedClass.__mro__[:3] == (
+        class_index_module.CompactIndexedClass,
+        class_index_module.CompactClassHeader,
+        class_index_module.ClassDeclaration,
+    )
+    assert class_index_module.CompactModuleClassProjection.__mro__[:2] == (
+        class_index_module.CompactModuleClassProjection,
+        class_index_module.CompactModuleClassHeader,
+    )
+    assert not hasattr(class_index_module, "_CLASS_HEADER_CORE_CLASS_DEFAULTS")
+    assert not hasattr(class_index_module, "_CLASS_HEADER_CORE_MODULE_DEFAULTS")
 
 
 def test_report_class_header_core_safety_is_detector_declared() -> None:
@@ -7234,9 +7245,8 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
             list(module.module.body)
         )
         if (
-            supplement := semantic_descent_module._compact_semantic_class_supplement(
-                module,
-                qualname,
+            supplement := semantic_descent_module._semantic_class_supplement(
+                f"{module.module_name}.{qualname}",
                 node,
             )
         )

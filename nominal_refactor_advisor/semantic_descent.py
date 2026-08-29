@@ -24,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from itertools import groupby
-from typing import ClassVar, TypeAlias
+from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 from .assignment_projection import SingleAssignmentAndValueNameProjection
@@ -47,6 +47,7 @@ from .cache_checkout import (
     rebase_checkout_path,
 )
 from .class_index import (
+    ClassDeclaration,
     ClassFamilyIndex,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -92,6 +93,10 @@ _CLASS_SUFFIXES = (
 _ENUM_BASE_NAMES = frozenset(("Enum", "IntEnum", "StrEnum"))
 
 SemanticClassFamilyIndex: TypeAlias = ClassFamilyIndex | CompactClassFamilyIndex
+IndexedClassDeclarationT = TypeVar(
+    "IndexedClassDeclarationT",
+    bound=ClassDeclaration,
+)
 
 
 class SemanticAuthorityKind(StrEnum):
@@ -603,6 +608,71 @@ class SemanticFact(SemanticFactReference):
             }
         )
 
+    @classmethod
+    def class_member(
+        cls,
+        authority_symbol: str,
+        indexed_class: ClassDeclaration,
+        aliases: Iterable[str],
+    ) -> "SemanticFact":
+        return cls(
+            fact_id=f"{authority_symbol}:{indexed_class.symbol}",
+            authority_id=authority_symbol,
+            kind=SemanticFactKind.CLASS_MEMBER,
+            name=indexed_class.simple_name,
+            aliases=sorted_tuple((indexed_class.simple_name, *aliases)),
+            location=SourceLocation(
+                indexed_class.file_path,
+                indexed_class.line,
+                indexed_class.qualname,
+            ),
+        )
+
+    @classmethod
+    def dataclass_field(
+        cls,
+        indexed_class: ClassDeclaration,
+        name: str,
+        line: int,
+    ) -> "SemanticFact":
+        return cls(
+            fact_id=f"{indexed_class.symbol}:{name}",
+            authority_id=indexed_class.symbol,
+            kind=SemanticFactKind.DATACLASS_FIELD,
+            name=name,
+            aliases=(name,),
+            location=SourceLocation(
+                indexed_class.file_path,
+                line,
+                f"{indexed_class.qualname}.{name}",
+            ),
+        )
+
+    @classmethod
+    def enum_member(
+        cls,
+        indexed_class: ClassDeclaration,
+        name: str,
+        line: int,
+        string_value: str | None,
+    ) -> "SemanticFact":
+        return cls(
+            fact_id=f"{indexed_class.symbol}:{name}",
+            authority_id=indexed_class.symbol,
+            kind=SemanticFactKind.ENUM_MEMBER,
+            name=name,
+            aliases=(
+                (name,)
+                if string_value is None
+                else sorted_tuple((name, string_value))
+            ),
+            location=SourceLocation(
+                indexed_class.file_path,
+                line,
+                f"{indexed_class.qualname}.{name}",
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class SemanticAuthority(SemanticAuthorityReference):
@@ -1031,14 +1101,15 @@ class PresentationProjection(SemanticProjectionReference):
 
 
 @dataclass(frozen=True)
-class CompactSemanticClassSupplement:
-    """AST-free class facts used only by semantic authority resolution."""
+class SemanticClassSupplement:
+    """AST-free class facts shared by every semantic authority source."""
 
     class_symbol: str
     constant_assignments: tuple[tuple[str, int, str | None], ...]
     annotated_fields: tuple[tuple[str, int], ...]
     declared_type_names: tuple[str, ...]
     constructed_type_names: tuple[str, ...]
+    is_dataclass: bool
     autoregister_authority_shape: bool
 
 
@@ -1049,7 +1120,7 @@ class CompactSemanticModuleProjection:
     module_name: str
     file_path: str
     projections: tuple[PresentationProjection, ...]
-    class_supplements: tuple[CompactSemanticClassSupplement, ...]
+    class_supplements: tuple[SemanticClassSupplement, ...]
 
 
 @dataclass(frozen=True)
@@ -2215,11 +2286,13 @@ class SemanticDescentGraphModuleOverlay:
 
     def graph(self) -> SemanticDescentGraph:
         class_index = self.merged_class_index()
-        authorities, facts = self.merged_authorities_and_facts(class_index)
+        authority_catalog = SemanticAuthorityBuilder.from_class_index(
+            class_index
+        ).build()
         projections = self.merged_projections(class_index)
         graph_space = SemanticDescentGraphSpace(
-            authorities,
-            facts,
+            authority_catalog.authorities,
+            authority_catalog.facts,
             projections,
         )
         resolution = self.merged_resolution(graph_space, class_index)
@@ -2228,15 +2301,6 @@ class SemanticDescentGraphModuleOverlay:
             resolution,
             class_index=class_index,
         )
-
-    def merged_authorities_and_facts(
-        self,
-        class_index: ClassFamilyIndex,
-    ) -> tuple[tuple[SemanticAuthority, ...], tuple[SemanticFact, ...]]:
-        return SemanticAuthorityBuilder(
-            self.changed_modules,
-            class_index,
-        ).build()
 
     def merged_resolution(
         self,
@@ -3388,20 +3452,19 @@ def _build_semantic_descent_graph_cached(
     scan_deadline_checkpoint("semantic_descent_class_index")
     class_index = build_class_family_index(list(modules))
     scan_deadline_checkpoint("semantic_descent_authorities")
-    authority_builder = SemanticAuthorityBuilder(tuple(modules), class_index)
-    authorities, facts = authority_builder.build()
+    authority_catalog = SemanticAuthorityBuilder.from_class_index(class_index).build()
     scan_deadline_checkpoint("semantic_descent_projections")
     projections = SemanticProjectionCollector(tuple(modules), class_index).collect()
     scan_deadline_checkpoint("semantic_descent_mirror_edges")
     resolution = SemanticMirrorResolver(
-        authorities,
-        facts,
+        authority_catalog.authorities,
+        authority_catalog.facts,
         projections,
         class_index,
     ).resolve()
     graph_space = SemanticDescentGraphSpace(
-        authorities,
-        facts,
+        authority_catalog.authorities,
+        authority_catalog.facts,
         projections,
     )
     scan_deadline_checkpoint("semantic_descent_certificates")
@@ -3413,25 +3476,63 @@ def _build_semantic_descent_graph_cached(
 
 
 @dataclass(frozen=True)
+class SemanticAuthorityInventory:
+    """Authorities and their facts as one construction result."""
+
+    authorities: tuple[SemanticAuthority, ...]
+    facts: tuple[SemanticFact, ...]
+
+
+@dataclass(frozen=True)
 class SemanticAuthorityBuilder:
-    """Build nominal authority and fact records from repo-level class data."""
+    """Build authorities once from source-form-independent declarations."""
 
-    modules: tuple[ParsedModule, ...]
-    class_index: ClassFamilyIndex
+    declarations: tuple["SemanticAuthorityDeclaration", ...]
 
-    def build(self) -> tuple[tuple[SemanticAuthority, ...], tuple[SemanticFact, ...]]:
+    @classmethod
+    def from_class_index(
+        cls,
+        class_index: ClassFamilyIndex,
+    ) -> "SemanticAuthorityBuilder":
+        context = AstSemanticAuthorityBuildContext(class_index)
+        return cls(
+            tuple(
+                context.declaration_for(indexed_class)
+                for indexed_class in sorted_tuple(
+                    class_index.classes_by_symbol.values(),
+                    key=lambda item: item.symbol,
+                )
+            )
+        )
+
+    @classmethod
+    def from_compact_class_index(
+        cls,
+        class_index: CompactClassFamilyIndex,
+        supplements_by_symbol: Mapping[str, SemanticClassSupplement],
+    ) -> "SemanticAuthorityBuilder":
+        context = CompactSemanticAuthorityBuildContext(
+            class_index,
+            supplements_by_symbol,
+        )
+        return cls(
+            tuple(
+                context.declaration_for(indexed_class)
+                for indexed_class in sorted_tuple(
+                    class_index.classes_by_symbol.values(),
+                    key=lambda item: item.symbol,
+                )
+            )
+        )
+
+    def build(self) -> SemanticAuthorityInventory:
         authorities: list[SemanticAuthority] = []
         facts: list[SemanticFact] = []
-        for indexed_class in sorted_tuple(
-            self.class_index.classes_by_symbol.values(),
-            key=lambda item: item.symbol,
-        ):
-            provider_result = SemanticAuthorityProvider.result_for_class(
-                indexed_class,
-                SemanticAuthorityBuildContext(self.class_index),
-            )
+        for declaration in self.declarations:
+            provider_result = SemanticAuthorityProvider().provide(declaration)
             if provider_result is None:
                 continue
+            indexed_class = declaration.indexed_class
             authorities.append(
                 SemanticAuthority(
                     authority_id=indexed_class.symbol,
@@ -3446,161 +3547,12 @@ class SemanticAuthorityBuilder:
                 )
             )
             facts.extend(provider_result.facts)
-        return (
-            sorted_tuple(authorities, key=lambda item: item.authority_id),
-            sorted_tuple(facts, key=lambda item: item.fact_id),
-        )
-
-
-@dataclass(frozen=True)
-class CompactSemanticAuthorityBuilder:
-    """Reconstruct semantic authorities from compact class facts."""
-
-    class_index: CompactClassFamilyIndex
-    supplements_by_symbol: Mapping[str, CompactSemanticClassSupplement]
-
-    def build(self) -> tuple[tuple[SemanticAuthority, ...], tuple[SemanticFact, ...]]:
-        authorities: list[SemanticAuthority] = []
-        facts: list[SemanticFact] = []
-        for indexed_class in sorted_tuple(
-            self.class_index.classes_by_symbol.values(),
-            key=lambda item: item.symbol,
-        ):
-            result = self._provider_result(indexed_class)
-            if result is None:
-                continue
-            authorities.append(
-                SemanticAuthority(
-                    authority_id=indexed_class.symbol,
-                    kind=result.kind,
-                    name=indexed_class.simple_name,
-                    location=SourceLocation(
-                        indexed_class.file_path,
-                        indexed_class.line,
-                        indexed_class.qualname,
-                    ),
-                    fact_ids=tuple(fact.fact_id for fact in result.facts),
-                )
-            )
-            facts.extend(result.facts)
-        return (
-            sorted_tuple(authorities, key=lambda item: item.authority_id),
-            sorted_tuple(facts, key=lambda item: item.fact_id),
-        )
-
-    def _provider_result(
-        self,
-        indexed_class: CompactIndexedClass,
-    ) -> SemanticAuthorityProviderResult | None:
-        supplement = self.supplements_by_symbol.get(indexed_class.symbol)
-        if any(
-            base_name.rsplit(".", 1)[-1] in _ENUM_BASE_NAMES
-            for base_name in indexed_class.declared_base_names
-        ):
-            enum_facts = self._enum_facts(indexed_class, supplement)
-            if enum_facts:
-                return SemanticAuthorityProviderResult(
-                    SemanticAuthorityKind.ENUM,
-                    enum_facts,
-                )
-        if indexed_class.is_dataclass:
-            dataclass_facts = self._dataclass_facts(indexed_class, supplement)
-            if dataclass_facts:
-                return SemanticAuthorityProviderResult(
-                    SemanticAuthorityKind.DATACLASS_SCHEMA,
-                    dataclass_facts,
-                )
-        descendants = self.class_index.descendant_symbols(indexed_class.symbol)
-        if len(descendants) < 2:
-            return None
-        family_facts = tuple(
-            self._class_member_fact(indexed_class.symbol, descendant)
-            for descendant_symbol in descendants
-            if (descendant := self.class_index.class_for(descendant_symbol)) is not None
-        )
-        if not family_facts:
-            return None
-        kind = (
-            SemanticAuthorityKind.AUTOREGISTER_FAMILY
-            if supplement is not None and supplement.autoregister_authority_shape
-            else SemanticAuthorityKind.CLASS_FAMILY
-        )
-        return SemanticAuthorityProviderResult(kind, family_facts)
-
-    @staticmethod
-    def _enum_facts(
-        indexed_class: CompactIndexedClass,
-        supplement: CompactSemanticClassSupplement | None,
-    ) -> tuple[SemanticFact, ...]:
-        if supplement is None:
-            return ()
-        facts = tuple(
-            SemanticFact(
-                fact_id=f"{indexed_class.symbol}:{name}",
-                authority_id=indexed_class.symbol,
-                kind=SemanticFactKind.ENUM_MEMBER,
-                name=name,
-                aliases=(
-                    (name,)
-                    if string_value is None
-                    else sorted_tuple((name, string_value))
-                ),
-                location=SourceLocation(
-                    indexed_class.file_path,
-                    line,
-                    f"{indexed_class.qualname}.{name}",
-                ),
-            )
-            for name, line, string_value in supplement.constant_assignments
-        )
-        return facts if len(facts) >= 2 else ()
-
-    @staticmethod
-    def _dataclass_facts(
-        indexed_class: CompactIndexedClass,
-        supplement: CompactSemanticClassSupplement | None,
-    ) -> tuple[SemanticFact, ...]:
-        if supplement is None:
-            return ()
-        facts = tuple(
-            SemanticFact(
-                fact_id=f"{indexed_class.symbol}:{name}",
-                authority_id=indexed_class.symbol,
-                kind=SemanticFactKind.DATACLASS_FIELD,
-                name=name,
-                aliases=(name,),
-                location=SourceLocation(
-                    indexed_class.file_path,
-                    line,
-                    f"{indexed_class.qualname}.{name}",
-                ),
-            )
-            for name, line in supplement.annotated_fields
-        )
-        return facts if len(facts) >= 2 else ()
-
-    @staticmethod
-    def _class_member_fact(
-        authority_symbol: str,
-        descendant: CompactIndexedClass,
-    ) -> SemanticFact:
-        semantic_string_aliases = tuple(
-            value
-            for name, value in descendant.direct_constant_string_assignments
-            if not name.startswith("__")
-            if PresentationTokenProjection.looks_like_semantic_literal(value)
-        )
-        return SemanticFact(
-            fact_id=f"{authority_symbol}:{descendant.symbol}",
-            authority_id=authority_symbol,
-            kind=SemanticFactKind.CLASS_MEMBER,
-            name=descendant.simple_name,
-            aliases=sorted_tuple((descendant.simple_name, *semantic_string_aliases)),
-            location=SourceLocation(
-                descendant.file_path,
-                descendant.line,
-                descendant.qualname,
+        return SemanticAuthorityInventory(
+            authorities=sorted_tuple(
+                authorities,
+                key=lambda item: item.authority_id,
             ),
+            facts=sorted_tuple(facts, key=lambda item: item.fact_id),
         )
 
 
@@ -3612,39 +3564,76 @@ class SemanticAuthorityProviderResult:
     facts: tuple[SemanticFact, ...]
 
 
+class SemanticAuthorityBuildContext(ABC, Generic[IndexedClassDeclarationT]):
+    """Project one indexed source form into shared authority declarations."""
+
+    class_index: SemanticClassFamilyIndex
+
+    def declaration_for(
+        self,
+        indexed_class: IndexedClassDeclarationT,
+    ) -> "SemanticAuthorityDeclaration":
+        return SemanticAuthorityDeclaration(
+            indexed_class=indexed_class,
+            supplement=self.supplement_for(indexed_class),
+            class_facts=self.class_facts_for(indexed_class.symbol),
+        )
+
+    def class_facts_for(
+        self,
+        authority_symbol: str,
+    ) -> tuple[SemanticFact, ...]:
+        descendant_symbols = self.class_index.descendant_symbols(authority_symbol)
+        if len(descendant_symbols) < 2:
+            return ()
+        return tuple(
+            SemanticFact.class_member(
+                authority_symbol,
+                descendant,
+                self.aliases_for(descendant),
+            )
+            for descendant_symbol in descendant_symbols
+            if (descendant := self.class_index.class_for(descendant_symbol)) is not None
+        )
+
+    @abstractmethod
+    def supplement_for(
+        self,
+        indexed_class: IndexedClassDeclarationT,
+    ) -> SemanticClassSupplement | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def aliases_for(
+        self,
+        indexed_class: IndexedClassDeclarationT,
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class SemanticAuthorityBuildContext:
-    """Shared construction authority for semantic authority providers."""
+class AstSemanticAuthorityBuildContext(
+    SemanticAuthorityBuildContext[IndexedClass]
+):
+    """Project AST-backed class declarations into provider input."""
 
     class_index: ClassFamilyIndex
 
-    def class_member_fact(
+    def supplement_for(
         self,
-        authority_symbol: str,
-        descendant_symbol: str,
-    ) -> SemanticFact:
-        descendant = self.class_index.classes_by_symbol[descendant_symbol]
-        aliases = (
-            descendant.simple_name,
-            *self._string_class_assignments(descendant.node),
-        )
-        return SemanticFact(
-            fact_id=f"{authority_symbol}:{descendant.symbol}",
-            authority_id=authority_symbol,
-            kind=SemanticFactKind.CLASS_MEMBER,
-            name=descendant.simple_name,
-            aliases=sorted_tuple(aliases),
-            location=SourceLocation(
-                descendant.file_path,
-                descendant.line,
-                descendant.qualname,
-            ),
+        indexed_class: IndexedClass,
+    ) -> SemanticClassSupplement | None:
+        return _semantic_class_supplement(
+            indexed_class.symbol,
+            indexed_class.node,
+            constructed_type_names=(),
         )
 
-    @staticmethod
-    def _string_class_assignments(node: ast.ClassDef) -> tuple[str, ...]:
+    def aliases_for(self, indexed_class: IndexedClass) -> tuple[str, ...]:
         values: list[str] = []
-        for name, value in AutoRegisterClassAuthority(node).assignment_pairs:
+        for name, value in AutoRegisterClassAuthority(
+            indexed_class.node
+        ).assignment_pairs:
             if name.startswith("__"):
                 continue
             if (
@@ -3656,183 +3645,117 @@ class SemanticAuthorityBuildContext:
         return sorted_tuple(values)
 
 
-class SemanticAuthorityProvider(ABC, metaclass=AutoRegisterMeta):
-    """Registered authority-kind provider for indexed class declarations."""
+@dataclass(frozen=True)
+class CompactSemanticAuthorityBuildContext(
+    SemanticAuthorityBuildContext[CompactIndexedClass]
+):
+    """Project compact class declarations into the same provider input."""
 
-    __registry__: ClassVar[dict[str, type["SemanticAuthorityProvider"]]] = {}
-    __registry_key__ = "provider_id"
-    __key_extractor__ = staticmethod(class_name_registry_key)
-    __skip_if_no_key__ = True
-    provider_order: ClassVar[int] = 100
+    class_index: CompactClassFamilyIndex
+    supplements_by_symbol: Mapping[str, SemanticClassSupplement]
 
-    @classmethod
-    def ordered_providers(cls) -> tuple["SemanticAuthorityProvider", ...]:
+    def supplement_for(
+        self,
+        indexed_class: CompactIndexedClass,
+    ) -> SemanticClassSupplement | None:
+        return self.supplements_by_symbol.get(indexed_class.symbol)
+
+    def aliases_for(
+        self,
+        indexed_class: CompactIndexedClass,
+    ) -> tuple[str, ...]:
         return tuple(
-            provider_type()
-            for provider_type in sorted(
-                cls.__registry__.values(),
-                key=lambda item: (item.provider_order, item.__name__),
-            )
+            value
+            for name, value in indexed_class.direct_constant_string_assignments
+            if not name.startswith("__")
+            if PresentationTokenProjection.looks_like_semantic_literal(value)
         )
 
-    @classmethod
-    def result_for_class(
-        cls,
-        indexed_class: IndexedClass,
-        context: SemanticAuthorityBuildContext,
-    ) -> SemanticAuthorityProviderResult | None:
-        for provider in cls.ordered_providers():
-            result = provider.provide(indexed_class, context)
-            if result is not None:
-                return result
-        return None
 
-    @abstractmethod
-    def provide(
-        self,
-        indexed_class: IndexedClass,
-        context: SemanticAuthorityBuildContext,
-    ) -> SemanticAuthorityProviderResult | None:
-        raise NotImplementedError
+@dataclass(frozen=True)
+class SemanticAuthorityDeclaration:
+    """One source-form-independent class declaration for authority selection."""
 
+    indexed_class: ClassDeclaration
+    supplement: SemanticClassSupplement | None
+    class_facts: tuple[SemanticFact, ...]
 
-class EnumSemanticAuthorityProvider(SemanticAuthorityProvider):
-    """Provide enum member authorities from enum subclasses."""
-
-    provider_order = 10
-
-    def provide(
-        self,
-        indexed_class: IndexedClass,
-        context: SemanticAuthorityBuildContext,
-    ) -> SemanticAuthorityProviderResult | None:
-        del context
-        if not self._is_enum(indexed_class):
-            return None
-        facts = self._enum_facts(indexed_class)
-        if not facts:
-            return None
-        return SemanticAuthorityProviderResult(SemanticAuthorityKind.ENUM, facts)
-
-    @staticmethod
-    def _is_enum(indexed_class: IndexedClass) -> bool:
+    @property
+    def is_enum(self) -> bool:
         return any(
             base_name.rsplit(".", 1)[-1] in _ENUM_BASE_NAMES
-            for base_name in indexed_class.declared_base_names
+            for base_name in self.indexed_class.declared_base_names
         )
 
-    @staticmethod
-    def _enum_facts(indexed_class: IndexedClass) -> tuple[SemanticFact, ...]:
-        facts: list[SemanticFact] = []
-        for name, value in AutoRegisterClassAuthority(
-            indexed_class.node
-        ).assignment_pairs:
-            if not isinstance(value, ast.Constant):
-                continue
-            aliases = (name,)
-            if isinstance(value.value, str):
-                aliases = (name, value.value)
-            facts.append(
-                SemanticFact(
-                    fact_id=f"{indexed_class.symbol}:{name}",
-                    authority_id=indexed_class.symbol,
-                    kind=SemanticFactKind.ENUM_MEMBER,
-                    name=name,
-                    aliases=sorted_tuple(aliases),
-                    location=SourceLocation(
-                        indexed_class.file_path,
-                        value.lineno,
-                        f"{indexed_class.qualname}.{name}",
-                    ),
-                )
-            )
-        return tuple(facts) if len(facts) >= 2 else ()
 
-
-class DataclassSemanticAuthorityProvider(SemanticAuthorityProvider):
-    """Provide dataclass field-schema authorities."""
-
-    provider_order = 20
+class ClassFamilySemanticAuthorityProvider:
+    """Terminal fallback for conventional and AutoRegister class families."""
 
     def provide(
         self,
-        indexed_class: IndexedClass,
-        context: SemanticAuthorityBuildContext,
+        declaration: SemanticAuthorityDeclaration,
     ) -> SemanticAuthorityProviderResult | None:
-        del context
-        if not self._is_dataclass(indexed_class.node):
+        if not declaration.class_facts:
             return None
-        facts = self._dataclass_facts(indexed_class)
-        if not facts:
-            return None
+        supplement = declaration.supplement
         return SemanticAuthorityProviderResult(
-            SemanticAuthorityKind.DATACLASS_SCHEMA,
-            facts,
+            (
+                SemanticAuthorityKind.AUTOREGISTER_FAMILY
+                if supplement is not None
+                and supplement.autoregister_authority_shape
+                else SemanticAuthorityKind.CLASS_FAMILY
+            ),
+            declaration.class_facts,
         )
 
-    @staticmethod
-    def _is_dataclass(node: ast.ClassDef) -> bool:
-        return any(
-            AttributeChainAuthority.decorator_terminal_name(decorator) == "dataclass"
-            for decorator in node.decorator_list
-        )
 
-    @staticmethod
-    def _dataclass_facts(indexed_class: IndexedClass) -> tuple[SemanticFact, ...]:
-        facts: list[SemanticFact] = []
-        for statement in indexed_class.node.body:
-            if not isinstance(statement, ast.AnnAssign):
-                continue
-            if not isinstance(statement.target, ast.Name):
-                continue
-            name = statement.target.id
-            facts.append(
-                SemanticFact(
-                    fact_id=f"{indexed_class.symbol}:{name}",
-                    authority_id=indexed_class.symbol,
-                    kind=SemanticFactKind.DATACLASS_FIELD,
-                    name=name,
-                    aliases=(name,),
-                    location=SourceLocation(
-                        indexed_class.file_path,
-                        statement.lineno,
-                        f"{indexed_class.qualname}.{name}",
-                    ),
-                )
-            )
-        return tuple(facts) if len(facts) >= 2 else ()
-
-
-class ClassFamilySemanticAuthorityProvider(SemanticAuthorityProvider):
-    """Provide conventional and AutoRegister class-family authorities."""
-
-    provider_order = 30
+class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
+    """Prefer dataclass field schemas, then continue to class-family facts."""
 
     def provide(
         self,
-        indexed_class: IndexedClass,
-        context: SemanticAuthorityBuildContext,
+        declaration: SemanticAuthorityDeclaration,
     ) -> SemanticAuthorityProviderResult | None:
-        descendants = context.class_index.descendant_symbols(indexed_class.symbol)
-        if len(descendants) < 2:
-            return None
-        facts = tuple(
-            context.class_member_fact(indexed_class.symbol, descendant_symbol)
-            for descendant_symbol in descendants
-            if context.class_index.class_for(descendant_symbol) is not None
-        )
-        if not facts:
-            return None
-        return SemanticAuthorityProviderResult(
-            self._authority_kind(indexed_class),
-            facts,
-        )
+        indexed_class = declaration.indexed_class
+        supplement = declaration.supplement
+        if supplement is not None and supplement.is_dataclass:
+            facts = tuple(
+                SemanticFact.dataclass_field(indexed_class, name, line)
+                for name, line in supplement.annotated_fields
+            )
+            if len(facts) >= 2:
+                return SemanticAuthorityProviderResult(
+                    SemanticAuthorityKind.DATACLASS_SCHEMA,
+                    facts,
+                )
+        return super().provide(declaration)
 
-    @staticmethod
-    def _authority_kind(indexed_class: IndexedClass) -> SemanticAuthorityKind:
-        if AutoRegisterClassAuthority(indexed_class.node).semantic_authority_shape:
-            return SemanticAuthorityKind.AUTOREGISTER_FAMILY
-        return SemanticAuthorityKind.CLASS_FAMILY
+
+class SemanticAuthorityProvider(DataclassSemanticAuthorityProvider):
+    """Complete MRO-owned authority selection: enum, dataclass, then family."""
+
+    def provide(
+        self,
+        declaration: SemanticAuthorityDeclaration,
+    ) -> SemanticAuthorityProviderResult | None:
+        indexed_class = declaration.indexed_class
+        supplement = declaration.supplement
+        if declaration.is_enum and supplement is not None:
+            facts = tuple(
+                SemanticFact.enum_member(
+                    indexed_class,
+                    name,
+                    line,
+                    string_value,
+                )
+                for name, line, string_value in supplement.constant_assignments
+            )
+            if len(facts) >= 2:
+                return SemanticAuthorityProviderResult(
+                    SemanticAuthorityKind.ENUM,
+                    facts,
+                )
+        return super().provide(declaration)
 
 
 @dataclass(frozen=True)
@@ -3878,14 +3801,17 @@ def _semantic_indexed_class_nodes(
     return tuple(classes)
 
 
-def _compact_semantic_class_supplement(
-    parsed_module: ParsedModule,
-    qualname: str,
+def _semantic_class_supplement(
+    class_symbol: str,
     node: ast.ClassDef,
     *,
     constructed_type_names: Iterable[str] | None = None,
-) -> CompactSemanticClassSupplement | None:
+) -> SemanticClassSupplement | None:
     authority = AutoRegisterClassAuthority(node)
+    is_dataclass = any(
+        AttributeChainAuthority.decorator_terminal_name(decorator) == "dataclass"
+        for decorator in node.decorator_list
+    )
     constant_assignments = tuple(
         (
             name,
@@ -3927,22 +3853,24 @@ def _compact_semantic_class_supplement(
         or annotated_fields
         or declared_type_names
         or collected_constructed_type_names
+        or is_dataclass
         or authority.semantic_authority_shape
     ):
         return None
-    return CompactSemanticClassSupplement(
-        class_symbol=f"{parsed_module.module_name}.{qualname}",
+    return SemanticClassSupplement(
+        class_symbol=class_symbol,
         constant_assignments=constant_assignments,
         annotated_fields=annotated_fields,
         declared_type_names=declared_type_names,
         constructed_type_names=sorted_tuple(collected_constructed_type_names),
+        is_dataclass=is_dataclass,
         autoregister_authority_shape=authority.semantic_authority_shape,
     )
 
 
 def _compact_semantic_class_supplements_from_syntax_index(
     parsed_module: ParsedModule,
-) -> tuple[CompactSemanticClassSupplement, ...]:
+) -> tuple[SemanticClassSupplement, ...]:
     """Derive context-only supplements from the shared module event index."""
 
     indexed_class_nodes = _semantic_indexed_class_nodes(list(parsed_module.module.body))
@@ -3981,9 +3909,8 @@ def _compact_semantic_class_supplements_from_syntax_index(
         supplement
         for qualname, class_node in indexed_class_nodes
         if (
-            supplement := _compact_semantic_class_supplement(
-                parsed_module,
-                qualname,
+            supplement := _semantic_class_supplement(
+                f"{parsed_module.module_name}.{qualname}",
                 class_node,
                 constructed_type_names=constructed_type_names_by_class_id.get(
                     id(class_node), ()
@@ -4162,7 +4089,7 @@ def build_compact_semantic_mirror_resolver(
         for projection in semantic_projections
         for supplement in projection.class_supplements
     )
-    authorities, facts = CompactSemanticAuthorityBuilder(
+    authority_catalog = SemanticAuthorityBuilder.from_compact_class_index(
         class_index,
         {supplement.class_symbol: supplement for supplement in supplements},
     ).build()
@@ -4172,8 +4099,8 @@ def build_compact_semantic_mirror_resolver(
         class_index,
     )
     return SemanticMirrorResolver(
-        authorities,
-        facts,
+        authority_catalog.authorities,
+        authority_catalog.facts,
         projections,
         class_index,
         supplements,
@@ -4262,10 +4189,10 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         self.owner_construction_stack: list[ProjectionOwnerConstructionFrame] = []
         self.class_supplement_stack: list[CompactSemanticClassSupplementFrame] = []
         self.active_class_method_frames: list[CompactSemanticClassSupplementFrame] = []
-        self._class_supplements: list[CompactSemanticClassSupplement | None] = []
+        self._class_supplements: list[SemanticClassSupplement | None] = []
 
     @property
-    def class_supplements(self) -> tuple[CompactSemanticClassSupplement, ...]:
+    def class_supplements(self) -> tuple[SemanticClassSupplement, ...]:
         return tuple(
             supplement
             for supplement in self._class_supplements
@@ -4296,9 +4223,8 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             if frame is not None:
                 self.class_supplement_stack.pop()
                 self._class_supplements[frame.supplement_index] = (
-                    _compact_semantic_class_supplement(
-                        self.parsed_module,
-                        frame.qualname,
+                    _semantic_class_supplement(
+                        f"{self.parsed_module.module_name}.{frame.qualname}",
                         node,
                         constructed_type_names=frame.constructed_type_names,
                     )
@@ -4803,7 +4729,7 @@ class ConstructionAuthorityResolver:
     authorities: tuple[SemanticAuthority, ...]
     projection_construction_type_names: frozenset[str] = frozenset()
     compact_class_supplements_by_symbol: Mapping[
-        str, CompactSemanticClassSupplement
+        str, SemanticClassSupplement
     ] = field(default_factory=dict)
 
     @cached_property
@@ -5530,7 +5456,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
     """Resolve graph edges where a projection mirrors an authority."""
 
     class_index: SemanticClassFamilyIndex
-    compact_class_supplements: tuple[CompactSemanticClassSupplement, ...] = ()
+    compact_class_supplements: tuple[SemanticClassSupplement, ...] = ()
 
     @cached_property
     def policy_catalog(self) -> SemanticMirrorPolicyCatalog:

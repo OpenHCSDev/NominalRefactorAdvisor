@@ -14,10 +14,11 @@ import pickle
 import re
 import zlib
 from collections import defaultdict
-from dataclasses import MISSING, dataclass, fields, replace
+from dataclasses import MISSING, dataclass, field, fields, replace
 from functools import cached_property, lru_cache
 from heapq import merge
 from pathlib import Path
+from typing import Self
 
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .ast_tools import (
@@ -35,16 +36,28 @@ from .native_syntax import NativePythonSyntaxIndex
 
 
 @dataclass(frozen=True)
-class IndexedClass:
+class ClassDeclaration:
+    """Source-form-independent identity shared by repository class indexes."""
+
     symbol: str
     module_name: str
     qualname: str
     simple_name: str
     file_path: str
     line: int
-    node: ast.ClassDef
     declared_base_names: tuple[str, ...]
-    resolved_base_symbols: tuple[str, ...]
+    resolved_base_symbols: tuple[str, ...] = field(default=(), kw_only=True)
+
+    def with_resolved_base_symbols(
+        self,
+        resolved_base_symbols: tuple[str, ...],
+    ) -> Self:
+        return replace(self, resolved_base_symbols=resolved_base_symbols)
+
+
+@dataclass(frozen=True)
+class IndexedClass(ClassDeclaration):
+    node: ast.ClassDef
 
     @property
     def is_final(self) -> bool:
@@ -82,13 +95,6 @@ class IndexedClass:
             resolved_base_symbols=(),
         )
 
-    def with_resolved_base_symbols(
-        self,
-        resolved_base_symbols: tuple[str, ...],
-    ) -> "IndexedClass":
-        return replace(self, resolved_base_symbols=resolved_base_symbols)
-
-
 @dataclass(frozen=True)
 class CompactClassValueConstruction:
     """One class-owned construction of a nominal value declaration."""
@@ -100,17 +106,17 @@ class CompactClassValueConstruction:
 
 
 @dataclass(frozen=True)
-class CompactIndexedClass:
+class CompactClassHeader(ClassDeclaration):
+    """Class-index surface sufficient for inheritance reconstruction."""
+
+    base_reference_parts: tuple[tuple[str, ...], ...]
+    is_final: bool = False
+
+
+@dataclass(frozen=True)
+class CompactIndexedClass(CompactClassHeader):
     """AST-free class declaration used to reconstruct inheritance globally."""
 
-    symbol: str
-    module_name: str
-    qualname: str
-    simple_name: str
-    file_path: str
-    line: int
-    declared_base_names: tuple[str, ...]
-    base_reference_parts: tuple[tuple[str, ...], ...]
     direct_assignment_expressions: tuple[tuple[str, str | None], ...] = ()
     direct_assignment_lines: tuple[tuple[str, int], ...] = ()
     direct_value_constructions: tuple[CompactClassValueConstruction, ...] = ()
@@ -118,7 +124,6 @@ class CompactIndexedClass:
     direct_non_none_assignment_names: tuple[str, ...] = ()
     metaclass_names: tuple[str, ...] = ()
     keyed_family_key_type_name: str | None = None
-    is_final: bool = False
     end_line: int | None = None
     method_names: tuple[str, ...] = ()
     abstract_method_names: tuple[str, ...] = ()
@@ -132,7 +137,6 @@ class CompactIndexedClass:
     keyed_registry_lookup_method_names: tuple[str, ...] = ()
     keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
     predicate_selected_methods: tuple[tuple[int, str, str, str], ...] = ()
-    resolved_base_symbols: tuple[str, ...] = ()
 
     @property
     def assignments_by_name(self) -> dict[str, str | None]:
@@ -144,13 +148,6 @@ class CompactIndexedClass:
         for name, line in self.direct_assignment_lines:
             lines.setdefault(name, line)
         return lines
-
-    def with_resolved_base_symbols(
-        self,
-        resolved_base_symbols: tuple[str, ...],
-    ) -> "CompactIndexedClass":
-        return replace(self, resolved_base_symbols=resolved_base_symbols)
-
 
 def has_complete_concrete_mro_composite(
     direct_child_symbols: tuple[str, ...],
@@ -174,13 +171,19 @@ def has_complete_concrete_mro_composite(
 
 
 @dataclass(frozen=True)
-class CompactModuleClassProjection:
-    """One module's class declarations and import aliases, without its AST."""
+class CompactModuleClassHeader:
+    """Module surface required to reconstruct its compact class index."""
 
     module_name: str
     file_path: str
     import_aliases: tuple[tuple[str, str], ...]
     classes: tuple[CompactIndexedClass, ...]
+
+
+@dataclass(frozen=True)
+class CompactModuleClassProjection(CompactModuleClassHeader):
+    """One module's class declarations and import aliases, without its AST."""
+
     sorted_key_calls: tuple["CompactSortedKeyCall", ...] = ()
     keyed_table_axes: tuple["CompactKeyedTableAxis", ...] = ()
     closed_axis_branch_functions: tuple["CompactClosedAxisBranchFunction", ...] = ()
@@ -209,6 +212,50 @@ class CompactModuleClassProjection:
     carrier_class_facts: tuple["CompactCarrierClassFact", ...] = ()
     carrier_base_edges: tuple[tuple[str, tuple[str, ...]], ...] = ()
     carrier_constructor_assignments: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def header_core(self) -> "CompactModuleClassProjection":
+        """Project only the class declarations required by the family index."""
+
+        return replace(
+            self,
+            classes=tuple(
+                replace(
+                    indexed_class,
+                    **self._default_values_outside(
+                        CompactIndexedClass,
+                        CompactClassHeader,
+                    ),
+                )
+                for indexed_class in self.classes
+            ),
+            **self._default_values_outside(
+                CompactModuleClassProjection,
+                CompactModuleClassHeader,
+            ),
+        )
+
+    @staticmethod
+    def _default_values_outside(
+        declaration_type: type,
+        preserved_type: type,
+    ) -> dict[str, object]:
+        preserved_names = frozenset(
+            dataclass_field.name for dataclass_field in fields(preserved_type)
+        )
+        values: dict[str, object] = {}
+        for dataclass_field in fields(declaration_type):
+            if dataclass_field.name in preserved_names:
+                continue
+            if dataclass_field.default is not MISSING:
+                values[dataclass_field.name] = dataclass_field.default
+            elif dataclass_field.default_factory is not MISSING:
+                values[dataclass_field.name] = dataclass_field.default_factory()
+            else:
+                raise TypeError(
+                    f"{declaration_type.__name__}.{dataclass_field.name} "
+                    "has no default"
+                )
+        return values
 
 
 @dataclass(frozen=True)
@@ -716,60 +763,7 @@ def _cached_class_demand_projection(
     )
     if not demand.header_core_only:
         return projected
-    return tuple(_class_header_core_projection(item) for item in projected)
-
-
-def _defaulted_dataclass_fields(
-    item_type: type,
-    preserved_names: frozenset[str],
-) -> dict[str, object]:
-    values: dict[str, object] = {}
-    for item in fields(item_type):
-        if item.name in preserved_names:
-            continue
-        if item.default is not MISSING:
-            values[item.name] = item.default
-        elif item.default_factory is not MISSING:
-            values[item.name] = item.default_factory()
-        else:
-            raise TypeError(f"{item_type.__name__}.{item.name} has no default")
-    return values
-
-
-_CLASS_HEADER_CORE_CLASS_DEFAULTS = _defaulted_dataclass_fields(
-    CompactIndexedClass,
-    frozenset(
-        {
-            "symbol",
-            "module_name",
-            "qualname",
-            "simple_name",
-            "file_path",
-            "line",
-            "declared_base_names",
-            "base_reference_parts",
-            "is_final",
-            "resolved_base_symbols",
-        }
-    ),
-)
-_CLASS_HEADER_CORE_MODULE_DEFAULTS = _defaulted_dataclass_fields(
-    CompactModuleClassProjection,
-    frozenset({"module_name", "file_path", "import_aliases", "classes"}),
-)
-
-
-def _class_header_core_projection(
-    item: CompactModuleClassProjection,
-) -> CompactModuleClassProjection:
-    return replace(
-        item,
-        classes=tuple(
-            replace(indexed_class, **_CLASS_HEADER_CORE_CLASS_DEFAULTS)
-            for indexed_class in item.classes
-        ),
-        **_CLASS_HEADER_CORE_MODULE_DEFAULTS,
-    )
+    return tuple(item.header_core() for item in projected)
 
 
 def _native_definition_child(node: object, definition_type: str) -> object | None:
@@ -1005,20 +999,18 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         del cls
         indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
         return [
-            _class_header_core_projection(
-                CompactModuleClassProjection(
-                    module_name=parsed_module.module_name,
-                    file_path=str(parsed_module.path),
-                    import_aliases=tuple(
-                        sorted(_module_import_aliases(parsed_module).items())
-                    ),
-                    classes=_compact_indexed_classes(
-                        parsed_module,
-                        indexed_class_nodes,
-                        include_body_facets=False,
-                    ),
-                )
-            )
+            CompactModuleClassProjection(
+                module_name=parsed_module.module_name,
+                file_path=str(parsed_module.path),
+                import_aliases=tuple(
+                    sorted(_module_import_aliases(parsed_module).items())
+                ),
+                classes=_compact_indexed_classes(
+                    parsed_module,
+                    indexed_class_nodes,
+                    include_body_facets=False,
+                ),
+            ).header_core()
         ]
 
     @classmethod
