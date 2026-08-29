@@ -214,6 +214,26 @@ def test_mapping_builder_identity_and_concept_are_registry_derived() -> None:
     )
 
 
+def test_registered_mapping_and_unpack_cases_publish_no_numeric_precedence() -> None:
+    mapping_declarations = (
+        codemod.MappingSemanticMirrorRecipeBuilder,
+        *EXPECTED_MAPPING_DECLARATIONS.values(),
+    )
+    unpack_declarations = (
+        codemod.TupleReturnUnpackValueMatcher,
+        *codemod.TupleReturnUnpackValueMatcher.__registry__.values(),
+    )
+
+    assert all(
+        not hasattr(declaration, "registration_order")
+        for declaration in mapping_declarations
+    )
+    assert all(
+        not hasattr(declaration, "registry_order")
+        for declaration in unpack_declarations
+    )
+
+
 def _repeated_builder_declaration_for_source(
     tmp_path: Path,
     source: str,

@@ -22787,7 +22787,6 @@ class MappingSemanticMirrorRecipeBuilder(
     __registry_key__ = "mapping_name"
     __skip_if_no_key__ = True
     mapping_name: ClassVar[str]
-    registration_order: ClassVar[int] = 100
 
     finding: RefactorFinding
 
@@ -22804,42 +22803,67 @@ class MappingSemanticMirrorRecipeBuilder(
         mapping_name = finding.metrics.plan_mapping_name
         if mapping_name is None:
             return None
-        for builder_type in cls.builder_types_for(mapping_name):
-            builder = builder_type(
-                source_index=context.source_index,
-                sources_by_file_path=context.sources_by_file_path,
-                class_family_index=context.class_family_index,
-                module_node_cache=context.module_nodes_by_file_path,
-                ast_target_node_cache=context.ast_target_nodes_by_id,
-                module_import_graph_cache=context.module_import_graph,
-                finding=finding,
+        builders = tuple(
+            builder
+            for builder_type in cls.builder_types()
+            if (builder := builder_type.from_context(finding, context)) is not None
+        )
+        exact_builder_type = cls.__registry__.get(mapping_name)
+        exact_builder = next(
+            (
+                builder
+                for builder in builders
+                if type(builder) is exact_builder_type and builder.supports_finding()
+            ),
+            None,
+        )
+        if exact_builder is not None:
+            return exact_builder
+        fallback_builders = tuple(
+            builder
+            for builder in builders
+            if type(builder) is not exact_builder_type and builder.supports_finding()
+        )
+        if len(fallback_builders) > 1:
+            raise ValueError(
+                "Mapping mirror finding matched multiple generic recipe "
+                "declarations: "
+                f"{tuple(type(builder).__name__ for builder in fallback_builders)!r}"
             )
-            if builder.supports_finding():
-                return builder
-        return None
+        return fallback_builders[0] if fallback_builders else None
 
     @classmethod
-    def builder_types_for(
+    def builder_types(
         cls,
-        mapping_name: str,
     ) -> tuple[type["MappingSemanticMirrorRecipeBuilder"], ...]:
-        exact_builder_type = cls.__registry__.get(mapping_name)
-        generic_builder_types = tuple(
-            builder_type
-            for registered_name, builder_type in cls.__registry__.items()
-            if registered_name != mapping_name
+        """Return the registered declarations in stable presentation order."""
+
+        return sorted_tuple(
+            cls.__registry__.values(),
+            key=lambda builder_type: builder_type.mapping_name,
         )
-        ordered_generic_types = sorted_tuple(
-            generic_builder_types,
-            key=lambda item: (item.registration_order, item.__name__),
-        )
-        if exact_builder_type is None:
-            return ordered_generic_types
-        return (exact_builder_type, *ordered_generic_types)
 
     @classmethod
     def registered_mapping_names(cls) -> frozenset[str]:
         return frozenset(cls.__registry__)
+
+    @classmethod
+    def from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> Self | None:
+        if context is None:
+            return None
+        return cls(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
+            module_node_cache=context.module_nodes_by_file_path,
+            ast_target_node_cache=context.ast_target_nodes_by_id,
+            module_import_graph_cache=context.module_import_graph,
+            finding=finding,
+        )
 
     @classmethod
     def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
@@ -22882,18 +22906,8 @@ class MappingSemanticMirrorRecipeBuilder(
             return ()
         return tuple(
             builder.rejection_reason()
-            for builder_type in cls.builder_types_for(mapping_name)
-            for builder in (
-                builder_type(
-                    source_index=context.source_index,
-                    sources_by_file_path=context.sources_by_file_path,
-                    class_family_index=context.class_family_index,
-                    module_node_cache=context.module_nodes_by_file_path,
-                    ast_target_node_cache=context.ast_target_nodes_by_id,
-                    module_import_graph_cache=context.module_import_graph,
-                    finding=finding,
-                ),
-            )
+            for builder_type in cls.builder_types()
+            if (builder := builder_type.from_context(finding, context)) is not None
             if builder.explains_rejection()
         )
 
@@ -23132,15 +23146,17 @@ class TupleReturnUnpackValueMatcher(ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     registry_key_suffix: ClassVar[str] = "Matcher"
-    registry_order: ClassVar[int] = 100
 
     @classmethod
-    def ordered_matchers(cls) -> tuple[type["TupleReturnUnpackValueMatcher"], ...]:
-        return tuple(
-            sorted(
-                cls.__registry__.values(),
-                key=lambda matcher: (matcher.registry_order, matcher.__name__),
-            )
+    def matches_any(
+        cls,
+        value: ast.expr,
+        producer_leaf_name: str,
+        bindings: TupleReturnProducerLocalBindings,
+    ) -> bool:
+        return any(
+            matcher.matches(value, producer_leaf_name, bindings)
+            for matcher in cls.__registry__.values()
         )
 
     @classmethod
@@ -23155,8 +23171,6 @@ class TupleReturnUnpackValueMatcher(ABC, metaclass=AutoRegisterMeta):
 
 
 class DirectTupleReturnCallMatcher(TupleReturnUnpackValueMatcher):
-    registry_order = 10
-
     @classmethod
     def matches(
         cls,
@@ -23171,8 +23185,6 @@ class DirectTupleReturnCallMatcher(TupleReturnUnpackValueMatcher):
 
 
 class TupleReturnAliasMatcher(TupleReturnUnpackValueMatcher):
-    registry_order = 20
-
     @classmethod
     def matches(
         cls,
@@ -23184,8 +23196,6 @@ class TupleReturnAliasMatcher(TupleReturnUnpackValueMatcher):
 
 
 class TupleReturnCollectionItemMatcher(TupleReturnUnpackValueMatcher):
-    registry_order = 30
-
     @classmethod
     def matches(
         cls,
@@ -23539,9 +23549,10 @@ class TupleReturnProjectionTargetAuthority:
         producer_leaf_name: str,
         bindings: TupleReturnProducerLocalBindings,
     ) -> bool:
-        return any(
-            matcher.matches(value, producer_leaf_name, bindings)
-            for matcher in TupleReturnUnpackValueMatcher.ordered_matchers()
+        return TupleReturnUnpackValueMatcher.matches_any(
+            value,
+            producer_leaf_name,
+            bindings,
         )
 
     @classmethod
@@ -24064,7 +24075,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     """Derive return-dict payload keys from the mirrored dataclass authority."""
 
     mapping_name: ClassVar[str] = "dataclass_payload_projection"
-    registration_order: ClassVar[int] = 1000
     payload_method_name: ClassVar[str] = "payload_from_field_values"
 
     finding: RefactorFinding
@@ -24311,7 +24321,6 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
     """Derive returned ``("field", value)`` items from a dataclass authority."""
 
     mapping_name: ClassVar[str] = "dataclass_key_value_sequence_projection"
-    registration_order: ClassVar[int] = 1001
     payload_method_name: ClassVar[str] = "payload_items_from_field_values"
 
     finding: RefactorFinding
@@ -24573,7 +24582,6 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
     """Nominalize formal source-scope return dictionaries as dataclass carriers."""
 
     mapping_name: ClassVar[str] = "formal_boundary_source_scope_return_dict"
-    registration_order: ClassVar[int] = 80
     context_mapping_prefix: ClassVar[str] = "formal_boundary_source_scope_"
 
     finding: RefactorFinding
@@ -24825,7 +24833,6 @@ class SemanticDictBagReturnRecordMappingRecipeBuilder(
     """Nominalize ordinary semantic return dictionaries as dataclass records."""
 
     mapping_name: ClassVar[str] = "semantic_dict_bag_return_dict_record"
-    registration_order: ClassVar[int] = 75
 
     finding: RefactorFinding
 
@@ -25100,7 +25107,6 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
     """Nominalize tuple returns and same-file unpack consumers."""
 
     mapping_name: ClassVar[str] = "semantic_tuple_return_record"
-    registration_order: ClassVar[int] = 76
 
     finding: RefactorFinding
 
@@ -25431,7 +25437,6 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
     """Derive constructor keyword mirrors through an existing dataclass method."""
 
     mapping_name: ClassVar[str] = "dataclass_constructor_projection"
-    registration_order: ClassVar[int] = 1010
     metrics_rejection_reason: ClassVar[str] = (
         "dataclass constructor projection requires mapping metrics"
     )
@@ -25703,7 +25708,6 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
     """Route loose call keyword mirrors through a dataclass context authority."""
 
     mapping_name: ClassVar[str] = "dataclass_context_call_projection"
-    registration_order: ClassVar[int] = 1005
     metrics_rejection_reason: ClassVar[str] = (
         "dataclass context call projection requires mapping metrics"
     )
