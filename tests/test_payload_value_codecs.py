@@ -10,17 +10,20 @@ from nominal_refactor_advisor.codemod import (
     BooleanPayloadValueCodec,
     CallReplacementArrayPayloadValueCodec,
     CodemodTargetSelector,
+    DefaultedStringPayloadValueCodec,
     IntegerPayloadValueCodec,
     MovedSymbolImportPolicy,
     NodeKindArrayPayloadValueCodec,
     ObjectPayloadValueCodec,
     OperationTemplateArrayPayloadValueCodec,
+    OptionalStringPayloadValueCodec,
     PayloadBindingSet,
     PayloadValueCodec,
     RecipeCallReplacement,
     RefactorRecipeOperation,
     RefactorRecipeOperationTemplate,
     RefactorRecipeOperationPlanTemplate,
+    RequiredStringPayloadValueCodec,
     ReplaceTextOperation,
     ReplacementImportPayloadValueCodec,
     SelectionCountExpectation,
@@ -29,7 +32,6 @@ from nominal_refactor_advisor.codemod import (
     SelectorObjectPayloadValueCodec,
     SourceIndexTargetSelector,
     StringArrayPayloadValueCodec,
-    StringPayloadValueCodec,
 )
 from nominal_refactor_advisor.semantic_descent import AuthorityClaim
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
@@ -92,7 +94,9 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
     selection_count = SelectionCountExpectation(minimum=1, maximum=3)
     replacement_import = MovedSymbolImportPolicy("from pkg.owner import AlphaAuthority")
     cases = (
-        (StringPayloadValueCodec(), "Alpha.run"),
+        (RequiredStringPayloadValueCodec(), "Alpha.run"),
+        (DefaultedStringPayloadValueCodec("default"), "Alpha.run"),
+        (OptionalStringPayloadValueCodec(), ""),
         (StringArrayPayloadValueCodec(), ("Alpha", "Beta")),
         (BooleanPayloadValueCodec(), True),
         (IntegerPayloadValueCodec(), 3),
@@ -141,7 +145,7 @@ def test_operation_plan_template_bindings_round_trip_the_complete_schema() -> No
 
 def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
     with pytest.raises(ValueError, match="non-empty string"):
-        StringPayloadValueCodec().read({}, "name")
+        RequiredStringPayloadValueCodec().read({}, "name")
     with pytest.raises(TypeError, match="required integer"):
         IntegerPayloadValueCodec(is_required=True).serialize(None)
     with pytest.raises(TypeError, match="MovedSymbolImportPolicy"):
@@ -159,3 +163,12 @@ def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
                 "recipe_label": "mirrored-name",
             }
         )
+
+
+def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:
+    assert DefaultedStringPayloadValueCodec("default").read({}, "name") == "default"
+    assert OptionalStringPayloadValueCodec().read({}, "name") is None
+    assert OptionalStringPayloadValueCodec("").read({}, "name") == ""
+
+    with pytest.raises(ValueError, match="non-empty string"):
+        DefaultedStringPayloadValueCodec("default").read({"name": ""}, "name")

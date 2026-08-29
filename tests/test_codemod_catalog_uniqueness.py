@@ -8,7 +8,7 @@ from nominal_refactor_advisor.codemod import (
     PayloadBindingSet,
     RefactorRecipeOperation,
     ReplaceRolePrefixedFieldsWithCarriersOperation,
-    StringPayloadValueCodec,
+    RequiredStringPayloadValueCodec,
 )
 
 
@@ -16,7 +16,7 @@ def _binding(field_name: str, constructor_argument_name: str) -> PayloadBinding:
     return PayloadBinding(
         field_name=field_name,
         constructor_argument_name=constructor_argument_name,
-        codec=StringPayloadValueCodec(),
+        codec=RequiredStringPayloadValueCodec(),
     )
 
 
@@ -49,8 +49,8 @@ def test_payload_binding_set_rejects_duplicates_across_composition() -> None:
 
 def test_payload_binding_set_derives_same_name_fields_from_keywords() -> None:
     binding_set = PayloadBindingSet.from_field_codecs(
-        source=StringPayloadValueCodec(),
-        destination=StringPayloadValueCodec(),
+        source=RequiredStringPayloadValueCodec(),
+        destination=RequiredStringPayloadValueCodec(),
     )
 
     assert tuple(
@@ -62,7 +62,7 @@ def test_payload_binding_set_derives_same_name_fields_from_keywords() -> None:
 def test_explicit_payload_fields_reject_redundant_same_name_schema() -> None:
     with pytest.raises(ValueError, match="must use from_field_codecs"):
         PayloadBindingSet.from_explicit_fields(
-            ("source", "source", StringPayloadValueCodec()),
+            ("source", "source", RequiredStringPayloadValueCodec()),
         )
 
 

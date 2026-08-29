@@ -1871,10 +1871,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
         str | None,
     ]:
         del cls
-        optional_string_codec = StringPayloadValueCodec(
-            is_required=False,
-            allows_empty=True,
-        )
+        optional_string_codec = OptionalStringPayloadValueCodec()
         return (
             PayloadBindingSet.from_field_codecs(target_id=optional_string_codec)
             + PayloadBindingSet.from_explicit_fields(
@@ -2883,13 +2880,28 @@ class PayloadValueCodec(Generic[PayloadValueT], ABC):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
-class StringPayloadValueCodec(PayloadValueCodec[str | None]):
-    """String payload semantics, including optional and empty values."""
+class StringPayloadValueCodec(PayloadValueCodec[str | None], ABC):
+    """Shared wire mechanics for the supported nominal string policies."""
 
-    is_required: bool = True
-    allows_empty: bool = False
-    missing_value: str | None = None
+    @abstractmethod
+    def value_when_missing(self, field_name: str) -> str | None:
+        """Return the declared missing-field value or reject its absence."""
+        raise NotImplementedError
+
+    def validate_present_value(
+        self,
+        value: str,
+        field_name: str | None,
+    ) -> None:
+        """Validate one present value under the non-empty string policy."""
+        if not value:
+            if field_name is None:
+                raise ValueError("string payload codec does not permit an empty value")
+            raise ValueError(f"Expected non-empty string field {field_name!r}")
+
+    def serialize_missing(self) -> JsonValue:
+        """Reject missing values unless a nominal leaf declares them valid."""
+        raise TypeError("string payload codec requires a string value")
 
     def read(
         self,
@@ -2898,23 +2910,55 @@ class StringPayloadValueCodec(PayloadValueCodec[str | None]):
     ) -> str | None:
         value = payload.get(field_name)
         if value is None:
-            if self.is_required:
-                raise ValueError(f"Expected non-empty string field {field_name!r}")
-            return self.missing_value
+            return self.value_when_missing(field_name)
         if not isinstance(value, str):
             raise ValueError(f"Expected string field {field_name!r}")
-        if not value and not self.allows_empty:
-            raise ValueError(f"Expected non-empty string field {field_name!r}")
+        self.validate_present_value(value, field_name)
         return value
 
     def serialize(self, value: object) -> JsonValue:
-        if value is None and not self.is_required:
-            return None
+        if value is None:
+            return self.serialize_missing()
         if not isinstance(value, str):
             raise TypeError("string payload codec requires a string value")
-        if not value and not self.allows_empty:
-            raise ValueError("string payload codec does not permit an empty value")
+        self.validate_present_value(value, None)
         return value
+
+
+@dataclass(frozen=True)
+class RequiredStringPayloadValueCodec(StringPayloadValueCodec):
+    """Require a present, non-empty string payload value."""
+
+    def value_when_missing(self, field_name: str) -> str:
+        raise ValueError(f"Expected non-empty string field {field_name!r}")
+
+
+@dataclass(frozen=True)
+class DefaultedStringPayloadValueCodec(StringPayloadValueCodec):
+    """Use a declared default when a non-empty string field is absent."""
+
+    missing_value: str
+
+    def value_when_missing(self, field_name: str) -> str:
+        del field_name
+        return self.missing_value
+
+    def serialize_missing(self) -> JsonValue:
+        return None
+
+
+@dataclass(frozen=True)
+class OptionalStringPayloadValueCodec(DefaultedStringPayloadValueCodec):
+    """Accept empty strings and optionally default an absent field."""
+
+    missing_value: str | None = None
+
+    def validate_present_value(
+        self,
+        value: str,
+        field_name: str | None,
+    ) -> None:
+        del value, field_name
 
 
 @dataclass(frozen=True)
@@ -3247,10 +3291,7 @@ class ReplacementImportPayloadValueCodec(PayloadValueCodec["MovedSymbolImportPol
         payload: Mapping[str, JsonValue],
         field_name: str,
     ) -> "MovedSymbolImportPolicy":
-        source = StringPayloadValueCodec(
-            is_required=False,
-            allows_empty=True,
-        ).read(payload, field_name)
+        source = OptionalStringPayloadValueCodec().read(payload, field_name)
         return MovedSymbolImportPolicy.from_source(source)
 
     def serialize(self, value: object) -> JsonValue:
@@ -3381,7 +3422,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, JsonValue]) -> "CodemodTargetSelector":
-        selector_key = StringPayloadValueCodec().read(payload, "selector")
+        selector_key = RequiredStringPayloadValueCodec().read(payload, "selector")
         if selector_key is None:
             raise ValueError("Expected non-empty string field 'selector'")
         selector_type = cls.__registry__.get(selector_key)
@@ -4287,16 +4328,10 @@ class RefactorRecipeOperationPlanTemplate:
         PayloadBindingSet["RefactorRecipeOperationPlanTemplate", object]
     ] = PayloadBindingSet.from_field_codecs(
         recipe_id=(
-            StringPayloadValueCodec(
-                is_required=False,
-                missing_value=default_recipe_id,
-            )
+            DefaultedStringPayloadValueCodec(default_recipe_id)
         ),
         reason=(
-            StringPayloadValueCodec(
-                is_required=False,
-                missing_value=default_reason,
-            )
+            DefaultedStringPayloadValueCodec(default_reason)
         ),
         setup_operations=SetupOperationArrayPayloadValueCodec(),
         operation_templates=OperationTemplateArrayPayloadValueCodec(
@@ -5804,7 +5839,7 @@ class StringPayloadOperation(RefactorRecipeOperation, ABC):
             (
                 cls.payload_field_name,
                 "payload_value",
-                StringPayloadValueCodec(),
+                RequiredStringPayloadValueCodec(),
             ),
         )
 
@@ -5851,12 +5886,8 @@ class ReplaceTextOperation(RefactorRecipeOperation):
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            old_source=StringPayloadValueCodec(),
-            new_source=StringPayloadValueCodec(
-                is_required=False,
-                allows_empty=True,
-                missing_value="",
-            ),
+            old_source=RequiredStringPayloadValueCodec(),
+            new_source=OptionalStringPayloadValueCodec(""),
         )
 
     def source_edits(
@@ -5889,11 +5920,7 @@ class CreateFileOperation(StringPayloadOperation):
             (
                 SOURCE_PAYLOAD_FIELD,
                 "payload_value",
-                StringPayloadValueCodec(
-                    is_required=False,
-                    allows_empty=True,
-                    missing_value="",
-                ),
+                OptionalStringPayloadValueCodec(""),
             ),
         )
 
@@ -6048,16 +6075,12 @@ class ReplaceModuleAssignmentOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            assignment_name=StringPayloadValueCodec(),
+            assignment_name=RequiredStringPayloadValueCodec(),
         ) + PayloadBindingSet.from_explicit_fields(
             (
                 SOURCE_PAYLOAD_FIELD,
                 "payload_value",
-                StringPayloadValueCodec(
-                    is_required=False,
-                    allows_empty=True,
-                    missing_value="",
-                ),
+                OptionalStringPayloadValueCodec(""),
             ),
         )
 
@@ -6117,7 +6140,7 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
                 "Class member promotion declarations must add one member field"
             )
         return PayloadBindingSet.from_field_codecs(
-            base_name=StringPayloadValueCodec(),
+            base_name=RequiredStringPayloadValueCodec(),
             class_names=StringArrayPayloadValueCodec(),
         ) + PayloadBindingSet.from_field_codecs(
             **{member_field_names[0]: StringArrayPayloadValueCodec()},
@@ -6834,7 +6857,7 @@ class ExtractMethodsToClassOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            destination_class_name=StringPayloadValueCodec(),
+            destination_class_name=RequiredStringPayloadValueCodec(),
         ) + PayloadBindingSet.from_explicit_fields(
             (
                 METHOD_NAMES_PAYLOAD_FIELD,
@@ -7200,7 +7223,7 @@ class CollapseFieldsToCarrierOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            carrier_name=StringPayloadValueCodec(),
+            carrier_name=RequiredStringPayloadValueCodec(),
             class_names=StringArrayPayloadValueCodec(),
             field_declaration_sources=StringArrayPayloadValueCodec(),
             carrier_base_names=StringArrayPayloadValueCodec(is_required=False),
@@ -7333,7 +7356,7 @@ class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         return PayloadBindingSet.from_field_codecs(
-            class_name=StringPayloadValueCodec(),
+            class_name=RequiredStringPayloadValueCodec(),
             field_projection_pairs=StringArrayPayloadValueCodec(),
             constructor_names=StringArrayPayloadValueCodec(is_required=False),
             attribute_owner_expressions=StringArrayPayloadValueCodec(
@@ -7356,7 +7379,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
     def payload_bindings(cls) -> OperationPayloadBindings:
         return super().payload_bindings() + (
             PayloadBindingSet.from_field_codecs(
-                carrier_field_declaration=StringPayloadValueCodec(),
+                carrier_field_declaration=RequiredStringPayloadValueCodec(),
             )
         )
 
@@ -7695,7 +7718,7 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         return super().payload_bindings() + (
             PayloadBindingSet.from_field_codecs(
-                carrier_source=StringPayloadValueCodec(),
+                carrier_source=RequiredStringPayloadValueCodec(),
                 carrier_field_declarations=StringArrayPayloadValueCodec(),
             )
         )
@@ -8486,7 +8509,7 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            module_name=StringPayloadValueCodec(),
+            module_name=RequiredStringPayloadValueCodec(),
             import_names=StringArrayPayloadValueCodec(),
         )
 
@@ -9595,7 +9618,7 @@ class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            destination_path=StringPayloadValueCodec(),
+            destination_path=RequiredStringPayloadValueCodec(),
             replacement_import=ReplacementImportPayloadValueCodec(),
         )
 
@@ -10011,12 +10034,10 @@ class ExposeGlobalCandidateCacheContextOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            candidate_type_name=StringPayloadValueCodec(),
-            candidate_collector_name=StringPayloadValueCodec(),
-            candidate_collector_scope=StringPayloadValueCodec(
-                is_required=False,
-                allows_empty=True,
-                missing_value=WholeModuleCandidateCollectorScopeSource.scope_key,
+            candidate_type_name=RequiredStringPayloadValueCodec(),
+            candidate_collector_name=RequiredStringPayloadValueCodec(),
+            candidate_collector_scope=OptionalStringPayloadValueCodec(
+                WholeModuleCandidateCollectorScopeSource.scope_key,
             ),
             candidate_collector_uses_config=BooleanPayloadValueCodec(),
             candidate_item_sort_attributes=StringArrayPayloadValueCodec(
@@ -10026,18 +10047,10 @@ class ExposeGlobalCandidateCacheContextOperation(
             (
                 BASE_NAME_PAYLOAD_FIELD,
                 "replaced_base_name",
-                StringPayloadValueCodec(
-                    is_required=False,
-                    allows_empty=True,
-                    missing_value="IssueDetector",
-                ),
+                OptionalStringPayloadValueCodec("IssueDetector"),
             ),
         ) + PayloadBindingSet.from_field_codecs(
-            import_source=StringPayloadValueCodec(
-                is_required=False,
-                allows_empty=True,
-                missing_value="",
-            ),
+            import_source=OptionalStringPayloadValueCodec(""),
         )
 
     @property
@@ -10253,10 +10266,10 @@ class DeriveAutoregisterInstanceViewOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            base_name=StringPayloadValueCodec(),
-            assignment_name=StringPayloadValueCodec(),
+            base_name=RequiredStringPayloadValueCodec(),
+            assignment_name=RequiredStringPayloadValueCodec(),
             class_key_pairs=StringArrayPayloadValueCodec(),
-            method_name=StringPayloadValueCodec(),
+            method_name=RequiredStringPayloadValueCodec(),
         )
 
     @property
@@ -10618,9 +10631,9 @@ class ConvertManualRegistryToAutoregisterOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            base_name=StringPayloadValueCodec(),
-            registry_name=StringPayloadValueCodec(),
-            registry_key_attribute=StringPayloadValueCodec(),
+            base_name=RequiredStringPayloadValueCodec(),
+            registry_name=RequiredStringPayloadValueCodec(),
+            registry_key_attribute=RequiredStringPayloadValueCodec(),
             class_key_pairs=StringArrayPayloadValueCodec(),
         )
 
@@ -11476,10 +11489,10 @@ class DispatchToPolymorphismOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
         return PayloadBindingSet.from_field_codecs(
-            dispatch_axis_expression=StringPayloadValueCodec(),
-            base_name=StringPayloadValueCodec(),
-            case_key_attribute=StringPayloadValueCodec(),
-            method_name=StringPayloadValueCodec(),
+            dispatch_axis_expression=RequiredStringPayloadValueCodec(),
+            base_name=RequiredStringPayloadValueCodec(),
+            case_key_attribute=RequiredStringPayloadValueCodec(),
+            method_name=RequiredStringPayloadValueCodec(),
             literal_cases=StringArrayPayloadValueCodec(),
         )
 
