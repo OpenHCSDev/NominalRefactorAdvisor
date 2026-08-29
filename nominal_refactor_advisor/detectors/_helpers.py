@@ -14370,80 +14370,41 @@ def _self_attribute_name(node: ast.AST) -> str | None:
     )
 
 
-class _SourceLocationEvidenceShapeStep(RegisteredEffectStep):
-    pass
+@dataclass(frozen=True)
+class _SourceLocationEvidenceShape:
+    file_attribute_name: str
+    line_attribute_name: str
+    symbol_attribute_name: str
 
-
-class SharedProjectMixin:
-    def project(
-        self, value: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> ast.Return | None:
-        return as_ast(single_item(_trim_docstring_body(value.body)), ast.Return)
-
-
-class _EvidencePropertyReturnStep(
-    SharedProjectMixin,
-    _SourceLocationEvidenceShapeStep,
-    GuardedEffectStep[ast.FunctionDef | ast.AsyncFunctionDef, ast.Return],
-):
-    step_id = "evidence_property_return"
-    registration_order = 10
-
-    def accepts(self, value: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        return value.name == "evidence" and any(
-            (
-                _ast_terminal_name(decorator) == "property"
-                for decorator in value.decorator_list
-            )
-        )
-
-
-class _SourceLocationReturnCallStep(
-    _SourceLocationEvidenceShapeStep,
-    GuardedEffectStep[ast.Return, ast.Call],
-):
-    step_id = "source_location_return_call"
-    registration_order = 20
-
-    def project(self, value: ast.Return) -> ast.Call | None:
-        call = as_ast(value.value, ast.Call)
-        if call is None or name_id(call.func) != "SourceLocation":
+    @classmethod
+    def from_property(
+        cls,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "_SourceLocationEvidenceShape | None":
+        if node.name != "evidence" or not any(
+            _ast_terminal_name(decorator) == "property"
+            for decorator in node.decorator_list
+        ):
             return None
-        return call
-
-
-class _SourceLocationSelfAttributeArgsStep(
-    _SourceLocationEvidenceShapeStep,
-    GuardedEffectStep[ast.Call, tuple[str, str, str]],
-):
-    step_id = "source_location_self_attribute_args"
-    registration_order = 30
-
-    def project(self, value: ast.Call) -> tuple[str, str, str] | None:
-        if value.keywords:
+        returned = as_ast(
+            single_item(_trim_docstring_body(node.body)),
+            ast.Return,
+        )
+        call = as_ast(returned.value if returned is not None else None, ast.Call)
+        if call is None or name_id(call.func) != "SourceLocation" or call.keywords:
             return None
         attributes = ast_sequence(
-            value.args, ast.Attribute, ast.Attribute, ast.Attribute
+            call.args,
+            ast.Attribute,
+            ast.Attribute,
+            ast.Attribute,
         )
         if attributes is None:
             return None
-        attribute_names = tuple((_self_attribute_name(arg) for arg in attributes))
-        return (
-            cast(tuple[str, str, str], attribute_names)
-            if all((name is not None for name in attribute_names))
-            else None
-        )
-
-
-def _source_location_evidence_shape(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, str, str] | None:
-    return cast(
-        tuple[str, str, str] | None,
-        Maybe.of(node)
-        .bind_all(registered_effect_steps(_SourceLocationEvidenceShapeStep))
-        .unwrap_or_none(),
-    )
+        attribute_names = tuple(_self_attribute_name(arg) for arg in attributes)
+        if not all(name is not None for name in attribute_names):
+            return None
+        return cls(*cast(tuple[str, str, str], attribute_names))
 
 
 def _source_location_evidence_property_candidates_for_class(
@@ -14452,18 +14413,17 @@ def _source_location_evidence_property_candidates_for_class(
     for statement in _trim_docstring_body(node.body):
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        shape = _source_location_evidence_shape(statement)
+        shape = _SourceLocationEvidenceShape.from_property(statement)
         if shape is None:
             continue
-        file_attribute_name, line_attribute_name, symbol_attribute_name = shape
         yield SourceLocationEvidencePropertyCandidate(
             file_path=str(module.path),
             line=statement.lineno,
             class_name=node.name,
             method_name=statement.name,
-            file_attribute_name=file_attribute_name,
-            line_attribute_name=line_attribute_name,
-            symbol_attribute_name=symbol_attribute_name,
+            file_attribute_name=shape.file_attribute_name,
+            line_attribute_name=shape.line_attribute_name,
+            symbol_attribute_name=shape.symbol_attribute_name,
         )
 
 
@@ -14479,50 +14439,27 @@ def _source_location_evidence_property_candidates(
 
 
 @dataclass(frozen=True)
-class _ZippedSourceLocationGeneratorCall:
-    source_location_call: ast.Call
-    generator: ast.GeneratorExp
-
-
-@dataclass(frozen=True)
-class _ZippedSourceLocationVariableArgs:
+class _ZippedSourceLocationEvidenceShape:
     file_attribute_name: str
-    line_variable_name: str
-    symbol_variable_name: str
-    generator: ast.GeneratorExp
+    line_numbers_attribute_name: str
+    symbol_names_attribute_name: str
 
-
-class _ZippedSourceLocationEvidenceShapeStep(RegisteredEffectStep):
-    pass
-
-
-class _ZippedEvidencePropertyReturnStep(
-    SharedProjectMixin,
-    _ZippedSourceLocationEvidenceShapeStep,
-    GuardedEffectStep[ast.FunctionDef | ast.AsyncFunctionDef, ast.Return],
-):
-    step_id = "zipped_evidence_property_return"
-    registration_order = 10
-
-    def accepts(self, value: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        return value.name in {"evidence", "evidence_locations"} and any(
-            (
-                _ast_terminal_name(decorator) == "property"
-                for decorator in value.decorator_list
-            )
+    @classmethod
+    def from_property(
+        cls,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "_ZippedSourceLocationEvidenceShape | None":
+        if node.name not in {"evidence", "evidence_locations"} or not any(
+            _ast_terminal_name(decorator) == "property"
+            for decorator in node.decorator_list
+        ):
+            return None
+        returned = as_ast(
+            single_item(_trim_docstring_body(node.body)),
+            ast.Return,
         )
-
-
-class _ZippedTupleGeneratorReturnStep(
-    _ZippedSourceLocationEvidenceShapeStep,
-    GuardedEffectStep[ast.Return, ast.GeneratorExp],
-):
-    step_id = "zipped_tuple_generator_return"
-    registration_order = 20
-
-    def project(self, value: ast.Return) -> ast.GeneratorExp | None:
-        outer_call = as_ast(value.value, ast.Call)
-        return (
+        outer_call = as_ast(returned.value if returned is not None else None, ast.Call)
+        generator = (
             as_ast(outer_call.args[0], ast.GeneratorExp)
             if outer_call is not None
             and name_id(outer_call.func) == "tuple"
@@ -14530,127 +14467,58 @@ class _ZippedTupleGeneratorReturnStep(
             and not outer_call.keywords
             else None
         )
-
-
-class _ZippedSourceLocationGeneratorCallStep(
-    _ZippedSourceLocationEvidenceShapeStep,
-    GuardedEffectStep[ast.GeneratorExp, _ZippedSourceLocationGeneratorCall],
-):
-    step_id = "zipped_source_location_generator_call"
-    registration_order = 30
-
-    def project(
-        self, value: ast.GeneratorExp
-    ) -> _ZippedSourceLocationGeneratorCall | None:
-        source_location_call = as_ast(value.elt, ast.Call)
-        return (
-            _ZippedSourceLocationGeneratorCall(source_location_call, value)
-            if source_location_call is not None
+        source_location_call = as_ast(
+            generator.elt if generator is not None else None,
+            ast.Call,
+        )
+        if not (
+            source_location_call is not None
             and name_id(source_location_call.func) == "SourceLocation"
             and len(source_location_call.args) == 3
             and not source_location_call.keywords
+        ):
+            return None
+        file_attribute_name = _self_attribute_name(source_location_call.args[0])
+        line_variable_name = name_id(source_location_call.args[1])
+        symbol_variable_name = name_id(source_location_call.args[2])
+        comprehension = single_item(generator.generators) if generator is not None else None
+        if (
+            file_attribute_name is None
+            or line_variable_name is None
+            or symbol_variable_name is None
+            or comprehension is None
+            or comprehension.ifs
+            or comprehension.is_async
+            or not isinstance(comprehension.target, ast.Tuple)
+        ):
+            return None
+        targets = ast_sequence(comprehension.target.elts, ast.Name, ast.Name)
+        zip_call = as_ast(comprehension.iter, ast.Call)
+        zipped_attributes = (
+            ast_sequence(zip_call.args, ast.Attribute, ast.Attribute)
+            if zip_call is not None and name_id(zip_call.func) == "zip"
             else None
         )
-
-
-class _ZippedSourceLocationCallArgsStep(
-    _ZippedSourceLocationEvidenceShapeStep,
-    GuardedEffectStep[
-        _ZippedSourceLocationGeneratorCall, _ZippedSourceLocationVariableArgs
-    ],
-):
-    step_id = "zipped_source_location_call_args"
-    registration_order = 40
-
-    def project(
-        self, value: _ZippedSourceLocationGeneratorCall
-    ) -> _ZippedSourceLocationVariableArgs | None:
-        file_attribute_name = _self_attribute_name(value.source_location_call.args[0])
-        line_variable_name = name_id(value.source_location_call.args[1])
-        symbol_variable_name = name_id(value.source_location_call.args[2])
-        return (
-            _ZippedSourceLocationVariableArgs(
-                file_attribute_name,
-                line_variable_name,
-                symbol_variable_name,
-                value.generator,
-            )
-            if file_attribute_name is not None
-            and line_variable_name is not None
-            and symbol_variable_name is not None
-            else None
+        if targets is None or zipped_attributes is None:
+            return None
+        attribute_names = tuple(
+            _self_attribute_name(attribute) for attribute in zipped_attributes
         )
-
-
-def _zipped_source_location_self_attribute_shape(
-    value: _ZippedSourceLocationVariableArgs,
-) -> tuple[str, str, str] | None:
-    comprehension = single_item(tuple(value.generator.generators))
-    if (
-        comprehension is None
-        or comprehension.ifs
-        or comprehension.is_async
-        or not isinstance(comprehension.target, ast.Tuple)
-    ):
-        return None
-    targets = ast_sequence(comprehension.target.elts, ast.Name, ast.Name)
-    zip_call = as_ast(comprehension.iter, ast.Call)
-    zipped_attributes = (
-        ast_sequence(zip_call.args, ast.Attribute, ast.Attribute)
-        if zip_call is not None and name_id(zip_call.func) == "zip"
-        else None
-    )
-    attribute_names = (
-        tuple(_self_attribute_name(attribute) for attribute in zipped_attributes)
-        if zipped_attributes is not None
-        else None
-    )
-    bindings = (
-        {
+        if not all(name is not None for name in attribute_names):
+            return None
+        bindings = {
             target.id: attribute_name
             for target, attribute_name in zip(targets, attribute_names, strict=True)
         }
-        if targets is not None
-        and attribute_names is not None
-        and all((name is not None for name in attribute_names))
-        else {}
-    )
-    line_numbers_attribute_name = bindings.get(value.line_variable_name)
-    symbol_names_attribute_name = bindings.get(value.symbol_variable_name)
-    return (
-        (
-            value.file_attribute_name,
+        line_numbers_attribute_name = bindings.get(line_variable_name)
+        symbol_names_attribute_name = bindings.get(symbol_variable_name)
+        if line_numbers_attribute_name is None or symbol_names_attribute_name is None:
+            return None
+        return cls(
+            file_attribute_name,
             line_numbers_attribute_name,
             symbol_names_attribute_name,
         )
-        if line_numbers_attribute_name is not None
-        and symbol_names_attribute_name is not None
-        else None
-    )
-
-
-class _ZippedSelfAttributeBindingsStep(
-    _ZippedSourceLocationEvidenceShapeStep,
-    GuardedEffectStep[_ZippedSourceLocationVariableArgs, tuple[str, str, str]],
-):
-    step_id = "zipped_self_attribute_bindings"
-    registration_order = 50
-
-    def project(
-        self, value: _ZippedSourceLocationVariableArgs
-    ) -> tuple[str, str, str] | None:
-        return _zipped_source_location_self_attribute_shape(value)
-
-
-def _zipped_source_location_evidence_shape(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, str, str] | None:
-    return cast(
-        tuple[str, str, str] | None,
-        Maybe.of(node)
-        .bind_all(registered_effect_steps(_ZippedSourceLocationEvidenceShapeStep))
-        .unwrap_or_none(),
-    )
 
 
 def _zipped_source_location_evidence_property_candidates_for_class(
@@ -14659,22 +14527,17 @@ def _zipped_source_location_evidence_property_candidates_for_class(
     for statement in _trim_docstring_body(node.body):
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        shape = _zipped_source_location_evidence_shape(statement)
+        shape = _ZippedSourceLocationEvidenceShape.from_property(statement)
         if shape is None or statement.end_lineno is None:
             continue
-        (
-            file_attribute_name,
-            line_numbers_attribute_name,
-            symbol_names_attribute_name,
-        ) = shape
         yield ZippedSourceLocationEvidencePropertyCandidate(
             file_path=str(module.path),
             line=statement.lineno,
             class_name=node.name,
             method_name=statement.name,
-            file_attribute_name=file_attribute_name,
-            line_numbers_attribute_name=line_numbers_attribute_name,
-            symbol_names_attribute_name=symbol_names_attribute_name,
+            file_attribute_name=shape.file_attribute_name,
+            line_numbers_attribute_name=shape.line_numbers_attribute_name,
+            symbol_names_attribute_name=shape.symbol_names_attribute_name,
             line_count=statement.end_lineno - statement.lineno + 1,
         )
 

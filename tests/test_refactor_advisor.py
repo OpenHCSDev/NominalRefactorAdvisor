@@ -11926,6 +11926,24 @@ def test_detects_zipped_source_location_evidence_property(tmp_path: Path) -> Non
     assert len(findings) == 1
     assert "LocalRecord.evidence_locations" in findings[0].summary
     assert "ZippedSourceLocationEvidenceProperty" in (findings[0].scaffold or "")
+    removed_names = (
+        "_SourceLocationEvidenceShapeStep",
+        "SharedProjectMixin",
+        "_EvidencePropertyReturnStep",
+        "_SourceLocationReturnCallStep",
+        "_SourceLocationSelfAttributeArgsStep",
+        "_source_location_evidence_shape",
+        "_ZippedSourceLocationGeneratorCall",
+        "_ZippedSourceLocationVariableArgs",
+        "_ZippedSourceLocationEvidenceShapeStep",
+        "_ZippedEvidencePropertyReturnStep",
+        "_ZippedTupleGeneratorReturnStep",
+        "_ZippedSourceLocationGeneratorCallStep",
+        "_ZippedSourceLocationCallArgsStep",
+        "_ZippedSelfAttributeBindingsStep",
+        "_zipped_source_location_evidence_shape",
+    )
+    assert all(not hasattr(helper_detectors, name) for name in removed_names)
 
 
 def test_detects_private_helper_shadow(tmp_path: Path) -> None:
