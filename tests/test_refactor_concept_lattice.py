@@ -283,29 +283,6 @@ def test_repeated_builder_nonconcept_rule_does_not_inherit_a_carrier_leaf(
     assert not issubclass(declarations[0], codemod.RefactorConcept)
 
 
-def test_semantic_carrier_and_goal_manifests_are_mro_derived() -> None:
-    manifests = {
-        manifest.goal_kind: manifest
-        for manifest in codemod_workflow.codemod_refactor_goal_policy_manifests()
-    }
-
-    for (
-        goal_kind,
-        policy_type,
-    ) in codemod_workflow.CodemodRefactorGoalTargetPolicy.__registry__.items():
-        manifest = manifests[goal_kind]
-        if not issubclass(policy_type, codemod.RefactorConcept):
-            assert manifest.refactor_concept is None
-            continue
-        concept_type = codemod.RefactorConcept.leaf_concept_for_declaration(policy_type)
-        assert manifest.refactor_concept == concept_type.concept_key()
-
-    semantic_carrier_manifest = manifests[
-        codemod_workflow.CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
-    ]
-    assert semantic_carrier_manifest.refactor_concept == "semantic_carrier"
-
-
 def test_target_shape_and_selector_mirror_authorities_are_absent() -> None:
     assert not hasattr(advisor, "RefactorRecipeTargetShape")
     assert not hasattr(codemod, "RefactorRecipeTargetShape")
@@ -313,8 +290,3 @@ def test_target_shape_and_selector_mirror_authorities_are_absent() -> None:
     assert not hasattr(advisor, "CodemodRefactorGoalFindingSelector")
     assert not hasattr(codemod_workflow, "CodemodRefactorGoalFindingSelector")
     assert not hasattr(codemod_workflow, "SelectorBackedRefactorGoalTargetPolicy")
-    assert all(
-        "selectors" not in manifest.to_dict()
-        and "target_shapes" not in manifest.to_dict()
-        for manifest in codemod_workflow.codemod_refactor_goal_policy_manifests()
-    )

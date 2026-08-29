@@ -14,6 +14,7 @@ from nominal_refactor_advisor.codemod import (
     PayloadBindingSet,
     RefactorRecipeOperation,
     ReplaceRolePrefixedFieldsWithCarriersOperation,
+    StringPayloadValueCodec,
 )
 
 
@@ -21,7 +22,7 @@ def _binding(field_name: str, constructor_argument_name: str) -> PayloadBinding:
     return PayloadBinding(
         field_name=field_name,
         constructor_argument_name=constructor_argument_name,
-        value_projector=lambda owner: str(owner),
+        codec=StringPayloadValueCodec(),
     )
 
 

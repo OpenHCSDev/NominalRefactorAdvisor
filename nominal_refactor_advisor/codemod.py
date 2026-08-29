@@ -21,7 +21,6 @@ import difflib
 import hashlib
 import importlib
 import importlib.util
-import inspect
 import os
 import re
 import stat
@@ -146,7 +145,6 @@ class JsonObject(dict[str, "JsonValue"]):
 JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
 JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
 PayloadOwnerT = TypeVar("PayloadOwnerT")
-PayloadSourceT = TypeVar("PayloadSourceT")
 PayloadValueT = TypeVar("PayloadValueT")
 DataclassRecordT = TypeVar("DataclassRecordT")
 SourceTargetIdentityValueT = TypeVar(
@@ -337,46 +335,6 @@ _COMPOSITION_KIND_LOAD_BEARING_BONUS = {
 }
 
 
-class RefactorRecipeOperationKind(StrEnum):
-    """Agent-facing codemod DSL operation kinds."""
-
-    ADD_CLASS_BASE = "add_class_base"
-    APPLY_SELECTED_TARGETS = "apply_selected_targets"
-    COLLAPSE_FIELDS_TO_CARRIER = "collapse_fields_to_carrier"
-    CONVERT_MANUAL_REGISTRY_TO_AUTOREGISTER = "convert_manual_registry_to_autoregister"
-    CREATE_FILE = "create_file"
-    DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
-    DELETE_MODULE_ASSIGNMENTS = "delete_module_assignments"
-    DELETE_SELECTED_TARGETS = "delete_selected_targets"
-    DELETE_TARGET = "delete_target"
-    DERIVE_AUTOREGISTER_INSTANCE_VIEW = "derive_autoregister_instance_view"
-    DECLARE_AUTHORITY = "declare_authority"
-    DISPATCH_TO_POLYMORPHISM = "dispatch_to_polymorphism"
-    ENSURE_IMPORT = "ensure_import"
-    EXPOSE_GLOBAL_CANDIDATE_CACHE_CONTEXT = "expose_global_candidate_cache_context"
-    EXTRACT_AUTHORITY = "extract_authority"
-    EXTRACT_METHODS_TO_CLASS = "extract_methods_to_class"
-    INSERT_AFTER_TARGET = "insert_after_target"
-    INSERT_AFTER_IMPORTS = "insert_after_imports"
-    INSERT_BEFORE_TARGET = "insert_before_target"
-    MOVE_SYMBOL_TO_MODULE = "move_symbol_to_module"
-    MOVE_SYMBOLS_TO_MODULE = "move_symbols_to_module"
-    PRODUCT_RECORD_TO_DATACLASS = "product_record_to_dataclass"
-    PRODUCT_RECORDS_TO_DATACLASSES = "product_records_to_dataclasses"
-    PROMOTE_CLASS_DECLARATIONS = "promote_class_declarations"
-    PROMOTE_CLASS_METHODS = "promote_class_methods"
-    REMOVE_CLASS_BASE = "remove_class_base"
-    REMOVE_IMPORT_NAMES = "remove_import_names"
-    REPLACE_FIELDS_WITH_CARRIER = "replace_fields_with_carrier"
-    REPLACE_ROLE_PREFIXED_FIELDS_WITH_CARRIERS = (
-        "replace_role_prefixed_fields_with_carriers"
-    )
-    REPLACE_FUNCTION_BODY = "replace_function_body"
-    REPLACE_FUNCTION_SIGNATURE = "replace_function_signature"
-    REPLACE_MODULE_ASSIGNMENT = "replace_module_assignment"
-    REPLACE_TEXT = "replace_text"
-
-
 class RefactorConcept(ABC):
     """Nominal refactor semantics inherited by executable declarations."""
 
@@ -554,6 +512,10 @@ RECORD_NAMES_PAYLOAD_FIELD = "record_names"
 REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD = "registry_key_attribute"
 REGISTRY_NAME_PAYLOAD_FIELD = "registry_name"
 SELECTION_COUNT_PAYLOAD_FIELD = "selection_count"
+AUTHORITY_BOUNDARIES_PAYLOAD_FIELD = "authority_boundaries"
+RECIPES_PAYLOAD_FIELD = "recipes"
+ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
+STAGES_PAYLOAD_FIELD = "stages"
 DETECTOR_ID_FIELD_NAME = "detector_id"
 CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
 CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD = "candidate_collector_name"
@@ -572,12 +534,6 @@ INLINE_LITERAL_DISPATCH_FINDING_ID = "inline_literal_dispatch"
 DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
     ("capability_tag_constants", "observation_tag_constants")
 )
-SELECTED_TARGET_OPERATION_KIND_VALUES = frozenset(
-    (
-        RefactorRecipeOperationKind.APPLY_SELECTED_TARGETS.value,
-        RefactorRecipeOperationKind.DELETE_SELECTED_TARGETS.value,
-    )
-)
 TARGET_TEMPLATE_FIELD_PATTERN = re.compile(r"\$\{target\.([a-z_][a-z0-9_]*)\}")
 UNKNOWN_CONFIDENCE_BASIS = "unknown"
 
@@ -587,14 +543,6 @@ class AuthorityClaimPayload:
 
     field_name: ClassVar[str] = "authority_claims"
     claim_field_name: ClassVar[str] = "authority_claim"
-
-    @classmethod
-    def required_claim(
-        cls,
-        payload: "SourceRewritePlanPayload",
-        field_name: str,
-    ) -> AuthorityClaim:
-        return AuthorityClaim.from_mapping(payload.required_object(field_name))
 
 
 class AuthorityLanguageSurfacePolicy:
@@ -2182,7 +2130,6 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
     ) -> tuple[
         PayloadBinding[
             "SourceRewriteTarget",
-            "SourceRewritePlanPayload",
             str | None,
         ],
         ...,
@@ -2192,20 +2139,26 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
             PayloadBinding(
                 "target_id",
                 "target_id",
-                lambda target: target.target_id,
-                optional_source_plan_payload_string,
+                StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                ),
             ),
             PayloadBinding(
                 "target_qualname",
                 "qualname",
-                lambda target: target.qualname,
-                optional_source_plan_payload_string,
+                StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                ),
             ),
             PayloadBinding(
                 "file_path",
                 "file_path",
-                lambda target: target.file_path,
-                optional_source_plan_payload_string,
+                StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                ),
             ),
         )
 
@@ -2768,7 +2721,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         if duplicate_paths or existing_paths:
             raise CodemodOperationPreflightError(
                 CodemodOperationPreflightReport(
-                    operation=RefactorRecipeOperationKind.CREATE_FILE.value,
+                    operation=CreateFileOperation.operation_key(),
                     status=CodemodPreflightStatus.FAILED,
                     message="create_file requires one new source path per operation",
                     details={
@@ -3119,7 +3072,6 @@ class SelectionCountExpectation:
     ) -> tuple[
         PayloadBinding[
             "SelectionCountExpectation",
-            Mapping[str, JsonValue],
             int | None,
         ],
         ...,
@@ -3128,20 +3080,17 @@ class SelectionCountExpectation:
             PayloadBinding(
                 "min",
                 "minimum",
-                lambda expectation: expectation.minimum,
-                cls.optional_non_negative_int,
+                IntegerPayloadValueCodec(),
             ),
             PayloadBinding(
                 "max",
                 "maximum",
-                lambda expectation: expectation.maximum,
-                cls.optional_non_negative_int,
+                IntegerPayloadValueCodec(),
             ),
             PayloadBinding(
                 "exact",
                 "exact",
-                lambda expectation: expectation.exact,
-                cls.optional_non_negative_int,
+                IntegerPayloadValueCodec(),
             ),
         )
 
@@ -3169,24 +3118,6 @@ class SelectionCountExpectation:
         )
         expectation.validate_definition()
         return expectation
-
-    @staticmethod
-    def optional_non_negative_int(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> int | None:
-        value = payload.get(field_name)
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(
-                f"Expected non-negative integer selection_count field {field_name!r}"
-            )
-        if value < 0:
-            raise ValueError(
-                f"Expected non-negative integer selection_count field {field_name!r}"
-            )
-        return value
 
     @property
     def is_empty(self) -> bool:
@@ -3232,62 +3163,381 @@ class SelectionCountExpectation:
         )
 
 
-def required_source_plan_payload_string(
-    payload: "SourceRewritePlanPayload",
-    field_name: str,
-) -> str:
-    if not isinstance(payload, SourceRewritePlanPayload):
-        raise TypeError("string payload binding requires source rewrite plan payload")
-    return payload.required_string(field_name)
+class PayloadValueCodec(Generic[PayloadValueT], ABC):
+    """Nominal owner of one payload value's wire semantics."""
 
+    @abstractmethod
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> PayloadValueT:
+        raise NotImplementedError
 
-def optional_source_plan_payload_string(
-    payload: "SourceRewritePlanPayload",
-    field_name: str,
-) -> str | None:
-    if not isinstance(payload, SourceRewritePlanPayload):
-        raise TypeError("string payload binding requires source rewrite plan payload")
-    return payload.optional_string(field_name)
+    @abstractmethod
+    def serialize(self, value: object) -> JsonValue:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
-class PayloadBinding(Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT]):
+class StringPayloadValueCodec(PayloadValueCodec[str | None]):
+    """String payload semantics, including optional and empty values."""
+
+    is_required: bool = True
+    allows_empty: bool = False
+    missing_value: str | None = None
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> str | None:
+        value = payload.get(field_name)
+        if value is None:
+            if self.is_required:
+                raise ValueError(f"Expected non-empty string field {field_name!r}")
+            return self.missing_value
+        if not isinstance(value, str):
+            raise ValueError(f"Expected string field {field_name!r}")
+        if not value and not self.allows_empty:
+            raise ValueError(f"Expected non-empty string field {field_name!r}")
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        if value is None and not self.is_required:
+            return None
+        if not isinstance(value, str):
+            raise TypeError("string payload codec requires a string value")
+        if not value and not self.allows_empty:
+            raise ValueError("string payload codec does not permit an empty value")
+        return value
+
+
+@dataclass(frozen=True)
+class StringArrayPayloadValueCodec(PayloadValueCodec[tuple[str, ...]]):
+    """Array-of-string payload semantics."""
+
+    is_required: bool = True
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[str, ...]:
+        if field_name not in payload or payload[field_name] is None:
+            if self.is_required:
+                raise ValueError(f"Expected string array field {field_name!r}")
+            return ()
+        value = payload[field_name]
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, str) for item in value
+        ):
+            raise ValueError(f"Expected string array field {field_name!r}")
+        return tuple(value)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, str) for item in value
+        ):
+            raise TypeError("string-array payload codec requires string values")
+        return tuple(value)
+
+
+@dataclass(frozen=True)
+class BooleanPayloadValueCodec(PayloadValueCodec[bool]):
+    """Optional boolean payload semantics with one declared default."""
+
+    declared_default: bool = False
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> bool:
+        if field_name not in payload:
+            return self.declared_default
+        value = payload[field_name]
+        if not isinstance(value, bool):
+            raise ValueError(f"Expected boolean field {field_name!r}")
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, bool):
+            raise TypeError("boolean payload codec requires a boolean value")
+        return value
+
+
+@dataclass(frozen=True)
+class IntegerPayloadValueCodec(PayloadValueCodec[int | None]):
+    """Optional non-negative integer payload semantics."""
+
+    is_required: bool = False
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> int | None:
+        value = payload.get(field_name)
+        if value is None:
+            if self.is_required:
+                raise ValueError(f"Expected non-negative integer field {field_name!r}")
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"Expected non-negative integer field {field_name!r}")
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        if value is None:
+            if self.is_required:
+                raise TypeError(
+                    "required integer payload codec requires a non-negative integer"
+                )
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise TypeError("integer payload codec requires a non-negative integer")
+        return value
+
+
+@dataclass(frozen=True)
+class ObjectPayloadValueCodec(PayloadValueCodec[Mapping[str, JsonValue]]):
+    """Required JSON-object payload semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> Mapping[str, JsonValue]:
+        value = payload.get(field_name)
+        if not isinstance(value, Mapping):
+            raise ValueError(f"Expected object field {field_name!r}")
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, Mapping):
+            raise TypeError("object payload codec requires a mapping value")
+        return JsonObject(value)
+
+
+@dataclass(frozen=True)
+class NodeKindArrayPayloadValueCodec(StringArrayPayloadValueCodec):
+    """AST target-node kind array payload semantics."""
+
+    is_required: bool = False
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[AstTargetNodeKind, ...]:
+        return tuple(
+            AstTargetNodeKind(value) for value in super().read(payload, field_name)
+        )
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, AstTargetNodeKind) for item in value
+        ):
+            raise TypeError("node-kind payload codec requires AstTargetNodeKind values")
+        return tuple(item.value for item in value)
+
+
+@dataclass(frozen=True)
+class SelectorObjectPayloadValueCodec(PayloadValueCodec["CodemodTargetSelector"]):
+    """Registered target-selector object payload semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> "CodemodTargetSelector":
+        value = ObjectPayloadValueCodec().read(payload, field_name)
+        return CodemodTargetSelector.from_dict(value)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, CodemodTargetSelector):
+            raise TypeError("selector payload codec requires a target selector")
+        return value.to_dict()
+
+
+@dataclass(frozen=True)
+class SelectorArrayPayloadValueCodec(
+    PayloadValueCodec[tuple["CodemodTargetSelector", ...]]
+):
+    """Optional array of registered target-selector payloads."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple["CodemodTargetSelector", ...]:
+        value = payload.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected selector array field {field_name!r}")
+        return tuple(
+            CodemodTargetSelector.from_dict(ObjectPayloadValueCodec().serialize(item))
+            for item in value
+        )
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, CodemodTargetSelector) for item in value
+        ):
+            raise TypeError("selector-array payload codec requires target selectors")
+        return tuple(item.to_dict() for item in value)
+
+
+@dataclass(frozen=True)
+class OperationTemplateArrayPayloadValueCodec(
+    PayloadValueCodec[tuple["RefactorRecipeOperationTemplate", ...]]
+):
+    """Required selected-target operation-template array semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple["RefactorRecipeOperationTemplate", ...]:
+        value = payload.get(field_name)
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected operation-template array field {field_name!r}")
+        return tuple(
+            RefactorRecipeOperationTemplate.from_json_value(item) for item in value
+        )
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, RefactorRecipeOperationTemplate) for item in value
+        ):
+            raise TypeError(
+                "operation-template payload codec requires operation templates"
+            )
+        return tuple(item.to_dict() for item in value)
+
+
+@dataclass(frozen=True)
+class CallReplacementArrayPayloadValueCodec(
+    PayloadValueCodec[tuple["RecipeCallReplacement", ...]]
+):
+    """Required exact call-site replacement array semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple["RecipeCallReplacement", ...]:
+        value = payload.get(field_name)
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected call-replacement array field {field_name!r}")
+        return tuple(RecipeCallReplacement.from_json_value(item) for item in value)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, RecipeCallReplacement) for item in value
+        ):
+            raise TypeError(
+                "call-replacement payload codec requires RecipeCallReplacement values"
+            )
+        return tuple(item.to_dict() for item in value)
+
+
+@dataclass(frozen=True)
+class AuthorityClaimPayloadValueCodec(PayloadValueCodec[AuthorityClaim]):
+    """Proof-carrying authority-claim object payload semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> AuthorityClaim:
+        value = ObjectPayloadValueCodec().read(payload, field_name)
+        return AuthorityClaim.from_mapping(value)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, AuthorityClaim):
+            raise TypeError("authority-claim payload codec requires AuthorityClaim")
+        return JsonObject(value.to_dict())
+
+
+@dataclass(frozen=True)
+class SelectionCountPayloadValueCodec(PayloadValueCodec["SelectionCountExpectation"]):
+    """Optional selected-target cardinality contract semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> "SelectionCountExpectation":
+        value = payload.get(field_name)
+        if value is not None and not isinstance(value, Mapping):
+            raise ValueError(f"Expected object field {field_name!r}")
+        return SelectionCountExpectation.from_mapping(value)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, SelectionCountExpectation):
+            raise TypeError(
+                "selection-count payload codec requires SelectionCountExpectation"
+            )
+        if value.is_empty:
+            return None
+        return value.to_dict()
+
+
+@dataclass(frozen=True)
+class ReplacementImportPayloadValueCodec(PayloadValueCodec["MovedSymbolImportPolicy"]):
+    """Optional source-module import policy for a symbol move."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> "MovedSymbolImportPolicy":
+        source = StringPayloadValueCodec(
+            is_required=False,
+            allows_empty=True,
+        ).read(payload, field_name)
+        return MovedSymbolImportPolicy.from_source(source)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, MovedSymbolImportPolicy):
+            raise TypeError(
+                "replacement-import payload codec requires MovedSymbolImportPolicy"
+            )
+        return value.import_source
+
+
+@dataclass(frozen=True)
+class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
     """Declarative JSON-to-constructor binding for one DSL payload field."""
 
     field_name: str
     constructor_argument_name: str
-    value_projector: Callable[[PayloadOwnerT], JsonValue]
-    constructor_value_reader: Callable[[PayloadSourceT, str], PayloadValueT] = (
-        required_source_plan_payload_string
-    )
-    dsl_value_kind: CodemodDslFieldKind | None = None
+    codec: PayloadValueCodec[PayloadValueT]
 
     def constructor_kwargs(
         self,
-        payload: PayloadSourceT,
+        payload: Mapping[str, JsonValue],
     ) -> dict[str, PayloadValueT]:
         return {
-            self.constructor_argument_name: self.constructor_value_reader(
-                payload,
-                self.field_name,
-            )
+            self.constructor_argument_name: self.codec.read(payload, self.field_name)
         }
 
     def payload_items(self, owner: PayloadOwnerT) -> tuple[tuple[str, JsonValue], ...]:
-        return ((self.field_name, self.value_projector(owner)),)
+        value = getattr(owner, self.constructor_argument_name)
+        return ((self.field_name, self.codec.serialize(value)),)
 
 
 class PayloadBindingSet(
-    tuple[PayloadBinding[PayloadOwnerT, PayloadSourceT, PayloadValueT], ...],
-    Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT],
+    tuple[PayloadBinding[PayloadOwnerT, PayloadValueT], ...],
+    Generic[PayloadOwnerT, PayloadValueT],
 ):
     """Validated declaration-owned payload binding catalog."""
 
     def __new__(
         cls,
-        bindings: Iterable[
-            PayloadBinding[PayloadOwnerT, PayloadSourceT, PayloadValueT]
-        ] = (),
+        bindings: Iterable[PayloadBinding[PayloadOwnerT, PayloadValueT]] = (),
     ) -> Self:
         binding_tuple = tuple(bindings)
         cls.require_unique_binding_names(binding_tuple)
@@ -3296,7 +3546,7 @@ class PayloadBindingSet(
     @staticmethod
     def require_unique_binding_names(
         bindings: tuple[
-            PayloadBinding[PayloadOwnerT, PayloadSourceT, PayloadValueT],
+            PayloadBinding[PayloadOwnerT, PayloadValueT],
             ...,
         ],
     ) -> None:
@@ -3317,14 +3567,8 @@ class PayloadBindingSet(
                 )
 
 
-SelectorPayloadBinding: TypeAlias = PayloadBinding[
-    "CodemodTargetSelector",
-    Mapping[str, JsonValue],
-    JsonValue,
-]
 SelectorPayloadBindings: TypeAlias = PayloadBindingSet[
     "CodemodTargetSelector",
-    Mapping[str, JsonValue],
     JsonValue,
 ]
 
@@ -3334,8 +3578,7 @@ def selector_payload_bindings(
         tuple[
             str,
             str,
-            Callable[["CodemodTargetSelector"], JsonValue],
-            Callable[[Mapping[str, JsonValue], str], JsonValue],
+            PayloadValueCodec,
         ]
     ],
 ) -> SelectorPayloadBindings:
@@ -3343,96 +3586,14 @@ def selector_payload_bindings(
         PayloadBinding(
             field_name=field_name,
             constructor_argument_name=constructor_argument_name,
-            value_projector=value_projector,
-            constructor_value_reader=constructor_value_reader,
+            codec=codec,
         )
         for (
             field_name,
             constructor_argument_name,
-            value_projector,
-            constructor_value_reader,
+            codec,
         ) in specs
     )
-
-
-class SelectorPayloadReader:
-    """Constructor-value readers for selector payload bindings."""
-
-    @staticmethod
-    def required_string(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> str:
-        value = payload.get(field_name)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"Expected non-empty string field {field_name!r}")
-        return value
-
-    @staticmethod
-    def string_tuple(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> JsonValue:
-        value = payload.get(field_name)
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)) or not all(
-            isinstance(item, str) for item in value
-        ):
-            raise ValueError(f"Expected string array field {field_name!r}")
-        return tuple(value)
-
-    @staticmethod
-    def node_kind_tuple(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> JsonValue:
-        values = SelectorPayloadReader.string_tuple(payload, field_name)
-        return tuple(AstTargetNodeKind(value) for value in values)
-
-    @staticmethod
-    def bool_with_default(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-        default: bool,
-    ) -> bool:
-        if field_name not in payload:
-            return default
-        value = payload[field_name]
-        if not isinstance(value, bool):
-            raise ValueError(f"Expected boolean field {field_name!r}")
-        return value
-
-    @staticmethod
-    def true_bool(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> JsonValue:
-        return SelectorPayloadReader.bool_with_default(payload, field_name, True)
-
-    @staticmethod
-    def false_bool(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> JsonValue:
-        return SelectorPayloadReader.bool_with_default(payload, field_name, False)
-
-    @staticmethod
-    def selector_tuple(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> JsonValue:
-        value = payload.get(field_name)
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"Expected selector array field {field_name!r}")
-        selectors = []
-        for item in value:
-            if not isinstance(item, Mapping):
-                raise ValueError(f"Expected selector object entries in {field_name!r}")
-            selectors.append(CodemodTargetSelector.from_dict(item))
-        return tuple(selectors)
 
 
 class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
@@ -3447,7 +3608,9 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, JsonValue]) -> "CodemodTargetSelector":
-        selector_key = SelectorPayloadReader.required_string(payload, "selector")
+        selector_key = StringPayloadValueCodec().read(payload, "selector")
+        if selector_key is None:
+            raise ValueError("Expected non-empty string field 'selector'")
         selector_type = cls.__registry__.get(selector_key)
         if selector_type is None:
             raise ValueError(f"Unsupported target selector: {selector_key}")
@@ -3502,7 +3665,6 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
         tuple[
             PayloadBinding[
                 "CodemodTargetSelector",
-                Mapping[str, JsonValue],
                 JsonValue,
             ],
             ...,
@@ -3512,8 +3674,7 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
             (
                 "finding_ids",
                 "finding_ids",
-                lambda selector: selector.finding_ids,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
         )
     )
@@ -3540,7 +3701,6 @@ class TargetSetExpressionSelector(CodemodTargetSelector):
         tuple[
             PayloadBinding[
                 "CodemodTargetSelector",
-                Mapping[str, JsonValue],
                 JsonValue,
             ],
             ...,
@@ -3550,20 +3710,17 @@ class TargetSetExpressionSelector(CodemodTargetSelector):
             (
                 "include",
                 "include",
-                lambda selector: tuple(item.to_dict() for item in selector.include),
-                SelectorPayloadReader.selector_tuple,
+                SelectorArrayPayloadValueCodec(),
             ),
             (
                 "require",
                 "require",
-                lambda selector: tuple(item.to_dict() for item in selector.require),
-                SelectorPayloadReader.selector_tuple,
+                SelectorArrayPayloadValueCodec(),
             ),
             (
                 "exclude",
                 "exclude",
-                lambda selector: tuple(item.to_dict() for item in selector.exclude),
-                SelectorPayloadReader.selector_tuple,
+                SelectorArrayPayloadValueCodec(),
             ),
         )
     )
@@ -3620,7 +3777,6 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
         tuple[
             PayloadBinding[
                 "CodemodTargetSelector",
-                Mapping[str, JsonValue],
                 JsonValue,
             ],
             ...,
@@ -3630,40 +3786,32 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
             (
                 "node_kinds",
                 "node_kinds",
-                lambda selector: tuple(
-                    node_kind.value for node_kind in selector.node_kinds
-                ),
-                SelectorPayloadReader.node_kind_tuple,
+                NodeKindArrayPayloadValueCodec(),
             ),
             (
                 "file_paths",
                 "file_paths",
-                lambda selector: selector.file_paths,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
             (
                 "qualnames",
                 "qualnames",
-                lambda selector: selector.qualnames,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
             (
                 "file_path_patterns",
                 "file_path_patterns",
-                lambda selector: selector.file_path_patterns,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
             (
                 "name_patterns",
                 "name_patterns",
-                lambda selector: selector.name_patterns,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
             (
                 "qualname_patterns",
                 "qualname_patterns",
-                lambda selector: selector.qualname_patterns,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
         )
     )
@@ -3727,7 +3875,6 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
         tuple[
             PayloadBinding[
                 "CodemodTargetSelector",
-                Mapping[str, JsonValue],
                 JsonValue,
             ],
             ...,
@@ -3737,26 +3884,22 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
             (
                 "class_symbols",
                 "class_symbols",
-                lambda selector: selector.class_symbols,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
             (
                 "include_self",
                 "include_self",
-                lambda selector: selector.include_self,
-                SelectorPayloadReader.true_bool,
+                BooleanPayloadValueCodec(declared_default=True),
             ),
             (
                 "include_ancestors",
                 "include_ancestors",
-                lambda selector: selector.include_ancestors,
-                SelectorPayloadReader.false_bool,
+                BooleanPayloadValueCodec(),
             ),
             (
                 "include_descendants",
                 "include_descendants",
-                lambda selector: selector.include_descendants,
-                SelectorPayloadReader.false_bool,
+                BooleanPayloadValueCodec(),
             ),
         )
     )
@@ -3806,7 +3949,6 @@ class InheritanceEdgeTargetSelector(CodemodTargetSelector):
         tuple[
             PayloadBinding[
                 "CodemodTargetSelector",
-                Mapping[str, JsonValue],
                 JsonValue,
             ],
             ...,
@@ -3816,26 +3958,22 @@ class InheritanceEdgeTargetSelector(CodemodTargetSelector):
             (
                 "parent_symbols",
                 "parent_symbols",
-                lambda selector: selector.parent_symbols,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
             (
                 "child_symbols",
                 "child_symbols",
-                lambda selector: selector.child_symbols,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
             (
                 "include_parents",
                 "include_parents",
-                lambda selector: selector.include_parents,
-                SelectorPayloadReader.true_bool,
+                BooleanPayloadValueCodec(declared_default=True),
             ),
             (
                 "include_children",
                 "include_children",
-                lambda selector: selector.include_children,
-                SelectorPayloadReader.true_bool,
+                BooleanPayloadValueCodec(declared_default=True),
             ),
         )
     )
@@ -3907,7 +4045,6 @@ class CallSiteTargetSelector(CodemodTargetSelector):
         tuple[
             PayloadBinding[
                 "CodemodTargetSelector",
-                Mapping[str, JsonValue],
                 JsonValue,
             ],
             ...,
@@ -3917,8 +4054,7 @@ class CallSiteTargetSelector(CodemodTargetSelector):
             (
                 "callee_names",
                 "callee_names",
-                lambda selector: selector.callee_names,
-                SelectorPayloadReader.string_tuple,
+                StringArrayPayloadValueCodec(is_required=False),
             ),
         )
     )
@@ -4289,48 +4425,12 @@ class SourceRewritePlanPayload:
             return ""
         return value
 
-    def bool_with_default(self, field_name: str, default: bool) -> bool:
-        if field_name not in self.fields:
-            return default
-        value = self.fields[field_name]
-        if not isinstance(value, bool):
-            raise ValueError(f"Expected boolean field {field_name!r}")
-        return value
-
-    def string_tuple_or_empty(self, field_name: str) -> tuple[str, ...]:
-        if field_name not in self.fields:
-            return ()
-        values = self.required_array(field_name)
-        if not all(isinstance(value, str) for value in values):
-            raise ValueError(f"Expected string array field {field_name!r}")
-        return tuple(values)
-
-    def required_object(self, field_name: str) -> Mapping[str, JsonValue]:
-        value = self.fields.get(field_name)
-        if not isinstance(value, Mapping):
-            raise ValueError(f"Expected object field {field_name!r}")
-        return value
-
-    def optional_object(self, field_name: str) -> Mapping[str, JsonValue] | None:
-        value = self.fields.get(field_name)
-        if value is None:
-            return None
-        if not isinstance(value, Mapping):
-            raise ValueError(f"Expected object field {field_name!r}")
-        return value
-
-    def required_array(self, field_name: str) -> tuple[JsonValue, ...]:
-        value = self.fields.get(field_name)
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"Expected array field {field_name!r}")
-        return tuple(value)
-
     def source_target(self) -> SourceRewriteTarget:
         return SourceRewriteTarget(
             **{
                 key: value
                 for binding in SourceRewriteTarget.payload_bindings()
-                for key, value in binding.constructor_kwargs(self).items()
+                for key, value in binding.constructor_kwargs(self.fields).items()
             }
         )
 
@@ -4351,16 +4451,6 @@ class RecipeCallReplacement(SourceRewriteTargetReference):
             target=SourceRewriteTarget.from_mapping(value),
             old_source=payload.required_string(OLD_SOURCE_PAYLOAD_FIELD),
             new_source=payload.required_string(NEW_SOURCE_PAYLOAD_FIELD),
-        )
-
-    @staticmethod
-    def tuple_from_payload(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> "OperationConstructorValue":
-        return tuple(
-            RecipeCallReplacement.from_json_value(value)
-            for value in payload.required_array(field_name)
         )
 
     def to_dict(self) -> JsonObject:
@@ -4474,13 +4564,14 @@ class RefactorRecipeOperationTemplate:
         operation_key = SourceRewritePlanPayload(self.fields).required_string(
             "operation"
         )
-        if operation_key in SELECTED_TARGET_OPERATION_KIND_VALUES:
+        operation_type = RefactorRecipeOperation.__registry__.get(operation_key)
+        if operation_type is None:
+            raise ValueError(f"Unsupported recipe operation: {operation_key}")
+        if issubclass(operation_type, SelectedTargetsOperation):
             raise ValueError(
                 "Selected-target operation templates must wrap a target-local "
                 "operation"
             )
-        if operation_key not in RefactorRecipeOperation.__registry__:
-            raise ValueError(f"Unsupported recipe operation: {operation_key}")
         target_fields = tuple(
             field_name
             for binding in SourceRewriteTarget.payload_bindings()
@@ -4542,12 +4633,7 @@ class RefactorRecipeOperationPlanTemplate:
 
     @classmethod
     def dsl_field_names(cls) -> tuple[str, ...]:
-        return (
-            "recipe_id",
-            "reason",
-            "setup_operations",
-            OPERATION_TEMPLATES_PAYLOAD_FIELD,
-        )
+        return tuple(cls().to_dict())
 
     @classmethod
     def from_json_value(
@@ -4713,100 +4799,10 @@ class RefactorRecipeOperationPlanTemplate:
         }
 
 
-OperationConstructorValue: TypeAlias = (
-    CodemodTargetSelector
-    | JsonValue
-    | tuple[RecipeCallReplacement, ...]
-    | tuple[RefactorRecipeOperationTemplate, ...]
-    | tuple[str, ...]
-)
-OperationPayloadBinding: TypeAlias = PayloadBinding[
-    "RefactorRecipeOperation",
-    SourceRewritePlanPayload,
-    OperationConstructorValue,
-]
 OperationPayloadBindings: TypeAlias = PayloadBindingSet[
     "RefactorRecipeOperation",
-    SourceRewritePlanPayload,
-    OperationConstructorValue,
+    object,
 ]
-
-
-class OperationPayloadReader:
-    """Constructor-value readers for recipe operation payload bindings."""
-
-    @staticmethod
-    def required_string(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> OperationConstructorValue:
-        return payload.required_string(field_name)
-
-    @staticmethod
-    def required_string_tuple(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> OperationConstructorValue:
-        values = payload.required_array(field_name)
-        if not all(isinstance(value, str) for value in values):
-            raise ValueError(f"Expected string array field {field_name!r}")
-        return tuple(values)
-
-    @staticmethod
-    def string_tuple_or_empty(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> OperationConstructorValue:
-        if field_name not in payload.fields:
-            return ()
-        values = payload.required_array(field_name)
-        if not all(isinstance(value, str) for value in values):
-            raise ValueError(f"Expected string array field {field_name!r}")
-        return tuple(values)
-
-    @staticmethod
-    def bool_with_default(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-        default: bool,
-    ) -> OperationConstructorValue:
-        if field_name not in payload.fields:
-            return default
-        value = payload.fields[field_name]
-        if not isinstance(value, bool):
-            raise ValueError(f"Expected boolean field {field_name!r}")
-        return value
-
-    @staticmethod
-    def true_bool(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> OperationConstructorValue:
-        return OperationPayloadReader.bool_with_default(payload, field_name, True)
-
-    @staticmethod
-    def false_bool(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> OperationConstructorValue:
-        return OperationPayloadReader.bool_with_default(payload, field_name, False)
-
-    @staticmethod
-    def required_selector(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> OperationConstructorValue:
-        return CodemodTargetSelector.from_dict(payload.required_object(field_name))
-
-    @staticmethod
-    def required_operation_templates(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> OperationConstructorValue:
-        return tuple(
-            RefactorRecipeOperationTemplate.from_json_value(value)
-            for value in payload.required_array(field_name)
-        )
 
 
 def operation_payload_bindings(
@@ -4814,8 +4810,7 @@ def operation_payload_bindings(
         tuple[
             str,
             str,
-            Callable[["RefactorRecipeOperation"], JsonValue],
-            Callable[[SourceRewritePlanPayload, str], OperationConstructorValue],
+            PayloadValueCodec,
         ]
     ],
 ) -> OperationPayloadBindings:
@@ -4825,14 +4820,12 @@ def operation_payload_bindings(
         PayloadBinding(
             field_name=field_name,
             constructor_argument_name=constructor_argument_name,
-            value_projector=value_projector,
-            constructor_value_reader=constructor_value_reader,
+            codec=codec,
         )
         for (
             field_name,
             constructor_argument_name,
-            value_projector,
-            constructor_value_reader,
+            codec,
         ) in specs
     )
 
@@ -5549,18 +5542,17 @@ class RefactorRecipeOperation(
 ):
     """Agent-authored codemod operation compiled through source-index geometry."""
 
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __registry_key__ = "operation_key_value"
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Operation"
+    operation_key_value: ClassVar[str]
     contributes_source_overlay: ClassVar[bool] = False
     reports_preflight: ClassVar[bool] = False
 
     @classmethod
-    def operation_kind(cls) -> RefactorRecipeOperationKind:
-        return RefactorRecipeOperationKind(
-            _suffix_trimmed_class_name_registry_key(cls.__name__, cls)
-        )
+    def operation_key(cls) -> str:
+        return cls.operation_key_value
 
     @classmethod
     def from_dict(
@@ -5579,7 +5571,7 @@ class RefactorRecipeOperation(
 
     def to_dict(self) -> JsonObject:
         return {
-            "operation": self.operation_kind().value,
+            "operation": self.operation_key(),
             **self.target.to_dict(),
             **self.operation_payload(),
             "rationale": self.rationale,
@@ -5591,9 +5583,9 @@ class RefactorRecipeOperation(
         target: SourceRewriteTarget,
         payload: SourceRewritePlanPayload,
     ) -> "RefactorRecipeOperation":
-        constructor_kwargs: dict[str, OperationConstructorValue] = {}
+        constructor_kwargs: dict[str, object] = {}
         for binding in cls.payload_binding_set():
-            constructor_kwargs.update(binding.constructor_kwargs(payload))
+            constructor_kwargs.update(binding.constructor_kwargs(payload.fields))
         return cls(
             target=target,
             rationale=payload.string_or_empty("rationale"),
@@ -5615,6 +5607,7 @@ class RefactorRecipeOperation(
             key: value
             for binding in type(self).payload_binding_set()
             for key, value in binding.payload_items(self)
+            if value is not None
         }
 
     @abstractmethod
@@ -5771,17 +5764,9 @@ class StringPayloadOperation(RefactorRecipeOperation, ABC):
             PayloadBinding(
                 field_name=cls.payload_field_name,
                 constructor_argument_name="payload_value",
-                value_projector=StringPayloadOperation.payload_value_from_operation,
+                codec=StringPayloadValueCodec(),
             ),
         )
-
-    @staticmethod
-    def payload_value_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, StringPayloadOperation):
-            raise TypeError("String payload binding requires StringPayloadOperation")
-        return operation.payload_value
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -5790,27 +5775,11 @@ class BaseNamePayloadOperation(RefactorRecipeOperation, ABC):
 
     base_name: str
 
-    @staticmethod
-    def base_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, BaseNamePayloadOperation):
-            raise TypeError("base_name binding requires base-name operation")
-        return operation.base_name
-
 
 class AssignmentNamePayloadMixin(ABC):
     """Operation mixin whose payload exposes a module assignment name."""
 
     assignment_name: str
-
-    @staticmethod
-    def assignment_name_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, AssignmentNamePayloadMixin):
-            raise TypeError(
-                "assignment_name binding requires assignment-name operation"
-            )
-        return operation.assignment_name
 
 
 class ClassKeyPairsPayloadMixin(ABC):
@@ -5818,41 +5787,17 @@ class ClassKeyPairsPayloadMixin(ABC):
 
     class_key_pairs: tuple[str, ...]
 
-    @staticmethod
-    def class_key_pairs_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ClassKeyPairsPayloadMixin):
-            raise TypeError("class_key_pairs binding requires class/key-pair operation")
-        return operation.class_key_pairs
-
 
 class MethodNamePayloadMixin(ABC):
     """Operation mixin whose payload exposes a method name."""
 
     method_name: str
 
-    @staticmethod
-    def method_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, MethodNamePayloadMixin):
-            raise TypeError("method_name binding requires method-name operation")
-        return operation.method_name
-
 
 class FieldDeclarationSourcesPayloadMixin(ABC):
     """Operation mixin whose payload exposes generated field declarations."""
 
     field_declaration_sources: tuple[str, ...]
-
-    @staticmethod
-    def field_declaration_sources_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, FieldDeclarationSourcesPayloadMixin):
-            raise TypeError(
-                "field_declaration_sources binding requires field-declaration operation"
-            )
-        return operation.field_declaration_sources
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -5869,31 +5814,18 @@ class ReplaceTextOperation(RefactorRecipeOperation):
             PayloadBinding(
                 field_name=OLD_SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="old_source",
-                value_projector=ReplaceTextOperation.old_source_from_operation,
+                codec=StringPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=NEW_SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="new_source",
-                value_projector=ReplaceTextOperation.new_source_from_operation,
-                constructor_value_reader=SourceRewritePlanPayload.string_or_empty,
+                codec=StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                    missing_value="",
+                ),
             ),
         )
-
-    @staticmethod
-    def old_source_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ReplaceTextOperation):
-            raise TypeError("old_source binding requires ReplaceTextOperation")
-        return operation.old_source
-
-    @staticmethod
-    def new_source_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ReplaceTextOperation):
-            raise TypeError("new_source binding requires ReplaceTextOperation")
-        return operation.new_source
 
     def line_replacements(
         self,
@@ -5925,8 +5857,11 @@ class CreateFileOperation(StringPayloadOperation):
             PayloadBinding(
                 field_name=SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="payload_value",
-                value_projector=StringPayloadOperation.payload_value_from_operation,
-                constructor_value_reader=SourceRewritePlanPayload.string_or_empty,
+                codec=StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                    missing_value="",
+                ),
             ),
         )
 
@@ -5943,7 +5878,7 @@ class CreateFileOperation(StringPayloadOperation):
     ) -> tuple[SourceLineReplacement, ...]:
         source_path = self.required_source_path(
             source_index,
-            self.operation_kind().value,
+            self.operation_key(),
         )
         existing_source = source_by_path[source_path]
         if existing_source:
@@ -6033,20 +5968,9 @@ class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
             PayloadBinding(
                 field_name=ASSIGNMENT_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name="assignment_names",
-                value_projector=DeleteModuleAssignmentsOperation.assignment_names_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                codec=StringArrayPayloadValueCodec(),
             ),
         )
-
-    @staticmethod
-    def assignment_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, DeleteModuleAssignmentsOperation):
-            raise TypeError(
-                "assignment_names binding requires DeleteModuleAssignmentsOperation"
-            )
-        return operation.assignment_names
 
     def line_replacements(
         self,
@@ -6101,14 +6025,16 @@ class ReplaceModuleAssignmentOperation(
             PayloadBinding(
                 field_name=ASSIGNMENT_NAME_PAYLOAD_FIELD,
                 constructor_argument_name="assignment_name",
-                value_projector=AssignmentNamePayloadMixin.assignment_name_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string,
+                codec=StringPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="payload_value",
-                value_projector=StringPayloadOperation.payload_value_from_operation,
-                constructor_value_reader=SourceRewritePlanPayload.string_or_empty,
+                codec=StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                    missing_value="",
+                ),
             ),
         )
 
@@ -6162,47 +6088,19 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
             PayloadBinding(
                 field_name=BASE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name=BASE_NAME_PAYLOAD_FIELD,
-                value_projector=ClassMemberPromotionOperation.base_name_from_operation,
+                codec=StringPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=CLASS_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name=CLASS_NAMES_PAYLOAD_FIELD,
-                value_projector=ClassMemberPromotionOperation.class_names_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                codec=StringArrayPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=cls.member_payload_field_name,
                 constructor_argument_name=cls.member_constructor_argument_name,
-                value_projector=ClassMemberPromotionOperation.member_names_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                codec=StringArrayPayloadValueCodec(),
             ),
         )
-
-    @staticmethod
-    def base_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, ClassMemberPromotionOperation):
-            raise TypeError(
-                f"{BASE_NAME_PAYLOAD_FIELD} binding requires "
-                "ClassMemberPromotionOperation"
-            )
-        return operation.base_name
-
-    @staticmethod
-    def class_names_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, ClassMemberPromotionOperation):
-            raise TypeError(
-                f"{CLASS_NAMES_PAYLOAD_FIELD} binding requires "
-                "ClassMemberPromotionOperation"
-            )
-        return operation.class_names
-
-    @staticmethod
-    def member_names_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, ClassMemberPromotionOperation):
-            raise TypeError(
-                "member-name binding requires ClassMemberPromotionOperation"
-            )
-        return operation.member_names
 
     @property
     @abstractmethod
@@ -6924,69 +6822,30 @@ class ExtractMethodsToClassOperation(
                 (
                     DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
                     DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
-                    ExtractMethodsToClassOperation.destination_class_name_from_operation,
-                    OperationPayloadReader.required_string,
+                    StringPayloadValueCodec(),
                 ),
                 (
                     METHOD_NAMES_PAYLOAD_FIELD,
                     "extracted_method_names",
-                    ExtractMethodsToClassOperation.extracted_method_names_from_operation,
-                    OperationPayloadReader.required_string_tuple,
+                    StringArrayPayloadValueCodec(),
                 ),
                 (
                     FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
                     FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
-                    FieldDeclarationSourcesPayloadMixin.field_declaration_sources_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
+                    StringArrayPayloadValueCodec(is_required=False),
                 ),
                 (
                     CLASS_BASE_NAMES_PAYLOAD_FIELD,
                     CLASS_BASE_NAMES_PAYLOAD_FIELD,
-                    ExtractMethodsToClassOperation.class_base_names_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
+                    StringArrayPayloadValueCodec(is_required=False),
                 ),
                 (
                     CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD,
                     CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD,
-                    ExtractMethodsToClassOperation.class_decorator_sources_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
+                    StringArrayPayloadValueCodec(is_required=False),
                 ),
             )
         )
-
-    @staticmethod
-    def destination_class_name_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ExtractMethodsToClassOperation):
-            raise TypeError("destination_class_name binding requires method extraction")
-        return operation.destination_class_name
-
-    @staticmethod
-    def extracted_method_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ExtractMethodsToClassOperation):
-            raise TypeError("method_names binding requires method extraction")
-        return operation.extracted_method_names
-
-    @staticmethod
-    def class_base_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ExtractMethodsToClassOperation):
-            raise TypeError("class_base_names binding requires method extraction")
-        return operation.class_base_names
-
-    @staticmethod
-    def class_decorator_sources_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ExtractMethodsToClassOperation):
-            raise TypeError(
-                "class_decorator_sources binding requires method extraction"
-            )
-        return operation.class_decorator_sources
 
     def line_replacements_for_target_node(
         self,
@@ -7344,97 +7203,40 @@ class CollapseFieldsToCarrierOperation(
                 (
                     CARRIER_NAME_PAYLOAD_FIELD,
                     CARRIER_NAME_PAYLOAD_FIELD,
-                    CollapseFieldsToCarrierOperation.carrier_name_from_operation,
-                    OperationPayloadReader.required_string,
+                    StringPayloadValueCodec(),
                 ),
                 (
                     CLASS_NAMES_PAYLOAD_FIELD,
                     CLASS_NAMES_PAYLOAD_FIELD,
-                    CollapseFieldsToCarrierOperation.class_names_from_operation,
-                    OperationPayloadReader.required_string_tuple,
+                    StringArrayPayloadValueCodec(),
                 ),
                 (
                     FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
                     FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
-                    FieldDeclarationSourcesPayloadMixin.field_declaration_sources_from_operation,
-                    OperationPayloadReader.required_string_tuple,
+                    StringArrayPayloadValueCodec(),
                 ),
                 (
                     CARRIER_BASE_NAMES_PAYLOAD_FIELD,
                     CARRIER_BASE_NAMES_PAYLOAD_FIELD,
-                    CollapseFieldsToCarrierOperation.carrier_base_names_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
+                    StringArrayPayloadValueCodec(is_required=False),
                 ),
                 (
                     CARRIER_DATACLASS_ARGUMENTS_PAYLOAD_FIELD,
                     CARRIER_DATACLASS_ARGUMENTS_PAYLOAD_FIELD,
-                    CollapseFieldsToCarrierOperation.carrier_dataclass_arguments_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
+                    StringArrayPayloadValueCodec(is_required=False),
                 ),
                 (
                     INHERITED_FIELD_NAMES_PAYLOAD_FIELD,
                     INHERITED_FIELD_NAMES_PAYLOAD_FIELD,
-                    CollapseFieldsToCarrierOperation.inherited_field_names_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
+                    StringArrayPayloadValueCodec(is_required=False),
                 ),
                 (
                     INSERT_CARRIER_PAYLOAD_FIELD,
                     INSERT_CARRIER_PAYLOAD_FIELD,
-                    CollapseFieldsToCarrierOperation.insert_carrier_from_operation,
-                    OperationPayloadReader.true_bool,
+                    BooleanPayloadValueCodec(declared_default=True),
                 ),
             )
         )
-
-    @staticmethod
-    def carrier_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, CollapseFieldsToCarrierOperation):
-            raise TypeError("carrier_name binding requires field carrier collapse")
-        return operation.carrier_name
-
-    @staticmethod
-    def class_names_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, CollapseFieldsToCarrierOperation):
-            raise TypeError("class_names binding requires field carrier collapse")
-        return operation.class_names
-
-    @staticmethod
-    def carrier_base_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, CollapseFieldsToCarrierOperation):
-            raise TypeError(
-                "carrier_base_names binding requires field carrier collapse"
-            )
-        return operation.carrier_base_names
-
-    @staticmethod
-    def carrier_dataclass_arguments_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, CollapseFieldsToCarrierOperation):
-            raise TypeError(
-                "carrier_dataclass_arguments binding requires field carrier collapse"
-            )
-        return operation.carrier_dataclass_arguments
-
-    @staticmethod
-    def inherited_field_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, CollapseFieldsToCarrierOperation):
-            raise TypeError(
-                "inherited_field_names binding requires field carrier collapse"
-            )
-        return operation.inherited_field_names
-
-    @staticmethod
-    def insert_carrier_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, CollapseFieldsToCarrierOperation):
-            raise TypeError("insert_carrier binding requires field carrier collapse")
-        return operation.insert_carrier
 
     @property
     def carrier_authority(self) -> SemanticCarrierSourceAuthority:
@@ -7563,65 +7365,25 @@ class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
                 (
                     CLASS_NAME_PAYLOAD_FIELD,
                     "class_name",
-                    CarrierProjectionOperationBase.class_name_from_operation,
-                    OperationPayloadReader.required_string,
+                    StringPayloadValueCodec(),
                 ),
                 (
                     FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
                     "field_projection_pairs",
-                    CarrierProjectionOperationBase.field_projection_pairs_from_operation,
-                    OperationPayloadReader.required_string_tuple,
+                    StringArrayPayloadValueCodec(),
                 ),
                 (
                     CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
                     "constructor_names",
-                    CarrierProjectionOperationBase.constructor_names_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
+                    StringArrayPayloadValueCodec(is_required=False),
                 ),
                 (
                     ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
                     "attribute_owner_expressions",
-                    CarrierProjectionOperationBase.attribute_owner_expressions_from_operation,
-                    OperationPayloadReader.string_tuple_or_empty,
+                    StringArrayPayloadValueCodec(is_required=False),
                 ),
             )
         )
-
-    @staticmethod
-    def class_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, CarrierProjectionOperationBase):
-            raise TypeError("class_name binding requires carrier projection operation")
-        return operation.class_name
-
-    @staticmethod
-    def field_projection_pairs_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, CarrierProjectionOperationBase):
-            raise TypeError(
-                "field_projection_pairs binding requires carrier projection operation"
-            )
-        return operation.field_projection_pairs
-
-    @staticmethod
-    def constructor_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, CarrierProjectionOperationBase):
-            raise TypeError(
-                "constructor_names binding requires carrier projection operation"
-            )
-        return operation.constructor_names
-
-    @staticmethod
-    def attribute_owner_expressions_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, CarrierProjectionOperationBase):
-            raise TypeError(
-                "attribute_owner_expressions binding requires carrier projection operation"
-            )
-        return operation.attribute_owner_expressions
 
     @property
     def resolved_constructor_names(self) -> tuple[str, ...]:
@@ -7644,22 +7406,11 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
                     (
                         "carrier_field_declaration",
                         "carrier_field_declaration",
-                        ReplaceFieldsWithCarrierOperation.carrier_field_declaration_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                 )
             ),
         )
-
-    @staticmethod
-    def carrier_field_declaration_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ReplaceFieldsWithCarrierOperation):
-            raise TypeError(
-                "carrier_field_declaration binding requires field carrier replacement"
-            )
-        return operation.carrier_field_declaration
 
     @property
     def carrier_field(self) -> CarrierFieldDeclaration:
@@ -7698,7 +7449,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
     ) -> tuple[SourceLineReplacement, ...]:
         source_path = self.required_source_path(
             source_index,
-            self.operation_kind().value,
+            self.operation_key(),
         )
         source = source_by_path[source_path]
         geometry = SourceTextGeometry(source)
@@ -8008,36 +7759,16 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
                     (
                         CARRIER_SOURCE_PAYLOAD_FIELD,
                         CARRIER_SOURCE_PAYLOAD_FIELD,
-                        ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_source_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                     (
                         CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
                         CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
-                        ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_field_declarations_from_operation,
-                        OperationPayloadReader.required_string_tuple,
+                        StringArrayPayloadValueCodec(),
                     ),
                 )
             ),
         )
-
-    @staticmethod
-    def carrier_source_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, ReplaceRolePrefixedFieldsWithCarriersOperation):
-            raise TypeError(
-                "carrier_source binding requires role field carrier replacement"
-            )
-        return operation.carrier_source
-
-    @staticmethod
-    def carrier_field_declarations_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ReplaceRolePrefixedFieldsWithCarriersOperation):
-            raise TypeError(
-                "carrier_field_declarations binding requires role field carrier replacement"
-            )
-        return operation.carrier_field_declarations
 
     @property
     def carrier_fields(self) -> tuple[CarrierFieldDeclaration, ...]:
@@ -8091,7 +7822,7 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
     ) -> tuple[SourceLineReplacement, ...]:
         source_path = self.required_source_path(
             source_index,
-            self.operation_kind().value,
+            self.operation_key(),
         )
         source = source_by_path[source_path]
         geometry = SourceTextGeometry(source)
@@ -8410,39 +8141,15 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
                 (
                     "selector",
                     "selector",
-                    cls.selector_from_operation,
-                    OperationPayloadReader.required_selector,
+                    SelectorObjectPayloadValueCodec(),
+                ),
+                (
+                    SELECTION_COUNT_PAYLOAD_FIELD,
+                    "selection_count",
+                    SelectionCountPayloadValueCodec(),
                 ),
             )
         )
-
-    @staticmethod
-    def selector_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, SelectedTargetsOperation):
-            raise TypeError("selector binding requires selected-targets operation")
-        return operation.selector.to_dict()
-
-    @classmethod
-    def from_operation_payload(
-        cls,
-        target: SourceRewriteTarget,
-        payload: SourceRewritePlanPayload,
-    ) -> "SelectedTargetsOperation":
-        operation = super().from_operation_payload(target, payload)
-        if not isinstance(operation, SelectedTargetsOperation):
-            raise TypeError("selected-target operation payload resolved incorrectly")
-        return replace(
-            operation,
-            selection_count=SelectionCountExpectation.from_mapping(
-                payload.optional_object(SELECTION_COUNT_PAYLOAD_FIELD)
-            ),
-        )
-
-    def operation_payload(self) -> JsonObject:
-        payload = super().operation_payload()
-        if not self.selection_count.is_empty:
-            payload[SELECTION_COUNT_PAYLOAD_FIELD] = self.selection_count.to_dict()
-        return payload
 
     def selector_context(
         self,
@@ -8498,22 +8205,11 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
                     (
                         OPERATION_TEMPLATES_PAYLOAD_FIELD,
                         "operation_templates",
-                        cls.operation_templates_from_operation,
-                        OperationPayloadReader.required_operation_templates,
+                        OperationTemplateArrayPayloadValueCodec(),
                     ),
                 )
             ),
         )
-
-    @staticmethod
-    def operation_templates_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ApplySelectedTargetsOperation):
-            raise TypeError(
-                "operation_templates binding requires apply-selected-targets operation"
-            )
-        return tuple(template.to_dict() for template in operation.operation_templates)
 
     def line_replacements_with_context(
         self,
@@ -8597,21 +8293,8 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
             PayloadBinding(
                 field_name=CALL_REPLACEMENTS_PAYLOAD_FIELD,
                 constructor_argument_name="call_replacements",
-                value_projector=ExtractAuthorityOperation.call_replacements_from_operation,
-                constructor_value_reader=RecipeCallReplacement.tuple_from_payload,
+                codec=CallReplacementArrayPayloadValueCodec(),
             ),
-        )
-
-    @staticmethod
-    def call_replacements_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ExtractAuthorityOperation):
-            raise TypeError(
-                "call_replacements binding requires ExtractAuthorityOperation"
-            )
-        return tuple(
-            replacement.to_dict() for replacement in operation.call_replacements
         )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
@@ -8664,8 +8347,6 @@ class DeclareAuthorityOperation(
 ):
     """Insert a declared authority boundary and bind it to an AuthorityClaim."""
 
-    registry_key: ClassVar[str] = RefactorRecipeOperationKind.DECLARE_AUTHORITY.value
-
     @property
     def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
         return (self.authority_claim,)
@@ -8677,22 +8358,10 @@ class DeclareAuthorityOperation(
             PayloadBinding(
                 field_name=AuthorityClaimPayload.claim_field_name,
                 constructor_argument_name="authority_claim",
-                value_projector=DeclareAuthorityOperation.authority_claim_from_operation,
-                constructor_value_reader=AuthorityClaimPayload.required_claim,
-                dsl_value_kind=CodemodDslFieldKind.AUTHORITY_CLAIM,
+                codec=AuthorityClaimPayloadValueCodec(),
             ),
             *AuthoritySourceOperation.payload_bindings(),
         )
-
-    @staticmethod
-    def authority_claim_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, DeclareAuthorityOperation):
-            raise TypeError(
-                "authority_claim binding requires DeclareAuthorityOperation"
-            )
-        return JsonObject(operation.authority_claim.to_dict())
 
     def line_replacements(
         self,
@@ -9066,31 +8735,14 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
             PayloadBinding(
                 field_name=MODULE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name="module_name",
-                value_projector=RemoveImportNamesOperation.module_name_from_operation,
+                codec=StringPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=IMPORT_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name="import_names",
-                value_projector=RemoveImportNamesOperation.import_names_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                codec=StringArrayPayloadValueCodec(),
             ),
         )
-
-    @staticmethod
-    def module_name_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, RemoveImportNamesOperation):
-            raise TypeError("module_name binding requires RemoveImportNamesOperation")
-        return operation.module_name
-
-    @staticmethod
-    def import_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, RemoveImportNamesOperation):
-            raise TypeError("import_names binding requires RemoveImportNamesOperation")
-        return operation.import_names
 
     def line_replacements(
         self,
@@ -9253,12 +8905,6 @@ class MovedSymbolImportPolicy:
     @classmethod
     def from_source(cls, import_source: str | None) -> "MovedSymbolImportPolicy":
         return cls(import_source=import_source)
-
-    @property
-    def operation_payload(self) -> JsonObject:
-        if self.import_source is None:
-            return {}
-        return {REPLACEMENT_IMPORT_PAYLOAD_FIELD: self.import_source}
 
     def source_replacement(
         self,
@@ -9859,7 +9505,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         if not self.dependency_report.is_clean:
             raise CodemodOperationPreflightError(
                 CodemodOperationPreflightReport(
-                    operation=RefactorRecipeOperationKind.MOVE_SYMBOLS_TO_MODULE.value,
+                    operation=MoveSymbolsToModuleOperation.operation_key(),
                     status=CodemodPreflightStatus.FAILED,
                     message=self.dependency_report.error_message,
                     details=self.dependency_report.to_dict(),
@@ -9962,40 +9608,16 @@ class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
         return PayloadBinding(
             field_name=DESTINATION_PATH_PAYLOAD_FIELD,
             constructor_argument_name="destination_path",
-            value_projector=ModuleSymbolMoveOperation.destination_path_from_operation,
+            codec=StringPayloadValueCodec(),
         )
-
-    @staticmethod
-    def destination_path_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ModuleSymbolMoveOperation):
-            raise TypeError(
-                "destination_path binding requires ModuleSymbolMoveOperation"
-            )
-        return operation.destination_path
 
     @classmethod
-    def from_operation_payload(
-        cls,
-        target: SourceRewriteTarget,
-        payload: SourceRewritePlanPayload,
-    ) -> "ModuleSymbolMoveOperation":
-        operation = super().from_operation_payload(target, payload)
-        if not isinstance(operation, ModuleSymbolMoveOperation):
-            raise TypeError("module-symbol move payload resolved incorrectly")
-        return replace(
-            operation,
-            replacement_import=MovedSymbolImportPolicy.from_source(
-                payload.optional_string(REPLACEMENT_IMPORT_PAYLOAD_FIELD)
-            ),
+    def replacement_import_payload_binding(cls) -> PayloadBinding:
+        return PayloadBinding(
+            field_name=REPLACEMENT_IMPORT_PAYLOAD_FIELD,
+            constructor_argument_name="replacement_import",
+            codec=ReplacementImportPayloadValueCodec(),
         )
-
-    def operation_payload(self) -> JsonObject:
-        return {
-            **super().operation_payload(),
-            **self.replacement_import.operation_payload,
-        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -10007,7 +9629,10 @@ class MoveSymbolToModuleOperation(
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        return (cls.destination_path_payload_binding(),)
+        return (
+            cls.destination_path_payload_binding(),
+            cls.replacement_import_payload_binding(),
+        )
 
     def line_replacements_for_target_node(
         self,
@@ -10052,21 +9677,11 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
             PayloadBinding(
                 field_name=SYMBOL_QUALNAMES_PAYLOAD_FIELD,
                 constructor_argument_name=SYMBOL_QUALNAMES_PAYLOAD_FIELD,
-                value_projector=MoveSymbolsToModuleOperation.symbol_qualnames_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                codec=StringArrayPayloadValueCodec(),
             ),
             cls.destination_path_payload_binding(),
+            cls.replacement_import_payload_binding(),
         )
-
-    @staticmethod
-    def symbol_qualnames_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, MoveSymbolsToModuleOperation):
-            raise TypeError(
-                "symbol_qualnames binding requires MoveSymbolsToModuleOperation"
-            )
-        return operation.symbol_qualnames
 
     def dependency_report(
         self,
@@ -10092,7 +9707,7 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
             message = dependency_report.error_message
         return (
             CodemodOperationPreflightReport(
-                operation=self.operation_kind().value,
+                operation=self.operation_key(),
                 status=status,
                 message=message,
                 details=dependency_report.to_dict(),
@@ -10433,208 +10048,51 @@ class ExposeGlobalCandidateCacheContextOperation(
             PayloadBinding(
                 field_name=CANDIDATE_TYPE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name="candidate_type_name",
-                value_projector=(
-                    ExposeGlobalCandidateCacheContextOperation.candidate_type_name_from_operation
-                ),
-                constructor_value_reader=OperationPayloadReader.required_string,
+                codec=StringPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD,
                 constructor_argument_name="candidate_collector_name",
-                value_projector=(
-                    ExposeGlobalCandidateCacheContextOperation.candidate_collector_name_from_operation
-                ),
-                constructor_value_reader=OperationPayloadReader.required_string,
+                codec=StringPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD,
                 constructor_argument_name="candidate_collector_scope",
-                value_projector=(
-                    ExposeGlobalCandidateCacheContextOperation.candidate_collector_scope_from_operation
+                codec=StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                    missing_value=WholeModuleCandidateCollectorScopeSource.scope_key,
                 ),
-                constructor_value_reader=OperationPayloadReader.required_string,
             ),
             PayloadBinding(
                 field_name=CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD,
                 constructor_argument_name="candidate_collector_uses_config",
-                value_projector=(
-                    ExposeGlobalCandidateCacheContextOperation.candidate_collector_uses_config_from_operation
-                ),
-                constructor_value_reader=OperationPayloadReader.false_bool,
+                codec=BooleanPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD,
                 constructor_argument_name="candidate_item_sort_attributes",
-                value_projector=(
-                    ExposeGlobalCandidateCacheContextOperation.candidate_item_sort_attributes_from_operation
-                ),
-                constructor_value_reader=OperationPayloadReader.string_tuple_or_empty,
+                codec=StringArrayPayloadValueCodec(is_required=False),
             ),
             PayloadBinding(
                 field_name=BASE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name="replaced_base_name",
-                value_projector=(
-                    ExposeGlobalCandidateCacheContextOperation.replaced_base_name_from_operation
+                codec=StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                    missing_value="IssueDetector",
                 ),
-                constructor_value_reader=OperationPayloadReader.required_string,
             ),
             PayloadBinding(
                 field_name=IMPORT_SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="import_source",
-                value_projector=(
-                    ExposeGlobalCandidateCacheContextOperation.import_source_from_operation
+                codec=StringPayloadValueCodec(
+                    is_required=False,
+                    allows_empty=True,
+                    missing_value="",
                 ),
-                constructor_value_reader=SourceRewritePlanPayload.string_or_empty,
             ),
         )
-
-    @classmethod
-    def from_operation_payload(
-        cls,
-        target: SourceRewriteTarget,
-        payload: SourceRewritePlanPayload,
-    ) -> "ExposeGlobalCandidateCacheContextOperation":
-        return cls(
-            target=target,
-            rationale=payload.string_or_empty("rationale"),
-            candidate_type_name=payload.required_string(
-                CANDIDATE_TYPE_NAME_PAYLOAD_FIELD
-            ),
-            candidate_collector_name=payload.required_string(
-                CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD
-            ),
-            candidate_collector_scope=cls.candidate_collector_scope_from_payload(
-                payload,
-                CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD,
-            ),
-            candidate_collector_uses_config=payload.bool_with_default(
-                CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD,
-                False,
-            ),
-            candidate_item_sort_attributes=payload.string_tuple_or_empty(
-                CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD,
-            ),
-            replaced_base_name=cls.replaced_base_from_payload(
-                payload,
-                BASE_NAME_PAYLOAD_FIELD,
-            ),
-            import_source=cls.import_source_from_payload(
-                payload,
-                IMPORT_SOURCE_PAYLOAD_FIELD,
-            ),
-        )
-
-    @staticmethod
-    def candidate_collector_scope_from_payload(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> str:
-        value = payload.optional_string(field_name)
-        if value is None:
-            return WholeModuleCandidateCollectorScopeSource.scope_key
-        return value
-
-    @staticmethod
-    def replaced_base_from_payload(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> str:
-        value = payload.optional_string(field_name)
-        if value is None:
-            return "IssueDetector"
-        return value
-
-    @staticmethod
-    def import_source_from_payload(
-        payload: SourceRewritePlanPayload,
-        field_name: str,
-    ) -> str:
-        value = payload.optional_string(field_name)
-        if value is None:
-            return ""
-        return value
-
-    @staticmethod
-    def _required_operation(
-        operation: RefactorRecipeOperation,
-    ) -> "ExposeGlobalCandidateCacheContextOperation":
-        if not isinstance(operation, ExposeGlobalCandidateCacheContextOperation):
-            raise TypeError(
-                "candidate cache context binding requires "
-                "ExposeGlobalCandidateCacheContextOperation"
-            )
-        return operation
-
-    @staticmethod
-    def candidate_type_name_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        return ExposeGlobalCandidateCacheContextOperation._required_operation(
-            operation
-        ).candidate_type_name
-
-    @staticmethod
-    def candidate_collector_name_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        return ExposeGlobalCandidateCacheContextOperation._required_operation(
-            operation
-        ).candidate_collector_name
-
-    @staticmethod
-    def candidate_collector_scope_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        return ExposeGlobalCandidateCacheContextOperation._required_operation(
-            operation
-        ).candidate_collector_scope
-
-    @staticmethod
-    def candidate_collector_uses_config_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        return ExposeGlobalCandidateCacheContextOperation._required_operation(
-            operation
-        ).candidate_collector_uses_config
-
-    @staticmethod
-    def candidate_item_sort_attributes_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        return ExposeGlobalCandidateCacheContextOperation._required_operation(
-            operation
-        ).candidate_item_sort_attributes
-
-    @staticmethod
-    def replaced_base_name_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        return ExposeGlobalCandidateCacheContextOperation._required_operation(
-            operation
-        ).replaced_base_name
-
-    @staticmethod
-    def import_source_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        return ExposeGlobalCandidateCacheContextOperation._required_operation(
-            operation
-        ).import_source
-
-    def operation_payload(self) -> JsonObject:
-        return {
-            CANDIDATE_TYPE_NAME_PAYLOAD_FIELD: self.candidate_type_name,
-            CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD: self.candidate_collector_name,
-            CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD: self.candidate_collector_scope,
-            CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD: (
-                self.candidate_collector_uses_config
-            ),
-            CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD: (
-                self.candidate_item_sort_attributes
-            ),
-            BASE_NAME_PAYLOAD_FIELD: self.replaced_base_name,
-            IMPORT_SOURCE_PAYLOAD_FIELD: self.import_source,
-        }
 
     @property
     def candidate_method_spec(self) -> CandidateCollectorMethodSpec:
@@ -10857,26 +10315,22 @@ class DeriveAutoregisterInstanceViewOperation(
             PayloadBinding(
                 field_name=BASE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name=BASE_NAME_PAYLOAD_FIELD,
-                value_projector=BaseNamePayloadOperation.base_name_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string,
+                codec=StringPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=ASSIGNMENT_NAME_PAYLOAD_FIELD,
                 constructor_argument_name=ASSIGNMENT_NAME_PAYLOAD_FIELD,
-                value_projector=AssignmentNamePayloadMixin.assignment_name_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string,
+                codec=StringPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
                 constructor_argument_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
-                value_projector=ClassKeyPairsPayloadMixin.class_key_pairs_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                codec=StringArrayPayloadValueCodec(),
             ),
             PayloadBinding(
                 field_name=METHOD_NAME_PAYLOAD_FIELD,
                 constructor_argument_name=METHOD_NAME_PAYLOAD_FIELD,
-                value_projector=MethodNamePayloadMixin.method_name_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string,
+                codec=StringPayloadValueCodec(),
             ),
         )
 
@@ -11246,47 +10700,26 @@ class ConvertManualRegistryToAutoregisterOperation(
                     (
                         BASE_NAME_PAYLOAD_FIELD,
                         BASE_NAME_PAYLOAD_FIELD,
-                        BaseNamePayloadOperation.base_name_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                     (
                         REGISTRY_NAME_PAYLOAD_FIELD,
                         REGISTRY_NAME_PAYLOAD_FIELD,
-                        ConvertManualRegistryToAutoregisterOperation.registry_name_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                     (
                         REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
                         REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                        ConvertManualRegistryToAutoregisterOperation.registry_key_attribute_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                 )
             ),
             PayloadBinding(
                 field_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
                 constructor_argument_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
-                value_projector=ClassKeyPairsPayloadMixin.class_key_pairs_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
-                dsl_value_kind=CodemodDslFieldKind.CLASS_KEY_PAIR_ARRAY,
+                codec=StringArrayPayloadValueCodec(),
             ),
         )
-
-    @staticmethod
-    def registry_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, ConvertManualRegistryToAutoregisterOperation):
-            raise TypeError("registry_name binding requires registry conversion")
-        return operation.registry_name
-
-    @staticmethod
-    def registry_key_attribute_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ConvertManualRegistryToAutoregisterOperation):
-            raise TypeError(
-                "registry_key_attribute binding requires registry conversion"
-            )
-        return operation.registry_key_attribute
 
     @property
     def parsed_class_key_pairs(self) -> tuple[ClassRegistryKeyPair, ...]:
@@ -12147,63 +11580,31 @@ class DispatchToPolymorphismOperation(
                     (
                         DISPATCH_AXIS_EXPRESSION_PAYLOAD_FIELD,
                         DISPATCH_AXIS_EXPRESSION_PAYLOAD_FIELD,
-                        DispatchToPolymorphismOperation.dispatch_axis_expression_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                     (
                         BASE_NAME_PAYLOAD_FIELD,
                         BASE_NAME_PAYLOAD_FIELD,
-                        BaseNamePayloadOperation.base_name_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                     (
                         CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
                         CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                        DispatchToPolymorphismOperation.case_key_attribute_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                     (
                         METHOD_NAME_PAYLOAD_FIELD,
                         METHOD_NAME_PAYLOAD_FIELD,
-                        MethodNamePayloadMixin.method_name_from_operation,
-                        OperationPayloadReader.required_string,
+                        StringPayloadValueCodec(),
                     ),
                 )
             ),
             PayloadBinding(
                 field_name=LITERAL_CASES_PAYLOAD_FIELD,
                 constructor_argument_name=LITERAL_CASES_PAYLOAD_FIELD,
-                value_projector=(
-                    DispatchToPolymorphismOperation.literal_cases_from_operation
-                ),
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
-                dsl_value_kind=CodemodDslFieldKind.PYTHON_LITERAL_ARRAY,
+                codec=StringArrayPayloadValueCodec(),
             ),
         )
-
-    @staticmethod
-    def dispatch_axis_expression_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, DispatchToPolymorphismOperation):
-            raise TypeError(
-                "dispatch_axis_expression binding requires dispatch conversion"
-            )
-        return operation.dispatch_axis_expression
-
-    @staticmethod
-    def literal_cases_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, DispatchToPolymorphismOperation):
-            raise TypeError("literal_cases binding requires dispatch conversion")
-        return operation.literal_cases
-
-    @staticmethod
-    def case_key_attribute_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, DispatchToPolymorphismOperation):
-            raise TypeError("case_key_attribute binding requires dispatch conversion")
-        return operation.case_key_attribute
 
     def line_replacements_for_target_node(
         self,
@@ -12459,20 +11860,9 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
             PayloadBinding(
                 field_name=RECORD_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name="record_names",
-                value_projector=ProductRecordsToDataclassesOperation.record_names_from_operation,
-                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                codec=StringArrayPayloadValueCodec(),
             ),
         )
-
-    @staticmethod
-    def record_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, ProductRecordsToDataclassesOperation):
-            raise TypeError(
-                "record_names binding requires ProductRecordsToDataclassesOperation"
-            )
-        return operation.record_names
 
     def line_replacements(
         self,
@@ -12491,760 +11881,6 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
             record_names=self.record_names,
             rationale=self.rationale,
         ).line_replacements(module)
-
-
-class CodemodDslFieldKind(StrEnum):
-    """Machine-readable JSON value kinds accepted by the codemod DSL."""
-
-    AUTHORITY_CLAIM = AuthorityClaimPayload.claim_field_name
-    BOOLEAN = "boolean"
-    CALL_REPLACEMENT_ARRAY = "call_replacement_array"
-    CLASS_KEY_PAIR_ARRAY = "class_key_pair_array"
-    INTEGER = "integer"
-    NODE_KIND_ARRAY = "node_kind_array"
-    OBJECT = "object"
-    OPERATION_TEMPLATE_ARRAY = "operation_template_array"
-    PYTHON_LITERAL_ARRAY = "python_literal_array"
-    SELECTOR_ARRAY = "selector_array"
-    SELECTOR_OBJECT = "selector_object"
-    STRING = "string"
-    STRING_ARRAY = "string_array"
-    UNKNOWN = "unknown"
-
-
-@dataclass(frozen=True)
-class CodemodDslPlaceholder:
-    """Typed placeholder token used only in agent-facing DSL examples."""
-
-    field_name: str
-
-    @property
-    def value(self) -> str:
-        return f"<{self.field_name}>"
-
-
-@dataclass(frozen=True)
-class CodemodDslPayloadReaderProfile:
-    """Value-shape profile inferred from a registered payload reader."""
-
-    value_kind: CodemodDslFieldKind
-    required: bool = True
-    empty_string_allowed: bool = False
-    default_value: JsonScalar = None
-
-    @classmethod
-    def string(cls) -> "CodemodDslPayloadReaderProfile":
-        return cls(CodemodDslFieldKind.STRING)
-
-    @classmethod
-    def optional_string(cls) -> "CodemodDslPayloadReaderProfile":
-        return cls(
-            CodemodDslFieldKind.STRING,
-            required=False,
-            empty_string_allowed=True,
-            default_value="",
-        )
-
-    @classmethod
-    def string_array(
-        cls,
-        *,
-        required: bool = True,
-    ) -> "CodemodDslPayloadReaderProfile":
-        return cls(CodemodDslFieldKind.STRING_ARRAY, required=required)
-
-    @classmethod
-    def optional_boolean(
-        cls,
-        default_value: bool,
-    ) -> "CodemodDslPayloadReaderProfile":
-        return cls(
-            CodemodDslFieldKind.BOOLEAN,
-            required=False,
-            default_value=default_value,
-        )
-
-    @classmethod
-    def from_reader(
-        cls,
-        reader: Callable[..., OperationConstructorValue],
-    ) -> "CodemodDslPayloadReaderProfile":
-        for rule in codemod_dsl_payload_reader_profile_rules():
-            if rule.matches(reader):
-                return rule.profile
-        return cls(CodemodDslFieldKind.UNKNOWN)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "value_kind": self.value_kind.value,
-            "required": self.required,
-            "empty_string_allowed": self.empty_string_allowed,
-            "default_value": self.default_value,
-        }
-
-
-@dataclass(frozen=True)
-class CodemodDslPayloadReaderProfileRule:
-    """Declared schema profile for one registered payload reader."""
-
-    reader: Callable[..., OperationConstructorValue]
-    profile: CodemodDslPayloadReaderProfile
-
-    def matches(self, candidate: Callable[..., OperationConstructorValue]) -> bool:
-        return candidate is self.reader
-
-
-def codemod_dsl_payload_reader_profile_rules() -> tuple[
-    CodemodDslPayloadReaderProfileRule,
-    ...,
-]:
-    """Return nominal reader-profile declarations used by the DSL manifest."""
-
-    return (
-        CodemodDslPayloadReaderProfileRule(
-            required_source_plan_payload_string,
-            CodemodDslPayloadReaderProfile.string(),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            optional_source_plan_payload_string,
-            CodemodDslPayloadReaderProfile(
-                CodemodDslFieldKind.STRING,
-                required=False,
-            ),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            SourceRewritePlanPayload.string_or_empty,
-            CodemodDslPayloadReaderProfile.optional_string(),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            OperationPayloadReader.required_string,
-            CodemodDslPayloadReaderProfile.string(),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            OperationPayloadReader.required_string_tuple,
-            CodemodDslPayloadReaderProfile.string_array(),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            OperationPayloadReader.string_tuple_or_empty,
-            CodemodDslPayloadReaderProfile.string_array(required=False),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            OperationPayloadReader.true_bool,
-            CodemodDslPayloadReaderProfile.optional_boolean(True),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            OperationPayloadReader.false_bool,
-            CodemodDslPayloadReaderProfile.optional_boolean(False),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            SelectionCountExpectation.optional_non_negative_int,
-            CodemodDslPayloadReaderProfile(
-                CodemodDslFieldKind.INTEGER,
-                required=False,
-            ),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            OperationPayloadReader.required_selector,
-            CodemodDslPayloadReaderProfile(CodemodDslFieldKind.SELECTOR_OBJECT),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            OperationPayloadReader.required_operation_templates,
-            CodemodDslPayloadReaderProfile(
-                CodemodDslFieldKind.OPERATION_TEMPLATE_ARRAY
-            ),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            RecipeCallReplacement.tuple_from_payload,
-            CodemodDslPayloadReaderProfile(CodemodDslFieldKind.CALL_REPLACEMENT_ARRAY),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            SelectorPayloadReader.required_string,
-            CodemodDslPayloadReaderProfile.string(),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            SelectorPayloadReader.string_tuple,
-            CodemodDslPayloadReaderProfile.string_array(required=False),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            SelectorPayloadReader.node_kind_tuple,
-            CodemodDslPayloadReaderProfile(
-                CodemodDslFieldKind.NODE_KIND_ARRAY,
-                required=False,
-            ),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            SelectorPayloadReader.selector_tuple,
-            CodemodDslPayloadReaderProfile(
-                CodemodDslFieldKind.SELECTOR_ARRAY,
-                required=False,
-            ),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            SelectorPayloadReader.true_bool,
-            CodemodDslPayloadReaderProfile.optional_boolean(True),
-        ),
-        CodemodDslPayloadReaderProfileRule(
-            SelectorPayloadReader.false_bool,
-            CodemodDslPayloadReaderProfile.optional_boolean(False),
-        ),
-    )
-
-
-@dataclass(frozen=True)
-class CodemodDslRegistryEntryFieldManifest(ABC, metaclass=AutoRegisterMeta):
-    """One field row inside a registry-entry manifest projection."""
-
-    __registry__: ClassVar[dict[str, type["CodemodDslRegistryEntryFieldManifest"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
-    registry_key_suffix: ClassVar[str] = "Manifest"
-
-    field_name: str
-
-    @abstractmethod
-    def to_dict(self) -> JsonObject:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class CodemodDslFieldManifest(CodemodDslRegistryEntryFieldManifest):
-    """One JSON field accepted by a registered codemod DSL payload."""
-
-    constructor_argument_name: str
-    reader_profile: CodemodDslPayloadReaderProfile
-
-    @classmethod
-    def from_binding(
-        cls,
-        binding: PayloadBinding,
-    ) -> "CodemodDslFieldManifest":
-        if binding.dsl_value_kind is None:
-            reader_profile = CodemodDslPayloadReaderProfile.from_reader(
-                binding.constructor_value_reader,
-            )
-        else:
-            reader_profile = CodemodDslPayloadReaderProfile(binding.dsl_value_kind)
-        return cls(
-            field_name=binding.field_name,
-            constructor_argument_name=binding.constructor_argument_name,
-            reader_profile=reader_profile,
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "field_name": self.field_name,
-            "constructor_argument_name": self.constructor_argument_name,
-            **self.reader_profile.to_dict(),
-            "example_value": self.example_value(),
-        }
-
-    def example_value(self) -> JsonValue:
-        return CodemodDslExampleValueProvider.example_for(self)
-
-
-def codemod_dsl_selector_example_payload() -> JsonObject:
-    """Return a minimal selector payload agents can adapt in plan templates."""
-
-    return SourceIndexTargetSelector(
-        node_kinds=(AstTargetNodeKind.FUNCTION,),
-        qualnames=(CodemodDslPlaceholder("target_qualname").value,),
-    ).to_dict()
-
-
-def codemod_dsl_target_example_payload() -> JsonObject:
-    """Return a source-index target example payload."""
-
-    return SourceRewriteTarget(
-        qualname=CodemodDslPlaceholder("target_qualname").value,
-        file_path=CodemodDslPlaceholder("file_path").value,
-    ).to_dict()
-
-
-def codemod_dsl_operation_template_example_payload() -> JsonObject:
-    """Return a target-free operation template payload for selected targets."""
-
-    return RefactorRecipeOperationTemplate.from_payload(
-        {
-            "operation": RefactorRecipeOperationKind.REPLACE_TEXT.value,
-            OLD_SOURCE_PAYLOAD_FIELD: CodemodDslPlaceholder(
-                OLD_SOURCE_PAYLOAD_FIELD
-            ).value,
-            NEW_SOURCE_PAYLOAD_FIELD: CodemodDslPlaceholder(
-                NEW_SOURCE_PAYLOAD_FIELD
-            ).value,
-        }
-    ).to_dict()
-
-
-def codemod_dsl_operation_plan_template_example_payload() -> JsonObject:
-    """Return a multi-step selected-target plan-template example payload."""
-
-    return RefactorRecipeOperationPlanTemplate(
-        recipe=RefactorRecipe(
-            recipe_id=RefactorRecipeOperationPlanTemplate.default_recipe_id,
-            reason=RefactorRecipeOperationPlanTemplate.default_reason,
-            operations=(
-                CreateFileOperation(
-                    target=SourceRewriteTarget(
-                        file_path=CodemodDslPlaceholder("new_file_path").value,
-                    ),
-                    payload_value="",
-                    rationale=CodemodDslPlaceholder("rationale").value,
-                ),
-            ),
-        ),
-        selected_operation_templates=(
-            RefactorRecipeOperationTemplate.from_payload(
-                codemod_dsl_operation_template_example_payload()
-            ),
-        ),
-    ).to_dict()
-
-
-def codemod_dsl_call_replacement_example_payload() -> JsonObject:
-    """Return an exact call-site replacement example payload."""
-
-    return RecipeCallReplacement.from_json_value(
-        {
-            **codemod_dsl_target_example_payload(),
-            OLD_SOURCE_PAYLOAD_FIELD: CodemodDslPlaceholder(
-                OLD_SOURCE_PAYLOAD_FIELD
-            ).value,
-            NEW_SOURCE_PAYLOAD_FIELD: CodemodDslPlaceholder(
-                NEW_SOURCE_PAYLOAD_FIELD
-            ).value,
-        }
-    ).to_dict()
-
-
-class CodemodDslExampleValueProvider(ABC, metaclass=AutoRegisterMeta):
-    """Registered field-kind strategy for agent-facing DSL example values."""
-
-    __registry__: ClassVar[
-        dict[CodemodDslFieldKind, type["CodemodDslExampleValueProvider"]]
-    ] = {}
-    __registry_key__ = "value_kind"
-    __skip_if_no_key__ = True
-
-    value_kind: ClassVar[CodemodDslFieldKind | None] = None
-
-    @classmethod
-    def example_for(cls, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        provider_type = cls.__registry__.get(field_manifest.reader_profile.value_kind)
-        if provider_type is None:
-            provider_type = cls.__registry__[CodemodDslFieldKind.UNKNOWN]
-        return provider_type().example_value(field_manifest)
-
-    @abstractmethod
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        raise NotImplementedError
-
-    @staticmethod
-    def placeholder(field_manifest: CodemodDslFieldManifest) -> str:
-        return CodemodDslPlaceholder(field_manifest.field_name).value
-
-
-class StringCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
-    """Example value for one scalar string field."""
-
-    value_kind = CodemodDslFieldKind.STRING
-
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        if field_manifest.reader_profile.default_value not in (None, ""):
-            return field_manifest.reader_profile.default_value
-        return self.placeholder(field_manifest)
-
-
-class StringArrayCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
-    """Example value for string-array fields."""
-
-    value_kind = CodemodDslFieldKind.STRING_ARRAY
-
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        return (self.placeholder(field_manifest),)
-
-
-class NodeKindArrayCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
-    """Example value for AST node-kind selector fields."""
-
-    value_kind = CodemodDslFieldKind.NODE_KIND_ARRAY
-
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        del field_manifest
-        return (AstTargetNodeKind.FUNCTION.value,)
-
-
-class ConstantCodemodDslExampleValueProvider(CodemodDslExampleValueProvider, ABC):
-    """Field-kind provider whose example is a class-declared constant."""
-
-    constant_example_value: ClassVar[JsonValue]
-
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        del field_manifest
-        return self.constant_example_value
-
-
-class ClassKeyPairArrayCodemodDslExampleValueProvider(
-    ConstantCodemodDslExampleValueProvider
-):
-    """Example value for class-name to registry-key source pairs."""
-
-    value_kind = CodemodDslFieldKind.CLASS_KEY_PAIR_ARRAY
-    constant_example_value = ("ExampleHandler='example'",)
-
-
-class AuthorityClaimCodemodDslExampleValueProvider(
-    ConstantCodemodDslExampleValueProvider
-):
-    """Example value for proof-carrying authority claim fields."""
-
-    value_kind = CodemodDslFieldKind.AUTHORITY_CLAIM
-    constant_example_value = JsonObject(
-        AuthorityClaim(
-            claimed_symbol="ExampleAuthority",
-            authority_kind="class_family",
-            file_path="pkg/example.py",
-            qualname="ExampleAuthority",
-        ).to_dict()
-    )
-
-
-class PythonLiteralArrayCodemodDslExampleValueProvider(
-    ConstantCodemodDslExampleValueProvider
-):
-    """Example value for Python literal source arrays."""
-
-    value_kind = CodemodDslFieldKind.PYTHON_LITERAL_ARRAY
-    constant_example_value = ("'example'",)
-
-
-class SelectorObjectCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
-    """Example value for nested selector object fields."""
-
-    value_kind = CodemodDslFieldKind.SELECTOR_OBJECT
-
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        del field_manifest
-        return codemod_dsl_selector_example_payload()
-
-
-class SingleItemArrayCodemodDslExampleValueProvider(
-    CodemodDslExampleValueProvider,
-    ABC,
-):
-    """Field-kind provider whose example is a single nested object array."""
-
-    item_factory: ClassVar[Callable[[], JsonValue]]
-
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        del field_manifest
-        return (self.item_factory(),)
-
-
-class SelectorArrayCodemodDslExampleValueProvider(
-    SingleItemArrayCodemodDslExampleValueProvider
-):
-    """Example value for nested selector-array fields."""
-
-    value_kind = CodemodDslFieldKind.SELECTOR_ARRAY
-    item_factory: ClassVar[Callable[[], JsonValue]] = staticmethod(
-        codemod_dsl_selector_example_payload
-    )
-
-
-class OperationTemplateArrayCodemodDslExampleValueProvider(
-    SingleItemArrayCodemodDslExampleValueProvider
-):
-    """Example value for selected-target operation-template fields."""
-
-    value_kind = CodemodDslFieldKind.OPERATION_TEMPLATE_ARRAY
-    item_factory: ClassVar[Callable[[], JsonValue]] = staticmethod(
-        codemod_dsl_operation_template_example_payload
-    )
-
-
-class CallReplacementArrayCodemodDslExampleValueProvider(
-    SingleItemArrayCodemodDslExampleValueProvider
-):
-    """Example value for authority-extraction call replacement fields."""
-
-    value_kind = CodemodDslFieldKind.CALL_REPLACEMENT_ARRAY
-    item_factory: ClassVar[Callable[[], JsonValue]] = staticmethod(
-        codemod_dsl_call_replacement_example_payload
-    )
-
-
-class BooleanCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
-    """Example value for boolean fields."""
-
-    value_kind = CodemodDslFieldKind.BOOLEAN
-
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        if field_manifest.reader_profile.default_value is not None:
-            return field_manifest.reader_profile.default_value
-        return True
-
-
-class IntegerCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvider):
-    """Example value for integer fields."""
-
-    value_kind = CodemodDslFieldKind.INTEGER
-    constant_example_value = 1
-
-
-class ObjectCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvider):
-    """Example value for object fields."""
-
-    value_kind = CodemodDslFieldKind.OBJECT
-    constant_example_value = {}
-
-
-class UnknownCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvider):
-    """Null example for unclassified value shapes."""
-
-    value_kind = CodemodDslFieldKind.UNKNOWN
-    constant_example_value = None
-
-
-@dataclass(frozen=True)
-class CodemodDslRegistryEntryManifest:
-    """Shared manifest surface for one registered DSL entry."""
-
-    class_name: str
-    description: str
-    payload_fields: tuple[CodemodDslRegistryEntryFieldManifest, ...]
-
-    def payload_field_dicts(self) -> tuple[JsonObject, ...]:
-        return tuple(field.to_dict() for field in self.payload_fields)
-
-    def registry_entry_payload(self) -> JsonObject:
-        return {
-            "class_name": self.class_name,
-            "description": self.description,
-            "payload_fields": self.payload_field_dicts(),
-        }
-
-
-@dataclass(frozen=True)
-class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
-    """Registered operation schema derived from the operation registry."""
-
-    operation: str
-    supports_selection_count: bool = False
-    contributes_source_overlay: bool = False
-    reports_preflight: bool = False
-
-    @classmethod
-    def from_operation_type(
-        cls,
-        operation_key: str,
-        operation_type: type[RefactorRecipeOperation],
-    ) -> "CodemodDslOperationManifest":
-        return cls(
-            class_name=operation_type.__name__,
-            description=codemod_dsl_entry_description(operation_type),
-            payload_fields=tuple(
-                CodemodDslFieldManifest.from_binding(binding)
-                for binding in operation_type.payload_binding_set()
-            ),
-            operation=operation_key,
-            supports_selection_count=issubclass(
-                operation_type,
-                SelectedTargetsOperation,
-            ),
-            contributes_source_overlay=operation_type.contributes_source_overlay,
-            reports_preflight=operation_type.reports_preflight,
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "operation": self.operation,
-            **self.registry_entry_payload(),
-            "target_fields": tuple(
-                field.to_dict() for field in codemod_target_fields()
-            ),
-            "common_fields": tuple(
-                field.to_dict() for field in codemod_common_fields()
-            ),
-            "supports_selection_count": self.supports_selection_count,
-            "contributes_source_overlay": self.contributes_source_overlay,
-            "reports_preflight": self.reports_preflight,
-            "example_payload": self.example_payload(),
-        }
-
-    def example_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "operation": self.operation,
-            "rationale": CodemodDslPlaceholder("rationale").value,
-        }
-        payload.update(codemod_dsl_target_example_payload())
-        payload.update(
-            {field.field_name: field.example_value() for field in self.payload_fields}
-        )
-        if self.supports_selection_count:
-            payload[SELECTION_COUNT_PAYLOAD_FIELD] = {"exact": 1}
-        return payload
-
-
-@dataclass(frozen=True)
-class CodemodDslSelectorManifest(CodemodDslRegistryEntryManifest):
-    """Registered selector schema derived from the selector registry."""
-
-    selector: str
-
-    @classmethod
-    def from_selector_type(
-        cls,
-        selector_key: str,
-        selector_type: type[CodemodTargetSelector],
-    ) -> "CodemodDslSelectorManifest":
-        return cls(
-            class_name=selector_type.__name__,
-            description=codemod_dsl_entry_description(selector_type),
-            payload_fields=tuple(
-                CodemodDslFieldManifest.from_binding(binding)
-                for binding in selector_type.payload_binding_set()
-            ),
-            selector=selector_key,
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "selector": self.selector,
-            **self.registry_entry_payload(),
-            "example_payload": self.example_payload(),
-        }
-
-    def example_payload(self) -> JsonObject:
-        return {
-            "selector": self.selector,
-            **{
-                field.field_name: field.example_value() for field in self.payload_fields
-            },
-        }
-
-
-@dataclass(frozen=True)
-class CodemodDslManifest:
-    """Self-describing contract for agent-authored codemod plan JSON."""
-
-    operations: tuple[CodemodDslOperationManifest, ...]
-    selectors: tuple[CodemodDslSelectorManifest, ...]
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "plan_fields": CodemodPlanDocument.dsl_field_names(),
-            "plan_sequence_fields": CodemodPlanSequence.dsl_field_names(),
-            "recipe_fields": RefactorRecipe.dsl_field_names(),
-            "operation_plan_template_fields": (
-                RefactorRecipeOperationPlanTemplate.dsl_field_names()
-            ),
-            "operation_plan_template_example": (
-                codemod_dsl_operation_plan_template_example_payload()
-            ),
-            "operation_common_fields": tuple(
-                field.to_dict() for field in codemod_common_fields()
-            ),
-            "operation_target_fields": tuple(
-                field.to_dict() for field in codemod_target_fields()
-            ),
-            "operation_template_target_fields": (
-                OperationTemplateTargetContext.template_field_names()
-            ),
-            "selection_count_fields": tuple(
-                field.to_dict() for field in codemod_selection_count_fields()
-            ),
-            "operations": tuple(operation.to_dict() for operation in self.operations),
-            "selectors": tuple(selector.to_dict() for selector in self.selectors),
-        }
-
-
-def codemod_dsl_manifest() -> CodemodDslManifest:
-    """Return a registry-derived manifest for agent-authored codemod plans."""
-
-    return CodemodDslManifest(
-        operations=tuple(
-            CodemodDslOperationManifest.from_operation_type(key, operation_type)
-            for key, operation_type in sorted(
-                RefactorRecipeOperation.__registry__.items()
-            )
-        ),
-        selectors=tuple(
-            CodemodDslSelectorManifest.from_selector_type(key, selector_type)
-            for key, selector_type in sorted(CodemodTargetSelector.__registry__.items())
-        ),
-    )
-
-
-def codemod_dsl_entry_description(
-    entry_type: type[RefactorRecipeOperation] | type[CodemodTargetSelector],
-) -> str:
-    """Return a normalized semantic description for one registry entry."""
-
-    description = inspect.getdoc(entry_type)
-    if description is None:
-        raise ValueError(f"{entry_type.__name__} must define a DSL description")
-    return description
-
-
-def codemod_dsl_example_plan_document() -> CodemodPlanDocument:
-    """Return parseable examples for every registered operation."""
-
-    operation_manifests = codemod_dsl_manifest().operations
-    return CodemodPlanDocument(
-        recipes=(
-            RefactorRecipe(
-                recipe_id="codemod-dsl-example",
-                operations=tuple(
-                    RefactorRecipeOperation.from_dict(operation.example_payload())
-                    for operation in operation_manifests
-                ),
-                reason="Starter document for registry-derived codemod DSL authoring.",
-            ),
-        )
-    )
-
-
-def codemod_dsl_example_plan_payload() -> JsonObject:
-    """Return a JSON-ready starter document for agent-authored codemod plans."""
-
-    return codemod_dsl_example_plan_document().to_dict()
-
-
-def codemod_common_fields() -> tuple[CodemodDslFieldManifest, ...]:
-    """Common JSON fields accepted by every operation object."""
-
-    return (
-        CodemodDslFieldManifest(
-            field_name="operation",
-            constructor_argument_name="operation",
-            reader_profile=CodemodDslPayloadReaderProfile.string(),
-        ),
-        CodemodDslFieldManifest(
-            field_name="rationale",
-            constructor_argument_name="rationale",
-            reader_profile=CodemodDslPayloadReaderProfile.optional_string(),
-        ),
-    )
-
-
-def codemod_target_fields() -> tuple[CodemodDslFieldManifest, ...]:
-    """Source-target JSON fields accepted by operation and rewrite objects."""
-
-    return tuple(
-        CodemodDslFieldManifest.from_binding(binding)
-        for binding in SourceRewriteTarget.payload_bindings()
-    )
-
-
-def codemod_selection_count_fields() -> tuple[CodemodDslFieldManifest, ...]:
-    """Optional cardinality contract fields for selected-target operations."""
-
-    return tuple(
-        CodemodDslFieldManifest.from_binding(binding)
-        for binding in SelectionCountExpectation.payload_bindings()
-    )
 
 
 @dataclass(frozen=True)
@@ -14718,7 +13354,7 @@ class RefactorRecipe:
 
     @classmethod
     def dsl_field_names(cls) -> tuple[str, ...]:
-        return dataclass_payload_field_names(cls)
+        return tuple(cls(recipe_id="").to_dict())
 
     @classmethod
     def compose(
@@ -15647,7 +14283,7 @@ class RefactorRecipe:
             "recipe_id": self.recipe_id,
             "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
             "operations": tuple(operation.to_dict() for operation in self.operations),
-            "architecture_guards": self.guard_suite.to_dict(),
+            ARCHITECTURE_GUARDS_PAYLOAD_FIELD: self.guard_suite.to_dict(),
             "reason": self.reason,
             AuthorityClaimPayload.field_name: tuple(
                 claim.to_dict() for claim in self.authority_claims
@@ -15666,7 +14302,7 @@ class CodemodPlanDocument:
 
     @classmethod
     def dsl_field_names(cls) -> tuple[str, ...]:
-        return ("authority_boundaries", "recipes", "architecture_guards")
+        return tuple(cls().to_dict())
 
     @classmethod
     def compose(
@@ -15733,7 +14369,7 @@ class CodemodPlanDocument:
     @classmethod
     def from_json_value(
         cls,
-        payload: JsonObject | JsonArray,
+        payload: JsonObject,
     ) -> "CodemodPlanDocument":
         del cls
         return CodemodPlanJsonParser().parse_document(payload)
@@ -15849,11 +14485,11 @@ class CodemodPlanDocument:
 
     def to_dict(self) -> JsonObject:
         return {
-            "authority_boundaries": tuple(
+            AUTHORITY_BOUNDARIES_PAYLOAD_FIELD: tuple(
                 boundary.to_dict() for boundary in self.authority_boundaries
             ),
-            "recipes": tuple(recipe.to_dict() for recipe in self.recipes),
-            "architecture_guards": self.guard_suite.to_dict(),
+            RECIPES_PAYLOAD_FIELD: tuple(recipe.to_dict() for recipe in self.recipes),
+            ARCHITECTURE_GUARDS_PAYLOAD_FIELD: self.guard_suite.to_dict(),
         }
 
 
@@ -15865,7 +14501,7 @@ class CodemodPlanSequence:
 
     @classmethod
     def dsl_field_names(cls) -> tuple[str, ...]:
-        return ("stages",)
+        return tuple(cls().to_dict())
 
     @classmethod
     def compose(
@@ -16007,40 +14643,34 @@ class CodemodPlanSequence:
 
     def to_dict(self) -> JsonObject:
         return {
-            "stages": tuple(document.to_dict() for document in self.documents),
+            STAGES_PAYLOAD_FIELD: tuple(
+                document.to_dict() for document in self.documents
+            ),
         }
 
 
-@dataclass(frozen=True)
 class CodemodPlanJsonParser:
     """Decode codemod-plan JSON into nominal codemod DSL records."""
 
-    authority_boundaries_field: str = "authority_boundaries"
-    recipes_field: str = "recipes"
-    architecture_guards_field: str = "architecture_guards"
-    stages_field: str = "stages"
+    @staticmethod
+    def is_sequence_payload(payload: JsonObject) -> bool:
+        return STAGES_PAYLOAD_FIELD in payload
 
-    def parse_sequence(self, payload: JsonObject | JsonArray) -> CodemodPlanSequence:
-        if isinstance(payload, dict) and self.stages_field in payload:
+    def parse_sequence(self, payload: JsonObject) -> CodemodPlanSequence:
+        if self.is_sequence_payload(payload):
             return CodemodPlanSequence(
                 documents=tuple(
                     self.parse_document(row)
-                    for row in self.array_field(payload, self.stages_field)
+                    for row in self.array_field(payload, STAGES_PAYLOAD_FIELD)
                 )
             )
         return CodemodPlanSequence.from_document(self.parse_document(payload))
 
-    def parse_document(self, payload: JsonObject | JsonArray) -> CodemodPlanDocument:
-        if isinstance(payload, dict):
-            return CodemodPlanDocument(
-                authority_boundaries=self.authority_boundaries(payload),
-                recipes=self.recipes(payload),
-                guard_suite=self.architecture_guard_suite(payload),
-            )
+    def parse_document(self, payload: JsonObject) -> CodemodPlanDocument:
         return CodemodPlanDocument(
-            authority_boundaries=tuple(
-                self.authority_boundary_plan(row) for row in payload
-            ),
+            authority_boundaries=self.authority_boundaries(payload),
+            recipes=self.recipes(payload),
+            guard_suite=self.architecture_guard_suite(payload),
         )
 
     def authority_boundaries(
@@ -16049,7 +14679,7 @@ class CodemodPlanJsonParser:
     ) -> tuple[AuthorityBoundaryPlan, ...]:
         return tuple(
             self.authority_boundary_plan(row)
-            for row in self.array_field(payload, self.authority_boundaries_field)
+            for row in self.array_field(payload, AUTHORITY_BOUNDARIES_PAYLOAD_FIELD)
         )
 
     def recipes(
@@ -16058,7 +14688,7 @@ class CodemodPlanJsonParser:
     ) -> tuple[RefactorRecipe, ...]:
         return tuple(
             self.refactor_recipe(row)
-            for row in self.array_field(payload, self.recipes_field)
+            for row in self.array_field(payload, RECIPES_PAYLOAD_FIELD)
         )
 
     def architecture_guard_suite(
@@ -16068,7 +14698,7 @@ class CodemodPlanJsonParser:
         return ArchitectureGuardSuite(
             tuple(
                 self.architecture_guard_rule(row)
-                for row in self.array_field(payload, self.architecture_guards_field)
+                for row in self.array_field(payload, ARCHITECTURE_GUARDS_PAYLOAD_FIELD)
             )
         )
 
@@ -16778,9 +15408,7 @@ class SemanticDescentRepairPlan:
 
     @property
     def operation_kinds(self) -> tuple[str, ...]:
-        return tuple(
-            operation.operation_kind().value for operation in self.recipe.operations
-        )
+        return tuple(operation.operation_key() for operation in self.recipe.operations)
 
     def to_dict(self) -> JsonObject:
         return {

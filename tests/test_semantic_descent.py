@@ -2894,9 +2894,9 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert record.refactor_concept == "dataclass_payload_projection"
     assert record.semantic_repair_plan is not None
     assert record.semantic_repair_plan.repair_kind == "mapping"
-    assert tuple(
-        operation.operation_kind().value for operation in recipe.operations
-    ) == ("replace_text",)
+    assert tuple(operation.operation_key() for operation in recipe.operations) == (
+        "replace_text",
+    )
     assert "def payload_from_field_values(cls, **values)" in rewritten_source
     assert "**RefactorAction.payload_from_field_values(" in rewritten_source
     assert "kind=self.action.kind" in rewritten_source
@@ -3051,9 +3051,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert record.status.value == "planned"
     assert record.refactor_concept == "dataclass_payload_projection"
     assert simulation.is_clean is True
-    assert tuple(
-        operation.operation_kind().value for operation in recipe.operations
-    ) == (
+    assert tuple(operation.operation_key() for operation in recipe.operations) == (
         "ensure_import",
         "replace_text",
     )
@@ -3191,9 +3189,9 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     assert record.refactor_concept == "constructor_kwarg_carrier_projection"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert tuple(
-        operation.operation_kind().value for operation in recipe.operations
-    ) == ("replace_text",)
+    assert tuple(operation.operation_key() for operation in recipe.operations) == (
+        "replace_text",
+    )
     assert "SourceLineSpan(" in rewritten_source
     assert ".line_replacement(" in rewritten_source
     assert "start_line=insertion_line" in rewritten_source
@@ -3251,9 +3249,9 @@ def test_semantic_mirror_context_call_projection_synthesizes_dataclass_context_r
     assert record.refactor_concept == "dataclass_context_call_projection"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert tuple(
-        operation.operation_kind().value for operation in recipe.operations
-    ) == ("replace_text",)
+    assert tuple(operation.operation_key() for operation in recipe.operations) == (
+        "replace_text",
+    )
     assert "FindingBuildContext(" in rewritten_source
     assert 'scaffold="scaffold"' in rewritten_source
     assert 'codemod_patch="patch"' in rewritten_source

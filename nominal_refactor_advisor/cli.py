@@ -86,15 +86,14 @@ from .codemod import (
     FindingRecipePlanSimulation,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesizer,
-    JsonArray,
     JsonObject,
     JsonValue,
     NEW_SOURCE_PAYLOAD_FIELD,
     OLD_SOURCE_PAYLOAD_FIELD,
     PlannedSourceRewrite,
-    RefactorRecipeOperationKind,
     RefactorRecipeOperationPlanTemplate,
     RefactorRecipeOperationTemplate,
+    ReplaceTextOperation,
     SourcePathCandidateAuthority,
     SourcePathCandidateSet,
     SourceIndexTargetSelector,
@@ -102,8 +101,6 @@ from .codemod import (
     codemod_class_plan_from_findings,
     codemod_plan_from_findings,
     codemod_candidates_from_impact_ranking,
-    codemod_dsl_example_plan_payload,
-    codemod_dsl_manifest,
     evaluate_architecture_guards,
     module_name_from_source_path,
 )
@@ -119,9 +116,6 @@ from .codemod_workflow import (
     CodemodWorkflowPlan,
     CodemodWorkflowPlanJsonParser,
     CodemodWorkflowRunContext,
-    codemod_refactor_goal_policy_manifests,
-    codemod_workflow_plan_example_payloads,
-    codemod_workflow_plan_manifests,
 )
 from .codemod_authoring import (
     CodemodAuthoringBundleActionRunner,
@@ -468,16 +462,6 @@ _CLI_ARGUMENT_SPECS = (
                 "Use '-' to read the plan from stdin. Plans enable "
                 "simulatable rewrites for semantic agent-required candidates."
             ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-dsl-manifest",),
-            action="store_true",
-            help="Emit the registry-derived codemod DSL JSON manifest and exit.",
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-dsl-example-plan",),
-            action="store_true",
-            help="Emit a registry-derived codemod DSL example plan JSON and exit.",
         ),
         CliArgumentSpec(
             flags=("--codemod-validate-plan",),
@@ -1692,20 +1676,14 @@ def load_authority_boundary_plans(path: Path) -> tuple[AuthorityBoundaryPlan, ..
 def load_codemod_plan_document(path: Path) -> CodemodPlanDocument:
     """Load caller-supplied codemod rewrites and guard invariants from JSON."""
 
-    payload = cast(
-        JsonObject | JsonArray,
-        JsonDocumentSource(path).load(),
-    )
+    payload = cast(JsonObject, JsonDocumentSource(path).load())
     return CodemodPlanDocument.from_json_value(payload)
 
 
 def load_codemod_plan_sequence(path: Path) -> CodemodPlanSequence:
     """Load one codemod document or staged codemod sequence from JSON."""
 
-    payload = cast(
-        JsonObject | JsonArray,
-        JsonDocumentSource(path).load(),
-    )
+    payload = cast(JsonObject, JsonDocumentSource(path).load())
     return CodemodPlanJsonParser().parse_sequence(payload)
 
 
@@ -1722,12 +1700,9 @@ def load_codemod_workflow_plan(path: Path) -> CodemodWorkflowPlan:
 def load_codemod_plan_validation_payload(path: Path) -> JsonObject:
     """Load a codemod document or sequence and return its normalized JSON shape."""
 
-    payload = cast(
-        JsonObject | JsonArray,
-        JsonDocumentSource(path).load(),
-    )
+    payload = cast(JsonObject, JsonDocumentSource(path).load())
     parser = CodemodPlanJsonParser()
-    if isinstance(payload, dict) and parser.stages_field in payload:
+    if parser.is_sequence_payload(payload):
         return parser.parse_sequence(payload).to_dict()
     return parser.parse_document(payload).to_dict()
 
@@ -1757,26 +1732,6 @@ def cli_string_tuple(
     raise TypeError(
         f"Expected CLI string value or sequence, got {type(value).__name__}"
     )
-
-
-@dataclass(frozen=True)
-class CodemodSelectedOperationSourceManifest:
-    """Manifest row for one selected-operation selector/template source."""
-
-    source_id: str
-    source_label: str
-    option_names: tuple[str, ...]
-    class_name: str
-    registry_order: int
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "source_id": self.source_id,
-            "source_label": self.source_label,
-            "option_names": self.option_names,
-            "class_name": self.class_name,
-            "registry_order": self.registry_order,
-        }
 
 
 class SelectedOperationCliSource(ABC):
@@ -1826,15 +1781,6 @@ class SelectedOperationCliSource(ABC):
         parser.error(
             f"{cls.source_family_label} sources are mutually exclusive: "
             + ", ".join(source.source_label for source in sources)
-        )
-
-    def source_manifest(self) -> CodemodSelectedOperationSourceManifest:
-        return CodemodSelectedOperationSourceManifest(
-            source_id=self.source_id,
-            source_label=self.source_label,
-            option_names=self.option_names,
-            class_name=type(self).__name__,
-            registry_order=self.registry_order,
         )
 
     @abstractmethod
@@ -2086,7 +2032,7 @@ class ReplaceTextSelectedOperationTemplateSource(SelectedOperationTemplateSource
             (
                 RefactorRecipeOperationTemplate.from_payload(
                     {
-                        "operation": RefactorRecipeOperationKind.REPLACE_TEXT.value,
+                        "operation": ReplaceTextOperation.operation_key(),
                         OLD_SOURCE_PAYLOAD_FIELD: old_source,
                         NEW_SOURCE_PAYLOAD_FIELD: new_source,
                     }
@@ -2109,7 +2055,6 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
 
     return any(
         (
-            args.codemod_dsl_example_plan,
             args.codemod_validate_plan,
             args.codemod_compose_plans is not None,
             args.codemod_compose_sequence is not None,
@@ -2997,80 +2942,13 @@ class CodemodAuthoringBundleWriter:
             (
                 RefactorRecipeOperationTemplate.from_payload(
                     {
-                        "operation": RefactorRecipeOperationKind.REPLACE_TEXT.value,
+                        "operation": ReplaceTextOperation.operation_key(),
                         OLD_SOURCE_PAYLOAD_FIELD: "${target.source}",
                         NEW_SOURCE_PAYLOAD_FIELD: "${target.source}",
                     }
                 ),
             )
         )
-
-
-def codemod_authoring_command_manifest_payloads() -> tuple[JsonObject, ...]:
-    """Return manifest rows for registered authoring bundle command actions."""
-
-    return tuple(
-        template_type().command_manifest().to_dict()
-        for template_type in OrderedAuthoringTemplateRegistry(
-            CodemodAuthoringBundleCommandTemplate.__registry__
-        ).template_types()
-    )
-
-
-def codemod_authoring_workflow_manifest_payloads() -> tuple[JsonObject, ...]:
-    """Return manifest rows for registered authoring bundle workflows."""
-
-    return tuple(
-        template_type().workflow_manifest().to_dict()
-        for template_type in OrderedAuthoringTemplateRegistry(
-            CodemodAuthoringBundleWorkflowTemplate.__registry__
-        ).template_types()
-    )
-
-
-def codemod_selected_operation_template_source_payloads() -> tuple[JsonObject, ...]:
-    """Return manifest rows for selected-operation template sources."""
-
-    return tuple(
-        source_type().source_manifest().to_dict()
-        for source_type in SelectedOperationTemplateSource.ordered_source_types()
-    )
-
-
-def codemod_selected_operation_target_selector_source_payloads() -> (
-    tuple[JsonObject, ...]
-):
-    """Return manifest rows for selected-operation target selector sources."""
-
-    return tuple(
-        source_type().source_manifest().to_dict()
-        for source_type in SelectedOperationTargetSelectorSource.ordered_source_types()
-    )
-
-
-def codemod_cli_dsl_manifest_payload() -> JsonObject:
-    """Return the codemod DSL manifest plus executable authoring workflow metadata."""
-
-    payload = codemod_dsl_manifest().to_dict()
-    payload["workflow_plans"] = tuple(
-        manifest.to_dict() for manifest in codemod_workflow_plan_manifests()
-    )
-    payload["workflow_plan_examples"] = codemod_workflow_plan_example_payloads()
-    payload["refactor_goal_policies"] = tuple(
-        manifest.to_dict() for manifest in codemod_refactor_goal_policy_manifests()
-    )
-    payload["authoring_artifact_roles"] = tuple(
-        artifact_role.value for artifact_role in CodemodAuthoringArtifactRole
-    )
-    payload["authoring_command_actions"] = codemod_authoring_command_manifest_payloads()
-    payload["authoring_workflows"] = codemod_authoring_workflow_manifest_payloads()
-    payload["selected_operation_target_selector_sources"] = (
-        codemod_selected_operation_target_selector_source_payloads()
-    )
-    payload["selected_operation_template_sources"] = (
-        codemod_selected_operation_template_source_payloads()
-    )
-    return payload
 
 
 @dataclass(frozen=True)
@@ -3837,36 +3715,6 @@ class CliEarlyExitCommand(CliCommand, ABC):
             if command.requested:
                 return command.run()
         return None
-
-
-class CodemodDslManifestCliCommand(CliEarlyExitCommand):
-    """Emit the registry-derived codemod DSL manifest."""
-
-    command_id = "codemod_dsl_manifest"
-
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_dsl_manifest
-
-    def run(self) -> int:
-        print(json.dumps(codemod_cli_dsl_manifest_payload(), indent=2))
-        return 0
-
-
-class CodemodDslExamplePlanCliCommand(CliEarlyExitCommand):
-    """Emit a registry-derived codemod DSL starter plan."""
-
-    command_id = "codemod_dsl_example_plan"
-
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_dsl_example_plan
-
-    def run(self) -> int:
-        payload = codemod_dsl_example_plan_payload()
-        write_cli_json_artifact(self.args.codemod_plan_out, payload)
-        print(json.dumps(payload, indent=2))
-        return 0
 
 
 class CodemodAuthoringStatusCliCommand(CliEarlyExitCommand):

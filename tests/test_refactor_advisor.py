@@ -131,13 +131,11 @@ from nominal_refactor_advisor.codemod import (
     FindingEvidenceTargetSelector,
     FindingRecipeEvaluation,
     InheritanceEdgeTargetSelector,
-    OperationTemplateTargetBindings,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
     RefactorConcept,
     RefactorRecipe,
-    RefactorRecipeOperation,
     RefactorRecipeOperationCompiler,
     RefactorRecipeOperationTemplate,
     RecipeCallReplacement,
@@ -155,8 +153,6 @@ from nominal_refactor_advisor.codemod import (
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
-    codemod_dsl_example_plan_document,
-    codemod_dsl_manifest,
     codemod_plan_from_findings,
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
@@ -13470,412 +13466,6 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     assert document.recipes[0].rewrites[0].target.file_path == "pkg/mod.py"
 
 
-def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
-    manifest = codemod_dsl_manifest().to_dict()
-    operations = {
-        operation["operation"]: operation for operation in manifest["operations"]
-    }
-    selectors = {selector["selector"]: selector for selector in manifest["selectors"]}
-
-    replace_text_fields = {
-        field["field_name"]: field
-        for field in operations["replace_text"]["payload_fields"]
-    }
-    extract_authority_fields = {
-        field["field_name"]: field
-        for field in operations["extract_authority"]["payload_fields"]
-    }
-    move_symbol_fields = {
-        field["field_name"]: field
-        for field in operations["move_symbol_to_module"]["payload_fields"]
-    }
-    create_file_fields = {
-        field["field_name"]: field
-        for field in operations["create_file"]["payload_fields"]
-    }
-    move_symbols_fields = {
-        field["field_name"]: field
-        for field in operations["move_symbols_to_module"]["payload_fields"]
-    }
-    registry_conversion_fields = {
-        field["field_name"]: field
-        for field in operations["convert_manual_registry_to_autoregister"][
-            "payload_fields"
-        ]
-    }
-    dispatch_fields = {
-        field["field_name"]: field
-        for field in operations["dispatch_to_polymorphism"]["payload_fields"]
-    }
-    declare_authority_fields = {
-        field["field_name"]: field
-        for field in operations["declare_authority"]["payload_fields"]
-    }
-    source_index_fields = {
-        field["field_name"]: field
-        for field in selectors["source_index_target"]["payload_fields"]
-    }
-    unknown_fields = [
-        {
-            "entry": "operation",
-            "name": operation["operation"],
-            "field": field["field_name"],
-        }
-        for operation in manifest["operations"]
-        for field in operation["payload_fields"]
-        if field["value_kind"] == "unknown"
-    ] + [
-        {
-            "entry": "selector",
-            "name": selector["selector"],
-            "field": field["field_name"],
-        }
-        for selector in manifest["selectors"]
-        for field in selector["payload_fields"]
-        if field["value_kind"] == "unknown"
-    ]
-
-    assert len(operations) >= 25
-    assert len(selectors) >= 6
-    assert unknown_fields == []
-    assert manifest["plan_fields"] == CodemodPlanDocument.dsl_field_names()
-    assert manifest["recipe_fields"] == RefactorRecipe.dsl_field_names()
-    assert manifest["plan_sequence_fields"] == ("stages",)
-    assert manifest["operation_plan_template_fields"] == (
-        "recipe_id",
-        "reason",
-        "setup_operations",
-        "operation_templates",
-    )
-    assert (
-        manifest["operation_template_target_fields"]
-        == OperationTemplateTargetBindings.field_names()
-    )
-    assert set(manifest["operation_template_target_fields"]) >= {
-        "qualname",
-        "source",
-        "leading_indent",
-    }
-    assert (
-        manifest["operation_plan_template_example"]["setup_operations"][0]["operation"]
-        == "create_file"
-    )
-    assert (
-        manifest["operation_plan_template_example"]["operation_templates"][0][
-            "operation"
-        ]
-        == "replace_text"
-    )
-    assert replace_text_fields["old_source"]["value_kind"] == "string"
-    assert replace_text_fields["old_source"]["required"] is True
-    assert replace_text_fields["new_source"]["empty_string_allowed"] is True
-    assert (
-        extract_authority_fields["call_replacements"]["value_kind"]
-        == "call_replacement_array"
-    )
-    assert declare_authority_fields["authority_claim"]["value_kind"] == (
-        "authority_claim"
-    )
-    assert create_file_fields["source"]["value_kind"] == "string"
-    assert move_symbol_fields["destination_path"]["value_kind"] == "string"
-    assert move_symbols_fields["destination_path"]["value_kind"] == "string"
-    assert move_symbols_fields["symbol_qualnames"]["value_kind"] == "string_array"
-    assert (
-        registry_conversion_fields["class_key_pairs"]["value_kind"]
-        == "class_key_pair_array"
-    )
-    assert dispatch_fields["literal_cases"]["value_kind"] == "python_literal_array"
-    assert operations["apply_selected_targets"]["supports_selection_count"] is True
-    assert operations["create_file"]["contributes_source_overlay"] is True
-    assert operations["create_file"]["reports_preflight"] is False
-    assert operations["move_symbols_to_module"]["reports_preflight"] is True
-    assert operations["move_symbols_to_module"]["contributes_source_overlay"] is False
-    assert operations["replace_text"]["example_payload"]["operation"] == "replace_text"
-    assert operations["replace_text"]["example_payload"]["old_source"] == "<old_source>"
-    assert operations["extract_authority"]["description"] == (
-        "Replace a helper target with a nominal authority and route call sites."
-    )
-    assert operations["declare_authority"]["description"] == (
-        "Insert a declared authority boundary and bind it to an AuthorityClaim."
-    )
-    assert (
-        operations["declare_authority"]["example_payload"]["authority_claim"][
-            "claimed_symbol"
-        ]
-        == "ExampleAuthority"
-    )
-    assert selectors["source_index_target"]["description"] == (
-        "Select source-index AST targets by kind, path, qualname, or regex."
-    )
-    assert (
-        operations["extract_authority"]["example_payload"]["call_replacements"][0][
-            "old_source"
-        ]
-        == "<old_source>"
-    )
-    assert (
-        RefactorRecipeOperation.from_dict(
-            operations["extract_authority"]["example_payload"]
-        ).to_dict()["operation"]
-        == "extract_authority"
-    )
-    assert (
-        RefactorRecipeOperation.from_dict(
-            operations["declare_authority"]["example_payload"]
-        ).to_dict()["authority_claim"]["claimed_symbol"]
-        == "ExampleAuthority"
-    )
-    assert (
-        RefactorRecipeOperation.from_dict(
-            operations["move_symbol_to_module"]["example_payload"]
-        ).to_dict()["destination_path"]
-        == "<destination_path>"
-    )
-    assert operations["convert_manual_registry_to_autoregister"]["example_payload"][
-        "class_key_pairs"
-    ] == ("ExampleHandler='example'",)
-    assert operations["dispatch_to_polymorphism"]["example_payload"][
-        "literal_cases"
-    ] == ("'example'",)
-    assert [
-        RefactorRecipeOperation.from_dict(operation["example_payload"]).to_dict()[
-            "operation"
-        ]
-        for operation in manifest["operations"]
-    ] == [operation["operation"] for operation in manifest["operations"]]
-    assert [
-        CodemodTargetSelector.from_dict(selector["example_payload"]).to_dict()[
-            "selector"
-        ]
-        for selector in manifest["selectors"]
-    ] == [selector["selector"] for selector in manifest["selectors"]]
-    assert (
-        operations["apply_selected_targets"]["example_payload"]["operation_templates"][
-            0
-        ]["operation"]
-        == "replace_text"
-    )
-    assert operations["apply_selected_targets"]["example_payload"][
-        "selection_count"
-    ] == {"exact": 1}
-    assert source_index_fields["node_kinds"]["value_kind"] == "node_kind_array"
-    assert source_index_fields["node_kinds"]["required"] is False
-    assert selectors["source_index_target"]["example_payload"]["selector"] == (
-        "source_index_target"
-    )
-
-
-def test_codemod_dsl_example_plan_document_round_trips() -> None:
-    document = codemod_dsl_example_plan_document()
-    parsed_document = CodemodPlanDocument.from_json_value(document.to_dict())
-
-    assert parsed_document.has_recipes is True
-    assert parsed_document.recipes[0].recipe_id == "codemod-dsl-example"
-    assert len(parsed_document.recipes[0].operations) == len(
-        codemod_dsl_manifest().operations
-    )
-    operation_payloads = tuple(
-        operation.to_dict() for operation in parsed_document.recipes[0].operations
-    )
-    assert any(payload["operation"] == "replace_text" for payload in operation_payloads)
-    assert any(
-        payload["operation"] == "move_symbol_to_module"
-        and payload["destination_path"] == "<destination_path>"
-        for payload in operation_payloads
-    )
-    assert (
-        next(
-            payload
-            for payload in operation_payloads
-            if payload["operation"] == "apply_selected_targets"
-        )["selector"]["selector"]
-        == "source_index_target"
-    )
-
-
-def test_module_cli_emits_codemod_dsl_manifest() -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowPlanJsonParser
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-dsl-manifest",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    payload = json.loads(result.stdout)
-
-    assert result.returncode == 0, result.stderr
-    assert any(
-        operation["operation"] == "replace_text" for operation in payload["operations"]
-    )
-    assert any(
-        selector["selector"] == "source_index_target"
-        for selector in payload["selectors"]
-    )
-    command_actions = {
-        command["action_id"]: command
-        for command in payload["authoring_command_actions"]
-    }
-    workflows = {
-        workflow["workflow_id"]: workflow for workflow in payload["authoring_workflows"]
-    }
-    workflow_plans = {
-        workflow_plan["workflow"]: workflow_plan
-        for workflow_plan in payload["workflow_plans"]
-    }
-    workflow_plan_examples = {
-        workflow_plan["workflow"]: workflow_plan
-        for workflow_plan in payload["workflow_plan_examples"]
-    }
-    refactor_goal_policies = {
-        policy["goal_kind"]: policy for policy in payload["refactor_goal_policies"]
-    }
-    assert "replacement_plan" in payload["authoring_artifact_roles"]
-    assert "goal_replay_plan" in payload["authoring_artifact_roles"]
-    assert set(workflow_plans) == {"fixpoint", "refactor_goal"}
-    assert set(workflow_plan_examples) == {"fixpoint", "refactor_goal"}
-    assert refactor_goal_policies["semantic_carrier_extraction"]["default_goal"] is True
-    semantic_carrier_policy = refactor_goal_policies["semantic_carrier_extraction"]
-    assert semantic_carrier_policy["refactor_concept"] == "semantic_carrier"
-    assert "selectors" not in semantic_carrier_policy
-    assert "executable_declarations" not in semantic_carrier_policy
-    assert [
-        field["field_name"] for field in workflow_plans["fixpoint"]["payload_fields"]
-    ] == ["workflow", "plan_id", "max_iterations"]
-    assert {
-        field["field_name"]: field
-        for field in workflow_plans["refactor_goal"]["payload_fields"]
-    }["goal"]["value_kind"] == "object"
-    assert workflow_plan_examples["fixpoint"]["max_iterations"] == 8
-    assert (
-        workflow_plan_examples["refactor_goal"]["goal"]["kind"]
-        == "semantic_carrier_extraction"
-    )
-    assert workflow_plan_examples["refactor_goal"]["goal"]["detector_ids"] == []
-    assert [
-        CodemodWorkflowPlanJsonParser().parse_plan(example).kind.value
-        for example in payload["workflow_plan_examples"]
-    ] == ["fixpoint", "refactor_goal"]
-    assert "simulate_replacement_plan" in command_actions
-    assert command_actions["simulate_replacement_plan"]["class_name"] == (
-        "SimulateReplacementPlanCommandTemplate"
-    )
-    assert command_actions["run_goal_refactor"]["class_name"] == (
-        "RunGoalRefactorCommandTemplate"
-    )
-    assert command_actions["run_goal_refactor"]["required_artifact_roles"] == []
-    assert command_actions["run_goal_refactor"]["generated_artifact_roles"] == [
-        "goal_replay_plan"
-    ]
-    assert command_actions["simulate_goal_replay_plan"]["required_artifact_roles"] == [
-        "goal_replay_plan"
-    ]
-    assert (
-        command_actions["simulate_goal_replay_plan"]["generated_artifact_roles"] == []
-    )
-    assert command_actions["scaffold_selected_operation_plan"][
-        "required_artifact_roles"
-    ] == [
-        "evidence_selector",
-        "selected_operation_template",
-    ]
-    assert command_actions["scaffold_selected_operation_plan"][
-        "generated_artifact_roles"
-    ] == [
-        "selected_operation_plan",
-    ]
-    assert workflows["replacement_plan"]["editable_artifact_roles"] == [
-        "replacement_plan",
-    ]
-    assert workflows["replacement_plan"]["default_next_action_id"] == (
-        "simulate_replacement_plan"
-    )
-    assert workflows["selected_operation_template"]["generated_artifact_roles"] == [
-        "selected_operation_plan",
-    ]
-    assert workflows["goal_refactor"]["generated_artifact_roles"] == [
-        "goal_replay_plan",
-    ]
-    assert workflows["goal_refactor"]["default_next_action_id"] == "run_goal_refactor"
-    target_sources = {
-        source["source_id"]: source
-        for source in payload["selected_operation_target_selector_sources"]
-    }
-    assert target_sources["json_target_selector"]["option_names"] == [
-        "--codemod-selected-operation-plan"
-    ]
-    assert (
-        "--codemod-selected-qualname-pattern"
-        in target_sources["inline_source_index_target"]["option_names"]
-    )
-    template_sources = {
-        source["source_id"]: source
-        for source in payload["selected_operation_template_sources"]
-    }
-    assert template_sources["json_operation_template"]["option_names"] == [
-        "--codemod-operation-template"
-    ]
-    assert template_sources["replace_text_operands"]["option_names"] == [
-        "--codemod-selected-replace-text"
-    ]
-
-
-def test_module_cli_emits_and_validates_codemod_dsl_example_plan(
-    tmp_path: Path,
-) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    example_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-dsl-example-plan",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    example_payload = json.loads(example_result.stdout)
-    plan_path = tmp_path / "codemod-plan.json"
-    plan_path.write_text(json.dumps(example_payload), encoding="utf-8")
-
-    validation_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-plan",
-            plan_path.as_posix(),
-            "--codemod-validate-plan",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    validation_payload = json.loads(validation_result.stdout)
-
-    assert example_result.returncode == 0, example_result.stderr
-    assert validation_result.returncode == 0, validation_result.stderr
-    validated_operations = {
-        operation["operation"]: operation
-        for operation in validation_payload["recipes"][0]["operations"]
-    }
-    assert len(validated_operations) == len(codemod_dsl_manifest().operations)
-    assert "replace_text" in validated_operations
-    assert (
-        validated_operations["apply_selected_targets"]["selector"]["selector"]
-        == "source_index_target"
-    )
-
-
 def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     first_plan_path = tmp_path / "first-plan.json"
@@ -19759,7 +19349,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFixpointWorkflowPlan
     from nominal_refactor_advisor import CodemodFixpointReplayPlan
     from nominal_refactor_advisor import CodemodFixpointRunner
-    from nominal_refactor_advisor import CodemodDslManifest
     from nominal_refactor_advisor import CodemodGuardedWorkflowRequest
     from nominal_refactor_advisor import CodemodPlanJsonParser
     from nominal_refactor_advisor import CodemodPlanSequence
@@ -19769,7 +19358,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodProjectedFindingReport
     from nominal_refactor_advisor import CodemodRefactorGoal
     from nominal_refactor_advisor import CodemodRefactorGoalKind
-    from nominal_refactor_advisor import CodemodRefactorGoalPolicyManifest
     from nominal_refactor_advisor import CodemodRefactorGoalProgress
     from nominal_refactor_advisor import CodemodRefactorGoalReport
     from nominal_refactor_advisor import CodemodRefactorGoalRunner
@@ -19779,8 +19367,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodWorkflowStopReason
     from nominal_refactor_advisor import CodemodSimulationFindingProjection
     from nominal_refactor_advisor import CodemodSourceSnapshot
-    from nominal_refactor_advisor import CodemodWorkflowPlanFieldManifest
-    from nominal_refactor_advisor import CodemodWorkflowPlanManifest
     from nominal_refactor_advisor import CodemodWorkflowReport
     from nominal_refactor_advisor import CodemodWorkflowPlan
     from nominal_refactor_advisor import CodemodWorkflowPlanJsonParser
@@ -19801,13 +19387,8 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import SemanticCarrierExtractionGoalTargetPolicy
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
     from nominal_refactor_advisor import TupleDictReturnNominalizationGoalTargetPolicy
-    from nominal_refactor_advisor import codemod_dsl_manifest
-    from nominal_refactor_advisor import codemod_refactor_goal_policy_manifests
-    from nominal_refactor_advisor import codemod_workflow_plan_example_payloads
-    from nominal_refactor_advisor import codemod_workflow_plan_manifests
 
     assert CodemodPlanJsonParser().recipes({}) == ()
-    assert isinstance(codemod_dsl_manifest(), CodemodDslManifest)
     assert CodemodAuthoringActionRunReport.__name__ == "CodemodAuthoringActionRunReport"
     assert (
         CodemodAuthoringActionRunRequest.__name__ == "CodemodAuthoringActionRunRequest"
@@ -19907,9 +19488,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
     assert CodemodRefactorGoal.__name__ == "CodemodRefactorGoal"
     assert not hasattr(nra, "CodemodRefactorGoalFindingSelector")
-    assert CodemodRefactorGoalPolicyManifest.__name__ == (
-        "CodemodRefactorGoalPolicyManifest"
-    )
     assert not hasattr(nra, "CodemodRefactorGoalSelectorCoverage")
     assert not hasattr(nra, "CodemodRefactorGoalSelectorManifest")
     assert (
@@ -19961,18 +19539,9 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         "DeadCompatibilityEraserGoalTargetPolicy"
     )
     assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
-    assert CodemodWorkflowPlanFieldManifest.__name__ == (
-        "CodemodWorkflowPlanFieldManifest"
-    )
-    assert CodemodWorkflowPlanManifest.__name__ == "CodemodWorkflowPlanManifest"
     assert CodemodWorkflowReport.__name__ == "CodemodWorkflowReport"
     assert CodemodWorkflowPlan.__name__ == "CodemodWorkflowPlan"
     assert CodemodWorkflowRunContext.__name__ == "CodemodWorkflowRunContext"
-    assert any(
-        manifest.default_goal
-        and manifest.goal_kind is CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
-        for manifest in codemod_refactor_goal_policy_manifests()
-    )
     assert (
         CodemodFixpointWorkflowPlan(
             plan_id="finding-backed-fixpoint",
@@ -19993,16 +19562,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         .max_iterations
         == 8
     )
-    assert [
-        manifest.workflow.value for manifest in codemod_workflow_plan_manifests()
-    ] == [
-        "fixpoint",
-        "refactor_goal",
-    ]
-    assert [
-        CodemodWorkflowPlanJsonParser().parse_plan(example).kind.value
-        for example in codemod_workflow_plan_example_payloads()
-    ] == ["fixpoint", "refactor_goal"]
     assert CodemodWorkflowScanRequest.__name__ == "CodemodWorkflowScanRequest"
     assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
     assert ParseCacheRequest(enabled=True).enabled is True

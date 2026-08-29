@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -28,9 +27,6 @@ from .ast_tools import ParsedModule, parse_python_module_roots
 from .codemod import (
     ArchitectureGuardSuite,
     BoundarySourceContextAuthorityConcept,
-    CodemodDslFieldKind,
-    CodemodDslRegistryEntryFieldManifest,
-    CodemodDslRegistryEntryManifest,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
@@ -109,40 +105,6 @@ class CodemodFindingClassStatus(StrEnum):
     PERSISTED = "persisted"
     INTRODUCED = "introduced"
     UNCHANGED = "unchanged"
-
-
-@dataclass(frozen=True)
-class CodemodWorkflowPlanFieldManifest(CodemodDslRegistryEntryFieldManifest):
-    """One JSON field accepted by an executable codemod workflow plan."""
-
-    value_kind: CodemodDslFieldKind
-    required: bool
-    description: str
-    example_value: JsonValue
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "field_name": self.field_name,
-            "value_kind": self.value_kind.value,
-            "required": self.required,
-            "description": self.description,
-            "example_value": self.example_value,
-        }
-
-
-@dataclass(frozen=True)
-class CodemodWorkflowPlanManifest(CodemodDslRegistryEntryManifest):
-    """Registry-derived schema and example for one workflow-plan DSL entry."""
-
-    workflow: CodemodWorkflowPlanKind
-    example_payload: JsonObject
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "workflow": self.workflow.value,
-            **self.registry_entry_payload(),
-            "example_payload": self.example_payload,
-        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -752,47 +714,6 @@ class CodemodRefactorGoalTargetPolicy(ABC, metaclass=AutoRegisterMeta):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
-class CodemodRefactorGoalPolicyManifest:
-    """MRO-derived executable declarations for one high-level refactor goal."""
-
-    goal_kind: CodemodRefactorGoalKind
-    class_name: str
-    description: str
-    default_goal: bool
-    refactor_concept: str | None
-
-    @classmethod
-    def from_policy_type(
-        cls,
-        goal_kind: CodemodRefactorGoalKind,
-        policy_type: type["CodemodRefactorGoalTargetPolicy"],
-    ) -> "CodemodRefactorGoalPolicyManifest":
-        concept_type = (
-            RefactorConcept.leaf_concept_for_declaration(policy_type)
-            if issubclass(policy_type, RefactorConcept)
-            else None
-        )
-        return cls(
-            goal_kind=goal_kind,
-            class_name=policy_type.__name__,
-            description=codemod_refactor_goal_policy_description(policy_type),
-            default_goal=goal_kind is CodemodRefactorGoalKind.default(),
-            refactor_concept=(
-                None if concept_type is None else concept_type.concept_key()
-            ),
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "goal_kind": self.goal_kind.value,
-            "class_name": self.class_name,
-            "description": self.description,
-            "default_goal": self.default_goal,
-            "refactor_concept": self.refactor_concept,
-        }
-
-
 class ConceptBackedRefactorGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
     """Select findings through their executable declaration's concept MRO."""
 
@@ -932,49 +853,6 @@ class CodemodWorkflowPlan(ABC, metaclass=AutoRegisterMeta):
             ) from error
 
     @classmethod
-    def common_payload_field_manifests(
-        cls,
-    ) -> tuple[CodemodWorkflowPlanFieldManifest, ...]:
-        return (
-            CodemodWorkflowPlanFieldManifest(
-                field_name="workflow",
-                value_kind=CodemodDslFieldKind.STRING,
-                required=True,
-                description="Registered executable workflow-plan kind.",
-                example_value=cls.workflow_key().value,
-            ),
-            CodemodWorkflowPlanFieldManifest(
-                field_name="plan_id",
-                value_kind=CodemodDslFieldKind.STRING,
-                required=True,
-                description="Stable caller-chosen identifier for this workflow run.",
-                example_value=f"{cls.workflow_key().value}-plan",
-            ),
-        )
-
-    @classmethod
-    def workflow_manifest(cls) -> CodemodWorkflowPlanManifest:
-        return CodemodWorkflowPlanManifest(
-            workflow=cls.workflow_key(),
-            class_name=cls.__name__,
-            description=codemod_workflow_entry_description(cls),
-            payload_fields=cls.payload_field_manifests(),
-            example_payload=cls.example_payload(),
-        )
-
-    @classmethod
-    @abstractmethod
-    def payload_field_manifests(
-        cls,
-    ) -> tuple[CodemodWorkflowPlanFieldManifest, ...]:
-        raise NotImplementedError
-
-    @classmethod
-    @abstractmethod
-    def example_payload(cls) -> JsonObject:
-        raise NotImplementedError
-
-    @classmethod
     @abstractmethod
     def from_payload(
         cls,
@@ -1007,28 +885,6 @@ class CodemodFixpointWorkflowPlan(CodemodWorkflowPlan):
 
     workflow: ClassVar[CodemodWorkflowPlanKind] = CodemodWorkflowPlanKind.FIXPOINT
     max_iterations: int = 8
-
-    @classmethod
-    def payload_field_manifests(
-        cls,
-    ) -> tuple[CodemodWorkflowPlanFieldManifest, ...]:
-        return (
-            *cls.common_payload_field_manifests(),
-            CodemodWorkflowPlanFieldManifest(
-                field_name="max_iterations",
-                value_kind=CodemodDslFieldKind.INTEGER,
-                required=True,
-                description="Maximum synthesize/apply/rescan cycles.",
-                example_value=8,
-            ),
-        )
-
-    @classmethod
-    def example_payload(cls) -> JsonObject:
-        return cls(
-            plan_id="finding-backed-fixpoint",
-            max_iterations=8,
-        ).to_dict()
 
     @classmethod
     def from_payload(
@@ -1066,33 +922,7 @@ class CodemodRefactorGoalWorkflowPlan(CodemodWorkflowPlan):
     """Workflow plan that drives a declarative refactor goal through staged recipes."""
 
     workflow: ClassVar[CodemodWorkflowPlanKind] = CodemodWorkflowPlanKind.REFACTOR_GOAL
-    example_goal: ClassVar[CodemodRefactorGoal] = CodemodRefactorGoal(
-        goal_id="semantic-carrier-goal",
-        kind=CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION,
-    )
     goal: CodemodRefactorGoal
-
-    @classmethod
-    def payload_field_manifests(
-        cls,
-    ) -> tuple[CodemodWorkflowPlanFieldManifest, ...]:
-        return (
-            *cls.common_payload_field_manifests(),
-            CodemodWorkflowPlanFieldManifest(
-                field_name="goal",
-                value_kind=CodemodDslFieldKind.OBJECT,
-                required=True,
-                description="Declarative semantic refactor goal to pursue.",
-                example_value=cls.example_goal.to_dict(),
-            ),
-        )
-
-    @classmethod
-    def example_payload(cls) -> JsonObject:
-        return cls(
-            plan_id=cls.example_goal.goal_id,
-            goal=cls.example_goal,
-        ).to_dict()
 
     @classmethod
     def from_payload(
@@ -1213,59 +1043,6 @@ class CodemodWorkflowPlanJsonParser:
         if not all(isinstance(item, item_type) for item in value):
             raise ValueError(f"`{field_name}` entries must be {item_type.__name__}")
         return tuple(value)
-
-
-def codemod_workflow_entry_description(
-    entry_type: type[CodemodWorkflowPlan],
-) -> str:
-    """Return a normalized semantic description for one workflow-plan entry."""
-
-    description = inspect.getdoc(entry_type)
-    if description is None:
-        raise ValueError(f"{entry_type.__name__} must define a workflow description")
-    return description
-
-
-def codemod_refactor_goal_policy_description(
-    policy_type: type[CodemodRefactorGoalTargetPolicy],
-) -> str:
-    """Return a normalized semantic description for one refactor-goal policy."""
-
-    description = inspect.getdoc(policy_type)
-    if description is None:
-        raise ValueError(f"{policy_type.__name__} must define a goal description")
-    return description
-
-
-def codemod_refactor_goal_policy_manifests() -> (
-    tuple[CodemodRefactorGoalPolicyManifest, ...]
-):
-    """Return registry-derived manifest rows for goal-directed refactor policies."""
-
-    return tuple(
-        CodemodRefactorGoalPolicyManifest.from_policy_type(
-            goal_kind,
-            CodemodRefactorGoalTargetPolicy.__registry__[goal_kind],
-        )
-        for goal_kind in CodemodRefactorGoalKind
-    )
-
-
-def codemod_workflow_plan_manifests() -> tuple[CodemodWorkflowPlanManifest, ...]:
-    """Return registry-derived manifest rows for executable workflow plans."""
-
-    return tuple(
-        CodemodWorkflowPlan.workflow_type(kind).workflow_manifest()
-        for kind in CodemodWorkflowPlanKind
-    )
-
-
-def codemod_workflow_plan_example_payloads() -> tuple[JsonObject, ...]:
-    """Return parseable starter payloads for executable workflow plans."""
-
-    return tuple(
-        manifest.example_payload for manifest in codemod_workflow_plan_manifests()
-    )
 
 
 @dataclass(frozen=True)
