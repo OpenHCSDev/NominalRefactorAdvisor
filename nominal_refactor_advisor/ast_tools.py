@@ -742,6 +742,7 @@ class BuiltinCallName(StrEnum):
     FROZENSET = "frozenset"
     INT = "int"
     ISINSTANCE = "isinstance"
+    ISSUBCLASS = "issubclass"
     ITER = "iter"
     LEN = "len"
     LIST = "list"
@@ -769,6 +770,10 @@ class BuiltinCallName(StrEnum):
     @classmethod
     def collection_factory_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset((cls.TUPLE, cls.LIST, cls.SET, cls.FROZENSET))
+
+    @classmethod
+    def mutable_collection_factory_names(cls) -> frozenset["BuiltinCallName"]:
+        return cls.schema_accessor_copy_call_names() - frozenset((cls.TUPLE,))
 
     @classmethod
     def return_collection_kind_names(cls) -> frozenset["BuiltinCallName"]:
@@ -836,6 +841,24 @@ class BuiltinCallName(StrEnum):
                 cls.TUPLE,
             )
         )
+
+    @classmethod
+    def non_value_reference_names(cls) -> frozenset["BuiltinCallName"]:
+        return cls.structural_alias_leaf_names() | frozenset(
+            (cls.ALL, cls.ANY, cls.LEN, cls.TYPE)
+        )
+
+    @classmethod
+    def invariant_refinement_call_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.ISINSTANCE, cls.ISSUBCLASS, cls.TYPE))
+
+    @classmethod
+    def invariant_cardinality_call_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.LEN, cls.SET))
+
+    @classmethod
+    def invariant_quantifier_call_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.ALL, cls.ANY))
 
     @classmethod
     def schema_accessor_copy_call_names(cls) -> frozenset["BuiltinCallName"]:

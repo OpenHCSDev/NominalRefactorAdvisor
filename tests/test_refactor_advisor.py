@@ -366,6 +366,16 @@ def test_builtin_call_name_declares_collection_factory_names() -> None:
             BuiltinCallName.TUPLE,
         )
     )
+    assert BuiltinCallName.mutable_collection_factory_names() == frozenset(
+        (BuiltinCallName.DICT, BuiltinCallName.LIST, BuiltinCallName.SET)
+    )
+    assert BuiltinCallName.invariant_refinement_call_names() == frozenset(
+        (
+            BuiltinCallName.ISINSTANCE,
+            BuiltinCallName.ISSUBCLASS,
+            BuiltinCallName.TYPE,
+        )
+    )
 
 
 def test_labeled_str_enum_subclasses_own_name_aliases() -> None:

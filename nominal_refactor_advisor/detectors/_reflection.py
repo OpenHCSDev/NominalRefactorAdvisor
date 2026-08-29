@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 
-from ..ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY
+from ..ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY, BuiltinCallName
 from ._base import *
 
 _DIRECT_REFLECTION_BUILTINS = frozenset(
@@ -41,11 +41,8 @@ _UPPERCASE_SEMANTIC_DECLARATION_CALLS = frozenset(
     (
         "ContextVar",
         "RegistryConfig",
-        "dict",
-        "set",
-        "list",
     )
-)
+) | BuiltinCallName.mutable_collection_factory_names()
 _NATIVE_BARE_OR_ATTRIBUTE_CALL_QUERY = """
 (call function: (identifier) @callee) @call
 (call function: (attribute attribute: (identifier) @attribute)) @call

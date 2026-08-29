@@ -5419,29 +5419,8 @@ _MONOLITHIC_CONSTRUCTOR_METHOD_NAMES = frozenset(("__init__", "__post_init__"))
 _MONOLITHIC_CONSTRUCTOR_MIN_PREDICATES = 8
 _MONOLITHIC_CONSTRUCTOR_MIN_FIELDS = 3
 _MONOLITHIC_CONSTRUCTOR_MIN_INVARIANT_KINDS = 4
-_INVARIANT_REFINEMENT_CALL_NAMES = frozenset(("isinstance", "issubclass", "type"))
-_INVARIANT_CARDINALITY_CALL_NAMES = frozenset(("len", "set"))
-_INVARIANT_QUANTIFIER_CALL_NAMES = frozenset(("all", "any"))
 _INVARIANT_NORMALIZATION_METHOD_NAMES = frozenset(
     ("absolute", "canonicalize", "lower", "normalize", "resolve", "upper")
-)
-_NON_VALUE_REFERENCE_NAMES = frozenset(
-    (
-        "all",
-        "any",
-        "bool",
-        "bytes",
-        "dict",
-        "float",
-        "frozenset",
-        "int",
-        "len",
-        "list",
-        "set",
-        "str",
-        "tuple",
-        "type",
-    )
 )
 
 
@@ -5493,7 +5472,7 @@ def _value_reference_names(node: ast.AST) -> frozenset[str]:
     if isinstance(node, ast.Name):
         return (
             frozenset()
-            if node.id in _NON_VALUE_REFERENCE_NAMES
+            if node.id in BuiltinCallName.non_value_reference_names()
             else frozenset((node.id,))
         )
     if isinstance(node, ast.Attribute):
@@ -5539,13 +5518,13 @@ def _constructor_invariant_kinds(
             for call_name in (_call_terminal_name(descendant),)
             if call_name is not None
         )
-        if call_names & _INVARIANT_REFINEMENT_CALL_NAMES:
+        if call_names & BuiltinCallName.invariant_refinement_call_names():
             kinds.add("runtime representation")
-        if call_names & _INVARIANT_CARDINALITY_CALL_NAMES or isinstance(
+        if call_names & BuiltinCallName.invariant_cardinality_call_names() or isinstance(
             predicate, ast.UnaryOp
         ):
             kinds.add("cardinality")
-        if call_names & _INVARIANT_QUANTIFIER_CALL_NAMES:
+        if call_names & BuiltinCallName.invariant_quantifier_call_names():
             kinds.add("quantified members")
         if call_names & _INVARIANT_NORMALIZATION_METHOD_NAMES:
             kinds.add("normalization")

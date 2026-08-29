@@ -13,6 +13,7 @@ from typing import ClassVar
 from metaclass_registry import AutoRegisterMeta
 
 from ..ast_tools import (
+    BuiltinCallName,
     CollectedFamily,
     ParsedModule,
     SourceModule,
@@ -54,7 +55,6 @@ _BOOLEAN_TOKEN_VOCABULARY = frozenset(
         "yes",
     )
 )
-_BOOLEAN_TOKEN_CONSTRUCTORS = frozenset(("frozenset", "list", "set", "tuple"))
 _ENVIRONMENT_KEY_PARAMETER_TOKENS = frozenset(
     ("env", "environment", "flag", "key", "name", "variable")
 )
@@ -344,7 +344,7 @@ class _LiteralResolver:
             elements = node.elts
         elif (
             isinstance(node, ast.Call)
-            and _terminal_name(node.func) in _BOOLEAN_TOKEN_CONSTRUCTORS
+            and _terminal_name(node.func) in BuiltinCallName.collection_factory_names()
             and len(node.args) == 1
             and not node.keywords
         ):
