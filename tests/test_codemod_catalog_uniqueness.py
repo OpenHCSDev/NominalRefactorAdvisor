@@ -47,6 +47,25 @@ def test_payload_binding_set_rejects_duplicates_across_composition() -> None:
         )
 
 
+def test_payload_binding_set_derives_same_name_fields_from_keywords() -> None:
+    binding_set = PayloadBindingSet.from_field_codecs(
+        source=StringPayloadValueCodec(),
+        destination=StringPayloadValueCodec(),
+    )
+
+    assert tuple(
+        (binding.field_name, binding.constructor_argument_name)
+        for binding in binding_set
+    ) == (("source", "source"), ("destination", "destination"))
+
+
+def test_explicit_payload_fields_reject_redundant_same_name_schema() -> None:
+    with pytest.raises(ValueError, match="must use from_field_codecs"):
+        PayloadBindingSet.from_explicit_fields(
+            ("source", "source", StringPayloadValueCodec()),
+        )
+
+
 def test_registered_operation_payload_bindings_are_unique() -> None:
     for operation_key, operation_type in RefactorRecipeOperation.__registry__.items():
         binding_set = operation_type.payload_bindings()
