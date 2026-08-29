@@ -16233,7 +16233,10 @@ class MappingBuilderFindingRecipeSynthesizer(
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        builder = MappingSemanticMirrorRecipeBuilder.builder_for(finding, context)
+        builder = MappingSemanticMirrorRecipeBuilder.declared_builder_for(
+            finding,
+            context,
+        )
         if builder is None:
             return FindingRecipeEvaluation(
                 rejection_reason=MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
@@ -16245,11 +16248,8 @@ class MappingBuilderFindingRecipeSynthesizer(
         if recipe is not None:
             return FindingRecipeEvaluation(recipe=recipe).declared_by(type(builder))
         return FindingRecipeEvaluation(
-            rejection_reason=MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
-                finding,
-                context,
-            )
-        ).declared_by(type(builder))
+            rejection_reason=builder.rejection_reason()
+        ).declared_by(type(self))
 
     def action_keys_for_finding(
         self,
@@ -22612,7 +22612,7 @@ class MappingSemanticMirrorRecipeBuilder(
     ABC,
     metaclass=AutoRegisterMeta,
 ):
-    """Registered executable recipe builder for one mapping-mirror family."""
+    """Registered recipe declaration for one mapping-mirror family."""
 
     __registry__: ClassVar[dict[str, type["MappingSemanticMirrorRecipeBuilder"]]] = {}
     __registry_key__ = "mapping_name"
@@ -22622,7 +22622,7 @@ class MappingSemanticMirrorRecipeBuilder(
     finding: RefactorFinding
 
     @classmethod
-    def builder_for(
+    def declared_builder_for(
         cls,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None,
@@ -22634,49 +22634,10 @@ class MappingSemanticMirrorRecipeBuilder(
         mapping_name = finding.metrics.plan_mapping_name
         if mapping_name is None:
             return None
-        builders = tuple(
-            builder
-            for builder_type in cls.builder_types()
-            if (builder := builder_type.from_context(finding, context)) is not None
-        )
-        exact_builder_type = cls.__registry__.get(mapping_name)
-        exact_builder = next(
-            (
-                builder
-                for builder in builders
-                if type(builder) is exact_builder_type and builder.supports_finding()
-            ),
-            None,
-        )
-        if exact_builder is not None:
-            return exact_builder
-        fallback_builders = tuple(
-            builder
-            for builder in builders
-            if type(builder) is not exact_builder_type and builder.supports_finding()
-        )
-        if len(fallback_builders) > 1:
-            raise ValueError(
-                "Mapping mirror finding matched multiple generic recipe "
-                "declarations: "
-                f"{tuple(type(builder).__name__ for builder in fallback_builders)!r}"
-            )
-        return fallback_builders[0] if fallback_builders else None
-
-    @classmethod
-    def builder_types(
-        cls,
-    ) -> tuple[type["MappingSemanticMirrorRecipeBuilder"], ...]:
-        """Return the registered declarations in stable presentation order."""
-
-        return sorted_tuple(
-            cls.__registry__.values(),
-            key=lambda builder_type: builder_type.mapping_name,
-        )
-
-    @classmethod
-    def registered_mapping_names(cls) -> frozenset[str]:
-        return frozenset(cls.__registry__)
+        builder_type = cls.__registry__.get(mapping_name)
+        if builder_type is None:
+            return None
+        return builder_type.from_context(finding, context)
 
     @classmethod
     def from_context(
@@ -22697,50 +22658,15 @@ class MappingSemanticMirrorRecipeBuilder(
         )
 
     @classmethod
-    def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
-        if not isinstance(finding.metrics, MappingMetrics):
-            return False
-        return finding.metrics.plan_mapping_name == cls.mapping_name
-
-    def supports_finding(self) -> bool:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return False
-        return self.finding.metrics.plan_mapping_name == self.mapping_name
-
-    def explains_rejection(self) -> bool:
-        return self.supports_finding()
-
-    @classmethod
     def rejection_reason_from_context(
         cls,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None,
     ) -> str:
-        builder = cls.builder_for(finding, context)
+        builder = cls.declared_builder_for(finding, context)
         if builder is None:
-            reasons = cls.unmatched_builder_reasons(finding, context)
-            if reasons:
-                return "; ".join(dict.fromkeys(reasons))
             return "no registered mapping-mirror recipe builder matched the finding"
         return builder.rejection_reason()
-
-    @classmethod
-    def unmatched_builder_reasons(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> tuple[str, ...]:
-        if context is None or not isinstance(finding.metrics, MappingMetrics):
-            return ()
-        mapping_name = finding.metrics.plan_mapping_name
-        if mapping_name is None:
-            return ()
-        return tuple(
-            builder.rejection_reason()
-            for builder_type in cls.builder_types()
-            if (builder := builder_type.from_context(finding, context)) is not None
-            if builder.explains_rejection()
-        )
 
     @abstractmethod
     def recipe(self) -> RefactorRecipe | None:
@@ -22773,15 +22699,6 @@ class PartsBackedMappingRecipeBuilder(
     @abstractmethod
     def parts(self) -> RecipePartsT | None:
         raise NotImplementedError
-
-    def supports_finding(self) -> bool:
-        return (
-            MappingSemanticMirrorRecipeBuilder.supports_finding(self)
-            and self.parts is not None
-        )
-
-    def explains_rejection(self) -> bool:
-        return MappingSemanticMirrorRecipeBuilder.supports_finding(self)
 
     def recipe(self) -> RefactorRecipe | None:
         if self.parts is None:
@@ -23659,20 +23576,6 @@ class DataclassAuthorityMappingRecipeBuilder(
 ):
     """Shared seed-to-authority workflow for dataclass projection recipes."""
 
-    @classmethod
-    def matches_return_projection_finding_shape(cls, finding: RefactorFinding) -> bool:
-        if not isinstance(finding.metrics, MappingMetrics):
-            return False
-        seed = FindingSemanticMirrorLocations(finding).optional_seed_locations()
-        return (
-            finding.metrics.plan_mapping_name is not None
-            and seed is not None
-            and seed.projection_is_kind(SemanticMirrorProjectionKind.RETURN)
-        )
-
-    def explains_rejection(self) -> bool:
-        return self.matches_return_projection_finding_shape(self.finding)
-
     @cached_property
     def parts(self) -> RecipePartsT | None:
         return (
@@ -23909,13 +23812,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     payload_method_name: ClassVar[str] = "payload_from_field_values"
 
     finding: RefactorFinding
-
-    @classmethod
-    def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
-        return cls.matches_return_projection_finding_shape(finding)
-
-    def supports_finding(self) -> bool:
-        return self.matches_finding_shape(self.finding) and self.parts is not None
 
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
@@ -24155,13 +24051,6 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
     payload_method_name: ClassVar[str] = "payload_items_from_field_values"
 
     finding: RefactorFinding
-
-    @classmethod
-    def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
-        return cls.matches_return_projection_finding_shape(finding)
-
-    def supports_finding(self) -> bool:
-        return self.matches_finding_shape(self.finding) and self.parts is not None
 
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
@@ -24413,26 +24302,11 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
     """Nominalize formal source-scope return dictionaries as dataclass carriers."""
 
     mapping_name: ClassVar[str] = "formal_boundary_source_scope_return_dict"
-    context_mapping_prefix: ClassVar[str] = "formal_boundary_source_scope_"
-
     finding: RefactorFinding
-
-    def explains_rejection(self) -> bool:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return False
-        mapping_name = self.finding.metrics.plan_mapping_name
-        return mapping_name is not None and mapping_name.startswith(
-            self.context_mapping_prefix
-        )
 
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return "source-context carrier extraction requires mapping metrics"
-        if self.finding.metrics.plan_mapping_name != self.mapping_name:
-            return (
-                "source-context carrier extraction is executable for return-dict "
-                "source scopes; call-site kwargs require a receiving carrier boundary"
-            )
         evidence = FindingPrimaryEvidence(self.finding).source_location
         if evidence is None:
             return "source-context carrier extraction requires primary source evidence"
@@ -25229,17 +25103,6 @@ class DataclassCallProjectionMappingRecipeBuilder(
     metrics_rejection_reason: ClassVar[str]
     executable_rejection_reason: ClassVar[str]
     missing_rejection_reason: ClassVar[str]
-
-    @classmethod
-    def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
-        # Goal-policy manifests must classify a finding by its declared mapping
-        # family.  The generic return-projection fallback below is intentionally
-        # broader, but using that fallback here makes every return projection
-        # appear to be a constructor projection and destroys selector priority.
-        return super().matches_finding_shape(finding)
-
-    def supports_finding(self) -> bool:
-        return self.explains_rejection() and self.parts is not None
 
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
@@ -28240,7 +28103,10 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        builder = MappingSemanticMirrorRecipeBuilder.builder_for(finding, context)
+        builder = MappingSemanticMirrorRecipeBuilder.declared_builder_for(
+            finding,
+            context,
+        )
         if builder is not None:
             builder_recipe = builder.recipe()
             if builder_recipe is not None:
@@ -28252,7 +28118,10 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        builder = MappingSemanticMirrorRecipeBuilder.builder_for(finding, context)
+        builder = MappingSemanticMirrorRecipeBuilder.declared_builder_for(
+            finding,
+            context,
+        )
         if builder is not None:
             builder_recipe = builder.recipe()
             if builder_recipe is not None:
@@ -28266,7 +28135,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                     finding,
                     builder.rejection_reason(),
                 )
-            ).declared_by(type(builder))
+            ).declared_by(type(self))
         enum_subset_builder = self.enum_subset_builder_for_finding(finding, context)
         if enum_subset_builder is not None:
             parts = enum_subset_builder.parts()
