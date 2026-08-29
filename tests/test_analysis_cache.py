@@ -7278,7 +7278,7 @@ def test_compact_distributed_boundary_graph_preserves_semantics_without_ast_shad
     ] == wrapper_detector._findings_for_candidates(compact_wrappers, config)
 
 
-def test_compact_role_surface_projection_matches_both_legacy_global_joins(
+def test_compact_role_surface_projection_owns_both_global_joins(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -7323,68 +7323,52 @@ def test_compact_role_surface_projection_matches_both_legacy_global_joins(
     config = DetectorConfig()
     role_detector = role_surface_detectors.RoleSurfaceDriftDetector()
     case_detector = role_surface_detectors.GenericRoleCaseTableDetector()
-    role_projections = role_detector.compact_module_projection_groups(modules)[
+    projection_groups = role_detector.compact_module_projection_groups(modules)
+    role_projections = projection_groups[
         role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily
     ]
-    class_projections = role_detector.compact_module_projection_groups(modules)[
-        runtime_detectors.CompactModuleClassProjectionFamily
-    ]
-    compact_role_candidates = (
-        role_surface_detectors._compact_role_surface_drift_candidates(
-            role_projections,
-            class_projections,
-            config,
-        )
-    )
-    legacy_role_candidates = role_surface_detectors._role_surface_drift_candidates(
-        modules,
+    role_candidates = role_detector._candidates_from_compact_projection_groups(
+        projection_groups,
         config,
     )
-    compact_case_candidates = (
-        role_surface_detectors._compact_generic_role_case_table_candidates(
-            role_projections,
-            config,
-        )
-    )
-    legacy_case_candidates = role_surface_detectors._generic_role_case_table_candidates(
-        modules, config
+    case_candidates = case_detector._candidates_from_compact_projections(
+        role_projections,
+        config,
     )
 
-    assert compact_role_candidates == legacy_role_candidates
-    assert len(compact_role_candidates) == 1
-    assert len(compact_role_candidates[0].use_sites) == 2
-    assert compact_case_candidates == legacy_case_candidates
-    assert compact_case_candidates
+    assert len(role_candidates) == 1
+    assert len(role_candidates[0].use_sites) == 2
+    assert case_candidates
     strict_role_config = DetectorConfig(min_role_drift_use_sites=3)
-    assert role_surface_detectors._compact_role_surface_drift_candidates(
-        role_projections,
-        class_projections,
-        strict_role_config,
-    ) == role_surface_detectors._role_surface_drift_candidates(
-        modules,
+    assert not role_detector._candidates_from_compact_projection_groups(
+        projection_groups,
         strict_role_config,
     )
     strict_case_config = DetectorConfig(min_generic_role_case_table_cases=6)
-    assert role_surface_detectors._compact_generic_role_case_table_candidates(
+    assert not case_detector._candidates_from_compact_projections(
         role_projections,
         strict_case_config,
-    ) == role_surface_detectors._generic_role_case_table_candidates(
-        modules,
-        strict_case_config,
     )
+    for removed_name in (
+        "_role_surface_drift_candidates",
+        "_compact_role_surface_drift_candidates",
+        "_generic_role_case_table_sites",
+        "_generic_role_case_table_candidates",
+        "_compact_generic_role_case_table_candidates",
+    ):
+        assert not hasattr(role_surface_detectors, removed_name)
+    assert "candidate_collector" not in type(role_detector).__dict__
+    assert "candidate_collector" not in type(case_detector).__dict__
+    assert role_detector._candidate_items(list(modules), config) == role_candidates
+    assert case_detector._candidate_items(list(modules), config) == case_candidates
     assert role_detector._findings_from_compact_projection_groups(
-        {
-            role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily: (
-                role_projections
-            ),
-            runtime_detectors.CompactModuleClassProjectionFamily: class_projections,
-        },
+        projection_groups,
         config,
-    ) == role_detector._findings_for_candidates(legacy_role_candidates, config)
+    ) == role_detector._findings_for_candidates(role_candidates, config)
     assert case_detector._findings_from_compact_projections(
         role_projections,
         config,
-    ) == case_detector._findings_for_candidates(legacy_case_candidates, config)
+    ) == case_detector._findings_for_candidates(case_candidates, config)
 
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
@@ -7398,10 +7382,10 @@ def test_compact_role_surface_projection_matches_both_legacy_global_joins(
     findings_by_detector = accumulator.findings_by_detector(config)
     assert findings_by_detector[
         role_surface_detectors.RoleSurfaceDriftDetector
-    ] == role_detector._findings_for_candidates(legacy_role_candidates, config)
+    ] == role_detector._findings_for_candidates(role_candidates, config)
     assert findings_by_detector[
         role_surface_detectors.GenericRoleCaseTableDetector
-    ] == case_detector._findings_for_candidates(legacy_case_candidates, config)
+    ] == case_detector._findings_for_candidates(case_candidates, config)
 
 
 def test_role_surface_projection_reuses_visitor_traversal_and_active_path(

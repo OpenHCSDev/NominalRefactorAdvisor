@@ -19,11 +19,8 @@ from ..ast_tools import (
     module_syntax_index,
 )
 from ..class_index import (
-    ClassFamilyIndex,
     CompactClassFamilyIndex,
-    CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
-    build_compact_class_family_index,
 )
 from ..export_tools import PublicExportPolicy, derive_public_exports
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
@@ -828,16 +825,6 @@ def _generic_role_case_table_sites_with_minimum(
     return tuple(sorted(sites, key=lambda item: (item.file_path, item.line)))
 
 
-def _generic_role_case_table_sites(
-    module: ParsedModule,
-    config: DetectorConfig,
-) -> tuple[GenericRoleCaseTableSite, ...]:
-    return _generic_role_case_table_sites_with_minimum(
-        module,
-        config.min_generic_role_case_table_cases,
-    )
-
-
 def _generic_role_case_table_certificate(
     *,
     sites: tuple[GenericRoleCaseTableSite, ...],
@@ -856,20 +843,6 @@ def _generic_role_case_table_certificate(
             ("shared_case_tokens", shared_case_tokens),
         ),
         independent_source_count=len({site.owner_symbol for site in sites}),
-    )
-
-
-def _generic_role_case_table_candidates(
-    modules: Sequence[ParsedModule],
-    config: DetectorConfig,
-) -> tuple[GenericRoleCaseTableCandidate, ...]:
-    return _generic_role_case_table_candidates_from_sites(
-        tuple(
-            site
-            for module in modules
-            for site in _generic_role_case_table_sites(module, config)
-        ),
-        config,
     )
 
 
@@ -1857,7 +1830,7 @@ class CompactRoleSurfaceModuleProjectionFamily(
 def _role_surface_use_descends_from_declaration(
     use_site: RoleSurfaceUseSite,
     declaration_symbols: frozenset[str],
-    class_index: ClassFamilyIndex | CompactClassFamilyIndex,
+    class_index: CompactClassFamilyIndex,
     class_symbols_by_file_and_qualname: dict[tuple[str, str], str],
 ) -> bool:
     """Recognize inherited-field uses as descent through the declaring class.
@@ -1899,7 +1872,7 @@ def _role_surface_declaration_symbols(
 
 
 def _role_surface_class_symbols_by_file_and_simple_name(
-    class_index: ClassFamilyIndex | CompactClassFamilyIndex,
+    class_index: CompactClassFamilyIndex,
 ) -> dict[tuple[str, str], frozenset[str]]:
     grouped: dict[tuple[str, str], set[str]] = defaultdict(set)
     for symbol, indexed_class in class_index.classes_by_symbol.items():
@@ -1907,40 +1880,11 @@ def _role_surface_class_symbols_by_file_and_simple_name(
     return {key: frozenset(symbols) for key, symbols in grouped.items()}
 
 
-def _role_surface_drift_candidates(
-    modules: Sequence[ParsedModule],
-    config: DetectorConfig,
-) -> tuple[RoleSurfaceDriftCandidate, ...]:
-    declarations = tuple(
-        declaration
-        for module in modules
-        for declaration in _role_surface_class_field_declarations(module)
-    )
-    if not declarations:
-        return ()
-    field_names = frozenset(declaration.field_name for declaration in declarations)
-    class_index = build_class_family_index(list(modules))
-    return _role_surface_drift_candidates_from_facts(
-        declarations,
-        (
-            use_site
-            for module in modules
-            for use_site in _role_surface_use_sites(module, field_names)
-        ),
-        class_index=class_index,
-        class_symbols_by_file_and_qualname=(class_index.symbols_by_file_and_qualname),
-        class_symbols_by_file_and_simple_name=(
-            _role_surface_class_symbols_by_file_and_simple_name(class_index)
-        ),
-        config=config,
-    )
-
-
 def _role_surface_drift_candidates_from_facts(
     declarations: Iterable[RoleSurfaceDeclaration],
     use_sites: Iterable[RoleSurfaceUseSite],
     *,
-    class_index: ClassFamilyIndex | CompactClassFamilyIndex,
+    class_index: CompactClassFamilyIndex,
     class_symbols_by_file_and_qualname: dict[tuple[str, str], str],
     class_symbols_by_file_and_simple_name: dict[tuple[str, str], frozenset[str]],
     config: DetectorConfig,
@@ -2050,55 +1994,8 @@ def _role_surface_drift_candidates_from_facts(
     )
 
 
-def _compact_role_surface_drift_candidates(
-    role_projections: tuple[CompactRoleSurfaceModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
-    config: DetectorConfig,
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
-) -> tuple[RoleSurfaceDriftCandidate, ...]:
-    if class_index is None:
-        class_index = build_compact_class_family_index(class_projections)
-    return _role_surface_drift_candidates_from_facts(
-        (
-            declaration
-            for projection in role_projections
-            for declaration in projection.declarations
-        ),
-        (
-            use_site
-            for projection in role_projections
-            for use_site in projection.possible_use_sites
-        ),
-        class_index=class_index,
-        class_symbols_by_file_and_qualname={
-            (indexed_class.file_path, indexed_class.qualname): symbol
-            for symbol, indexed_class in class_index.classes_by_symbol.items()
-        },
-        class_symbols_by_file_and_simple_name=(
-            _role_surface_class_symbols_by_file_and_simple_name(class_index)
-        ),
-        config=config,
-    )
-
-
-def _compact_generic_role_case_table_candidates(
-    projections: tuple[CompactRoleSurfaceModuleProjection, ...],
-    config: DetectorConfig,
-) -> tuple[GenericRoleCaseTableCandidate, ...]:
-    return _generic_role_case_table_candidates_from_sites(
-        (
-            site
-            for projection in projections
-            for site in projection.generic_role_case_table_sites
-        ),
-        config,
-    )
-
-
 class RoleSurfaceDriftDetector(
-    CompactMultiModuleProjectionDetectorMixin,
-    ConfiguredCrossModuleCollectorCandidateDetector[RoleSurfaceDriftCandidate],
+    CompactMultiProjectionCandidateDetector[RoleSurfaceDriftCandidate],
 ):
     module_projection_families = (
         CompactRoleSurfaceModuleProjectionFamily,
@@ -2118,55 +2015,62 @@ class RoleSurfaceDriftDetector(
         _NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS,
         _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
-    candidate_collector = staticmethod(_role_surface_drift_candidates)
+    @staticmethod
+    def _candidates_with_class_index(
+        role_projections: tuple[CompactRoleSurfaceModuleProjection, ...],
+        class_index: CompactClassFamilyIndex,
+        config: DetectorConfig,
+    ) -> tuple[RoleSurfaceDriftCandidate, ...]:
+        return _role_surface_drift_candidates_from_facts(
+            (
+                declaration
+                for projection in role_projections
+                for declaration in projection.declarations
+            ),
+            (
+                use_site
+                for projection in role_projections
+                for use_site in projection.possible_use_sites
+            ),
+            class_index=class_index,
+            class_symbols_by_file_and_qualname={
+                (indexed_class.file_path, indexed_class.qualname): symbol
+                for symbol, indexed_class in class_index.classes_by_symbol.items()
+            },
+            class_symbols_by_file_and_simple_name=(
+                _role_surface_class_symbols_by_file_and_simple_name(class_index)
+            ),
+            config=config,
+        )
 
-    def _findings_from_compact_projection_groups(
+    def _candidates_from_compact_projection_groups(
         self,
         projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[RoleSurfaceDriftCandidate]:
         role_projections = cast(
             tuple[CompactRoleSurfaceModuleProjection, ...],
             projections_by_family[CompactRoleSurfaceModuleProjectionFamily],
         )
-        class_projections = cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
-        )
-        return self._findings_for_candidates(
-            _compact_role_surface_drift_candidates(
-                role_projections,
-                class_projections,
-                config,
-            ),
+        return self._candidates_with_class_index(
+            role_projections,
+            compact_class_index_from_projection_groups(projections_by_family, config),
             config,
         )
 
-    def _findings_from_compact_projection_groups_context(
+    def _candidates_from_compact_projection_groups_context(
         self,
         projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
         context: object | None,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[RoleSurfaceDriftCandidate]:
         if not isinstance(context, CompactClassFamilyIndex):
             raise TypeError("shared compact class index is unavailable")
         role_projections = cast(
             tuple[CompactRoleSurfaceModuleProjection, ...],
             projections_by_family[CompactRoleSurfaceModuleProjectionFamily],
         )
-        class_projections = cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
-        )
-        return self._findings_for_candidates(
-            _compact_role_surface_drift_candidates(
-                role_projections,
-                class_projections,
-                config,
-                class_index=context,
-            ),
-            config,
-        )
+        return self._candidates_with_class_index(role_projections, context, config)
 
     def _finding_for_candidate(
         self, candidate: RoleSurfaceDriftCandidate
@@ -2197,9 +2101,11 @@ class RoleSurfaceDriftDetector(
 
 
 class GenericRoleCaseTableDetector(
-    CompactModuleProjectionDetectorMixin[CompactRoleSurfaceModuleProjection],
     SemanticMirrorIssueDetector,
-    ConfiguredCrossModuleCollectorCandidateDetector[GenericRoleCaseTableCandidate],
+    CompactProjectionCandidateDetector[
+        CompactRoleSurfaceModuleProjection,
+        GenericRoleCaseTableCandidate,
+    ],
 ):
     module_projection_family = CompactRoleSurfaceModuleProjectionFamily
     finding_spec = high_confidence_certified_spec(
@@ -2211,15 +2117,17 @@ class GenericRoleCaseTableDetector(
         _NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS,
         _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
-    candidate_collector = staticmethod(_generic_role_case_table_candidates)
-
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactRoleSurfaceModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _compact_generic_role_case_table_candidates(projections, config),
+    ) -> Sequence[GenericRoleCaseTableCandidate]:
+        return _generic_role_case_table_candidates_from_sites(
+            (
+                site
+                for projection in projections
+                for site in projection.generic_role_case_table_sites
+            ),
             config,
         )
 
