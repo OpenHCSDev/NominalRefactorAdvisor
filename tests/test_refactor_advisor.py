@@ -11979,6 +11979,30 @@ def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
         if item.detector_id == "field_only_frozen_dataclass"
     ]
     assert not findings
+    module = parse_python_modules(tmp_path)[0]
+    node = next(
+        item for item in module.module.body if isinstance(item, ast.ClassDef)
+    )
+    candidate = base_detectors.FieldOnlyFrozenDataclassCandidate.from_class(
+        module,
+        node,
+    )
+    assert candidate is not None
+    assert candidate.field_specs == (("name", "str"), ("line", "int"))
+    removed_names = (
+        "ProductRecordFieldSpec",
+        "ProductRecordFieldSpecs",
+        "MutableProductRecordFieldSpecs",
+        "ProductRecordAnnotatedClass",
+        "ProductRecordDataclassShape",
+        "_FieldOnlyFrozenDataclassShapeStep",
+        "_FrozenDataclassClassStep",
+        "_ProductRecordAnnotatedFieldsStep",
+        "_ProductRecordShapeStep",
+        "_field_only_frozen_dataclass_shape",
+        "_field_only_frozen_dataclass_candidate",
+    )
+    assert all(not hasattr(helper_detectors, name) for name in removed_names)
 
 
 def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:

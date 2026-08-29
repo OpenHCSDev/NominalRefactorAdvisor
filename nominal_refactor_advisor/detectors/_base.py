@@ -53,10 +53,8 @@ from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_regis
 from ..registry_normal_form import RegistryNormalFormStage
 from ..semantic_identity import SemanticRoleIdentityToken
 from ..semantic_match import (
-    AstTypedEffectStep,
     AstPredicateGrammar,
     AstPredicateRule,
-    GuardedEffectStep,
     Maybe,
     NamedCallAssignment,
     NamedValueBinding,
@@ -13582,6 +13580,72 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
     docstring: str | None
     kw_only: bool
     line_count: int
+
+    @staticmethod
+    def _dataclass_keyword_bool(node: ast.ClassDef, keyword_name: str) -> bool:
+        for decorator in node.decorator_list:
+            call = as_ast(decorator, ast.Call)
+            if call is None or name_id(call.func) != "dataclass":
+                continue
+            for keyword in call.keywords:
+                if (
+                    keyword.arg == keyword_name
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, bool)
+                ):
+                    return keyword.value.value
+        return False
+
+    @classmethod
+    def from_class(
+        cls,
+        module: ParsedModule,
+        node: ast.ClassDef,
+    ) -> "FieldOnlyFrozenDataclassCandidate | None":
+        if not _is_frozen_dataclass(node):
+            return None
+        product_fields: list[tuple[str, str, str | None]] = []
+        for statement in _trim_docstring_body(node.body):
+            if isinstance(statement, ast.Pass):
+                continue
+            assignment = as_ast(statement, ast.AnnAssign)
+            target = (
+                as_ast(assignment.target, ast.Name)
+                if assignment is not None
+                else None
+            )
+            if assignment is None or target is None:
+                return None
+            product_fields.append(
+                (
+                    target.id,
+                    ast.unparse(assignment.annotation),
+                    (
+                        ast.unparse(assignment.value)
+                        if assignment.value is not None
+                        else None
+                    ),
+                )
+            )
+        if not product_fields:
+            return None
+        return cls(
+            file_path=str(module.path),
+            line=node.lineno,
+            class_name=node.name,
+            base_names=tuple(ast.unparse(base) for base in node.bases),
+            field_specs=tuple(
+                (name, annotation) for name, annotation, _ in product_fields
+            ),
+            default_specs=tuple(
+                (name, default)
+                for name, _, default in product_fields
+                if default is not None
+            ),
+            docstring=ast.get_docstring(node),
+            kw_only=cls._dataclass_keyword_bool(node, "kw_only"),
+            line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
+        )
 
 
 @dataclass(frozen=True)

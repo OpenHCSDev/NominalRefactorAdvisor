@@ -32,12 +32,7 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..semantic_identity import SemanticRoleIdentityToken
-from ..semantic_match import (
-    FirstSuccessfulEffectStep,
-    RegisteredEffectStep,
-    effect_step_class_family_authority,
-    registered_effect_steps,
-)
+from ..semantic_match import effect_step_class_family_authority
 from ..impact_ranking import RefactorImpactKey
 
 import pickle
@@ -73,17 +68,6 @@ NamedStringSequenceSpecsByName: TypeAlias = dict[str, MutableNamedStringSequence
 DerivedQuerySignature: TypeAlias = tuple[str, str, str]
 DerivedQuerySpecsBySignature: TypeAlias = dict[
     DerivedQuerySignature, MutableNamedStringSequenceSpecs
-]
-ProductRecordFieldSpec: TypeAlias = tuple[str, str, str | None]
-ProductRecordFieldSpecs: TypeAlias = tuple[ProductRecordFieldSpec, ...]
-MutableProductRecordFieldSpecs: TypeAlias = list[ProductRecordFieldSpec]
-ProductRecordAnnotatedClass: TypeAlias = tuple[ast.ClassDef, ProductRecordFieldSpecs]
-ProductRecordDataclassShape: TypeAlias = tuple[
-    tuple[str, ...],
-    tuple[tuple[str, str], ...],
-    tuple[tuple[str, str], ...],
-    str | None,
-    bool,
 ]
 TopLevelDeclaration: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
 TopLevelDeclarationMap: TypeAlias = dict[str, TopLevelDeclaration]
@@ -14626,168 +14610,15 @@ def _private_helper_shadow_candidates_from_definition_facts(
     )
 
 
-def _is_frozen_dataclass_decorator(node: ast.AST) -> bool:
-    call = as_ast(node, ast.Call)
-    if call is None or name_id(call.func) != "dataclass":
-        return False
-    return any(
-        (
-            keyword.arg == "frozen"
-            and isinstance(keyword.value, ast.Constant)
-            and (keyword.value.value is True)
-            for keyword in call.keywords
-        )
-    )
-
-
-def _dataclass_keyword_bool(node: ast.ClassDef, keyword_name: str) -> bool:
-    for decorator in node.decorator_list:
-        call = as_ast(decorator, ast.Call)
-        if call is None or name_id(call.func) != "dataclass":
-            continue
-        for keyword in call.keywords:
-            if (
-                keyword.arg == keyword_name
-                and isinstance(keyword.value, ast.Constant)
-                and isinstance(keyword.value.value, bool)
-            ):
-                return keyword.value.value
-    return False
-
-
-class _FieldOnlyFrozenDataclassShapeStep(RegisteredEffectStep):
-    pass
-
-
-class _FrozenDataclassClassStep(
-    _FieldOnlyFrozenDataclassShapeStep,
-    GuardedEffectStep[ast.ClassDef, ast.ClassDef],
-):
-    step_id = "frozen_dataclass_class"
-    registration_order = 10
-
-    def accepts(self, value: ast.ClassDef) -> bool:
-        return any(
-            (
-                _is_frozen_dataclass_decorator(decorator)
-                for decorator in value.decorator_list
-            )
-        )
-
-    def project(self, value: ast.ClassDef) -> ast.ClassDef | None:
-        return value
-
-
-def _ann_assign_product_field_spec(
-    statement: ast.stmt,
-) -> tuple[str, str, str | None] | None:
-    return (
-        Maybe.of(as_ast(statement, ast.AnnAssign))
-        .combine(
-            lambda assignment: as_ast(assignment.target, ast.Name),
-            lambda assignment, target: (
-                target.id,
-                ast.unparse(assignment.annotation),
-                ast.unparse(assignment.value) if assignment.value is not None else None,
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-class _ProductRecordAnnotatedFieldsStep(
-    _FieldOnlyFrozenDataclassShapeStep,
-    GuardedEffectStep[(ast.ClassDef, ProductRecordAnnotatedClass)],
-):
-    step_id = "product_record_annotated_fields"
-    registration_order = 20
-
-    def project(
-        self,
-        value: ast.ClassDef,
-    ) -> ProductRecordAnnotatedClass | None:
-        field_specs: MutableProductRecordFieldSpecs = []
-        for statement in _trim_docstring_body(value.body):
-            if isinstance(statement, ast.Pass):
-                continue
-            field_spec = _ann_assign_product_field_spec(statement)
-            if field_spec is None:
-                return None
-            field_specs.append(field_spec)
-        if not field_specs:
-            return None
-        return value, tuple(field_specs)
-
-
-class _ProductRecordShapeStep(
-    _FieldOnlyFrozenDataclassShapeStep,
-    GuardedEffectStep[(ProductRecordAnnotatedClass, ProductRecordDataclassShape)],
-):
-    step_id = "product_record_shape"
-    registration_order = 30
-
-    def project(
-        self, value: ProductRecordAnnotatedClass
-    ) -> ProductRecordDataclassShape | None:
-        node, product_fields = value
-        return (
-            tuple((ast.unparse(base) for base in node.bases)),
-            tuple(((name, annotation) for name, annotation, _ in product_fields)),
-            tuple(
-                (
-                    (name, default)
-                    for name, _, default in product_fields
-                    if default is not None
-                )
-            ),
-            ast.get_docstring(node),
-            _dataclass_keyword_bool(node, "kw_only"),
-        )
-
-
-def _field_only_frozen_dataclass_shape(
-    node: ast.ClassDef,
-) -> ProductRecordDataclassShape | None:
-    return cast(
-        ProductRecordDataclassShape | None,
-        Maybe.of(node)
-        .bind_all(registered_effect_steps(_FieldOnlyFrozenDataclassShapeStep))
-        .unwrap_or_none(),
-    )
-
-
-def _field_only_frozen_dataclass_candidate(
-    module: ParsedModule,
-    node: ast.ClassDef,
-    shape: tuple[
-        tuple[str, ...],
-        tuple[tuple[str, str], ...],
-        tuple[tuple[str, str], ...],
-        str | None,
-        bool,
-    ],
-) -> FieldOnlyFrozenDataclassCandidate:
-    base_names, field_specs, default_specs, docstring, kw_only = shape
-    return FieldOnlyFrozenDataclassCandidate(
-        file_path=str(module.path),
-        line=node.lineno,
-        class_name=node.name,
-        base_names=base_names,
-        field_specs=field_specs,
-        default_specs=default_specs,
-        docstring=docstring,
-        kw_only=kw_only,
-        line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
-    )
-
-
 def _field_only_frozen_dataclass_candidates(
     module: ParsedModule,
 ) -> tuple[FieldOnlyFrozenDataclassCandidate, ...]:
-    return HELPER_SYNTAX_PROJECTION_AUTHORITY.class_shape_candidates(
-        module,
-        _field_only_frozen_dataclass_shape,
-        _field_only_frozen_dataclass_candidate,
+    return tuple(
+        candidate
+        for node in _walk_nodes(module.module)
+        if isinstance(node, ast.ClassDef)
+        for candidate in (FieldOnlyFrozenDataclassCandidate.from_class(module, node),)
+        if candidate is not None
     )
 
 
