@@ -7646,7 +7646,7 @@ def test_compact_nominal_bypass_and_variant_candidates_own_global_analysis(
     assert len(findings[type(variant_detector)]) == 1
 
 
-def test_compact_isinstance_scatter_preserves_nested_function_attribution(
+def test_isinstance_scatter_uses_one_nested_function_attribution_path(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -7668,11 +7668,13 @@ def test_compact_isinstance_scatter_preserves_nested_function_attribution(
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
 
-    legacy = runtime_detectors._isinstance_family_scatter_candidates(module)
-    compact = runtime_detectors._compact_isinstance_family_scatter_candidates(module)
+    candidates = runtime_detectors._isinstance_family_scatter_candidates(module)
 
-    assert compact == legacy
-    assert {candidate.qualname for candidate in compact} == {"inner", "outer"}
+    assert {candidate.qualname for candidate in candidates} == {"inner", "outer"}
+    assert not hasattr(
+        runtime_detectors,
+        "_compact_isinstance_family_scatter_candidates",
+    )
 
 
 def test_compact_semantic_descent_graph_matches_legacy_ast_graph(

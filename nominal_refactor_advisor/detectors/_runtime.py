@@ -3612,16 +3612,7 @@ def _isinstance_family_scatter_candidates_from_named_functions(
 def _isinstance_family_scatter_candidates(
     module: ParsedModule,
 ) -> tuple[IsinstanceFamilyScatterCandidate, ...]:
-    return _isinstance_family_scatter_candidates_from_named_functions(
-        module,
-        _iter_named_functions(module),
-    )
-
-
-def _compact_isinstance_family_scatter_candidates(
-    module: ParsedModule,
-) -> tuple[IsinstanceFamilyScatterCandidate, ...]:
-    """Preserve repeated-walk semantics while skipping irrelevant functions."""
+    """Preserve nested attribution while skipping irrelevant functions."""
 
     relevant_function_ids: set[int] = set()
 
@@ -12694,7 +12685,7 @@ class CompactNominalBypassModuleProjectionFamily(
             CompactNominalBypassModuleProjection(
                 module_name=parsed_module.module_name,
                 file_path=str(parsed_module.path),
-                isinstance_scatters=_compact_isinstance_family_scatter_candidates(
+                isinstance_scatters=_isinstance_family_scatter_candidates(
                     parsed_module
                 ),
                 repeated_templates=_cross_class_small_method_template_candidates(
@@ -12763,7 +12754,7 @@ def _collect_nominal_bypass_ast_demand(
     if not isinstance(demand, CompactNominalBypassProjectionDemand):
         raise TypeError("nominal-bypass demand has the wrong authority type")
     isinstance_scatters = (
-        _compact_isinstance_family_scatter_candidates(parsed_module)
+        _isinstance_family_scatter_candidates(parsed_module)
         if "isinstance" in parsed_module.source
         else ()
     )
