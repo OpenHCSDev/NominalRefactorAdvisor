@@ -11423,7 +11423,9 @@ def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
     assert finding.compression_certificate.pays_rent
     assert "AST type guards" in finding.summary
     assert "EffectStep" in (finding.scaffold or "")
-    assert "AutoRegisterMeta" in (finding.scaffold or "")
+    assert "refinement_path" in (finding.scaffold or "")
+    assert "__mro__" in (finding.scaffold or "")
+    assert "AutoRegisterMeta" not in (finding.scaffold or "")
     assert "bind_all" in (finding.codemod_patch or "")
 
 

@@ -6940,7 +6940,6 @@ class SubclassFilterNameRule(AstPredicateRule[str, ast.AST, str]):
 
 class NamedSubclassFilterCallRule(SubclassFilterNameRule):
     node_type = ast.Call
-    rule_order = 10
 
     def project_ast(self, node: ast.Call, current_name: str) -> str | None:
         if name_id(node.func) is None:
@@ -6952,7 +6951,6 @@ class NamedSubclassFilterCallRule(SubclassFilterNameRule):
 
 class DictBackedSubclassFilterRule(SubclassFilterNameRule):
     node_type = ast.Call
-    rule_order = 20
 
     def project_ast(self, node: ast.Call, current_name: str) -> str | None:
         match = attribute_call_match(
@@ -6969,16 +6967,12 @@ class DictBackedSubclassFilterRule(SubclassFilterNameRule):
         return attribute_name if isinstance(attribute_name, str) else None
 
 
-SUBCLASS_FILTER_NAME_GRAMMAR = AstPredicateGrammar[str, str](SubclassFilterNameRule)
-
-
 class SubclassLoopRule(AstPredicateRule[str, ast.AST, str]):
     """Rule family for loop shapes that advance subclass traversal queues."""
 
 
 class QueueExtendingSubclassLoopRule(SubclassLoopRule):
     node_type = ast.While
-    rule_order = 10
 
     def project_ast(self, node: ast.While, queue_name: str) -> str | None:
         current_name: str | None = None
@@ -6998,9 +6992,6 @@ class QueueExtendingSubclassLoopRule(SubclassLoopRule):
             ):
                 extends_queue = True
         return current_name if extends_queue else None
-
-
-SUBCLASS_LOOP_GRAMMAR = AstPredicateGrammar[str, str](SubclassLoopRule)
 
 
 class SubclassTraversalProfile:
@@ -7029,13 +7020,13 @@ class SubclassTraversalProfile:
         current_name: str,
     ) -> tuple[str, ...]:
         return sorted_tuple(
-            set(SUBCLASS_FILTER_NAME_GRAMMAR.matches_anywhere(node, current_name))
+            set(SubclassFilterNameRule.matches_anywhere(node, current_name))
         )
 
     def loop_profile(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef, queue_name: str
     ) -> str | None:
-        return SUBCLASS_LOOP_GRAMMAR.first_match_anywhere(node, queue_name)
+        return SubclassLoopRule.first_match_anywhere(node, queue_name)
 
     def materialization_kind(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str | None

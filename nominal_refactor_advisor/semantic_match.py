@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any, Callable, ClassVar, Generic, Sequence, TypeVar, cast, overload
-
-from metaclass_registry import AutoRegisterMeta
-
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 
 T = TypeVar("T")
 U = TypeVar("U")
@@ -21,7 +17,25 @@ AstA = TypeVar("AstA", bound=ast.AST)
 AstB = TypeVar("AstB", bound=ast.AST)
 AstC = TypeVar("AstC", bound=ast.AST)
 OwnerT = TypeVar("OwnerT", bound=ast.AST)
-RuleT = TypeVar("RuleT", bound="AstPredicateRule[Any, ast.AST, Any]")
+DeclarationT = TypeVar("DeclarationT")
+
+
+def _loaded_nominal_descendants(
+    root: type[DeclarationT],
+) -> tuple[type[DeclarationT], ...]:
+    """Derive the loaded nominal family without a parallel registry."""
+
+    descendants: list[type[DeclarationT]] = []
+    seen: set[type[DeclarationT]] = set()
+    pending = list(root.__subclasses__())
+    while pending:
+        member = pending.pop(0)
+        pending.extend(member.__subclasses__())
+        if member in seen:
+            continue
+        seen.add(member)
+        descendants.append(member)
+    return tuple(descendants)
 
 
 class EffectStep(ABC, Generic[T, U]):
@@ -37,17 +51,7 @@ class EffectStep(ABC, Generic[T, U]):
     def family_types(cls) -> tuple[type["EffectStep[Any, Any]"], ...]:
         """Return the loaded nominal family rooted at this declaration."""
 
-        family: list[type[EffectStep[Any, Any]]] = [cls]
-        seen: set[type[EffectStep[Any, Any]]] = {cls}
-        pending = list(cls.__subclasses__())
-        while pending:
-            member = pending.pop(0)
-            pending.extend(member.__subclasses__())
-            if member in seen:
-                continue
-            seen.add(member)
-            family.append(member)
-        return tuple(family)
+        return (cls, *_loaded_nominal_descendants(cls))
 
     @classmethod
     def declares_source_member(
@@ -135,18 +139,10 @@ class AstTypedEffectStep(EffectStep[ast.AST, U], Generic[AstT, U]):
         raise NotImplementedError
 
 
-class AstPredicateRule(ABC, Generic[ContextT, AstT, U], metaclass=AutoRegisterMeta):
+class AstPredicateRule(ABC, Generic[ContextT, AstT, U]):
     """Declarative AST matcher rule with shared type narrowing semantics."""
 
-    __registry__: ClassVar[
-        dict[str, type["AstPredicateRule[Any, ast.AST, Any]"]]
-    ] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
     node_type: ClassVar[type[AstT]]
-    rule_order: ClassVar[int] = 0
 
     def apply(self, node: ast.AST, context: ContextT) -> U | None:
         narrowed = as_ast(node, self.node_type)
@@ -156,28 +152,26 @@ class AstPredicateRule(ABC, Generic[ContextT, AstT, U], metaclass=AutoRegisterMe
     def project_ast(self, node: AstT, context: ContextT) -> U | None:
         raise NotImplementedError
 
+    @classmethod
+    def rules(cls) -> tuple["AstPredicateRule[ContextT, ast.AST, U]", ...]:
+        return tuple(
+            cast(AstPredicateRule[ContextT, ast.AST, U], rule_type())
+            for rule_type in _loaded_nominal_descendants(cls)
+            if not inspect.isabstract(rule_type)
+        )
 
-@dataclass(frozen=True)
-class AstPredicateGrammar(Generic[ContextT, U]):
-    """Reusable traversal runner for nominal AST predicate rules."""
-
-    rule_base: type[AstPredicateRule[ContextT, ast.AST, U]]
-
-    @property
-    def rules(self) -> tuple[AstPredicateRule[ContextT, ast.AST, U], ...]:
-        return registered_ast_predicate_rules(self.rule_base)
-
-    def matches_anywhere(self, root: ast.AST, context: ContextT) -> tuple[U, ...]:
+    @classmethod
+    def matches_anywhere(cls, root: ast.AST, context: ContextT) -> tuple[U, ...]:
         matches: list[U] = []
         for node in ast.walk(root):
-            for rule in self.rules:
+            for rule in cls.rules():
                 if (match := rule.apply(node, context)) is not None:
                     matches.append(match)
-                    break
         return tuple(matches)
 
-    def first_match_anywhere(self, root: ast.AST, context: ContextT) -> U | None:
-        return single_item(self.matches_anywhere(root, context))
+    @classmethod
+    def first_match_anywhere(cls, root: ast.AST, context: ContextT) -> U | None:
+        return single_item(cls.matches_anywhere(root, context))
 
 
 @dataclass(frozen=True)
@@ -309,23 +303,6 @@ class _AttributeCallArgumentStep(
         return AttributeCallMatch(
             value.call, value.attribute, value.owner, argument.argument
         )
-
-
-@lru_cache(maxsize=None)
-def registered_ast_predicate_rules(rule_base: type[RuleT]) -> tuple[RuleT, ...]:
-    registry = cast(dict[str, type[RuleT]], AstPredicateRule.__registry__)
-    return tuple(
-        rule_type()
-        for rule_type in sorted(
-            (
-                registered_type
-                for registered_type in registry.values()
-                if issubclass(registered_type, rule_base)
-                and registered_type is not rule_base
-            ),
-            key=lambda item: (item.rule_order, item.__name__),
-        )
-    )
 
 
 @dataclass(frozen=True)

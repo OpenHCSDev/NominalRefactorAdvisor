@@ -53,7 +53,6 @@ from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_regis
 from ..registry_normal_form import RegistryNormalFormStage
 from ..semantic_identity import SemanticRoleIdentityToken
 from ..semantic_match import (
-    AstPredicateGrammar,
     AstPredicateRule,
     Maybe,
     NamedCallAssignment,

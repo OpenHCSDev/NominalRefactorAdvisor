@@ -2456,7 +2456,7 @@ declare_candidate_rule_detector(
         "A nominal authority method that still hand-codes AST traversal, isinstance checks, attribute guards, and boolean predicate ladders has only moved the smell. The deeper normal form is a declarative matcher/effect-step grammar: node types and field predicates are data, while traversal and failure semantics live in one reusable ABC.",
         "declarative AST matcher grammar with traversal and predicate semantics owned once",
         "authority method repeats AST traversal and predicate mechanics inline",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
         _NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS,
     ),
     summary=lambda candidate: (
@@ -2466,17 +2466,21 @@ declare_candidate_rule_detector(
     ),
     scaffold=lambda candidate: (
         "class AstPredicateRule(ABC):\n"
-        "    node_types: ClassVar[tuple[type[ast.AST], ...]]\n"
+        "    node_type: ClassVar[type[ast.AST]]\n"
         "    def matches(self, node: ast.AST) -> bool: ...\n\n"
-        "class AstPredicateGrammar(ABC):\n"
-        "    rules: ClassVar[tuple[AstPredicateRule, ...]]\n"
-        "    def matches_anywhere(self, root: ast.AST): ..."
+        "    @classmethod\n"
+        "    def concrete_rule_types(cls): ...\n\n"
+        "    @classmethod\n"
+        "    def matches_anywhere(cls, root: ast.AST):\n"
+        "        rule_types = cls.concrete_rule_types()\n"
+        "        # Collect all declaration-derived matches and fail on overlap.\n"
+        "        ..."
     ),
     codemod_patch=lambda candidate: (
         f"# Replace inline predicate ladder in `{candidate.class_name}.{candidate.method_name}` "
-        "with declarative `AstPredicateRule` rows and one traversal runner.\n"
+        "with declaration-derived `AstPredicateRule` subclasses and one traversal runner.\n"
         "# Keep node type, field name, operator, and projection residue as typed rule data; "
-        "do not hide repeated predicates inside another authority method."
+        "fail closed if rule matches overlap instead of introducing precedence metadata."
     ),
     metrics=lambda candidate: OrchestrationMetrics(
         function_line_count=candidate.line_count,
@@ -6458,7 +6462,7 @@ class FailSoftEffectPipelineDetector(
 
 def _effect_step_payoff_scaffold(candidate: EffectStepAmortizationCandidate) -> str:
     normal_form_class = _camel_case(candidate.normal_form)
-    return f"class {normal_form_class}Step(EffectStep, ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'step_id'\n    __skip_if_no_key__ = True\n    step_id: ClassVar[str | None] = None\n    registration_order: ClassVar[int] = 0\n\n@dataclass(frozen=True)\nclass {normal_form_class}Matcher:\n    steps: tuple[{normal_form_class}Step, ...]\n\n    def match(self, source):\n        return Maybe.of(source).bind_all(self.steps)"
+    return f"class {normal_form_class}Step(EffectStep, ABC):\n    @classmethod\n    def refinement_path(cls):\n        return tuple(\n            step_type()\n            for step_type in reversed(cls.__mro__)\n            if step_type is not {normal_form_class}Step\n            and issubclass(step_type, {normal_form_class}Step)\n        )\n\n@dataclass(frozen=True)\nclass {normal_form_class}Matcher:\n    complete_step_type: type[{normal_form_class}Step]\n\n    def match(self, source):\n        return Maybe.of(source).bind_all(\n            self.complete_step_type.refinement_path()\n        )"
 
 
 class EffectStepAmortizationDetector(
@@ -6468,8 +6472,8 @@ class EffectStepAmortizationDetector(
     finding_spec = finding_spec_template(
         PatternId.STAGED_ORCHESTRATION,
         "Manual AST matcher should amortize EffectStep infrastructure",
-        "A helper that repeatedly performs AST type/cardinality checks and exits through `return None` is paying the cognitive cost of an effect pipeline without reusing the nominal `EffectStep` carrier. The infrastructure pays rent when these guard atoms become registered matcher-step objects that can be shared, ordered, tested, and composed.",
-        "reusable nominal EffectStep family for recurring AST type, cardinality, and optional-exit guards",
+        "A helper that repeatedly performs AST type/cardinality checks and exits through `return None` is paying the cognitive cost of an effect pipeline without reusing the nominal `EffectStep` carrier. The infrastructure pays rent when these guard atoms become a single nominal refinement path whose execution is derived from its MRO.",
+        "reusable nominal EffectStep refinement path for recurring AST type, cardinality, and optional-exit guards",
         "same optional AST matcher mechanics are hand-expanded inside one helper",
         _SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _PREDICATE_CHAIN_NORMALIZED_AST_DATAFLOW_ROOT_OBSERVATION_TAGS,
@@ -6516,7 +6520,7 @@ class EffectStepAmortizationDetector(
             scaffold=_effect_step_payoff_scaffold(payoff_candidate),
             compression_certificate=payoff_candidate.compression_certificate,
             codemod_patch=(
-                "# Delete the manual guard chain only when the computed algebraic budget is positive.\n# Extract repeated AST guard atoms into nominal `EffectStep` subclasses or generated step declarations.\n# Register ordered steps with `AutoRegisterMeta`, then route the helper through `Maybe.of(source).bind_all(steps)`.\n# Keep only domain-specific witness construction outside the shared matcher pipeline."
+                "# Delete the manual guard chain only when the computed algebraic budget is positive.\n# Extract repeated AST guard atoms into one linear nominal `EffectStep` refinement path.\n# Derive execution from the complete step type's MRO, then route the helper through `Maybe.of(source).bind_all(steps)`.\n# Keep only domain-specific witness construction outside the shared matcher pipeline."
             ),
             metrics=OrchestrationMetrics(
                 function_line_count=payoff_candidate.line_count,
@@ -6540,7 +6544,7 @@ declare_candidate_rule_detector(
         _PREDICATE_CHAIN_NORMALIZED_AST_OBSERVATION_TAGS,
     ),
     summary=lambda leak: f"`{leak.class_name}.{leak.method_name}` owns {leak.raw_guard_count} raw guard mechanics and {leak.none_return_count} optional exits; move the algorithm into `{leak.suggested_base_name}` and leave only attrs/properties plus hooks on the leaf.",
-    scaffold=lambda leak: f"class {leak.class_name}({leak.suggested_base_name}):\n    step_id = 'semantic_step'\n    registration_order = 10\n    # declare class attrs/properties here\n\n    def accepts(self, value): ...\n    def project(self, value): ...",
+    scaffold=lambda leak: f"class {leak.class_name}({leak.suggested_base_name}):\n    # declare class attrs/properties here\n\n    def accepts(self, value): ...\n    def project(self, value): ...",
     codemod_patch=lambda leak: "# Delete the concrete mechanics-heavy leaf method.\n# Move optional flow/type narrowing/cardinality mechanics to the ABC/template base.\n# Keep the implementation class declarative: attrs, properties, and the smallest semantic hooks.",
     metrics=lambda leak: OrchestrationMetrics(
         function_line_count=0,

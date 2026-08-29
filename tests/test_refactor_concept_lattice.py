@@ -7,6 +7,7 @@ import pytest
 import nominal_refactor_advisor as advisor
 from nominal_refactor_advisor import codemod
 from nominal_refactor_advisor import codemod_workflow
+from nominal_refactor_advisor import semantic_match
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 
@@ -244,6 +245,13 @@ def test_registered_mapping_and_unpack_cases_publish_no_numeric_precedence() -> 
         codemod.RegistrationSemanticMirrorRecipeStrategy,
         "manual_registration_order",
     )
+
+
+def test_semantic_match_families_publish_no_registry_or_numeric_precedence() -> None:
+    assert not hasattr(semantic_match.EffectStep, "__registry__")
+    assert not hasattr(semantic_match.EffectStep, "registration_order")
+    assert not hasattr(semantic_match.AstPredicateRule, "__registry__")
+    assert not hasattr(semantic_match.AstPredicateRule, "rule_order")
 
 
 def _repeated_builder_declaration_for_source(
