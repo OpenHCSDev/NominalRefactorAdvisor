@@ -7165,7 +7165,7 @@ def test_compact_private_helper_cluster_preserves_semantics_without_ast_shadow(
     ).__dict__
 
 
-def test_compact_distributed_boundary_graph_matches_legacy_global_join(
+def test_compact_distributed_boundary_graph_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7225,41 +7225,40 @@ def test_compact_distributed_boundary_graph_matches_legacy_global_join(
         projections,
         config,
     )
-    legacy_fanout = surface_detectors._distributed_boundary_fanout_candidates(
-        modules,
+    compact_context = surface_detectors.CompactDistributedBoundaryContext.from_projections(
+        projections,
         config,
     )
-    compact_wrappers = (
-        surface_detectors._compact_boundary_local_wrapper_collapse_candidates(
-            projections,
-            config,
-        )
-    )
-    wrappers_from_shared_fanout = surface_detectors._boundary_local_wrapper_pairs(
+    compact_wrappers = surface_detectors._boundary_local_wrapper_pairs(
         compact_fanout,
         config,
     )
-    legacy_wrappers = surface_detectors._boundary_local_wrapper_collapse_candidates(
-        modules,
-        config,
-    )
 
-    assert compact_fanout == legacy_fanout
+    assert compact_context.fanout_candidates == compact_fanout
     assert {candidate.field_name for candidate in compact_fanout} == {
         "axis_id",
         "axis_scope",
     }
-    assert compact_wrappers == legacy_wrappers
-    assert wrappers_from_shared_fanout == legacy_wrappers
     assert compact_wrappers
+    assert fanout_detector._candidate_items(list(modules), config) == compact_fanout
+    assert wrapper_detector._candidate_items(list(modules), config) == compact_wrappers
+    for removed_name in (
+        "_distributed_boundary_fanout_candidates",
+        "_distributed_boundary_fanout_candidates_cached",
+        "_boundary_local_wrapper_collapse_candidates",
+        "_compact_boundary_local_wrapper_collapse_candidates",
+    ):
+        assert not hasattr(surface_detectors, removed_name)
+    assert "candidate_collector" not in type(fanout_detector).__dict__
+    assert "candidate_collector" not in type(wrapper_detector).__dict__
     assert fanout_detector._findings_from_compact_projections(
         projections,
         config,
-    ) == fanout_detector._findings_for_candidates(legacy_fanout, config)
+    ) == fanout_detector._findings_for_candidates(compact_fanout, config)
     assert wrapper_detector._findings_from_compact_projections(
         projections,
         config,
-    ) == wrapper_detector._findings_for_candidates(legacy_wrappers, config)
+    ) == wrapper_detector._findings_for_candidates(compact_wrappers, config)
 
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
@@ -7273,10 +7272,10 @@ def test_compact_distributed_boundary_graph_matches_legacy_global_join(
     findings_by_detector = accumulator.findings_by_detector(config)
     assert findings_by_detector[
         surface_detectors.DistributedBoundaryFanoutDetector
-    ] == fanout_detector._findings_for_candidates(legacy_fanout, config)
+    ] == fanout_detector._findings_for_candidates(compact_fanout, config)
     assert findings_by_detector[
         surface_detectors.BoundaryLocalWrapperCollapseDetector
-    ] == wrapper_detector._findings_for_candidates(legacy_wrappers, config)
+    ] == wrapper_detector._findings_for_candidates(compact_wrappers, config)
 
 
 def test_compact_role_surface_projection_matches_both_legacy_global_joins(
