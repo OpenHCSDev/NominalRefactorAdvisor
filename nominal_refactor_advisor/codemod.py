@@ -3337,6 +3337,20 @@ class PayloadBindingSet(
         cls.require_unique_binding_names(binding_tuple)
         return super().__new__(cls, binding_tuple)
 
+    @classmethod
+    def from_specs(
+        cls,
+        specs: Iterable[tuple[str, str, PayloadValueCodec]],
+    ) -> Self:
+        return cls(
+            PayloadBinding(
+                field_name=field_name,
+                constructor_argument_name=constructor_argument_name,
+                codec=codec,
+            )
+            for field_name, constructor_argument_name, codec in specs
+        )
+
     @staticmethod
     def require_unique_binding_names(
         bindings: tuple[
@@ -3365,29 +3379,6 @@ SelectorPayloadBindings: TypeAlias = PayloadBindingSet[
     "CodemodTargetSelector",
     JsonValue,
 ]
-
-
-def selector_payload_bindings(
-    specs: Iterable[
-        tuple[
-            str,
-            str,
-            PayloadValueCodec,
-        ]
-    ],
-) -> SelectorPayloadBindings:
-    return PayloadBindingSet(
-        PayloadBinding(
-            field_name=field_name,
-            constructor_argument_name=constructor_argument_name,
-            codec=codec,
-        )
-        for (
-            field_name,
-            constructor_argument_name,
-            codec,
-        ) in specs
-    )
 
 
 class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
@@ -3468,7 +3459,7 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = selector_payload_bindings(
+    ] = PayloadBindingSet.from_specs(
         (
             (
                 "finding_ids",
@@ -3504,7 +3495,7 @@ class TargetSetExpressionSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = selector_payload_bindings(
+    ] = PayloadBindingSet.from_specs(
         (
             (
                 "include",
@@ -3580,7 +3571,7 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = selector_payload_bindings(
+    ] = PayloadBindingSet.from_specs(
         (
             (
                 "node_kinds",
@@ -3678,7 +3669,7 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = selector_payload_bindings(
+    ] = PayloadBindingSet.from_specs(
         (
             (
                 "class_symbols",
@@ -3752,7 +3743,7 @@ class InheritanceEdgeTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = selector_payload_bindings(
+    ] = PayloadBindingSet.from_specs(
         (
             (
                 "parent_symbols",
@@ -3848,7 +3839,7 @@ class CallSiteTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = selector_payload_bindings(
+    ] = PayloadBindingSet.from_specs(
         (
             (
                 "callee_names",
@@ -4620,31 +4611,6 @@ OperationPayloadBindings: TypeAlias = PayloadBindingSet[
     "RefactorRecipeOperation",
     object,
 ]
-
-
-def operation_payload_bindings(
-    specs: Iterable[
-        tuple[
-            str,
-            str,
-            PayloadValueCodec,
-        ]
-    ],
-) -> OperationPayloadBindings:
-    """Materialize declarative recipe-operation payload binding specs."""
-
-    return PayloadBindingSet(
-        PayloadBinding(
-            field_name=field_name,
-            constructor_argument_name=constructor_argument_name,
-            codec=codec,
-        )
-        for (
-            field_name,
-            constructor_argument_name,
-            codec,
-        ) in specs
-    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -7114,7 +7080,7 @@ class ExtractMethodsToClassOperation(
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return operation_payload_bindings(
+        return PayloadBindingSet.from_specs(
             (
                 (
                     DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
@@ -7494,7 +7460,7 @@ class CollapseFieldsToCarrierOperation(
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return operation_payload_bindings(
+        return PayloadBindingSet.from_specs(
             (
                 (
                     CARRIER_NAME_PAYLOAD_FIELD,
@@ -7655,7 +7621,7 @@ class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
 
     @classmethod
     def carrier_projection_payload_bindings(cls) -> OperationPayloadBindings:
-        return operation_payload_bindings(
+        return PayloadBindingSet.from_specs(
             (
                 (
                     CLASS_NAME_PAYLOAD_FIELD,
@@ -7696,7 +7662,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         del cls
         return (
             *CarrierProjectionOperationBase.carrier_projection_payload_bindings(),
-            *operation_payload_bindings(
+            *PayloadBindingSet.from_specs(
                 (
                     (
                         "carrier_field_declaration",
@@ -8043,7 +8009,7 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         del cls
         return (
             *CarrierProjectionOperationBase.carrier_projection_payload_bindings(),
-            *operation_payload_bindings(
+            *PayloadBindingSet.from_specs(
                 (
                     (
                         CARRIER_SOURCE_PAYLOAD_FIELD,
@@ -8419,7 +8385,7 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        return operation_payload_bindings(
+        return PayloadBindingSet.from_specs(
             (
                 (
                     "selector",
@@ -8483,7 +8449,7 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         return (
             *super().payload_bindings(),
-            *operation_payload_bindings(
+            *PayloadBindingSet.from_specs(
                 (
                     (
                         OPERATION_TEMPLATES_PAYLOAD_FIELD,
@@ -11071,7 +11037,7 @@ class ConvertManualRegistryToAutoregisterOperation(
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return (
-            *operation_payload_bindings(
+            *PayloadBindingSet.from_specs(
                 (
                     (
                         BASE_NAME_PAYLOAD_FIELD,
@@ -11949,7 +11915,7 @@ class DispatchToPolymorphismOperation(
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return (
-            *operation_payload_bindings(
+            *PayloadBindingSet.from_specs(
                 (
                     (
                         DISPATCH_AXIS_EXPRESSION_PAYLOAD_FIELD,

@@ -4,6 +4,7 @@ import inspect
 
 import pytest
 
+from nominal_refactor_advisor import codemod as codemod_module
 from nominal_refactor_advisor.codemod import (
     AuthorityClaimPayloadValueCodec,
     BooleanPayloadValueCodec,
@@ -14,6 +15,7 @@ from nominal_refactor_advisor.codemod import (
     NodeKindArrayPayloadValueCodec,
     ObjectPayloadValueCodec,
     OperationTemplateArrayPayloadValueCodec,
+    PayloadBindingSet,
     PayloadValueCodec,
     RecipeCallReplacement,
     RefactorRecipeOperationTemplate,
@@ -39,13 +41,18 @@ def test_registered_payload_bindings_own_exact_codec_leaves() -> None:
     )
 
     for declaration_type in declaration_types:
-        for binding in declaration_type.payload_binding_set():
+        binding_set = declaration_type.payload_binding_set()
+        assert isinstance(binding_set, PayloadBindingSet)
+        for binding in binding_set:
             assert isinstance(binding.codec, PayloadValueCodec)
             assert type(binding.codec) is not PayloadValueCodec
             assert not inspect.isabstract(type(binding.codec))
             assert not hasattr(binding, "constructor_value_reader")
             assert not hasattr(binding, "value_projector")
             assert not hasattr(binding, "dsl_value_kind")
+
+    assert not hasattr(codemod_module, "selector_payload_bindings")
+    assert not hasattr(codemod_module, "operation_payload_bindings")
 
 
 def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
