@@ -2,12 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from nominal_refactor_advisor import (
-    CodemodAuthoringBundleActionRunner,
-    CodemodAuthoringCommandCatalog,
-    CodemodAuthoringCommandModel,
-    CodemodAuthoringWorkflowPlanner,
-)
 from nominal_refactor_advisor.codemod import (
     CodemodTargetSelector,
     PayloadBinding,
@@ -79,28 +73,3 @@ def test_role_carrier_operation_declares_inherited_bindings_once() -> None:
         "carrier_source",
         "carrier_field_declarations",
     )
-
-
-def test_authoring_command_catalog_rejects_duplicate_model_action_ids() -> None:
-    duplicate_commands = (
-        CodemodAuthoringCommandModel("apply", (), ()),
-        CodemodAuthoringCommandModel("apply", ("plan",), ()),
-    )
-
-    with pytest.raises(ValueError, match="Duplicate codemod authoring command"):
-        CodemodAuthoringCommandCatalog(duplicate_commands)
-
-    with pytest.raises(ValueError, match="Duplicate codemod authoring command"):
-        CodemodAuthoringWorkflowPlanner(duplicate_commands, ())
-
-
-def test_authoring_runner_uses_unique_invocation_catalog(tmp_path) -> None:
-    record_payload = {
-        "commands": (
-            {"action_id": "apply", "argv": ("first",), "cwd": tmp_path.as_posix()},
-            {"action_id": "apply", "argv": ("second",), "cwd": tmp_path.as_posix()},
-        )
-    }
-
-    with pytest.raises(ValueError, match="Duplicate codemod authoring command"):
-        CodemodAuthoringBundleActionRunner.invocations_by_action_id(record_payload)

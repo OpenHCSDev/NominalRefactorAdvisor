@@ -34,7 +34,7 @@ from dataclasses import fields as dataclass_fields
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
-from typing import ClassVar, Generic, Self, TypeAlias, TypeVar
+from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -732,22 +732,22 @@ class SourceRewriteContributor:
         )
 
     @classmethod
-    def from_line_replacement(
+    def from_source_edit(
         cls,
         *,
         recipe_id: str,
         plan_item_declaration: str,
         plan_item_index: int,
-        replacement: "SourceLineReplacement",
+        source_edit: "PhysicalSourceEdit",
         sources_by_file_path: Mapping[str, str],
     ) -> "SourceRewriteContributor":
         return cls.from_source_span(
             recipe_id=recipe_id,
             plan_item_declaration=plan_item_declaration,
             plan_item_index=plan_item_index,
-            file_path=replacement.file_path,
-            line=replacement.start_line,
-            end_line=replacement.end_line,
+            file_path=source_edit.file_path,
+            line=source_edit.start_line,
+            end_line=source_edit.end_line,
             sources_by_file_path=sources_by_file_path,
         )
 
@@ -4466,7 +4466,7 @@ class RecipeCallReplacement(SourceRewriteTargetReference):
         source_by_path: Mapping[str, str],
         *,
         rationale: str,
-    ) -> SourceLineReplacement:
+    ) -> SourceSpanReplacement:
         target_identifier = self.target.required_target_id(source_index)
         target_digest = source_index.target_by_id[target_identifier]
         return SourceTargetEditor(source_by_path, target_digest).exact_text_replacement(
@@ -4940,15 +4940,158 @@ class RefactorRecipeRewrite(ReplacementSource, SourceRewritePlanItem):
 
 
 @dataclass(frozen=True)
-class SourceLineReplacement:
-    """Replacement of one absolute line span in a source file."""
+class SourceEditOrigin:
+    """Operation identity retained until a semantic edit has physical geometry."""
+
+    recipe_id: str
+    plan_item_declaration: str
+    plan_item_index: int
+
+    @property
+    def identity(self) -> tuple[str, str, int]:
+        return self.recipe_id, self.plan_item_declaration, self.plan_item_index
+
+    def contributor_for(
+        self,
+        source_edit: "PhysicalSourceEdit",
+        sources_by_file_path: Mapping[str, str],
+    ) -> SourceRewriteContributor:
+        return SourceRewriteContributor.from_source_edit(
+            recipe_id=self.recipe_id,
+            plan_item_declaration=self.plan_item_declaration,
+            plan_item_index=self.plan_item_index,
+            source_edit=source_edit,
+            sources_by_file_path=sources_by_file_path,
+        )
+
+    @classmethod
+    def merge(
+        cls,
+        *origin_groups: Iterable["SourceEditOrigin"],
+    ) -> tuple["SourceEditOrigin", ...]:
+        origins_by_identity = {
+            origin.identity: origin
+            for origin_group in origin_groups
+            for origin in origin_group
+        }
+        return tuple(origins_by_identity.values())
+
+
+@dataclass(frozen=True, kw_only=True)
+class NominalSourceEdit(ABC):
+    """Declaration-owned semantic source edit emitted by recipe operations."""
+
+    rationale: str = ""
+    contributors: tuple[SourceRewriteContributor, ...] = ()
+    origins: tuple[SourceEditOrigin, ...] = ()
+
+    def with_origin(self, origin: SourceEditOrigin) -> "NominalSourceEdit":
+        return replace(
+            self,
+            origins=SourceEditOrigin.merge(self.origins, (origin,)),
+        )
+
+    @abstractmethod
+    def coalesced_with_peers(
+        self,
+        peers: tuple["NominalSourceEdit", ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple["NominalSourceEdit", ...]:
+        """Coalesce edits owned by this exact nominal declaration."""
+
+    @abstractmethod
+    def resolved_edits(
+        self,
+        context: "CodemodSelectorContext",
+    ) -> tuple["PhysicalSourceEdit", ...]:
+        """Project this semantic edit into physical source geometry."""
+
+    @classmethod
+    def coalesced_by_declaration(
+        cls,
+        edits: Iterable["NominalSourceEdit"],
+        context: "CodemodSelectorContext",
+    ) -> tuple["NominalSourceEdit", ...]:
+        edits_by_declaration: dict[
+            type[NominalSourceEdit],
+            list[NominalSourceEdit],
+        ] = {}
+        for edit in edits:
+            edits_by_declaration.setdefault(type(edit), []).append(edit)
+        return tuple(
+            coalesced
+            for declaration_edits in edits_by_declaration.values()
+            for coalesced in declaration_edits[0].coalesced_with_peers(
+                tuple(declaration_edits),
+                context,
+            )
+        )
+
+    @staticmethod
+    def merged_origins(
+        edits: Iterable["NominalSourceEdit"],
+    ) -> tuple[SourceEditOrigin, ...]:
+        return SourceEditOrigin.merge(*(edit.origins for edit in edits))
+
+    @staticmethod
+    def merged_contributors(
+        edits: Iterable["NominalSourceEdit"],
+    ) -> tuple[SourceRewriteContributor, ...]:
+        return SourceRewriteContributor.merge(*(edit.contributors for edit in edits))
+
+
+@dataclass(frozen=True, kw_only=True)
+class PhysicalSourceEdit(NominalSourceEdit, ABC):
+    """Semantic edit whose absolute source-line geometry is resolved."""
 
     file_path: str
+
+    def resolved_edits(
+        self,
+        context: "CodemodSelectorContext",
+    ) -> tuple["PhysicalSourceEdit", ...]:
+        del context
+        return (self,)
+
+    @abstractmethod
+    def conflicts_with(self, other: "PhysicalSourceEdit") -> bool:
+        """Return whether two physical edits cannot be applied as one rewrite."""
+
+    @abstractmethod
+    def conflicts_with_span(self, start_line: int, end_line: int) -> bool:
+        """Accept a span-owned conflict query through nominal dispatch."""
+
+    @abstractmethod
+    def conflicts_with_insertion(self, insertion_line: int) -> bool:
+        """Accept an insertion-owned conflict query through nominal dispatch."""
+
+    @classmethod
+    def require_compatible(
+        cls,
+        edits: tuple["PhysicalSourceEdit", ...],
+    ) -> tuple["PhysicalSourceEdit", ...]:
+        for index, first in enumerate(edits):
+            for second in edits[index + 1 :]:
+                if first.file_path == second.file_path and first.conflicts_with(second):
+                    raise ValueError(
+                        "Physical source edits conflict in "
+                        f"{first.file_path}:{first.start_line}-{first.end_line} and "
+                        f"{second.start_line}-{second.end_line}"
+                    )
+        return edits
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceSpanReplacement(PhysicalSourceEdit):
+    """Replace or delete one non-empty absolute line span."""
+
     start_line: int
     end_line: int
     replacement_lines: tuple[str, ...] = ()
-    rationale: str = ""
-    contributors: tuple[SourceRewriteContributor, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.start_line > self.end_line:
+            raise ValueError("Source span replacement requires a non-empty span")
 
     @classmethod
     def delete_target(
@@ -4956,12 +5099,185 @@ class SourceLineReplacement:
         target_digest: AstTargetDigest,
         *,
         rationale: str = "",
-    ) -> "SourceLineReplacement":
+    ) -> "SourceSpanReplacement":
         return cls(
             file_path=target_digest.file_path,
             start_line=target_digest.line,
             end_line=target_digest.end_line,
             rationale=rationale or f"Delete target {target_digest.qualname!r}.",
+        )
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        replacements_by_span: dict[
+            tuple[str, int, int],
+            list[SourceSpanReplacement],
+        ] = defaultdict(list)
+        for peer in peers:
+            replacement = cast(SourceSpanReplacement, peer)
+            replacements_by_span[
+                replacement.file_path,
+                replacement.start_line,
+                replacement.end_line,
+            ].append(replacement)
+        return tuple(
+            self._coalesced_same_span(tuple(replacements))
+            for replacements in replacements_by_span.values()
+        )
+
+    def conflicts_with(self, other: PhysicalSourceEdit) -> bool:
+        return other.conflicts_with_span(self.start_line, self.end_line)
+
+    def conflicts_with_span(self, start_line: int, end_line: int) -> bool:
+        return self.start_line <= end_line and start_line <= self.end_line
+
+    def conflicts_with_insertion(self, insertion_line: int) -> bool:
+        return self.start_line < insertion_line <= self.end_line
+
+    @staticmethod
+    def _coalesced_same_span(
+        replacements: tuple["SourceSpanReplacement", ...],
+    ) -> "SourceSpanReplacement":
+        first = replacements[0]
+        if any(
+            replacement.replacement_lines != first.replacement_lines
+            for replacement in replacements[1:]
+        ):
+            raise ValueError(
+                "Conflicting source span replacements target "
+                f"{first.file_path}:{first.start_line}-{first.end_line}"
+            )
+        return replace(
+            first,
+            rationale=_joined_rationales(
+                replacement.rationale for replacement in replacements
+            ),
+            contributors=NominalSourceEdit.merged_contributors(replacements),
+            origins=NominalSourceEdit.merged_origins(replacements),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceInsertion(PhysicalSourceEdit):
+    """Insert source at one absolute line anchor."""
+
+    insertion_line: int
+    inserted_lines: tuple[str, ...] = ()
+
+    @property
+    def start_line(self) -> int:
+        return self.insertion_line
+
+    @property
+    def end_line(self) -> int:
+        return self.insertion_line - 1
+
+    @property
+    def replacement_lines(self) -> tuple[str, ...]:
+        return self.inserted_lines
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        insertions_by_anchor: dict[
+            tuple[str, int],
+            list[SourceInsertion],
+        ] = defaultdict(list)
+        for peer in peers:
+            insertion = cast(SourceInsertion, peer)
+            insertions_by_anchor[
+                insertion.file_path,
+                insertion.insertion_line,
+            ].append(insertion)
+        return tuple(
+            self._coalesced_same_anchor(tuple(insertions))
+            for insertions in insertions_by_anchor.values()
+        )
+
+    def conflicts_with(self, other: PhysicalSourceEdit) -> bool:
+        return other.conflicts_with_insertion(self.insertion_line)
+
+    def conflicts_with_span(self, start_line: int, end_line: int) -> bool:
+        return start_line < self.insertion_line <= end_line
+
+    def conflicts_with_insertion(self, insertion_line: int) -> bool:
+        del insertion_line
+        return False
+
+    @staticmethod
+    def _coalesced_same_anchor(
+        insertions: tuple["SourceInsertion", ...],
+    ) -> "SourceInsertion":
+        first = insertions[0]
+        unique_sources = tuple(
+            dict.fromkeys(insertion.inserted_lines for insertion in insertions)
+        )
+        return replace(
+            first,
+            inserted_lines=tuple(
+                line for source_lines in unique_sources for line in source_lines
+            ),
+            rationale=_joined_rationales(
+                insertion.rationale for insertion in insertions
+            ),
+            contributors=NominalSourceEdit.merged_contributors(insertions),
+            origins=NominalSourceEdit.merged_origins(insertions),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceFileCreation(NominalSourceEdit):
+    """Create one source path with an explicit initial source."""
+
+    file_path: str
+    source: str = ""
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        creations_by_path: dict[str, list[SourceFileCreation]] = defaultdict(list)
+        for peer in peers:
+            creation = cast(SourceFileCreation, peer)
+            creations_by_path[creation.file_path].append(creation)
+        duplicate_paths = tuple(
+            sorted(
+                file_path
+                for file_path, creations in creations_by_path.items()
+                if len(creations) > 1
+            )
+        )
+        if duplicate_paths:
+            raise ValueError(
+                f"Source files require one creation authority: {duplicate_paths!r}"
+            )
+        return tuple(creations[0] for creations in creations_by_path.values())
+
+    def resolved_edits(
+        self,
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        existing_source = context.sources_by_file_path[self.file_path]
+        if existing_source:
+            raise ValueError(f"create_file target {self.file_path!r} is not empty")
+        return (
+            SourceInsertion(
+                file_path=self.file_path,
+                insertion_line=1,
+                inserted_lines=SourceTargetEditor.source_lines(self.source),
+                rationale=self.rationale or f"Create source file {self.file_path!r}.",
+                contributors=self.contributors,
+                origins=self.origins,
+            ),
         )
 
 
@@ -4979,7 +5295,7 @@ class SourceLineDiffAuthority:
         candidate_lines: tuple[str, ...],
         rationale: str,
         contributors: tuple[SourceRewriteContributor, ...] = (),
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         prefix_count = cls.common_prefix_count(original_lines, candidate_lines)
         suffix_count = cls.common_suffix_count(
             original_lines,
@@ -5013,17 +5329,31 @@ class SourceLineDiffAuthority:
             source_start = prefix_count + original_start
             source_end = prefix_count + original_end
             replacements.append(
-                SourceLineReplacement(
-                    file_path=target.file_path,
-                    start_line=target.line + source_start,
-                    end_line=target.line + source_end - 1,
-                    replacement_lines=candidate_lines[
-                        prefix_count
-                        + replacement_start : prefix_count
-                        + replacement_end
-                    ],
-                    rationale=rationale,
-                    contributors=contributors,
+                (
+                    SourceInsertion(
+                        file_path=target.file_path,
+                        insertion_line=target.line + source_start,
+                        inserted_lines=candidate_lines[
+                            prefix_count
+                            + replacement_start : prefix_count
+                            + replacement_end
+                        ],
+                        rationale=rationale,
+                        contributors=contributors,
+                    )
+                    if source_start == source_end
+                    else SourceSpanReplacement(
+                        file_path=target.file_path,
+                        start_line=target.line + source_start,
+                        end_line=target.line + source_end - 1,
+                        replacement_lines=candidate_lines[
+                            prefix_count
+                            + replacement_start : prefix_count
+                            + replacement_end
+                        ],
+                        rationale=rationale,
+                        contributors=contributors,
+                    )
                 )
             )
         return tuple(replacements)
@@ -5075,7 +5405,7 @@ class SourceLineDiffAuthority:
 
 
 @dataclass(frozen=True)
-class SourceOffsetReplacement(ReplacementSource):
+class SourceTextSpanReplacement(ReplacementSource):
     """Replacement of one character-offset span inside a source string."""
 
     start_offset: int
@@ -5088,7 +5418,7 @@ class SourceOffsetReplacement(ReplacementSource):
         start_offset: int,
         end_offset: int,
         replacement_source: str,
-    ) -> "SourceOffsetReplacement":
+    ) -> "SourceTextSpanReplacement":
         return cls(
             start_offset=start_offset,
             end_offset=end_offset,
@@ -5206,7 +5536,7 @@ class SourceTextGeometry:
         self,
         span_start: int,
         span_end: int,
-        replacements: Iterable[SourceOffsetReplacement],
+        replacements: Iterable[SourceTextSpanReplacement],
     ) -> str:
         span_source = self.source[span_start:span_end]
         for replacement in reversed(
@@ -5221,12 +5551,90 @@ class SourceTextGeometry:
             )
         return span_source
 
+    def physical_edits(
+        self,
+        *,
+        file_path: str,
+        replacements: Iterable[SourceTextSpanReplacement],
+        rationale: str = "",
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        """Project offset edits into the smallest independent line edits."""
+
+        ordered = self.replacements_in_span(0, self.end_offset, replacements)
+        line_windows: list[tuple[int, int, list[SourceTextSpanReplacement]]] = []
+        insertions: list[SourceInsertion] = []
+        for replacement in ordered:
+            insertion_line = self._line_start_insertion_line(replacement)
+            if insertion_line is not None:
+                insertions.append(
+                    SourceInsertion(
+                        file_path=file_path,
+                        insertion_line=insertion_line,
+                        inserted_lines=SourceTargetEditor.source_lines(
+                            replacement.replacement_source
+                        ),
+                        rationale=rationale,
+                    )
+                )
+                continue
+            start_line = self._line_number_for_offset(replacement.start_offset)
+            end_line = self._line_number_for_offset(
+                max(replacement.start_offset, replacement.end_offset - 1)
+            )
+            if line_windows and start_line <= line_windows[-1][1]:
+                previous_start, previous_end, previous_replacements = line_windows[-1]
+                line_windows[-1] = (
+                    previous_start,
+                    max(previous_end, end_line),
+                    [*previous_replacements, replacement],
+                )
+                continue
+            line_windows.append((start_line, end_line, [replacement]))
+
+        span_replacements = tuple(
+            SourceSpanReplacement(
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    self.source_with_replacements_in_span(
+                        *self._line_span_offsets(start_line, end_line),
+                        window_replacements,
+                    )
+                ),
+                rationale=rationale,
+            )
+            for start_line, end_line, window_replacements in line_windows
+        )
+        return (*span_replacements, *insertions)
+
+    def _line_start_insertion_line(
+        self,
+        replacement: SourceTextSpanReplacement,
+    ) -> int | None:
+        if replacement.start_offset != replacement.end_offset:
+            return None
+        for line_index, line_offset in enumerate(self.line_offsets):
+            if replacement.start_offset == line_offset:
+                return line_index + 1
+        if replacement.start_offset == self.end_offset:
+            return len(self.lines) + 1
+        return None
+
+    def _line_number_for_offset(self, offset: int) -> int:
+        line_number = 1
+        for candidate_line, line_offset in enumerate(self.line_offsets, start=1):
+            if line_offset > offset:
+                break
+            line_number = candidate_line
+        return line_number
+
     def replacements_in_span(
         self,
         span_start: int,
         span_end: int,
-        replacements: Iterable[SourceOffsetReplacement],
-    ) -> tuple[SourceOffsetReplacement, ...]:
+        replacements: Iterable[SourceTextSpanReplacement],
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         """Return one unambiguous replacement per offset span."""
 
         if not 0 <= span_start <= span_end <= self.end_offset:
@@ -5234,7 +5642,7 @@ class SourceTextGeometry:
                 "Replacement target span must fit the source geometry: "
                 f"{span_start}:{span_end}"
             )
-        replacement_by_span: dict[SourceTextSpan, SourceOffsetReplacement] = {}
+        replacement_by_span: dict[SourceTextSpan, SourceTextSpanReplacement] = {}
         for replacement in replacements:
             if not (
                 span_start
@@ -5279,8 +5687,8 @@ class SourceTextGeometry:
 
     @staticmethod
     def replacement_spans_overlap(
-        first: SourceOffsetReplacement,
-        second: SourceOffsetReplacement,
+        first: SourceTextSpanReplacement,
+        second: SourceTextSpanReplacement,
     ) -> bool:
         if first.start_offset == first.end_offset:
             return second.start_offset < first.start_offset < second.end_offset
@@ -5433,7 +5841,7 @@ class SourceTargetEditor:
 
     def replacement_source(
         self,
-        replacements: Iterable[SourceLineReplacement],
+        replacements: Iterable[PhysicalSourceEdit],
     ) -> str:
         lines = self.target_lines
         ordered_replacements = self._ordered_replacements(replacements)
@@ -5449,7 +5857,7 @@ class SourceTargetEditor:
         new_source: str,
         *,
         rationale: str = "",
-    ) -> SourceLineReplacement:
+    ) -> SourceSpanReplacement:
         target_source = "".join(self.target_lines)
         match_count = target_source.count(old_source)
         if match_count != 1:
@@ -5474,7 +5882,7 @@ class SourceTargetEditor:
             f"{new_source}"
             f"{span_source[relative_end:]}"
         )
-        return SourceLineReplacement(
+        return SourceSpanReplacement(
             file_path=self.target.file_path,
             start_line=self.target.line + start_index,
             end_line=self.target.line + end_index,
@@ -5485,8 +5893,8 @@ class SourceTargetEditor:
 
     def _ordered_replacements(
         self,
-        replacements: Iterable[SourceLineReplacement],
-    ) -> tuple[SourceLineReplacement, ...]:
+        replacements: Iterable[PhysicalSourceEdit],
+    ) -> tuple[PhysicalSourceEdit, ...]:
         ordered_replacements = sorted_tuple(
             replacements,
             key=lambda item: (item.start_line, item.end_line),
@@ -5611,22 +6019,22 @@ class RefactorRecipeOperation(
         }
 
     @abstractmethod
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         raise NotImplementedError
 
-    def line_replacements_with_context(
+    def source_edits_with_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         *,
         selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         del selector_context
-        return self.line_replacements(source_index, source_by_path)
+        return self.source_edits(source_index, source_by_path)
 
     def preflight_reports(
         self,
@@ -5654,7 +6062,7 @@ class RefactorRecipeOperation(
             raise ValueError(f"{operation_name} requires file_path")
         return self.target.required_file_path(source_index)
 
-    def required_import_replacements(
+    def required_import_mutations(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
@@ -5662,12 +6070,12 @@ class RefactorRecipeOperation(
         *,
         import_source: str,
         default_rationale: str,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple["ModuleImportMutation", ...]:
         return EnsureImportOperation(
             target=SourceRewriteTarget(file_path=source_path),
             payload_value=import_source,
             rationale=self.rationale_text(default_rationale),
-        ).line_replacements(source_index, source_by_path)
+        ).source_edits(source_index, source_by_path)
 
     def target_digest(
         self,
@@ -5717,23 +6125,23 @@ class AuthorityDeclaringRecipeOperation(ABC):
 class TargetNodeRecipeOperationMixin(ABC):
     """Operation family whose rewrites require the target AST node."""
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
-        return self.line_replacements_with_context(source_index, source_by_path)
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
 
-    def line_replacements_with_context(
+    def source_edits_with_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         *,
         selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         context = self.operation_context(source_index, source_by_path, selector_context)
         target_identifier, target_digest, node = self.target_node_from_context(context)
-        return self.line_replacements_for_target_node(
+        return self.source_edits_for_target_node(
             context,
             target_identifier,
             target_digest,
@@ -5741,13 +6149,13 @@ class TargetNodeRecipeOperationMixin(ABC):
         )
 
     @abstractmethod
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         raise NotImplementedError
 
 
@@ -5827,11 +6235,11 @@ class ReplaceTextOperation(RefactorRecipeOperation):
             ),
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         _, target_digest = self.target_digest(source_index)
         return (
             SourceTargetEditor(source_by_path, target_digest).exact_text_replacement(
@@ -5871,11 +6279,11 @@ class CreateFileOperation(StringPayloadOperation):
     ) -> tuple[str, ...]:
         return (self.created_source_path(source_index),)
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[SourceFileCreation, ...]:
         source_path = self.required_source_path(
             source_index,
             self.operation_key(),
@@ -5884,11 +6292,9 @@ class CreateFileOperation(StringPayloadOperation):
         if existing_source:
             raise ValueError(f"create_file target {source_path!r} is not empty")
         return (
-            SourceLineReplacement(
+            SourceFileCreation(
                 file_path=source_path,
-                start_line=1,
-                end_line=0,
-                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                source=self.payload_value,
                 rationale=self.rationale or f"Create source file {source_path!r}.",
             ),
         )
@@ -5911,13 +6317,13 @@ class DeleteClassAssignmentOperation(
 
     payload_field_name = "attribute_name"
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
@@ -5932,7 +6338,7 @@ class DeleteClassAssignmentOperation(
                 f"for {self.payload_value!r}"
             )
         return tuple(
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=target_digest.file_path,
                 start_line=assignment.lineno,
                 end_line=assignment.end_lineno or assignment.lineno,
@@ -5972,11 +6378,11 @@ class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
             ),
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             "delete_module_assignments",
@@ -5992,7 +6398,7 @@ class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
                 continue
             pending_names -= matched_names
             replacements.append(
-                SourceLineReplacement(
+                SourceSpanReplacement(
                     file_path=source_path,
                     start_line=statement.lineno,
                     end_line=statement.end_lineno or statement.lineno,
@@ -6038,11 +6444,11 @@ class ReplaceModuleAssignmentOperation(
             ),
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             "replace_module_assignment",
@@ -6060,7 +6466,7 @@ class ReplaceModuleAssignmentOperation(
             )
         statement = matching_statements[0]
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=source_path,
                 start_line=statement.lineno,
                 end_line=statement.end_lineno or statement.lineno,
@@ -6112,11 +6518,11 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     def statement_type(self) -> type["ClassMemberPromotionStatement"]:
         raise NotImplementedError
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         targets = ClassMemberPromotionTargets.resolve(
             CodemodSelectorContext(
                 source_index=source_index,
@@ -6133,7 +6539,7 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
             rationale=self.rationale,
             inserted_base_role=self.member_role,
             deleted_member_role=self.member_role,
-        ).line_replacements(targets)
+        ).source_edits(targets)
 
     def validate_targets(self, targets: "ClassMemberPromotionTargets") -> None:
         if not targets.supports_base_rewrites():
@@ -6410,10 +6816,10 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
     inserted_base_role: str
     deleted_member_role: str
 
-    def line_replacements(
+    def source_edits(
         self,
         targets: ClassMemberPromotionTargets,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         return (
             self.base_insertion_replacement(targets),
             *self.base_addition_replacements(targets),
@@ -6423,7 +6829,7 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
     def base_insertion_replacement(
         self,
         targets: ClassMemberPromotionTargets,
-    ) -> SourceLineReplacement:
+    ) -> SourceInsertion:
         class_target = targets.insertion_target
         base_source = ClassMemberPromotedBase(
             base_name=self.base_name,
@@ -6432,11 +6838,10 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
             source_text=targets.first_source,
             source_class=class_target.node,
         ).source
-        return SourceLineReplacement(
+        return SourceInsertion(
             file_path=class_target.file_path,
-            start_line=targets.insertion_line,
-            end_line=targets.insertion_line - 1,
-            replacement_lines=SourceTargetEditor.source_lines(f"{base_source}\n"),
+            insertion_line=targets.insertion_line,
+            inserted_lines=SourceTargetEditor.source_lines(f"{base_source}\n"),
             rationale=self.rationale
             or f"Insert promoted {self.inserted_base_role} base {self.base_name!r}.",
         )
@@ -6444,7 +6849,7 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
     def base_addition_replacements(
         self,
         targets: ClassMemberPromotionTargets,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         replacements = []
         for class_target in targets.targets:
             if self.base_name in _class_base_source_names(class_target.node):
@@ -6454,7 +6859,7 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
                 source=targets.source_for(class_target.file_path),
             )
             replacements.append(
-                SourceLineReplacement(
+                SourceSpanReplacement(
                     file_path=class_target.file_path,
                     start_line=header_authority.start_line,
                     end_line=header_authority.end_line,
@@ -6470,7 +6875,7 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
     def member_deletion_replacements(
         self,
         targets: ClassMemberPromotionTargets,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         replacements = []
         for class_target in targets.targets:
             promoted_statements = self.promoted_statements(class_target.node)
@@ -6486,7 +6891,7 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
             for index, statement in enumerate(promoted_statements):
                 member_statement = self.statement_type(statement)
                 replacements.append(
-                    SourceLineReplacement(
+                    SourceSpanReplacement(
                         file_path=class_target.file_path,
                         start_line=member_statement.start_line,
                         end_line=member_statement.end_line,
@@ -6847,13 +7252,13 @@ class ExtractMethodsToClassOperation(
             )
         )
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError("extract_methods_to_class requires a class target")
@@ -6954,14 +7359,13 @@ class ExtractMethodsToClassOperation(
         target_digest: AstTargetDigest,
         node: ast.ClassDef,
         source_by_path: Mapping[str, str],
-    ) -> SourceLineReplacement:
+    ) -> SourceInsertion:
         source = source_by_path[target_digest.file_path]
         method_nodes = self.selected_method_nodes(node)
-        return SourceLineReplacement(
+        return SourceInsertion(
             file_path=target_digest.file_path,
-            start_line=target_digest.line,
-            end_line=target_digest.line - 1,
-            replacement_lines=SourceTargetEditor.source_lines(
+            insertion_line=target_digest.line,
+            inserted_lines=SourceTargetEditor.source_lines(
                 f"{self.destination_class_source(source, method_nodes)}\n"
             ),
             rationale=self.rationale
@@ -7037,7 +7441,7 @@ class ExtractMethodsToClassOperation(
         target_digest: AstTargetDigest,
         method_nodes: ExtractableMethodNodes,
         class_would_be_empty: bool,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         replacements = []
         for index, method_node in enumerate(method_nodes):
             replacements.append(
@@ -7254,11 +7658,11 @@ class CollapseFieldsToCarrierOperation(
     def removed_field_names(self) -> tuple[str, ...]:
         return (*self.carrier_authority.field_names, *self.inherited_field_names)
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             "collapse_fields_to_carrier",
@@ -7285,7 +7689,7 @@ class CollapseFieldsToCarrierOperation(
             deleted_member_role="carrier field",
         )
         return (
-            *self.dataclass_import_replacements(
+            *self.dataclass_import_mutations(
                 source_index,
                 source_by_path,
                 source_path,
@@ -7295,15 +7699,15 @@ class CollapseFieldsToCarrierOperation(
             *member_plan.member_deletion_replacements(targets),
         )
 
-    def dataclass_import_replacements(
+    def dataclass_import_mutations(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         source_path: str,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[ModuleImportMutation, ...]:
         if not self.insert_carrier:
             return ()
-        return self.required_import_replacements(
+        return self.required_import_mutations(
             source_index,
             source_by_path,
             source_path,
@@ -7323,7 +7727,7 @@ class CollapseFieldsToCarrierOperation(
         self,
         source_index: SourceIndex,
         targets: ClassMemberPromotionTargets,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         if not self.insert_carrier:
             return ()
         class_target = targets.insertion_target
@@ -7335,11 +7739,10 @@ class CollapseFieldsToCarrierOperation(
         ):
             return ()
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=class_target.file_path,
-                start_line=targets.insertion_line,
-                end_line=targets.insertion_line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(
+                insertion_line=targets.insertion_line,
+                inserted_lines=SourceTargetEditor.source_lines(
                     f"{self.carrier_authority.source}\n"
                 ),
                 rationale=self.rationale_text(
@@ -7442,11 +7845,11 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
             raise ValueError("Field carrier replacement requires projection pairs")
         return pairs
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             self.operation_key(),
@@ -7473,19 +7876,13 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
             raise ValueError(
                 f"Field carrier replacement found no edits in {source_path!r}"
             )
-        replacement_source = geometry.source_with_replacements_in_span(
-            0,
-            geometry.end_offset,
-            replacements,
-        )
-        return (
-            SourceLineReplacement(
-                file_path=source_path,
-                start_line=1,
-                end_line=len(geometry.lines),
-                replacement_lines=SourceTargetEditor.source_lines(replacement_source),
-                rationale=self.rationale
-                or f"Replace projected fields on {self.class_name!r} with carrier field {self.carrier_field_name!r}.",
+        return geometry.physical_edits(
+            file_path=source_path,
+            replacements=replacements,
+            rationale=self.rationale
+            or (
+                f"Replace projected fields on {self.class_name!r} with carrier "
+                f"field {self.carrier_field_name!r}."
             ),
         )
 
@@ -7493,7 +7890,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         self,
         root: ast.Module,
         geometry: SourceTextGeometry,
-    ) -> tuple[SourceOffsetReplacement, ...]:
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         class_node = self.required_class_node(root)
         field_lines = tuple(
             statement
@@ -7507,7 +7904,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         if not field_lines:
             return ()
         first_field = field_lines[0]
-        replacements: list[SourceOffsetReplacement] = []
+        replacements: list[SourceTextSpanReplacement] = []
         if not existing_carrier_field:
             replacements.append(
                 self.line_span_replacement(
@@ -7530,8 +7927,8 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         root: ast.Module,
         source: str,
         geometry: SourceTextGeometry,
-    ) -> tuple[SourceOffsetReplacement, ...]:
-        replacements: list[SourceOffsetReplacement] = []
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        replacements: list[SourceTextSpanReplacement] = []
         constructor_names = frozenset(self.resolved_constructor_names)
         for call in (node for node in ast.walk(root) if isinstance(node, ast.Call)):
             call_name = self.call_name(call)
@@ -7597,10 +7994,10 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         source: str,
         *,
         covered_lines: tuple["SourceLineSpan", ...],
-    ) -> tuple[SourceOffsetReplacement, ...]:
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         if not self.attribute_owner_expressions:
             return ()
-        replacements: list[SourceOffsetReplacement] = []
+        replacements: list[SourceTextSpanReplacement] = []
         projection_map = self.field_projection_map
         carrier_field_name = self.carrier_field_name
         allowed_owner_sources = frozenset(self.attribute_owner_expressions)
@@ -7618,7 +8015,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
             if value_source not in allowed_owner_sources:
                 continue
             replacements.append(
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=self.node_start_offset_for_source(source, attribute),
                     end_offset=self.node_end_offset_for_source(source, attribute),
                     replacement_source=(
@@ -7661,13 +8058,13 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         geometry: SourceTextGeometry,
         node: ast.stmt | ast.expr,
         replacement_source: str,
-    ) -> SourceOffsetReplacement:
+    ) -> SourceTextSpanReplacement:
         line_span = SourceNodeSpan(node).line_span
         start_offset, end_offset = geometry._line_span_offsets(
             line_span.start_line,
             line_span.end_line,
         )
-        return SourceOffsetReplacement.from_offsets(
+        return SourceTextSpanReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
             replacement_source=replacement_source,
@@ -7815,11 +8212,11 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
             if projection.carrier_field_name == carrier_field_name
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             self.operation_key(),
@@ -7847,19 +8244,13 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
             raise ValueError(
                 f"Role field carrier replacement found no edits in {source_path!r}"
             )
-        replacement_source = geometry.source_with_replacements_in_span(
-            0,
-            geometry.end_offset,
-            replacements,
-        )
-        return (
-            SourceLineReplacement(
-                file_path=source_path,
-                start_line=1,
-                end_line=len(geometry.lines),
-                replacement_lines=SourceTargetEditor.source_lines(replacement_source),
-                rationale=self.rationale
-                or f"Replace role-prefixed fields on {self.class_name!r} with role carriers.",
+        return geometry.physical_edits(
+            file_path=source_path,
+            replacements=replacements,
+            rationale=self.rationale
+            or (
+                f"Replace role-prefixed fields on {self.class_name!r} with "
+                "role carriers."
             ),
         )
 
@@ -7867,11 +8258,11 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         self,
         root: ast.Module,
         geometry: SourceTextGeometry,
-    ) -> tuple[SourceOffsetReplacement, ...]:
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         class_node = self.required_class_node(root)
         insertion_offset = geometry.line_offsets[class_node.lineno - 1]
         return (
-            SourceOffsetReplacement.from_offsets(
+            SourceTextSpanReplacement.from_offsets(
                 start_offset=insertion_offset,
                 end_offset=insertion_offset,
                 replacement_source=f"{self.carrier_source.rstrip()}\n\n",
@@ -7882,14 +8273,14 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         self,
         root: ast.Module,
         geometry: SourceTextGeometry,
-    ) -> tuple[SourceOffsetReplacement, ...]:
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         class_node = self.required_class_node(root)
         statements_by_field = {
             field_name: statement
             for statement in class_node.body
             if (field_name := self.field_name_for_statement(statement)) is not None
         }
-        replacements: list[SourceOffsetReplacement] = []
+        replacements: list[SourceTextSpanReplacement] = []
         for carrier_field in self.carrier_fields:
             carrier_field_name = carrier_field.field_name
             projections = self.projections_for_carrier(carrier_field_name)
@@ -7923,8 +8314,8 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         root: ast.Module,
         source: str,
         geometry: SourceTextGeometry,
-    ) -> tuple[SourceOffsetReplacement, ...]:
-        replacements: list[SourceOffsetReplacement] = []
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        replacements: list[SourceTextSpanReplacement] = []
         constructor_names = frozenset(self.resolved_constructor_names)
         for call in (node for node in ast.walk(root) if isinstance(node, ast.Call)):
             call_name = self.call_name(call)
@@ -8008,10 +8399,10 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         source: str,
         *,
         covered_lines: tuple["SourceLineSpan", ...],
-    ) -> tuple[SourceOffsetReplacement, ...]:
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         if not self.attribute_owner_expressions:
             return ()
-        replacements: list[SourceOffsetReplacement] = []
+        replacements: list[SourceTextSpanReplacement] = []
         projection_map = self.projection_map
         allowed_owner_sources = frozenset(self.attribute_owner_expressions)
         for attribute in (
@@ -8028,7 +8419,7 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
             if value_source not in allowed_owner_sources:
                 continue
             replacements.append(
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=self.node_start_offset_for_source(source, attribute),
                     end_offset=self.node_end_offset_for_source(source, attribute),
                     replacement_source=(
@@ -8055,7 +8446,7 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         geometry: SourceTextGeometry,
         node: ast.stmt | ast.expr,
         replacement_source: str,
-    ) -> SourceOffsetReplacement:
+    ) -> SourceTextSpanReplacement:
         return ReplaceFieldsWithCarrierOperation.line_span_replacement(
             geometry,
             node,
@@ -8088,11 +8479,11 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
 class DeleteTargetOperation(RefactorRecipeOperation):
     """Delete one source-index target."""
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         target_identifier = self.target.required_target_id(source_index)
         target_digest = source_index.target_by_id[target_identifier]
         target_node = (
@@ -8109,7 +8500,7 @@ class DeleteTargetOperation(RefactorRecipeOperation):
                 SourceNodeDecoratorPolicy.INCLUDE,
             )
             return (
-                SourceLineReplacement(
+                SourceSpanReplacement(
                     file_path=target_digest.file_path,
                     start_line=target_span.start_line,
                     end_line=target_span.end_line,
@@ -8118,7 +8509,7 @@ class DeleteTargetOperation(RefactorRecipeOperation):
                 ),
             )
         return (
-            SourceLineReplacement.delete_target(
+            SourceSpanReplacement.delete_target(
                 target_digest,
                 rationale=self.rationale,
             ),
@@ -8172,21 +8563,21 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
         self.selection_count.require_actual_count(len(target_ids))
         return target_ids
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
-        return self.line_replacements_with_context(source_index, source_by_path)
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
 
     @abstractmethod
-    def line_replacements_with_context(
+    def source_edits_with_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         *,
         selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         raise NotImplementedError
 
 
@@ -8211,13 +8602,13 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
             ),
         )
 
-    def line_replacements_with_context(
+    def source_edits_with_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         *,
         selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         context = self.selector_context(source_index, source_by_path, selector_context)
         return tuple(
             replacement
@@ -8227,7 +8618,7 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
                 context,
                 target_id,
                 template,
-            ).line_replacements(source_index, source_by_path)
+            ).source_edits(source_index, source_by_path)
         )
 
     def operation_for_template(
@@ -8248,13 +8639,13 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
 class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
     """Delete every source-index target selected by a registered selector."""
 
-    def line_replacements_with_context(
+    def source_edits_with_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         *,
         selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         return tuple(
             self.line_replacement_for(source_index.target_by_id[target_id])
             for target_id in self.selected_target_ids(
@@ -8265,8 +8656,8 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
     def line_replacement_for(
         self,
         target_digest: AstTargetDigest,
-    ) -> SourceLineReplacement:
-        return SourceLineReplacement.delete_target(
+    ) -> SourceSpanReplacement:
+        return SourceSpanReplacement.delete_target(
             target_digest,
             rationale=self.rationale,
         )
@@ -8307,23 +8698,22 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
             ),
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         target_identifier = self.target.required_target_id(source_index)
         target_digest = source_index.target_by_id[target_identifier]
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=target_digest.file_path,
-                start_line=target_digest.line,
-                end_line=target_digest.line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                insertion_line=target_digest.line,
+                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
                 rationale=self.rationale
                 or f"Insert authority before {target_digest.qualname!r}.",
             ),
-            SourceLineReplacement.delete_target(
+            SourceSpanReplacement.delete_target(
                 target_digest,
                 rationale=self.rationale
                 or f"Delete helper target {target_digest.qualname!r}.",
@@ -8363,20 +8753,19 @@ class DeclareAuthorityOperation(
             *AuthoritySourceOperation.payload_bindings(),
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(source_index, "declare_authority")
         source = source_by_path[source_path]
         insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=source_path,
-                start_line=insertion_line,
-                end_line=insertion_line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                insertion_line=insertion_line,
+                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
                 rationale=self.rationale
                 or ("Declare authority " f"{self.authority_claim.claimed_symbol!r}."),
             ),
@@ -8392,20 +8781,19 @@ class InsertBeforeTargetOperation(
 
     payload_field_name = SOURCE_PAYLOAD_FIELD
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del context, target_identifier, node
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=target_digest.file_path,
-                start_line=target_digest.line,
-                end_line=target_digest.line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                insertion_line=target_digest.line,
+                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
                 rationale=self.rationale
                 or f"Insert source before {target_digest.qualname!r}.",
             ),
@@ -8421,20 +8809,19 @@ class InsertAfterTargetOperation(
 
     payload_field_name = SOURCE_PAYLOAD_FIELD
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del context, target_identifier, node
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=target_digest.file_path,
-                start_line=target_digest.end_line + 1,
-                end_line=target_digest.end_line,
-                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                insertion_line=target_digest.end_line + 1,
+                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
                 rationale=self.rationale
                 or f"Insert source after {target_digest.qualname!r}.",
             ),
@@ -8447,11 +8834,11 @@ class InsertAfterImportsOperation(StringPayloadOperation):
 
     payload_field_name = SOURCE_PAYLOAD_FIELD
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             "insert_after_imports",
@@ -8459,11 +8846,10 @@ class InsertAfterImportsOperation(StringPayloadOperation):
         source = source_by_path[source_path]
         insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=source_path,
-                start_line=insertion_line,
-                end_line=insertion_line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                insertion_line=insertion_line,
+                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
                 rationale=self.rationale
                 or f"Insert source imports into {source_path!r}.",
             ),
@@ -8476,87 +8862,31 @@ class EnsureImportOperation(StringPayloadOperation):
 
     payload_field_name = IMPORT_SOURCE_PAYLOAD_FIELD
 
-    def line_replacements_with_context(
+    def source_edits_with_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         *,
         selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[SourceLineReplacement, ...]:
-        source_path = self.required_source_path(source_index, "ensure_import")
-        module_node = None
-        if selector_context is not None:
-            module_node = selector_context.module_nodes_by_file_path.get(source_path)
-        return self.line_replacements_for_source(
-            source_path,
-            source_by_path[source_path],
-            module_node=module_node,
-        )
+    ) -> tuple[ModuleImportMutation, ...]:
+        del source_by_path, selector_context
+        return (self.mutation(source_index),)
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[ModuleImportMutation, ...]:
+        del source_by_path
+        return (self.mutation(source_index),)
+
+    def mutation(self, source_index: SourceIndex) -> ModuleImportMutation:
         source_path = self.required_source_path(source_index, "ensure_import")
-        return self.line_replacements_for_source(
-            source_path,
-            source_by_path[source_path],
-            module_node=None,
-        )
-
-    def line_replacements_for_source(
-        self,
-        source_path: str,
-        source: str,
-        *,
-        module_node: ast.Module | None,
-    ) -> tuple[SourceLineReplacement, ...]:
-        import_lines = SourceTargetEditor.source_lines(self.payload_value)
-        if self._source_already_contains_import(
-            source,
-            import_lines,
-            module_node=module_node,
-        ):
-            return ()
-        requested_imports = RequestedImportSet.from_source_lines(import_lines)
-        merge_replacements = requested_imports.merge_replacements_for(
-            source_path=source_path,
-            source=source,
-            rationale=self.rationale,
-            module_node=module_node,
-        )
-        if merge_replacements:
-            return merge_replacements
-        insertion_line = ModuleImportInsertionPoint(
-            source,
-            source_path,
-            module_node=module_node,
-        ).line_number
-        return (
-            SourceLineSpan(
-                end_line=insertion_line - 1, start_line=insertion_line
-            ).line_replacement(
-                file_path=source_path,
-                replacement_lines=import_lines,
-                rationale=self.rationale
-                or f"Ensure import source exists in {source_path!r}.",
-            ),
-        )
-
-    @staticmethod
-    def _source_already_contains_import(
-        source: str,
-        import_lines: tuple[str, ...],
-        *,
-        module_node: ast.Module | None = None,
-    ) -> bool:
-        existing_lines = frozenset(source.splitlines(keepends=True))
-        if all(line in existing_lines for line in import_lines if line.strip()):
-            return True
-        return RequestedImportSet.from_source_lines(import_lines).is_satisfied_by(
-            source,
-            module_node=module_node,
+        return ModuleImportMutation.from_source(
+            file_path=source_path,
+            import_source=self.payload_value,
+            rationale=self.rationale
+            or f"Ensure import source exists in {source_path!r}.",
         )
 
 
@@ -8571,11 +8901,6 @@ class ImportAliasRequirement:
     def from_alias(cls, alias: ast.alias) -> "ImportAliasRequirement":
         return cls(name=alias.name, asname=alias.asname)
 
-    def is_satisfied_by(self, aliases: Iterable[ast.alias]) -> bool:
-        return any(
-            alias.name == self.name and alias.asname == self.asname for alias in aliases
-        )
-
 
 @dataclass(frozen=True)
 class RequestedImportStatement:
@@ -8583,141 +8908,66 @@ class RequestedImportStatement:
 
     statement: ast.Import | ast.ImportFrom
 
+    @classmethod
+    def from_source(cls, source: str) -> tuple["RequestedImportStatement", ...]:
+        module = ast.parse(source, filename="<requested-import>")
+        statements = tuple(
+            cls(statement)
+            for statement in module.body
+            if isinstance(statement, (ast.Import, ast.ImportFrom))
+        )
+        if len(statements) != len(module.body):
+            return ()
+        return statements
+
     @property
     def aliases(self) -> tuple[ImportAliasRequirement, ...]:
         return tuple(
             ImportAliasRequirement.from_alias(alias) for alias in self.statement.names
         )
 
-    def is_satisfied_by(self, existing_statement: ast.stmt) -> bool:
+    @property
+    def module_name(self) -> "ImportFromModuleName | None":
+        if not isinstance(self.statement, ast.ImportFrom):
+            return None
+        return ImportFromModuleName.from_node(self.statement)
+
+    @property
+    def family_identity(
+        self,
+    ) -> tuple[type[ast.Import | ast.ImportFrom], int, str | None]:
         if isinstance(self.statement, ast.Import):
-            if not isinstance(existing_statement, ast.Import):
-                return False
-            return all(
-                alias.is_satisfied_by(existing_statement.names)
-                for alias in self.aliases
+            return ast.Import, 0, None
+        return ast.ImportFrom, self.statement.level, self.statement.module
+
+    @property
+    def source(self) -> str:
+        if isinstance(self.statement, ast.Import):
+            aliases = ", ".join(
+                ImportFromSource.alias_source(alias) for alias in self.statement.names
             )
-        if not isinstance(existing_statement, ast.ImportFrom):
-            return False
-        if existing_statement.level != self.statement.level:
-            return False
-        if existing_statement.module != self.statement.module:
-            return False
-        if any(alias.name == "*" for alias in existing_statement.names):
-            return True
-        return all(
-            alias.is_satisfied_by(existing_statement.names) for alias in self.aliases
+            return f"import {aliases}\n"
+        aliases = ", ".join(
+            ImportFromSource.alias_source(alias) for alias in self.statement.names
         )
+        module_name = ImportFromModuleName.from_node(self.statement).source
+        return f"from {module_name} import {aliases}\n"
 
-
-@dataclass(frozen=True)
-class RequestedImportSet:
-    """Requested import statements parsed from EnsureImportOperation source."""
-
-    statements: tuple[RequestedImportStatement, ...]
-
-    @classmethod
-    def from_source_lines(cls, import_lines: tuple[str, ...]) -> "RequestedImportSet":
-        source = "".join(import_lines)
-        module = ast.parse(source, filename="<requested-import>")
-        statements = tuple(
-            RequestedImportStatement(statement)
-            for statement in module.body
-            if isinstance(statement, (ast.Import, ast.ImportFrom))
-        )
-        if len(statements) != len(module.body):
-            return cls(())
-        return cls(statements)
-
-    def is_satisfied_by(
+    def with_aliases(
         self,
-        source: str,
-        *,
-        module_node: ast.Module | None = None,
-    ) -> bool:
-        if not self.statements:
-            return False
-        module = module_node if module_node is not None else ast.parse(source)
-        return all(
-            any(requested.is_satisfied_by(existing) for existing in module.body)
-            for requested in self.statements
-        )
-
-    def merge_replacements_for(
-        self,
-        *,
-        source_path: str,
-        source: str,
-        rationale: str | None,
-        module_node: ast.Module | None = None,
-    ) -> tuple[SourceLineReplacement, ...]:
-        if len(self.statements) != 1:
-            return ()
-        requested = self.statements[0].statement
-        if not isinstance(requested, ast.ImportFrom):
-            return ()
-        module = (
-            module_node
-            if module_node is not None
-            else ast.parse(
-                source,
-                filename=source_path,
+        aliases: Iterable[ImportAliasRequirement],
+    ) -> "RequestedImportStatement":
+        alias_nodes = [
+            ast.alias(name=alias.name, asname=alias.asname) for alias in aliases
+        ]
+        if isinstance(self.statement, ast.Import):
+            return RequestedImportStatement(ast.Import(names=alias_nodes))
+        return RequestedImportStatement(
+            ast.ImportFrom(
+                module=self.statement.module,
+                names=alias_nodes,
+                level=self.statement.level,
             )
-        )
-        for statement in module.body:
-            if not isinstance(statement, ast.ImportFrom):
-                continue
-            if not self.imports_from_same_module(requested, statement):
-                continue
-            replacement = self.merge_import_from_replacement(
-                source_path=source_path,
-                requested=requested,
-                existing=statement,
-                rationale=rationale,
-            )
-            if replacement is not None:
-                return (replacement,)
-        return ()
-
-    @staticmethod
-    def imports_from_same_module(
-        requested: ast.ImportFrom,
-        existing: ast.ImportFrom,
-    ) -> bool:
-        return requested.level == existing.level and requested.module == existing.module
-
-    @classmethod
-    def merge_import_from_replacement(
-        cls,
-        *,
-        source_path: str,
-        requested: ast.ImportFrom,
-        existing: ast.ImportFrom,
-        rationale: str | None,
-    ) -> SourceLineReplacement | None:
-        missing_aliases = tuple(
-            alias
-            for alias in requested.names
-            if not ImportAliasRequirement.from_alias(alias).is_satisfied_by(
-                existing.names
-            )
-        )
-        if any(alias.name == "*" for alias in existing.names):
-            return None
-        if not missing_aliases:
-            return None
-        module_name = ImportFromModuleName.from_node(existing).source
-        merged_source = ImportFromSource(
-            module_name=module_name,
-            aliases=(*existing.names, *missing_aliases),
-        ).source
-        return SourceLineReplacement(
-            file_path=source_path,
-            start_line=existing.lineno,
-            end_line=existing.end_lineno or existing.lineno,
-            replacement_lines=SourceTargetEditor.source_lines(merged_source),
-            rationale=rationale
-            or f"Merge import source into {module_name!r} import in {source_path!r}.",
         )
 
 
@@ -8744,44 +8994,24 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
             ),
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[ModuleImportMutation, ...]:
+        del source_by_path
         source_path = self.required_source_path(
             source_index,
             "remove_import_names",
         )
-        module = ast.parse(source_by_path[source_path], filename=source_path)
-        for statement in module.body:
-            if not isinstance(statement, ast.ImportFrom):
-                continue
-            if ImportFromModuleName.from_node(statement).source != self.module_name:
-                continue
-            return (self.line_replacement(source_path, statement),)
-        return ()
-
-    def line_replacement(
-        self,
-        source_path: str,
-        node: ast.ImportFrom,
-    ) -> SourceLineReplacement:
-        remaining_aliases = tuple(
-            alias for alias in node.names if alias.name not in self.import_names
-        )
-        return SourceLineReplacement(
-            file_path=source_path,
-            start_line=node.lineno,
-            end_line=node.end_lineno or node.lineno,
-            replacement_lines=SourceTargetEditor.source_lines(
-                ImportFromSource(
-                    module_name=self.module_name,
-                    aliases=remaining_aliases,
-                ).source
+        return (
+            ModuleImportMutation.remove_names(
+                file_path=source_path,
+                module_name=self.module_name,
+                names=self.import_names,
+                rationale=self.rationale
+                or f"Remove imports {self.import_names!r} from {self.module_name!r}.",
             ),
-            rationale=self.rationale
-            or f"Remove imports {self.import_names!r} from {self.module_name!r}.",
         )
 
 
@@ -8826,6 +9056,284 @@ class ImportFromSource:
         if alias.asname is None:
             return alias.name
         return f"{alias.name} as {alias.asname}"
+
+
+@dataclass(frozen=True)
+class ImportNameRemoval:
+    """Names removed from one nominal from-import module."""
+
+    module_name: ImportFromModuleName
+    names: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModuleImportMutation(NominalSourceEdit):
+    """Typed additions and removals resolved once against a module import block."""
+
+    file_path: str
+    additions: tuple[RequestedImportStatement, ...] = ()
+    removals: tuple[ImportNameRemoval, ...] = ()
+
+    @classmethod
+    def from_source(
+        cls,
+        *,
+        file_path: str,
+        import_source: str,
+        rationale: str = "",
+    ) -> "ModuleImportMutation":
+        requested = RequestedImportStatement.from_source(import_source)
+        if not requested:
+            raise ValueError("Module import mutations require import statements")
+        return cls(
+            file_path=file_path,
+            additions=requested,
+            rationale=rationale,
+        )
+
+    @classmethod
+    def remove_names(
+        cls,
+        *,
+        file_path: str,
+        module_name: str,
+        names: Iterable[str],
+        rationale: str = "",
+    ) -> "ModuleImportMutation":
+        return cls(
+            file_path=file_path,
+            removals=(
+                ImportNameRemoval(
+                    module_name=ImportFromModuleName(module_name),
+                    names=tuple(dict.fromkeys(names)),
+                ),
+            ),
+            rationale=rationale,
+        )
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        mutations_by_path: dict[str, list[ModuleImportMutation]] = defaultdict(list)
+        for peer in peers:
+            mutation = cast(ModuleImportMutation, peer)
+            mutations_by_path[mutation.file_path].append(mutation)
+        return tuple(
+            self._coalesced_file_mutation(tuple(mutations))
+            for mutations in mutations_by_path.values()
+        )
+
+    @classmethod
+    def _coalesced_file_mutation(
+        cls,
+        mutations: tuple["ModuleImportMutation", ...],
+    ) -> "ModuleImportMutation":
+        first = mutations[0]
+        additions = cls._coalesced_additions(
+            addition for mutation in mutations for addition in mutation.additions
+        )
+        removals = cls._coalesced_removals(
+            removal for mutation in mutations for removal in mutation.removals
+        )
+        removed_names_by_module = {
+            removal.module_name: frozenset(removal.names) for removal in removals
+        }
+        conflicts = tuple(
+            (addition.module_name.source, alias.name)
+            for addition in additions
+            if addition.module_name is not None
+            for alias in addition.aliases
+            if alias.name
+            in removed_names_by_module.get(
+                addition.module_name,
+                frozenset(),
+            )
+        )
+        if conflicts:
+            raise ValueError(
+                f"Import mutations both add and remove names: {conflicts!r}"
+            )
+        return replace(
+            first,
+            additions=additions,
+            removals=removals,
+            rationale=_joined_rationales(mutation.rationale for mutation in mutations),
+            contributors=NominalSourceEdit.merged_contributors(mutations),
+            origins=NominalSourceEdit.merged_origins(mutations),
+        )
+
+    @staticmethod
+    def _coalesced_additions(
+        additions: Iterable[RequestedImportStatement],
+    ) -> tuple[RequestedImportStatement, ...]:
+        aliases_by_family: dict[
+            tuple[type[ast.Import | ast.ImportFrom], int, str | None],
+            list[ImportAliasRequirement],
+        ] = {}
+        statement_by_family: dict[
+            tuple[type[ast.Import | ast.ImportFrom], int, str | None],
+            RequestedImportStatement,
+        ] = {}
+        for addition in additions:
+            family = addition.family_identity
+            statement_by_family.setdefault(family, addition)
+            aliases = aliases_by_family.setdefault(family, [])
+            for alias in addition.aliases:
+                if alias not in aliases:
+                    aliases.append(alias)
+        return tuple(
+            statement_by_family[family].with_aliases(aliases)
+            for family, aliases in aliases_by_family.items()
+        )
+
+    @staticmethod
+    def _coalesced_removals(
+        removals: Iterable[ImportNameRemoval],
+    ) -> tuple[ImportNameRemoval, ...]:
+        names_by_module: dict[ImportFromModuleName, list[str]] = {}
+        for removal in removals:
+            names = names_by_module.setdefault(removal.module_name, [])
+            for name in removal.names:
+                if name not in names:
+                    names.append(name)
+        return tuple(
+            ImportNameRemoval(module_name=module_name, names=tuple(names))
+            for module_name, names in names_by_module.items()
+        )
+
+    def resolved_edits(
+        self,
+        context: "CodemodSelectorContext",
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        source = context.sources_by_file_path[self.file_path]
+        module = context.module_nodes_by_file_path.get(self.file_path)
+        if module is None:
+            module = ast.parse(source, filename=self.file_path)
+        additions = list(self._coalesced_additions(self.additions))
+        removals_by_module = {
+            removal.module_name: frozenset(removal.names)
+            for removal in self._coalesced_removals(self.removals)
+        }
+        import_from_statements = tuple(
+            statement
+            for statement in module.body
+            if isinstance(statement, ast.ImportFrom)
+        )
+        aliases_by_statement = {
+            id(statement): [
+                ImportAliasRequirement.from_alias(alias) for alias in statement.names
+            ]
+            for statement in import_from_statements
+        }
+
+        for statement in import_from_statements:
+            module_name = ImportFromModuleName.from_node(statement)
+            removed_names = removals_by_module.get(module_name, frozenset())
+            if removed_names and any(alias.name == "*" for alias in statement.names):
+                raise ValueError(
+                    f"Cannot remove named imports from star import {module_name.source!r}"
+                )
+            aliases_by_statement[id(statement)] = [
+                alias
+                for alias in aliases_by_statement[id(statement)]
+                if alias.name not in removed_names
+            ]
+
+        pending_additions: list[RequestedImportStatement] = []
+        for addition in additions:
+            matching_from_statements = tuple(
+                statement
+                for statement in import_from_statements
+                if addition.module_name == ImportFromModuleName.from_node(statement)
+            )
+            if addition.module_name is None:
+                existing_aliases = tuple(
+                    ImportAliasRequirement.from_alias(alias)
+                    for statement in module.body
+                    if isinstance(statement, ast.Import)
+                    for alias in statement.names
+                )
+                missing_aliases = tuple(
+                    alias for alias in addition.aliases if alias not in existing_aliases
+                )
+                if not missing_aliases:
+                    continue
+                pending_additions.append(addition.with_aliases(missing_aliases))
+                continue
+            if any(
+                alias.name == "*"
+                for statement in matching_from_statements
+                for alias in aliases_by_statement[id(statement)]
+            ):
+                continue
+            if not matching_from_statements:
+                pending_additions.append(addition)
+                continue
+            target_statement = matching_from_statements[0]
+            aliases = aliases_by_statement[id(target_statement)]
+            existing_aliases = tuple(
+                alias
+                for statement in matching_from_statements
+                for alias in aliases_by_statement[id(statement)]
+            )
+            for alias in addition.aliases:
+                if alias in existing_aliases:
+                    continue
+                if alias not in aliases:
+                    aliases.append(alias)
+
+        replacements: list[PhysicalSourceEdit] = []
+        for statement in import_from_statements:
+            original_aliases = tuple(
+                ImportAliasRequirement.from_alias(alias) for alias in statement.names
+            )
+            aliases = tuple(aliases_by_statement[id(statement)])
+            if aliases == original_aliases:
+                continue
+            replacement = RequestedImportStatement(statement).with_aliases(aliases)
+            replacement_statement = cast(ast.ImportFrom, replacement.statement)
+            replacements.append(
+                SourceSpanReplacement(
+                    file_path=self.file_path,
+                    start_line=statement.lineno,
+                    end_line=statement.end_lineno or statement.lineno,
+                    replacement_lines=SourceTargetEditor.source_lines(
+                        ImportFromSource(
+                            module_name=ImportFromModuleName.from_node(
+                                replacement_statement
+                            ).source,
+                            aliases=tuple(replacement_statement.names),
+                        ).source
+                    ),
+                    rationale=self.rationale
+                    or f"Update imports from {ImportFromModuleName.from_node(statement).source!r}.",
+                    contributors=self.contributors,
+                    origins=self.origins,
+                )
+            )
+        if pending_additions:
+            insertion_line = ModuleImportInsertionPoint(
+                source,
+                self.file_path,
+                module_node=module,
+            ).line_number
+            replacements.append(
+                SourceInsertion(
+                    file_path=self.file_path,
+                    insertion_line=insertion_line,
+                    inserted_lines=SourceTargetEditor.source_lines(
+                        "".join(addition.source for addition in pending_additions)
+                    ),
+                    rationale=self.rationale
+                    or f"Ensure imports exist in {self.file_path!r}.",
+                    contributors=self.contributors,
+                    origins=self.origins,
+                )
+            )
+        return tuple(replacements)
 
 
 @dataclass(frozen=True)
@@ -8882,8 +9390,8 @@ class MovedTopLevelSymbolSource:
             )
         return node
 
-    def deletion_replacement(self, *, rationale: str) -> SourceLineReplacement:
-        return SourceLineReplacement(
+    def deletion_replacement(self, *, rationale: str) -> SourceSpanReplacement:
+        return SourceSpanReplacement(
             file_path=self.source_file_path,
             start_line=self.source_start_line,
             end_line=self.source_end_line,
@@ -8906,28 +9414,17 @@ class MovedSymbolImportPolicy:
     def from_source(cls, import_source: str | None) -> "MovedSymbolImportPolicy":
         return cls(import_source=import_source)
 
-    def source_replacement(
+    def source_mutation(
         self,
         source_block: MovedTopLevelSymbolSource,
-        source_by_path: Mapping[str, str],
         *,
         rationale: str,
-    ) -> SourceLineReplacement | None:
+    ) -> ModuleImportMutation | None:
         if not self.import_source:
             return None
-        import_lines = SourceTargetEditor.source_lines(self.import_source)
-        source = source_by_path[source_block.source_file_path]
-        if EnsureImportOperation._source_already_contains_import(source, import_lines):
-            return None
-        insertion_line = ModuleImportInsertionPoint(
-            source,
-            source_block.source_file_path,
-        ).line_number
-        return SourceLineReplacement(
+        return ModuleImportMutation.from_source(
             file_path=source_block.source_file_path,
-            start_line=insertion_line,
-            end_line=insertion_line - 1,
-            replacement_lines=import_lines,
+            import_source=self.import_source,
             rationale=rationale
             or f"Ensure moved symbol import for {source_block.name!r}.",
         )
@@ -8997,30 +9494,28 @@ class SourceTopLevelSymbolMovePlan:
                 f"module-level symbol {target_digest.name!r}"
             )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
-        replacements = [
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return (
             self.destination_insertion(source_by_path),
             self.source_block.deletion_replacement(rationale=self.rationale),
-        ]
-        return tuple(replacements)
+        )
 
     def destination_insertion(
         self,
         source_by_path: Mapping[str, str],
-    ) -> SourceLineReplacement:
+    ) -> SourceInsertion:
         destination_source = source_by_path[self.destination_file_path]
         insertion_line = ModuleImportInsertionPoint(
             destination_source,
             self.destination_file_path,
         ).line_number
-        return SourceLineReplacement(
+        return SourceInsertion(
             file_path=self.destination_file_path,
-            start_line=insertion_line,
-            end_line=insertion_line - 1,
-            replacement_lines=self.destination_replacement_lines(
+            insertion_line=insertion_line,
+            inserted_lines=self.destination_replacement_lines(
                 destination_source,
                 insertion_line,
             ),
@@ -9499,9 +9994,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 import_sources.append(import_source)
         return tuple(dict.fromkeys(import_sources))
 
-    def line_replacements(
+    def source_edits(
         self, source_by_path: Mapping[str, str]
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         if not self.dependency_report.is_clean:
             raise CodemodOperationPreflightError(
                 CodemodOperationPreflightReport(
@@ -9511,32 +10006,43 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     details=self.dependency_report.to_dict(),
                 )
             )
-        replacements = [
+        edits: list[NominalSourceEdit] = [
             self.destination_insertion(source_by_path),
             *(
                 block.deletion_replacement(rationale=self.rationale)
                 for block in self.source_blocks
             ),
+            *(
+                ModuleImportMutation.from_source(
+                    file_path=self.destination_path,
+                    import_source=import_source,
+                    rationale=self.rationale
+                    or (
+                        "Ensure dependencies for moved symbols "
+                        f"{self.dependency_report.moved_symbol_names!r}."
+                    ),
+                )
+                for import_source in self.dependency_report.import_sources
+            ),
         ]
-        replacement_import = self.source_replacement_import(source_by_path)
-        if replacement_import is not None:
-            replacements.append(replacement_import)
-        return tuple(replacements)
+        source_import = self.source_replacement_import()
+        if source_import is not None:
+            edits.append(source_import)
+        return tuple(edits)
 
     def destination_insertion(
         self,
         source_by_path: Mapping[str, str],
-    ) -> SourceLineReplacement:
+    ) -> SourceInsertion:
         destination_source = source_by_path[self.destination_path]
         insertion_line = ModuleImportInsertionPoint(
             destination_source,
             self.destination_path,
         ).line_number
-        return SourceLineReplacement(
+        return SourceInsertion(
             file_path=self.destination_path,
-            start_line=insertion_line,
-            end_line=insertion_line - 1,
-            replacement_lines=SourceTargetEditor.source_lines(
+            insertion_line=insertion_line,
+            inserted_lines=SourceTargetEditor.source_lines(
                 self.destination_source(destination_source, insertion_line)
             ),
             rationale=self.rationale
@@ -9556,36 +10062,22 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_lines,
             insertion_line,
         )
-        imports = "".join(self.dependency_report.import_sources)
         moved_source = "\n\n".join(
             block.moved_source.strip("\n") for block in self.source_blocks
         )
         spacing = DestinationInsertionSpacing(
             previous_line=previous_line,
             current_line=current_line,
-            has_import_block=bool(imports),
+            has_import_block=False,
         )
-        body = f"{imports}{spacing.import_separator}{moved_source}"
-        return f"{spacing.leading_separator}{body}{spacing.trailing_separator}"
+        return f"{spacing.leading_separator}{moved_source}{spacing.trailing_separator}"
 
-    def source_replacement_import(
-        self,
-        source_by_path: Mapping[str, str],
-    ) -> SourceLineReplacement | None:
+    def source_replacement_import(self) -> ModuleImportMutation | None:
         if not self.replacement_import:
             return None
-        import_lines = SourceTargetEditor.source_lines(self.replacement_import)
-        source = source_by_path[self.source_path]
-        if EnsureImportOperation._source_already_contains_import(source, import_lines):
-            return None
-        insertion_line = ModuleImportInsertionPoint(
-            source, self.source_path
-        ).line_number
-        return SourceLineReplacement(
+        return ModuleImportMutation.from_source(
             file_path=self.source_path,
-            start_line=insertion_line,
-            end_line=insertion_line - 1,
-            replacement_lines=import_lines,
+            import_source=self.replacement_import,
             rationale=self.rationale
             or (
                 "Ensure source module imports moved symbols "
@@ -9634,13 +10126,13 @@ class MoveSymbolToModuleOperation(
             cls.replacement_import_payload_binding(),
         )
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         del target_identifier
         move_plan = SourceTopLevelSymbolMovePlan.from_target(
             target_digest,
@@ -9653,14 +10145,13 @@ class MoveSymbolToModuleOperation(
             ).required_path(),
             rationale=self.rationale,
         )
-        replacements = list(move_plan.line_replacements(context.sources_by_file_path))
-        import_replacement = self.replacement_import.source_replacement(
+        replacements = list(move_plan.source_edits(context.sources_by_file_path))
+        import_mutation = self.replacement_import.source_mutation(
             move_plan.source_block,
-            context.sources_by_file_path,
             rationale=self.rationale,
         )
-        if import_replacement is not None:
-            replacements.append(import_replacement)
+        if import_mutation is not None:
+            replacements.append(import_mutation)
         return tuple(replacements)
 
 
@@ -9740,12 +10231,12 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
             source_by_path=source_by_path,
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
-        return self.move_plan(source_index, source_by_path).line_replacements(
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.move_plan(source_index, source_by_path).source_edits(
             source_by_path,
         )
 
@@ -9759,13 +10250,13 @@ class AddClassBaseOperation(
 
     payload_field_name = BASE_NAME_PAYLOAD_FIELD
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
@@ -9778,7 +10269,7 @@ class AddClassBaseOperation(
             source=context.sources_by_file_path[target_digest.file_path],
         )
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=target_digest.file_path,
                 start_line=header_authority.start_line,
                 end_line=header_authority.end_line,
@@ -9798,13 +10289,13 @@ class RemoveClassBaseOperation(
 
     payload_field_name = BASE_NAME_PAYLOAD_FIELD
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
@@ -9817,7 +10308,7 @@ class RemoveClassBaseOperation(
             source=context.sources_by_file_path[target_digest.file_path],
         )
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=target_digest.file_path,
                 start_line=header_authority.start_line,
                 end_line=header_authority.end_line,
@@ -10119,13 +10610,13 @@ class ExposeGlobalCandidateCacheContextOperation(
             return self.import_source
         return self.scope_source.import_source(self.candidate_method_spec)
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         del target_identifier
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
@@ -10133,11 +10624,11 @@ class ExposeGlobalCandidateCacheContextOperation(
             )
         source_path = target_digest.file_path
         source = context.sources_by_file_path[source_path]
-        replacements: list[SourceLineReplacement] = []
+        edits: list[NominalSourceEdit] = []
         import_source = self.required_import_source
         if import_source:
-            replacements.extend(
-                self.required_import_replacements(
+            edits.extend(
+                self.required_import_mutations(
                     context.source_index,
                     context.sources_by_file_path,
                     source_path,
@@ -10147,21 +10638,17 @@ class ExposeGlobalCandidateCacheContextOperation(
                     ),
                 )
             )
-        replacements.extend(self.class_header_replacements(node, source_path, source))
-        replacements.extend(
-            self.candidate_declaration_replacements(node, source_path, source)
-        )
-        replacements.extend(
-            self.candidate_method_replacements(node, source_path, source)
-        )
-        return tuple(replacements)
+        edits.extend(self.class_header_replacements(node, source_path, source))
+        edits.extend(self.candidate_declaration_replacements(node, source_path, source))
+        edits.extend(self.candidate_method_replacements(node, source_path, source))
+        return tuple(edits)
 
     def class_header_replacements(
         self,
         node: ast.ClassDef,
         source_path: str,
         source: str,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         header_authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
         base_items = header_authority.base_items
         if self.contextual_base_source in base_items:
@@ -10178,7 +10665,7 @@ class ExposeGlobalCandidateCacheContextOperation(
         else:
             updated_base_items = (*base_items, self.contextual_base_source)
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=source_path,
                 start_line=header_authority.start_line,
                 end_line=header_authority.end_line,
@@ -10202,7 +10689,7 @@ class ExposeGlobalCandidateCacheContextOperation(
         node: ast.ClassDef,
         source_path: str,
         source: str,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         if CandidateCacheDetectorProtocolSource.class_def_has_collector_assignment(
             node
         ):
@@ -10215,11 +10702,10 @@ class ExposeGlobalCandidateCacheContextOperation(
             else header_authority.end_line + 1
         )
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=source_path,
-                start_line=insertion_line,
-                end_line=insertion_line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(
+                insertion_line=insertion_line,
+                inserted_lines=SourceTargetEditor.source_lines(
                     self.scope_source.class_declaration_source(
                         self.candidate_method_spec,
                         header_authority.indentation,
@@ -10235,13 +10721,13 @@ class ExposeGlobalCandidateCacheContextOperation(
         node: ast.ClassDef,
         source_path: str,
         source: str,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del source
         method = CandidateCacheDetectorProtocolSource.candidate_method(node)
         if method is None:
             return ()
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=source_path,
                 start_line=method.lineno,
                 end_line=method.end_lineno or method.lineno,
@@ -10279,7 +10765,7 @@ class ManualRegistryConversionCarrier:
 class ManualRegistrationDeletionSelection:
     """Matched manual registration deletions for one registry conversion."""
 
-    replacements: tuple[SourceLineReplacement, ...]
+    replacements: tuple[PhysicalSourceEdit, ...]
     deleted_pair_count: int
     expected_pair_count: int
 
@@ -10340,11 +10826,11 @@ class DeriveAutoregisterInstanceViewOperation(
             ClassRegistryKeyPair.parse(source) for source in self.class_key_pairs
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             "derive_autoregister_instance_view",
@@ -10460,7 +10946,7 @@ class DeriveAutoregisterInstanceViewOperation(
         targets: ClassMemberPromotionTargets,
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
         registry_key_attribute: str,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         operation = ConvertManualRegistryToAutoregisterOperation(
             target=self.target,
             base_name=self.base_name,
@@ -10477,7 +10963,7 @@ class DeriveAutoregisterInstanceViewOperation(
         authority: AutoRegisterClassAuthority,
         source_by_path: Mapping[str, str],
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         if authority.declares_method(self.method_name):
             return ()
         source_lines = source_by_path[authority_target.file_path].splitlines(
@@ -10488,11 +10974,10 @@ class DeriveAutoregisterInstanceViewOperation(
             authority_target.node.end_lineno or authority_target.node.lineno
         )
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=authority_target.file_path,
-                start_line=insertion_line + 1,
-                end_line=insertion_line,
-                replacement_lines=SourceTargetEditor.source_lines(
+                insertion_line=insertion_line + 1,
+                inserted_lines=SourceTargetEditor.source_lines(
                     self.instance_method_source(body_indent, class_key_pairs)
                 ),
                 rationale=self.rationale
@@ -10509,7 +10994,7 @@ class DeriveAutoregisterInstanceViewOperation(
         authority: AutoRegisterClassAuthority,
         source_by_path: Mapping[str, str],
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         return (
             *self.explicit_registry_replacements(
                 authority_target,
@@ -10531,7 +11016,7 @@ class DeriveAutoregisterInstanceViewOperation(
         authority: AutoRegisterClassAuthority,
         source_by_path: Mapping[str, str],
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         if authority.declares_registry:
             return ()
         if not self.requires_explicit_registry(class_key_pairs):
@@ -10546,11 +11031,10 @@ class DeriveAutoregisterInstanceViewOperation(
             else (authority.node.lineno + 1)
         )
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=authority_target.file_path,
-                start_line=insertion_line,
-                end_line=insertion_line - 1,
-                replacement_lines=(f"{body_indent}__registry__ = {{}}\n",),
+                insertion_line=insertion_line,
+                inserted_lines=(f"{body_indent}__registry__ = {{}}\n",),
                 rationale=self.rationale
                 or f"Keep {authority_target.qualname!r} registry in memory.",
             ),
@@ -10642,12 +11126,12 @@ class DeriveAutoregisterInstanceViewOperation(
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         source_path: str,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del source_index
         module = ast.parse(source_by_path[source_path], filename=source_path)
         statement = self.single_assignment_statement(module)
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=source_path,
                 start_line=statement.lineno,
                 end_line=statement.end_lineno or statement.lineno,
@@ -10727,11 +11211,11 @@ class ConvertManualRegistryToAutoregisterOperation(
             ClassRegistryKeyPair.parse(source) for source in self.class_key_pairs
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         source_path = self.required_source_path(source_index, "registry conversion")
         if not self.registry_key_attribute.isidentifier():
             raise ValueError(
@@ -10753,7 +11237,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             class_key_pairs,
         )
         return (
-            *self.required_import_replacements(
+            *self.required_import_mutations(
                 source_index,
                 source_by_path,
                 source_path,
@@ -10780,7 +11264,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         self,
         source_index: SourceIndex,
         targets: ClassMemberPromotionTargets,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         if any(
             target.is_class
             and target.file_path == targets.insertion_target.file_path
@@ -10790,11 +11274,10 @@ class ConvertManualRegistryToAutoregisterOperation(
             return ()
         class_target = targets.insertion_target
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=class_target.file_path,
-                start_line=targets.insertion_line,
-                end_line=targets.insertion_line - 1,
-                replacement_lines=SourceTargetEditor.source_lines(
+                insertion_line=targets.insertion_line,
+                inserted_lines=SourceTargetEditor.source_lines(
                     self.autoregister_base_source
                 ),
                 rationale=self.rationale_text(
@@ -10815,7 +11298,7 @@ class ConvertManualRegistryToAutoregisterOperation(
     def class_base_replacements(
         self,
         targets: ClassMemberPromotionTargets,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         replacements = []
         for class_target in targets.targets:
             if self.base_name in _class_base_source_names(class_target.node):
@@ -10825,7 +11308,7 @@ class ConvertManualRegistryToAutoregisterOperation(
                 source=targets.source_for(class_target.file_path),
             )
             replacements.append(
-                SourceLineReplacement(
+                SourceSpanReplacement(
                     file_path=class_target.file_path,
                     start_line=header_authority.start_line,
                     end_line=header_authority.end_line,
@@ -10841,7 +11324,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         self,
         targets: ClassMemberPromotionTargets,
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         pair_by_class_name = {pair.class_name: pair for pair in class_key_pairs}
         replacements = []
         for class_target in targets.targets:
@@ -10871,14 +11354,14 @@ class ConvertManualRegistryToAutoregisterOperation(
         target: AstTargetDigest,
         node: ast.ClassDef,
         pair: ClassRegistryKeyPair,
-    ) -> SourceLineReplacement:
+    ) -> PhysicalSourceEdit:
         body_without_docstring = self.class_body_without_docstring(node)
         if len(body_without_docstring) == 1 and isinstance(
             body_without_docstring[0],
             ast.Pass,
         ):
             pass_statement = body_without_docstring[0]
-            return SourceLineReplacement(
+            return SourceSpanReplacement(
                 file_path=target.file_path,
                 start_line=pass_statement.lineno,
                 end_line=pass_statement.end_lineno or pass_statement.lineno,
@@ -10895,11 +11378,10 @@ class ConvertManualRegistryToAutoregisterOperation(
                 ),
             )
         insert_after_line = self.class_key_insert_after_line(node)
-        return SourceLineReplacement(
+        return SourceInsertion(
             file_path=target.file_path,
-            start_line=insert_after_line + 1,
-            end_line=insert_after_line,
-            replacement_lines=(
+            insertion_line=insert_after_line + 1,
+            inserted_lines=(
                 self.class_key_assignment_line(targets, target, node, pair),
             ),
             rationale=self.rationale_text(
@@ -10951,7 +11433,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         source_path: str,
         module: ast.Module,
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         selection = self.registration_deletion_selection(
             source_path,
             module,
@@ -11013,7 +11495,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         source_path: str,
         statement: ast.stmt,
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[SourceLineReplacement, int] | None:
+    ) -> tuple[SourceSpanReplacement, int] | None:
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
             return None
         target = statement.targets[0]
@@ -11097,12 +11579,12 @@ class ConvertManualRegistryToAutoregisterOperation(
         source_path: str,
         node: ast.ClassDef,
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         pair = self.class_key_pair_for(node.name, class_key_pairs)
         if pair is None:
             return ()
         return tuple(
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=source_path,
                 start_line=decorator.lineno,
                 end_line=decorator.end_lineno or decorator.lineno,
@@ -11144,8 +11626,8 @@ class ConvertManualRegistryToAutoregisterOperation(
         self,
         source_path: str,
         module: ast.Module,
-        deletion_replacements: tuple[SourceLineReplacement, ...],
-    ) -> tuple[SourceLineReplacement, ...]:
+        deletion_replacements: tuple[PhysicalSourceEdit, ...],
+    ) -> tuple[PhysicalSourceEdit, ...]:
         assignment = self.empty_registry_assignment(module)
         if assignment is None:
             return ()
@@ -11182,8 +11664,8 @@ class ConvertManualRegistryToAutoregisterOperation(
         self,
         source_path: str,
         statement: ast.stmt,
-    ) -> SourceLineReplacement:
-        return SourceLineReplacement(
+    ) -> SourceSpanReplacement:
+        return SourceSpanReplacement(
             file_path=source_path,
             start_line=statement.lineno,
             end_line=statement.end_lineno or statement.lineno,
@@ -11606,13 +12088,13 @@ class DispatchToPolymorphismOperation(
             ),
         )
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         del target_identifier
         if not isinstance(node, ast.FunctionDef):
             raise ValueError("dispatch_to_polymorphism requires a function target")
@@ -11625,7 +12107,7 @@ class DispatchToPolymorphismOperation(
             )
         source = DispatchPolymorphismSource.from_operation(self, extraction)
         return (
-            *self.import_replacements(
+            *self.import_mutations(
                 context.source_index,
                 context.sources_by_file_path,
                 target_digest.file_path,
@@ -11659,12 +12141,12 @@ class DispatchToPolymorphismOperation(
             literal_cases=self.literal_cases,
         ).extraction()
 
-    def import_replacements(
+    def import_mutations(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
         source_path: str,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[ModuleImportMutation, ...]:
         return tuple(
             replacement
             for import_source in (
@@ -11676,7 +12158,7 @@ class DispatchToPolymorphismOperation(
                 target=SourceRewriteTarget(file_path=source_path),
                 payload_value=import_source,
                 rationale=self.rationale_text("Import dispatch strategy support."),
-            ).line_replacements(source_index, source_by_path)
+            ).source_edits(source_index, source_by_path)
         )
 
     def family_insertion_replacement(
@@ -11684,14 +12166,13 @@ class DispatchToPolymorphismOperation(
         source_index: SourceIndex,
         target_digest: AstTargetDigest,
         source: DispatchPolymorphismSource,
-    ) -> SourceLineReplacement:
+    ) -> SourceInsertion:
         if self.base_exists(source_index, target_digest.file_path):
             raise ValueError(f"Dispatch base {self.base_name!r} already exists")
-        return SourceLineReplacement(
+        return SourceInsertion(
             file_path=target_digest.file_path,
-            start_line=target_digest.line,
-            end_line=target_digest.line - 1,
-            replacement_lines=SourceTargetEditor.source_lines(
+            insertion_line=target_digest.line,
+            inserted_lines=SourceTargetEditor.source_lines(
                 f"{source.family_source()}\n"
             ),
             rationale=self.rationale_text(
@@ -11705,7 +12186,7 @@ class DispatchToPolymorphismOperation(
         node: ast.FunctionDef,
         source: DispatchPolymorphismSource,
         source_by_path: Mapping[str, str],
-    ) -> SourceLineReplacement:
+    ) -> SourceSpanReplacement:
         if not node.body:
             raise ValueError("dispatch function has no body")
         body_start = node.body[0].lineno
@@ -11714,7 +12195,7 @@ class DispatchToPolymorphismOperation(
             source_by_path,
             target_digest,
         ).indentation_for_line(body_start)
-        return SourceLineReplacement(
+        return SourceSpanReplacement(
             file_path=target_digest.file_path,
             start_line=body_start,
             end_line=body_end,
@@ -11744,13 +12225,13 @@ class ReplaceFunctionSignatureOperation(
 
     payload_field_name = "signature_source"
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del target_identifier
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             raise ValueError(f"Target {target_digest.qualname!r} is not a function")
@@ -11760,7 +12241,7 @@ class ReplaceFunctionSignatureOperation(
             original_line,
         ).replacement_line(self.payload_value)
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=target_digest.file_path,
                 start_line=node.lineno,
                 end_line=node.lineno,
@@ -11780,13 +12261,13 @@ class ReplaceFunctionBodyOperation(
 
     payload_field_name = "body_source"
 
-    def line_replacements_for_target_node(
+    def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del target_identifier
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             raise ValueError(f"Target {target_digest.qualname!r} is not a function")
@@ -11795,7 +12276,7 @@ class ReplaceFunctionBodyOperation(
         body_start = node.body[0].lineno
         body_end = node.body[-1].end_lineno or node.body[-1].lineno
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=target_digest.file_path,
                 start_line=body_start,
                 end_line=body_end,
@@ -11828,11 +12309,11 @@ class ProductRecordToDataclassOperation(StringPayloadOperation):
 
     payload_field_name = RECORD_NAME_PAYLOAD_FIELD
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             "product_record_to_dataclass",
@@ -11844,7 +12325,7 @@ class ProductRecordToDataclassOperation(StringPayloadOperation):
             file_path=source_path,
             record_name=self.payload_value,
             rationale=self.rationale,
-        ).line_replacements(module)
+        ).source_edits(module)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -11864,11 +12345,11 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
             ),
         )
 
-    def line_replacements(
+    def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
             source_index,
             "product_records_to_dataclasses",
@@ -11880,7 +12361,7 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
             file_path=source_path,
             record_names=self.record_names,
             rationale=self.rationale,
-        ).line_replacements(module)
+        ).source_edits(module)
 
 
 @dataclass(frozen=True)
@@ -12324,7 +12805,7 @@ class ProductRecordDataclassFieldParser:
         )
 
 
-ProductRecordRewriteResult: TypeAlias = tuple[SourceLineReplacement, ...] | None
+ProductRecordRewriteResult: TypeAlias = tuple[PhysicalSourceEdit, ...] | None
 PRODUCT_RECORD_BATCH_REWRITE_KEY = "batch"
 PRODUCT_RECORD_SINGLE_REWRITE_KEY = "single"
 
@@ -12343,10 +12824,10 @@ class ProductRecordRewriteAuthorityBase(ABC, metaclass=AutoRegisterMeta):
     file_path: str
     rationale: str = ""
 
-    def line_replacements(
+    def source_edits(
         self,
         module: ast.Module,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         for statement in module.body:
             replacements = self.search_statement(statement)
             if replacements is not None:
@@ -12364,7 +12845,7 @@ class ProductRecordRewriteAuthorityBase(ABC, metaclass=AutoRegisterMeta):
             raise ValueError(
                 f"No product_record search registered for {self.registry_key!r}"
             )
-        return search_type(statement=statement, authority=self).line_replacements()
+        return search_type(statement=statement, authority=self).source_edits()
 
     @abstractmethod
     def missing_schema_message(self) -> str:
@@ -12417,7 +12898,7 @@ class ProductRecordStatementRewriteSearch(ABC, metaclass=AutoRegisterMeta):
     authority: ProductRecordRewriteAuthorityBase
 
     @abstractmethod
-    def line_replacements(self) -> ProductRecordRewriteResult:
+    def source_edits(self) -> ProductRecordRewriteResult:
         raise NotImplementedError
 
 
@@ -12432,7 +12913,7 @@ class ProductRecordBatchRewriteSearch(ProductRecordStatementRewriteSearch):
     def statement_value(self) -> "ProductRecordStatementValue":
         return ProductRecordStatementValue(self.statement)
 
-    def line_replacements(self) -> ProductRecordRewriteResult:
+    def source_edits(self) -> ProductRecordRewriteResult:
         call = self.statement_value.expr_call
         if (
             call is None
@@ -12458,7 +12939,7 @@ class ProductRecordBatchRewriteSearch(ProductRecordStatementRewriteSearch):
             self.statement
         ).replacement_line_span(self.authority.source)
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=self.authority.file_path,
                 start_line=replacement_line_span.start_line,
                 end_line=replacement_line_span.end_line,
@@ -12510,7 +12991,7 @@ class ProductRecordRewriteSearch(ProductRecordStatementRewriteSearch):
     def statement_value(self) -> "ProductRecordStatementValue":
         return ProductRecordStatementValue(self.statement)
 
-    def line_replacements(self) -> ProductRecordRewriteResult:
+    def source_edits(self) -> ProductRecordRewriteResult:
         return (
             self.direct_assignment_replacements()
             or self.single_materialization_replacements()
@@ -12614,8 +13095,8 @@ class ProductRecordRewriteSearch(ProductRecordStatementRewriteSearch):
         self,
         declaration: ProductRecordDataclassDeclaration,
         placement: "ProductRecordRewritePlacement",
-    ) -> tuple[SourceLineReplacement, ...]:
-        return placement.line_replacements(self.authority, declaration)
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return placement.source_edits(self.authority, declaration)
 
 
 class ProductRecordRewritePlacement(ABC, metaclass=AutoRegisterMeta):
@@ -12628,11 +13109,11 @@ class ProductRecordRewritePlacement(ABC, metaclass=AutoRegisterMeta):
     registry_key: ClassVar[str]
 
     @abstractmethod
-    def line_replacements(
+    def source_edits(
         self,
         authority: ProductRecordDataclassRewriteAuthority,
         declaration: ProductRecordDataclassDeclaration,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         raise NotImplementedError
 
     @staticmethod
@@ -12691,8 +13172,15 @@ class SourceLineSpan:
         file_path: str,
         replacement_lines: tuple[str, ...] = (),
         rationale: str = "",
-    ) -> SourceLineReplacement:
-        return SourceLineReplacement(
+    ) -> PhysicalSourceEdit:
+        if self.start_line > self.end_line:
+            return SourceInsertion(
+                file_path=file_path,
+                insertion_line=self.start_line,
+                inserted_lines=replacement_lines,
+                rationale=rationale,
+            )
+        return SourceSpanReplacement(
             file_path=file_path,
             start_line=self.start_line,
             end_line=self.end_line,
@@ -12722,14 +13210,14 @@ class ProductRecordReplacementPlacement(ProductRecordRewritePlacement):
     registry_key = "replacement"
     node: ast.stmt | ast.expr
 
-    def line_replacements(
+    def source_edits(
         self,
         authority: ProductRecordDataclassRewriteAuthority,
         declaration: ProductRecordDataclassDeclaration,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         replacement_line_span = self.replacement_line_span(authority.source)
         return (
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=authority.file_path,
                 start_line=replacement_line_span.start_line,
                 end_line=replacement_line_span.end_line,
@@ -12754,24 +13242,23 @@ class ProductRecordBatchPlacement(ProductRecordRewritePlacement):
     insertion_line_anchor: ast.stmt
     deletion_node: ast.expr
 
-    def line_replacements(
+    def source_edits(
         self,
         authority: ProductRecordDataclassRewriteAuthority,
         declaration: ProductRecordDataclassDeclaration,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         deletion_line_span = self.line_span(self.deletion_node)
         return (
-            SourceLineReplacement(
+            SourceInsertion(
                 file_path=authority.file_path,
-                start_line=self.insertion_line_anchor.lineno,
-                end_line=self.insertion_line_anchor.lineno - 1,
-                replacement_lines=SourceTargetEditor.source_lines(
+                insertion_line=self.insertion_line_anchor.lineno,
+                inserted_lines=SourceTargetEditor.source_lines(
                     f"{declaration.source}\n"
                 ),
                 rationale=authority.rationale
                 or f"Insert dataclass for {declaration.record_name!r}.",
             ),
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=authority.file_path,
                 start_line=deletion_line_span.start_line,
                 end_line=deletion_line_span.end_line,
@@ -12997,7 +13484,7 @@ class FunctionSignatureSourceAuthority:
 @dataclass(frozen=True)
 class _RecipeReplacementGroup:
     target: AstTargetDigest
-    replacements: tuple[SourceLineReplacement, ...]
+    replacements: tuple[PhysicalSourceEdit, ...]
 
 
 @dataclass(frozen=True)
@@ -13011,224 +13498,83 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         *,
         plan_item_index_offset: int = 0,
     ) -> tuple[PlannedSourceRewrite, ...]:
-        replacements = self._coalesced_replacements(
-            replacement
+        edits = tuple(
+            edit
             for plan_item_index, operation in enumerate(
                 operations,
                 start=plan_item_index_offset,
             )
-            for replacement in self._contributed_replacements(
+            for edit in self._originated_edits(
                 recipe_id,
                 plan_item_index,
                 operation,
             )
         )
+        replacements = self._resolved_physical_edits(edits)
         groups = self._merged_replacement_groups(replacements)
         return tuple(self._planned_rewrite(group) for group in groups)
 
-    def _contributed_replacements(
+    def _originated_edits(
         self,
         recipe_id: str,
         plan_item_index: int,
         operation: RefactorRecipeOperation,
-    ) -> tuple[SourceLineReplacement, ...]:
-        replacements = operation.line_replacements_with_context(
+    ) -> tuple[NominalSourceEdit, ...]:
+        edits = operation.source_edits_with_context(
             self.source_index,
             self.sources_by_file_path,
             selector_context=self,
         )
         return tuple(
-            replace(
-                replacement,
-                contributors=SourceRewriteContributor.merge(
-                    replacement.contributors,
-                    (
-                        SourceRewriteContributor.from_line_replacement(
-                            recipe_id=recipe_id,
-                            plan_item_declaration=type(operation).__name__,
-                            plan_item_index=plan_item_index,
-                            replacement=replacement,
-                            sources_by_file_path=self.sources_by_file_path,
-                        ),
-                    ),
-                ),
+            edit.with_origin(
+                SourceEditOrigin(
+                    recipe_id=recipe_id,
+                    plan_item_declaration=type(operation).__name__,
+                    plan_item_index=plan_item_index,
+                )
             )
-            for replacement in replacements
+            for edit in edits
         )
 
-    @staticmethod
-    def _coalesced_replacements(
-        replacements: Iterable[SourceLineReplacement],
-    ) -> tuple[SourceLineReplacement, ...]:
-        replacements_by_span: dict[
-            tuple[str, int, int], list[SourceLineReplacement]
-        ] = defaultdict(list)
-        for replacement in replacements:
-            replacements_by_span[
-                replacement.file_path,
-                replacement.start_line,
-                replacement.end_line,
-            ].append(replacement)
-        return tuple(
-            RefactorRecipeOperationCompiler._coalesced_same_span_replacement(
-                tuple(span_replacements)
-            )
-            for span_replacements in replacements_by_span.values()
+    def _resolved_physical_edits(
+        self,
+        edits: tuple[NominalSourceEdit, ...],
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        semantic_edits = NominalSourceEdit.coalesced_by_declaration(edits, self)
+        physical_edits = tuple(
+            physical_edit
+            for semantic_edit in semantic_edits
+            for physical_edit in semantic_edit.resolved_edits(self)
         )
+        coalesced_physical = NominalSourceEdit.coalesced_by_declaration(
+            physical_edits,
+            self,
+        )
+        replacements = tuple(
+            self._materialized_contributors(cast(PhysicalSourceEdit, edit))
+            for edit in coalesced_physical
+        )
+        return PhysicalSourceEdit.require_compatible(replacements)
 
-    @staticmethod
-    def _coalesced_same_span_replacement(
-        replacements: tuple[SourceLineReplacement, ...],
-    ) -> SourceLineReplacement:
-        first = replacements[0]
-        if len(replacements) == 1:
-            return first
-        replacement_line_sets = {
-            replacement.replacement_lines for replacement in replacements
-        }
-        if len(replacement_line_sets) == 1:
-            return replace(
-                first,
-                rationale=_joined_rationales(
-                    replacement.rationale for replacement in replacements
-                ),
-                contributors=SourceRewriteContributor.merge(
-                    *(replacement.contributors for replacement in replacements)
-                ),
-            )
-        content_insertion_replacement = (
-            RefactorRecipeOperationCompiler._coalesced_content_insertion_replacement(
-                replacements
-            )
-        )
-        if content_insertion_replacement is not None:
-            return content_insertion_replacement
-        merged_import_replacement = (
-            RefactorRecipeOperationCompiler._coalesced_import_replacement(replacements)
-        )
-        if merged_import_replacement is not None:
-            return merged_import_replacement
-        insertion_replacement = (
-            RefactorRecipeOperationCompiler._coalesced_insertion_replacement(
-                replacements
-            )
-        )
-        if insertion_replacement is not None:
-            return insertion_replacement
-        raise ValueError(
-            "Conflicting replacements target the same source span "
-            f"{first.file_path}:{first.start_line}-{first.end_line}"
-        )
-
-    @staticmethod
-    def _coalesced_content_insertion_replacement(
-        replacements: tuple[SourceLineReplacement, ...],
-    ) -> SourceLineReplacement | None:
-        first = replacements[0]
-        if first.start_line <= first.end_line:
-            return None
-        content_replacements = tuple(
-            replacement for replacement in replacements if replacement.replacement_lines
-        )
-        if len(content_replacements) != 1:
-            return None
+    def _materialized_contributors(
+        self,
+        edit: PhysicalSourceEdit,
+    ) -> PhysicalSourceEdit:
         return replace(
-            content_replacements[0],
-            rationale=_joined_rationales(
-                replacement.rationale for replacement in replacements
-            ),
+            edit,
             contributors=SourceRewriteContributor.merge(
-                *(replacement.contributors for replacement in replacements)
+                edit.contributors,
+                (
+                    origin.contributor_for(edit, self.sources_by_file_path)
+                    for origin in edit.origins
+                ),
             ),
+            origins=(),
         )
-
-    @staticmethod
-    def _coalesced_import_replacement(
-        replacements: tuple[SourceLineReplacement, ...],
-    ) -> SourceLineReplacement | None:
-        import_from_nodes = tuple(
-            RefactorRecipeOperationCompiler._single_import_from_node(
-                replacement.replacement_lines
-            )
-            for replacement in replacements
-        )
-        if any(node is None for node in import_from_nodes):
-            return None
-        first_node = import_from_nodes[0]
-        if first_node is None:
-            return None
-        if not all(
-            RequestedImportSet.imports_from_same_module(first_node, node)
-            for node in import_from_nodes
-            if node is not None
-        ):
-            return None
-        aliases_by_key: dict[tuple[str, str | None], ast.alias] = {}
-        for node in import_from_nodes:
-            if node is None:
-                return None
-            for alias in node.names:
-                aliases_by_key.setdefault((alias.name, alias.asname), alias)
-        first = replacements[0]
-        return replace(
-            first,
-            replacement_lines=SourceTargetEditor.source_lines(
-                ImportFromSource(
-                    module_name=ImportFromModuleName.from_node(first_node).source,
-                    aliases=tuple(aliases_by_key.values()),
-                ).source
-            ),
-            rationale=_joined_rationales(
-                replacement.rationale for replacement in replacements
-            ),
-            contributors=SourceRewriteContributor.merge(
-                *(replacement.contributors for replacement in replacements)
-            ),
-        )
-
-    @staticmethod
-    def _coalesced_insertion_replacement(
-        replacements: tuple[SourceLineReplacement, ...],
-    ) -> SourceLineReplacement | None:
-        first = replacements[0]
-        if first.start_line <= first.end_line:
-            return None
-        replacement_lines = tuple(
-            line
-            for replacement in replacements
-            for line in replacement.replacement_lines
-        )
-        if not replacement_lines:
-            return None
-        return replace(
-            first,
-            replacement_lines=replacement_lines,
-            rationale=_joined_rationales(
-                replacement.rationale for replacement in replacements
-            ),
-            contributors=SourceRewriteContributor.merge(
-                *(replacement.contributors for replacement in replacements)
-            ),
-        )
-
-    @staticmethod
-    def _single_import_from_node(
-        replacement_lines: tuple[str, ...],
-    ) -> ast.ImportFrom | None:
-        try:
-            module = ast.parse("".join(replacement_lines), filename="<replacement>")
-        except SyntaxError:
-            return None
-        if len(module.body) != 1:
-            return None
-        statement = module.body[0]
-        if not isinstance(statement, ast.ImportFrom):
-            return None
-        return statement
 
     def _merged_replacement_groups(
         self,
-        replacements: tuple[SourceLineReplacement, ...],
+        replacements: tuple[PhysicalSourceEdit, ...],
     ) -> tuple[_RecipeReplacementGroup, ...]:
         groups = [
             _RecipeReplacementGroup(
@@ -13299,7 +13645,7 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
 
     def _smallest_enclosing_target(
         self,
-        replacements: tuple[SourceLineReplacement, ...],
+        replacements: tuple[PhysicalSourceEdit, ...],
     ) -> AstTargetDigest:
         file_paths = {replacement.file_path for replacement in replacements}
         if len(file_paths) != 1:
@@ -15426,8 +15772,8 @@ class SemanticDescentRepairPlan:
 
 
 @dataclass(frozen=True)
-class FindingRecipeSynthesisRecordIdentity:
-    """Shared identity and source hints for synthesis record views."""
+class FindingRecipeSynthesisRecord:
+    """Recipe-synthesis outcome for one finding."""
 
     finding_id: str
     detector_id: str
@@ -15435,100 +15781,6 @@ class FindingRecipeSynthesisRecordIdentity:
     status: FindingRecipeSynthesisStatus
     scaffold: str
     codemod_patch: str
-
-
-@dataclass(frozen=True)
-class FindingRecipeSynthesisAuthoringRecord(
-    FindingRecipeSynthesisRecordIdentity,
-    CodemodJsonReport,
-):
-    """Agent-authoring handle for one finding synthesis outcome."""
-
-    evidence_selector: FindingEvidenceTargetSelector
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "finding_id": self.finding_id,
-            "detector_id": self.detector_id,
-            "title": self.title,
-            "status": self.status.value,
-            "evidence_selector": self.evidence_selector.to_dict(),
-            "scaffold": self.scaffold,
-            "codemod_patch": self.codemod_patch,
-        }
-
-
-class FindingRecipeSynthesisReportView(CodemodJsonReport, ABC):
-    """Shared JSON projection algorithm for synthesis report views."""
-
-    def to_dict(self) -> JsonObject:
-        record_payloads = self.record_payloads()
-        return {
-            "records": record_payloads,
-            "planned_count": self.planned_count,
-            "rejected_count": self.rejected_count,
-            "unsupported_count": self.unsupported_count,
-            "status_counts": self.status_counts(record_payloads),
-        }
-
-    @staticmethod
-    def status_counts(record_payloads: tuple[JsonObject, ...]) -> JsonObject:
-        counts: dict[str, int] = {}
-        for record in record_payloads:
-            status = record.get("status")
-            if not isinstance(status, str):
-                continue
-            counts[status] = counts.get(status, 0) + 1
-        return counts
-
-    @abstractmethod
-    def record_payloads(self) -> tuple[JsonObject, ...]:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def planned_count(self) -> int:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def rejected_count(self) -> int:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def unsupported_count(self) -> int:
-        raise NotImplementedError
-
-
-class FindingRecipeSynthesisAuthoringReport(FindingRecipeSynthesisReportView):
-    """Agent-authoring handles for a finding-backed synthesis report."""
-
-    def __init__(self, source_report: "FindingRecipeSynthesisReport") -> None:
-        self.source_report = source_report
-
-    def record_payloads(self) -> tuple[JsonObject, ...]:
-        return tuple(
-            record.authoring_record().to_dict() for record in self.source_report.records
-        )
-
-    @property
-    def planned_count(self) -> int:
-        return self.source_report.planned_count
-
-    @property
-    def rejected_count(self) -> int:
-        return self.source_report.rejected_count
-
-    @property
-    def unsupported_count(self) -> int:
-        return self.source_report.unsupported_count
-
-
-@dataclass(frozen=True)
-class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
-    """Recipe-synthesis outcome for one finding."""
-
     summary: str
     capability_gap: str
     evaluation: "FindingRecipeEvaluation"
@@ -15598,17 +15850,6 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
     def semantic_repair_plan(self) -> SemanticDescentRepairPlan | None:
         return self.evaluation.semantic_repair_plan
 
-    def authoring_record(self) -> FindingRecipeSynthesisAuthoringRecord:
-        return FindingRecipeSynthesisAuthoringRecord(
-            finding_id=self.finding_id,
-            detector_id=self.detector_id,
-            title=self.title,
-            status=self.status,
-            scaffold=self.scaffold,
-            codemod_patch=self.codemod_patch,
-            evidence_selector=self.evidence_selector,
-        )
-
     def to_dict(self) -> JsonObject:
         return {
             "finding_id": self.finding_id,
@@ -15636,7 +15877,7 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
 
 
 @dataclass(frozen=True)
-class FindingRecipeSynthesisReport(FindingRecipeSynthesisReportView):
+class FindingRecipeSynthesisReport(CodemodJsonReport):
     """Coverage report for finding-backed DSL recipe synthesis."""
 
     records: tuple[FindingRecipeSynthesisRecord, ...] = ()
@@ -15653,11 +15894,21 @@ class FindingRecipeSynthesisReport(FindingRecipeSynthesisReportView):
     def unsupported_count(self) -> int:
         return sum(1 for record in self.records if record.status.unsupported)
 
-    def record_payloads(self) -> tuple[JsonObject, ...]:
-        return tuple(record.to_dict() for record in self.records)
-
-    def authoring_report(self) -> FindingRecipeSynthesisAuthoringReport:
-        return FindingRecipeSynthesisAuthoringReport(self)
+    def to_dict(self) -> JsonObject:
+        record_payloads = tuple(record.to_dict() for record in self.records)
+        return {
+            "records": record_payloads,
+            "planned_count": self.planned_count,
+            "rejected_count": self.rejected_count,
+            "unsupported_count": self.unsupported_count,
+            "status_counts": {
+                status.value: sum(
+                    1 for record in self.records if record.status is status
+                )
+                for status in FindingRecipeSynthesisStatus
+                if any(record.status is status for record in self.records)
+            },
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -15681,8 +15932,6 @@ class FindingRecipeSynthesisBoundary(FindingRecipeClassPlanBoundary):
     """Single payload boundary for finding-backed synthesis projections."""
 
     payload_key: ClassVar[str] = "synthesis_report"
-    authoring_payload_key: ClassVar[str] = "synthesis_authoring"
-
     report: FindingRecipeSynthesisReport = field(
         default_factory=FindingRecipeSynthesisReport
     )
@@ -15711,12 +15960,6 @@ class FindingRecipeSynthesisBoundary(FindingRecipeClassPlanBoundary):
 
     def to_dict(self) -> JsonObject:
         return self.synthesis_payload()
-
-    def with_authoring_payload(self, payload: JsonObject) -> JsonObject:
-        return {
-            **payload,
-            self.authoring_payload_key: self.report.authoring_report().to_dict(),
-        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -19049,7 +19292,7 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         caller_qualname: str,
         callee_source: str,
         parameter_names: tuple[str, ...],
-    ) -> SourceOffsetReplacement | None:
+    ) -> SourceTextSpanReplacement | None:
         if not isinstance(node, ast.Call):
             return None
         if not self.is_wrapper_call(
@@ -19063,7 +19306,7 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         if argument_sources is None:
             return None
         start_offset, end_offset = self.node_offsets(source, node)
-        return SourceOffsetReplacement.from_offsets(
+        return SourceTextSpanReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
             replacement_source=(
@@ -19138,12 +19381,12 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         cls,
         source: str,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> SourceOffsetReplacement:
+    ) -> SourceTextSpanReplacement:
         geometry = SourceTextGeometry(source)
         start_offset, end_offset = geometry.node_span_offsets(
             SourceNodeSpan(node, SourceNodeDecoratorPolicy.INCLUDE)
         )
-        return SourceOffsetReplacement.from_offsets(
+        return SourceTextSpanReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
             replacement_source="",
@@ -19153,7 +19396,7 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
     def replacement_source_for_target(
         source: str,
         target: AstTargetDigest,
-        replacements: tuple[SourceOffsetReplacement, ...],
+        replacements: tuple[SourceTextSpanReplacement, ...],
     ) -> str:
         geometry = SourceTextGeometry(source)
         start_offset = geometry.line_offsets[target.line - 1]
@@ -19803,8 +20046,8 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         *,
         call_spec: RepeatedMethodCallAuthorityCallSpec,
         parameters: tuple[RepeatedMethodCallAuthorityParameter, ...],
-    ) -> tuple[SourceOffsetReplacement, ...]:
-        replacements: list[SourceOffsetReplacement] = []
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        replacements: list[SourceTextSpanReplacement] = []
         for call in calls:
             argument_sources = cls.method_call_argument_sources(
                 source,
@@ -19820,7 +20063,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
                 )
             )
             replacements.append(
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=start_offset,
                     end_offset=end_offset,
                     replacement_source=cls.method_call_authority_call_source(
@@ -19883,7 +20126,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         callee_node: ast.FunctionDef | ast.AsyncFunctionDef,
         *,
         source_spec: RepeatedMethodCallAuthoritySourceSpec,
-        call_replacements: tuple[SourceOffsetReplacement, ...],
+        call_replacements: tuple[SourceTextSpanReplacement, ...],
     ) -> str:
         geometry = SourceTextGeometry(source)
         class_start, class_end = geometry.node_span_offsets(SourceNodeSpan(class_node))
@@ -19896,7 +20139,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         method_source = self.method_call_authority_source(source_spec)
         replacements = (
             *call_replacements,
-            SourceOffsetReplacement.from_offsets(
+            SourceTextSpanReplacement.from_offsets(
                 start_offset=insertion_offset,
                 end_offset=insertion_offset,
                 replacement_source=method_source,
@@ -20544,7 +20787,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
             source,
             target,
             (
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=insertion_offset,
                     end_offset=insertion_offset,
                     replacement_source=method_source,
@@ -20664,7 +20907,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         *,
         constructor_name: str,
         method: RepeatedBuilderAuthorityMethod,
-    ) -> SourceOffsetReplacement | None:
+    ) -> SourceTextSpanReplacement | None:
         if not isinstance(node, ast.Call):
             return None
         if not cls.constructor_call_matches(
@@ -20687,7 +20930,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
                 node,
             )
         )
-        return SourceOffsetReplacement.from_offsets(
+        return SourceTextSpanReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
             replacement_source=(
@@ -20773,7 +21016,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
     def replacement_source_for_target(
         source: str,
         target: AstTargetDigest,
-        replacements: tuple[SourceOffsetReplacement, ...],
+        replacements: tuple[SourceTextSpanReplacement, ...],
     ) -> str:
         return IdentityKeywordForwardingShellFindingRecipeSynthesizer.replacement_source_for_target(
             source,
@@ -24427,7 +24670,7 @@ class DataclassAuthorityMappingRecipeBuilder(
             target_start,
             target_end,
             (
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=insertion_offset,
                     end_offset=insertion_offset,
                     replacement_source=method_source,
@@ -26542,7 +26785,7 @@ class GenericRoleCaseTableMappingRecipeBuilder(
             module_target = self.module_target(file_path)
             if module_target is None:
                 return ()
-            line_replacements = self.file_line_replacements(
+            source_edits = self.file_source_edits(
                 file_path=file_path,
                 authority_location=authority_location,
                 authority_source=authority_source,
@@ -26555,7 +26798,7 @@ class GenericRoleCaseTableMappingRecipeBuilder(
             replacement_source = SourceTargetEditor(
                 self.sources_by_file_path,
                 module_target,
-            ).replacement_source(line_replacements)
+            ).replacement_source(source_edits)
             rewrites.append(
                 GenericRoleCaseFileRewrite(
                     module_target=module_target,
@@ -26564,16 +26807,16 @@ class GenericRoleCaseTableMappingRecipeBuilder(
             )
         return tuple(rewrites)
 
-    def file_line_replacements(
+    def file_source_edits(
         self,
         *,
         file_path: str,
         authority_location: "SemanticMirrorAuthorityLocation",
         authority_source: GenericRoleCaseAuthoritySource,
         target_rewrites: tuple[GenericRoleCaseTargetRewrite, ...],
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         replacements = [
-            SourceLineReplacement(
+            SourceSpanReplacement(
                 file_path=file_path,
                 start_line=rewrite.target.line,
                 end_line=rewrite.target.end_line,
@@ -26600,32 +26843,29 @@ class GenericRoleCaseTableMappingRecipeBuilder(
         self,
         file_path: str,
         authority_source: GenericRoleCaseAuthoritySource,
-    ) -> SourceLineReplacement:
+    ) -> SourceInsertion:
         source = self.sources_by_file_path[file_path]
         insertion_line = ModuleImportInsertionPoint(
             source,
             file_path,
             module_node=self.module_nodes_by_file_path.get(file_path),
         ).line_number
-        return SourceLineReplacement(
+        return SourceInsertion(
             file_path=file_path,
-            start_line=insertion_line,
-            end_line=insertion_line - 1,
-            replacement_lines=SourceTargetEditor.source_lines(
-                authority_source.source()
-            ),
+            insertion_line=insertion_line,
+            inserted_lines=SourceTargetEditor.source_lines(authority_source.source()),
             rationale="Insert nominal role-case authority.",
         )
 
     def authority_import_replacements(
         self,
         location: "SemanticMirrorAuthorityLocation",
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         return EnsureImportOperation(
             target=SourceRewriteTarget(file_path=location.projection_path),
             payload_value=location.import_source(),
             rationale="Import nominal role-case authority.",
-        ).line_replacements_with_context(
+        ).source_edits_with_context(
             self.source_index,
             self.sources_by_file_path,
             selector_context=self,
@@ -26647,7 +26887,7 @@ class GenericRoleCaseTableMappingRecipeBuilder(
         geometry: SourceTextGeometry,
         literal_authority: GenericRoleCaseLiteralAuthority,
         authority_name: str,
-    ) -> tuple[SourceOffsetReplacement, ...]:
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         replacements = []
         for child in ast.walk(node):
             if not isinstance(child, ast.Constant) or not isinstance(child.value, str):
@@ -26659,7 +26899,7 @@ class GenericRoleCaseTableMappingRecipeBuilder(
                 return ()
             start_offset, end_offset = offsets
             replacements.append(
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=start_offset,
                     end_offset=end_offset,
                     replacement_source=literal_authority.reference_for(
@@ -29631,7 +29871,7 @@ class FindingRecipePlanBuilder:
     detector_ids: frozenset[str] = frozenset()
     rewrite_line_replacement_cache: dict[
         PlannedSourceRewrite,
-        tuple[SourceLineReplacement, ...],
+        tuple[PhysicalSourceEdit, ...],
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
     planned_rewrite_cache: dict[int, tuple[PlannedSourceRewrite, ...]] = field(
         default_factory=dict,
@@ -29868,12 +30108,12 @@ class FindingRecipePlanBuilder:
         replacements = tuple(
             replacement
             for rewrite in rewrites
-            for replacement in self.rewrite_line_replacements(
+            for replacement in self.rewrite_source_edits(
                 rewrite,
                 selector_context,
             )
         )
-        if self.line_replacements_conflict(replacements):
+        if self.source_edits_conflict(replacements):
             return None
         if not replacements:
             return None
@@ -29883,7 +30123,7 @@ class FindingRecipePlanBuilder:
         )
         if target is None:
             return None
-        if not self.line_replacements_fit_target(target, replacements):
+        if not self.source_edits_fit_target(target, replacements):
             return None
         replacement_source = SourceTargetEditor(
             selector_context.sources_by_file_path,
@@ -29908,11 +30148,11 @@ class FindingRecipePlanBuilder:
         )
 
     @staticmethod
-    def line_replacements_from_rewrite(
+    def source_edits_from_rewrite(
         target: AstTargetDigest,
         original_source: str,
         rewrite: PlannedSourceRewrite,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         original_lines = SourceTargetEditor.source_lines(original_source)
         replacement_lines = SourceTargetEditor.source_lines(rewrite.replacement_source)
         return SourceLineDiffAuthority.replacements(
@@ -29924,31 +30164,31 @@ class FindingRecipePlanBuilder:
         )
 
     @classmethod
-    def uncached_rewrite_line_replacements(
+    def uncached_rewrite_source_edits(
         cls,
         rewrite: PlannedSourceRewrite,
         selector_context: CodemodSelectorContext,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         target = cls.rewrite_target(rewrite, selector_context)
         target_editor = SourceTargetEditor(
             selector_context.sources_by_file_path,
             target,
         )
-        return cls.line_replacements_from_rewrite(
+        return cls.source_edits_from_rewrite(
             target,
             "".join(target_editor.target_lines),
             rewrite,
         )
 
-    def rewrite_line_replacements(
+    def rewrite_source_edits(
         self,
         rewrite: PlannedSourceRewrite,
         selector_context: CodemodSelectorContext,
-    ) -> tuple[SourceLineReplacement, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         cached_replacements = self.rewrite_line_replacement_cache.get(rewrite)
         if cached_replacements is not None:
             return cached_replacements
-        replacements = self.uncached_rewrite_line_replacements(
+        replacements = self.uncached_rewrite_source_edits(
             rewrite,
             selector_context,
         )
@@ -29963,16 +30203,16 @@ class FindingRecipePlanBuilder:
     ) -> bool:
         if selector_context is None:
             return True
-        return self.line_replacements_conflict(
+        return self.source_edits_conflict(
             (
-                *self.rewrite_line_replacements(first, selector_context),
-                *self.rewrite_line_replacements(second, selector_context),
+                *self.rewrite_source_edits(first, selector_context),
+                *self.rewrite_source_edits(second, selector_context),
             )
         )
 
     @staticmethod
-    def line_replacements_conflict(
-        replacements: tuple[SourceLineReplacement, ...],
+    def source_edits_conflict(
+        replacements: tuple[PhysicalSourceEdit, ...],
     ) -> bool:
         previous_by_file: dict[str, tuple[int, int] | None] = {}
         for replacement in sorted(
@@ -29996,7 +30236,7 @@ class FindingRecipePlanBuilder:
 
     @staticmethod
     def smallest_enclosing_target_for_replacements(
-        replacements: tuple[SourceLineReplacement, ...],
+        replacements: tuple[PhysicalSourceEdit, ...],
         selector_context: CodemodSelectorContext,
     ) -> AstTargetDigest | None:
         file_paths = frozenset(replacement.file_path for replacement in replacements)
@@ -30024,10 +30264,10 @@ class FindingRecipePlanBuilder:
         )
 
     @classmethod
-    def line_replacements_fit_target(
+    def source_edits_fit_target(
         cls,
         target: AstTargetDigest,
-        replacements: tuple[SourceLineReplacement, ...],
+        replacements: tuple[PhysicalSourceEdit, ...],
     ) -> bool:
         previous_end = target.line - 1
         for replacement in sorted(
@@ -30044,7 +30284,7 @@ class FindingRecipePlanBuilder:
     @staticmethod
     def line_replacement_fits_target(
         target: AstTargetDigest,
-        replacement: SourceLineReplacement,
+        replacement: SourceSpanReplacement,
     ) -> bool:
         return (
             replacement.file_path == target.file_path
@@ -31564,7 +31804,7 @@ def _descriptor_property_rewrites(
         source_index,
         source_by_path,
     ).nodes_by_target_identifier()
-    replacements_by_class_target_id: dict[str, list[SourceOffsetReplacement]] = {}
+    replacements_by_class_target_id: dict[str, list[SourceTextSpanReplacement]] = {}
     for target_id in candidate.target_ids:
         target = source_index.target_by_id.get(target_id)
         node = nodes_by_target_id.get(target_id)
@@ -31593,7 +31833,7 @@ def _descriptor_property_rewrites(
         if class_target.target_id not in replacements_by_class_target_id:
             replacements_by_class_target_id[class_target.target_id] = []
         replacements_by_class_target_id[class_target.target_id].append(
-            SourceOffsetReplacement.from_offsets(
+            SourceTextSpanReplacement.from_offsets(
                 start_offset=start,
                 end_offset=end,
                 replacement_source=f"{geometry.line_indent(start)}{assignment}\n",
@@ -31650,7 +31890,7 @@ def _class_statement_deletion_rewrites(
         geometry = SourceTextGeometry(source)
         class_start, class_end = geometry.node_span_offsets(SourceNodeSpan(node))
         replacements = tuple(
-            SourceOffsetReplacement.from_offsets(
+            SourceTextSpanReplacement.from_offsets(
                 start_offset=start,
                 end_offset=end,
                 replacement_source="",

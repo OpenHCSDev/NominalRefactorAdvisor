@@ -82,9 +82,7 @@ from .codemod import (
     CodemodSimulationStatus,
     CodemodSourceContext,
     CodemodSourceSnapshot,
-    FindingRecipePlan,
     FindingRecipePlanSimulation,
-    FindingRecipeSynthesisRecord,
     FindingRecipeSynthesizer,
     JsonObject,
     JsonValue,
@@ -116,16 +114,6 @@ from .codemod_workflow import (
     CodemodWorkflowPlan,
     CodemodWorkflowPlanJsonParser,
     CodemodWorkflowRunContext,
-)
-from .codemod_authoring import (
-    CodemodAuthoringBundleActionRunner,
-    CodemodAuthoringBundleStatusReporter,
-    CodemodAuthoringArtifactRole,
-    CodemodAuthoringCommandActionId,
-    CodemodAuthoringWorkflowActionCommandSpec,
-    CodemodAuthoringWorkflowId,
-    CodemodAuthoringWorkflowPlanner,
-    CodemodCliCommandSpec,
 )
 from .detectors import DetectorConfig, IssueDetector
 from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
@@ -524,64 +512,6 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "With a plan-producing codemod command, write the reusable "
                 "CodemodPlanDocument or CodemodPlanSequence JSON to this path."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-synthesis-authoring",),
-            action="store_true",
-            help=(
-                "With --codemod-synthesize-plan, include opt-in authoring "
-                "selectors for each synthesis record."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-authoring-bundle-out",),
-            value_type=Path,
-            help=(
-                "With --codemod-synthesize-plan --codemod-synthesis-authoring, "
-                "write per-finding selector and replacement-plan artifacts under "
-                "this directory."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-authoring-status",),
-            value_type=Path,
-            help=(
-                "Load an authoring bundle index.json, recompute workflow readiness "
-                "from the current artifact files, emit JSON, and exit without "
-                "scanning."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-authoring-run-action",),
-            value_type=Path,
-            help=(
-                "Load an authoring bundle index.json, plan the command chain for "
-                "--codemod-authoring-target-action, execute it, emit JSON, and "
-                "exit without scanning."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-authoring-record-index",),
-            value_type=int,
-            default=0,
-            help=(
-                "Record index to use with --codemod-authoring-run-action. "
-                "Defaults to 0."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-authoring-workflow-id",),
-            help=(
-                "Optional workflow id for --codemod-authoring-run-action. If "
-                "omitted, the workflow is inferred from the target action."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-authoring-target-action",),
-            help=(
-                "Target action id for --codemod-authoring-run-action, such as "
-                "simulate_goal_replay_plan."
             ),
         ),
         CliArgumentSpec(
@@ -2069,888 +1999,6 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
     )
 
 
-def cli_artifact_slug(value: str) -> str:
-    """Convert a report identifier into a stable filesystem-friendly stem."""
-
-    if not value:
-        raise ValueError("CLI artifact slug source cannot be empty")
-    characters: list[str] = []
-    for character in value:
-        if character.isalnum() or character in ("-", "_"):
-            characters.append(character)
-            continue
-        characters.append("_")
-    cleaned = "".join(characters).strip("_")
-    if not cleaned:
-        raise ValueError("CLI artifact slug source has no filesystem-safe characters")
-    return cleaned
-
-
-class CodemodAuthoringBundleControlActionId(str, Enum):
-    """Stable action ids for authoring bundle control commands."""
-
-    AUTHORING_STATUS = "authoring_status"
-    AUTHORING_RUN_ACTION = "authoring_run_action"
-
-
-AuthoringTemplateRegistryKey: TypeAlias = (
-    CodemodAuthoringCommandActionId | CodemodAuthoringWorkflowId
-)
-
-
-@dataclass(frozen=True)
-class CodemodAuthoringBundleCommandContext:
-    """Paths and roots required to emit one replayable authoring command."""
-
-    roots: tuple[Path, ...]
-    evidence_selector_file: Path
-    replacement_scaffold_file: Path
-    replacement_plan_file: Path
-    operation_template_file: Path
-    selected_operation_scaffold_file: Path
-    selected_operation_plan_file: Path
-    goal_replay_plan_file: Path
-    output_dir: Path
-    cwd: Path
-    finding_id: str
-
-    @property
-    def root_args(self) -> tuple[str, ...]:
-        return tuple(root.as_posix() for root in self.roots)
-
-    @property
-    def selector_arg(self) -> str:
-        return self.evidence_selector_file.as_posix()
-
-    @property
-    def plan_arg(self) -> str:
-        return self.replacement_plan_file.as_posix()
-
-    @property
-    def operation_template_arg(self) -> str:
-        return self.operation_template_file.as_posix()
-
-    @property
-    def selected_operation_plan_arg(self) -> str:
-        return self.selected_operation_plan_file.as_posix()
-
-    @property
-    def goal_replay_plan_arg(self) -> str:
-        return self.goal_replay_plan_file.as_posix()
-
-    def bundle_relative_path(self, path: Path) -> str:
-        try:
-            relative_path = path.relative_to(self.output_dir)
-        except ValueError as error:
-            raise ValueError(
-                f"Authoring artifact {path} is outside bundle root {self.output_dir}"
-            ) from error
-        return relative_path.as_posix()
-
-    def artifact_path(self, role: CodemodAuthoringArtifactRole) -> Path:
-        return {
-            CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE: (
-                self.evidence_selector_file
-            ),
-            CodemodAuthoringArtifactRole.REPLACEMENT_SCAFFOLD_FILE: (
-                self.replacement_scaffold_file
-            ),
-            CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE: (
-                self.replacement_plan_file
-            ),
-            CodemodAuthoringArtifactRole.SELECTED_OPERATION_TEMPLATE_FILE: (
-                self.operation_template_file
-            ),
-            CodemodAuthoringArtifactRole.SELECTED_OPERATION_SCAFFOLD_FILE: (
-                self.selected_operation_scaffold_file
-            ),
-            CodemodAuthoringArtifactRole.SELECTED_OPERATION_PLAN_FILE: (
-                self.selected_operation_plan_file
-            ),
-            CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE: (
-                self.goal_replay_plan_file
-            ),
-        }[role]
-
-    def bundle_relative_paths(
-        self,
-        roles: tuple[CodemodAuthoringArtifactRole, ...],
-    ) -> tuple[str, ...]:
-        return tuple(
-            self.bundle_relative_path(self.artifact_path(role)) for role in roles
-        )
-
-
-@dataclass(frozen=True)
-class CodemodAuthoringWorkflowDefinition:
-    """Shared identity and roles for authoring workflow views."""
-
-    workflow_id: CodemodAuthoringWorkflowId
-    description: str
-    editable_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...]
-    review_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...]
-    generated_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...]
-    command_action_ids: tuple[CodemodAuthoringCommandActionId, ...]
-    default_next_action_id: CodemodAuthoringCommandActionId
-
-    def definition_items(self) -> tuple[tuple[str, JsonValue], ...]:
-        return (
-            ("workflow_id", self.workflow_id.value),
-            ("description", self.description),
-            (
-                "editable_artifact_roles",
-                tuple(role.value for role in self.editable_artifact_roles),
-            ),
-            (
-                "review_artifact_roles",
-                tuple(role.value for role in self.review_artifact_roles),
-            ),
-            (
-                "generated_artifact_roles",
-                tuple(role.value for role in self.generated_artifact_roles),
-            ),
-            (
-                "command_action_ids",
-                tuple(action_id.value for action_id in self.command_action_ids),
-            ),
-            ("default_next_action_id", self.default_next_action_id.value),
-        )
-
-
-@dataclass(frozen=True)
-class CodemodAuthoringWorkflowSpec(CodemodAuthoringWorkflowDefinition):
-    """Ordered commands and artifacts for one bundle authoring workflow."""
-
-    editable_artifacts: tuple[str, ...]
-    review_artifacts: tuple[str, ...]
-    generated_artifacts: tuple[str, ...]
-
-    def to_dict(self) -> JsonObject:
-        payload = JsonObject(dict(self.definition_items()))
-        payload.update(
-            {
-                "editable_artifacts": self.editable_artifacts,
-                "review_artifacts": self.review_artifacts,
-                "generated_artifacts": self.generated_artifacts,
-            }
-        )
-        return payload
-
-
-@dataclass(frozen=True)
-class CodemodAuthoringCommandManifest:
-    """Manifest row for one registered replayable authoring command."""
-
-    action_id: CodemodAuthoringCommandActionId
-    class_name: str
-    description: str
-    registry_order: int
-    required_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
-    generated_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "action_id": self.action_id.value,
-            "class_name": self.class_name,
-            "description": self.description,
-            "registry_order": self.registry_order,
-            "required_artifact_roles": tuple(
-                role.value for role in self.required_artifact_roles
-            ),
-            "generated_artifact_roles": tuple(
-                role.value for role in self.generated_artifact_roles
-            ),
-        }
-
-
-@dataclass(frozen=True)
-class CodemodAuthoringWorkflowManifest(CodemodAuthoringWorkflowDefinition):
-    """Manifest row for one registered authoring workflow."""
-
-    class_name: str
-    registry_order: int
-
-    def to_dict(self) -> JsonObject:
-        payload = JsonObject(dict(self.definition_items()))
-        payload.update(
-            {
-                "class_name": self.class_name,
-                "registry_order": self.registry_order,
-            }
-        )
-        return payload
-
-
-@dataclass(frozen=True)
-class OrderedAuthoringTemplateRegistry:
-    """Ordered view over one authoring template registry."""
-
-    registry: Mapping[AuthoringTemplateRegistryKey, type]
-
-    def template_types(self) -> tuple[type, ...]:
-        return tuple(
-            sorted(
-                self.registry.values(),
-                key=lambda template_type: template_type.registry_order,
-            )
-        )
-
-
-class CodemodAuthoringBundleWorkflowTemplate(
-    ABC,
-    metaclass=AutoRegisterMeta,
-):
-    """Registered workflow emitted into an authoring bundle record."""
-
-    __registry__: ClassVar[
-        dict[
-            CodemodAuthoringWorkflowId,
-            type["CodemodAuthoringBundleWorkflowTemplate"],
-        ]
-    ] = {}
-    __registry_key__ = "workflow_id"
-    __skip_if_no_key__ = True
-
-    workflow_id: ClassVar[CodemodAuthoringWorkflowId | None] = None
-    registry_order: ClassVar[int]
-    description: ClassVar[str]
-    command_action_ids: ClassVar[tuple[CodemodAuthoringCommandActionId, ...]]
-    default_next_action_id: ClassVar[CodemodAuthoringCommandActionId]
-    editable_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
-    review_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
-    generated_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
-
-    @property
-    def required_workflow_id(self) -> CodemodAuthoringWorkflowId:
-        if self.workflow_id is None:
-            raise RuntimeError(
-                "registered authoring workflow template has no workflow_id"
-            )
-        return self.workflow_id
-
-    def workflow_spec(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> CodemodAuthoringWorkflowSpec:
-        return CodemodAuthoringWorkflowSpec(
-            workflow_id=self.required_workflow_id,
-            description=self.description,
-            editable_artifacts=context.bundle_relative_paths(
-                self.editable_artifact_roles
-            ),
-            review_artifacts=context.bundle_relative_paths(self.review_artifact_roles),
-            generated_artifacts=context.bundle_relative_paths(
-                self.generated_artifact_roles
-            ),
-            editable_artifact_roles=self.editable_artifact_roles,
-            review_artifact_roles=self.review_artifact_roles,
-            generated_artifact_roles=self.generated_artifact_roles,
-            command_action_ids=self.command_action_ids,
-            default_next_action_id=self.default_next_action_id,
-        )
-
-    def workflow_manifest(self) -> CodemodAuthoringWorkflowManifest:
-        return CodemodAuthoringWorkflowManifest(
-            workflow_id=self.required_workflow_id,
-            class_name=type(self).__name__,
-            description=self.description,
-            registry_order=self.registry_order,
-            editable_artifact_roles=self.editable_artifact_roles,
-            review_artifact_roles=self.review_artifact_roles,
-            generated_artifact_roles=self.generated_artifact_roles,
-            command_action_ids=self.command_action_ids,
-            default_next_action_id=self.default_next_action_id,
-        )
-
-
-class ReplacementPlanAuthoringWorkflowTemplate(CodemodAuthoringBundleWorkflowTemplate):
-    workflow_id = CodemodAuthoringWorkflowId.REPLACEMENT_PLAN
-    registry_order = 10
-    description = (
-        "Edit the target replacement plan, then validate, simulate, and apply it."
-    )
-    command_action_ids = (
-        CodemodAuthoringCommandActionId.RESOLVE_SELECTOR,
-        CodemodAuthoringCommandActionId.SCAFFOLD_REPLACEMENT_PLAN,
-        CodemodAuthoringCommandActionId.VALIDATE_REPLACEMENT_PLAN,
-        CodemodAuthoringCommandActionId.SIMULATE_REPLACEMENT_PLAN,
-        CodemodAuthoringCommandActionId.APPLY_REPLACEMENT_PLAN,
-    )
-    default_next_action_id = CodemodAuthoringCommandActionId.SIMULATE_REPLACEMENT_PLAN
-    editable_artifact_roles = (CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,)
-    review_artifact_roles = (
-        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
-        CodemodAuthoringArtifactRole.REPLACEMENT_SCAFFOLD_FILE,
-    )
-
-
-class SelectedOperationAuthoringWorkflowTemplate(
-    CodemodAuthoringBundleWorkflowTemplate
-):
-    workflow_id = CodemodAuthoringWorkflowId.SELECTED_OPERATION_TEMPLATE
-    registry_order = 20
-    description = (
-        "Edit the selected-operation template, scaffold a plan, then preflight, "
-        "simulate, and apply it."
-    )
-    command_action_ids = (
-        CodemodAuthoringCommandActionId.SCAFFOLD_SELECTED_OPERATION_PLAN,
-        CodemodAuthoringCommandActionId.PREFLIGHT_SELECTED_OPERATION_PLAN,
-        CodemodAuthoringCommandActionId.SIMULATE_SELECTED_OPERATION_PLAN,
-        CodemodAuthoringCommandActionId.APPLY_SELECTED_OPERATION_PLAN,
-    )
-    default_next_action_id = (
-        CodemodAuthoringCommandActionId.SIMULATE_SELECTED_OPERATION_PLAN
-    )
-    editable_artifact_roles = (
-        CodemodAuthoringArtifactRole.SELECTED_OPERATION_TEMPLATE_FILE,
-    )
-    review_artifact_roles = (
-        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
-        CodemodAuthoringArtifactRole.SELECTED_OPERATION_SCAFFOLD_FILE,
-    )
-    generated_artifact_roles = (
-        CodemodAuthoringArtifactRole.SELECTED_OPERATION_PLAN_FILE,
-    )
-
-
-class GoalRefactorAuthoringWorkflowTemplate(CodemodAuthoringBundleWorkflowTemplate):
-    workflow_id = CodemodAuthoringWorkflowId.GOAL_REFACTOR
-    registry_order = 30
-    description = (
-        "Run a goal-directed finding refactor, then simulate or apply the generated "
-        "staged replay plan."
-    )
-    command_action_ids = (
-        CodemodAuthoringCommandActionId.RUN_GOAL_REFACTOR,
-        CodemodAuthoringCommandActionId.SIMULATE_GOAL_REPLAY_PLAN,
-        CodemodAuthoringCommandActionId.APPLY_GOAL_REPLAY_PLAN,
-    )
-    default_next_action_id = CodemodAuthoringCommandActionId.RUN_GOAL_REFACTOR
-    review_artifact_roles = (CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,)
-    generated_artifact_roles = (CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,)
-
-
-class CodemodAuthoringBundleCommandTemplate(
-    ABC,
-    metaclass=AutoRegisterMeta,
-):
-    """Registered command template emitted into an authoring bundle."""
-
-    __registry__: ClassVar[
-        dict[
-            CodemodAuthoringCommandActionId,
-            type["CodemodAuthoringBundleCommandTemplate"],
-        ]
-    ] = {}
-    __registry_key__ = "action_id"
-    __skip_if_no_key__ = True
-
-    action_id: ClassVar[CodemodAuthoringCommandActionId | None] = None
-    registry_order: ClassVar[int]
-    description: ClassVar[str] = ""
-    required_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
-    generated_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
-
-    def command_spec(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> CodemodCliCommandSpec:
-        if self.action_id is None:
-            raise RuntimeError("registered authoring command template has no action_id")
-        return CodemodCliCommandSpec(
-            action_id=self.action_id,
-            args=self.command_args(context),
-            cwd=context.cwd,
-            required_artifact_roles=self.required_artifact_roles,
-            generated_artifact_roles=self.generated_artifact_roles,
-            required_artifacts=context.bundle_relative_paths(
-                self.required_artifact_roles
-            ),
-            generated_artifacts=context.bundle_relative_paths(
-                self.generated_artifact_roles
-            ),
-        )
-
-    def command_manifest(self) -> CodemodAuthoringCommandManifest:
-        if self.action_id is None:
-            raise RuntimeError("registered authoring command template has no action_id")
-        return CodemodAuthoringCommandManifest(
-            action_id=self.action_id,
-            class_name=type(self).__name__,
-            description=self.description,
-            registry_order=self.registry_order,
-            required_artifact_roles=self.required_artifact_roles,
-            generated_artifact_roles=self.generated_artifact_roles,
-        )
-
-    @abstractmethod
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        raise NotImplementedError
-
-
-class ResolveSelectorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
-    action_id = CodemodAuthoringCommandActionId.RESOLVE_SELECTOR
-    registry_order = 10
-    required_artifact_roles = (CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,)
-
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            *context.root_args,
-            "--codemod-resolve-selector",
-            context.selector_arg,
-        )
-
-
-class ScaffoldReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
-    action_id = CodemodAuthoringCommandActionId.SCAFFOLD_REPLACEMENT_PLAN
-    registry_order = 20
-    required_artifact_roles = (CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,)
-    generated_artifact_roles = (CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,)
-
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            *context.root_args,
-            "--codemod-replacement-plan",
-            context.selector_arg,
-            "--codemod-plan-out",
-            context.plan_arg,
-        )
-
-
-class ValidateReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
-    action_id = CodemodAuthoringCommandActionId.VALIDATE_REPLACEMENT_PLAN
-    registry_order = 30
-    required_artifact_roles = (CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,)
-
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            "--codemod-plan",
-            context.plan_arg,
-            "--codemod-validate-plan",
-        )
-
-
-class ReplacementPlanExecutionCommandTemplate(
-    CodemodAuthoringBundleCommandTemplate,
-    ABC,
-):
-    execution_flag: ClassVar[str]
-    required_artifact_roles = (CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,)
-
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            *context.root_args,
-            "--codemod-plan",
-            context.plan_arg,
-            self.execution_flag,
-        )
-
-
-class SimulateReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplate):
-    action_id = CodemodAuthoringCommandActionId.SIMULATE_REPLACEMENT_PLAN
-    registry_order = 40
-    execution_flag = "--codemod-simulate"
-
-
-class ApplyReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplate):
-    action_id = CodemodAuthoringCommandActionId.APPLY_REPLACEMENT_PLAN
-    registry_order = 50
-    execution_flag = "--codemod-apply"
-
-
-class ScaffoldSelectedOperationPlanCommandTemplate(
-    CodemodAuthoringBundleCommandTemplate
-):
-    action_id = CodemodAuthoringCommandActionId.SCAFFOLD_SELECTED_OPERATION_PLAN
-    registry_order = 60
-    required_artifact_roles = (
-        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
-        CodemodAuthoringArtifactRole.SELECTED_OPERATION_TEMPLATE_FILE,
-    )
-    generated_artifact_roles = (
-        CodemodAuthoringArtifactRole.SELECTED_OPERATION_PLAN_FILE,
-    )
-
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            *context.root_args,
-            "--codemod-selected-operation-plan",
-            context.selector_arg,
-            "--codemod-operation-template",
-            context.operation_template_arg,
-            "--codemod-plan-out",
-            context.selected_operation_plan_arg,
-        )
-
-
-class SelectedOperationPlanExecutionCommandTemplate(
-    CodemodAuthoringBundleCommandTemplate,
-    ABC,
-):
-    execution_flag: ClassVar[str]
-    required_artifact_roles = (
-        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
-        CodemodAuthoringArtifactRole.SELECTED_OPERATION_TEMPLATE_FILE,
-    )
-
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            *context.root_args,
-            "--codemod-selected-operation-plan",
-            context.selector_arg,
-            "--codemod-operation-template",
-            context.operation_template_arg,
-            self.execution_flag,
-        )
-
-
-class PreflightSelectedOperationPlanCommandTemplate(
-    SelectedOperationPlanExecutionCommandTemplate
-):
-    action_id = CodemodAuthoringCommandActionId.PREFLIGHT_SELECTED_OPERATION_PLAN
-    registry_order = 70
-    execution_flag = "--codemod-preflight"
-
-
-class SimulateSelectedOperationPlanCommandTemplate(
-    SelectedOperationPlanExecutionCommandTemplate
-):
-    action_id = CodemodAuthoringCommandActionId.SIMULATE_SELECTED_OPERATION_PLAN
-    registry_order = 80
-    execution_flag = "--codemod-simulate"
-
-
-class ApplySelectedOperationPlanCommandTemplate(
-    SelectedOperationPlanExecutionCommandTemplate
-):
-    action_id = CodemodAuthoringCommandActionId.APPLY_SELECTED_OPERATION_PLAN
-    registry_order = 90
-    execution_flag = "--codemod-apply"
-
-
-class RunGoalRefactorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
-    action_id = CodemodAuthoringCommandActionId.RUN_GOAL_REFACTOR
-    registry_order = 100
-    generated_artifact_roles = (CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,)
-
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            *context.root_args,
-            "--codemod-refactor-goal",
-            CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION.value,
-            "--codemod-goal-finding-id",
-            context.finding_id,
-            "--codemod-goal-plan-out",
-            context.goal_replay_plan_arg,
-            "--json",
-        )
-
-
-class GoalReplayPlanExecutionCommandTemplate(
-    CodemodAuthoringBundleCommandTemplate,
-    ABC,
-):
-    execution_flag: ClassVar[str]
-    required_artifact_roles = (CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,)
-
-    def command_args(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            *context.root_args,
-            "--codemod-plan",
-            context.goal_replay_plan_arg,
-            self.execution_flag,
-        )
-
-
-class SimulateGoalReplayPlanCommandTemplate(GoalReplayPlanExecutionCommandTemplate):
-    action_id = CodemodAuthoringCommandActionId.SIMULATE_GOAL_REPLAY_PLAN
-    registry_order = 110
-    execution_flag = "--codemod-simulate"
-
-
-class ApplyGoalReplayPlanCommandTemplate(GoalReplayPlanExecutionCommandTemplate):
-    action_id = CodemodAuthoringCommandActionId.APPLY_GOAL_REPLAY_PLAN
-    registry_order = 120
-    execution_flag = "--codemod-apply"
-
-
-@dataclass(frozen=True)
-class CodemodAuthoringBundleWriter:
-    """Materialize per-finding synthesis authoring artifacts for agents."""
-
-    output_dir: Path
-    snapshot: CodemodSourceSnapshot
-    plan: FindingRecipePlan
-    roots: tuple[Path, ...]
-    cwd: Path
-
-    @property
-    def index_path(self) -> Path:
-        return self.output_dir / "index.json"
-
-    def write(self) -> JsonObject:
-        records = tuple(
-            self.write_record(record_index, record)
-            for record_index, record in enumerate(self.plan.records)
-        )
-        payload: JsonObject = {
-            **self.plan.synthesis_payload(),
-            "bundle_commands": self.bundle_control_commands(),
-            "records": records,
-        }
-        write_cli_json_artifact(self.index_path, payload)
-        return payload
-
-    def write_record(
-        self,
-        record_index: int,
-        record: FindingRecipeSynthesisRecord,
-    ) -> JsonObject:
-        authoring_record = record.authoring_record()
-        record_dir = self.record_dir(record_index, authoring_record.detector_id)
-        selector_payload = authoring_record.evidence_selector.to_dict()
-        scaffold = self.snapshot.replacement_plan_scaffold_report(
-            authoring_record.evidence_selector
-        )
-        selector_path = record_dir / "selector.json"
-        scaffold_path = record_dir / "replacement-scaffold.json"
-        replacement_plan_path = record_dir / "replacement-plan.json"
-        operation_template_path = record_dir / "selected-operation-template.json"
-        selected_scaffold_path = record_dir / "selected-operation-scaffold.json"
-        selected_plan_path = record_dir / "selected-operation-plan.json"
-        goal_replay_plan_path = record_dir / "goal-replay-plan.json"
-        operation_template = self.selected_operation_plan_template()
-        selected_scaffold = self.snapshot.selected_operation_plan_scaffold_report(
-            authoring_record.evidence_selector,
-            operation_template,
-        )
-        write_cli_json_artifact(selector_path, selector_payload)
-        write_cli_json_artifact(scaffold_path, scaffold.to_dict())
-        write_cli_json_artifact(replacement_plan_path, scaffold.document.to_dict())
-        write_cli_json_artifact(operation_template_path, operation_template.to_dict())
-        write_cli_json_artifact(selected_scaffold_path, selected_scaffold.to_dict())
-        write_cli_json_artifact(
-            selected_plan_path, selected_scaffold.document.to_dict()
-        )
-        context = self.authoring_context(
-            authoring_record.finding_id,
-            selector_path,
-            scaffold_path,
-            replacement_plan_path,
-            operation_template_path,
-            selected_scaffold_path,
-            selected_plan_path,
-            goal_replay_plan_path,
-        )
-        command_specs = self.command_specs(context)
-        workflow_specs = self.workflow_specs(context)
-        command_payloads = tuple(command.to_dict() for command in command_specs)
-        workflow_payloads = tuple(workflow.to_dict() for workflow in workflow_specs)
-        workflow_readiness = (
-            CodemodAuthoringWorkflowPlanner.from_payloads(
-                command_payloads,
-                workflow_payloads,
-            )
-            .bundle_readiness(
-                self.available_authoring_artifacts(context),
-            )
-            .to_dict()
-        )
-        return {
-            "record_index": record_index,
-            "finding_id": authoring_record.finding_id,
-            "detector_id": authoring_record.detector_id,
-            "status": authoring_record.status.value,
-            "selector_path": selector_path.relative_to(self.output_dir).as_posix(),
-            "replacement_scaffold_path": scaffold_path.relative_to(
-                self.output_dir
-            ).as_posix(),
-            "replacement_plan_path": replacement_plan_path.relative_to(
-                self.output_dir
-            ).as_posix(),
-            "selected_operation_template_path": operation_template_path.relative_to(
-                self.output_dir
-            ).as_posix(),
-            "selected_operation_scaffold_path": selected_scaffold_path.relative_to(
-                self.output_dir
-            ).as_posix(),
-            "selected_operation_plan_path": selected_plan_path.relative_to(
-                self.output_dir
-            ).as_posix(),
-            "goal_replay_plan_path": goal_replay_plan_path.relative_to(
-                self.output_dir
-            ).as_posix(),
-            "commands": command_payloads,
-            "workflows": workflow_payloads,
-            "workflow_action_commands": tuple(
-                command.to_dict()
-                for command in self.workflow_action_command_specs(
-                    record_index,
-                    workflow_specs,
-                )
-            ),
-            "workflow_readiness": workflow_readiness,
-            "authoring_record": authoring_record.to_dict(),
-        }
-
-    def record_dir(self, record_index: int, detector_id: str) -> Path:
-        return self.output_dir / f"{record_index:04d}-{cli_artifact_slug(detector_id)}"
-
-    def authoring_context(
-        self,
-        finding_id: str,
-        evidence_selector_file: Path,
-        replacement_scaffold_file: Path,
-        replacement_plan_file: Path,
-        operation_template_file: Path,
-        selected_operation_scaffold_file: Path,
-        selected_operation_plan_file: Path,
-        goal_replay_plan_file: Path,
-    ) -> CodemodAuthoringBundleCommandContext:
-        return CodemodAuthoringBundleCommandContext(
-            roots=self.roots,
-            evidence_selector_file=evidence_selector_file,
-            replacement_scaffold_file=replacement_scaffold_file,
-            replacement_plan_file=replacement_plan_file,
-            operation_template_file=operation_template_file,
-            selected_operation_scaffold_file=selected_operation_scaffold_file,
-            selected_operation_plan_file=selected_operation_plan_file,
-            goal_replay_plan_file=goal_replay_plan_file,
-            output_dir=self.output_dir,
-            cwd=self.cwd,
-            finding_id=finding_id,
-        )
-
-    def command_specs(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[CodemodCliCommandSpec, ...]:
-        return tuple(
-            template_type().command_spec(context)
-            for template_type in OrderedAuthoringTemplateRegistry(
-                CodemodAuthoringBundleCommandTemplate.__registry__
-            ).template_types()
-        )
-
-    def bundle_control_commands(self) -> JsonObject:
-        return {
-            "status": self.status_command_spec().to_dict(),
-        }
-
-    def status_command_spec(self) -> CodemodCliCommandSpec:
-        return CodemodCliCommandSpec(
-            action_id=CodemodAuthoringBundleControlActionId.AUTHORING_STATUS,
-            args=(
-                "--codemod-authoring-status",
-                self.index_path.as_posix(),
-            ),
-            cwd=self.cwd,
-        )
-
-    def workflow_action_command_specs(
-        self,
-        record_index: int,
-        workflow_specs: tuple[CodemodAuthoringWorkflowSpec, ...],
-    ) -> tuple[CodemodAuthoringWorkflowActionCommandSpec, ...]:
-        return tuple(
-            CodemodAuthoringWorkflowActionCommandSpec(
-                workflow_id=workflow.workflow_id,
-                target_action_id=action_id,
-                action_id=CodemodAuthoringBundleControlActionId.AUTHORING_RUN_ACTION,
-                args=self.workflow_action_command_args(
-                    record_index,
-                    workflow.workflow_id,
-                    action_id,
-                ),
-                cwd=self.cwd,
-            )
-            for workflow in workflow_specs
-            for action_id in workflow.command_action_ids
-        )
-
-    def workflow_action_command_args(
-        self,
-        record_index: int,
-        workflow_id: CodemodAuthoringWorkflowId,
-        target_action_id: CodemodAuthoringCommandActionId,
-    ) -> tuple[str, ...]:
-        return (
-            "--codemod-authoring-run-action",
-            self.index_path.as_posix(),
-            "--codemod-authoring-record-index",
-            str(record_index),
-            "--codemod-authoring-workflow-id",
-            workflow_id.value,
-            "--codemod-authoring-target-action",
-            target_action_id.value,
-        )
-
-    def workflow_specs(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[CodemodAuthoringWorkflowSpec, ...]:
-        return tuple(
-            template_type().workflow_spec(context)
-            for template_type in OrderedAuthoringTemplateRegistry(
-                CodemodAuthoringBundleWorkflowTemplate.__registry__
-            ).template_types()
-        )
-
-    def available_authoring_artifacts(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return tuple(
-            context.bundle_relative_path(path)
-            for path in (
-                context.artifact_path(role) for role in CodemodAuthoringArtifactRole
-            )
-            if path.exists()
-        )
-
-    @staticmethod
-    def selected_operation_plan_template() -> RefactorRecipeOperationPlanTemplate:
-        return RefactorRecipeOperationPlanTemplate.from_operation_templates(
-            (
-                RefactorRecipeOperationTemplate.from_payload(
-                    {
-                        "operation": ReplaceTextOperation.operation_key(),
-                        OLD_SOURCE_PAYLOAD_FIELD: "${target.source}",
-                        NEW_SOURCE_PAYLOAD_FIELD: "${target.source}",
-                    }
-                ),
-            )
-        )
-
-
 @dataclass(frozen=True)
 class CodemodSimulationPayload:
     """JSON-ready metadata for a codemod simulation/apply run."""
@@ -3717,65 +2765,6 @@ class CliEarlyExitCommand(CliCommand, ABC):
         return None
 
 
-class CodemodAuthoringStatusCliCommand(CliEarlyExitCommand):
-    """Recompute authoring bundle workflow readiness."""
-
-    command_id = "codemod_authoring_status"
-
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_authoring_status is not None
-
-    def run(self) -> int:
-        try:
-            payload = (
-                CodemodAuthoringBundleStatusReporter.from_index_path(
-                    self.args.codemod_authoring_status
-                )
-                .status()
-                .to_dict()
-            )
-        except (OSError, json.JSONDecodeError, TypeError) as error:
-            self.parser.error(str(error))
-        print(json.dumps(payload, indent=2))
-        return 0
-
-
-class CodemodAuthoringRunActionCliCommand(CliEarlyExitCommand):
-    """Run a planned command chain from an authoring bundle."""
-
-    command_id = "codemod_authoring_run_action"
-
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_authoring_run_action is not None
-
-    def run(self) -> int:
-        if self.args.codemod_authoring_target_action is None:
-            self.parser.error(
-                "--codemod-authoring-run-action requires "
-                "--codemod-authoring-target-action"
-            )
-        try:
-            report = CodemodAuthoringBundleActionRunner(
-                bundle_index_path=self.args.codemod_authoring_run_action,
-                record_index=self.args.codemod_authoring_record_index,
-                workflow_id=self.args.codemod_authoring_workflow_id,
-                target_action_id=self.args.codemod_authoring_target_action,
-            ).run()
-        except (
-            OSError,
-            json.JSONDecodeError,
-            TypeError,
-            ValueError,
-            IndexError,
-            KeyError,
-        ) as error:
-            self.parser.error(str(error))
-        print(json.dumps(report.to_dict(), indent=2))
-        return report.exit_code
-
-
 class CodemodValidatePlanCliCommand(CliEarlyExitCommand):
     """Validate a supplied codemod DSL plan and emit its normalized form."""
 
@@ -4353,7 +3342,6 @@ class CodemodScanQueryMode:
     selected_operation_template_source_labels: tuple[str, ...]
     synthesis_has_registered_detector: bool
     synthesis_execution_requested: bool
-    synthesis_authoring_requested: bool
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
@@ -4381,10 +3369,6 @@ class CodemodScanQueryMode:
                 or args.codemod_simulate
                 or args.codemod_apply
             ),
-            synthesis_authoring_requested=(
-                args.codemod_synthesis_authoring
-                or args.codemod_authoring_bundle_out is not None
-            ),
         )
 
     @property
@@ -4402,9 +3386,7 @@ class CodemodScanQueryMode:
         if not self.synthesize_plan:
             return True
         return (
-            self.synthesis_execution_requested
-            or self.synthesis_authoring_requested
-            or self.synthesis_has_registered_detector
+            self.synthesis_execution_requested or self.synthesis_has_registered_detector
         )
 
     @property
@@ -4590,15 +3572,6 @@ class CodemodScanQueryCliCommand(
 class CodemodSynthesisExecutionCliCommand(CodemodScanQueryCliCommand, ABC):
     """Shared execution surface for finding-backed synthesis commands."""
 
-    def with_optional_synthesis_authoring(
-        self,
-        payload: JsonObject,
-        plan: FindingRecipePlan,
-    ) -> JsonObject:
-        if not self.args.codemod_synthesis_authoring:
-            return payload
-        return plan.with_authoring_payload(payload)
-
     @property
     def synthesis_execution_requested(self) -> bool:
         return (
@@ -4607,22 +3580,6 @@ class CodemodSynthesisExecutionCliCommand(CodemodScanQueryCliCommand, ABC):
             or self.args.codemod_simulate
             or self.args.codemod_apply
         )
-
-    def write_authoring_bundle_if_requested(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        plan: FindingRecipePlan,
-    ) -> JsonObject | None:
-        output_dir = self.args.codemod_authoring_bundle_out
-        if output_dir is None:
-            return None
-        return CodemodAuthoringBundleWriter(
-            output_dir=output_dir,
-            snapshot=snapshot,
-            plan=plan,
-            roots=self.roots,
-            cwd=Path.cwd(),
-        ).write()
 
     def apply_synthesized_plan(
         self,
@@ -4652,15 +3609,10 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 self.findings,
                 detector_ids=detector_ids,
             )
-            authoring_bundle = None
         else:
             finding_recipe_plan = snapshot.plan_from_findings(
                 self.findings,
                 detector_ids=detector_ids,
-            )
-            authoring_bundle = self.write_authoring_bundle_if_requested(
-                snapshot,
-                finding_recipe_plan,
             )
         write_cli_json_artifact(
             self.args.codemod_plan_out,
@@ -4668,12 +3620,6 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
         )
         if self.args.codemod_preflight:
             payload = finding_recipe_plan.preflight_snapshot(snapshot).to_dict()
-            payload = self.with_optional_synthesis_authoring(
-                payload,
-                finding_recipe_plan,
-            )
-            if authoring_bundle is not None:
-                payload["authoring_bundle"] = authoring_bundle
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
         if self.synthesis_execution_requested:
@@ -4700,24 +3646,12 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
             if projected_findings is not None:
                 payload["projected_findings"] = projected_findings.to_dict()
                 self.write_continuation_plan_if_requested(projected_findings)
-            payload = self.with_optional_synthesis_authoring(
-                payload,
-                finding_recipe_plan,
-            )
-            if authoring_bundle is not None:
-                payload["authoring_bundle"] = authoring_bundle
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
         if self.args.codemod_synthesize_document_only:
             payload = finding_recipe_plan.document.to_dict()
         else:
             payload = finding_recipe_plan.to_dict()
-            payload = self.with_optional_synthesis_authoring(
-                payload,
-                finding_recipe_plan,
-            )
-        if authoring_bundle is not None:
-            payload["authoring_bundle"] = authoring_bundle
         print(json.dumps(payload, indent=2))
         return 0
 
@@ -4729,11 +3663,6 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 "--codemod-synthesize-document-only cannot be combined with "
                 "--codemod-preflight, --codemod-diff, --codemod-simulate, "
                 "or --codemod-apply"
-            )
-        if self.args.codemod_synthesis_authoring:
-            self.parser.error(
-                "--codemod-synthesis-authoring cannot be combined with "
-                "--codemod-synthesize-document-only"
             )
 
 
@@ -4765,10 +3694,6 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 "preflight_report": preflight.preflight_report.to_dict(),
                 "is_clean": preflight.is_clean,
             }
-            payload = self.with_optional_synthesis_authoring(
-                payload,
-                report.finding_plan,
-            )
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
         if self.synthesis_execution_requested:
@@ -4799,15 +3724,9 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
                     projected_findings.class_plan_delta_report(report).to_dict()
                 )
                 self.write_continuation_plan_if_requested(projected_findings)
-            payload = self.with_optional_synthesis_authoring(
-                payload,
-                report.finding_plan,
-            )
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
-        payload = report.to_dict()
-        payload = self.with_optional_synthesis_authoring(payload, report.finding_plan)
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(report.to_dict(), indent=2))
         return 0
 
 
@@ -5225,14 +4144,6 @@ def _main_without_deadline() -> int:
 
     if args.codemod_plan_out is not None and not codemod_plan_output_supported(args):
         parser.error("--codemod-plan-out requires a plan-producing codemod command")
-    if args.codemod_authoring_bundle_out is not None and not (
-        args.codemod_synthesize_plan and args.codemod_synthesis_authoring
-    ):
-        parser.error(
-            "--codemod-authoring-bundle-out requires "
-            "--codemod-synthesize-plan --codemod-synthesis-authoring"
-        )
-
     early_exit_code = CliEarlyExitCommand.run_first(parser, args)
     if early_exit_code is not None:
         return early_exit_code
@@ -5275,8 +4186,6 @@ def _main_without_deadline() -> int:
         or args.codemod_refactor_goal is not None
         or codemod_scan_query_mode.requested
     )
-    if args.codemod_synthesis_authoring and not args.codemod_synthesize_plan:
-        parser.error("--codemod-synthesis-authoring requires --codemod-synthesize-plan")
     if (
         args.codemod_continuation_plan_out is not None
         and not args.codemod_project_findings

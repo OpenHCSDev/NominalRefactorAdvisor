@@ -34,13 +34,11 @@ from nominal_refactor_advisor.analysis import (
 from nominal_refactor_advisor.ast_tools import (
     AccessorWrapperObservationFamily,
     AttributeProbeObservationFamily,
-    BuilderCallShapeFamily,
     BuiltinCallName,
     ClassMarkerObservationFamily,
     ConfigDispatchObservationFamily,
     DualAxisResolutionObservationFamily,
     DynamicMethodInjectionObservationFamily,
-    ExportDictShapeFamily,
     FieldObservationSpec,
     FieldObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
@@ -55,7 +53,6 @@ from nominal_refactor_advisor.ast_tools import (
     ScopedShapeWrapperSpecFamily,
     SentinelTypeObservationFamily,
     StringLiteralDispatchObservationFamily,
-    NumericLiteralDispatchObservationFamily,
     ParsedModule,
     PythonSourcePathPolicy,
     TypedLiteralObservationSpec,
@@ -88,7 +85,6 @@ from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
 from nominal_refactor_advisor.cli import ProofExitCodeAuthority
 from nominal_refactor_advisor.cli import SingleRootModeAuthority
 from nominal_refactor_advisor.cli import analyze_path
-from nominal_refactor_advisor.cli import analyze_paths
 from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
 from nominal_refactor_advisor.cli import load_authority_boundary_plans
 from nominal_refactor_advisor.cli import load_codemod_plan_document
@@ -136,15 +132,13 @@ from nominal_refactor_advisor.codemod import (
     PlannedSourceRewrite,
     RefactorConcept,
     RefactorRecipe,
-    RefactorRecipeOperationCompiler,
     RefactorRecipeOperationTemplate,
     RecipeCallReplacement,
     SelectionCountExpectation,
     SourceRewriteTarget,
     SourceRewriteSimulationPayload,
-    SourceLineReplacement,
     SourceRewriteContributor,
-    SourceOffsetReplacement,
+    SourceTextSpanReplacement,
     SourceTextGeometry,
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
@@ -1447,7 +1441,6 @@ def test_projected_finding_report_omits_compact_global_detectors(
     )
 
     changed_path = tmp_path / "pkg/changed.py"
-    other_path = tmp_path / "pkg/other.py"
     _write_module(
         tmp_path,
         "pkg/changed.py",
@@ -2426,7 +2419,7 @@ def test_synthesis_records_expose_evidence_selectors(tmp_path: Path) -> None:
         detector_ids=("class_level_inheritance_optimization",),
     )
     record = plan.records[0]
-    selector_payload = record.authoring_record().to_dict()["evidence_selector"]
+    selector_payload = record.evidence_selector.to_dict()
 
     assert isinstance(selector_payload, dict)
     selector = CodemodTargetSelector.from_dict(selector_payload)
@@ -2664,7 +2657,6 @@ def test_class_level_inheritance_findings_synthesize_promotion_recipe(
 def test_class_level_inheritance_bridge_rewrites_multiline_class_headers(
     tmp_path: Path,
 ) -> None:
-    module_path = tmp_path / "pkg/mod.py"
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -3300,7 +3292,7 @@ def test_expose_global_candidate_cache_context_operation(
 
 def test_source_text_geometry_coalesces_identical_offset_replacements() -> None:
     geometry = SourceTextGeometry("alpha beta gamma")
-    replacement = SourceOffsetReplacement.from_offsets(
+    replacement = SourceTextSpanReplacement.from_offsets(
         start_offset=6,
         end_offset=10,
         replacement_source="delta",
@@ -3323,12 +3315,12 @@ def test_source_text_geometry_rejects_same_span_replacement_conflict() -> None:
             0,
             geometry.end_offset,
             (
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=6,
                     end_offset=10,
                     replacement_source="delta",
                 ),
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=6,
                     end_offset=10,
                     replacement_source="epsilon",
@@ -3356,12 +3348,12 @@ def test_source_text_geometry_rejects_overlapping_offset_replacements(
             0,
             geometry.end_offset,
             (
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=first_span[0],
                     end_offset=first_span[1],
                     replacement_source="first",
                 ),
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=second_span[0],
                     end_offset=second_span[1],
                     replacement_source="second",
@@ -3384,7 +3376,7 @@ def test_source_text_geometry_rejects_replacements_outside_target_span(
             0,
             10,
             (
-                SourceOffsetReplacement.from_offsets(
+                SourceTextSpanReplacement.from_offsets(
                     start_offset=replacement_span[0],
                     end_offset=replacement_span[1],
                     replacement_source="replacement",
@@ -3459,123 +3451,6 @@ def test_operation_compiler_coalesces_identical_line_replacements(
     assert "candidate_collector = staticmethod(_beta_candidates)" in rewritten
     assert rewritten.count("lambda item: (item.name,)") == 2
     assert "def _candidate_items(" not in rewritten
-
-
-def test_operation_compiler_rejects_conflicting_same_span_replacements() -> None:
-    replacements = (
-        SourceLineReplacement(
-            file_path="pkg/mod.py",
-            start_line=4,
-            end_line=4,
-            replacement_lines=("FIRST = 1\n",),
-        ),
-        SourceLineReplacement(
-            file_path="pkg/mod.py",
-            start_line=4,
-            end_line=4,
-            replacement_lines=("SECOND = 2\n",),
-        ),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="Conflicting replacements target the same source span pkg/mod.py:4-4",
-    ):
-        RefactorRecipeOperationCompiler._coalesced_replacements(replacements)
-
-
-def test_operation_compiler_unions_contributors_for_equivalent_composition() -> None:
-    first_contributor = SourceRewriteContributor(
-        recipe_id="first-recipe",
-        plan_item_declaration="FirstOperation",
-        plan_item_index=0,
-        file_path="pkg/mod.py",
-        line=1,
-        end_line=1,
-        source_hash="first-source-hash",
-    )
-    second_contributor = replace(
-        first_contributor,
-        recipe_id="second-recipe",
-        plan_item_declaration="SecondOperation",
-        source_hash="second-source-hash",
-    )
-    contributor_set = (first_contributor, second_contributor)
-
-    exact = RefactorRecipeOperationCompiler._coalesced_replacements(
-        (
-            SourceLineReplacement(
-                file_path="pkg/mod.py",
-                start_line=4,
-                end_line=4,
-                replacement_lines=("VALUE = 1\n",),
-                contributors=(first_contributor,),
-            ),
-            SourceLineReplacement(
-                file_path="pkg/mod.py",
-                start_line=4,
-                end_line=4,
-                replacement_lines=("VALUE = 1\n",),
-                contributors=(second_contributor,),
-            ),
-        )
-    )
-    import_union = RefactorRecipeOperationCompiler._coalesced_replacements(
-        (
-            SourceLineReplacement(
-                file_path="pkg/mod.py",
-                start_line=1,
-                end_line=0,
-                replacement_lines=("from pkg.types import Alpha\n",),
-                contributors=(first_contributor,),
-            ),
-            SourceLineReplacement(
-                file_path="pkg/mod.py",
-                start_line=1,
-                end_line=0,
-                replacement_lines=("from pkg.types import Beta\n",),
-                contributors=(second_contributor,),
-            ),
-        )
-    )
-    insertion = RefactorRecipeOperationCompiler._coalesced_replacements(
-        (
-            SourceLineReplacement(
-                file_path="pkg/mod.py",
-                start_line=8,
-                end_line=7,
-                replacement_lines=("ALPHA = 1\n",),
-                contributors=(first_contributor,),
-            ),
-            SourceLineReplacement(
-                file_path="pkg/mod.py",
-                start_line=8,
-                end_line=7,
-                replacement_lines=("BETA = 2\n",),
-                contributors=(second_contributor,),
-            ),
-        )
-    )
-
-    assert exact[0].contributors == contributor_set
-    assert import_union[0].contributors == contributor_set
-    assert "Alpha" in "".join(import_union[0].replacement_lines)
-    assert "Beta" in "".join(import_union[0].replacement_lines)
-    assert insertion[0].contributors == contributor_set
-    assert insertion[0].replacement_lines == ("ALPHA = 1\n", "BETA = 2\n")
-
-    with pytest.raises(ValueError, match="resolves to unequal declarations"):
-        RefactorRecipeOperationCompiler._coalesced_replacements(
-            (
-                exact[0],
-                replace(
-                    exact[0],
-                    contributors=(
-                        replace(first_contributor, source_hash="colliding-hash"),
-                    ),
-                ),
-            )
-        )
 
 
 def test_expose_global_candidate_cache_context_collapses_existing_candidate_method(
@@ -13852,35 +13727,6 @@ def test_module_cli_runs_codemod_workflow_plan(
     assert json.loads(replay_plan_path.read_text(encoding="utf-8")) == {"stages": []}
 
 
-def test_module_cli_rejects_authoring_bundle_without_authoring_mode(
-    tmp_path: Path,
-) -> None:
-    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-synthesize-plan",
-            "--codemod-authoring-bundle-out",
-            (tmp_path / "authoring-bundle").as_posix(),
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert (
-        "--codemod-authoring-bundle-out requires "
-        "--codemod-synthesize-plan --codemod-synthesis-authoring"
-    ) in result.stderr
-
-
 def test_module_cli_simulates_codemod_plan_from_stdin(
     tmp_path: Path,
 ) -> None:
@@ -14946,533 +14792,6 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
         operation["operation"] == "delete_module_assignments"
         and operation["assignment_names"] == ["field_names", "method_names"]
         for operation in operations
-    )
-
-
-def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    bundle_dir = tmp_path / "authoring-bundle"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from typing import ClassVar\n\n\n"
-        "class Alpha:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n\n\n"
-        "class Beta:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n",
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-impact-ranking",
-            "--codemod-synthesize-plan",
-            "--codemod-synthesis-authoring",
-            "--codemod-authoring-bundle-out",
-            bundle_dir.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    payload = json.loads(result.stdout)
-    records = payload["synthesis_authoring"]["records"]
-    selector_payload = records[0]["evidence_selector"]
-    bundle_index = json.loads((bundle_dir / "index.json").read_text(encoding="utf-8"))
-    bundle_commands = bundle_index["bundle_commands"]
-    bundle_record = bundle_index["records"][0]
-    bundle_selector = json.loads(
-        (bundle_dir / bundle_record["selector_path"]).read_text(encoding="utf-8")
-    )
-    replacement_plan_path = bundle_dir / bundle_record["replacement_plan_path"]
-    replacement_plan = load_codemod_plan_document(replacement_plan_path)
-    selected_template_path = (
-        bundle_dir / bundle_record["selected_operation_template_path"]
-    )
-    selected_template = json.loads(selected_template_path.read_text(encoding="utf-8"))
-    selected_plan_path = bundle_dir / bundle_record["selected_operation_plan_path"]
-    selected_plan = load_codemod_plan_document(selected_plan_path)
-    commands = {command["action_id"]: command for command in bundle_record["commands"]}
-    workflows = {
-        workflow["workflow_id"]: workflow for workflow in bundle_record["workflows"]
-    }
-    readiness_workflows = {
-        workflow["workflow_id"]: workflow
-        for workflow in bundle_record["workflow_readiness"]["workflows"]
-    }
-    workflow_action_commands = {
-        (
-            command["workflow_id"],
-            command["target_action_id"],
-        ): command
-        for command in bundle_record["workflow_action_commands"]
-    }
-
-    assert result.returncode == 0, result.stderr
-    assert payload["authoring_bundle"] == bundle_index
-    assert bundle_commands["status"]["action_id"] == "authoring_status"
-    assert bundle_commands["status"]["args"] == [
-        "--codemod-authoring-status",
-        (bundle_dir / "index.json").as_posix(),
-    ]
-    assert bundle_commands["status"]["argv"][-2:] == bundle_commands["status"]["args"]
-    assert (
-        records[0]["finding_id"]
-        == payload["synthesis_report"]["records"][0]["finding_id"]
-    )
-    assert selector_payload["selector"] == "finding_evidence_target"
-    assert selector_payload["finding_ids"] == [records[0]["finding_id"]]
-    assert bundle_selector == selector_payload
-    assert bundle_record["authoring_record"] == records[0]
-    assert bundle_record["replacement_plan_path"].endswith("replacement-plan.json")
-    assert bundle_record["selected_operation_template_path"].endswith(
-        "selected-operation-template.json"
-    )
-    assert bundle_record["selected_operation_plan_path"].endswith(
-        "selected-operation-plan.json"
-    )
-    assert bundle_record["goal_replay_plan_path"].endswith("goal-replay-plan.json")
-    assert replacement_plan.has_recipes
-    assert selected_plan.has_recipes
-    assert selected_template["operation_templates"][0]["old_source"] == (
-        "${target.source}"
-    )
-    assert selected_template["operation_templates"][0]["new_source"] == (
-        "${target.source}"
-    )
-    assert set(commands) == {
-        "resolve_selector",
-        "scaffold_replacement_plan",
-        "validate_replacement_plan",
-        "simulate_replacement_plan",
-        "apply_replacement_plan",
-        "scaffold_selected_operation_plan",
-        "preflight_selected_operation_plan",
-        "simulate_selected_operation_plan",
-        "apply_selected_operation_plan",
-        "run_goal_refactor",
-        "simulate_goal_replay_plan",
-        "apply_goal_replay_plan",
-    }
-    assert set(workflows) == {
-        "replacement_plan",
-        "selected_operation_template",
-        "goal_refactor",
-    }
-    assert (
-        workflow_action_commands[("goal_refactor", "simulate_goal_replay_plan")][
-            "action_id"
-        ]
-        == "authoring_run_action"
-    )
-    assert workflow_action_commands[("goal_refactor", "simulate_goal_replay_plan")][
-        "args"
-    ] == [
-        "--codemod-authoring-run-action",
-        (bundle_dir / "index.json").as_posix(),
-        "--codemod-authoring-record-index",
-        "0",
-        "--codemod-authoring-workflow-id",
-        "goal_refactor",
-        "--codemod-authoring-target-action",
-        "simulate_goal_replay_plan",
-    ]
-    assert set(workflows["replacement_plan"]["command_action_ids"]) <= set(commands)
-    assert set(workflows["selected_operation_template"]["command_action_ids"]) <= set(
-        commands
-    )
-    assert set(workflows["goal_refactor"]["command_action_ids"]) <= set(commands)
-    assert workflows["replacement_plan"]["editable_artifacts"] == [
-        bundle_record["replacement_plan_path"]
-    ]
-    assert workflows["replacement_plan"]["editable_artifact_roles"] == [
-        "replacement_plan"
-    ]
-    assert workflows["replacement_plan"]["default_next_action_id"] == (
-        "simulate_replacement_plan"
-    )
-    assert workflows["selected_operation_template"]["editable_artifacts"] == [
-        bundle_record["selected_operation_template_path"]
-    ]
-    assert workflows["selected_operation_template"]["editable_artifact_roles"] == [
-        "selected_operation_template"
-    ]
-    assert workflows["selected_operation_template"]["generated_artifacts"] == [
-        bundle_record["selected_operation_plan_path"]
-    ]
-    assert workflows["selected_operation_template"]["generated_artifact_roles"] == [
-        "selected_operation_plan"
-    ]
-    assert workflows["selected_operation_template"]["default_next_action_id"] == (
-        "simulate_selected_operation_plan"
-    )
-    assert workflows["goal_refactor"]["generated_artifacts"] == [
-        bundle_record["goal_replay_plan_path"]
-    ]
-    assert workflows["goal_refactor"]["generated_artifact_roles"] == [
-        "goal_replay_plan"
-    ]
-    assert workflows["goal_refactor"]["default_next_action_id"] == "run_goal_refactor"
-    assert bundle_record["goal_replay_plan_path"] not in (
-        bundle_record["workflow_readiness"]["available_artifacts"]
-    )
-    goal_readiness = readiness_workflows["goal_refactor"]
-    goal_command_readiness = {
-        readiness["action_id"]: readiness
-        for readiness in goal_readiness["command_readiness"]
-    }
-    goal_action_plans = {
-        plan["target_action_id"]: plan for plan in goal_readiness["action_plans"]
-    }
-    assert goal_readiness["next_action_id"] == "run_goal_refactor"
-    assert goal_command_readiness["run_goal_refactor"]["runnable"] is True
-    assert goal_command_readiness["simulate_goal_replay_plan"]["runnable"] is False
-    assert goal_command_readiness["simulate_goal_replay_plan"]["missing_artifacts"] == [
-        bundle_record["goal_replay_plan_path"]
-    ]
-    assert goal_action_plans["simulate_goal_replay_plan"]["action_ids"] == [
-        "run_goal_refactor",
-        "simulate_goal_replay_plan",
-    ]
-    assert goal_action_plans["apply_goal_replay_plan"]["action_ids"] == [
-        "run_goal_refactor",
-        "apply_goal_replay_plan",
-    ]
-    assert goal_action_plans["apply_goal_replay_plan"]["blocked"] is False
-    assert commands["simulate_replacement_plan"]["args"][0] == tmp_path.as_posix()
-    assert commands["simulate_replacement_plan"]["args"][-2:] == [
-        replacement_plan_path.as_posix(),
-        "--codemod-simulate",
-    ]
-    assert commands["scaffold_selected_operation_plan"]["args"][-2:] == [
-        "--codemod-plan-out",
-        selected_plan_path.as_posix(),
-    ]
-    assert commands["run_goal_refactor"]["args"][:3] == [
-        tmp_path.as_posix(),
-        "--codemod-refactor-goal",
-        "semantic_carrier_extraction",
-    ]
-    assert (
-        commands["run_goal_refactor"]["args"][
-            commands["run_goal_refactor"]["args"].index("--codemod-goal-finding-id") + 1
-        ]
-        == records[0]["finding_id"]
-    )
-    assert (
-        commands["run_goal_refactor"]["args"][
-            commands["run_goal_refactor"]["args"].index("--codemod-goal-plan-out") + 1
-        ]
-        == (bundle_dir / bundle_record["goal_replay_plan_path"]).as_posix()
-    )
-    assert commands["run_goal_refactor"]["args"][-1] == "--json"
-    assert commands["run_goal_refactor"]["required_artifact_roles"] == []
-    assert commands["run_goal_refactor"]["required_artifacts"] == []
-    assert commands["run_goal_refactor"]["generated_artifact_roles"] == [
-        "goal_replay_plan"
-    ]
-    assert commands["run_goal_refactor"]["generated_artifacts"] == [
-        bundle_record["goal_replay_plan_path"]
-    ]
-    assert commands["simulate_goal_replay_plan"]["required_artifact_roles"] == [
-        "goal_replay_plan"
-    ]
-    assert commands["simulate_goal_replay_plan"]["required_artifacts"] == [
-        bundle_record["goal_replay_plan_path"]
-    ]
-    assert commands["scaffold_selected_operation_plan"]["required_artifact_roles"] == [
-        "evidence_selector",
-        "selected_operation_template",
-    ]
-    assert commands["scaffold_selected_operation_plan"]["required_artifacts"] == [
-        bundle_record["selector_path"],
-        bundle_record["selected_operation_template_path"],
-    ]
-    assert commands["scaffold_selected_operation_plan"]["generated_artifact_roles"] == [
-        "selected_operation_plan",
-    ]
-    assert commands["scaffold_selected_operation_plan"]["generated_artifacts"] == [
-        bundle_record["selected_operation_plan_path"]
-    ]
-
-    validate_command = commands["validate_replacement_plan"]
-    validate_result = subprocess.run(
-        validate_command["argv"],
-        cwd=validate_command["cwd"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert validate_result.returncode == 0, validate_result.stderr
-
-    preflight_command = commands["preflight_selected_operation_plan"]
-    preflight_result = subprocess.run(
-        preflight_command["argv"],
-        cwd=preflight_command["cwd"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    preflight_payload = json.loads(preflight_result.stdout)
-
-    assert preflight_result.returncode == 0, preflight_result.stderr
-    assert preflight_payload["preflight_failed"] is False
-
-
-def test_authoring_bundle_goal_refactor_command_generates_replay_plan(
-    tmp_path: Path,
-) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    bundle_dir = tmp_path / "authoring-bundle"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from nominal_refactor_advisor.record_algebra import (\n"
-        "    materialize_product_record,\n"
-        "    product_record_spec,\n"
-        ")\n\n\n"
-        "class SemanticRecord:\n"
-        "    pass\n\n\n"
-        "materialize_product_record(\n"
-        "    product_record_spec(\n"
-        '        "GeneratedRecord",\n'
-        '        "path: str",\n'
-        '        "SemanticRecord",\n'
-        "    )\n"
-        ")\n",
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-impact-ranking",
-            "--codemod-synthesize-plan",
-            "--codemod-synthesis-authoring",
-            "--codemod-authoring-bundle-out",
-            bundle_dir.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    payload = json.loads(result.stdout)
-    bundle_record = payload["authoring_bundle"]["records"][0]
-    commands = {command["action_id"]: command for command in bundle_record["commands"]}
-    workflow_action_commands = {
-        (
-            command["workflow_id"],
-            command["target_action_id"],
-        ): command
-        for command in bundle_record["workflow_action_commands"]
-    }
-    goal_replay_plan_path = bundle_dir / bundle_record["goal_replay_plan_path"]
-
-    assert result.returncode == 0, result.stderr
-    assert goal_replay_plan_path.exists() is False
-    assert commands["run_goal_refactor"]["generated_artifacts"] == [
-        bundle_record["goal_replay_plan_path"]
-    ]
-    assert commands["simulate_goal_replay_plan"]["required_artifacts"] == [
-        bundle_record["goal_replay_plan_path"]
-    ]
-
-    initial_status_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-authoring-status",
-            (bundle_dir / "index.json").as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    initial_status_payload = json.loads(initial_status_result.stdout)
-    initial_goal_readiness = {
-        workflow["workflow_id"]: workflow
-        for workflow in initial_status_payload["records"][0]["workflow_readiness"][
-            "workflows"
-        ]
-    }["goal_refactor"]
-    initial_goal_commands = {
-        readiness["action_id"]: readiness
-        for readiness in initial_goal_readiness["command_readiness"]
-    }
-
-    assert initial_status_result.returncode == 0, initial_status_result.stderr
-    assert bundle_record["goal_replay_plan_path"] not in (
-        initial_status_payload["records"][0]["workflow_readiness"][
-            "available_artifacts"
-        ]
-    )
-    assert initial_goal_readiness["next_action_id"] == "run_goal_refactor"
-    assert initial_goal_commands["simulate_goal_replay_plan"]["runnable"] is False
-
-    run_action_result = subprocess.run(
-        workflow_action_commands[("goal_refactor", "simulate_goal_replay_plan")][
-            "argv"
-        ],
-        cwd=workflow_action_commands[("goal_refactor", "simulate_goal_replay_plan")][
-            "cwd"
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    run_action_payload = json.loads(run_action_result.stdout)
-    run_goal_payload = run_action_payload["command_runs"][0]["stdout_json"]
-    simulate_payload = run_action_payload["command_runs"][1]["stdout_json"]
-    replay_payload = json.loads(goal_replay_plan_path.read_text(encoding="utf-8"))
-    replay_sequence = load_codemod_plan_sequence(goal_replay_plan_path)
-
-    assert run_action_result.returncode == 0, run_action_result.stderr
-    assert run_action_payload["completed"] is True
-    assert run_action_payload["action_plan"]["action_ids"] == [
-        "run_goal_refactor",
-        "simulate_goal_replay_plan",
-    ]
-    assert [
-        command_run["action_id"] for command_run in run_action_payload["command_runs"]
-    ] == [
-        "run_goal_refactor",
-        "simulate_goal_replay_plan",
-    ]
-    assert run_goal_payload["completed"] is True
-    assert run_goal_payload["achieved"] is True
-    assert run_goal_payload["replay_sequence"] == replay_payload
-    assert replay_sequence.has_recipes
-    assert simulate_payload["applied"] is False
-    assert simulate_payload["parse_valid"] is True
-    assert "+class GeneratedRecord(SemanticRecord):" in simulate_payload["unified_diff"]
-
-    refreshed_status_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-authoring-status",
-            (bundle_dir / "index.json").as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    refreshed_status_payload = json.loads(refreshed_status_result.stdout)
-    refreshed_goal_readiness = {
-        workflow["workflow_id"]: workflow
-        for workflow in refreshed_status_payload["records"][0]["workflow_readiness"][
-            "workflows"
-        ]
-    }["goal_refactor"]
-    refreshed_goal_commands = {
-        readiness["action_id"]: readiness
-        for readiness in refreshed_goal_readiness["command_readiness"]
-    }
-
-    assert refreshed_status_result.returncode == 0, refreshed_status_result.stderr
-    assert bundle_record["goal_replay_plan_path"] in (
-        refreshed_status_payload["records"][0]["workflow_readiness"][
-            "available_artifacts"
-        ]
-    )
-    assert refreshed_goal_commands["simulate_goal_replay_plan"]["runnable"] is True
-    assert refreshed_goal_commands["apply_goal_replay_plan"]["runnable"] is True
-
-
-def test_codemod_authoring_workflow_planner_chains_generated_artifacts() -> None:
-    from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
-
-    planner = CodemodAuthoringWorkflowPlanner.from_payloads(
-        command_payloads=(
-            {
-                "action_id": "write_plan",
-                "required_artifacts": ("selector",),
-                "generated_artifacts": ("plan",),
-            },
-            {
-                "action_id": "apply_plan",
-                "required_artifacts": ("plan",),
-                "generated_artifacts": (),
-            },
-        ),
-        workflow_payloads=(
-            {
-                "workflow_id": "nominal_boundary",
-                "command_action_ids": ("write_plan", "apply_plan"),
-                "default_next_action_id": "apply_plan",
-            },
-        ),
-    )
-    payload = planner.bundle_readiness(("selector",)).to_dict()
-    workflow = payload["workflows"][0]
-    command_readiness = {
-        readiness["action_id"]: readiness for readiness in workflow["command_readiness"]
-    }
-    action_plans = {plan["target_action_id"]: plan for plan in workflow["action_plans"]}
-
-    assert workflow["next_action_id"] == "write_plan"
-    assert command_readiness["write_plan"]["runnable"] is True
-    assert command_readiness["apply_plan"]["runnable"] is False
-    assert command_readiness["apply_plan"]["missing_artifacts"] == ("plan",)
-    assert action_plans["apply_plan"]["blocked"] is False
-    assert action_plans["apply_plan"]["action_ids"] == ("write_plan", "apply_plan")
-
-
-def test_codemod_authoring_workflow_planner_tries_alternate_generators() -> None:
-    from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
-
-    planner = CodemodAuthoringWorkflowPlanner.from_payloads(
-        command_payloads=(
-            {
-                "action_id": "write_plan_from_missing_context",
-                "required_artifacts": ("missing_context",),
-                "generated_artifacts": ("plan",),
-            },
-            {
-                "action_id": "write_plan_from_selector",
-                "required_artifacts": ("selector",),
-                "generated_artifacts": ("plan",),
-            },
-            {
-                "action_id": "apply_plan",
-                "required_artifacts": ("plan",),
-                "generated_artifacts": (),
-            },
-        ),
-        workflow_payloads=(
-            {
-                "workflow_id": "nominal_boundary",
-                "command_action_ids": (
-                    "write_plan_from_missing_context",
-                    "write_plan_from_selector",
-                    "apply_plan",
-                ),
-                "default_next_action_id": "apply_plan",
-            },
-        ),
-    )
-
-    action_plan = planner.plan_to_action("apply_plan", ("selector",)).to_dict()
-
-    assert action_plan["blocked"] is False
-    assert action_plan["missing_artifacts"] == ()
-    assert action_plan["action_ids"] == (
-        "write_plan_from_selector",
-        "apply_plan",
     )
 
 
@@ -19311,31 +18630,6 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
 def test_codemod_workflow_types_are_public_package_exports() -> None:
     import nominal_refactor_advisor as nra
 
-    from nominal_refactor_advisor import CodemodAuthoringActionRunReport
-    from nominal_refactor_advisor import CodemodAuthoringActionRunRequest
-    from nominal_refactor_advisor import CodemodAuthoringActionPlan
-    from nominal_refactor_advisor import CodemodAuthoringArtifactInventory
-    from nominal_refactor_advisor import CodemodAuthoringArtifactRole
-    from nominal_refactor_advisor import CodemodAuthoringBundleActionRunner
-    from nominal_refactor_advisor import CodemodAuthoringBundleReadiness
-    from nominal_refactor_advisor import CodemodAuthoringBundleRecordStatus
-    from nominal_refactor_advisor import CodemodAuthoringBundleStatus
-    from nominal_refactor_advisor import CodemodAuthoringBundleStatusReporter
-    from nominal_refactor_advisor import CodemodAuthoringCommandActionId
-    from nominal_refactor_advisor import CodemodAuthoringCommandInvocation
-    from nominal_refactor_advisor import CodemodAuthoringCommandModel
-    from nominal_refactor_advisor import CodemodAuthoringCommandReadiness
-    from nominal_refactor_advisor import CodemodAuthoringCommandRun
-    from nominal_refactor_advisor import CodemodAuthoringPayloadModel
-    from nominal_refactor_advisor import CodemodAuthoringPayloadReader
-    from nominal_refactor_advisor import CodemodAuthoringRecordReference
-    from nominal_refactor_advisor import CodemodAuthoringTargetAction
-    from nominal_refactor_advisor import CodemodAuthoringWorkflowActionCommandSpec
-    from nominal_refactor_advisor import CodemodAuthoringWorkflowId
-    from nominal_refactor_advisor import CodemodAuthoringWorkflowModel
-    from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
-    from nominal_refactor_advisor import CodemodAuthoringWorkflowReadiness
-    from nominal_refactor_advisor import CodemodCliCommandSpec
     from nominal_refactor_advisor import CodemodClassPlanProjectedDelta
     from nominal_refactor_advisor import CodemodClassPlanProjectedDeltaReport
     from nominal_refactor_advisor import CodemodClassPlanSiteProjectedDelta
@@ -19389,59 +18683,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import TupleDictReturnNominalizationGoalTargetPolicy
 
     assert CodemodPlanJsonParser().recipes({}) == ()
-    assert CodemodAuthoringActionRunReport.__name__ == "CodemodAuthoringActionRunReport"
-    assert (
-        CodemodAuthoringActionRunRequest.__name__ == "CodemodAuthoringActionRunRequest"
-    )
-    assert CodemodAuthoringActionPlan.__name__ == "CodemodAuthoringActionPlan"
-    assert (
-        CodemodAuthoringArtifactInventory.__name__
-        == "CodemodAuthoringArtifactInventory"
-    )
-    assert CodemodAuthoringArtifactRole.__name__ == "CodemodAuthoringArtifactRole"
-    assert (
-        CodemodAuthoringBundleActionRunner.__name__
-        == "CodemodAuthoringBundleActionRunner"
-    )
-    assert CodemodAuthoringBundleReadiness.__name__ == "CodemodAuthoringBundleReadiness"
-    assert (
-        CodemodAuthoringBundleRecordStatus.__name__
-        == "CodemodAuthoringBundleRecordStatus"
-    )
-    assert CodemodAuthoringBundleStatus.__name__ == "CodemodAuthoringBundleStatus"
-    assert (
-        CodemodAuthoringBundleStatusReporter.__name__
-        == "CodemodAuthoringBundleStatusReporter"
-    )
-    assert CodemodAuthoringCommandActionId.__name__ == "CodemodAuthoringCommandActionId"
-    assert CodemodAuthoringCommandModel.__name__ == "CodemodAuthoringCommandModel"
-    assert (
-        CodemodAuthoringCommandInvocation.__name__
-        == "CodemodAuthoringCommandInvocation"
-    )
-    assert CodemodAuthoringCommandRun.__name__ == "CodemodAuthoringCommandRun"
-    assert (
-        CodemodAuthoringCommandReadiness.__name__ == "CodemodAuthoringCommandReadiness"
-    )
-    assert CodemodAuthoringPayloadModel.__name__ == "CodemodAuthoringPayloadModel"
-    assert CodemodAuthoringPayloadReader.__name__ == "CodemodAuthoringPayloadReader"
-    assert CodemodAuthoringRecordReference.__name__ == "CodemodAuthoringRecordReference"
-    assert CodemodAuthoringTargetAction.__name__ == "CodemodAuthoringTargetAction"
-    assert (
-        CodemodAuthoringWorkflowActionCommandSpec.__name__
-        == "CodemodAuthoringWorkflowActionCommandSpec"
-    )
-    assert CodemodAuthoringWorkflowId.__name__ == "CodemodAuthoringWorkflowId"
-    assert CodemodAuthoringWorkflowModel.__name__ == "CodemodAuthoringWorkflowModel"
-    assert CodemodAuthoringWorkflowPlanner.__name__ == (
-        "CodemodAuthoringWorkflowPlanner"
-    )
-    assert (
-        CodemodAuthoringWorkflowReadiness.__name__
-        == "CodemodAuthoringWorkflowReadiness"
-    )
-    assert CodemodCliCommandSpec.__name__ == "CodemodCliCommandSpec"
-
     delta = CodemodFindingDelta(
         before_finding_ids=("a", "b"),
         after_finding_ids=("b", "c"),
