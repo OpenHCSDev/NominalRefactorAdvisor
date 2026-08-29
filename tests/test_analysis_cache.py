@@ -4924,7 +4924,7 @@ def test_compact_class_index_detectors_match_full_ast_detection(
         ]
 
 
-def test_compact_keyed_axis_projection_matches_legacy_ast_candidates(
+def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -4993,52 +4993,82 @@ def test_compact_keyed_axis_projection_matches_legacy_ast_candidates(
             modules
         )
     )
-
-    legacy_family_specs = (
-        systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules)
+    config = DetectorConfig()
+    context = systemic_detectors.CompactClassRepositoryContext.from_projections(
+        projections,
+        config,
     )
-    compact_family_specs = systemic_detectors._compact_keyed_family_axis_specs(
+    family_specs = systemic_detectors._compact_keyed_family_axis_specs_from_context(
+        context
+    )
+    table_specs = systemic_detectors._compact_keyed_table_axis_specs(
         projections
     )
-    legacy_table_specs = tuple(
-        table_spec
-        for module in modules
-        for table_spec in systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(
-            module
-        )
-    )
-    compact_table_specs = systemic_detectors._compact_keyed_table_axis_specs(
-        projections
-    )
-    legacy_manual_selector_specs = systemic_detectors._manual_selector_axis_specs(
-        modules
-    )
-    compact_manual_selector_specs = (
+    manual_selector_specs = (
         systemic_detectors._compact_manual_selector_axis_specs(projections)
     )
-
-    assert compact_family_specs == legacy_family_specs
-    assert compact_table_specs == legacy_table_specs
-    assert compact_manual_selector_specs == legacy_manual_selector_specs
-    assert systemic_detectors._parallel_keyed_axis_family_candidates_from_specs(
-        compact_family_specs
-    ) == systemic_detectors._parallel_keyed_axis_family_candidates(modules)
-    assert systemic_detectors._parallel_keyed_table_and_family_candidates_from_specs(
-        compact_family_specs,
-        compact_table_specs,
-    ) == systemic_detectors._parallel_keyed_table_and_family_candidates(modules)
-    assert systemic_detectors._parallel_keyed_table_axis_candidates_from_specs(
-        compact_table_specs
-    ) == systemic_detectors._parallel_keyed_table_axis_candidates(modules)
-    assert systemic_detectors._residual_closed_axis_branching_candidates_from_compact_projections(
-        projections
-    ) == systemic_detectors._residual_closed_axis_branching_candidates(
-        modules
+    detectors_and_candidates = (
+        (
+            systemic_detectors.ParallelKeyedAxisFamilyDetector(),
+            systemic_detectors._parallel_keyed_axis_family_candidates_from_specs(
+                family_specs
+            ),
+        ),
+        (
+            systemic_detectors.ParallelKeyedTableAndFamilyDetector(),
+            systemic_detectors._parallel_keyed_table_and_family_candidates_from_specs(
+                family_specs,
+                table_specs,
+            ),
+        ),
+        (
+            systemic_detectors.ParallelKeyedTableAxisDetector(),
+            systemic_detectors._parallel_keyed_table_axis_candidates_from_specs(
+                table_specs
+            ),
+        ),
+        (
+            systemic_detectors.ResidualClosedAxisBranchingDetector(),
+            systemic_detectors._residual_closed_axis_branching_candidates_from_compact_specs(
+                projections,
+                family_specs,
+            ),
+        ),
+        (
+            systemic_detectors.CrossModuleAxisShadowFamilyDetector(),
+            systemic_detectors._cross_module_axis_shadow_family_candidates_from_specs(
+                family_specs,
+                manual_selector_specs,
+            ),
+        ),
     )
-    assert systemic_detectors._cross_module_axis_shadow_family_candidates_from_specs(
-        compact_family_specs,
-        compact_manual_selector_specs,
-    ) == systemic_detectors._cross_module_axis_shadow_family_candidates(modules)
+
+    assert family_specs
+    assert table_specs
+    assert manual_selector_specs
+    assert detectors_and_candidates[0][1]
+    for detector, candidates in detectors_and_candidates:
+        assert detector._candidate_items(list(modules), config) == candidates
+        assert "candidate_collector" not in type(detector).__dict__
+    for removed_name in (
+        "_compact_keyed_family_axis_specs",
+        "_parallel_keyed_axis_family_candidates",
+        "_parallel_keyed_table_and_family_candidates",
+        "_parallel_keyed_table_axis_candidates",
+        "_residual_closed_axis_branching_candidates",
+        "_residual_closed_axis_branching_candidates_from_compact_projections",
+        "_cross_module_axis_shadow_family_candidates",
+        "_manual_selector_axis_specs",
+    ):
+        assert not hasattr(systemic_detectors, removed_name)
+    assert not hasattr(
+        systemic_detectors.DispatchAlgebraAuthority,
+        "keyed_family_axis_specs",
+    )
+    assert not hasattr(
+        systemic_detectors.DispatchAlgebraAuthority,
+        "module_keyed_table_axis_specs",
+    )
 
 
 def test_compact_top_level_definitions_preserve_private_helper_shadow_semantics(

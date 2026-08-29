@@ -4272,58 +4272,6 @@ class DispatchAlgebraAuthority:
             return None
         return (value, trimmed[0].lineno)
 
-    def keyed_family_axis_specs(
-        self, modules: Sequence[ParsedModule]
-    ) -> tuple[_KeyedFamilyAxisSpec, ...]:
-        class_index = build_class_family_index(list(modules))
-        specs: list[_KeyedFamilyAxisSpec] = []
-        for indexed_class in sorted(
-            class_index.classes_by_symbol.values(), key=lambda item: item.symbol
-        ):
-            node = indexed_class.node
-            key_type_name = SYNTAX_PROJECTION_AUTHORITY.keyed_family_key_type_name(node)
-            if key_type_name is None:
-                continue
-            registry_key_attr_name = _constant_string(
-                CLASS_NODE_AUTHORITY.direct_assignments(node).get("registry_key_attr")
-            )
-            if registry_key_attr_name is None:
-                continue
-            case_names = sorted_tuple(
-                {
-                    ast.unparse(assignment)
-                    for descendant in CLASS_INDEX_PROJECTION.descendant_classes(
-                        class_index, indexed_class.symbol
-                    )
-                    if (
-                        assignment := CLASS_NODE_AUTHORITY.direct_assignments(
-                            descendant.node
-                        ).get(registry_key_attr_name)
-                    )
-                    is not None
-                }
-            )
-            if len(case_names) < 2:
-                continue
-            specs.append(
-                _KeyedFamilyAxisSpec(
-                    file_path=indexed_class.file_path,
-                    line=indexed_class.line,
-                    family_name=CLASS_INDEX_PROJECTION.display_name(
-                        indexed_class, class_index
-                    ),
-                    key_type_name=key_type_name,
-                    family_label=_constant_string(
-                        CLASS_NODE_AUTHORITY.direct_assignments(node).get(
-                            "family_label"
-                        )
-                    ),
-                    registry_key_attr_name=registry_key_attr_name,
-                    case_names=case_names,
-                )
-            )
-        return tuple(specs)
-
     def case_overlap_ratio(
         self,
         left_case_names: tuple[str, ...],
@@ -4335,44 +4283,6 @@ class DispatchAlgebraAuthority:
         return shared_case_count / float(
             min(len(left_case_names), len(right_case_names))
         )
-
-    def module_keyed_table_axis_specs(
-        self, module: ParsedModule
-    ) -> tuple[_KeyedTableAxisSpec, ...]:
-        specs: list[_KeyedTableAxisSpec] = []
-        for table_name, (line, mapping) in sorted(
-            _module_level_named_dicts(module).items()
-        ):
-            if len(mapping.keys) < 2 or any((key is None for key in mapping.keys)):
-                continue
-            case_names = tuple(
-                ast.unparse(key) for key in mapping.keys if key is not None
-            )
-            key_type_name = _enum_family_name(case_names)
-            if key_type_name is None:
-                continue
-            value_shape_name: str | None = None
-            all_values_are_calls = all(
-                isinstance(value, ast.Call) for value in mapping.values
-            )
-            value_constructor_names = {
-                ast.unparse(value.func)
-                for value in mapping.values
-                if isinstance(value, ast.Call)
-            }
-            if all_values_are_calls and len(value_constructor_names) == 1:
-                value_shape_name = next(iter(value_constructor_names))
-            specs.append(
-                _KeyedTableAxisSpec(
-                    file_path=str(module.path),
-                    line=line,
-                    table_name=table_name,
-                    key_type_name=key_type_name,
-                    case_names=sorted_tuple(case_names),
-                    value_shape_name=value_shape_name,
-                )
-            )
-        return tuple(specs)
 
     def derivable_registry_key_suffix(
         self,
@@ -7262,14 +7172,6 @@ def _compact_constant_string(expression: str | None) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _compact_keyed_family_axis_specs(
-    projections: tuple[CompactModuleClassProjection, ...],
-) -> tuple[_KeyedFamilyAxisSpec, ...]:
-    return _compact_keyed_family_axis_specs_from_index(
-        build_compact_class_family_index(projections)
-    )
-
-
 def _compact_keyed_family_axis_specs_from_index(
     class_index: CompactClassFamilyIndex,
 ) -> tuple[_KeyedFamilyAxisSpec, ...]:
@@ -7487,21 +7389,6 @@ def _enum_keyed_table_class_axis_shadow_candidates(
     )
 
 
-def _parallel_keyed_table_and_family_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
-    return _parallel_keyed_table_and_family_candidates_from_specs(
-        DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules),
-        tuple(
-            table_spec
-            for module in modules
-            for table_spec in DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(
-                module
-            )
-        ),
-    )
-
-
 def _parallel_keyed_table_and_family_candidates_from_specs(
     family_specs: Sequence[_KeyedFamilyAxisSpec],
     table_specs: Sequence[_KeyedTableAxisSpec],
@@ -7562,20 +7449,6 @@ def _parallel_keyed_table_and_family_candidates_from_specs(
             item.table_name,
             item.family_name,
         ),
-    )
-
-
-def _parallel_keyed_table_axis_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[ParallelKeyedTableAxisCandidate, ...]:
-    return _parallel_keyed_table_axis_candidates_from_specs(
-        tuple(
-            table_spec
-            for module in modules
-            for table_spec in DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(
-                module
-            )
-        )
     )
 
 
@@ -7643,14 +7516,6 @@ def _parallel_keyed_table_axis_candidates_from_specs(
             item.right.file_path,
             item.right.table_name,
         ),
-    )
-
-
-def _parallel_keyed_axis_family_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[ParallelKeyedAxisFamilyCandidate, ...]:
-    return _parallel_keyed_axis_family_candidates_from_specs(
-        DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules)
     )
 
 
@@ -7724,39 +7589,6 @@ def _parallel_keyed_axis_family_candidates_from_specs(
     )
 
 
-def _manual_selector_axis_specs(
-    modules: Sequence[ParsedModule],
-) -> tuple[_ManualSelectorAxisSpec, ...]:
-    specs: list[_ManualSelectorAxisSpec] = []
-    for module in modules:
-        for selector_spec in SUPPORT_PROJECTION_AUTHORITY.strategy_selector_specs(
-            module
-        ):
-            key_type_name = _enum_family_name(selector_spec.case_names)
-            if key_type_name is None:
-                continue
-            specs.append(
-                _ManualSelectorAxisSpec(
-                    file_path=str(module.path),
-                    line=selector_spec.line,
-                    family_name=selector_spec.root_name,
-                    selector_method_name=selector_spec.selector_method_name,
-                    key_type_name=key_type_name,
-                    case_names=selector_spec.case_names,
-                )
-            )
-    return tuple(specs)
-
-
-def _cross_module_axis_shadow_family_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[CrossModuleAxisShadowFamilyCandidate, ...]:
-    return _cross_module_axis_shadow_family_candidates_from_specs(
-        DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules),
-        _manual_selector_axis_specs(modules),
-    )
-
-
 def _cross_module_axis_shadow_family_candidates_from_specs(
     authoritative_specs: Sequence[_KeyedFamilyAxisSpec],
     shadow_specs: Sequence[_ManualSelectorAxisSpec],
@@ -7809,138 +7641,11 @@ def _cross_module_axis_shadow_family_candidates_from_specs(
     )
 
 
-def _closed_axis_branch_refs_for_function(
-    function: NamedFunctionNode,
-    *,
-    key_type_names: frozenset[str],
-) -> tuple[Counter[str], dict[str, set[str]]]:
-    branch_site_count: Counter[str] = Counter()
-    case_names_by_key: dict[str, set[str]] = defaultdict(set)
-    for subnode in SYNTAX_PROJECTION_AUTHORITY.non_nested_subnodes(function.body):
-        if isinstance(subnode, ast.If):
-            refs = SYNTAX_PROJECTION_AUTHORITY.enum_member_refs_for_known_key_types(
-                subnode.test, key_type_names=key_type_names
-            )
-            for key_type_name, case_names in refs.items():
-                branch_site_count[key_type_name] += 1
-                case_names_by_key[key_type_name].update(case_names)
-            continue
-        if isinstance(subnode, ast.Match):
-            refs_by_key: dict[str, set[str]] = defaultdict(set)
-            for case in subnode.cases:
-                pattern_refs = (
-                    SYNTAX_PROJECTION_AUTHORITY.enum_member_refs_for_known_key_types(
-                        case.pattern, key_type_names=key_type_names
-                    )
-                )
-                for key_type_name, case_names in pattern_refs.items():
-                    refs_by_key[key_type_name].update(case_names)
-                if case.guard is not None:
-                    guard_refs = SYNTAX_PROJECTION_AUTHORITY.enum_member_refs_for_known_key_types(
-                        case.guard, key_type_names=key_type_names
-                    )
-                    for key_type_name, case_names in guard_refs.items():
-                        refs_by_key[key_type_name].update(case_names)
-            for key_type_name, case_names in refs_by_key.items():
-                branch_site_count[key_type_name] += 1
-                case_names_by_key[key_type_name].update(case_names)
-    return branch_site_count, case_names_by_key
-
-
 @dataclass(frozen=True)
 class ResidualClosedAxisBranchingIdentity:
     file_path: str
     qualname: str
     key_type_name: str
-
-
-def _residual_closed_axis_branching_candidates_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-    authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey,
-    key_type_names: frozenset[str],
-    seen: set[ResidualClosedAxisBranchingIdentity],
-) -> Iterable[ResidualClosedAxisBranchingCandidate]:
-    file_path = str(module.path)
-    branch_site_count, case_names_by_key = _closed_axis_branch_refs_for_function(
-        function, key_type_names=key_type_names
-    )
-    for key_type_name, branch_count in sorted(branch_site_count.items()):
-        if branch_count <= 0:
-            continue
-        specs = authoritative_specs_by_key.get(key_type_name, ())
-        if not specs:
-            continue
-        if any((spec.file_path == file_path for spec in specs)):
-            continue
-        authoritative_case_names = {
-            case_name for spec in specs for case_name in spec.case_names
-        }
-        shared_case_names = sorted_tuple(
-            case_names_by_key[key_type_name] & authoritative_case_names
-        )
-        if not shared_case_names:
-            continue
-        identity = ResidualClosedAxisBranchingIdentity(
-            file_path=file_path,
-            qualname=qualname,
-            key_type_name=key_type_name,
-        )
-        if identity in seen:
-            continue
-        seen.add(identity)
-        authoritative_families = sorted_tuple(
-            ((spec.family_name, spec.file_path, spec.line) for spec in specs)
-        )
-        yield ResidualClosedAxisBranchingCandidate(
-            key_type_name=key_type_name,
-            file_path=file_path,
-            line=function.lineno,
-            qualname=qualname,
-            branch_site_count=branch_count,
-            case_names=shared_case_names,
-            authoritative_families=authoritative_families,
-        )
-
-
-def _residual_closed_axis_branching_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
-    authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey = defaultdict(list)
-    for spec in DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules):
-        authoritative_specs_by_key[spec.key_type_name].append(spec)
-    if not authoritative_specs_by_key:
-        return ()
-    key_type_names = frozenset(authoritative_specs_by_key)
-    candidates: list[ResidualClosedAxisBranchingCandidate] = []
-    seen: set[ResidualClosedAxisBranchingIdentity] = set()
-    for module in modules:
-        file_path = str(module.path)
-        if "/tests/" in file_path:
-            continue
-        candidates.extend(
-            CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-                module,
-                _residual_closed_axis_branching_candidates_for_function,
-                authoritative_specs_by_key,
-                key_type_names,
-                seen,
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.key_type_name, item.file_path, item.line, item.qualname),
-    )
-
-
-def _residual_closed_axis_branching_candidates_from_compact_projections(
-    projections: tuple[CompactModuleClassProjection, ...],
-) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
-    return _residual_closed_axis_branching_candidates_from_compact_specs(
-        projections,
-        _compact_keyed_family_axis_specs(projections),
-    )
 
 
 def _residual_closed_axis_branching_candidates_from_compact_specs(

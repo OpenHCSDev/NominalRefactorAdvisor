@@ -3461,42 +3461,21 @@ def _target_has_residual_axis_evidence(
 
 
 class CompactCrossModuleAxisShadowFamilyCandidateBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector[CrossModuleAxisShadowFamilyCandidate],
+    CompactClassRepositoryCandidateDetector[CrossModuleAxisShadowFamilyCandidate],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_axis_shadow_evidence
     )
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        context: CompactClassRepositoryContext,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _cross_module_axis_shadow_family_candidates_from_specs(
-                _compact_keyed_family_axis_specs(projections),
-                _compact_manual_selector_axis_specs(projections),
-            ),
-            config,
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _cross_module_axis_shadow_family_candidates_from_specs(
-                _compact_keyed_family_axis_specs_from_context(context),
-                _compact_manual_selector_axis_specs(projections),
-            ),
-            config,
+    ) -> tuple[CrossModuleAxisShadowFamilyCandidate, ...]:
+        del config
+        return _cross_module_axis_shadow_family_candidates_from_specs(
+            _compact_keyed_family_axis_specs_from_context(context),
+            _compact_manual_selector_axis_specs(context.projections),
         )
 
 
@@ -3520,20 +3499,14 @@ declare_candidate_rule_detector(
         shadow_candidate.shared_case_names, shadow_candidate.key_type_name
     ),
     detector_base=CompactCrossModuleAxisShadowFamilyCandidateBase,
-    candidate_collector=_cross_module_axis_shadow_family_candidates,
 )
 
 
 class ResidualClosedAxisBranchingDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector[ResidualClosedAxisBranchingCandidate],
+    CompactClassRepositoryCandidateDetector[ResidualClosedAxisBranchingCandidate],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_residual_axis_evidence
-    )
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
     )
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
@@ -3545,30 +3518,15 @@ class ResidualClosedAxisBranchingDetector(
         _BRANCH_DISPATCH_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        context: CompactClassRepositoryContext,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _residual_closed_axis_branching_candidates_from_compact_projections(
-                projections
-            ),
-            config,
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _residual_closed_axis_branching_candidates_from_compact_specs(
-                projections,
-                _compact_keyed_family_axis_specs_from_context(context),
-            ),
-            config,
+    ) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
+        del config
+        return _residual_closed_axis_branching_candidates_from_compact_specs(
+            context.projections,
+            _compact_keyed_family_axis_specs_from_context(context),
         )
 
     def _finding_for_candidate(
@@ -3604,15 +3562,10 @@ class ResidualClosedAxisBranchingDetector(
 
 
 class ParallelKeyedAxisFamilyDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector[ParallelKeyedAxisFamilyCandidate],
+    CompactClassRepositoryCandidateDetector[ParallelKeyedAxisFamilyCandidate],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_keyed_family_axis_root
-    )
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
     )
     registry_normal_form_stage = UnifiedRegistryAxisFamilyStage
     finding_spec = high_confidence_spec(
@@ -3625,30 +3578,14 @@ class ParallelKeyedAxisFamilyDetector(
         _CLASS_FAMILY_FACTORY_DISPATCH_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        context: CompactClassRepositoryContext,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _parallel_keyed_axis_family_candidates_from_specs(
-                _compact_keyed_family_axis_specs(projections)
-            ),
-            config,
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del projections
-        return self._findings_for_candidates(
-            _parallel_keyed_axis_family_candidates_from_specs(
-                _compact_keyed_family_axis_specs_from_context(context)
-            ),
-            config,
+    ) -> tuple[ParallelKeyedAxisFamilyCandidate, ...]:
+        del config
+        return _parallel_keyed_axis_family_candidates_from_specs(
+            _compact_keyed_family_axis_specs_from_context(context)
         )
 
     def _finding_for_candidate(
@@ -3690,24 +3627,24 @@ class ParallelKeyedAxisFamilyDetector(
 
 
 class CompactParallelKeyedTableAxisCandidateBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector[ParallelKeyedTableAxisCandidate],
+    CompactProjectionCandidateDetector[
+        CompactModuleClassProjection,
+        ParallelKeyedTableAxisCandidate,
+    ],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_keyed_table_axis
     )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _parallel_keyed_table_axis_candidates_from_specs(
-                _compact_keyed_table_axis_specs(projections)
-            ),
-            config,
+    ) -> tuple[ParallelKeyedTableAxisCandidate, ...]:
+        del config
+        return _parallel_keyed_table_axis_candidates_from_specs(
+            _compact_keyed_table_axis_specs(projections)
         )
 
 
@@ -3738,21 +3675,15 @@ declare_candidate_rule_detector(
         identity_field_names=("key",),
     ),
     detector_base=CompactParallelKeyedTableAxisCandidateBase,
-    candidate_collector=_parallel_keyed_table_axis_candidates,
     registry_normal_form_stage=DerivedRegistryProjectionStage,
 )
 
 
 class ParallelKeyedTableAndFamilyDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector[ParallelKeyedTableAndFamilyCandidate],
+    CompactClassRepositoryCandidateDetector[ParallelKeyedTableAndFamilyCandidate],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_keyed_table_axis
-    )
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
     )
     registry_normal_form_stage = SingleRegistryAuthorityStage
     finding_spec = high_confidence_spec(
@@ -3765,31 +3696,15 @@ class ParallelKeyedTableAndFamilyDetector(
         _CLASS_FAMILY_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        context: CompactClassRepositoryContext,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _parallel_keyed_table_and_family_candidates_from_specs(
-                _compact_keyed_family_axis_specs(projections),
-                _compact_keyed_table_axis_specs(projections),
-            ),
-            config,
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _parallel_keyed_table_and_family_candidates_from_specs(
-                _compact_keyed_family_axis_specs_from_context(context),
-                _compact_keyed_table_axis_specs(projections),
-            ),
-            config,
+    ) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
+        del config
+        return _parallel_keyed_table_and_family_candidates_from_specs(
+            _compact_keyed_family_axis_specs_from_context(context),
+            _compact_keyed_table_axis_specs(context.projections),
         )
 
     def _finding_for_candidate(
