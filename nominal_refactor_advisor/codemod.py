@@ -1458,42 +1458,11 @@ class SimulatedSourceRewrite(SourceTargetSpan, SourceRewriteDelta):
         }
 
 
-class SourcePathResolutionStrategy(ABC, metaclass=AutoRegisterMeta):
-    """One nominal strategy for matching a DSL path to indexed source files."""
+class ExactSourcePathResolution:
+    """Resolve an indexed source path exactly as provided by the DSL."""
 
-    __registry__: ClassVar[dict[str, type["SourcePathResolutionStrategy"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
-    registry_key_suffix: ClassVar[str] = "SourcePathResolutionStrategy"
-    registry_order: ClassVar[int] = 100
-
-    @classmethod
-    def ordered_strategies(cls) -> tuple["SourcePathResolutionStrategy", ...]:
-        return tuple(
-            strategy_type()
-            for strategy_type in sorted(
-                cls.__registry__.values(),
-                key=lambda item: (item.registry_order, item.__name__),
-            )
-        )
-
-    @abstractmethod
+    @staticmethod
     def matching_paths(
-        self,
-        requested_path: str,
-        projection: "SourcePathCandidateSet",
-    ) -> tuple[str, ...]:
-        raise NotImplementedError
-
-
-class ExactSourcePathResolutionStrategy(SourcePathResolutionStrategy):
-    """Match an indexed source path exactly as provided by the DSL."""
-
-    registry_order = 10
-
-    def matching_paths(
-        self,
         requested_path: str,
         projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
@@ -1502,16 +1471,18 @@ class ExactSourcePathResolutionStrategy(SourcePathResolutionStrategy):
         )
 
 
-class NormalizedSourcePathResolutionStrategy(SourcePathResolutionStrategy):
-    """Match path strings after platform-neutral slash normalization."""
+class NormalizedSourcePathResolution(ExactSourcePathResolution):
+    """Preserve exact resolution and add slash-normalized matching."""
 
-    registry_order = 20
-
+    @classmethod
     def matching_paths(
-        self,
+        cls,
         requested_path: str,
         projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
+        exact_matches = super().matching_paths(requested_path, projection)
+        if exact_matches:
+            return exact_matches
         requested_posix = Path(requested_path).as_posix()
         return tuple(
             candidate
@@ -1520,16 +1491,18 @@ class NormalizedSourcePathResolutionStrategy(SourcePathResolutionStrategy):
         )
 
 
-class ResolvedSourcePathResolutionStrategy(SourcePathResolutionStrategy):
-    """Match paths after resolving them from the current working directory."""
+class ResolvedSourcePathResolution(NormalizedSourcePathResolution):
+    """Preserve textual matching and add current-directory resolution."""
 
-    registry_order = 30
-
+    @classmethod
     def matching_paths(
-        self,
+        cls,
         requested_path: str,
         projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
+        textual_matches = super().matching_paths(requested_path, projection)
+        if textual_matches:
+            return textual_matches
         requested_resolved = _resolved_source_path_text(requested_path)
         return tuple(
             candidate
@@ -1538,16 +1511,18 @@ class ResolvedSourcePathResolutionStrategy(SourcePathResolutionStrategy):
         )
 
 
-class RelativeSuffixSourcePathResolutionStrategy(SourcePathResolutionStrategy):
-    """Match repo-relative DSL paths against absolute indexed source paths."""
+class RelativeSuffixSourcePathResolution(ResolvedSourcePathResolution):
+    """Preserve stronger matches and add repo-relative suffix resolution."""
 
-    registry_order = 40
-
+    @classmethod
     def matching_paths(
-        self,
+        cls,
         requested_path: str,
         projection: "SourcePathCandidateSet",
     ) -> tuple[str, ...]:
+        resolved_matches = super().matching_paths(requested_path, projection)
+        if resolved_matches:
+            return resolved_matches
         requested = Path(requested_path)
         suffix = f"/{requested.as_posix()}"
         return tuple(
@@ -1592,7 +1567,6 @@ def _source_path_candidate_set(
     return SourcePathCandidateSet(candidate_paths)
 
 
-@lru_cache(maxsize=4096)
 def _resolved_source_path_text(path: str) -> str:
     return Path(path).expanduser().resolve().as_posix()
 
@@ -1643,18 +1617,10 @@ class SourcePathResolutionAuthority(SourcePathCandidateAuthority):
         )
 
     def matching_paths(self) -> tuple[str, ...]:
-        prioritized_matches = (
-            *(
-                matches
-                for strategy in SourcePathResolutionStrategy.ordered_strategies()
-                for matches in (
-                    strategy.matching_paths(self.requested_path, self.candidate_set),
-                )
-                if matches
-            ),
-            (),
+        return RelativeSuffixSourcePathResolution.matching_paths(
+            self.requested_path,
+            self.candidate_set,
         )
-        return prioritized_matches[0]
 
 
 @dataclass(frozen=True)

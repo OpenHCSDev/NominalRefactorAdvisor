@@ -19,6 +19,8 @@ from nominal_refactor_advisor.codemod import (
     SourceEditOrigin,
     SourceFileCreation,
     SourceInsertion,
+    SourcePathCandidateSet,
+    SourcePathResolutionAuthority,
     SourceSpanReplacement,
     SourceRewriteTarget,
 )
@@ -31,6 +33,42 @@ def _snapshot(tmp_path: Path, source: str) -> tuple[Path, CodemodSourceSnapshot]
     return module_path, CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
     )
+
+
+def test_source_path_resolution_mro_preserves_stronger_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_candidate = (first_root / "pkg/mod.py").as_posix()
+    second_candidate = (second_root / "pkg/mod.py").as_posix()
+    authority = SourcePathResolutionAuthority(
+        requested_path="pkg/mod.py",
+        candidate_set=SourcePathCandidateSet.from_paths(
+            (first_candidate, second_candidate)
+        ),
+    )
+
+    monkeypatch.chdir(first_root)
+    assert authority.required_path() == first_candidate
+    monkeypatch.chdir(second_root)
+    assert authority.required_path() == second_candidate
+
+
+def test_source_path_resolution_fails_closed_on_suffix_ambiguity() -> None:
+    authority = SourcePathResolutionAuthority(
+        requested_path="pkg/mod.py",
+        candidate_set=SourcePathCandidateSet.from_paths(
+            ("/first/pkg/mod.py", "/second/pkg/mod.py")
+        ),
+    )
+
+    assert authority.optional_path() is None
+    with pytest.raises(ValueError, match="resolved to multiple indexed source files"):
+        authority.required_path()
 
 
 def test_span_replacement_owns_deduplication_and_conflict_proof(
