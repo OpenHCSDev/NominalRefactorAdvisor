@@ -106,14 +106,13 @@ from .codemod import (
 from .codemod_source_cache import CodemodSourceContextCache
 from .codemod_workflow import (
     CodemodFixpointReport,
+    CodemodFixpointRunner,
     CodemodFixpointScan,
     CodemodProjectedFindingReport,
     CodemodRefactorGoal,
     CodemodRefactorGoalReport,
+    CodemodRefactorGoalRunner,
     CodemodSimulationFindingProjection,
-    CodemodWorkflowPlan,
-    CodemodWorkflowPlanJsonParser,
-    CodemodWorkflowRunContext,
 )
 from .detectors import DetectorConfig, IssueDetector
 from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
@@ -692,14 +691,6 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
-            flags=("--codemod-workflow-plan",),
-            value_type=Path,
-            help=(
-                "Load a reusable codemod workflow DSL plan JSON and run it. "
-                "Supported workflows: fixpoint, refactor_goal."
-            ),
-        ),
-        CliArgumentSpec(
             flags=("--codemod-fixpoint-max-iterations",),
             value_type=int,
             default=8,
@@ -1197,7 +1188,6 @@ class SourceSnapshotCacheEligibility:
     codemod_scan_query_needs_source_snapshot: bool
     codemod_fixpoint: bool
     codemod_refactor_goal_requested: bool
-    codemod_workflow_plan_requested: bool
 
     @property
     def needs_source_snapshot(self) -> bool:
@@ -1212,7 +1202,6 @@ class SourceSnapshotCacheEligibility:
         return (
             self.codemod_fixpoint
             or self.codemod_refactor_goal_requested
-            or self.codemod_workflow_plan_requested
             or self.codemod_plan_sequence_has_recipes
         )
 
@@ -1620,16 +1609,6 @@ def load_codemod_plan_sequence(path: Path) -> CodemodPlanSequence:
     return CodemodPlanJsonParser().parse_sequence(payload)
 
 
-def load_codemod_workflow_plan(path: Path) -> CodemodWorkflowPlan:
-    """Load one reusable codemod workflow plan from JSON."""
-
-    payload = cast(
-        JsonObject,
-        JsonDocumentSource(path).load(),
-    )
-    return CodemodWorkflowPlanJsonParser().parse_plan(payload)
-
-
 def load_codemod_plan_validation_payload(path: Path) -> JsonObject:
     """Load a codemod document or sequence and return its normalized JSON shape."""
 
@@ -1997,7 +1976,6 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             bool(SelectedOperationTargetSelectorSource.selected_sources(args)),
             args.codemod_fixpoint,
             args.codemod_refactor_goal is not None,
-            args.codemod_workflow_plan is not None,
         )
     )
 
@@ -4171,7 +4149,6 @@ def _main_without_deadline() -> int:
     JsonDocumentInputSet.from_option_paths(
         (
             ("--codemod-plan", (args.codemod_plan,)),
-            ("--codemod-workflow-plan", (args.codemod_workflow_plan,)),
             ("--codemod-resolve-selector", (args.codemod_resolve_selector,)),
             ("--codemod-target-source", (args.codemod_target_source,)),
             ("--codemod-replacement-plan", (args.codemod_replacement_plan,)),
@@ -4188,7 +4165,6 @@ def _main_without_deadline() -> int:
         args.codemod_plan is not None
         or codemod_execution_mode.requested
         or args.codemod_fixpoint
-        or args.codemod_workflow_plan is not None
         or args.codemod_refactor_goal is not None
         or codemod_scan_query_mode.requested
     )
@@ -4203,22 +4179,10 @@ def _main_without_deadline() -> int:
         parser.error(
             "--codemod-project-source-index requires --codemod-project-findings"
         )
-    if args.codemod_workflow_plan is not None and (
-        args.codemod_fixpoint or args.codemod_refactor_goal is not None
-    ):
-        parser.error(
-            "--codemod-workflow-plan cannot be combined with "
-            "--codemod-fixpoint or --codemod-refactor-goal"
-        )
     if args.codemod_fixpoint_plan_out is not None and not args.codemod_fixpoint:
         parser.error("--codemod-fixpoint-plan-out requires --codemod-fixpoint")
     if args.codemod_goal_plan_out is not None and args.codemod_refactor_goal is None:
         parser.error("--codemod-goal-plan-out requires --codemod-refactor-goal")
-    codemod_workflow_plan = (
-        load_codemod_workflow_plan(args.codemod_workflow_plan)
-        if args.codemod_workflow_plan is not None
-        else None
-    )
     codemod_plan_sequence = (
         load_codemod_plan_sequence(args.codemod_plan)
         if args.codemod_plan is not None
@@ -4232,7 +4196,6 @@ def _main_without_deadline() -> int:
         codemod_requested
         and not explicit_impact_ranking_request
         and not args.codemod_fixpoint
-        and codemod_workflow_plan is None
         and args.codemod_refactor_goal is None
         and not codemod_scan_query_mode.requested
         and not codemod_plan_sequence.has_recipes
@@ -4243,7 +4206,6 @@ def _main_without_deadline() -> int:
     if (
         codemod_requested
         and not args.codemod_fixpoint
-        and codemod_workflow_plan is None
         and args.codemod_refactor_goal is None
         and not codemod_scan_query_mode.requested
         and not args.include_impact_ranking
@@ -4362,7 +4324,6 @@ def _main_without_deadline() -> int:
         SemanticRefactorGateMode.from_flags(
             include_impact_ranking=args.include_impact_ranking
             or args.codemod_fixpoint
-            or codemod_workflow_plan is not None
             or codemod_scan_query_mode.requested,
             semantic_refactor_gate=emitted_semantic_refactor_gate,
             raw_findings=(
@@ -4378,7 +4339,6 @@ def _main_without_deadline() -> int:
         codemod_execution_request.exact_recipe_execution
         and not args.include_impact_ranking
         and not args.codemod_fixpoint
-        and codemod_workflow_plan is None
         and args.codemod_refactor_goal is None
         and args.import_lean_export is None
         and not codemod_scan_query_mode.requested
@@ -4414,7 +4374,6 @@ def _main_without_deadline() -> int:
         ),
         codemod_fixpoint=args.codemod_fixpoint,
         codemod_refactor_goal_requested=args.codemod_refactor_goal is not None,
-        codemod_workflow_plan_requested=codemod_workflow_plan is not None,
     )
     cached_source_context = None
     if args.import_lean_export is None:
@@ -4796,30 +4755,21 @@ def _main_without_deadline() -> int:
         modules,
         architecture_guard_rules,
     )
-    workflow_run_context = CodemodWorkflowRunContext(
-        resolved_dir=parse_cache_dir,
-        enabled=args.use_parse_cache,
-        roots=roots,
-        report_roots=path_scope.report_roots,
-        config=config,
-        parse_workers=args.parse_workers,
-        guard_suite=codemod_plan_sequence.guard_suite,
-        dry_run=not args.codemod_apply,
-        initial_scan=CodemodFixpointScan(
-            modules=modules,
-            findings=findings,
-        ),
+    workflow_initial_scan = CodemodFixpointScan(
+        modules=modules,
+        findings=findings,
     )
-    if codemod_workflow_plan is not None:
-        report = codemod_workflow_plan.run(workflow_run_context)
-        write_cli_json_artifact(args.codemod_plan_out, report.replay_sequence.to_dict())
-        if args.json:
-            print(json.dumps(report.to_dict(), indent=2))
-        else:
-            print(report.to_markdown())
-        return 0 if report.completed else 1
     if args.codemod_fixpoint:
-        report = workflow_run_context.fixpoint_runner(
+        report = CodemodFixpointRunner(
+            resolved_dir=parse_cache_dir,
+            enabled=args.use_parse_cache,
+            roots=roots,
+            report_roots=path_scope.report_roots,
+            config=config,
+            parse_workers=args.parse_workers,
+            guard_suite=codemod_plan_sequence.guard_suite,
+            dry_run=not args.codemod_apply,
+            initial_scan=workflow_initial_scan,
             max_iterations=args.codemod_fixpoint_max_iterations,
         ).run()
         replay_plan_payload = report.replay_plan.sequence.to_dict()
@@ -4835,7 +4785,16 @@ def _main_without_deadline() -> int:
             refactor_goal = codemod_refactor_goal_from_args(args)
         except ValueError as error:
             parser.error(str(error))
-        report = workflow_run_context.refactor_goal_runner(
+        report = CodemodRefactorGoalRunner(
+            resolved_dir=parse_cache_dir,
+            enabled=args.use_parse_cache,
+            roots=roots,
+            report_roots=path_scope.report_roots,
+            config=config,
+            parse_workers=args.parse_workers,
+            guard_suite=codemod_plan_sequence.guard_suite,
+            dry_run=not args.codemod_apply,
+            initial_scan=workflow_initial_scan,
             goal=refactor_goal,
         ).run()
         replay_plan_payload = report.replay_sequence.to_dict()

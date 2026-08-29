@@ -38,6 +38,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from . import patterns as pattern_declarations
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .assignment_projection import (
     ModuleAssignmentNameProjection,
@@ -1380,7 +1381,9 @@ class CodemodStrategyRegistry:
 
     def __init__(
         self,
-        pattern_strategies: Mapping[PatternId, CodemodStrategy] | None = None,
+        pattern_strategies: (
+            Mapping[pattern_declarations.PatternId, CodemodStrategy] | None
+        ) = None,
         *,
         fallback_strategy: CodemodStrategy = SEMANTIC_ADVISORY_CODEMOD_STRATEGY,
         mixed_strategy: CodemodStrategy = MIXED_SEMANTIC_ADVISORY_CODEMOD_STRATEGY,
