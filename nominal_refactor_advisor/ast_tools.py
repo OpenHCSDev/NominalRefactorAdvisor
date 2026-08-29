@@ -73,14 +73,11 @@ from .observation_shapes import (
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_match import (
-    AstTypedEffectStep,
     GuardedEffectStep,
     Maybe,
-    RegisteredEffectStep,
     SingleCompareEffectStep,
     as_ast,
     named_value_binding,
-    registered_effect_steps,
     single_assign_target,
     single_call_arg,
     single_item,
@@ -3620,47 +3617,17 @@ def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
     return body
 
 
-class _ProjectionOuterCallStep(RegisteredEffectStep):
-    pass
-
-
-class _SingleReturnCallStep(
-    _ProjectionOuterCallStep, GuardedEffectStep[list[ast.stmt], ast.Call]
-):
-    step_id = "single_return_call"
-    registration_order = 10
-
-    def project(self, value: list[ast.stmt]) -> ast.Call | None:
-        return single_return_call(value)
-
-
-class _SingleArgumentCallStep(
-    _ProjectionOuterCallStep, GuardedEffectStep[ast.Call, ast.Call]
-):
-    step_id = "single_argument_call"
-    registration_order = 20
-
-    def project(self, value: ast.Call) -> ast.Call | None:
-        return value if len(value.args) == 1 else None
-
-
-class _TerminalCalleeFamilyStep(
-    _ProjectionOuterCallStep, GuardedEffectStep[ast.Call, ast.Call]
-):
-    step_id = "terminal_callee_family"
-    registration_order = 30
-    terminal_names = BuiltinCallName.sequence_wrapper_names()
-
-    def project(self, value: ast.Call) -> ast.Call | None:
-        return value if _terminal_name(value.func) in self.terminal_names else None
-
-
 def _projection_outer_inner_calls(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, ast.Call] | None:
     outer_call = (
         Maybe.of(_trim_docstring_body(function.body))
-        .bind_all(registered_effect_steps(_ProjectionOuterCallStep))
+        .project(single_return_call)
+        .filter(lambda call: len(call.args) == 1)
+        .filter(
+            lambda call: _terminal_name(call.func)
+            in BuiltinCallName.sequence_wrapper_names()
+        )
         .unwrap_or_none()
     )
     return (
@@ -3684,68 +3651,45 @@ class _ProjectionGeneratorMatch:
     node: ast.GeneratorExp
     comprehension: ast.comprehension
 
-
-class _ProjectionGeneratorAttributeStep(RegisteredEffectStep):
-    pass
-
-
-class _SingleProjectionGeneratorStep(
-    _ProjectionGeneratorAttributeStep,
-    AstTypedEffectStep[ast.GeneratorExp, _ProjectionGeneratorMatch],
-):
-    step_id = "single_projection_generator"
-    registration_order = 10
-    node_type = ast.GeneratorExp
-
-    def project_ast(self, value: ast.GeneratorExp) -> _ProjectionGeneratorMatch | None:
+    @classmethod
+    def from_node(cls, node: ast.AST) -> "_ProjectionGeneratorMatch | None":
         return (
-            Maybe.of(single_item(value.generators))
-            .map(lambda comprehension: _ProjectionGeneratorMatch(value, comprehension))
+            Maybe.of(as_ast(node, ast.GeneratorExp))
+            .with_projection(
+                lambda generator: single_item(generator.generators)
+            )
+            .map(lambda match: cls(*match))
             .unwrap_or_none()
         )
 
+    @property
+    def has_plain_name_target(self) -> bool:
+        return (
+            not self.comprehension.is_async
+            and not self.comprehension.ifs
+            and isinstance(self.comprehension.target, ast.Name)
+        )
 
-class _ProjectionNameTargetStep(
-    _ProjectionGeneratorAttributeStep,
-    GuardedEffectStep[_ProjectionGeneratorMatch, _ProjectionGeneratorMatch],
-):
-    step_id = "projection_name_target"
-    registration_order = 20
-
-    def project(
-        self, value: _ProjectionGeneratorMatch
-    ) -> _ProjectionGeneratorMatch | None:
-        if value.comprehension.is_async or value.comprehension.ifs:
+    def projected_attribute_name(self) -> str | None:
+        attribute = as_ast(self.node.elt, ast.Attribute)
+        target = as_ast(self.comprehension.target, ast.Name)
+        owner = as_ast(attribute.value if attribute else None, ast.Name)
+        if (
+            attribute is None
+            or target is None
+            or owner is None
+            or owner.id != target.id
+        ):
             return None
-        return value if isinstance(value.comprehension.target, ast.Name) else None
-
-
-def _projected_attribute_name(value: _ProjectionGeneratorMatch) -> str | None:
-    attribute = as_ast(value.node.elt, ast.Attribute)
-    target = as_ast(value.comprehension.target, ast.Name)
-    owner = as_ast(attribute.value if attribute else None, ast.Name)
-    if attribute is None or target is None or owner is None or (owner.id != target.id):
-        return None
-    return attribute.attr
-
-
-class _ProjectedAttributeStep(
-    _ProjectionGeneratorAttributeStep,
-    GuardedEffectStep[_ProjectionGeneratorMatch, str],
-):
-    step_id = "projected_attribute"
-    registration_order = 30
-
-    def project(self, value: _ProjectionGeneratorMatch) -> str | None:
-        return _projected_attribute_name(value)
+        return attribute.attr
 
 
 def _projection_generator_attribute(node: ast.AST) -> str | None:
-    return cast(
-        str | None,
-        Maybe.of(node)
-        .bind_all(registered_effect_steps(_ProjectionGeneratorAttributeStep))
-        .unwrap_or_none(),
+    return (
+        Maybe.of(_ProjectionGeneratorMatch.from_node(node))
+        .filter(lambda match: match.has_plain_name_target)
+        .project(lambda match: match.projected_attribute_name())
+        .unwrap_or_none()
     )
 
 

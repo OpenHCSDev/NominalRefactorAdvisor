@@ -15,6 +15,7 @@ from typing import cast
 
 import pytest
 
+import nominal_refactor_advisor.ast_tools as ast_tools_module
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
@@ -20386,6 +20387,21 @@ def test_collects_projection_helper_shapes_via_spec_family(tmp_path: Path) -> No
     module = parse_python_modules(tmp_path)[0]
     shapes = collect_family_items(module, ProjectionHelperObservationFamily)
     assert {shape.projected_attribute for shape in shapes} == {"label", "score"}
+
+
+def test_projection_helper_shape_has_no_registered_execution_roster() -> None:
+    removed_step_types = (
+        "_ProjectionOuterCallStep",
+        "_SingleReturnCallStep",
+        "_SingleArgumentCallStep",
+        "_TerminalCalleeFamilyStep",
+        "_ProjectionGeneratorAttributeStep",
+        "_SingleProjectionGeneratorStep",
+        "_ProjectionNameTargetStep",
+        "_ProjectedAttributeStep",
+    )
+
+    assert all(not hasattr(ast_tools_module, name) for name in removed_step_types)
 
 
 def test_collects_accessor_wrapper_candidates_via_spec_family(tmp_path: Path) -> None:
