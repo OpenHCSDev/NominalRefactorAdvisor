@@ -5855,13 +5855,32 @@ def test_compact_concrete_family_candidates_preserve_semantics(
     )
 
 
-def test_compact_roster_candidates_match_legacy_ast_candidates(
+def test_compact_roster_candidates_preserve_semantics(
     tmp_path: Path,
 ) -> None:
     assert not hasattr(class_index_module, "CompactLatentRosterObservation")
     assert not hasattr(helper_detectors, "_LatentRosterObservation")
     assert not hasattr(helper_detectors, "LatentRosterProjectionAuthority")
     assert not hasattr(helper_detectors, "LATENT_ROSTER_PROJECTION_AUTHORITY")
+    assert not hasattr(base_detectors, "_ManualSubclassRegistrationSite")
+    for deleted_shadow in (
+        "_class_list_registry_names",
+        "_registration_append_registry_name",
+        "_looks_like_cls_registration_value",
+        "_class_dict_get_attr_name",
+        "_guarded_defined_attr_name",
+        "_guard_requires_concrete_subclass",
+        "_manual_subclass_registration_sites",
+        "_uses_named_registry",
+        "_registry_consumer_locations",
+        "_registered_descendant_classes",
+        "_manual_concrete_subclass_roster_candidates",
+        "_family_roster_member",
+        "_extract_family_roster_members",
+        "_best_shared_family_base_name",
+        "_manual_family_roster_candidates",
+    ):
+        assert not hasattr(helper_detectors, deleted_shadow)
 
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -5914,10 +5933,24 @@ def test_compact_roster_candidates_match_legacy_ast_candidates(
     )
     context = runtime_detectors._compact_concrete_family_context(projections, config)
 
-    assert runtime_detectors._compact_manual_concrete_subclass_roster_candidates(
-        projections, context, config
-    ) == runtime_detectors._manual_concrete_subclass_roster_candidates(
-        list(modules), config
+    manual_candidates = (
+        runtime_detectors._compact_manual_concrete_subclass_roster_candidates(
+            context, config
+        )
+    )
+    assert len(manual_candidates) == 1
+    manual_candidate = manual_candidates[0]
+    assert manual_candidate.class_name == "RoutedRequest"
+    assert manual_candidate.registry_name == "_registered_types"
+    assert manual_candidate.guard_summary == (
+        "cls.__dict__.get('route_name') is not None"
+    )
+    assert manual_candidate.registration_site.selector_attr_name == "route_name"
+    assert not manual_candidate.registration_site.requires_concrete_subclass
+    assert manual_candidate.consumer_names == ("RoutedRequest.concrete_types",)
+    assert manual_candidate.concrete_class_names == (
+        "DirectRequest",
+        "GuidedRequest",
     )
     latent_candidates = (
         runtime_detectors._compact_latent_implementation_roster_candidates(
@@ -5936,20 +5969,28 @@ def test_compact_roster_candidates_match_legacy_ast_candidates(
         ("Exporter", "EXPORT_FORMATS", "format", 1.0),
         ("Exporter", "DEFAULT_EXPORTERS", None, 1.0),
     }
-    legacy_index = surface_detectors.NominalAuthorityIndex(modules)
-    assert surface_detectors._compact_manual_family_roster_candidates(
-        projections, context
-    ) == tuple(
-        candidate
-        for module in modules
-        for candidate in surface_detectors._manual_family_roster_candidates(
-            module, legacy_index
-        )
+    manual_family_candidates = (
+        surface_detectors._compact_manual_family_roster_candidates(context)
     )
-    manual_family_detector = surface_detectors.ManualFamilyRosterDetector()
-    assert manual_family_detector._findings_from_compact_context(
-        projections, context, config
-    ) == manual_family_detector._collect_findings(list(modules), config)
+    assert len(manual_family_candidates) == 1
+    manual_family_candidate = manual_family_candidates[0]
+    assert manual_family_candidate.owner_name == "DEFAULT_EXPORTERS"
+    assert manual_family_candidate.member_names == ("CsvExporter", "JsonExporter")
+    assert manual_family_candidate.family_base_name == "Exporter"
+    assert manual_family_candidate.constructor_style == "constructor_call"
+    assert tuple(
+        (Path(location.file_path).name, location.symbol)
+        for location in manual_family_candidate.member_locations
+    ) == (
+        ("implementations.py", "CsvExporter"),
+        ("implementations.py", "JsonExporter"),
+    )
+    assert (
+        surface_detectors.ManualFamilyRosterDetector()._candidate_items(
+            list(modules), config
+        )
+        == manual_family_candidates
+    )
 
 
 def test_concrete_family_detectors_share_one_compact_graph_context(
@@ -5966,27 +6007,50 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
         runtime_detectors.ParallelMirroredLeafFamilyDetector,
         surface_detectors.ManualFamilyRosterDetector,
     )
-    calls = 0
-    original_builder = runtime_detectors._compact_concrete_family_context
+    assert {
+        detector_type.compact_shared_context_builder for detector_type in detector_types
+    } == {runtime_detectors.compact_class_repository_context}
 
-    def counting_builder(projections, config):
-        nonlocal calls
-        calls += 1
-        return original_builder(projections, config)
+    repository_calls = 0
+    concrete_context_calls = 0
+    original_repository_builder = runtime_detectors.compact_class_repository_context
+    original_concrete_context_builder = (
+        runtime_detectors._compact_concrete_family_context
+    )
+
+    def counting_repository_builder(projections, config):
+        nonlocal repository_calls
+        repository_calls += 1
+        return original_repository_builder(projections, config)
+
+    def counting_concrete_context_builder(projections, config, *, class_index=None):
+        nonlocal concrete_context_calls
+        concrete_context_calls += 1
+        return original_concrete_context_builder(
+            projections,
+            config,
+            class_index=class_index,
+        )
 
     for detector_type in detector_types:
         monkeypatch.setattr(
             detector_type,
             "compact_shared_context_builder",
-            staticmethod(counting_builder),
+            staticmethod(counting_repository_builder),
         )
+    monkeypatch.setattr(
+        runtime_detectors,
+        "_compact_concrete_family_context",
+        counting_concrete_context_builder,
+    )
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,), detector_types, use_parse_cache=False
     )
 
     accumulator.findings_by_detector(DetectorConfig())
 
-    assert calls == 1
+    assert repository_calls == 1
+    assert concrete_context_calls == 1
 
 
 def test_compact_nominal_authority_candidates_match_legacy_ast_candidates(

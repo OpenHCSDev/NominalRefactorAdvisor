@@ -152,6 +152,7 @@ from ..class_index import (
     ClassFamilyIndex,
     CompactClassFamilyIndex,
     CompactIndexedClass,
+    CompactManualSubclassRegistrationSite,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactRepeatedKeyedFamilyRoot,
@@ -10846,6 +10847,7 @@ class NominalAuthorityShape:
 class ManualFamilyRosterCandidate(LineWitnessCandidate):
     owner_name: str
     member_names: tuple[str, ...]
+    member_locations: tuple[SourceLocation, ...]
     family_base_name: str
     constructor_style: str
 
@@ -10889,7 +10891,7 @@ class LatentImplementationRosterCandidate(ClassLineWitnessCandidate):
 
 @dataclass(frozen=True)
 class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
-    registration_site: "_ManualSubclassRegistrationSite"
+    registration_site: CompactManualSubclassRegistrationSite
     consumer_locations: tuple[SourceLocation, ...]
     concrete_class_names: tuple[str, ...]
 
@@ -11367,14 +11369,6 @@ class ConcreteConfigFieldProbeCandidate(ClassLineWitnessCandidate):
     config_type_name: str
     missing_field_names: tuple[str, ...]
     probe_builtin_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _ManualSubclassRegistrationSite:
-    registry_name: str
-    guard_summary: str | None
-    selector_attr_name: str | None = None
-    requires_concrete_subclass: bool = False
 
 
 @dataclass(frozen=True)
