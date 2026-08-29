@@ -11611,6 +11611,38 @@ def test_detects_named_function_collector_boilerplate(tmp_path: Path) -> None:
     assert "_collect_named_function_candidates" in (findings[0].scaffold or "")
 
 
+@pytest.mark.parametrize(
+    "assignment_source",
+    ("items = []", "items = list()"),
+)
+def test_list_accumulator_binding_owns_empty_list_syntax(
+    assignment_source: str,
+) -> None:
+    statement = ast.parse(assignment_source).body[0]
+
+    assert isinstance(statement, ast.Assign)
+    binding = helper_detectors._ListAccumulatorBinding.from_statement(statement)
+    assert binding is not None
+    assert binding.name == "items"
+
+
+def test_collector_syntax_has_no_registered_step_authority() -> None:
+    removed_names = (
+        "_CandidateAppendConstructorNameStep",
+        "_CandidateAccumulatorAppendArgumentStep",
+        "_CandidateConstructorNameStep",
+        "_ListAccumulatorAssignmentStep",
+        "_EmptyListAccumulatorValueStep",
+        "_NamedValueBindingStep",
+        "_LiteralEmptyListAccumulatorValueStep",
+        "_ConstructorEmptyListAccumulatorValueStep",
+        "_EmptyListValueBindingStep",
+        "_list_accumulator_name_from_assignment",
+    )
+
+    assert all(not hasattr(helper_detectors, name) for name in removed_names)
+
+
 def test_named_function_collector_boilerplate_synthesizes_shared_traversal_recipe(
     tmp_path: Path,
 ) -> None:

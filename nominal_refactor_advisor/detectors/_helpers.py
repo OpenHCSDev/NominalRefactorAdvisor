@@ -13168,52 +13168,25 @@ def _is_named_function_iteration(node: ast.For) -> bool:
     return named_function_loop_components(node) is not None
 
 
-class _CandidateAppendConstructorNameStep(RegisteredEffectStep):
-    pass
-
-
-class _CandidateAccumulatorAppendArgumentStep(
-    _CandidateAppendConstructorNameStep,
-    AstTypedEffectStep[ast.Call, ast.AST],
-):
-    step_id = "candidate_accumulator_append_argument"
-    registration_order = 10
-    node_type = ast.Call
-
-    def project_ast(self, value: ast.Call) -> ast.AST | None:
-        match = attribute_call_match(
-            value,
-            method_name=_APPEND_METHOD_NAME,
-            owner_type=ast.Name,
-            owner_name=_CANDIDATE_ACCUMULATOR_NAME,
-            single_argument_required=True,
-            argument_count=1,
-            allow_keywords=False,
-        )
-        return None if match is None else match.single_argument
-
-
-class _CandidateConstructorNameStep(
-    _CandidateAppendConstructorNameStep,
-    AstTypedEffectStep[ast.Call, str],
-):
-    step_id = "candidate_constructor_name"
-    registration_order = 20
-    node_type = ast.Call
-
-    def project_ast(self, value: ast.Call) -> str | None:
-        candidate_name = _call_name(value.func)
-        if candidate_name is None or not candidate_name.endswith("Candidate"):
-            return None
-        return candidate_name
-
-
 def _candidate_append_constructor_name(node: ast.AST) -> str | None:
-    return cast(
-        str | None,
-        Maybe.of(node)
-        .bind_all(registered_effect_steps(_CandidateAppendConstructorNameStep))
-        .unwrap_or_none(),
+    call = as_ast(node, ast.Call)
+    if call is None:
+        return None
+    match = attribute_call_match(
+        call,
+        method_name=_APPEND_METHOD_NAME,
+        owner_type=ast.Name,
+        owner_name=_CANDIDATE_ACCUMULATOR_NAME,
+        single_argument_required=True,
+        argument_count=1,
+        allow_keywords=False,
+    )
+    appended = as_ast(match.single_argument if match is not None else None, ast.Call)
+    candidate_name = _call_name(appended.func) if appended is not None else None
+    return (
+        candidate_name
+        if candidate_name is not None and candidate_name.endswith("Candidate")
+        else None
     )
 
 
@@ -13283,97 +13256,34 @@ def _named_function_collector_boilerplate_candidates(
     return tuple(collector_candidates)
 
 
-class _ListAccumulatorAssignmentStep(RegisteredEffectStep):
-    pass
+@dataclass(frozen=True)
+class _ListAccumulatorBinding:
+    name: str
 
-
-class _EmptyListAccumulatorValueStep(RegisteredEffectStep):
-    pass
-
-
-class _NamedValueBindingStep(
-    _ListAccumulatorAssignmentStep,
-    GuardedEffectStep[ast.stmt, NamedValueBinding],
-):
-    step_id = "named_value_binding"
-    registration_order = 10
-
-    def project(self, value: ast.stmt) -> NamedValueBinding | None:
-        return named_value_binding(value)
-
-
-class _LiteralEmptyListAccumulatorValueStep(
-    _EmptyListAccumulatorValueStep,
-    GuardedEffectStep[NamedValueBinding, str],
-):
-    step_id = "literal_empty_list_accumulator_value"
-    registration_order = 10
-
-    def accepts(self, value: NamedValueBinding) -> bool:
-        return isinstance(value.value, ast.List)
-
-    def project(self, value: NamedValueBinding) -> str | None:
-        list_node = cast(ast.List, value.value)
-        return value.name if not list_node.elts else None
-
-
-class _ConstructorEmptyListAccumulatorValueStep(
-    _EmptyListAccumulatorValueStep,
-    GuardedEffectStep[NamedValueBinding, str],
-):
-    step_id = "constructor_empty_list_accumulator_value"
-    registration_order = 20
-
-    def accepts(self, value: NamedValueBinding) -> bool:
-        return isinstance(value.value, ast.Call)
-
-    def project(self, value: NamedValueBinding) -> str | None:
-        call = cast(ast.Call, value.value)
+    @classmethod
+    def from_statement(cls, statement: ast.stmt) -> "_ListAccumulatorBinding | None":
+        binding = named_value_binding(statement)
+        if binding is None:
+            return None
+        if isinstance(binding.value, ast.List):
+            return cls(binding.name) if not binding.value.elts else None
+        if not isinstance(binding.value, ast.Call):
+            return None
         is_empty_list = (
-            _call_name(call.func) == BuiltinCallName.LIST
-            and not call.args
-            and not call.keywords
+            _call_name(binding.value.func) == BuiltinCallName.LIST
+            and not binding.value.args
+            and not binding.value.keywords
         )
-        return value.name if is_empty_list else None
-
-
-class _EmptyListValueBindingStep(
-    _ListAccumulatorAssignmentStep,
-    GuardedEffectStep[NamedValueBinding, str],
-):
-    step_id = "empty_list_value_binding"
-    registration_order = 20
-
-    def project(self, value: NamedValueBinding) -> str | None:
-        return cast(
-            str | None,
-            Maybe.of(value)
-            .bind(
-                FirstSuccessfulEffectStep(
-                    registered_effect_steps(_EmptyListAccumulatorValueStep)
-                )
-            )
-            .unwrap_or_none(),
-        )
-
-
-def _list_accumulator_name_from_assignment(statement: ast.stmt) -> str | None:
-    return cast(
-        str | None,
-        Maybe.of(statement)
-        .bind_all(registered_effect_steps(_ListAccumulatorAssignmentStep))
-        .unwrap_or_none(),
-    )
+        return cls(binding.name) if is_empty_list else None
 
 
 def _local_list_accumulator_names(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> frozenset[str]:
     return frozenset(
-        accumulator_name
+        binding.name
         for statement in _trim_docstring_body(function.body)
-        if (accumulator_name := _list_accumulator_name_from_assignment(statement))
-        is not None
+        if (binding := _ListAccumulatorBinding.from_statement(statement)) is not None
     )
 
 
