@@ -40,9 +40,16 @@ def test_payload_binding_set_rejects_duplicate_constructor_argument_names() -> N
         )
 
 
-def test_registered_operation_payload_binding_sets_are_unique() -> None:
+def test_payload_binding_set_rejects_duplicates_across_composition() -> None:
+    with pytest.raises(ValueError, match="Duplicate payload field binding name"):
+        PayloadBindingSet((_binding("source", "old_source"),)) + PayloadBindingSet(
+            (_binding("source", "new_source"),)
+        )
+
+
+def test_registered_operation_payload_bindings_are_unique() -> None:
     for operation_key, operation_type in RefactorRecipeOperation.__registry__.items():
-        binding_set = operation_type.payload_binding_set()
+        binding_set = operation_type.payload_bindings()
 
         assert isinstance(binding_set, PayloadBindingSet), operation_key
         assert len({binding.field_name for binding in binding_set}) == len(binding_set)
@@ -51,9 +58,9 @@ def test_registered_operation_payload_binding_sets_are_unique() -> None:
         ) == len(binding_set)
 
 
-def test_registered_selector_payload_binding_sets_are_unique() -> None:
+def test_registered_selector_payload_bindings_are_unique() -> None:
     for selector_key, selector_type in CodemodTargetSelector.__registry__.items():
-        binding_set = selector_type.payload_binding_set()
+        binding_set = selector_type.payload_bindings
 
         assert isinstance(binding_set, PayloadBindingSet), selector_key
         assert len({binding.field_name for binding in binding_set}) == len(binding_set)
@@ -63,7 +70,7 @@ def test_registered_selector_payload_binding_sets_are_unique() -> None:
 
 
 def test_role_carrier_operation_declares_inherited_bindings_once() -> None:
-    binding_set = ReplaceRolePrefixedFieldsWithCarriersOperation.payload_binding_set()
+    binding_set = ReplaceRolePrefixedFieldsWithCarriersOperation.payload_bindings()
 
     assert tuple(binding.field_name for binding in binding_set) == (
         "class_name",

@@ -35,13 +35,16 @@ from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 
 def test_registered_payload_bindings_own_exact_codec_leaves() -> None:
-    declaration_types = (
-        *RefactorRecipeOperation.__registry__.values(),
-        *CodemodTargetSelector.__registry__.values(),
+    operation_binding_sets = (
+        declaration_type.payload_bindings()
+        for declaration_type in RefactorRecipeOperation.__registry__.values()
+    )
+    selector_binding_sets = (
+        declaration_type.payload_bindings
+        for declaration_type in CodemodTargetSelector.__registry__.values()
     )
 
-    for declaration_type in declaration_types:
-        binding_set = declaration_type.payload_binding_set()
+    for binding_set in (*operation_binding_sets, *selector_binding_sets):
         assert isinstance(binding_set, PayloadBindingSet)
         for binding in binding_set:
             assert isinstance(binding.codec, PayloadValueCodec)

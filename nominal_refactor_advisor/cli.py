@@ -1789,7 +1789,7 @@ class InlineSourceIndexSelectedOperationTargetSelectorSource(
             )
             for option_name, selector_binding in zip(
                 cls.cli_option_names,
-                SourceIndexTargetSelector.selector_payload_bindings,
+                SourceIndexTargetSelector.payload_bindings,
                 strict=True,
             )
         )

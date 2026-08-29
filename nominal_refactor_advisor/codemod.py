@@ -1924,16 +1924,13 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
     @classmethod
     def payload_bindings(
         cls,
-    ) -> tuple[
-        PayloadBinding[
-            "SourceRewriteTarget",
-            str | None,
-        ],
-        ...,
+    ) -> PayloadBindingSet[
+        "SourceRewriteTarget",
+        str | None,
     ]:
         del cls
-        return (
-            PayloadBinding(
+        return PayloadBindingSet.from_specs(
+            (
                 "target_id",
                 "target_id",
                 StringPayloadValueCodec(
@@ -1941,7 +1938,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
                     allows_empty=True,
                 ),
             ),
-            PayloadBinding(
+            (
                 "target_qualname",
                 "qualname",
                 StringPayloadValueCodec(
@@ -1949,7 +1946,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
                     allows_empty=True,
                 ),
             ),
-            PayloadBinding(
+            (
                 "file_path",
                 "file_path",
                 StringPayloadValueCodec(
@@ -2863,25 +2860,22 @@ class SelectionCountExpectation:
     @classmethod
     def payload_bindings(
         cls,
-    ) -> tuple[
-        PayloadBinding[
-            "SelectionCountExpectation",
-            int | None,
-        ],
-        ...,
+    ) -> PayloadBindingSet[
+        "SelectionCountExpectation",
+        int | None,
     ]:
-        return (
-            PayloadBinding(
+        return PayloadBindingSet.from_specs(
+            (
                 "min",
                 "minimum",
                 IntegerPayloadValueCodec(),
             ),
-            PayloadBinding(
+            (
                 "max",
                 "maximum",
                 IntegerPayloadValueCodec(),
             ),
-            PayloadBinding(
+            (
                 "exact",
                 "exact",
                 IntegerPayloadValueCodec(),
@@ -3340,7 +3334,7 @@ class PayloadBindingSet(
     @classmethod
     def from_specs(
         cls,
-        specs: Iterable[tuple[str, str, PayloadValueCodec]],
+        *specs: tuple[str, str, PayloadValueCodec],
     ) -> Self:
         return cls(
             PayloadBinding(
@@ -3350,6 +3344,9 @@ class PayloadBindingSet(
             )
             for field_name, constructor_argument_name, codec in specs
         )
+
+    def __add__(self, other: Self) -> Self:
+        return type(self)((*self, *other))
 
     @staticmethod
     def require_unique_binding_names(
@@ -3389,7 +3386,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
-    selector_payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet()
+    payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet()
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, JsonValue]) -> "CodemodTargetSelector":
@@ -3412,15 +3409,9 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
         payload: Mapping[str, JsonValue],
     ) -> "CodemodTargetSelector":
         constructor_kwargs: dict[str, JsonValue] = {}
-        for binding in cls.payload_binding_set():
+        for binding in cls.payload_bindings:
             constructor_kwargs.update(binding.constructor_kwargs(payload))
         return cls(**constructor_kwargs)
-
-    @classmethod
-    def payload_binding_set(cls) -> SelectorPayloadBindings:
-        """Return the selector declaration through the uniqueness authority."""
-
-        return PayloadBindingSet(cls.selector_payload_bindings)
 
     def select(self, context: CodemodSelectorContext) -> CodemodTargetSelection:
         return CodemodTargetSelection(self.target_ids(context))
@@ -3437,7 +3428,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     def selector_payload(self) -> JsonObject:
         return {
             key: value
-            for binding in type(self).payload_binding_set()
+            for binding in type(self).payload_bindings
             for key, value in binding.payload_items(self)
         }
 
@@ -3451,22 +3442,12 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
     """Select source-index targets connected to advisor finding evidence."""
 
     finding_ids: tuple[str, ...]
-    selector_payload_bindings: ClassVar[
-        tuple[
-            PayloadBinding[
-                "CodemodTargetSelector",
-                JsonValue,
-            ],
-            ...,
-        ]
-    ] = PayloadBindingSet.from_specs(
+    payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet.from_specs(
         (
-            (
-                "finding_ids",
-                "finding_ids",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-        )
+            "finding_ids",
+            "finding_ids",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
     )
 
     @classmethod
@@ -3487,32 +3468,22 @@ class TargetSetExpressionSelector(CodemodTargetSelector):
     include: tuple[CodemodTargetSelector, ...] = ()
     require: tuple[CodemodTargetSelector, ...] = ()
     exclude: tuple[CodemodTargetSelector, ...] = ()
-    selector_payload_bindings: ClassVar[
-        tuple[
-            PayloadBinding[
-                "CodemodTargetSelector",
-                JsonValue,
-            ],
-            ...,
-        ]
-    ] = PayloadBindingSet.from_specs(
+    payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet.from_specs(
         (
-            (
-                "include",
-                "include",
-                SelectorArrayPayloadValueCodec(),
-            ),
-            (
-                "require",
-                "require",
-                SelectorArrayPayloadValueCodec(),
-            ),
-            (
-                "exclude",
-                "exclude",
-                SelectorArrayPayloadValueCodec(),
-            ),
-        )
+            "include",
+            "include",
+            SelectorArrayPayloadValueCodec(),
+        ),
+        (
+            "require",
+            "require",
+            SelectorArrayPayloadValueCodec(),
+        ),
+        (
+            "exclude",
+            "exclude",
+            SelectorArrayPayloadValueCodec(),
+        ),
     )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -3563,47 +3534,37 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
     file_path_patterns: tuple[str, ...] = ()
     name_patterns: tuple[str, ...] = ()
     qualname_patterns: tuple[str, ...] = ()
-    selector_payload_bindings: ClassVar[
-        tuple[
-            PayloadBinding[
-                "CodemodTargetSelector",
-                JsonValue,
-            ],
-            ...,
-        ]
-    ] = PayloadBindingSet.from_specs(
+    payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet.from_specs(
         (
-            (
-                "node_kinds",
-                "node_kinds",
-                NodeKindArrayPayloadValueCodec(),
-            ),
-            (
-                "file_paths",
-                "file_paths",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-            (
-                "qualnames",
-                "qualnames",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-            (
-                "file_path_patterns",
-                "file_path_patterns",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-            (
-                "name_patterns",
-                "name_patterns",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-            (
-                "qualname_patterns",
-                "qualname_patterns",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-        )
+            "node_kinds",
+            "node_kinds",
+            NodeKindArrayPayloadValueCodec(),
+        ),
+        (
+            "file_paths",
+            "file_paths",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
+        (
+            "qualnames",
+            "qualnames",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
+        (
+            "file_path_patterns",
+            "file_path_patterns",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
+        (
+            "name_patterns",
+            "name_patterns",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
+        (
+            "qualname_patterns",
+            "qualname_patterns",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
     )
 
     @classmethod
@@ -3661,37 +3622,27 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
     include_self: bool = True
     include_ancestors: bool = False
     include_descendants: bool = False
-    selector_payload_bindings: ClassVar[
-        tuple[
-            PayloadBinding[
-                "CodemodTargetSelector",
-                JsonValue,
-            ],
-            ...,
-        ]
-    ] = PayloadBindingSet.from_specs(
+    payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet.from_specs(
         (
-            (
-                "class_symbols",
-                "class_symbols",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-            (
-                "include_self",
-                "include_self",
-                BooleanPayloadValueCodec(declared_default=True),
-            ),
-            (
-                "include_ancestors",
-                "include_ancestors",
-                BooleanPayloadValueCodec(),
-            ),
-            (
-                "include_descendants",
-                "include_descendants",
-                BooleanPayloadValueCodec(),
-            ),
-        )
+            "class_symbols",
+            "class_symbols",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
+        (
+            "include_self",
+            "include_self",
+            BooleanPayloadValueCodec(declared_default=True),
+        ),
+        (
+            "include_ancestors",
+            "include_ancestors",
+            BooleanPayloadValueCodec(),
+        ),
+        (
+            "include_descendants",
+            "include_descendants",
+            BooleanPayloadValueCodec(),
+        ),
     )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -3735,37 +3686,27 @@ class InheritanceEdgeTargetSelector(CodemodTargetSelector):
     child_symbols: tuple[str, ...] = ()
     include_parents: bool = True
     include_children: bool = True
-    selector_payload_bindings: ClassVar[
-        tuple[
-            PayloadBinding[
-                "CodemodTargetSelector",
-                JsonValue,
-            ],
-            ...,
-        ]
-    ] = PayloadBindingSet.from_specs(
+    payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet.from_specs(
         (
-            (
-                "parent_symbols",
-                "parent_symbols",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-            (
-                "child_symbols",
-                "child_symbols",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-            (
-                "include_parents",
-                "include_parents",
-                BooleanPayloadValueCodec(declared_default=True),
-            ),
-            (
-                "include_children",
-                "include_children",
-                BooleanPayloadValueCodec(declared_default=True),
-            ),
-        )
+            "parent_symbols",
+            "parent_symbols",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
+        (
+            "child_symbols",
+            "child_symbols",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
+        (
+            "include_parents",
+            "include_parents",
+            BooleanPayloadValueCodec(declared_default=True),
+        ),
+        (
+            "include_children",
+            "include_children",
+            BooleanPayloadValueCodec(declared_default=True),
+        ),
     )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -3831,22 +3772,12 @@ class CallSiteTargetSelector(CodemodTargetSelector):
     """Select source-index targets that enclose matching call sites."""
 
     callee_names: tuple[str, ...]
-    selector_payload_bindings: ClassVar[
-        tuple[
-            PayloadBinding[
-                "CodemodTargetSelector",
-                JsonValue,
-            ],
-            ...,
-        ]
-    ] = PayloadBindingSet.from_specs(
+    payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet.from_specs(
         (
-            (
-                "callee_names",
-                "callee_names",
-                StringArrayPayloadValueCodec(is_required=False),
-            ),
-        )
+            "callee_names",
+            "callee_names",
+            StringArrayPayloadValueCodec(is_required=False),
+        ),
     )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -5719,7 +5650,7 @@ class RefactorRecipeOperation(
         payload: CodemodPayload,
     ) -> "RefactorRecipeOperation":
         constructor_kwargs: dict[str, object] = {}
-        for binding in cls.payload_binding_set():
+        for binding in cls.payload_bindings():
             constructor_kwargs.update(binding.constructor_kwargs(payload.fields))
         return cls(
             target=target,
@@ -5731,16 +5662,10 @@ class RefactorRecipeOperation(
     def payload_bindings(cls) -> OperationPayloadBindings:
         return PayloadBindingSet()
 
-    @classmethod
-    def payload_binding_set(cls) -> OperationPayloadBindings:
-        """Return the operation declaration through the uniqueness authority."""
-
-        return PayloadBindingSet(cls.payload_bindings())
-
     def operation_payload(self) -> JsonObject:
         return {
             key: value
-            for binding in type(self).payload_binding_set()
+            for binding in type(self).payload_bindings()
             for key, value in binding.payload_items(self)
             if value is not None
         }
@@ -6025,12 +5950,12 @@ class StringPayloadOperation(RefactorRecipeOperation, ABC):
     payload_value: str
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        return (
-            PayloadBinding(
-                field_name=cls.payload_field_name,
-                constructor_argument_name="payload_value",
-                codec=StringPayloadValueCodec(),
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        return PayloadBindingSet.from_specs(
+            (
+                cls.payload_field_name,
+                "payload_value",
+                StringPayloadValueCodec(),
             ),
         )
 
@@ -6074,18 +5999,18 @@ class ReplaceTextOperation(RefactorRecipeOperation):
     new_source: str
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBinding(
-                field_name=OLD_SOURCE_PAYLOAD_FIELD,
-                constructor_argument_name="old_source",
-                codec=StringPayloadValueCodec(),
+        return PayloadBindingSet.from_specs(
+            (
+                OLD_SOURCE_PAYLOAD_FIELD,
+                "old_source",
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=NEW_SOURCE_PAYLOAD_FIELD,
-                constructor_argument_name="new_source",
-                codec=StringPayloadValueCodec(
+            (
+                NEW_SOURCE_PAYLOAD_FIELD,
+                "new_source",
+                StringPayloadValueCodec(
                     is_required=False,
                     allows_empty=True,
                     missing_value="",
@@ -6117,13 +6042,13 @@ class CreateFileOperation(StringPayloadOperation):
     contributes_source_overlay = True
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBinding(
-                field_name=SOURCE_PAYLOAD_FIELD,
-                constructor_argument_name="payload_value",
-                codec=StringPayloadValueCodec(
+        return PayloadBindingSet.from_specs(
+            (
+                SOURCE_PAYLOAD_FIELD,
+                "payload_value",
+                StringPayloadValueCodec(
                     is_required=False,
                     allows_empty=True,
                     missing_value="",
@@ -6226,13 +6151,13 @@ class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
     assignment_names: tuple[str, ...]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBinding(
-                field_name=ASSIGNMENT_NAMES_PAYLOAD_FIELD,
-                constructor_argument_name="assignment_names",
-                codec=StringArrayPayloadValueCodec(),
+        return PayloadBindingSet.from_specs(
+            (
+                ASSIGNMENT_NAMES_PAYLOAD_FIELD,
+                "assignment_names",
+                StringArrayPayloadValueCodec(),
             ),
         )
 
@@ -6283,18 +6208,18 @@ class ReplaceModuleAssignmentOperation(
     assignment_name: str
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBinding(
-                field_name=ASSIGNMENT_NAME_PAYLOAD_FIELD,
-                constructor_argument_name="assignment_name",
-                codec=StringPayloadValueCodec(),
+        return PayloadBindingSet.from_specs(
+            (
+                ASSIGNMENT_NAME_PAYLOAD_FIELD,
+                "assignment_name",
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=SOURCE_PAYLOAD_FIELD,
-                constructor_argument_name="payload_value",
-                codec=StringPayloadValueCodec(
+            (
+                SOURCE_PAYLOAD_FIELD,
+                "payload_value",
+                StringPayloadValueCodec(
                     is_required=False,
                     allows_empty=True,
                     missing_value="",
@@ -6347,22 +6272,22 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     member_constructor_argument_name: ClassVar[str]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        return (
-            PayloadBinding(
-                field_name=BASE_NAME_PAYLOAD_FIELD,
-                constructor_argument_name=BASE_NAME_PAYLOAD_FIELD,
-                codec=StringPayloadValueCodec(),
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        return PayloadBindingSet.from_specs(
+            (
+                BASE_NAME_PAYLOAD_FIELD,
+                BASE_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=CLASS_NAMES_PAYLOAD_FIELD,
-                constructor_argument_name=CLASS_NAMES_PAYLOAD_FIELD,
-                codec=StringArrayPayloadValueCodec(),
+            (
+                CLASS_NAMES_PAYLOAD_FIELD,
+                CLASS_NAMES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=cls.member_payload_field_name,
-                constructor_argument_name=cls.member_constructor_argument_name,
-                codec=StringArrayPayloadValueCodec(),
+            (
+                cls.member_payload_field_name,
+                cls.member_constructor_argument_name,
+                StringArrayPayloadValueCodec(),
             ),
         )
 
@@ -7082,32 +7007,30 @@ class ExtractMethodsToClassOperation(
         del cls
         return PayloadBindingSet.from_specs(
             (
-                (
-                    DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
-                    DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
-                    StringPayloadValueCodec(),
-                ),
-                (
-                    METHOD_NAMES_PAYLOAD_FIELD,
-                    "extracted_method_names",
-                    StringArrayPayloadValueCodec(),
-                ),
-                (
-                    FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
-                    FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
-                    StringArrayPayloadValueCodec(is_required=False),
-                ),
-                (
-                    CLASS_BASE_NAMES_PAYLOAD_FIELD,
-                    CLASS_BASE_NAMES_PAYLOAD_FIELD,
-                    StringArrayPayloadValueCodec(is_required=False),
-                ),
-                (
-                    CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD,
-                    CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD,
-                    StringArrayPayloadValueCodec(is_required=False),
-                ),
-            )
+                DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
+                DESTINATION_CLASS_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
+            ),
+            (
+                METHOD_NAMES_PAYLOAD_FIELD,
+                "extracted_method_names",
+                StringArrayPayloadValueCodec(),
+            ),
+            (
+                FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
+                FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(is_required=False),
+            ),
+            (
+                CLASS_BASE_NAMES_PAYLOAD_FIELD,
+                CLASS_BASE_NAMES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(is_required=False),
+            ),
+            (
+                CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD,
+                CLASS_DECORATOR_SOURCES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(is_required=False),
+            ),
         )
 
     def source_edits_for_target_node(
@@ -7462,42 +7385,40 @@ class CollapseFieldsToCarrierOperation(
         del cls
         return PayloadBindingSet.from_specs(
             (
-                (
-                    CARRIER_NAME_PAYLOAD_FIELD,
-                    CARRIER_NAME_PAYLOAD_FIELD,
-                    StringPayloadValueCodec(),
-                ),
-                (
-                    CLASS_NAMES_PAYLOAD_FIELD,
-                    CLASS_NAMES_PAYLOAD_FIELD,
-                    StringArrayPayloadValueCodec(),
-                ),
-                (
-                    FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
-                    FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
-                    StringArrayPayloadValueCodec(),
-                ),
-                (
-                    CARRIER_BASE_NAMES_PAYLOAD_FIELD,
-                    CARRIER_BASE_NAMES_PAYLOAD_FIELD,
-                    StringArrayPayloadValueCodec(is_required=False),
-                ),
-                (
-                    CARRIER_DATACLASS_ARGUMENTS_PAYLOAD_FIELD,
-                    CARRIER_DATACLASS_ARGUMENTS_PAYLOAD_FIELD,
-                    StringArrayPayloadValueCodec(is_required=False),
-                ),
-                (
-                    INHERITED_FIELD_NAMES_PAYLOAD_FIELD,
-                    INHERITED_FIELD_NAMES_PAYLOAD_FIELD,
-                    StringArrayPayloadValueCodec(is_required=False),
-                ),
-                (
-                    INSERT_CARRIER_PAYLOAD_FIELD,
-                    INSERT_CARRIER_PAYLOAD_FIELD,
-                    BooleanPayloadValueCodec(declared_default=True),
-                ),
-            )
+                CARRIER_NAME_PAYLOAD_FIELD,
+                CARRIER_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
+            ),
+            (
+                CLASS_NAMES_PAYLOAD_FIELD,
+                CLASS_NAMES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(),
+            ),
+            (
+                FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
+                FIELD_DECLARATION_SOURCES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(),
+            ),
+            (
+                CARRIER_BASE_NAMES_PAYLOAD_FIELD,
+                CARRIER_BASE_NAMES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(is_required=False),
+            ),
+            (
+                CARRIER_DATACLASS_ARGUMENTS_PAYLOAD_FIELD,
+                CARRIER_DATACLASS_ARGUMENTS_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(is_required=False),
+            ),
+            (
+                INHERITED_FIELD_NAMES_PAYLOAD_FIELD,
+                INHERITED_FIELD_NAMES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(is_required=False),
+            ),
+            (
+                INSERT_CARRIER_PAYLOAD_FIELD,
+                INSERT_CARRIER_PAYLOAD_FIELD,
+                BooleanPayloadValueCodec(declared_default=True),
+            ),
         )
 
     @property
@@ -7623,27 +7544,25 @@ class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
     def carrier_projection_payload_bindings(cls) -> OperationPayloadBindings:
         return PayloadBindingSet.from_specs(
             (
-                (
-                    CLASS_NAME_PAYLOAD_FIELD,
-                    "class_name",
-                    StringPayloadValueCodec(),
-                ),
-                (
-                    FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
-                    "field_projection_pairs",
-                    StringArrayPayloadValueCodec(),
-                ),
-                (
-                    CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
-                    "constructor_names",
-                    StringArrayPayloadValueCodec(is_required=False),
-                ),
-                (
-                    ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
-                    "attribute_owner_expressions",
-                    StringArrayPayloadValueCodec(is_required=False),
-                ),
-            )
+                CLASS_NAME_PAYLOAD_FIELD,
+                "class_name",
+                StringPayloadValueCodec(),
+            ),
+            (
+                FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
+                "field_projection_pairs",
+                StringArrayPayloadValueCodec(),
+            ),
+            (
+                CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
+                "constructor_names",
+                StringArrayPayloadValueCodec(is_required=False),
+            ),
+            (
+                ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
+                "attribute_owner_expressions",
+                StringArrayPayloadValueCodec(is_required=False),
+            ),
         )
 
     @property
@@ -7659,18 +7578,14 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return (
-            *CarrierProjectionOperationBase.carrier_projection_payload_bindings(),
-            *PayloadBindingSet.from_specs(
+        return super().carrier_projection_payload_bindings() + (
+            PayloadBindingSet.from_specs(
                 (
-                    (
-                        "carrier_field_declaration",
-                        "carrier_field_declaration",
-                        StringPayloadValueCodec(),
-                    ),
-                )
-            ),
+                    "carrier_field_declaration",
+                    "carrier_field_declaration",
+                    StringPayloadValueCodec(),
+                ),
+            )
         )
 
     @property
@@ -8006,23 +7921,19 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return (
-            *CarrierProjectionOperationBase.carrier_projection_payload_bindings(),
-            *PayloadBindingSet.from_specs(
+        return super().carrier_projection_payload_bindings() + (
+            PayloadBindingSet.from_specs(
                 (
-                    (
-                        CARRIER_SOURCE_PAYLOAD_FIELD,
-                        CARRIER_SOURCE_PAYLOAD_FIELD,
-                        StringPayloadValueCodec(),
-                    ),
-                    (
-                        CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
-                        CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
-                        StringArrayPayloadValueCodec(),
-                    ),
-                )
-            ),
+                    CARRIER_SOURCE_PAYLOAD_FIELD,
+                    CARRIER_SOURCE_PAYLOAD_FIELD,
+                    StringPayloadValueCodec(),
+                ),
+                (
+                    CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
+                    CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
+                    StringArrayPayloadValueCodec(),
+                ),
+            )
         )
 
     @property
@@ -8384,20 +8295,18 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
     )
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         return PayloadBindingSet.from_specs(
             (
-                (
-                    "selector",
-                    "selector",
-                    SelectorObjectPayloadValueCodec(),
-                ),
-                (
-                    SELECTION_COUNT_PAYLOAD_FIELD,
-                    "selection_count",
-                    SelectionCountPayloadValueCodec(),
-                ),
-            )
+                "selector",
+                "selector",
+                SelectorObjectPayloadValueCodec(),
+            ),
+            (
+                SELECTION_COUNT_PAYLOAD_FIELD,
+                "selection_count",
+                SelectionCountPayloadValueCodec(),
+            ),
         )
 
     def selector_context(
@@ -8446,17 +8355,12 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
     operation_templates: tuple[RefactorRecipeOperationTemplate, ...]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        return (
-            *super().payload_bindings(),
-            *PayloadBindingSet.from_specs(
-                (
-                    (
-                        OPERATION_TEMPLATES_PAYLOAD_FIELD,
-                        "operation_templates",
-                        OperationTemplateArrayPayloadValueCodec(),
-                    ),
-                )
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        return super().payload_bindings() + PayloadBindingSet.from_specs(
+            (
+                OPERATION_TEMPLATES_PAYLOAD_FIELD,
+                "operation_templates",
+                OperationTemplateArrayPayloadValueCodec(),
             ),
         )
 
@@ -8535,15 +8439,15 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
     call_replacements: tuple[RecipeCallReplacement, ...] = ()
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        del cls
-        return (
-            *AuthoritySourceOperation.payload_bindings(),
-            PayloadBinding(
-                field_name=CALL_REPLACEMENTS_PAYLOAD_FIELD,
-                constructor_argument_name="call_replacements",
-                codec=CallReplacementArrayPayloadValueCodec(),
-            ),
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        return super().payload_bindings() + (
+            PayloadBindingSet.from_specs(
+                (
+                    CALL_REPLACEMENTS_PAYLOAD_FIELD,
+                    "call_replacements",
+                    CallReplacementArrayPayloadValueCodec(),
+                ),
+            )
         )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
@@ -8600,16 +8504,14 @@ class DeclareAuthorityOperation(
         return (self.authority_claim,)
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        del cls
-        return (
-            PayloadBinding(
-                field_name=AuthorityClaimPayload.claim_field_name,
-                constructor_argument_name="authority_claim",
-                codec=AuthorityClaimPayloadValueCodec(),
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        return PayloadBindingSet.from_specs(
+            (
+                AuthorityClaimPayload.claim_field_name,
+                "authority_claim",
+                AuthorityClaimPayloadValueCodec(),
             ),
-            *AuthoritySourceOperation.payload_bindings(),
-        )
+        ) + super().payload_bindings()
 
     def source_edits(
         self,
@@ -8837,18 +8739,18 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
     import_names: tuple[str, ...]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBinding(
-                field_name=MODULE_NAME_PAYLOAD_FIELD,
-                constructor_argument_name="module_name",
-                codec=StringPayloadValueCodec(),
+        return PayloadBindingSet.from_specs(
+            (
+                MODULE_NAME_PAYLOAD_FIELD,
+                "module_name",
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=IMPORT_NAMES_PAYLOAD_FIELD,
-                constructor_argument_name="import_names",
-                codec=StringArrayPayloadValueCodec(),
+            (
+                IMPORT_NAMES_PAYLOAD_FIELD,
+                "import_names",
+                StringArrayPayloadValueCodec(),
             ),
         )
 
@@ -9978,10 +9880,12 @@ class MoveSymbolToModuleOperation(
     """Move one module-level class or function into another existing module."""
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        return (
-            cls.destination_path_payload_binding(),
-            cls.replacement_import_payload_binding(),
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        return PayloadBindingSet(
+            (
+                cls.destination_path_payload_binding(),
+                cls.replacement_import_payload_binding(),
+            )
         )
 
     def source_edits_for_target_node(
@@ -10021,15 +9925,18 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
     reports_preflight = True
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        return (
-            PayloadBinding(
-                field_name=SYMBOL_QUALNAMES_PAYLOAD_FIELD,
-                constructor_argument_name=SYMBOL_QUALNAMES_PAYLOAD_FIELD,
-                codec=StringArrayPayloadValueCodec(),
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        return PayloadBindingSet.from_specs(
+            (
+                SYMBOL_QUALNAMES_PAYLOAD_FIELD,
+                SYMBOL_QUALNAMES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(),
             ),
-            cls.destination_path_payload_binding(),
-            cls.replacement_import_payload_binding(),
+        ) + PayloadBindingSet(
+            (
+                cls.destination_path_payload_binding(),
+                cls.replacement_import_payload_binding(),
+            )
         )
 
     def dependency_report(
@@ -10393,49 +10300,49 @@ class ExposeGlobalCandidateCacheContextOperation(
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBinding(
-                field_name=CANDIDATE_TYPE_NAME_PAYLOAD_FIELD,
-                constructor_argument_name="candidate_type_name",
-                codec=StringPayloadValueCodec(),
+        return PayloadBindingSet.from_specs(
+            (
+                CANDIDATE_TYPE_NAME_PAYLOAD_FIELD,
+                "candidate_type_name",
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD,
-                constructor_argument_name="candidate_collector_name",
-                codec=StringPayloadValueCodec(),
+            (
+                CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD,
+                "candidate_collector_name",
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD,
-                constructor_argument_name="candidate_collector_scope",
-                codec=StringPayloadValueCodec(
+            (
+                CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD,
+                "candidate_collector_scope",
+                StringPayloadValueCodec(
                     is_required=False,
                     allows_empty=True,
                     missing_value=WholeModuleCandidateCollectorScopeSource.scope_key,
                 ),
             ),
-            PayloadBinding(
-                field_name=CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD,
-                constructor_argument_name="candidate_collector_uses_config",
-                codec=BooleanPayloadValueCodec(),
+            (
+                CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD,
+                "candidate_collector_uses_config",
+                BooleanPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD,
-                constructor_argument_name="candidate_item_sort_attributes",
-                codec=StringArrayPayloadValueCodec(is_required=False),
+            (
+                CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD,
+                "candidate_item_sort_attributes",
+                StringArrayPayloadValueCodec(is_required=False),
             ),
-            PayloadBinding(
-                field_name=BASE_NAME_PAYLOAD_FIELD,
-                constructor_argument_name="replaced_base_name",
-                codec=StringPayloadValueCodec(
+            (
+                BASE_NAME_PAYLOAD_FIELD,
+                "replaced_base_name",
+                StringPayloadValueCodec(
                     is_required=False,
                     allows_empty=True,
                     missing_value="IssueDetector",
                 ),
             ),
-            PayloadBinding(
-                field_name=IMPORT_SOURCE_PAYLOAD_FIELD,
-                constructor_argument_name="import_source",
-                codec=StringPayloadValueCodec(
+            (
+                IMPORT_SOURCE_PAYLOAD_FIELD,
+                "import_source",
+                StringPayloadValueCodec(
                     is_required=False,
                     allows_empty=True,
                     missing_value="",
@@ -10653,28 +10560,28 @@ class DeriveAutoregisterInstanceViewOperation(
     method_name: str
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBinding(
-                field_name=BASE_NAME_PAYLOAD_FIELD,
-                constructor_argument_name=BASE_NAME_PAYLOAD_FIELD,
-                codec=StringPayloadValueCodec(),
+        return PayloadBindingSet.from_specs(
+            (
+                BASE_NAME_PAYLOAD_FIELD,
+                BASE_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=ASSIGNMENT_NAME_PAYLOAD_FIELD,
-                constructor_argument_name=ASSIGNMENT_NAME_PAYLOAD_FIELD,
-                codec=StringPayloadValueCodec(),
+            (
+                ASSIGNMENT_NAME_PAYLOAD_FIELD,
+                ASSIGNMENT_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
-                constructor_argument_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
-                codec=StringArrayPayloadValueCodec(),
+            (
+                CLASS_KEY_PAIRS_PAYLOAD_FIELD,
+                CLASS_KEY_PAIRS_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=METHOD_NAME_PAYLOAD_FIELD,
-                constructor_argument_name=METHOD_NAME_PAYLOAD_FIELD,
-                codec=StringPayloadValueCodec(),
+            (
+                METHOD_NAME_PAYLOAD_FIELD,
+                METHOD_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
             ),
         )
 
@@ -11034,32 +10941,28 @@ class ConvertManualRegistryToAutoregisterOperation(
         )
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            *PayloadBindingSet.from_specs(
-                (
-                    (
-                        BASE_NAME_PAYLOAD_FIELD,
-                        BASE_NAME_PAYLOAD_FIELD,
-                        StringPayloadValueCodec(),
-                    ),
-                    (
-                        REGISTRY_NAME_PAYLOAD_FIELD,
-                        REGISTRY_NAME_PAYLOAD_FIELD,
-                        StringPayloadValueCodec(),
-                    ),
-                    (
-                        REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                        REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                        StringPayloadValueCodec(),
-                    ),
-                )
+        return PayloadBindingSet.from_specs(
+            (
+                BASE_NAME_PAYLOAD_FIELD,
+                BASE_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
-                constructor_argument_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
-                codec=StringArrayPayloadValueCodec(),
+            (
+                REGISTRY_NAME_PAYLOAD_FIELD,
+                REGISTRY_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
+            ),
+            (
+                REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
+            ),
+            (
+                CLASS_KEY_PAIRS_PAYLOAD_FIELD,
+                CLASS_KEY_PAIRS_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(),
             ),
         )
 
@@ -11912,37 +11815,33 @@ class DispatchToPolymorphismOperation(
     """Replace simple literal dispatch functions with strategy subclasses."""
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            *PayloadBindingSet.from_specs(
-                (
-                    (
-                        DISPATCH_AXIS_EXPRESSION_PAYLOAD_FIELD,
-                        DISPATCH_AXIS_EXPRESSION_PAYLOAD_FIELD,
-                        StringPayloadValueCodec(),
-                    ),
-                    (
-                        BASE_NAME_PAYLOAD_FIELD,
-                        BASE_NAME_PAYLOAD_FIELD,
-                        StringPayloadValueCodec(),
-                    ),
-                    (
-                        CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                        CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                        StringPayloadValueCodec(),
-                    ),
-                    (
-                        METHOD_NAME_PAYLOAD_FIELD,
-                        METHOD_NAME_PAYLOAD_FIELD,
-                        StringPayloadValueCodec(),
-                    ),
-                )
+        return PayloadBindingSet.from_specs(
+            (
+                DISPATCH_AXIS_EXPRESSION_PAYLOAD_FIELD,
+                DISPATCH_AXIS_EXPRESSION_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
             ),
-            PayloadBinding(
-                field_name=LITERAL_CASES_PAYLOAD_FIELD,
-                constructor_argument_name=LITERAL_CASES_PAYLOAD_FIELD,
-                codec=StringArrayPayloadValueCodec(),
+            (
+                BASE_NAME_PAYLOAD_FIELD,
+                BASE_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
+            ),
+            (
+                CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
+            ),
+            (
+                METHOD_NAME_PAYLOAD_FIELD,
+                METHOD_NAME_PAYLOAD_FIELD,
+                StringPayloadValueCodec(),
+            ),
+            (
+                LITERAL_CASES_PAYLOAD_FIELD,
+                LITERAL_CASES_PAYLOAD_FIELD,
+                StringArrayPayloadValueCodec(),
             ),
         )
 
@@ -12193,13 +12092,13 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
     record_names: tuple[str, ...]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBinding(
-                field_name=RECORD_NAMES_PAYLOAD_FIELD,
-                constructor_argument_name="record_names",
-                codec=StringArrayPayloadValueCodec(),
+        return PayloadBindingSet.from_specs(
+            (
+                RECORD_NAMES_PAYLOAD_FIELD,
+                "record_names",
+                StringArrayPayloadValueCodec(),
             ),
         )
 
