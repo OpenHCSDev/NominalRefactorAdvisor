@@ -16772,61 +16772,63 @@ class CompactPublicApiPrivateDelegateContext:
     shell_candidates: tuple[PublicApiPrivateDelegateShellCandidate, ...]
     family_candidates: tuple[PublicApiPrivateDelegateFamilyCandidate, ...]
 
+    @classmethod
+    def from_projections(
+        cls,
+        projections: tuple[PublicApiPrivateDelegateModuleFacts, ...],
+        config: DetectorConfig,
+    ) -> "CompactPublicApiPrivateDelegateContext":
+        return cls(
+            shell_candidates=_public_api_private_delegate_shell_candidates_from_facts(
+                projections, config
+            ),
+            family_candidates=_public_api_private_delegate_family_candidates_from_facts(
+                projections, config
+            ),
+        )
 
-def _compact_public_api_private_delegate_context(
-    projections: tuple[PublicApiPrivateDelegateModuleFacts, ...],
-    config: DetectorConfig,
-) -> CompactPublicApiPrivateDelegateContext:
-    return CompactPublicApiPrivateDelegateContext(
-        shell_candidates=_public_api_private_delegate_shell_candidates_from_facts(
-            projections, config
-        ),
-        family_candidates=_public_api_private_delegate_family_candidates_from_facts(
-            projections, config
-        ),
-    )
+
+PublicApiPrivateDelegateCandidateT = TypeVar("PublicApiPrivateDelegateCandidateT")
 
 
 class _CompactPublicApiPrivateDelegateDetectorBase(
-    CompactModuleProjectionDetectorMixin[PublicApiPrivateDelegateModuleFacts],
+    CompactContextCandidateDetector[
+        PublicApiPrivateDelegateModuleFacts,
+        CompactPublicApiPrivateDelegateContext,
+        PublicApiPrivateDelegateCandidateT,
+    ],
+    Generic[PublicApiPrivateDelegateCandidateT],
 ):
     module_projection_family = CompactPublicApiPrivateDelegateModuleProjectionFamily
     compact_shared_context_builder = staticmethod(
-        _compact_public_api_private_delegate_context
+        CompactPublicApiPrivateDelegateContext.from_projections
     )
-    compact_candidate_attribute: ClassVar[str]
 
-    def _findings_from_compact_projections(
-        self,
+    @classmethod
+    def _compact_context_from_projections(
+        cls,
         projections: tuple[PublicApiPrivateDelegateModuleFacts, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_from_compact_context(
-            projections,
-            _compact_public_api_private_delegate_context(projections, config),
-            config,
+    ) -> CompactPublicApiPrivateDelegateContext:
+        return CompactPublicApiPrivateDelegateContext.from_projections(
+            projections, config
         )
 
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[PublicApiPrivateDelegateModuleFacts, ...],
+    @classmethod
+    def _compact_context_from_shared(
+        cls,
         context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del projections
+    ) -> CompactPublicApiPrivateDelegateContext:
         if not isinstance(context, CompactPublicApiPrivateDelegateContext):
             raise TypeError("compact public/private delegate context is unavailable")
-        return self._findings_for_candidates(
-            getattr(context, type(self).compact_candidate_attribute),
-            config,
-        )
+        return context
 
 
 class PublicApiPrivateDelegateShellDetector(
-    _CompactPublicApiPrivateDelegateDetectorBase,
-    IssueDetector,
+    _CompactPublicApiPrivateDelegateDetectorBase[
+        PublicApiPrivateDelegateShellCandidate
+    ],
 ):
-    compact_candidate_attribute = "shell_candidates"
     ssot_authority_boundary = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -16837,6 +16839,14 @@ class PublicApiPrivateDelegateShellDetector(
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _ACCESSOR_WRAPPER_INTERFACE_IDENTITY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
+
+    def _candidates_from_compact_context(
+        self,
+        context: CompactPublicApiPrivateDelegateContext,
+        config: DetectorConfig,
+    ) -> Sequence[PublicApiPrivateDelegateShellCandidate]:
+        del config
+        return context.shell_candidates
 
     def _findings_for_candidates(
         self,
@@ -16874,12 +16884,10 @@ class PublicApiPrivateDelegateShellDetector(
 
 
 class PublicApiPrivateDelegateFamilyDetector(
-    _CompactPublicApiPrivateDelegateDetectorBase,
-    ConfiguredCrossModuleCollectorCandidateDetector[
+    _CompactPublicApiPrivateDelegateDetectorBase[
         PublicApiPrivateDelegateFamilyCandidate
     ],
 ):
-    compact_candidate_attribute = "family_candidates"
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Multiple public shells over one private delegate should collapse into a public facade family",
@@ -16890,7 +16898,13 @@ class PublicApiPrivateDelegateFamilyDetector(
         _ACCESSOR_WRAPPER_INTERFACE_IDENTITY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    candidate_collector = staticmethod(_public_api_private_delegate_family_candidates)
+    def _candidates_from_compact_context(
+        self,
+        context: CompactPublicApiPrivateDelegateContext,
+        config: DetectorConfig,
+    ) -> Sequence[PublicApiPrivateDelegateFamilyCandidate]:
+        del config
+        return context.family_candidates
 
     def _findings_for_candidates(
         self,

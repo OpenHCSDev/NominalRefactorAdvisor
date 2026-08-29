@@ -7683,16 +7683,6 @@ def _public_api_private_delegate_shell_candidates_from_facts(
     )
 
 
-def _public_api_private_delegate_shell_candidates(
-    modules: Sequence[ParsedModule],
-    config: DetectorConfig,
-) -> tuple[PublicApiPrivateDelegateShellCandidate, ...]:
-    return _public_api_private_delegate_shell_candidates_from_facts(
-        tuple(_public_api_private_delegate_module_facts(module) for module in modules),
-        config,
-    )
-
-
 def _public_api_private_delegate_family_candidates_from_facts(
     module_facts: Sequence[PublicApiPrivateDelegateModuleFacts],
     config: DetectorConfig,
@@ -7767,16 +7757,6 @@ def _public_api_private_delegate_family_candidates_from_facts(
             item.delegate_root_symbol,
             item.wrappers[0].line,
         ),
-    )
-
-
-def _public_api_private_delegate_family_candidates(
-    modules: Sequence[ParsedModule],
-    config: DetectorConfig,
-) -> tuple[PublicApiPrivateDelegateFamilyCandidate, ...]:
-    return _public_api_private_delegate_family_candidates_from_facts(
-        tuple(_public_api_private_delegate_module_facts(module) for module in modules),
-        config,
     )
 
 

@@ -6742,7 +6742,7 @@ def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
     ) < sum(len(item.authorities) + len(item.locals) for item in projections)
 
 
-def test_compact_public_private_delegate_context_matches_legacy_ast_candidates(
+def test_compact_public_private_delegate_context_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -6776,28 +6776,45 @@ def test_compact_public_private_delegate_context_matches_legacy_ast_candidates(
     shell_detector = runtime_detectors.PublicApiPrivateDelegateShellDetector()
     family_detector = runtime_detectors.PublicApiPrivateDelegateFamilyDetector()
     projections = type(shell_detector).compact_module_projections(modules)
-    context = runtime_detectors._compact_public_api_private_delegate_context(
+    context = runtime_detectors.CompactPublicApiPrivateDelegateContext.from_projections(
         projections, config
     )
-    legacy_shell_candidates = (
-        runtime_detectors._public_api_private_delegate_shell_candidates(modules, config)
-    )
-    legacy_family_candidates = (
-        runtime_detectors._public_api_private_delegate_family_candidates(
-            modules, config
-        )
-    )
 
-    assert context.shell_candidates == legacy_shell_candidates
-    assert context.family_candidates == legacy_family_candidates
     assert len(context.shell_candidates) == 2
     assert len(context.family_candidates) == 1
+    assert shell_detector._candidate_items(list(modules), config) == (
+        context.shell_candidates
+    )
+    assert family_detector._candidate_items(list(modules), config) == (
+        context.family_candidates
+    )
     assert shell_detector._findings_from_compact_context(
         projections, context, config
-    ) == shell_detector._findings_for_candidates(legacy_shell_candidates, config)
+    ) == shell_detector._findings_for_candidates(context.shell_candidates, config)
     assert family_detector._findings_from_compact_context(
         projections, context, config
-    ) == family_detector._findings_for_candidates(legacy_family_candidates, config)
+    ) == family_detector._findings_for_candidates(context.family_candidates, config)
+    assert {candidate.wrapper.qualname for candidate in context.shell_candidates} == {
+        "route_scoring",
+        "scoring_engine_requires_electrostatics",
+    }
+    family_candidate = context.family_candidates[0]
+    assert family_candidate.delegate_root_symbol == "_Router"
+    assert family_candidate.wrapper_names == (
+        "route_scoring",
+        "scoring_engine_requires_electrostatics",
+    )
+    assert "candidate_collector" not in type(family_detector).__dict__
+    for removed_name in (
+        "_compact_public_api_private_delegate_context",
+        "_public_api_private_delegate_shell_candidates",
+        "_public_api_private_delegate_family_candidates",
+    ):
+        assert not hasattr(runtime_detectors, removed_name)
+    assert not hasattr(
+        runtime_detectors._CompactPublicApiPrivateDelegateDetectorBase,
+        "compact_candidate_attribute",
+    )
     detector_types = (type(shell_detector), type(family_detector))
     accumulator = accumulate_compact_global_projections_for_roots(
         (tmp_path,), detector_types, use_parse_cache=False
