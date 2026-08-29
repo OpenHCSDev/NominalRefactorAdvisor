@@ -22,10 +22,13 @@ import hashlib
 import importlib
 import importlib.util
 import inspect
+import os
 import re
+import stat
+import tempfile
 import textwrap
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclass_fields
@@ -222,33 +225,72 @@ class CodemodActionability(StrEnum):
     SEMANTIC_UNCERTAINTY_REVIEW = "semantic_uncertainty_review"
 
 
+class FindingRecipeSynthesisDisposition(StrEnum):
+    """Reporting disposition carried by each terminal synthesis status."""
+
+    PLANNED = "planned"
+    REJECTED = "rejected"
+    UNSUPPORTED = "unsupported"
+    UNCOUNTED = "uncounted"
+
+
 class FindingRecipeSynthesisStatus(StrEnum):
     """Recipe-synthesis outcome for one advisor finding."""
 
-    PLANNED = ("planned", "")
+    PLANNED = ("planned", "", FindingRecipeSynthesisDisposition.PLANNED)
     NO_SYNTHESIZER = (
         "no_synthesizer",
         "no registered finding-to-recipe synthesizer",
+        FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     NO_ACTION_KEYS = (
         "no_action_keys",
         "synthesizer produced no source action keys",
+        FindingRecipeSynthesisDisposition.UNCOUNTED,
     )
     DUPLICATE_ACTION_KEYS = (
         "duplicate_action_keys",
         "all source action keys were claimed by earlier recipes",
+        FindingRecipeSynthesisDisposition.UNCOUNTED,
     )
-    REJECTED_BY_SAFETY_CHECK = ("rejected_by_safety_check", "")
+    NO_EFFECTIVE_REWRITES = (
+        "no_effective_rewrites",
+        "synthesizer recipe produced no effective source rewrites",
+        FindingRecipeSynthesisDisposition.REJECTED,
+    )
+    REJECTED_BY_SAFETY_CHECK = (
+        "rejected_by_safety_check",
+        "",
+        FindingRecipeSynthesisDisposition.REJECTED,
+    )
 
-    def __new__(cls, value: str, default_reason: str) -> "FindingRecipeSynthesisStatus":
+    def __new__(
+        cls,
+        value: str,
+        default_reason: str,
+        disposition: FindingRecipeSynthesisDisposition,
+    ) -> "FindingRecipeSynthesisStatus":
         member = str.__new__(cls, value)
         member._value_ = value
         member._default_reason = default_reason
+        member._disposition = disposition
         return member
 
     @property
     def default_reason(self) -> str:
         return self._default_reason
+
+    @property
+    def planned(self) -> bool:
+        return self._disposition is FindingRecipeSynthesisDisposition.PLANNED
+
+    @property
+    def rejected(self) -> bool:
+        return self._disposition is FindingRecipeSynthesisDisposition.REJECTED
+
+    @property
+    def unsupported(self) -> bool:
+        return self._disposition is FindingRecipeSynthesisDisposition.UNSUPPORTED
 
     def result(
         self,
@@ -804,6 +846,11 @@ class CodemodPlanPreflightReport:
     @property
     def preflight_failed(self) -> bool:
         return not self.is_clean
+
+    def require_clean(self) -> None:
+        for report in self.reports:
+            if report.status is CodemodPreflightStatus.FAILED:
+                raise CodemodOperationPreflightError(report)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -1957,12 +2004,21 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
             return None
         return matching_target_ids[0]
 
-    def required_target_id(self, source_index: SourceIndex) -> str:
-        target_id = self.optional_target_id(source_index)
+    def required_target_id(
+        self,
+        source_index: SourceIndex,
+        *,
+        eligible_target_ids: Iterable[str] | None = None,
+    ) -> str:
+        target_id = self.optional_target_id(
+            source_index,
+            eligible_target_ids=eligible_target_ids,
+        )
         if target_id is not None:
             return target_id
         raise ValueError(
-            "Source rewrite target did not resolve to exactly one source-index target"
+            "Source rewrite target did not resolve to exactly one eligible "
+            "source-index target"
         )
 
     def matches_target(
@@ -2422,6 +2478,35 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self.modules_with_source_overlay(source_overlay)
         )
 
+    def with_created_source_paths(
+        self,
+        source_paths: Iterable[str],
+    ) -> "CodemodSourceSnapshot":
+        path_tuple = tuple(source_paths)
+        duplicate_paths = tuple(
+            sorted(
+                path
+                for path, count in Counter(path_tuple).items()
+                if count > 1
+            )
+        )
+        existing_paths = tuple(
+            sorted(set(path_tuple).intersection(self.sources_by_file_path))
+        )
+        if duplicate_paths or existing_paths:
+            raise CodemodOperationPreflightError(
+                CodemodOperationPreflightReport(
+                    operation=RefactorRecipeOperationKind.CREATE_FILE.value,
+                    status=CodemodPreflightStatus.FAILED,
+                    message="create_file requires one new source path per operation",
+                    details={
+                        "duplicate_source_paths": duplicate_paths,
+                        "existing_source_paths": existing_paths,
+                    },
+                )
+            )
+        return self.with_virtual_sources(dict.fromkeys(path_tuple, ""))
+
     def modules_with_source_overlay(
         self,
         source_overlay: Mapping[str, str],
@@ -2517,22 +2602,19 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         backend: "CodemodBackend" | None = None,
         guard_suite: "ArchitectureGuardSuite" | None = None,
     ) -> "RefactorRecipeSimulation":
-        active_guard_suite = guard_suite or ArchitectureGuardSuite()
-        simulation = self.simulate_rewrites(
-            self.source_rewrite_batch_for_recipe(recipe),
+        document_simulation = self.simulate_document(
+            CodemodPlanDocument(
+                recipes=(recipe,),
+                guard_suite=guard_suite or ArchitectureGuardSuite(),
+            ),
             backend=backend,
-        )
-        architecture_guard_report = (
-            active_guard_suite.clean_report()
-            if active_guard_suite.is_empty
-            else self.with_simulation(simulation).evaluate_guard_suite(
-                active_guard_suite
-            )
         )
         return RefactorRecipeSimulation(
             recipe=recipe,
-            simulation=simulation,
-            architecture_guard_report=architecture_guard_report,
+            simulation=document_simulation.simulation,
+            architecture_guard_report=(
+                document_simulation.architecture_guard_report
+            ),
         )
 
     def simulate_document(
@@ -2542,10 +2624,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         backend: "CodemodBackend" | None = None,
     ) -> "CodemodPlanDocumentSimulation":
         rewrite_snapshot = document.rewrite_snapshot(self)
+        document.preflight_rewrite_snapshot(rewrite_snapshot).require_clean()
         simulation = rewrite_snapshot.simulate_rewrites(
             rewrite_snapshot.source_rewrite_batch_for_document(document),
             backend=backend,
-        )
+        ).with_base_snapshot(self)
         after_snapshot_projection = CodemodAfterSnapshotProjection(
             base_snapshot=rewrite_snapshot,
             source_overlay_by_file_path=simulation.rewritten_sources,
@@ -2924,6 +3007,58 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT]):
         return ((self.field_name, self.value_projector(owner)),)
 
 
+class PayloadBindingSet(
+    tuple[PayloadBinding[PayloadOwnerT, PayloadSourceT, PayloadValueT], ...],
+    Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT],
+):
+    """Validated declaration-owned payload binding catalog."""
+
+    def __new__(
+        cls,
+        bindings: Iterable[
+            PayloadBinding[PayloadOwnerT, PayloadSourceT, PayloadValueT]
+        ] = (),
+    ) -> Self:
+        binding_tuple = tuple(bindings)
+        cls.require_unique_binding_names(binding_tuple)
+        return super().__new__(cls, binding_tuple)
+
+    @staticmethod
+    def require_unique_binding_names(
+        bindings: tuple[
+            PayloadBinding[PayloadOwnerT, PayloadSourceT, PayloadValueT],
+            ...,
+        ],
+    ) -> None:
+        for name_kind, names in (
+            ("payload field", tuple(binding.field_name for binding in bindings)),
+            (
+                "constructor argument",
+                tuple(binding.constructor_argument_name for binding in bindings),
+            ),
+        ):
+            duplicate_names = tuple(
+                name for name, count in Counter(names).items() if count > 1
+            )
+            if duplicate_names:
+                raise ValueError(
+                    f"Duplicate {name_kind} binding name(s): "
+                    f"{', '.join(repr(name) for name in duplicate_names)}"
+                )
+
+
+SelectorPayloadBinding: TypeAlias = PayloadBinding[
+    "CodemodTargetSelector",
+    Mapping[str, JsonValue],
+    JsonValue,
+]
+SelectorPayloadBindings: TypeAlias = PayloadBindingSet[
+    "CodemodTargetSelector",
+    Mapping[str, JsonValue],
+    JsonValue,
+]
+
+
 def selector_payload_bindings(
     specs: Iterable[
         tuple[
@@ -2933,10 +3068,8 @@ def selector_payload_bindings(
             Callable[[Mapping[str, JsonValue], str], JsonValue],
         ]
     ],
-) -> tuple[
-    PayloadBinding["CodemodTargetSelector", Mapping[str, JsonValue], JsonValue], ...
-]:
-    return tuple(
+) -> SelectorPayloadBindings:
+    return PayloadBindingSet(
         PayloadBinding(
             field_name=field_name,
             constructor_argument_name=constructor_argument_name,
@@ -3040,16 +3173,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
-    selector_payload_bindings: ClassVar[
-        tuple[
-            PayloadBinding[
-                "CodemodTargetSelector",
-                Mapping[str, JsonValue],
-                JsonValue,
-            ],
-            ...,
-        ]
-    ] = ()
+    selector_payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet()
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, JsonValue]) -> "CodemodTargetSelector":
@@ -3065,9 +3189,15 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
         payload: Mapping[str, JsonValue],
     ) -> "CodemodTargetSelector":
         constructor_kwargs: dict[str, JsonValue] = {}
-        for binding in cls.selector_payload_bindings:
+        for binding in cls.payload_binding_set():
             constructor_kwargs.update(binding.constructor_kwargs(payload))
         return cls(**constructor_kwargs)
+
+    @classmethod
+    def payload_binding_set(cls) -> SelectorPayloadBindings:
+        """Return the selector declaration through the uniqueness authority."""
+
+        return PayloadBindingSet(cls.selector_payload_bindings)
 
     def select(self, context: CodemodSelectorContext) -> CodemodTargetSelection:
         return CodemodTargetSelection(self.target_ids(context))
@@ -3084,7 +3214,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     def selector_payload(self) -> JsonObject:
         return {
             key: value
-            for binding in type(self).selector_payload_bindings
+            for binding in type(self).payload_binding_set()
             for key, value in binding.payload_items(self)
         }
 
@@ -4325,7 +4455,11 @@ OperationPayloadBinding: TypeAlias = PayloadBinding[
     SourceRewritePlanPayload,
     OperationConstructorValue,
 ]
-OperationPayloadBindings: TypeAlias = tuple[OperationPayloadBinding, ...]
+OperationPayloadBindings: TypeAlias = PayloadBindingSet[
+    "RefactorRecipeOperation",
+    SourceRewritePlanPayload,
+    OperationConstructorValue,
+]
 
 
 class OperationPayloadReader:
@@ -4417,7 +4551,7 @@ def operation_payload_bindings(
 ) -> OperationPayloadBindings:
     """Materialize declarative recipe-operation payload binding specs."""
 
-    return tuple(
+    return PayloadBindingSet(
         PayloadBinding(
             field_name=field_name,
             constructor_argument_name=constructor_argument_name,
@@ -4785,10 +4919,8 @@ class SourceTextGeometry:
         replacements: Iterable[SourceOffsetReplacement],
     ) -> str:
         span_source = self.source[span_start:span_end]
-        for replacement in sorted(
-            replacements,
-            key=lambda item: (item.start_offset, item.end_offset),
-            reverse=True,
+        for replacement in reversed(
+            self.replacements_in_span(span_start, span_end, replacements)
         ):
             relative_start = replacement.start_offset - span_start
             relative_end = replacement.end_offset - span_start
@@ -4798,6 +4930,76 @@ class SourceTextGeometry:
                 f"{span_source[relative_end:]}"
             )
         return span_source
+
+    def replacements_in_span(
+        self,
+        span_start: int,
+        span_end: int,
+        replacements: Iterable[SourceOffsetReplacement],
+    ) -> tuple[SourceOffsetReplacement, ...]:
+        """Return one unambiguous replacement per offset span."""
+
+        if not 0 <= span_start <= span_end <= self.end_offset:
+            raise ValueError(
+                "Replacement target span must fit the source geometry: "
+                f"{span_start}:{span_end}"
+            )
+        replacement_by_span: dict[SourceTextSpan, SourceOffsetReplacement] = {}
+        for replacement in replacements:
+            if not (
+                span_start
+                <= replacement.start_offset
+                <= replacement.end_offset
+                <= span_end
+            ):
+                raise ValueError(
+                    "Offset replacement must fit its target span: "
+                    f"{replacement.start_offset}:{replacement.end_offset} "
+                    f"outside {span_start}:{span_end}"
+                )
+            replacement_span = SourceTextSpan(
+                start_offset=replacement.start_offset,
+                end_offset=replacement.end_offset,
+            )
+            existing = replacement_by_span.get(replacement_span)
+            if existing is None:
+                replacement_by_span[replacement_span] = replacement
+                continue
+            if existing.replacement_source != replacement.replacement_source:
+                raise ValueError(
+                    "Offset replacements assign different source to the same span: "
+                    f"{replacement.start_offset}:{replacement.end_offset}"
+                )
+
+        ordered = sorted_tuple(
+            replacement_by_span.values(),
+            key=lambda item: (item.start_offset, item.end_offset),
+        )
+        for index, first in enumerate(ordered):
+            for second in ordered[index + 1 :]:
+                if second.start_offset > first.end_offset:
+                    break
+                if self.replacement_spans_overlap(first, second):
+                    raise ValueError(
+                        "Offset replacement spans overlap: "
+                        f"{first.start_offset}:{first.end_offset} and "
+                        f"{second.start_offset}:{second.end_offset}"
+                    )
+        return ordered
+
+    @staticmethod
+    def replacement_spans_overlap(
+        first: SourceOffsetReplacement,
+        second: SourceOffsetReplacement,
+    ) -> bool:
+        if first.start_offset == first.end_offset:
+            return second.start_offset < first.start_offset < second.end_offset
+        if second.start_offset == second.end_offset:
+            return first.start_offset < second.start_offset < first.end_offset
+        return (
+            first.start_offset < second.end_offset
+            and second.start_offset < first.end_offset
+        )
 
     def _line_span_offsets(self, start_line: int, end_line: int) -> tuple[int, int]:
         line_offsets = self.line_offsets
@@ -5093,7 +5295,7 @@ class RefactorRecipeOperation(
         payload: SourceRewritePlanPayload,
     ) -> "RefactorRecipeOperation":
         constructor_kwargs: dict[str, OperationConstructorValue] = {}
-        for binding in cls.payload_bindings():
+        for binding in cls.payload_binding_set():
             constructor_kwargs.update(binding.constructor_kwargs(payload))
         return cls(
             target=target,
@@ -5103,12 +5305,18 @@ class RefactorRecipeOperation(
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        return ()
+        return PayloadBindingSet()
+
+    @classmethod
+    def payload_binding_set(cls) -> OperationPayloadBindings:
+        """Return the operation declaration through the uniqueness authority."""
+
+        return PayloadBindingSet(cls.payload_bindings())
 
     def operation_payload(self) -> JsonObject:
         return {
             key: value
-            for binding in type(self).payload_bindings()
+            for binding in type(self).payload_binding_set()
             for key, value in binding.payload_items(self)
         }
 
@@ -5140,15 +5348,12 @@ class RefactorRecipeOperation(
         del source_index, source_by_path, selector_context
         return ()
 
-    def source_overlays(
+    def created_source_paths(
         self,
         source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> Mapping[str, str]:
-        del source_index, source_by_path, selector_context
-        return {}
+    ) -> tuple[str, ...]:
+        del source_index
+        return ()
 
     def required_source_path(
         self,
@@ -5428,15 +5633,11 @@ class CreateFileOperation(StringPayloadOperation):
             ),
         )
 
-    def source_overlays(
+    def created_source_paths(
         self,
         source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> Mapping[str, str]:
-        del source_by_path, selector_context
-        return {self.created_source_path(source_index): ""}
+    ) -> tuple[str, ...]:
+        return (self.created_source_path(source_index),)
 
     def line_replacements(
         self,
@@ -7227,7 +7428,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         replacement_source = geometry.source_with_replacements_in_span(
             0,
             geometry.end_offset,
-            self.require_non_overlapping_replacements(replacements),
+            replacements,
         )
         return (
             SourceLineReplacement(
@@ -7447,22 +7648,6 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
             raise ValueError(f"Node has no source end column: {node!r}")
         return geometry.line_offsets[end_lineno - 1] + end_col_offset
 
-    @staticmethod
-    def require_non_overlapping_replacements(
-        replacements: Iterable[SourceOffsetReplacement],
-    ) -> tuple[SourceOffsetReplacement, ...]:
-        ordered = sorted_tuple(
-            replacements,
-            key=lambda item: (item.start_offset, item.end_offset),
-        )
-        previous: SourceOffsetReplacement | None = None
-        for replacement in ordered:
-            if previous is not None and replacement.start_offset < previous.end_offset:
-                raise ValueError("Field carrier replacements overlap")
-            previous = replacement
-        return ordered
-
-
 @dataclass(frozen=True)
 class RoleCarrierFieldProjection:
     """Projection from one flattened field to one field on a role carrier."""
@@ -7533,24 +7718,6 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
                         CARRIER_FIELD_DECLARATIONS_PAYLOAD_FIELD,
                         ReplaceRolePrefixedFieldsWithCarriersOperation.carrier_field_declarations_from_operation,
                         OperationPayloadReader.required_string_tuple,
-                    ),
-                    (
-                        FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
-                        FIELD_PROJECTION_PAIRS_PAYLOAD_FIELD,
-                        ReplaceRolePrefixedFieldsWithCarriersOperation.field_projection_pairs_from_operation,
-                        OperationPayloadReader.required_string_tuple,
-                    ),
-                    (
-                        CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
-                        CONSTRUCTOR_NAMES_PAYLOAD_FIELD,
-                        ReplaceRolePrefixedFieldsWithCarriersOperation.constructor_names_from_operation,
-                        OperationPayloadReader.string_tuple_or_empty,
-                    ),
-                    (
-                        ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
-                        ATTRIBUTE_OWNER_EXPRESSIONS_PAYLOAD_FIELD,
-                        ReplaceRolePrefixedFieldsWithCarriersOperation.attribute_owner_expressions_from_operation,
-                        OperationPayloadReader.string_tuple_or_empty,
                     ),
                 )
             ),
@@ -7654,9 +7821,7 @@ class ReplaceRolePrefixedFieldsWithCarriersOperation(
         replacement_source = geometry.source_with_replacements_in_span(
             0,
             geometry.end_offset,
-            ReplaceFieldsWithCarrierOperation.require_non_overlapping_replacements(
-                replacements
-            ),
+            replacements,
         )
         return (
             SourceLineReplacement(
@@ -12583,7 +12748,7 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
             description=codemod_dsl_entry_description(operation_type),
             payload_fields=tuple(
                 CodemodDslFieldManifest.from_binding(binding)
-                for binding in operation_type.payload_bindings()
+                for binding in operation_type.payload_binding_set()
             ),
             operation=operation_key,
             supports_selection_count=issubclass(
@@ -12641,7 +12806,7 @@ class CodemodDslSelectorManifest(CodemodDslRegistryEntryManifest):
             description=codemod_dsl_entry_description(selector_type),
             payload_fields=tuple(
                 CodemodDslFieldManifest.from_binding(binding)
-                for binding in selector_type.selector_payload_bindings
+                for binding in selector_type.payload_binding_set()
             ),
             selector=selector_key,
         )
@@ -14099,7 +14264,10 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
                     merged_groups.append(group)
                     continue
                 previous = merged_groups[-1]
-                if not self._target_spans_overlap(previous.target, group.target):
+                if not PlannedRewriteSelectionAuthority.overlaps(
+                    previous.target,
+                    group.target,
+                ):
                     merged_groups.append(group)
                     continue
                 merged_groups[-1] = self._merge_groups(previous, group)
@@ -14164,17 +14332,6 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
                 target.line,
                 target.qualname,
             ),
-        )
-
-    @staticmethod
-    def _target_spans_overlap(
-        first: AstTargetDigest,
-        second: AstTargetDigest,
-    ) -> bool:
-        return (
-            first.file_path == second.file_path
-            and first.line <= second.end_line
-            and second.line <= first.end_line
         )
 
     def _group_sort_key(
@@ -14267,6 +14424,22 @@ class RefactorRecipe:
             target
             for item in (*self.rewrites, *self.operations)
             for target in item.referenced_source_targets()
+        )
+
+    def has_effective_rewrites(
+        self,
+        selector_context: CodemodSelectorContext | None,
+    ) -> bool:
+        if selector_context is None:
+            return bool(self.rewrites or self.operations)
+        if self.created_source_paths(selector_context.source_index):
+            return True
+        return bool(
+            self.source_rewrite_batch(
+                selector_context.source_index,
+                selector_context.sources_by_file_path,
+                selector_context=selector_context,
+            )
         )
 
     def with_architecture_guard(
@@ -14958,23 +15131,15 @@ class RefactorRecipe:
         )
         return (*rewrite_batch, *operation_rewrites)
 
-    def source_overlays(
+    def created_source_paths(
         self,
         source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> Mapping[str, str]:
-        overlays: dict[str, str] = {}
-        for operation in self.operations:
-            overlays.update(
-                operation.source_overlays(
-                    source_index,
-                    source_by_path,
-                    selector_context=selector_context,
-                )
-            )
-        return overlays
+    ) -> tuple[str, ...]:
+        return tuple(
+            source_path
+            for operation in self.operations
+            for source_path in operation.created_source_paths(source_index)
+        )
 
     def preflight_reports(
         self,
@@ -15280,7 +15445,12 @@ class CodemodPlanDocument:
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> CodemodPlanPreflightReport:
-        rewrite_snapshot = self.rewrite_snapshot(snapshot)
+        return self.preflight_rewrite_snapshot(self.rewrite_snapshot(snapshot))
+
+    def preflight_rewrite_snapshot(
+        self,
+        rewrite_snapshot: CodemodSourceSnapshot,
+    ) -> CodemodPlanPreflightReport:
         return CodemodPlanPreflightReport(
             tuple(
                 report
@@ -15297,22 +15467,11 @@ class CodemodPlanDocument:
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> CodemodSourceSnapshot:
-        return snapshot.with_virtual_sources(self.source_overlays(snapshot))
-
-    def source_overlays(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> Mapping[str, str]:
-        overlays: dict[str, str] = {}
-        for recipe in self.recipes:
-            overlays.update(
-                recipe.source_overlays(
-                    snapshot.source_index,
-                    snapshot.sources_by_file_path,
-                    selector_context=snapshot,
-                )
-            )
-        return overlays
+        return snapshot.with_created_source_paths(
+            source_path
+            for recipe in self.recipes
+            for source_path in recipe.created_source_paths(snapshot.source_index)
+        )
 
     def simulate(
         self,
@@ -15493,8 +15652,11 @@ class CodemodPlanSequence:
             sequence=self,
             stage_reports=tuple(stage_reports),
             final_snapshot=active_snapshot,
-            simulation=CodemodSimulationReport.combine(
-                stage.document_simulation.simulation for stage in stage_reports
+            simulation=CodemodSimulationReport.from_sequential_reports(
+                (
+                    stage.document_simulation.simulation
+                    for stage in stage_reports
+                ),
             ),
             architecture_guard_report=self.guard_suite.evaluate(
                 active_snapshot.source_index,
@@ -15738,6 +15900,68 @@ class CodemodParseValidationReport:
 
 
 @dataclass(frozen=True)
+class CodemodSourceRevision:
+    """Full-source revision required before one simulated file write."""
+
+    file_path: str
+    source_hash: str | None
+
+    @classmethod
+    def from_sources(
+        cls,
+        file_path: str,
+        sources_by_file_path: Mapping[str, str],
+    ) -> "CodemodSourceRevision":
+        source = sources_by_file_path.get(file_path)
+        return cls(
+            file_path=file_path,
+            source_hash=(cls.hash_source(source) if source is not None else None),
+        )
+
+    @staticmethod
+    def hash_source(source: str) -> str:
+        return hashlib.blake2s(
+            source.encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
+    def matches_source(self, source: str | None) -> bool:
+        if source is None:
+            return self.source_hash is None
+        return self.source_hash == self.hash_source(source)
+
+    def require_path_state(
+        self,
+        path: Path | None = None,
+        *,
+        encoding: str = "utf-8",
+    ) -> None:
+        source_path = Path(self.file_path) if path is None else path
+        if not source_path.exists():
+            current_source = None
+        elif source_path.is_file():
+            current_source = source_path.read_text(encoding=encoding)
+        else:
+            raise CodemodSourceRevisionError(
+                f"Codemod source path is not a file: {source_path}"
+            )
+        if not self.matches_source(current_source):
+            raise CodemodSourceRevisionError(
+                f"Codemod source changed after simulation: {self.file_path}"
+            )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "file_path": self.file_path,
+            "source_hash": self.source_hash,
+        }
+
+
+class CodemodSourceRevisionError(ValueError):
+    """Raised when a simulated write no longer matches its source revision."""
+
+
+@dataclass(frozen=True)
 class CodemodSimulationReport:
     """Result of simulating planned rewrites without writing files."""
 
@@ -15745,13 +15969,25 @@ class CodemodSimulationReport:
     rewrites: tuple[SimulatedSourceRewrite, ...]
     rewritten_sources: dict[str, str]
     parse_validation: CodemodParseValidationReport
+    base_revisions: tuple[CodemodSourceRevision, ...]
+
+    def __post_init__(self) -> None:
+        revision_paths = tuple(
+            revision.file_path for revision in self.base_revisions
+        )
+        if len(revision_paths) != len(frozenset(revision_paths)):
+            raise ValueError("Codemod source revisions require unique file paths")
+        if frozenset(revision_paths) != frozenset(self.changed_file_paths):
+            raise ValueError(
+                "Codemod source revisions must cover every changed file exactly"
+            )
 
     @classmethod
-    def combine(
+    def from_sequential_reports(
         cls,
         reports: Iterable["CodemodSimulationReport"],
     ) -> "CodemodSimulationReport":
-        """Combine sequential simulation reports into one final write set."""
+        """Compose reports only when every source revision proves the sequence."""
 
         report_tuple = tuple(reports)
         if not report_tuple:
@@ -15765,13 +16001,34 @@ class CodemodSimulationReport:
                     validated_file_paths=(),
                     parse_valid=True,
                 ),
+                base_revisions=(),
             )
+        backends = frozenset(report.backend for report in report_tuple)
+        if len(backends) != 1:
+            raise ValueError("Sequential codemod reports require one backend")
+        initial_revisions: dict[str, CodemodSourceRevision] = {}
+        active_source_hashes: dict[str, str | None] = {}
         rewritten_sources: dict[str, str] = {}
         validated_file_paths: set[str] = set()
         for report in report_tuple:
-            rewritten_sources.update(report.rewritten_sources)
+            for revision in report.base_revisions:
+                active_hash = active_source_hashes.setdefault(
+                    revision.file_path,
+                    revision.source_hash,
+                )
+                if active_hash != revision.source_hash:
+                    raise ValueError(
+                        "Codemod report sequence has a stale source transition for "
+                        f"{revision.file_path!r}"
+                    )
+                initial_revisions.setdefault(revision.file_path, revision)
+            for file_path, source in report.rewritten_sources.items():
+                active_source_hashes[file_path] = CodemodSourceRevision.hash_source(
+                    source
+                )
+                rewritten_sources[file_path] = source
             validated_file_paths.update(report.validated_file_paths)
-        backend = report_tuple[-1].backend
+        backend = report_tuple[0].backend
         return cls(
             backend=backend,
             rewrites=tuple(
@@ -15783,7 +16040,36 @@ class CodemodSimulationReport:
                 validated_file_paths=tuple(sorted(validated_file_paths)),
                 parse_valid=all(report.parse_valid for report in report_tuple),
             ),
+            base_revisions=tuple(
+                initial_revisions[file_path]
+                for file_path in sorted(initial_revisions)
+            ),
         )
+
+    def with_base_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> "CodemodSimulationReport":
+        return replace(
+            self,
+            base_revisions=tuple(
+                CodemodSourceRevision.from_sources(
+                    file_path,
+                    snapshot.sources_by_file_path,
+                )
+                for file_path in self.changed_file_paths
+            ),
+        )
+
+    @property
+    def base_revision_by_file_path(self) -> Mapping[str, CodemodSourceRevision]:
+        return {
+            revision.file_path: revision for revision in self.base_revisions
+        }
+
+    def require_current_sources(self, *, encoding: str = "utf-8") -> None:
+        for revision in self.base_revisions:
+            revision.require_path_state(encoding=encoding)
 
     @property
     def applied_rewrite_count(self) -> int:
@@ -15807,6 +16093,9 @@ class CodemodSimulationReport:
             "applied_rewrite_count": self.applied_rewrite_count,
             "changed_file_paths": self.changed_file_paths,
             "parse_validation": self.parse_validation.to_dict(),
+            "base_revisions": tuple(
+                revision.to_dict() for revision in self.base_revisions
+            ),
             "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
         }
 
@@ -16383,18 +16672,15 @@ class FindingRecipeSynthesisReport(FindingRecipeSynthesisReportView):
 
     @property
     def planned_count(self) -> int:
-        return self.count_status(FindingRecipeSynthesisStatus.PLANNED)
+        return sum(1 for record in self.records if record.status.planned)
 
     @property
     def rejected_count(self) -> int:
-        return self.count_status(FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK)
+        return sum(1 for record in self.records if record.status.rejected)
 
     @property
     def unsupported_count(self) -> int:
-        return self.count_status(FindingRecipeSynthesisStatus.NO_SYNTHESIZER)
-
-    def count_status(self, status: FindingRecipeSynthesisStatus) -> int:
-        return sum(1 for record in self.records if record.status == status)
+        return sum(1 for record in self.records if record.status.unsupported)
 
     def record_payloads(self) -> tuple[JsonObject, ...]:
         return tuple(record.to_dict() for record in self.records)
@@ -16473,7 +16759,7 @@ class FindingRecipeSynthesisResult:
 
     @property
     def planned_result(self) -> bool:
-        return self.status is FindingRecipeSynthesisStatus.PLANNED
+        return self.status.planned
 
     @property
     def recipe(self) -> RefactorRecipe | None:
@@ -16713,6 +16999,14 @@ class FindingRecipeSynthesisAttempt:
                         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
                     )
                     result_reason = evaluation.rejection_reason
+                elif not evaluation.recipe.has_effective_rewrites(
+                    self.selector_context
+                ):
+                    result_status = (
+                        FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
+                    )
+                    result_evaluation = evaluation
+                    result_reason = result_status.default_reason
                 else:
                     result_status = FindingRecipeSynthesisStatus.PLANNED
                     result_evaluation = evaluation
@@ -16910,7 +17204,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         return tuple(
             record.finding_id
             for record in self.synthesis_records
-            if record.status is FindingRecipeSynthesisStatus.PLANNED
+            if record.status.planned
         )
 
     @property
@@ -16951,7 +17245,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             dict.fromkeys(
                 record.recipe_target_shape
                 for record in self.synthesis_records
-                if record.recipe_target_shape
+                if record.status.planned and record.recipe_target_shape
             )
         )
 
@@ -16991,7 +17285,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         recipes = tuple(
             record.evaluation.recipe
             for record in records
-            if record.status is FindingRecipeSynthesisStatus.PLANNED
+            if record.status.planned
             and record.evaluation.recipe is not None
         )
         if not recipes:
@@ -30375,19 +30669,20 @@ class FindingRecipePlanBuilder:
         claimed_rewrites: Iterable[PlannedSourceRewrite],
         selector_context: CodemodSelectorContext | None,
     ) -> str:
+        if selector_context is None:
+            return ""
         planned_rewrites = self.planned_rewrites_for_recipe(recipe, selector_context)
         if not planned_rewrites:
             return ""
         claimed_rewrite_tuple = tuple(claimed_rewrites)
         for planned_rewrite in planned_rewrites:
             planned_target = self.rewrite_target(planned_rewrite, selector_context)
-            if planned_target is None:
-                continue
             for claimed_rewrite in claimed_rewrite_tuple:
                 claimed_target = self.rewrite_target(claimed_rewrite, selector_context)
-                if claimed_target is None:
-                    continue
-                if not self.targets_overlap(planned_target, claimed_target):
+                if not PlannedRewriteSelectionAuthority.overlaps(
+                    planned_target,
+                    claimed_target,
+                ):
                     continue
                 if not self.rewrites_have_line_conflict(
                     planned_rewrite,
@@ -30443,19 +30738,11 @@ class FindingRecipePlanBuilder:
     @staticmethod
     def rewrite_target(
         rewrite: PlannedSourceRewrite,
-        selector_context: CodemodSelectorContext | None,
-    ) -> AstTargetDigest | None:
-        if selector_context is None:
-            return None
-        return selector_context.source_index.target_by_id.get(rewrite.target_id)
-
-    @staticmethod
-    def targets_overlap(first: AstTargetDigest, second: AstTargetDigest) -> bool:
-        return (
-            first.file_path == second.file_path
-            and first.line <= second.end_line
-            and second.line <= first.end_line
-        )
+        selector_context: CodemodSelectorContext,
+    ) -> AstTargetDigest:
+        return PlannedRewriteSelectionAuthority(
+            selector_context.source_index
+        ).required_target(rewrite)
 
     def merged_recipes(
         self,
@@ -30525,8 +30812,6 @@ class FindingRecipePlanBuilder:
         rewrites_by_file: dict[str, list[PlannedSourceRewrite]] = defaultdict(list)
         for rewrite in rewrites:
             target = self.rewrite_target(rewrite, selector_context)
-            if target is None:
-                return None
             rewrites_by_file[target.file_path].append(rewrite)
 
         merged_rewrites: list[PlannedSourceRewrite] = []
@@ -30597,8 +30882,6 @@ class FindingRecipePlanBuilder:
         selector_context: CodemodSelectorContext,
     ) -> tuple[SourceLineReplacement, ...]:
         target = cls.rewrite_target(rewrite, selector_context)
-        if target is None:
-            return ()
         target_editor = SourceTargetEditor(
             selector_context.sources_by_file_path,
             target,
@@ -30728,13 +31011,11 @@ class FindingRecipePlanBuilder:
         selector_context: CodemodSelectorContext,
     ) -> bool:
         targets = tuple(
-            target
-            for rewrite in rewrites
-            if (target := cls.rewrite_target(rewrite, selector_context)) is not None
+            cls.rewrite_target(rewrite, selector_context) for rewrite in rewrites
         )
         for index, first in enumerate(targets):
             for second in targets[index + 1 :]:
-                if cls.targets_overlap(first, second):
+                if PlannedRewriteSelectionAuthority.overlaps(first, second):
                     return True
         return False
 
@@ -31541,13 +31822,10 @@ class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
             if not plan.matches(candidate):
                 continue
             for boundary_rewrite in plan.rewrites:
-                target_id = _authority_boundary_target_id(
-                    boundary_rewrite,
-                    candidate,
+                target_id = boundary_rewrite.target.required_target_id(
                     source_index,
+                    eligible_target_ids=candidate.target_ids,
                 )
-                if target_id is None:
-                    continue
                 rewrites.append(
                     PlannedSourceRewrite(
                         target_id=target_id,
@@ -31559,7 +31837,7 @@ class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
                         ),
                     )
                 )
-        return NonOverlappingPlannedRewriteSelector(source_index).select(rewrites)
+        return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
 
 
 DEFAULT_CODEMOD_REWRITE_BUILDERS: tuple[CodemodRewriteBuilder, ...] = (
@@ -31659,13 +31937,124 @@ def apply_codemod_simulation(
     *,
     encoding: str = "utf-8",
 ) -> tuple[str, ...]:
-    """Write simulated codemod sources to their files and return changed paths."""
+    """Commit a revision-checked codemod transaction."""
 
-    for file_path, source in simulation.rewritten_sources.items():
-        path = Path(file_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(source, encoding=encoding)
-    return simulation.changed_file_paths
+    return CodemodSimulationWriter(simulation, encoding=encoding).apply()
+
+
+@dataclass(frozen=True)
+class CommittedCodemodSource:
+    """One installed source plus enough state to roll it back."""
+
+    target_path: Path
+    backup_path: Path | None
+
+    def rollback(self) -> None:
+        if self.backup_path is None:
+            self.target_path.unlink(missing_ok=True)
+            return
+        os.replace(self.backup_path, self.target_path)
+
+
+@dataclass(frozen=True)
+class CodemodSimulationWriter:
+    """Validate, stage, commit, and roll back one simulated write set."""
+
+    simulation: CodemodSimulationReport
+    encoding: str = "utf-8"
+
+    def apply(self) -> tuple[str, ...]:
+        self.simulation.require_current_sources(encoding=self.encoding)
+        staged_paths = self.stage_sources()
+        committed_sources: list[CommittedCodemodSource] = []
+        try:
+            self.simulation.require_current_sources(encoding=self.encoding)
+            for file_path in self.simulation.changed_file_paths:
+                committed_sources.append(
+                    self.commit_source(
+                        self.simulation.base_revision_by_file_path[file_path],
+                        staged_paths[file_path],
+                    )
+                )
+        except BaseException:
+            for committed_source in reversed(committed_sources):
+                committed_source.rollback()
+            raise
+        finally:
+            for staged_path in staged_paths.values():
+                staged_path.unlink(missing_ok=True)
+        for committed_source in committed_sources:
+            if committed_source.backup_path is not None:
+                committed_source.backup_path.unlink(missing_ok=True)
+        return self.simulation.changed_file_paths
+
+    def stage_sources(self) -> Mapping[str, Path]:
+        staged_paths: dict[str, Path] = {}
+        try:
+            for file_path, source in self.simulation.rewritten_sources.items():
+                target_path = Path(file_path)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                file_descriptor, staged_path_value = tempfile.mkstemp(
+                    prefix=f".{target_path.name}.nra-stage-",
+                    dir=target_path.parent,
+                    text=True,
+                )
+                staged_path = Path(staged_path_value)
+                try:
+                    with os.fdopen(
+                        file_descriptor,
+                        "w",
+                        encoding=self.encoding,
+                        newline="",
+                    ) as staged_file:
+                        staged_file.write(source)
+                        staged_file.flush()
+                        os.fsync(staged_file.fileno())
+                    staged_path.chmod(
+                        stat.S_IMODE(target_path.stat().st_mode)
+                        if target_path.exists()
+                        else 0o644
+                    )
+                except BaseException:
+                    staged_path.unlink(missing_ok=True)
+                    raise
+                staged_paths[file_path] = staged_path
+        except BaseException:
+            for staged_path in staged_paths.values():
+                staged_path.unlink(missing_ok=True)
+            raise
+        return staged_paths
+
+    def commit_source(
+        self,
+        revision: CodemodSourceRevision,
+        staged_path: Path,
+    ) -> CommittedCodemodSource:
+        target_path = Path(revision.file_path)
+        if revision.source_hash is None:
+            os.link(staged_path, target_path)
+            staged_path.unlink()
+            return CommittedCodemodSource(target_path, None)
+        backup_path = self.reserve_backup_path(target_path)
+        os.replace(target_path, backup_path)
+        try:
+            revision.require_path_state(backup_path, encoding=self.encoding)
+            os.replace(staged_path, target_path)
+        except BaseException:
+            os.replace(backup_path, target_path)
+            raise
+        return CommittedCodemodSource(target_path, backup_path)
+
+    @staticmethod
+    def reserve_backup_path(target_path: Path) -> Path:
+        file_descriptor, backup_path_value = tempfile.mkstemp(
+            prefix=f".{target_path.name}.nra-backup-",
+            dir=target_path.parent,
+        )
+        os.close(file_descriptor)
+        backup_path = Path(backup_path_value)
+        backup_path.unlink()
+        return backup_path
 
 
 @dataclass(frozen=True)
@@ -31867,8 +32256,12 @@ class SourceRewriteSimulationAuthority:
         self,
         rewrites: Iterable[PlannedSourceRewrite],
     ) -> CodemodSimulationReport:
-        resolved = self.resolved_rewrites(tuple(rewrites))
-        self.validate_non_overlapping(resolved)
+        resolved = PlannedRewriteSelectionAuthority(
+            self.source_index
+        ).resolved_rewrites(rewrites)
+        for item in resolved:
+            if item.target.file_path not in self.source_by_path:
+                raise KeyError(f"Missing source text for {item.target.file_path!r}")
 
         sources = dict(self.source_by_path)
         simulated: list[SimulatedSourceRewrite] = []
@@ -31907,46 +32300,14 @@ class SourceRewriteSimulationAuthority:
                 validated_file_paths=tuple(sorted(changed_sources)),
                 parse_valid=True,
             ),
+            base_revisions=tuple(
+                CodemodSourceRevision.from_sources(
+                    file_path,
+                    self.source_by_path,
+                )
+                for file_path in sorted(changed_sources)
+            ),
         )
-
-    def resolved_rewrites(
-        self,
-        rewrites: tuple[PlannedSourceRewrite, ...],
-    ) -> tuple[ResolvedSourceRewrite, ...]:
-        resolved = []
-        for rewrite in rewrites:
-            if rewrite.operation != RewriteOperation.REPLACE_TARGET:
-                raise ValueError(f"Unsupported rewrite operation: {rewrite.operation}")
-            target = self.source_index.target_by_id.get(rewrite.target_id)
-            if target is None:
-                raise KeyError(f"Unknown source-index target id: {rewrite.target_id}")
-            if target.file_path not in self.source_by_path:
-                raise KeyError(f"Missing source text for {target.file_path!r}")
-            resolved.append(ResolvedSourceRewrite(rewrite=rewrite, target=target))
-        return tuple(resolved)
-
-    def validate_non_overlapping(
-        self,
-        resolved: tuple[ResolvedSourceRewrite, ...],
-    ) -> None:
-        spans_by_file: dict[str, list[tuple[int, int, str]]] = {}
-        for item in resolved:
-            target = item.target
-            if target.file_path not in spans_by_file:
-                spans_by_file[target.file_path] = []
-            spans_by_file[target.file_path].append(
-                (target.line - 1, target.end_line, target.target_id)
-            )
-        for file_path, spans in spans_by_file.items():
-            ordered_spans = sorted(spans)
-            _, previous_end, previous_id = ordered_spans[0]
-            for start, end, target_identifier in ordered_spans[1:]:
-                if start < previous_end:
-                    raise ValueError(
-                        "Overlapping rewrites for "
-                        f"{file_path!r}: {previous_id!r} and {target_identifier!r}"
-                    )
-                previous_end, previous_id = end, target_identifier
 
     def apply_resolved_rewrite(
         self,
@@ -32007,50 +32368,86 @@ def simulate_planned_rewrites(
     ).simulate(rewrites)
 
 
+class PlannedRewriteConflictError(ValueError):
+    """Two non-equivalent planned rewrites claim overlapping source geometry."""
+
+    def __init__(
+        self,
+        first: ResolvedSourceRewrite,
+        second: ResolvedSourceRewrite,
+    ) -> None:
+        self.first = first
+        self.second = second
+        super().__init__(
+            "Conflicting planned rewrites overlap in "
+            f"{first.target.file_path!r}: {first.target.target_id!r} and "
+            f"{second.target.target_id!r}"
+        )
+
+
 @dataclass(frozen=True)
-class NonOverlappingPlannedRewriteSelector:
-    """Select a deterministic non-overlapping subset of planned rewrites."""
+class PlannedRewriteSelectionAuthority:
+    """Prove a rewrite batch is exact-deduplicated and conflict free."""
 
     source_index: SourceIndex
+
+    def resolved_rewrites(
+        self,
+        rewrites: Iterable[PlannedSourceRewrite],
+    ) -> tuple[ResolvedSourceRewrite, ...]:
+        resolved = tuple(
+            ResolvedSourceRewrite(
+                rewrite=rewrite,
+                target=self.required_target(rewrite),
+            )
+            for rewrite in dict.fromkeys(rewrites)
+        )
+        ordered = sorted_tuple(resolved, key=self.resolved_sort_key)
+        self.require_disjoint(ordered)
+        return ordered
 
     def select(
         self,
         rewrites: Iterable[PlannedSourceRewrite],
     ) -> tuple[PlannedSourceRewrite, ...]:
-        rewrites_by_file: dict[str, list[PlannedSourceRewrite]] = {}
+        return tuple(item.rewrite for item in self.resolved_rewrites(rewrites))
+
+    def required_target(self, rewrite: PlannedSourceRewrite) -> AstTargetDigest:
+        if rewrite.operation is not RewriteOperation.REPLACE_TARGET:
+            raise ValueError(f"Unsupported rewrite operation: {rewrite.operation}")
+        target = self.source_index.target_by_id.get(rewrite.target_id)
+        if target is None:
+            raise KeyError(f"Unknown source-index target id: {rewrite.target_id}")
+        return target
+
+    @staticmethod
+    def resolved_sort_key(
+        item: ResolvedSourceRewrite,
+    ) -> tuple[str, int, int, str]:
+        return (
+            item.target.file_path,
+            item.target.line,
+            -item.target.end_line,
+            item.target.qualname,
+        )
+
+    @classmethod
+    def require_disjoint(
+        cls,
+        rewrites: tuple[ResolvedSourceRewrite, ...],
+    ) -> None:
+        previous: ResolvedSourceRewrite | None = None
         for rewrite in rewrites:
-            target = self.source_index.target_by_id[rewrite.target_id]
-            if target.file_path not in rewrites_by_file:
-                rewrites_by_file[target.file_path] = []
-            rewrites_by_file[target.file_path].append(rewrite)
+            if previous is not None and cls.overlaps(previous.target, rewrite.target):
+                raise PlannedRewriteConflictError(previous, rewrite)
+            previous = rewrite
 
-        selected: list[PlannedSourceRewrite] = []
-        for file_rewrites in rewrites_by_file.values():
-            previous_end = -1
-            ordered = sorted(
-                file_rewrites,
-                key=lambda item: (
-                    self.source_index.target_by_id[item.target_id].line,
-                    -self.source_index.target_by_id[item.target_id].end_line,
-                    self.source_index.target_by_id[item.target_id].qualname,
-                ),
-            )
-            for rewrite in ordered:
-                target = self.source_index.target_by_id[rewrite.target_id]
-                start = target.line - 1
-                end = target.end_line
-                if start < previous_end:
-                    continue
-                selected.append(rewrite)
-                previous_end = end
-
-        return sorted_tuple(
-            selected,
-            key=lambda item: (
-                self.source_index.target_by_id[item.target_id].file_path,
-                self.source_index.target_by_id[item.target_id].line,
-                self.source_index.target_by_id[item.target_id].qualname,
-            ),
+    @staticmethod
+    def overlaps(first: AstTargetDigest, second: AstTargetDigest) -> bool:
+        return (
+            first.file_path == second.file_path
+            and first.line <= second.end_line
+            and second.line <= first.end_line
         )
 
 
@@ -32103,17 +32500,6 @@ def _opportunity_pattern_ids(
         except ValueError:
             continue
     return tuple(pattern_ids)
-
-
-def _authority_boundary_target_id(
-    rewrite: AuthorityBoundaryRewrite,
-    candidate: CodemodCandidate,
-    source_index: SourceIndex,
-) -> str | None:
-    return rewrite.target.optional_target_id(
-        source_index,
-        eligible_target_ids=candidate.target_ids,
-    )
 
 
 def _descriptor_property_rewrites(
@@ -32184,7 +32570,7 @@ def _descriptor_property_rewrites(
                 rationale=rationale,
             )
         )
-    return NonOverlappingPlannedRewriteSelector(source_index).select(rewrites)
+    return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
 
 
 def _class_statement_deletion_rewrites(
@@ -32233,7 +32619,7 @@ def _class_statement_deletion_rewrites(
                 rationale=rationale,
             )
         )
-    return NonOverlappingPlannedRewriteSelector(source_index).select(rewrites)
+    return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
 
 
 def _derivable_detector_declaration_assignments(

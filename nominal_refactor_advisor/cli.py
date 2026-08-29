@@ -4193,8 +4193,8 @@ class CodemodCliExecution(
             plan_sequence_simulation = (
                 self.execution_request.sequence.simulate_snapshot(active_snapshot)
             )
-            simulation = CodemodSimulationReport.combine(
-                (candidate_simulation, plan_sequence_simulation.simulation)
+            simulation = CodemodSimulationReport.from_sequential_reports(
+                (candidate_simulation, plan_sequence_simulation.simulation),
             )
         else:
             plan_sequence_simulation = None

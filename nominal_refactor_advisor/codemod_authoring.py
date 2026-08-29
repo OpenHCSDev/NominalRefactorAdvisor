@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 from .codemod import JsonObject, JsonValue
 
 PayloadItem = TypeVar("PayloadItem")
+CommandEntryT = TypeVar("CommandEntryT", bound="CodemodAuthoringCommandEntry")
 
 
 class CodemodAuthoringCommandActionId(str, Enum):
@@ -200,10 +203,24 @@ class CodemodAuthoringPayloadReader:
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringCommandModel(CodemodAuthoringPayloadModel):
-    """Executable command node in an authoring workflow artifact graph."""
+class CodemodAuthoringCommandEntry(CodemodAuthoringPayloadModel, ABC):
+    """Nominal action-id-bearing entry accepted by the command catalog."""
 
     action_id: str
+
+    @classmethod
+    @abstractmethod
+    def from_payload(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> "CodemodAuthoringCommandEntry":
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringCommandModel(CodemodAuthoringCommandEntry):
+    """Executable command node in an authoring workflow artifact graph."""
+
     required_artifacts: tuple[str, ...]
     generated_artifacts: tuple[str, ...]
 
@@ -504,10 +521,9 @@ class CodemodAuthoringBundleStatusReporter(CodemodAuthoringBundleIndex):
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringCommandInvocation(CodemodAuthoringPayloadModel):
+class CodemodAuthoringCommandInvocation(CodemodAuthoringCommandEntry):
     """Executable argv/cwd pair for one authoring command."""
 
-    action_id: str
     argv: tuple[str, ...]
     cwd: Path
 
@@ -537,6 +553,28 @@ class CodemodAuthoringCommandInvocation(CodemodAuthoringPayloadModel):
             stdout=result.stdout,
             stderr=result.stderr,
         )
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringCommandCatalog(Generic[CommandEntryT]):
+    """Unique action-id catalog shared by planning and command execution."""
+
+    entries: tuple[CommandEntryT, ...]
+
+    def __post_init__(self) -> None:
+        action_ids = tuple(entry.action_id for entry in self.entries)
+        duplicate_action_ids = tuple(
+            action_id for action_id, count in Counter(action_ids).items() if count > 1
+        )
+        if duplicate_action_ids:
+            raise ValueError(
+                "Duplicate codemod authoring command action id(s): "
+                f"{', '.join(repr(action_id) for action_id in duplicate_action_ids)}"
+            )
+
+    @property
+    def by_action_id(self) -> dict[str, CommandEntryT]:
+        return {entry.action_id: entry for entry in self.entries}
 
 
 @dataclass(frozen=True)
@@ -706,13 +744,12 @@ class CodemodAuthoringBundleActionRunner(
         record_payload: Mapping[str, JsonValue],
     ) -> dict[str, CodemodAuthoringCommandInvocation]:
         reader = CodemodAuthoringPayloadReader(record_payload)
-        return {
-            invocation.action_id: invocation
-            for invocation in (
+        return CodemodAuthoringCommandCatalog(
+            tuple(
                 CodemodAuthoringCommandInvocation.from_payload(command_payload)
                 for command_payload in reader.object_tuple("commands")
             )
-        }
+        ).by_action_id
 
 
 @dataclass(frozen=True)
@@ -721,6 +758,9 @@ class CodemodAuthoringWorkflowPlanner:
 
     commands: tuple[CodemodAuthoringCommandModel, ...]
     workflows: tuple[CodemodAuthoringWorkflowModel, ...]
+
+    def __post_init__(self) -> None:
+        CodemodAuthoringCommandCatalog(self.commands)
 
     @classmethod
     def from_payloads(
@@ -864,7 +904,7 @@ class CodemodAuthoringWorkflowPlanner:
         )
 
     def command_by_action_id(self) -> dict[str, CodemodAuthoringCommandModel]:
-        return {command.action_id: command for command in self.commands}
+        return CodemodAuthoringCommandCatalog(self.commands).by_action_id
 
     def generators_by_artifact(
         self,

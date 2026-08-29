@@ -113,6 +113,10 @@ from nominal_refactor_advisor.codemod import (
     ClassFamilyTargetSelector,
     CodemodSelectorContext,
     CodemodRewriteBuilder,
+    CodemodSimulationReport,
+    CodemodSimulationWriter,
+    CodemodSourceRevision,
+    CodemodSourceRevisionError,
     CodemodSimulationStatus,
     CodemodSourceSnapshot,
     CodemodStrategy,
@@ -128,6 +132,9 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeEvaluation,
     InheritanceEdgeTargetSelector,
     OperationTemplateTargetBindings,
+    PlannedRewriteConflictError,
+    PlannedRewriteSelectionAuthority,
+    PlannedSourceRewrite,
     RefactorRecipe,
     RefactorRecipeTargetShape,
     RefactorRecipeOperation,
@@ -138,6 +145,8 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
     SourceRewriteSimulationPayload,
     SourceLineReplacement,
+    SourceOffsetReplacement,
+    SourceTextGeometry,
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
     apply_codemod_simulation,
@@ -152,6 +161,7 @@ from nominal_refactor_advisor.codemod import (
     evaluate_architecture_guards,
     format_codemod_unified_diff,
     simulate_codemod_candidates,
+    simulate_planned_rewrites,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.detectors import SemanticMirrorWithoutDescentDetector
@@ -668,6 +678,27 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
             ),
         ),
     )
+    with pytest.raises(ValueError, match="eligible source-index target"):
+        codemod_candidates_with_supplied_authority_boundaries(
+            candidates,
+            source_index,
+            {module_path.as_posix(): module_path.read_text()},
+            (
+                AuthorityBoundaryPlan(
+                    boundary_id="unresolved-alpha-boundary",
+                    detector_ids=("orbit_detector",),
+                    rewrites=(
+                        AuthorityBoundaryRewrite(
+                            replacement_source="class Alpha:\n    pass\n",
+                            target=SourceRewriteTarget(
+                                file_path=module_path.as_posix(),
+                                qualname="Alpha",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
 
     candidate = boundary_candidates[0]
     source_by_path = {module_path.as_posix(): module_path.read_text()}
@@ -696,6 +727,159 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
     assert "return AlphaRunAuthority.run(value)" in module_path.read_text()
 
 
+def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overlap(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n"
+        "    def run(self):\n"
+        "        return 'old'\n\n"
+        "    def stop(self):\n"
+        "        return 'old'\n",
+    )
+    source = module_path.read_text()
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    target_ids = {
+        target.qualname: target.target_id for target in source_index.ast_targets
+    }
+    run_rewrite = PlannedSourceRewrite(
+        target_id=target_ids["Alpha.run"],
+        replacement_source="    def run(self):\n        return 'new'\n",
+    )
+    stop_rewrite = PlannedSourceRewrite(
+        target_id=target_ids["Alpha.stop"],
+        replacement_source="    def stop(self):\n        return 'new'\n",
+    )
+    class_rewrite = PlannedSourceRewrite(
+        target_id=target_ids["Alpha"],
+        replacement_source="class Alpha:\n    pass\n",
+    )
+    conflicting_run_rewrite = replace(
+        run_rewrite,
+        replacement_source="    def run(self):\n        return 'other'\n",
+    )
+    authority = PlannedRewriteSelectionAuthority(source_index)
+
+    assert authority.select((run_rewrite, run_rewrite, stop_rewrite)) == (
+        run_rewrite,
+        stop_rewrite,
+    )
+    simulation = simulate_planned_rewrites(
+        source_index,
+        (run_rewrite, run_rewrite),
+        {module_path.as_posix(): source},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    assert simulation.applied_rewrite_count == 1
+
+    with pytest.raises(PlannedRewriteConflictError, match="planned rewrites overlap"):
+        authority.select((run_rewrite, conflicting_run_rewrite))
+    with pytest.raises(PlannedRewriteConflictError, match="planned rewrites overlap"):
+        authority.select((class_rewrite, run_rewrite))
+
+
+def test_codemod_apply_rejects_source_changed_after_simulation(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n    value = 1\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    simulation = RefactorRecipe("rewrite-alpha").replace_text(
+        "Alpha",
+        "value = 1",
+        "value = 2",
+        source_path=module_path.as_posix(),
+    ).simulate_snapshot(snapshot)
+    intervening_source = "class Alpha:\n    value = 99\n"
+    module_path.write_text(intervening_source)
+
+    with pytest.raises(CodemodSourceRevisionError, match="changed after simulation"):
+        simulation.apply()
+
+    assert module_path.read_text() == intervening_source
+
+
+def test_codemod_apply_rejects_create_path_that_appeared_after_simulation(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/existing.py", "EXISTING = 1\n")
+    generated_path = tmp_path / "pkg/generated.py"
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    simulation = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("create-generated").create_file(
+                generated_path.as_posix(),
+                "GENERATED = 1\n",
+            ),
+        )
+    ).simulate_snapshot(snapshot)
+    intervening_source = "USER_FILE = 1\n"
+    generated_path.write_text(intervening_source)
+
+    with pytest.raises(CodemodSourceRevisionError, match="changed after simulation"):
+        simulation.apply()
+
+    assert generated_path.read_text() == intervening_source
+
+
+def test_codemod_multifile_commit_failure_rolls_back_prior_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alpha_path = tmp_path / "pkg/alpha.py"
+    beta_path = tmp_path / "pkg/beta.py"
+    alpha_source = "class Alpha:\n    value = 1\n"
+    beta_source = "class Beta:\n    value = 2\n"
+    _write_module(tmp_path, "pkg/alpha.py", alpha_source)
+    _write_module(tmp_path, "pkg/beta.py", beta_source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    simulation = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("rewrite-alpha").replace_text(
+                "Alpha",
+                "value = 1",
+                "value = 10",
+                source_path=alpha_path.as_posix(),
+            ),
+            RefactorRecipe("rewrite-beta").replace_text(
+                "Beta",
+                "value = 2",
+                "value = 20",
+                source_path=beta_path.as_posix(),
+            ),
+        )
+    ).simulate_snapshot(snapshot)
+    real_commit_source = CodemodSimulationWriter.commit_source
+
+    def fail_second_commit(
+        writer: CodemodSimulationWriter,
+        revision: CodemodSourceRevision,
+        staged_path: Path,
+    ):
+        if revision.file_path == beta_path.as_posix():
+            raise OSError("injected second-file commit failure")
+        return real_commit_source(writer, revision, staged_path)
+
+    monkeypatch.setattr(
+        CodemodSimulationWriter,
+        "commit_source",
+        fail_second_commit,
+    )
+
+    with pytest.raises(OSError, match="injected second-file commit failure"):
+        simulation.apply()
+
+    assert alpha_path.read_text() == alpha_source
+    assert beta_path.read_text() == beta_source
+
+
 def test_refactor_recipe_simulates_and_applies_qualname_batch(
     tmp_path: Path,
 ) -> None:
@@ -714,7 +898,10 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
     source_index = build_source_index(modules, ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
     recipe = (
-        RefactorRecipe(recipe_id="route-alpha-beta", reason="route through authority")
+        RefactorRecipe(
+            recipe_id="route-alpha-beta",
+            reason="Replace both implementations.",
+        )
         .replace_target(
             "    def run(self, value):\n" "        return AlphaAuthority.run(value)\n",
             qualname="Alpha.run",
@@ -767,7 +954,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
     snapshot = CodemodSourceSnapshot.from_modules(modules)
     recipe = RefactorRecipe(
         recipe_id="route-alpha",
-        reason="route through authority",
+        reason="Replace the implementation.",
     ).replace_target(
         "    def run(self, value):\n" "        return AlphaAuthority.run(value)\n",
         qualname="Alpha.run",
@@ -829,6 +1016,65 @@ def test_codemod_preflight_rejects_unclaimed_authority_rationale(
     assert finding["detector_id"] == "unresolved_authority_claim"
     assert "emits no AuthorityClaim" in finding["summary"]
     assert finding["evidence"][0]["file_path"] == "<codemod-plan>"
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="resolved authority claim",
+    ):
+        CodemodPlanDocument(recipes=(recipe,)).simulate_snapshot(snapshot)
+
+
+def test_codemod_create_file_rejects_existing_source_without_mutation(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = "KEEP = 1\n"
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("replace-existing-with-create").create_file(
+                module_path.as_posix(),
+                "LOST = 2\n",
+            ),
+        )
+    )
+
+    with pytest.raises(CodemodOperationPreflightError) as error:
+        document.simulate_snapshot(snapshot)
+
+    assert error.value.report.operation == "create_file"
+    assert error.value.report.details["existing_source_paths"] == (
+        module_path.as_posix(),
+    )
+    assert module_path.read_text() == original_source
+
+
+def test_codemod_create_file_rejects_duplicate_source_authorities(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/existing.py", "EXISTING = 1\n")
+    generated_path = tmp_path / "pkg/generated.py"
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("first-create").create_file(
+                generated_path.as_posix(),
+                "FIRST = 1\n",
+            ),
+            RefactorRecipe("second-create").create_file(
+                generated_path.as_posix(),
+                "SECOND = 2\n",
+            ),
+        )
+    )
+
+    with pytest.raises(CodemodOperationPreflightError) as error:
+        document.simulate_snapshot(snapshot)
+
+    assert error.value.report.details["duplicate_source_paths"] == (
+        generated_path.as_posix(),
+    )
+    assert generated_path.exists() is False
 
 
 def test_codemod_preflight_accepts_source_backed_authority_claim(
@@ -2168,6 +2414,72 @@ def test_synthesis_records_expose_evidence_selectors(tmp_path: Path) -> None:
     } == {"Alpha", "Beta"}
 
 
+def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+
+    detector_id = "empty_recipe_test_detector"
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "class Alpha:\n    pass\n")
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Empty recipe synthesis fixture",
+        "A finding requires an executable source change.",
+        "one effective source rewrite",
+        "synthesized recipe declares no source change",
+    ).build(
+        detector_id,
+        "Alpha requires an effective source rewrite.",
+        (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        (finding,),
+    )
+
+    class EmptyRecipeTestSynthesizer(FindingRecipeSynthesizer):
+        detector_id = "empty_recipe_test_detector"
+
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "Alpha"),),
+            )
+
+        def recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ) -> RefactorRecipe | None:
+            del finding, context
+            return RefactorRecipe("empty-generated-recipe")
+
+    try:
+        plan = codemod_plan_from_findings(
+            (finding,),
+            selector_context=snapshot,
+        )
+    finally:
+        FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+
+    record = plan.report.records[0]
+    payload = plan.to_dict()
+    assert record.status is FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
+    assert record.recipe_id == "empty-generated-recipe"
+    assert plan.document.recipes == ()
+    assert plan.expected_removed_finding_ids == ()
+    assert plan.report.planned_count == 0
+    assert plan.report.rejected_count == 1
+    assert payload["synthesis_report"]["status_counts"] == {
+        "no_effective_rewrites": 1
+    }
+
+
 def test_source_index_target_selector_supports_regex_patterns(
     tmp_path: Path,
 ) -> None:
@@ -2963,6 +3275,101 @@ def test_expose_global_candidate_cache_context_operation(
     ) in rewritten
     assert "candidate_collector = staticmethod(_candidates)" in rewritten
     assert "def _candidate_items(" not in rewritten
+
+
+def test_source_text_geometry_coalesces_identical_offset_replacements() -> None:
+    geometry = SourceTextGeometry("alpha beta gamma")
+    replacement = SourceOffsetReplacement.from_offsets(
+        start_offset=6,
+        end_offset=10,
+        replacement_source="delta",
+    )
+
+    rewritten = geometry.source_with_replacements_in_span(
+        0,
+        geometry.end_offset,
+        (replacement, replacement),
+    )
+
+    assert rewritten == "alpha delta gamma"
+
+
+def test_source_text_geometry_rejects_same_span_replacement_conflict() -> None:
+    geometry = SourceTextGeometry("alpha beta gamma")
+
+    with pytest.raises(ValueError, match="different source to the same span"):
+        geometry.source_with_replacements_in_span(
+            0,
+            geometry.end_offset,
+            (
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=6,
+                    end_offset=10,
+                    replacement_source="delta",
+                ),
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=6,
+                    end_offset=10,
+                    replacement_source="epsilon",
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("first_span", "second_span"),
+    (
+        ((0, 5), (4, 10)),
+        ((0, 10), (2, 5)),
+        ((0, 10), (5, 5)),
+    ),
+)
+def test_source_text_geometry_rejects_overlapping_offset_replacements(
+    first_span: tuple[int, int],
+    second_span: tuple[int, int],
+) -> None:
+    geometry = SourceTextGeometry("alpha beta gamma")
+
+    with pytest.raises(ValueError, match="spans overlap"):
+        geometry.source_with_replacements_in_span(
+            0,
+            geometry.end_offset,
+            (
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=first_span[0],
+                    end_offset=first_span[1],
+                    replacement_source="first",
+                ),
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=second_span[0],
+                    end_offset=second_span[1],
+                    replacement_source="second",
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "replacement_span",
+    ((-1, 2), (4, 3), (6, 11)),
+)
+def test_source_text_geometry_rejects_replacements_outside_target_span(
+    replacement_span: tuple[int, int],
+) -> None:
+    geometry = SourceTextGeometry("alpha beta gamma")
+
+    with pytest.raises(ValueError, match="must fit its target span"):
+        geometry.source_with_replacements_in_span(
+            0,
+            10,
+            (
+                SourceOffsetReplacement.from_offsets(
+                    start_offset=replacement_span[0],
+                    end_offset=replacement_span[1],
+                    replacement_source="replacement",
+                ),
+            ),
+        )
 
 
 def test_operation_compiler_coalesces_identical_line_replacements(
@@ -13840,6 +14247,58 @@ def test_module_cli_simulates_codemod_plan_from_stdin(
     assert "return value + 1" not in module_path.read_text()
 
 
+def test_module_cli_apply_cannot_bypass_authority_preflight(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = (
+        "class Alpha:\n    def run(self, value):\n        return value\n"
+    )
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "unclaimed-authority-route",
+                "reason": "route through authority",
+                "operations": [
+                    {
+                        "operation": "replace_text",
+                        "file_path": module_path.as_posix(),
+                        "target_qualname": "Alpha.run",
+                        "old_source": "return value",
+                        "new_source": "return value + 1",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-apply",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 1
+    assert payload["preflight_failed"] is True
+    assert payload["applied"] is False
+    assert payload["preflight_report"]["operation"] == "authority_claims"
+    assert module_path.read_text() == original_source
+
+
 def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
     tmp_path: Path,
 ) -> None:
@@ -13895,6 +14354,50 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
         target.qualname == "Generated.run"
         for target in projected_snapshot.source_index.ast_targets
     )
+
+
+def test_codemod_sequential_report_projection_preserves_same_file_changes(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n"
+        "    value = 1\n\n\n"
+        "class Beta:\n"
+        "    value = 2\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    alpha_recipe = RefactorRecipe("rewrite-alpha").replace_text(
+        "Alpha",
+        "value = 1",
+        "value = 10",
+        source_path=module_path.as_posix(),
+    )
+    beta_recipe = RefactorRecipe("rewrite-beta").replace_text(
+        "Beta",
+        "value = 2",
+        "value = 20",
+        source_path=module_path.as_posix(),
+    )
+    alpha_report = alpha_recipe.simulate_snapshot(snapshot).simulation
+    same_base_beta_report = beta_recipe.simulate_snapshot(snapshot).simulation
+    after_alpha = snapshot.with_simulation(alpha_report)
+    beta_report = beta_recipe.simulate_snapshot(after_alpha).simulation
+
+    combined = CodemodSimulationReport.from_sequential_reports(
+        (alpha_report, beta_report),
+    )
+
+    rewritten_source = combined.rewritten_sources[module_path.as_posix()]
+    assert combined.applied_rewrite_count == 2
+    assert "value = 10" in rewritten_source
+    assert "value = 20" in rewritten_source
+    with pytest.raises(ValueError, match="stale source transition"):
+        CodemodSimulationReport.from_sequential_reports(
+            (alpha_report, same_base_beta_report),
+        )
 
 
 def test_codemod_document_empty_guard_avoids_after_snapshot_rebuild(
@@ -17693,6 +18196,12 @@ def test_codemod_fixpoint_projected_scan_reuses_unchanged_modules(
             validated_file_paths=(beta_path.as_posix(),),
             parse_valid=True,
         ),
+        base_revisions=(
+            CodemodSourceRevision.from_sources(
+                beta_path.as_posix(),
+                {beta_path.as_posix(): beta_path.read_text()},
+            ),
+        ),
     )
     runner = CodemodFixpointRunner(
         roots=(tmp_path,),
@@ -17737,6 +18246,9 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
             backend=CodemodBackend.AST_SPAN,
             validated_file_paths=(created_path.as_posix(),),
             parse_valid=True,
+        ),
+        base_revisions=(
+            CodemodSourceRevision.from_sources(created_path.as_posix(), {}),
         ),
     )
     runner = CodemodFixpointRunner(

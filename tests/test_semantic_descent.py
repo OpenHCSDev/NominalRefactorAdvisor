@@ -2193,6 +2193,47 @@ def test_identity_keyword_forwarding_shell_synthesizes_inline_delete_recipe(
     assert simulation.is_clean is True
 
 
+def test_identity_keyword_forwarding_shell_coalesces_nested_function_call_site(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SupportItem:\n"
+        "    name: str\n"
+        "    value: str\n"
+        "\n"
+        "class SupportBuilder:\n"
+        "    def first(self, name, value):\n"
+        "        def nested():\n"
+        "            return self.second(value=value, name=name)\n"
+        "\n"
+        "        return nested()\n"
+        "\n"
+        "    def second(self, *, name, value):\n"
+        "        return SupportItem(name=name, value=value)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "identity_keyword_forwarding_shell"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert "def second" not in rewritten
+    assert "return SupportItem(name=name, value=value)" in rewritten
+    assert rewritten.count("SupportItem(name=name, value=value)") == 1
+    assert simulation.is_clean is True
+
+
 def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
     tmp_path: Path,
 ) -> None:
