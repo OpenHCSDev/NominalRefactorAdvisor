@@ -5763,9 +5763,21 @@ def test_compact_repeated_keyed_family_preserves_grouping_semantics(
     )
 
 
-def test_compact_concrete_family_candidates_match_legacy_ast_candidates(
+def test_compact_concrete_family_candidates_preserve_semantics(
     tmp_path: Path,
 ) -> None:
+    for deleted_shadow in (
+        "_registered_type_match_assignment_shape",
+        "_registered_type_list_assignment",
+        "_registered_type_list_generator",
+        "_registered_type_predicate_shape",
+        "_is_selected_match_subscript",
+        "_predicate_selected_concrete_family_candidates",
+        "_mirrored_leaf_family_map",
+        "_parallel_mirrored_leaf_family_candidates",
+    ):
+        assert not hasattr(helper_detectors, deleted_shadow)
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "families.py").write_text(
@@ -5810,15 +5822,36 @@ def test_compact_concrete_family_candidates_match_legacy_ast_candidates(
     )
     context = runtime_detectors._compact_concrete_family_context(projections, config)
 
-    assert runtime_detectors._compact_predicate_selected_concrete_family_candidates(
-        context, config
-    ) == runtime_detectors._predicate_selected_concrete_family_candidates(
-        list(modules), config
+    predicate_candidates = (
+        runtime_detectors._compact_predicate_selected_concrete_family_candidates(
+            context, config
+        )
     )
-    assert runtime_detectors._compact_parallel_mirrored_leaf_family_candidates(
-        context, config
-    ) == runtime_detectors._parallel_mirrored_leaf_family_candidates(
-        list(modules), config
+    assert len(predicate_candidates) == 1
+    predicate_candidate = predicate_candidates[0]
+    assert predicate_candidate.class_name == "RenderRule"
+    assert predicate_candidate.selector_method_name == "resolve"
+    assert predicate_candidate.predicate_method_name == "matches_context"
+    assert predicate_candidate.context_param_name == "artifact"
+    assert predicate_candidate.concrete_class_names == (
+        "AlphaRenderRule",
+        "BetaRenderRule",
+    )
+
+    mirrored_candidates = (
+        runtime_detectors._compact_parallel_mirrored_leaf_family_candidates(
+            context, config
+        )
+    )
+    assert len(mirrored_candidates) == 1
+    mirrored_candidate = mirrored_candidates[0]
+    assert mirrored_candidate.left.root_name == "InvoiceFieldEmitter"
+    assert mirrored_candidate.right.root_name == "ReceiptFieldEmitter"
+    assert mirrored_candidate.contract_method_names == ("emit",)
+    assert mirrored_candidate.shared_leaf_family_names == (
+        "alpha emitter",
+        "beta emitter",
+        "gamma emitter",
     )
 
 

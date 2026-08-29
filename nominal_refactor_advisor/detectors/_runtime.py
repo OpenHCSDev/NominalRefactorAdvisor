@@ -7,6 +7,7 @@ selection, wrapper surfaces, and dynamic dispatch residue.
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 import copy
 import hashlib
 import os
@@ -7904,26 +7905,28 @@ class AutoRegisterMetaUnderRentedDetector(
         )
 
 
-class PredicateSelectedConcreteFamilyDetector(
+CompactConcreteFamilyCandidateT = TypeVar("CompactConcreteFamilyCandidateT")
+
+
+class _CompactConcreteFamilyDetectorBase(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[
-        PredicateSelectedConcreteFamilyCandidate
-    ],
+    CrossModuleCandidateDetector[CompactConcreteFamilyCandidateT],
+    Generic[CompactConcreteFamilyCandidateT],
+    ABC,
 ):
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_report_context_promotion_predicate = staticmethod(
-        _target_has_predicate_selected_root
-    )
-    compact_shared_context_builder = _compact_concrete_family_context
-    finding_spec = high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
-        "Predicate-selected concrete family should collapse into one metaclass-registry selector base",
-        "The docs treat repeated scans over `registered_types()` plus `matches_*` predicates as family-selection framework logic. When a root class manually filters registered concrete descendants, enforces exactly one match, and then consumes the chosen subclass, the selection algorithm should live in one reusable `metaclass-registry` family base.",
-        "single authoritative metaclass-registry predicate-selected concrete-family substrate",
-        "registered concrete subclasses are manually scanned and cardinality-checked inside a family root",
-        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_PREDICATE_CHAIN_REGISTRY_POPULATION_OBSERVATION_TAGS,
-    )
+    compact_shared_context_builder = staticmethod(_compact_concrete_family_context)
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[CompactConcreteFamilyCandidateT]:
+        projections = type(self).compact_module_projections(modules)
+        return self._candidates_from_compact_context(
+            _compact_concrete_family_context(projections, config),
+            config,
+        )
 
     def _findings_from_compact_projections(
         self,
@@ -7931,8 +7934,9 @@ class PredicateSelectedConcreteFamilyDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
-            _compact_predicate_selected_concrete_family_candidates(
-                _compact_concrete_family_context(projections, config), config
+            self._candidates_from_compact_context(
+                _compact_concrete_family_context(projections, config),
+                config,
             ),
             config,
         )
@@ -7944,12 +7948,45 @@ class PredicateSelectedConcreteFamilyDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del projections
-        if not isinstance(context, _CompactConcreteFamilyContext):
-            raise TypeError("predicate selector compact context is missing")
         return self._findings_for_candidates(
-            _compact_predicate_selected_concrete_family_candidates(context, config),
+            self._candidates_from_compact_context(
+                _compact_concrete_family_context_from_repository(context),
+                config,
+            ),
             config,
         )
+
+    @abstractmethod
+    def _candidates_from_compact_context(
+        self,
+        context: _CompactConcreteFamilyContext,
+        config: DetectorConfig,
+    ) -> Sequence[CompactConcreteFamilyCandidateT]:
+        raise NotImplementedError
+
+
+class PredicateSelectedConcreteFamilyDetector(
+    _CompactConcreteFamilyDetectorBase[PredicateSelectedConcreteFamilyCandidate],
+):
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_predicate_selected_root
+    )
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Predicate-selected concrete family should collapse into one metaclass-registry selector base",
+        "The docs treat repeated scans over `registered_types()` plus `matches_*` predicates as family-selection framework logic. When a root class manually filters registered concrete descendants, enforces exactly one match, and then consumes the chosen subclass, the selection algorithm should live in one reusable `metaclass-registry` family base.",
+        "single authoritative metaclass-registry predicate-selected concrete-family substrate",
+        "registered concrete subclasses are manually scanned and cardinality-checked inside a family root",
+        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _CLASS_FAMILY_PREDICATE_CHAIN_REGISTRY_POPULATION_OBSERVATION_TAGS,
+    )
+
+    def _candidates_from_compact_context(
+        self,
+        context: _CompactConcreteFamilyContext,
+        config: DetectorConfig,
+    ) -> Sequence[PredicateSelectedConcreteFamilyCandidate]:
+        return _compact_predicate_selected_concrete_family_candidates(context, config)
 
     def _finding_for_candidate(
         self, family_candidate: PredicateSelectedConcreteFamilyCandidate
@@ -7982,13 +8019,8 @@ class PredicateSelectedConcreteFamilyDetector(
 
 
 class ParallelMirroredLeafFamilyDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[
-        ParallelMirroredLeafFamilyCandidate
-    ],
+    _CompactConcreteFamilyDetectorBase[ParallelMirroredLeafFamilyCandidate],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = _compact_concrete_family_context
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Parallel mirrored leaf families should derive from one axis-declared family substrate",
@@ -7999,29 +8031,13 @@ class ParallelMirroredLeafFamilyDetector(
         _CLASS_FAMILY_REGISTRY_POPULATION_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
     )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        context: _CompactConcreteFamilyContext,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _compact_parallel_mirrored_leaf_family_candidates(
-                _compact_concrete_family_context(projections, config), config
-            ),
-            config,
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del projections
-        if not isinstance(context, _CompactConcreteFamilyContext):
-            raise TypeError("mirrored leaf compact context is missing")
-        return self._findings_for_candidates(
-            _compact_parallel_mirrored_leaf_family_candidates(context, config),
+    ) -> Sequence[ParallelMirroredLeafFamilyCandidate]:
+        return _compact_parallel_mirrored_leaf_family_candidates(
+            context,
             config,
         )
 
