@@ -7,12 +7,14 @@ axis authority, registration, and other repo-wide architectural smells.
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from pathlib import Path
 import re
+from typing import Generic, TypeVar
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import (
@@ -5085,111 +5087,6 @@ def _compact_keyed_registry_axis_facts_from_context(
     )
 
 
-def _compact_premature_registry_infrastructure_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-    config: DetectorConfig,
-) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
-    return _compact_premature_registry_infrastructure_candidates_from_facts(
-        _compact_keyed_registry_axis_facts(projections, config)
-    )
-
-
-def _compact_premature_registry_infrastructure_candidates_from_facts(
-    facts: tuple[KeyedRegistryAxisFact, ...],
-) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
-    return tuple(
-        PrematureRegistryInfrastructureCandidate(
-            file_path=fact.file_path,
-            line=fact.line,
-            class_name=fact.class_name,
-            key_type_name=fact.key_type_name,
-            registry_key_attr_name=fact.registry_key_attr_name,
-            lookup_method_names=fact.lookup_method_names,
-            registered_case_names=fact.registered_case_names,
-            consumer_symbols=fact.consumer_symbols,
-            missing_maturity_signals=fact.missing_maturity_signals,
-        )
-        for fact in facts
-        if fact.missing_maturity_signals
-    )
-
-
-def _compact_non_injective_type_registry_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-    config: DetectorConfig,
-) -> tuple[NonInjectiveTypeRegistryCandidate, ...]:
-    return _compact_non_injective_type_registry_candidates_from_facts(
-        _compact_keyed_registry_axis_facts(projections, config)
-    )
-
-
-def _compact_non_injective_type_registry_candidates_from_facts(
-    facts: tuple[KeyedRegistryAxisFact, ...],
-) -> tuple[NonInjectiveTypeRegistryCandidate, ...]:
-    return tuple(
-        NonInjectiveTypeRegistryCandidate(
-            file_path=fact.file_path,
-            line=fact.line,
-            class_name=fact.class_name,
-            key_type_name=fact.key_type_name,
-            registry_key_attr_name=fact.registry_key_attr_name,
-            lookup_method_names=fact.lookup_method_names,
-            registered_case_names=fact.registered_case_names,
-            consumer_symbols=fact.consumer_symbols,
-            injectivity_proof=fact.injectivity_proof,
-        )
-        for fact in facts
-        if fact.injectivity_proof.duplicate_key_names
-        or fact.injectivity_proof.duplicate_type_names
-        or fact.injectivity_proof.missing_type_names
-    )
-
-
-def _compact_injective_type_registry_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-    config: DetectorConfig,
-) -> tuple[InjectiveTypeRegistryCandidate, ...]:
-    return _compact_injective_type_registry_candidates_from_facts(
-        _compact_keyed_registry_axis_facts(projections, config)
-    )
-
-
-def _compact_injective_type_registry_candidates_from_facts(
-    facts: tuple[KeyedRegistryAxisFact, ...],
-) -> tuple[InjectiveTypeRegistryCandidate, ...]:
-    return tuple(
-        InjectiveTypeRegistryCandidate(
-            file_path=fact.file_path,
-            line=fact.line,
-            class_name=fact.class_name,
-            key_type_name=fact.key_type_name,
-            registry_key_attr_name=fact.registry_key_attr_name,
-            lookup_method_names=fact.lookup_method_names,
-            registered_case_names=fact.registered_case_names,
-            consumer_symbols=fact.consumer_symbols,
-            injectivity_proof=fact.injectivity_proof,
-        )
-        for fact in facts
-        if not fact.missing_maturity_signals
-        and not fact.injectivity_proof.duplicate_key_names
-        and not fact.injectivity_proof.duplicate_type_names
-        and not fact.injectivity_proof.missing_type_names
-    )
-
-
-def _compact_mature_injective_registry_facts(
-    facts: tuple[KeyedRegistryAxisFact, ...],
-) -> tuple[KeyedRegistryAxisFact, ...]:
-    return tuple(
-        fact
-        for fact in facts
-        if not fact.missing_maturity_signals
-        and not fact.injectivity_proof.duplicate_key_names
-        and not fact.injectivity_proof.duplicate_type_names
-        and not fact.injectivity_proof.missing_type_names
-    )
-
-
 def _compact_registry_projection_import_aliases(
     projection: CompactModuleClassProjection,
     *,
@@ -5315,7 +5212,9 @@ def _compact_registry_projection_surface_candidates_from_facts(
         projection.file_path: projection for projection in projections
     }
     candidates: list[RegistryProjectionSurfaceCandidate] = []
-    for fact in _compact_mature_injective_registry_facts(facts):
+    for fact in facts:
+        if not fact.is_mature_injective:
+            continue
         registry_projection = projections_by_path.get(fact.file_path)
         if registry_projection is None:
             continue
@@ -5424,17 +5323,27 @@ def _target_has_named_registry_projection_surface(
     )
 
 
-class _CompactPrematureRegistryInfrastructureDetectorBase(
+CompactKeyedRegistryCandidateT = TypeVar("CompactKeyedRegistryCandidateT")
+
+
+class _CompactKeyedRegistryCandidateDetectorBase(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[
-        PrematureRegistryInfrastructureCandidate
-    ],
+    CrossModuleCandidateDetector[CompactKeyedRegistryCandidateT],
+    Generic[CompactKeyedRegistryCandidateT],
+    ABC,
 ):
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_report_context_promotion_predicate = staticmethod(
-        _target_has_keyed_registry_axis_root
-    )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[CompactKeyedRegistryCandidateT]:
+        return self._candidates_from_compact_projections(
+            type(self).compact_module_projections(modules),
+            config,
+        )
 
     def _findings_from_compact_projections(
         self,
@@ -5442,8 +5351,35 @@ class _CompactPrematureRegistryInfrastructureDetectorBase(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
-            _compact_premature_registry_infrastructure_candidates(projections, config),
+            self._candidates_from_compact_projections(projections, config),
             config,
+        )
+
+    @abstractmethod
+    def _candidates_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> Sequence[CompactKeyedRegistryCandidateT]:
+        raise NotImplementedError
+
+
+class _CompactPrematureRegistryInfrastructureDetectorBase(
+    _CompactKeyedRegistryCandidateDetectorBase[
+        PrematureRegistryInfrastructureCandidate
+    ],
+):
+    compact_report_context_promotion_predicate = staticmethod(
+        _target_has_keyed_registry_axis_root
+    )
+
+    def _candidates_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> Sequence[PrematureRegistryInfrastructureCandidate]:
+        return PrematureRegistryInfrastructureCandidate.from_facts(
+            _compact_keyed_registry_axis_facts(projections, config)
         )
 
     def _findings_from_compact_context(
@@ -5455,29 +5391,24 @@ class _CompactPrematureRegistryInfrastructureDetectorBase(
         del projections
         facts = _compact_keyed_registry_axis_facts_from_context(context)
         return self._findings_for_candidates(
-            _compact_premature_registry_infrastructure_candidates_from_facts(facts),
-            config,
+            PrematureRegistryInfrastructureCandidate.from_facts(facts), config
         )
 
 
 class _CompactNonInjectiveTypeRegistryDetectorBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[NonInjectiveTypeRegistryCandidate],
+    _CompactKeyedRegistryCandidateDetectorBase[NonInjectiveTypeRegistryCandidate],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_keyed_registry_axis_root
     )
-    compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _compact_non_injective_type_registry_candidates(projections, config),
-            config,
+    ) -> Sequence[NonInjectiveTypeRegistryCandidate]:
+        return NonInjectiveTypeRegistryCandidate.from_facts(
+            _compact_keyed_registry_axis_facts(projections, config)
         )
 
     def _findings_from_compact_context(
@@ -5489,29 +5420,24 @@ class _CompactNonInjectiveTypeRegistryDetectorBase(
         del projections
         facts = _compact_keyed_registry_axis_facts_from_context(context)
         return self._findings_for_candidates(
-            _compact_non_injective_type_registry_candidates_from_facts(facts),
-            config,
+            NonInjectiveTypeRegistryCandidate.from_facts(facts), config
         )
 
 
 class _CompactInjectiveTypeRegistryDetectorBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[InjectiveTypeRegistryCandidate],
+    _CompactKeyedRegistryCandidateDetectorBase[InjectiveTypeRegistryCandidate],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_keyed_registry_axis_root
     )
-    compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _compact_injective_type_registry_candidates(projections, config),
-            config,
+    ) -> Sequence[InjectiveTypeRegistryCandidate]:
+        return InjectiveTypeRegistryCandidate.from_facts(
+            _compact_keyed_registry_axis_facts(projections, config)
         )
 
     def _findings_from_compact_context(
@@ -5523,29 +5449,24 @@ class _CompactInjectiveTypeRegistryDetectorBase(
         del projections
         facts = _compact_keyed_registry_axis_facts_from_context(context)
         return self._findings_for_candidates(
-            _compact_injective_type_registry_candidates_from_facts(facts),
-            config,
+            InjectiveTypeRegistryCandidate.from_facts(facts), config
         )
 
 
 class _CompactRegistryProjectionSurfaceDetectorBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[RegistryProjectionSurfaceCandidate],
+    _CompactKeyedRegistryCandidateDetectorBase[RegistryProjectionSurfaceCandidate],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_named_registry_projection_surface
     )
-    compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _compact_registry_projection_surface_candidates(projections, config),
-            config,
+    ) -> Sequence[RegistryProjectionSurfaceCandidate]:
+        return _compact_registry_projection_surface_candidates(
+            projections, config
         )
 
     def _findings_from_compact_context(
@@ -5564,27 +5485,21 @@ class _CompactRegistryProjectionSurfaceDetectorBase(
 
 
 class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[
+    _CompactKeyedRegistryCandidateDetectorBase[
         RegistryProjectionPolicyAuthorityCandidate
     ],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_named_registry_projection_surface
     )
-    compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _compact_registry_projection_policy_authority_candidates(
-                projections, config
-            ),
-            config,
+    ) -> Sequence[RegistryProjectionPolicyAuthorityCandidate]:
+        return _compact_registry_projection_policy_authority_candidates(
+            projections, config
         )
 
     def _findings_from_compact_context(
@@ -5642,7 +5557,6 @@ declare_candidate_rule_detector(
         registry_name=candidate.class_name,
     ),
     detector_base=_CompactNonInjectiveTypeRegistryDetectorBase,
-    candidate_collector=_non_injective_type_registry_candidates,
     registry_normal_form_stage=CanonicalRegistryIdentityStage,
 )
 
@@ -5679,7 +5593,6 @@ declare_candidate_rule_detector(
         registry_name=candidate.class_name,
     ),
     detector_base=_CompactInjectiveTypeRegistryDetectorBase,
-    candidate_collector=_injective_type_registry_candidates,
     registry_normal_form_stage=MetaclassRegisteredRegistryStage,
 )
 
@@ -5759,7 +5672,6 @@ declare_candidate_rule_detector(
         ),
     ),
     detector_base=_CompactRegistryProjectionSurfaceDetectorBase,
-    candidate_collector=_REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_candidates,
 )
 
 
@@ -5803,9 +5715,6 @@ declare_candidate_rule_detector(
         ),
     ),
     detector_base=_CompactRegistryProjectionPolicyAuthorityDetectorBase,
-    candidate_collector=(
-        _REGISTRY_PROJECTION_SURFACE_ANALYZER.policy_authority_candidates
-    ),
 )
 
 
@@ -5838,7 +5747,6 @@ declare_candidate_rule_detector(
     ),
     metrics=_registry_maturity_fanout_metrics,
     detector_base=_CompactPrematureRegistryInfrastructureDetectorBase,
-    candidate_collector=_premature_registry_infrastructure_candidates,
     registry_normal_form_stage=ProvenRegistryMaturityStage,
 )
 

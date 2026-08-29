@@ -5234,6 +5234,7 @@ def test_injective_type_registry_proof_detects_aliasing_and_missing_types() -> N
     assert proof.missing_type_names == ("GammaRunner",)
     assert proof.reverse_lookup_names == ("type_for_mode",)
     assert proof.consumer_symbols == ("run_alpha",)
+    assert not proof.is_injective
 
 
 def test_factorization_engine_derives_shared_authority_and_residue_axes() -> None:

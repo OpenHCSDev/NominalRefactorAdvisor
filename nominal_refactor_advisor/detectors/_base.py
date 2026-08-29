@@ -121,7 +121,6 @@ from ..ast_tools import (
     MethodShape,
     MethodShapeFamily,
     ParsedModule,
-    PythonSourcePathPolicy,
     SourceModule,
     ProjectionHelperShape,
     ProjectionHelperObservationFamily,
@@ -4179,79 +4178,6 @@ class DispatchAlgebraAuthority:
             )
         return tuple(specs)
 
-    def keyed_registry_axis_fact_records(
-        self, modules: Sequence[ParsedModule], config: DetectorConfig
-    ) -> tuple[KeyedRegistryAxisFact, ...]:
-        class_index = build_class_family_index(list(modules))
-        min_case_count = max(2, config.min_registration_sites)
-        min_consumer_count = max(2, config.min_registration_sites)
-        facts: list[KeyedRegistryAxisFact] = []
-        for indexed_class in sorted(
-            class_index.classes_by_symbol.values(), key=lambda item: item.symbol
-        ):
-            if PythonSourcePathPolicy.is_test_path(Path(indexed_class.file_path)):
-                continue
-            node = indexed_class.node
-            key_type_name = SYNTAX_PROJECTION_AUTHORITY.keyed_family_key_type_name(node)
-            if key_type_name is None:
-                continue
-            registry_key_attr_name = _constant_string(
-                CLASS_NODE_AUTHORITY.direct_assignments(node).get("registry_key_attr")
-            )
-            if registry_key_attr_name is None:
-                continue
-            lookup_method_names = _keyed_registry_lookup_method_names(node)
-            family_name = CLASS_INDEX_PROJECTION.display_name(
-                indexed_class, class_index
-            )
-            lookup_method_name_set = set(lookup_method_names)
-            consumer_symbols = sorted_tuple(
-                {
-                    qualname
-                    for module in modules
-                    if not PythonSourcePathPolicy.is_test_path(module.path)
-                    for qualname, function in _iter_named_functions(module)
-                    if not qualname.startswith(f"{family_name}.")
-                    if any(
-                        attribute is not None
-                        and attribute.attr in lookup_method_name_set
-                        and name_id(attribute.value) == family_name
-                        for node in _walk_nodes(function)
-                        for attribute in (as_ast(node, ast.Attribute),)
-                    )
-                }
-            )
-            registered_case_names = _registered_keyed_case_names(
-                class_index, indexed_class, registry_key_attr_name
-            )
-            facts.append(
-                KeyedRegistryAxisFact(
-                    file_path=indexed_class.file_path,
-                    line=indexed_class.line,
-                    class_name=family_name,
-                    key_type_name=key_type_name,
-                    registry_key_attr_name=registry_key_attr_name,
-                    lookup_method_names=lookup_method_names,
-                    registered_case_names=registered_case_names,
-                    consumer_symbols=consumer_symbols,
-                    missing_maturity_signals=_registry_maturity_missing_signals(
-                        registered_case_count=len(registered_case_names),
-                        lookup_method_names=lookup_method_names,
-                        consumer_count=len(consumer_symbols),
-                        min_case_count=min_case_count,
-                        min_consumer_count=min_consumer_count,
-                    ),
-                    injectivity_proof=_keyed_type_registry_injectivity_proof(
-                        class_index,
-                        indexed_class,
-                        registry_key_attr_name,
-                        key_type_name=key_type_name,
-                        consumer_symbols=consumer_symbols,
-                    ),
-                )
-            )
-        return tuple(facts)
-
     def derivable_registry_key_suffix(
         self,
         class_names: Sequence[str],
@@ -8021,111 +7947,6 @@ def _repeated_keyed_family_candidates(
     )
 
 
-def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        (
-            method.name
-            for method in CLASS_NODE_AUTHORITY.methods(node)
-            if _is_classmethod(method)
-            and (
-                RegistryLookupShape.from_method(method) is not None
-                or _method_references_cls_registry(method)
-            )
-        )
-    )
-
-
-def _method_references_cls_registry(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    return RegistryLookupShape.references_registry(method)
-
-
-def _registered_keyed_case_names(
-    class_index: ClassFamilyIndex,
-    indexed_class: IndexedClass,
-    registry_key_attr_name: str,
-) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            ast.unparse(assignment)
-            for descendant in CLASS_INDEX_PROJECTION.descendant_classes(
-                class_index, indexed_class.symbol
-            )
-            if (
-                assignment := CLASS_NODE_AUTHORITY.direct_assignments(
-                    descendant.node
-                ).get(registry_key_attr_name)
-            )
-            is not None
-        }
-    )
-
-
-def _registered_keyed_type_names_by_key(
-    class_index: ClassFamilyIndex,
-    indexed_class: IndexedClass,
-    registry_key_attr_name: str,
-) -> dict[str, tuple[str, ...]]:
-    grouped: dict[str, list[str]] = defaultdict(list)
-    for descendant in SYNTAX_PROJECTION_AUTHORITY.concrete_indexed_descendant_classes(
-        class_index, indexed_class
-    ):
-        assignment = CLASS_NODE_AUTHORITY.direct_assignments(descendant.node).get(
-            registry_key_attr_name
-        )
-        if assignment is None:
-            continue
-        grouped[ast.unparse(assignment)].append(
-            CLASS_INDEX_PROJECTION.display_name(descendant, class_index)
-        )
-    return {
-        key_name: sorted_tuple(type_names)
-        for key_name, type_names in sorted(grouped.items())
-    }
-
-
-def _registry_reverse_lookup_method_names(
-    node: ast.ClassDef,
-) -> tuple[str, ...]:
-    return tuple(
-        (
-            method.name
-            for method in CLASS_NODE_AUTHORITY.methods(node)
-            if _is_classmethod(method)
-            and _method_references_cls_registry(method)
-            and any((token in method.name for token in ("class", "type", "reverse")))
-        )
-    )
-
-
-def _keyed_type_registry_injectivity_proof(
-    class_index: ClassFamilyIndex,
-    indexed_class: IndexedClass,
-    registry_key_attr_name: str,
-    *,
-    key_type_name: str,
-    consumer_symbols: tuple[str, ...],
-) -> InjectiveTypeRegistryProof:
-    registered_type_names = tuple(
-        (
-            CLASS_INDEX_PROJECTION.display_name(descendant, class_index)
-            for descendant in SYNTAX_PROJECTION_AUTHORITY.concrete_indexed_descendant_classes(
-                class_index, indexed_class
-            )
-        )
-    )
-    return InjectiveTypeRegistryProof.from_type_map(
-        key_axis_name=key_type_name,
-        type_names_by_key=_registered_keyed_type_names_by_key(
-            class_index, indexed_class, registry_key_attr_name
-        ),
-        registered_type_names=registered_type_names,
-        reverse_lookup_names=_registry_reverse_lookup_method_names(indexed_class.node),
-        consumer_symbols=consumer_symbols,
-    )
-
-
 def _registry_maturity_missing_signals(
     *,
     registered_case_count: int,
@@ -8142,110 +7963,6 @@ def _registry_maturity_missing_signals(
     if consumer_count < min_consumer_count:
         missing.append("consumer_fanout")
     return tuple(missing)
-
-
-def _premature_registry_infrastructure_candidates(
-    modules: Sequence[ParsedModule], config: DetectorConfig
-) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
-    candidates: list[PrematureRegistryInfrastructureCandidate] = []
-    for fact in DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
-        modules, config
-    ):
-        if not fact.missing_maturity_signals:
-            continue
-        candidates.append(
-            PrematureRegistryInfrastructureCandidate(
-                file_path=fact.file_path,
-                line=fact.line,
-                class_name=fact.class_name,
-                key_type_name=fact.key_type_name,
-                registry_key_attr_name=fact.registry_key_attr_name,
-                lookup_method_names=fact.lookup_method_names,
-                registered_case_names=fact.registered_case_names,
-                consumer_symbols=fact.consumer_symbols,
-                missing_maturity_signals=fact.missing_maturity_signals,
-            )
-        )
-    return tuple(candidates)
-
-
-def _non_injective_type_registry_candidates(
-    modules: Sequence[ParsedModule], config: DetectorConfig
-) -> tuple[NonInjectiveTypeRegistryCandidate, ...]:
-    candidates: list[NonInjectiveTypeRegistryCandidate] = []
-    for fact in DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
-        modules, config
-    ):
-        proof = fact.injectivity_proof
-        if not (
-            proof.duplicate_key_names
-            or proof.duplicate_type_names
-            or proof.missing_type_names
-        ):
-            continue
-        candidates.append(
-            NonInjectiveTypeRegistryCandidate(
-                file_path=fact.file_path,
-                line=fact.line,
-                class_name=fact.class_name,
-                key_type_name=fact.key_type_name,
-                registry_key_attr_name=fact.registry_key_attr_name,
-                lookup_method_names=fact.lookup_method_names,
-                registered_case_names=fact.registered_case_names,
-                consumer_symbols=fact.consumer_symbols,
-                injectivity_proof=proof,
-            )
-        )
-    return tuple(candidates)
-
-
-def _injective_type_registry_candidates(
-    modules: Sequence[ParsedModule], config: DetectorConfig
-) -> tuple[InjectiveTypeRegistryCandidate, ...]:
-    candidates: list[InjectiveTypeRegistryCandidate] = []
-    for fact in DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
-        modules, config
-    ):
-        proof = fact.injectivity_proof
-        if fact.missing_maturity_signals:
-            continue
-        if (
-            proof.duplicate_key_names
-            or proof.duplicate_type_names
-            or proof.missing_type_names
-        ):
-            continue
-        candidates.append(
-            InjectiveTypeRegistryCandidate(
-                file_path=fact.file_path,
-                line=fact.line,
-                class_name=fact.class_name,
-                key_type_name=fact.key_type_name,
-                registry_key_attr_name=fact.registry_key_attr_name,
-                lookup_method_names=fact.lookup_method_names,
-                registered_case_names=fact.registered_case_names,
-                consumer_symbols=fact.consumer_symbols,
-                injectivity_proof=proof,
-            )
-        )
-    return tuple(candidates)
-
-
-def _mature_injective_registry_facts(
-    modules: Sequence[ParsedModule], config: DetectorConfig
-) -> tuple[KeyedRegistryAxisFact, ...]:
-    return tuple(
-        (
-            fact
-            for fact in DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
-                modules, config
-            )
-            if not fact.missing_maturity_signals
-            and not fact.injectivity_proof.duplicate_key_names
-            and not fact.injectivity_proof.duplicate_type_names
-            and not fact.injectivity_proof.missing_type_names
-        )
-    )
 
 
 _REGISTRY_PROJECTION_EXPORT_ROSTER = "export_roster"
@@ -8422,62 +8139,6 @@ class _RegistryProjectionSurfaceAnalyzer:
         ("docs_catalog", ("docs", "doc", "catalog", "index")),
         ("ui_options", ("ui", "view", "menu", "dropdown")),
     )
-
-    def import_aliases(
-        self,
-        module: ParsedModule,
-        *,
-        registry_module: ParsedModule,
-        fact: KeyedRegistryAxisFact,
-    ) -> dict[str, str]:
-        registry_module_name = registry_module.module_name
-        canonical_names = frozenset(
-            (
-                fact.class_name,
-                fact.key_type_name,
-                *fact.injectivity_proof.registered_type_names,
-            )
-        )
-        aliases: dict[str, str] = {}
-        for local_name, qualified_name in _module_import_aliases(module).items():
-            for canonical_name in canonical_names:
-                if qualified_name == f"{registry_module_name}.{canonical_name}":
-                    aliases[local_name] = canonical_name
-        return aliases
-
-    def imports_axis(
-        self,
-        module: ParsedModule,
-        *,
-        registry_module: ParsedModule,
-        fact: KeyedRegistryAxisFact,
-    ) -> bool:
-        aliases = self.import_aliases(
-            module, registry_module=registry_module, fact=fact
-        )
-        return bool(
-            fact.key_type_name in aliases.values()
-            or fact.class_name in aliases.values()
-            or frozenset(aliases.values())
-            & frozenset(fact.injectivity_proof.registered_type_names)
-        )
-
-    def reference_name(
-        self, node: ast.AST, import_aliases: Mapping[str, str] | None = None
-    ) -> str | None:
-        import_aliases = import_aliases or {}
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.Name):
-            return import_aliases.get(node.id, node.id)
-        if isinstance(node, ast.Attribute):
-            parts = _ast_attribute_chain(node)
-            if parts is None:
-                return ast.unparse(node)
-            head, *tail = parts
-            canonical_head = import_aliases.get(head, head)
-            return ".".join((canonical_head, *tail))
-        return None
 
     def surface_kind(
         self,
@@ -8669,172 +8330,6 @@ class _RegistryProjectionSurfaceAnalyzer:
             missing_type_names=missing_type_names,
             subset_policy_hint=self.subset_policy_hint(surface_name),
             injectivity_proof=proof,
-        )
-
-    def sequence_candidate(
-        self,
-        *,
-        module: ParsedModule,
-        fact: KeyedRegistryAxisFact,
-        surface_name: str,
-        line: int,
-        elements: tuple[ast.AST, ...],
-        import_aliases: Mapping[str, str] | None = None,
-    ) -> RegistryProjectionSurfaceCandidate | None:
-        reference_names = tuple(
-            name
-            for element in elements
-            if (name := self.reference_name(element, import_aliases)) is not None
-        )
-        proof = fact.injectivity_proof
-        shared_key_names = sorted_tuple(
-            frozenset(reference_names) & frozenset(proof.key_names)
-        )
-        shared_type_names = sorted_tuple(
-            frozenset(reference_names) & frozenset(proof.registered_type_names)
-        )
-        surface_kind = self.surface_kind(
-            surface_name=surface_name,
-            shared_key_names=shared_key_names,
-            shared_type_names=shared_type_names,
-            has_key_to_type_pairs=False,
-            has_type_to_key_pairs=False,
-        )
-        if surface_kind is None or (len(shared_key_names) + len(shared_type_names) < 2):
-            return None
-        return self.candidate(
-            file_path=str(module.path),
-            fact=fact,
-            surface_name=surface_name,
-            line=line,
-            surface_kind=surface_kind,
-            projected_names=reference_names,
-            shared_key_names=shared_key_names,
-            shared_type_names=shared_type_names,
-        )
-
-    def dict_candidate(
-        self,
-        *,
-        module: ParsedModule,
-        fact: KeyedRegistryAxisFact,
-        surface_name: str,
-        line: int,
-        mapping: ast.Dict,
-        import_aliases: Mapping[str, str] | None = None,
-    ) -> RegistryProjectionSurfaceCandidate | None:
-        proof = fact.injectivity_proof
-        key_names = tuple(
-            name
-            for key in mapping.keys
-            if key is not None
-            if (name := self.reference_name(key, import_aliases)) is not None
-        )
-        value_names = tuple(
-            name
-            for value in mapping.values
-            if (name := self.reference_name(value, import_aliases)) is not None
-        )
-        proof_key_names = frozenset(proof.key_names)
-        proof_type_names = frozenset(proof.registered_type_names)
-        shared_key_names = sorted_tuple(
-            (frozenset(key_names) | frozenset(value_names)) & proof_key_names
-        )
-        shared_type_names = sorted_tuple(
-            (frozenset(key_names) | frozenset(value_names)) & proof_type_names
-        )
-        has_key_to_type_pairs = bool(
-            len(frozenset(key_names) & proof_key_names) >= 2
-            and len(frozenset(value_names) & proof_type_names) >= 2
-        )
-        has_type_to_key_pairs = bool(
-            len(frozenset(key_names) & proof_type_names) >= 2
-            and len(frozenset(value_names) & proof_key_names) >= 2
-        )
-        surface_kind = self.surface_kind(
-            surface_name=surface_name,
-            shared_key_names=shared_key_names,
-            shared_type_names=shared_type_names,
-            has_key_to_type_pairs=has_key_to_type_pairs,
-            has_type_to_key_pairs=has_type_to_key_pairs,
-        )
-        if surface_kind is None or (len(shared_key_names) + len(shared_type_names) < 3):
-            return None
-        return self.candidate(
-            file_path=str(module.path),
-            fact=fact,
-            surface_name=surface_name,
-            line=line,
-            surface_kind=surface_kind,
-            projected_names=(*key_names, *value_names),
-            shared_key_names=shared_key_names,
-            shared_type_names=shared_type_names,
-        )
-
-    def surface_candidates(
-        self, modules: Sequence[ParsedModule], config: DetectorConfig
-    ) -> tuple[RegistryProjectionSurfaceCandidate, ...]:
-        modules_by_path = {str(module.path): module for module in modules}
-        candidates: list[RegistryProjectionSurfaceCandidate] = []
-        for fact in _mature_injective_registry_facts(modules, config):
-            registry_module = modules_by_path.get(fact.file_path)
-            if registry_module is None:
-                continue
-            for module in modules:
-                if str(module.path) == fact.file_path:
-                    import_aliases: Mapping[str, str] = {}
-                elif self.imports_axis(
-                    module, registry_module=registry_module, fact=fact
-                ):
-                    import_aliases = self.import_aliases(
-                        module, registry_module=registry_module, fact=fact
-                    )
-                else:
-                    continue
-                for surface_name, (
-                    line,
-                    elements,
-                ) in SUPPORT_PROJECTION_AUTHORITY.module_level_named_sequences(
-                    module
-                ).items():
-                    candidate = self.sequence_candidate(
-                        module=module,
-                        fact=fact,
-                        surface_name=surface_name,
-                        line=line,
-                        elements=elements,
-                        import_aliases=import_aliases,
-                    )
-                    if candidate is not None:
-                        candidates.append(candidate)
-                for surface_name, (line, mapping) in _module_level_named_dicts(
-                    module
-                ).items():
-                    candidate = self.dict_candidate(
-                        module=module,
-                        fact=fact,
-                        surface_name=surface_name,
-                        line=line,
-                        mapping=mapping,
-                        import_aliases=import_aliases,
-                    )
-                    if candidate is not None:
-                        candidates.append(candidate)
-        return sorted_tuple(
-            candidates,
-            key=lambda item: (
-                item.file_path,
-                item.line,
-                item.registry_class_name,
-                item.surface_name,
-            ),
-        )
-
-    def policy_authority_candidates(
-        self, modules: Sequence[ParsedModule], config: DetectorConfig
-    ) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
-        return self.policy_authority_candidates_from_surfaces(
-            self.surface_candidates(modules, config)
         )
 
     def policy_authority_candidates_from_surfaces(
@@ -12464,26 +11959,65 @@ class KeyedRegistryAxisFact(InjectiveRegistryProofSurface):
     class_name: str
     missing_maturity_signals: tuple[str, ...]
 
+    @property
+    def is_mature_injective(self) -> bool:
+        return not self.missing_maturity_signals and self.injectivity_proof.is_injective
+
+
+class KeyedRegistryFactCandidate(ABC):
+    """Nominal refinement of keyed-registry facts selected by one invariant."""
+
+    @classmethod
+    @abstractmethod
+    def accepts_fact(cls, fact: KeyedRegistryAxisFact) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    def from_facts(cls, facts: Sequence[KeyedRegistryAxisFact]) -> tuple[Self, ...]:
+        field_names = tuple(item.name for item in fields(cls))
+        return tuple(
+            cls(**{name: getattr(fact, name) for name in field_names})
+            for fact in facts
+            if cls.accepts_fact(fact)
+        )
+
 
 @dataclass(frozen=True)
 class PrematureRegistryInfrastructureCandidate(
-    KeyedRegistryAxisSurface, ClassLineWitnessCandidate
+    KeyedRegistryFactCandidate,
+    KeyedRegistryAxisSurface,
+    ClassLineWitnessCandidate,
 ):
     missing_maturity_signals: tuple[str, ...]
+
+    @classmethod
+    def accepts_fact(cls, fact: KeyedRegistryAxisFact) -> bool:
+        del cls
+        return bool(fact.missing_maturity_signals)
 
 
 @dataclass(frozen=True)
 class InjectiveTypeRegistryCandidate(
-    InjectiveRegistryProofSurface, ClassLineWitnessCandidate
+    KeyedRegistryFactCandidate,
+    InjectiveRegistryProofSurface,
+    ClassLineWitnessCandidate,
 ):
-    pass
+    @classmethod
+    def accepts_fact(cls, fact: KeyedRegistryAxisFact) -> bool:
+        del cls
+        return fact.is_mature_injective
 
 
 @dataclass(frozen=True)
 class NonInjectiveTypeRegistryCandidate(
-    InjectiveRegistryProofSurface, ClassLineWitnessCandidate
+    KeyedRegistryFactCandidate,
+    InjectiveRegistryProofSurface,
+    ClassLineWitnessCandidate,
 ):
-    pass
+    @classmethod
+    def accepts_fact(cls, fact: KeyedRegistryAxisFact) -> bool:
+        del cls
+        return not fact.injectivity_proof.is_injective
 
 
 @dataclass(frozen=True)

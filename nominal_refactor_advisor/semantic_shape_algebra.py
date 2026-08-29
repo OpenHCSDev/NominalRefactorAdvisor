@@ -46,57 +46,61 @@ class InjectiveTypeRegistryProof:
     reverse_lookup_names: tuple[str, ...]
     consumer_symbols: tuple[str, ...]
 
+    @property
+    def is_injective(self) -> bool:
+        return not (
+            self.duplicate_key_names
+            or self.duplicate_type_names
+            or self.missing_type_names
+        )
 
-def _injective_type_registry_proof(
-    *,
-    key_axis_name: str,
-    type_names_by_key: Mapping[str, tuple[str, ...]],
-    registered_type_names: Iterable[str],
-    reverse_lookup_names: Iterable[str] = (),
-    consumer_symbols: Iterable[str] = (),
-) -> InjectiveTypeRegistryProof:
-    """Build an injectivity proof for a type-keyed registry surface."""
+    @classmethod
+    def from_type_map(
+        cls,
+        *,
+        key_axis_name: str,
+        type_names_by_key: Mapping[str, tuple[str, ...]],
+        registered_type_names: Iterable[str],
+        reverse_lookup_names: Iterable[str] = (),
+        consumer_symbols: Iterable[str] = (),
+    ) -> "InjectiveTypeRegistryProof":
+        """Build an injectivity proof for a type-keyed registry surface."""
 
-    registered_type_set = frozenset(registered_type_names)
-    duplicate_key_names = sorted_tuple(
-        {
-            key_name
-            for key_name, type_names in type_names_by_key.items()
-            if len(frozenset(type_names)) > 1
-        }
-    )
-    keyed_type_names = frozenset(
-        type_name
-        for type_names in type_names_by_key.values()
-        for type_name in type_names
-    )
-    duplicate_type_names = sorted_tuple(
-        {
+        registered_type_set = frozenset(registered_type_names)
+        duplicate_key_names = sorted_tuple(
+            {
+                key_name
+                for key_name, type_names in type_names_by_key.items()
+                if len(frozenset(type_names)) > 1
+            }
+        )
+        keyed_type_names = frozenset(
             type_name
-            for type_name in keyed_type_names
-            if sum(
-                (
+            for type_names in type_names_by_key.values()
+            for type_name in type_names
+        )
+        duplicate_type_names = sorted_tuple(
+            {
+                type_name
+                for type_name in keyed_type_names
+                if sum(
                     1
                     for type_names in type_names_by_key.values()
                     if type_name in type_names
                 )
-            )
-            > 1
-        }
-    )
-    return InjectiveTypeRegistryProof(
-        key_axis_name=key_axis_name,
-        registered_type_names=sorted_tuple(registered_type_set),
-        key_names=sorted_tuple(frozenset(type_names_by_key)),
-        duplicate_key_names=duplicate_key_names,
-        duplicate_type_names=duplicate_type_names,
-        missing_type_names=sorted_tuple(registered_type_set - keyed_type_names),
-        reverse_lookup_names=sorted_tuple(frozenset(reverse_lookup_names)),
-        consumer_symbols=sorted_tuple(frozenset(consumer_symbols)),
-    )
-
-
-InjectiveTypeRegistryProof.from_type_map = staticmethod(_injective_type_registry_proof)
+                > 1
+            }
+        )
+        return cls(
+            key_axis_name=key_axis_name,
+            registered_type_names=sorted_tuple(registered_type_set),
+            key_names=sorted_tuple(frozenset(type_names_by_key)),
+            duplicate_key_names=duplicate_key_names,
+            duplicate_type_names=duplicate_type_names,
+            missing_type_names=sorted_tuple(registered_type_set - keyed_type_names),
+            reverse_lookup_names=sorted_tuple(frozenset(reverse_lookup_names)),
+            consumer_symbols=sorted_tuple(frozenset(consumer_symbols)),
+        )
 
 
 @dataclass(frozen=True)

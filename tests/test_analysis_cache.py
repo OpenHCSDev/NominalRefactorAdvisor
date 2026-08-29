@@ -5271,9 +5271,15 @@ def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
     assert candidate.missing_rent_signals == ("stable_key_axis",)
 
 
-def test_compact_keyed_registry_axis_facts_match_legacy_ast_facts(
+def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     tmp_path: Path,
 ) -> None:
+    assert not hasattr(
+        systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY,
+        "keyed_registry_axis_fact_records",
+    )
+    assert not hasattr(base_detectors, "_keyed_type_registry_injectivity_proof")
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "family.py").write_text(
@@ -5316,18 +5322,36 @@ def test_compact_keyed_registry_axis_facts_match_legacy_ast_facts(
         )
     )
 
-    assert systemic_detectors._compact_keyed_registry_axis_facts(
+    facts = systemic_detectors._compact_keyed_registry_axis_facts(
         projections,
-        config,
-    ) == systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
-        list(modules),
         config,
     )
 
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.class_name == "Handler"
+    assert fact.key_type_name == "Kind"
+    assert fact.registry_key_attr_name == "kind"
+    assert fact.lookup_method_names == ("for_kind", "type_for_kind")
+    assert fact.registered_case_names == ("Kind.ALPHA",)
+    assert fact.consumer_symbols == ("first", "second")
+    assert fact.missing_maturity_signals == ("registered_case_axis",)
+    assert fact.injectivity_proof.duplicate_key_names == ("Kind.ALPHA",)
+    assert fact.injectivity_proof.missing_type_names == ("MissingKeyHandler",)
 
-def test_compact_registry_projection_candidates_match_legacy_ast_candidates(
+
+def test_compact_registry_projection_candidates_preserve_projection_semantics(
     tmp_path: Path,
 ) -> None:
+    assert not hasattr(
+        systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
+        "surface_candidates",
+    )
+    assert not hasattr(
+        systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
+        "policy_authority_candidates",
+    )
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "core.py").write_text(
@@ -5362,7 +5386,7 @@ def test_compact_registry_projection_candidates_match_legacy_ast_candidates(
         encoding="utf-8",
     )
     (package_root / "config.py").write_text(
-        "from pkg.core import (\n"
+        "from core import (\n"
         "    AlphaModeRunner as Alpha, BetaModeRunner as Beta, Mode as ModeKey,\n"
         ")\n"
         "PUBLIC_MODE_CHOICES = (ModeKey.ALPHA, ModeKey.BETA)\n"
@@ -5381,18 +5405,32 @@ def test_compact_registry_projection_candidates_match_legacy_ast_candidates(
     )
     facts = systemic_detectors._compact_keyed_registry_axis_facts(projections, config)
 
-    assert (
+    candidates = (
         systemic_detectors._compact_registry_projection_surface_candidates_from_facts(
-            projections, facts
-        )
-        == systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_candidates(
-            list(modules), config
+            projections,
+            facts,
         )
     )
-    assert systemic_detectors._compact_registry_projection_policy_authority_candidates_from_facts(
-        projections, facts
-    ) == systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER.policy_authority_candidates(
-        list(modules), config
+    policies = (
+        systemic_detectors._compact_registry_projection_policy_authority_candidates_from_facts(
+            projections,
+            facts,
+        )
+    )
+
+    assert {candidate.surface_name for candidate in candidates} == {
+        "DUAL_MODE_SURFACE",
+        "PUBLIC_MODE_CHOICES",
+        "PUBLIC_MODE_TYPES",
+    }
+    assert {candidate.projection_role for candidate in candidates} == {
+        "config_choices"
+    }
+    assert len(policies) == 1
+    assert policies[0].policy_hint == "public"
+    assert policies[0].surface_names == (
+        "PUBLIC_MODE_CHOICES",
+        "PUBLIC_MODE_TYPES",
     )
 
 
