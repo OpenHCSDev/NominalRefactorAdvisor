@@ -4,6 +4,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
+from nominal_refactor_advisor.detectors import (
+    _semantic_descent as semantic_descent_detectors,
+)
 from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -121,6 +124,22 @@ def test_semantic_authority_selection_is_one_mro_owned_fallback_chain() -> None:
         semantic_descent_module.CompactSemanticAuthorityBuildContext,
         semantic_descent_module.SemanticAuthorityBuildContext,
     )
+
+
+def test_class_key_resolution_is_one_mro_owned_fallback_chain() -> None:
+    resolver_type = semantic_descent_detectors.SemanticMirrorClassKeySourceResolver
+
+    assert resolver_type.__mro__[:2] == (
+        resolver_type,
+        semantic_descent_detectors.AliasOverlapClassKeySourceResolver,
+    )
+    assert not hasattr(
+        semantic_descent_detectors,
+        "DictProjectionClassKeySourceResolver",
+    )
+    assert not hasattr(resolver_type, "resolver_order")
+    assert not hasattr(resolver_type, "ordered_resolvers")
+    assert not hasattr(resolver_type, "__registry__")
 
 
 def test_fact_token_index_reuses_facts_in_deterministic_reference_order() -> None:

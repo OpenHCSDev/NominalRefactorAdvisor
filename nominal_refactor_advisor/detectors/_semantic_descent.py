@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, ClassVar, Iterator, cast
-
-from metaclass_registry import AutoRegisterMeta
+from typing import Callable, Iterator, cast
 
 from ._base import (
     CompactFindingStream,
@@ -45,66 +42,11 @@ from ..semantic_descent import (
     build_compact_semantic_mirror_resolution,
     normalized_name_variants,
 )
-from ..registry_identity import class_name_registry_key
 from ..taxonomy import CapabilityTag, ObservationTag
 
 
-class SemanticMirrorClassKeySourceResolver(ABC, metaclass=AutoRegisterMeta):
-    """Resolve a registration key source for a mirrored class-family projection."""
-
-    __registry__: ClassVar[dict[str, type["SemanticMirrorClassKeySourceResolver"]]] = {}
-    __registry_key__ = "resolver_id"
-    __key_extractor__ = staticmethod(class_name_registry_key)
-    __skip_if_no_key__ = True
-    resolver_order: ClassVar[int] = 100
-
-    @classmethod
-    def ordered_resolvers(cls) -> tuple["SemanticMirrorClassKeySourceResolver", ...]:
-        return tuple(
-            resolver_type()
-            for resolver_type in sorted(
-                cls.__registry__.values(),
-                key=lambda item: (item.resolver_order, item.__name__),
-            )
-        )
-
-    @abstractmethod
-    def key_source_for(
-        self,
-        fact: SemanticFact,
-        projection: PresentationProjection,
-        matched_token_set: frozenset[str],
-    ) -> str | None:
-        raise NotImplementedError
-
-
-class DictProjectionClassKeySourceResolver(SemanticMirrorClassKeySourceResolver):
-    """Use source dict keys when dict values identify the mirrored class."""
-
-    resolver_order = 10
-
-    def key_source_for(
-        self,
-        fact: SemanticFact,
-        projection: PresentationProjection,
-        matched_token_set: frozenset[str],
-    ) -> str | None:
-        del matched_token_set
-        fact_aliases = frozenset(fact.normalized_aliases)
-        matches = tuple(
-            pair.key_source
-            for pair in projection.key_value_pairs
-            if fact_aliases & frozenset(pair.value_tokens)
-        )
-        if len(matches) != 1:
-            return None
-        return matches[0]
-
-
-class AliasOverlapClassKeySourceResolver(SemanticMirrorClassKeySourceResolver):
+class AliasOverlapClassKeySourceResolver:
     """Use fact aliases when no structured projection key owns the key source."""
-
-    resolver_order = 100
 
     def key_source_for(
         self,
@@ -125,6 +67,26 @@ class AliasOverlapClassKeySourceResolver(SemanticMirrorClassKeySourceResolver):
             if matched_token_set & frozenset(normalized_name_variants(alias)):
                 return repr(alias)
         return None
+
+
+class SemanticMirrorClassKeySourceResolver(AliasOverlapClassKeySourceResolver):
+    """Prefer a unique structured mapping key, then use alias overlap."""
+
+    def key_source_for(
+        self,
+        fact: SemanticFact,
+        projection: PresentationProjection,
+        matched_token_set: frozenset[str],
+    ) -> str | None:
+        fact_aliases = frozenset(fact.normalized_aliases)
+        matches = tuple(
+            pair.key_source
+            for pair in projection.key_value_pairs
+            if fact_aliases & frozenset(pair.value_tokens)
+        )
+        if len(matches) == 1:
+            return matches[0]
+        return super().key_source_for(fact, projection, matched_token_set)
 
 
 class SemanticMirrorWithoutDescentDetector(
@@ -459,8 +421,8 @@ class SemanticMirrorWithoutDescentDetector(
         projection: PresentationProjection,
         matched_token_set: frozenset[str],
     ) -> str | None:
-        for resolver in SemanticMirrorClassKeySourceResolver.ordered_resolvers():
-            key_source = resolver.key_source_for(fact, projection, matched_token_set)
-            if key_source is not None:
-                return key_source
-        return None
+        return SemanticMirrorClassKeySourceResolver().key_source_for(
+            fact,
+            projection,
+            matched_token_set,
+        )
