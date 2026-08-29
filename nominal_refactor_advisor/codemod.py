@@ -22942,21 +22942,20 @@ class DataclassAuthorityMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class DataclassPayloadProjectionRecipeParts(FindingRecipeParts):
-    """Executable source rewrite facts for dataclass-owned payload keys."""
+class DataclassProjectionRecipeParts(FindingRecipeParts):
+    """Executable facts shared by dataclass-authority projection rewrites."""
 
-    projection: ReturnDictProjectionTarget
+    projection: FunctionProjectionTarget
     authority: DataclassPayloadAuthorityTarget
-    method_name: str
     projection_old_source: str
     projection_new_source: str
     import_source: str | None
-    authority_replacement_source: str | None
+    authority_replacement_source: str | None = None
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
         recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-dataclass-payload-projection",
-            reason="Derive mirrored payload keys from the dataclass authority.",
+            recipe_id=f"{finding.stable_id}-derive-dataclass-projection",
+            reason="Derive a mirrored projection from its dataclass authority.",
         )
         if self.import_source is not None:
             recipe = recipe.with_operation(
@@ -22974,7 +22973,7 @@ class DataclassPayloadProjectionRecipeParts(FindingRecipeParts):
                 ),
                 old_source=self.projection_old_source,
                 new_source=self.projection_new_source,
-                rationale="Replace mirrored return-dict keys with an authority-owned projection.",
+                rationale="Replace mirrored fields with an authority-owned projection.",
             )
         )
         if self.authority_replacement_source is not None:
@@ -22986,7 +22985,7 @@ class DataclassPayloadProjectionRecipeParts(FindingRecipeParts):
                         file_path=None,
                     ),
                     replacement_source=self.authority_replacement_source,
-                    rationale="Add the authority-owned payload projection method.",
+                    rationale="Add the authority-owned projection method.",
                 )
             )
         return recipe
@@ -22997,7 +22996,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     ReturnDictFieldValueExtractor,
     DataclassAuthorityMappingRecipeBuilder[
         ReturnDictProjectionTarget,
-        DataclassPayloadProjectionRecipeParts,
+        DataclassProjectionRecipeParts,
     ],
     InferredSemanticMirrorMappingRecipeBuilder,
     DataclassPayloadProjectionConcept,
@@ -23045,7 +23044,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: ReturnDictProjectionTarget,
-    ) -> DataclassPayloadProjectionRecipeParts | None:
+    ) -> DataclassProjectionRecipeParts | None:
         projection_rewrite = self.projection_rewrite_parts(
             authority,
             projection,
@@ -23060,10 +23059,9 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             authority_replacement_source = self.authority_replacement_source(authority)
             if authority_replacement_source is None:
                 return None
-        return DataclassPayloadProjectionRecipeParts(
+        return DataclassProjectionRecipeParts(
             projection=projection,
             authority=authority,
-            method_name=self.payload_method_name,
             projection_old_source=projection_rewrite[0],
             projection_new_source=projection_rewrite[1],
             import_source=self.import_source(authority, projection),
@@ -23169,64 +23167,11 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         )
 
 
-@dataclass(frozen=True)
-class DataclassKeyValueSequenceProjectionRecipeParts(FindingRecipeParts):
-    """Executable rewrite facts for dataclass-owned key/value return items."""
-
-    projection: ReturnKeyValueSequenceProjectionTarget
-    authority: DataclassPayloadAuthorityTarget
-    method_name: str
-    projection_old_source: str
-    projection_new_source: str
-    import_source: str | None
-    authority_replacement_source: str | None
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-dataclass-payload-items",
-            reason=(
-                "Derive mirrored key/value payload items from the dataclass authority."
-            ),
-        )
-        if self.import_source is not None:
-            recipe = recipe.with_operation(
-                EnsureImportOperation(
-                    target=SourceRewriteTarget(file_path=self.projection.source_path),
-                    payload_value=self.import_source,
-                    rationale="Import the dataclass authority used by the projection.",
-                )
-            )
-        recipe = recipe.with_operation(
-            ReplaceTextOperation(
-                target=SourceRewriteTarget(
-                    qualname=self.projection.function_qualname,
-                    file_path=self.projection.source_path,
-                ),
-                old_source=self.projection_old_source,
-                new_source=self.projection_new_source,
-                rationale="Replace mirrored key/value return items with an authority-owned projection.",
-            )
-        )
-        if self.authority_replacement_source is not None:
-            recipe = recipe.with_operation(
-                ReplaceTargetOperation(
-                    target=SourceRewriteTarget(
-                        target_id=self.authority.target.target_id,
-                        qualname=None,
-                        file_path=None,
-                    ),
-                    replacement_source=self.authority_replacement_source,
-                    rationale="Add the authority-owned key/value item projection method.",
-                )
-            )
-        return recipe
-
-
 @dataclass(frozen=True, kw_only=True)
 class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
     DataclassAuthorityMappingRecipeBuilder[
         ReturnKeyValueSequenceProjectionTarget,
-        DataclassKeyValueSequenceProjectionRecipeParts,
+        DataclassProjectionRecipeParts,
     ],
     InferredSemanticMirrorMappingRecipeBuilder,
     DataclassPayloadProjectionConcept,
@@ -23268,7 +23213,7 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: ReturnKeyValueSequenceProjectionTarget,
-    ) -> DataclassKeyValueSequenceProjectionRecipeParts | None:
+    ) -> DataclassProjectionRecipeParts | None:
         projection_rewrite = self.projection_rewrite_parts(authority, projection)
         if projection_rewrite is None:
             return None
@@ -23285,10 +23230,9 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
             )
             if authority_replacement_source is None:
                 return None
-        return DataclassKeyValueSequenceProjectionRecipeParts(
+        return DataclassProjectionRecipeParts(
             projection=projection,
             authority=authority,
-            method_name=self.payload_method_name,
             projection_old_source=projection_rewrite.old_source,
             projection_new_source=projection_rewrite.new_source,
             import_source=self.import_source(authority, projection),
@@ -23397,29 +23341,28 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class BoundarySourceContextReturnDictRecipeParts(
-    FunctionProjectionTarget,
-    FindingRecipeParts,
-):
-    """Executable facts for replacing a source-scope return dict with a carrier."""
+class DataclassCarrierRecipeParts(FunctionProjectionTarget, FindingRecipeParts):
+    """Executable facts for replacing an anonymous return product with a record."""
 
     insertion_qualname: str
     carrier_name: str
-    projection: ReturnDictProjectionTarget
-    old_source: str
-    new_source: str
+    projection: ReturnDictProjectionTarget | TupleReturnProjectionTarget
+    producer_old_source: str
+    producer_new_source: str
+    field_annotations: tuple[tuple[str, str], ...] = ()
+    consumer_rewrites: tuple["TupleReturnConsumerRewrite", ...] = ()
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        return (
+        recipe = (
             RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-source-context-carrier",
-                reason="Replace formal source-scope string-key return data with a declared source-context carrier.",
+                recipe_id=f"{finding.stable_id}-dataclass-return-carrier",
+                reason="Replace an anonymous return product with a nominal dataclass carrier.",
             )
             .with_operation(
                 EnsureImportOperation(
                     target=SourceRewriteTarget(file_path=self.source_path),
                     payload_value="from dataclasses import dataclass\n",
-                    rationale="Import the dataclass decorator for the source-context carrier.",
+                    rationale="Import the dataclass decorator for the return carrier.",
                 )
             )
             .with_operation(
@@ -23428,7 +23371,7 @@ class BoundarySourceContextReturnDictRecipeParts(
                         qualname=self.insertion_qualname, file_path=self.source_path
                     ),
                     payload_value=self.carrier_source(),
-                    rationale="Declare the nominal source-context carrier at the owner boundary.",
+                    rationale="Declare the nominal carrier at the producer boundary.",
                 )
             )
             .with_operation(
@@ -23436,16 +23379,31 @@ class BoundarySourceContextReturnDictRecipeParts(
                     target=SourceRewriteTarget(
                         qualname=self.function_qualname, file_path=self.source_path
                     ),
-                    old_source=self.old_source,
-                    new_source=self.new_source,
-                    rationale="Return the source-context carrier instead of a string-key dict.",
+                    old_source=self.producer_old_source,
+                    new_source=self.producer_new_source,
+                    rationale="Return the nominal carrier instead of an anonymous product.",
                 )
             )
         )
+        for rewrite in self.consumer_rewrites:
+            recipe = recipe.with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname=rewrite.function_qualname,
+                        file_path=self.source_path,
+                    ),
+                    old_source=rewrite.old_source,
+                    new_source=rewrite.new_source,
+                    rationale="Project named fields from the nominal return carrier.",
+                )
+            )
+        return recipe
 
     def carrier_source(self) -> str:
+        annotations_by_field = dict(self.field_annotations)
         field_lines = tuple(
-            f"    {field_name}: object\n" for field_name in self.field_names()
+            f"    {field_name}: {annotations_by_field.get(field_name, 'object')}\n"
+            for field_name in self.field_names()
         )
         return "".join(
             (
@@ -23481,7 +23439,7 @@ class BoundarySourceContextCarrierSelection:
 @dataclass(frozen=True, kw_only=True)
 class BoundarySourceContextReturnDictMappingRecipeBuilder(
     ReturnDictFieldValueExtractor,
-    PartsBackedMappingRecipeBuilder[BoundarySourceContextReturnDictRecipeParts],
+    PartsBackedMappingRecipeBuilder[DataclassCarrierRecipeParts],
     BoundarySourceContextAuthorityConcept,
 ):
     """Nominalize formal source-scope return dictionaries as dataclass carriers."""
@@ -23504,7 +23462,7 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
         )
 
     @cached_property
-    def parts(self) -> BoundarySourceContextReturnDictRecipeParts | None:
+    def parts(self) -> DataclassCarrierRecipeParts | None:
         return (
             Maybe.of(FindingPrimaryEvidence(self.finding).source_location)
             .filter(lambda _evidence: isinstance(self.finding.metrics, MappingMetrics))
@@ -23572,7 +23530,7 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
     def parts_from_carrier_selection(
         self,
         selection: BoundarySourceContextCarrierSelection,
-    ) -> BoundarySourceContextReturnDictRecipeParts | None:
+    ) -> DataclassCarrierRecipeParts | None:
         return (
             Maybe.of(
                 self.projection_rewrite_parts(
@@ -23581,14 +23539,14 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
                 )
             )
             .map(
-                lambda rewrite: BoundarySourceContextReturnDictRecipeParts(
+                lambda rewrite: DataclassCarrierRecipeParts(
                     source_path=selection.source_path,
                     function_qualname=selection.projection.function_qualname,
                     insertion_qualname=selection.insertion_qualname,
                     carrier_name=selection.carrier_name,
                     projection=selection.projection,
-                    old_source=rewrite.old_source,
-                    new_source=rewrite.new_source,
+                    producer_old_source=rewrite.old_source,
+                    producer_new_source=rewrite.new_source,
                 )
             )
             .unwrap_or_none()
@@ -23649,74 +23607,10 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
         return f"{_pascal_case_identifier(leaf_name)}Context"
 
 
-@dataclass(frozen=True)
-class SemanticReturnDictRecordRecipeParts(FunctionProjectionTarget, FindingRecipeParts):
-    """Executable facts for replacing an anonymous return dict with a record."""
-
-    insertion_qualname: str
-    carrier_name: str
-    projection: ReturnDictProjectionTarget
-    field_annotations: tuple[tuple[str, str], ...]
-    old_source: str
-    new_source: str
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        return (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-return-dict-record",
-                reason="Replace the anonymous return dictionary with a nominal result record.",
-            )
-            .with_operation(
-                EnsureImportOperation(
-                    target=SourceRewriteTarget(file_path=self.source_path),
-                    payload_value="from dataclasses import dataclass\n",
-                    rationale="Import the dataclass decorator for the result record.",
-                )
-            )
-            .with_operation(
-                InsertBeforeTargetOperation(
-                    target=SourceRewriteTarget(
-                        qualname=self.insertion_qualname, file_path=self.source_path
-                    ),
-                    payload_value=self.carrier_source(),
-                    rationale="Declare the nominal result record at the producer boundary.",
-                )
-            )
-            .with_operation(
-                ReplaceTextOperation(
-                    target=SourceRewriteTarget(
-                        qualname=self.function_qualname, file_path=self.source_path
-                    ),
-                    old_source=self.old_source,
-                    new_source=self.new_source,
-                    rationale="Return the nominal record instead of a string-key dict.",
-                )
-            )
-        )
-
-    def carrier_source(self) -> str:
-        annotations_by_field = dict(self.field_annotations)
-        field_lines = tuple(
-            f"    {field_name}: {annotations_by_field.get(field_name, 'object')}\n"
-            for field_name in self.field_names()
-        )
-        return "".join(
-            (
-                "@dataclass(frozen=True)\n",
-                f"class {self.carrier_name}:\n",
-                *field_lines,
-                "\n",
-            )
-        )
-
-    def field_names(self) -> tuple[str, ...]:
-        return tuple(field.field_name for field in self.projection.field_values)
-
-
 @dataclass(frozen=True, kw_only=True)
 class SemanticDictBagReturnRecordMappingRecipeBuilder(
     ReturnDictFieldValueExtractor,
-    PartsBackedMappingRecipeBuilder[SemanticReturnDictRecordRecipeParts],
+    PartsBackedMappingRecipeBuilder[DataclassCarrierRecipeParts],
     TupleDictReturnRecordConcept,
 ):
     """Nominalize ordinary semantic return dictionaries as dataclass records."""
@@ -23737,7 +23631,7 @@ class SemanticDictBagReturnRecordMappingRecipeBuilder(
         )
 
     @cached_property
-    def parts(self) -> SemanticReturnDictRecordRecipeParts | None:
+    def parts(self) -> DataclassCarrierRecipeParts | None:
         evidence = FindingPrimaryEvidence(self.finding).source_location
         if evidence is None or not isinstance(self.finding.metrics, MappingMetrics):
             return None
@@ -23765,15 +23659,15 @@ class SemanticDictBagReturnRecordMappingRecipeBuilder(
         )
         if rewrite is None:
             return None
-        return SemanticReturnDictRecordRecipeParts(
+        return DataclassCarrierRecipeParts(
             source_path=projection.source_path,
             function_qualname=projection.function_qualname,
             insertion_qualname=insertion_qualname,
             carrier_name=carrier_name,
             projection=projection,
             field_annotations=self.field_annotations(projection),
-            old_source=rewrite.old_source,
-            new_source=rewrite.new_source,
+            producer_old_source=rewrite.old_source,
+            producer_new_source=rewrite.new_source,
         )
 
     def carrier_name(self, source_path: str) -> str | None:
@@ -23906,83 +23800,9 @@ class TupleReturnConsumerRewrite:
     new_source: str
 
 
-@dataclass(frozen=True)
-class SemanticTupleReturnRecordRecipeParts(
-    FunctionProjectionTarget, FindingRecipeParts
-):
-    """Executable facts for replacing a tuple return with a nominal record."""
-
-    insertion_qualname: str
-    carrier_name: str
-    projection: TupleReturnProjectionTarget
-    return_old_source: str
-    return_new_source: str
-    consumer_rewrites: tuple[TupleReturnConsumerRewrite, ...]
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-tuple-return-record",
-                reason="Replace the positional tuple return with a nominal result record and rewrite unpack consumers to named projections.",
-            )
-            .with_operation(
-                EnsureImportOperation(
-                    target=SourceRewriteTarget(file_path=self.source_path),
-                    payload_value="from dataclasses import dataclass\n",
-                    rationale="Import the dataclass decorator for the tuple result record.",
-                )
-            )
-            .with_operation(
-                InsertBeforeTargetOperation(
-                    target=SourceRewriteTarget(
-                        qualname=self.insertion_qualname, file_path=self.source_path
-                    ),
-                    payload_value=self.carrier_source(),
-                    rationale="Declare the nominal tuple result record at the producer boundary.",
-                )
-            )
-            .with_operation(
-                ReplaceTextOperation(
-                    target=SourceRewriteTarget(
-                        qualname=self.function_qualname, file_path=self.source_path
-                    ),
-                    old_source=self.return_old_source,
-                    new_source=self.return_new_source,
-                    rationale="Return the nominal record instead of positional values.",
-                )
-            )
-        )
-        for rewrite in self.consumer_rewrites:
-            recipe = recipe.with_operation(
-                ReplaceTextOperation(
-                    target=SourceRewriteTarget(
-                        qualname=rewrite.function_qualname, file_path=self.source_path
-                    ),
-                    old_source=rewrite.old_source,
-                    new_source=rewrite.new_source,
-                    rationale="Project named fields from the tuple result record.",
-                )
-            )
-        return recipe
-
-    def carrier_source(self) -> str:
-        field_lines = tuple(
-            f"    {field.field_name}: object\n"
-            for field in self.projection.field_values
-        )
-        return "".join(
-            (
-                "@dataclass(frozen=True)\n",
-                f"class {self.carrier_name}:\n",
-                *field_lines,
-                "\n",
-            )
-        )
-
-
 @dataclass(frozen=True, kw_only=True)
 class SemanticTupleReturnRecordMappingRecipeBuilder(
-    PartsBackedMappingRecipeBuilder[SemanticTupleReturnRecordRecipeParts],
+    PartsBackedMappingRecipeBuilder[DataclassCarrierRecipeParts],
     TupleDictReturnRecordConcept,
 ):
     """Nominalize tuple returns and same-file unpack consumers."""
@@ -24003,7 +23823,7 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
         )
 
     @cached_property
-    def parts(self) -> SemanticTupleReturnRecordRecipeParts | None:
+    def parts(self) -> DataclassCarrierRecipeParts | None:
         evidence = FindingPrimaryEvidence(self.finding).source_location
         if evidence is None or not isinstance(self.finding.metrics, MappingMetrics):
             return None
@@ -24037,14 +23857,14 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
         consumer_rewrites = self.consumer_rewrites(carrier_name, projection)
         if not consumer_rewrites:
             return None
-        return SemanticTupleReturnRecordRecipeParts(
+        return DataclassCarrierRecipeParts(
             source_path=projection.source_path,
             function_qualname=projection.function_qualname,
             insertion_qualname=insertion_qualname,
             carrier_name=carrier_name,
             projection=projection,
-            return_old_source=return_rewrite.old_source,
-            return_new_source=return_rewrite.new_source,
+            producer_old_source=return_rewrite.old_source,
+            producer_new_source=return_rewrite.new_source,
             consumer_rewrites=consumer_rewrites,
         )
 
@@ -24209,45 +24029,6 @@ class DataclassConstructorProjectionCallTarget(DataclassCallProjectionTarget):
 
 
 @dataclass(frozen=True)
-class DataclassConstructorProjectionRecipeParts(FindingRecipeParts):
-    """Executable facts for routing a constructor projection through a dataclass."""
-
-    projection: DataclassConstructorProjectionCallTarget
-    authority: DataclassPayloadAuthorityTarget
-    authority_method: DataclassConstructorProjectionMethod
-    projection_old_source: str
-    projection_new_source: str
-    import_source: str | None
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-dataclass-constructor-projection",
-            reason=(
-                "Derive mirrored constructor fields from the dataclass authority method."
-            ),
-        )
-        if self.import_source is not None:
-            recipe = recipe.with_operation(
-                EnsureImportOperation(
-                    target=SourceRewriteTarget(file_path=self.projection.source_path),
-                    payload_value=self.import_source,
-                    rationale="Import the dataclass authority used by the projection.",
-                )
-            )
-        return recipe.with_operation(
-            ReplaceTextOperation(
-                target=SourceRewriteTarget(
-                    qualname=self.projection.function_qualname,
-                    file_path=self.projection.source_path,
-                ),
-                old_source=self.projection_old_source,
-                new_source=self.projection_new_source,
-                rationale="Replace mirrored constructor fields with an authority-owned method.",
-            )
-        )
-
-
-@dataclass(frozen=True)
 class DataclassConstructorAuthorityMethodSelection:
     """Resolved authority method for one constructor projection."""
 
@@ -24296,7 +24077,7 @@ class DataclassCallProjectionMappingRecipeBuilder(
 class DataclassConstructorProjectionMappingRecipeBuilder(
     DataclassCallProjectionMappingRecipeBuilder[
         DataclassConstructorProjectionCallTarget,
-        DataclassConstructorProjectionRecipeParts,
+        DataclassProjectionRecipeParts,
     ],
     InferredSemanticMirrorMappingRecipeBuilder,
     ConstructorKwargCarrierProjectionConcept,
@@ -24366,7 +24147,7 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: DataclassConstructorProjectionCallTarget,
-    ) -> DataclassConstructorProjectionRecipeParts | None:
+    ) -> DataclassProjectionRecipeParts | None:
         return (
             Maybe.of(_call_name(projection.call_node.func))
             .with_projection(
@@ -24389,10 +24170,9 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
                 )
             )
             .map(
-                lambda row: DataclassConstructorProjectionRecipeParts(
+                lambda row: DataclassProjectionRecipeParts(
                     projection=projection,
                     authority=authority,
-                    authority_method=row[0].authority_method,
                     projection_old_source=row[1].old_source,
                     projection_new_source=row[1].new_source,
                     import_source=self.import_source(authority, projection),
@@ -24527,47 +24307,11 @@ class DataclassContextCallProjectionTarget(DataclassCallProjectionTarget):
     field_keywords_by_name: Mapping[str, ast.keyword]
 
 
-@dataclass(frozen=True)
-class DataclassContextCallProjectionRecipeParts(FindingRecipeParts):
-    """Executable rewrite facts for a dataclass-context call projection."""
-
-    projection: DataclassContextCallProjectionTarget
-    authority: DataclassPayloadAuthorityTarget
-    projection_old_source: str
-    projection_new_source: str
-    import_source: str | None
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-dataclass-context-call-projection",
-            reason="Move loose call keywords behind the dataclass context authority.",
-        )
-        if self.import_source is not None:
-            recipe = recipe.with_operation(
-                EnsureImportOperation(
-                    target=SourceRewriteTarget(file_path=self.projection.source_path),
-                    payload_value=self.import_source,
-                    rationale="Import the dataclass context authority used by the call.",
-                )
-            )
-        return recipe.with_operation(
-            ReplaceTextOperation(
-                target=SourceRewriteTarget(
-                    qualname=self.projection.function_qualname,
-                    file_path=self.projection.source_path,
-                ),
-                old_source=self.projection_old_source,
-                new_source=self.projection_new_source,
-                rationale="Replace mirrored loose keywords with a nominal context value.",
-            )
-        )
-
-
 @dataclass(frozen=True, kw_only=True)
 class DataclassContextCallProjectionMappingRecipeBuilder(
     DataclassCallProjectionMappingRecipeBuilder[
         DataclassContextCallProjectionTarget,
-        DataclassContextCallProjectionRecipeParts,
+        DataclassProjectionRecipeParts,
     ],
     InferredSemanticMirrorMappingRecipeBuilder,
     DataclassContextCallProjectionConcept,
@@ -24638,11 +24382,11 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: DataclassContextCallProjectionTarget,
-    ) -> DataclassContextCallProjectionRecipeParts | None:
+    ) -> DataclassProjectionRecipeParts | None:
         projection_rewrite = self.projection_rewrite_parts(authority, projection)
         if projection_rewrite is None:
             return None
-        return DataclassContextCallProjectionRecipeParts(
+        return DataclassProjectionRecipeParts(
             projection=projection,
             authority=authority,
             projection_old_source=projection_rewrite[0],
