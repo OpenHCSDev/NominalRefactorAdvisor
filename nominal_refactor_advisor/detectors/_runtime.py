@@ -3759,30 +3759,6 @@ def _declared_class_surface_members(node: ast.ClassDef) -> tuple[str, ...]:
     return tuple(sorted(members))
 
 
-@lru_cache(maxsize=8)
-def _role_surface_members_by_type_name(
-    modules: tuple[ParsedModule, ...],
-) -> dict[str, tuple[str, ...]]:
-    surfaces: dict[str, set[str]] = defaultdict(set)
-    for module in modules:
-        scan_deadline_checkpoint("contextual_role_surface_index")
-        module_index = PrivateReferenceModuleIndex.from_module(module)
-        for (
-            type_name,
-            members,
-        ) in module_index.class_surface_members_by_type_name.items():
-            surfaces[type_name].update(members)
-    return {
-        type_name: tuple(sorted(members))
-        for type_name, members in sorted(surfaces.items())
-    }
-
-
-def _role_surface_context_signature(role_surfaces: dict[str, tuple[str, ...]]) -> str:
-    payload = repr(tuple(sorted(role_surfaces.items()))).encode("utf-8")
-    return hashlib.blake2s(payload, digest_size=16).hexdigest()
-
-
 def _stable_text_digest(value: str) -> str:
     return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
@@ -3809,39 +3785,6 @@ def _isinstance_guard_bindings(
             for type_name in type_names
         )
     return tuple(bindings)
-
-
-def _accessed_declared_members(
-    statements: Sequence[ast.stmt],
-    *,
-    subject_expression: str,
-    declared_members: tuple[str, ...],
-) -> tuple[str, ...]:
-    declared_member_set = frozenset(declared_members)
-    accessed: set[str] = set()
-
-    class Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            del node
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            del node
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            del node
-
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            if (
-                node.attr in declared_member_set
-                and ast.unparse(node.value) == subject_expression
-            ):
-                accessed.add(node.attr)
-            self.generic_visit(node)
-
-    visitor = Visitor()
-    for statement in statements:
-        visitor.visit(statement)
-    return sorted_tuple(accessed)
 
 
 def _accessed_members_by_subject_expression(
@@ -4263,78 +4206,6 @@ def _compact_role_guarded_surface_access_candidates(
     return tuple(candidates)
 
 
-def _role_guarded_surface_access_candidates_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-    role_surfaces: dict[str, tuple[str, ...]],
-) -> Iterable[RoleGuardedSurfaceAccessCandidate]:
-    for node in ast.walk(function):
-        if not isinstance(node, ast.If):
-            continue
-        for (
-            subject_expression,
-            type_name,
-            guard_expression,
-        ) in _isinstance_guard_bindings(node.test):
-            if type_name not in role_surfaces:
-                continue
-            declared_members = role_surfaces[type_name]
-            accessed_members = _accessed_declared_members(
-                node.body,
-                subject_expression=subject_expression,
-                declared_members=declared_members,
-            )
-            if len(accessed_members) == 0:
-                continue
-            yield RoleGuardedSurfaceAccessCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                qualname=qualname,
-                subject_expression=subject_expression,
-                role_type_name=type_name,
-                guard_expression=guard_expression,
-                accessed_members=accessed_members,
-                declared_members=declared_members,
-            )
-
-
-def _role_guarded_surface_access_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[RoleGuardedSurfaceAccessCandidate, ...]:
-    module_context = tuple(modules)
-    role_surfaces = _role_surface_members_by_type_name(module_context)
-    return tuple(
-        sorted(
-            (
-                candidate
-                for module in module_context
-                for candidate in _role_guarded_surface_access_candidates_for_module(
-                    module, role_surfaces
-                )
-            ),
-            key=lambda item: (
-                item.file_path,
-                item.line,
-                item.qualname,
-                item.subject_expression,
-                item.role_type_name,
-            ),
-        )
-    )
-
-
-def _role_guarded_surface_access_candidates_for_module(
-    module: ParsedModule,
-    role_surfaces: dict[str, tuple[str, ...]],
-) -> tuple[RoleGuardedSurfaceAccessCandidate, ...]:
-    return _collect_named_function_candidates(
-        module,
-        _role_guarded_surface_access_candidates_for_function,
-        role_surfaces,
-    )
-
-
 def _role_guarded_surface_access_summary(
     candidate: RoleGuardedSurfaceAccessCandidate,
 ) -> str:
@@ -4391,7 +4262,7 @@ def _role_guarded_surface_access_patch(
 
 class RoleGuardedSurfaceAccessDetector(
     CompactModuleProjectionDetectorMixin[CompactRoleGuardedSurfaceModuleProjection],
-    ContextualModuleIssueDetector,
+    IssueDetector,
 ):
     module_projection_family = CompactRoleGuardedSurfaceModuleProjectionFamily
     detector_priority = -25
@@ -4412,31 +4283,6 @@ class RoleGuardedSurfaceAccessDetector(
             ObservationTag.PARTIAL_VIEW,
         ),
     )
-
-    @classmethod
-    def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
-    ) -> str:
-        del config
-        return _role_surface_context_signature(
-            _role_surface_members_by_type_name(modules)
-        )
-
-    def _findings_for_module_context(
-        self,
-        module: ParsedModule,
-        modules: tuple[ParsedModule, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        role_surfaces = _role_surface_members_by_type_name(modules)
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _role_guarded_surface_access_candidates_for_module(
-                module,
-                role_surfaces,
-            )
-        ]
 
     def _findings_from_compact_projections(
         self,

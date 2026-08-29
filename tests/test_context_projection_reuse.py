@@ -273,9 +273,12 @@ def test_role_surfaces_reuse_private_reference_module_projection(
     )
     modules = tuple(parse_python_modules(tmp_path))
     runtime_detectors._private_reference_module_index.cache_clear()
-    runtime_detectors._role_surface_members_by_type_name.cache_clear()
 
-    role_surfaces = runtime_detectors._role_surface_members_by_type_name(modules)
+    role_surfaces = dict(
+        runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily.collect(
+            modules[0]
+        )[0].class_surface_members_by_type_name
+    )
     first_cache_state = runtime_detectors._private_reference_module_index.cache_info()
     context = runtime_detectors.PrivateReferenceDetectorContext(modules)
     runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(context)
@@ -287,28 +290,6 @@ def test_role_surfaces_reuse_private_reference_module_projection(
     }
     assert first_cache_state.misses == len(modules)
     assert second_cache_state.misses == first_cache_state.misses
-
-
-def test_contextual_projection_honors_expired_absolute_deadline(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/sample.py",
-        "\nclass Renderer:\n"
-        "    def render(self, value):\n"
-        "        return str(value)\n",
-    )
-    modules = tuple(parse_python_modules(tmp_path))
-    runtime_detectors._role_surface_members_by_type_name.cache_clear()
-
-    deadline = ScanDeadline.start(0.0)
-    with pytest.raises(
-        ScanDeadlineExceeded,
-        match="contextual_role_surface_index",
-    ):
-        with enforce_scan_deadline(deadline):
-            runtime_detectors._role_surface_members_by_type_name(modules)
 
 
 def test_process_cli_hard_exits_after_publishing_deadline_payload(

@@ -6938,7 +6938,7 @@ def _write_compact_private_helper_cluster_fixture(package_root: Path) -> None:
     )
 
 
-def test_compact_role_guarded_surface_candidates_match_legacy_ast_candidates(
+def test_compact_role_guarded_surface_candidates_preserve_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -6966,23 +6966,23 @@ def test_compact_role_guarded_surface_candidates_match_legacy_ast_candidates(
     compact_candidates = (
         runtime_detectors._compact_role_guarded_surface_access_candidates(projections)
     )
-    role_surfaces = runtime_detectors._role_surface_members_by_type_name(modules)
-    legacy_candidates = tuple(
-        candidate
-        for module in modules
-        for candidate in runtime_detectors._role_guarded_surface_access_candidates_for_module(
-            module,
-            role_surfaces,
-        )
-    )
-
-    assert compact_candidates == legacy_candidates
     assert len(compact_candidates) == 1
-    assert compact_candidates[0].accessed_members == ("position_avoid_widgets",)
+    candidate = compact_candidates[0]
+    assert candidate.qualname == "place_window"
+    assert candidate.role_type_name == "AvoidWidgetsWindow"
+    assert candidate.accessed_members == ("position_avoid_widgets",)
+    assert candidate.declared_members == ("position_avoid_widgets",)
+    for removed_name in (
+        "_role_surface_members_by_type_name",
+        "_role_surface_context_signature",
+        "_role_guarded_surface_access_candidates",
+        "_role_guarded_surface_access_candidates_for_module",
+    ):
+        assert not hasattr(runtime_detectors, removed_name)
     assert detector._findings_from_compact_projections(
         projections,
         DetectorConfig(),
-    ) == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
+    ) == [detector._finding_for_candidate(candidate)]
 
 
 def test_compact_non_nominal_private_helper_matches_legacy_multi_family_join(
