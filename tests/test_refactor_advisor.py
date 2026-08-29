@@ -17,6 +17,7 @@ import pytest
 
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.detectors._structural as structural_detectors
+import nominal_refactor_advisor.detectors._structural_step_regex_extractor as regex_extractor_detectors
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
@@ -26271,6 +26272,52 @@ def test_detects_regex_group_extractor_family(tmp_path: Path) -> None:
     assert "declaration_name" in finding.summary
     assert "namespace" in finding.summary
     assert "RegexGroupExtractor" in (finding.scaffold or "")
+    removed_shape_types = (
+        "_RegexExtractorBody",
+        "_RegexExtractorMethodContext",
+        "_RegexExtractorReturnedContext",
+        "_RegexExtractorAssignment",
+        "_RegexExtractorMatcherCall",
+        "_RegexExtractorConditionalReturn",
+        "_RegexGroupExtractorStep",
+        "_RegexExtractorBodyStep",
+        "_RegexExtractorAssignmentStep",
+        "_RegexExtractorMatcherCallStep",
+        "_RegexExtractorConditionalReturnStep",
+        "_RegexExtractorGroupCallStep",
+    )
+    assert all(
+        not hasattr(regex_extractor_detectors, name) for name in removed_shape_types
+    )
+
+
+@pytest.mark.parametrize(
+    "method_source",
+    (
+        "def extract(self, line):\n"
+        "    match = self.pattern.finditer(line)\n"
+        "    return match.group(1) if match else None\n",
+        "def extract(self, line):\n"
+        "    match = self.pattern.search(line)\n"
+        "    return match.group(1) if other else None\n",
+        "def extract(self, line):\n"
+        "    match = self.pattern.search(line)\n"
+        "    return match.groups() if match else None\n",
+        "def extract(self, line):\n"
+        "    match = self.pattern.search(line)\n"
+        "    return match.group(name) if match else None\n",
+    ),
+)
+def test_regex_group_extractor_method_rejects_nonmatching_shapes(
+    method_source: str,
+) -> None:
+    method = ast.parse(method_source).body[0]
+
+    assert isinstance(method, ast.FunctionDef)
+    assert (
+        regex_extractor_detectors._RegexGroupExtractorMethod.from_method(method)
+        is None
+    )
 
 
 def test_detects_sparse_constructor_variant_family(tmp_path: Path) -> None:

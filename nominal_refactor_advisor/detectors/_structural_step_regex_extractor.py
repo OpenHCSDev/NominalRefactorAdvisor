@@ -6,22 +6,18 @@ import ast
 from collections import defaultdict
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
-from typing import Generic, TypeVar, cast
+from typing import ClassVar, Generic, TypeVar
 
 from ..ast_tools import ParsedModule, _walk_nodes
 from ..collection_algebra import sorted_tuple
 from ..semantic_match import (
-    AstTypedEffectStep,
-    GuardedEffectStep,
     Maybe,
-    RegisteredEffectStep,
     as_ast,
     ast_sequence,
     attribute_call_match,
     constant_value,
     name_id,
     named_call_assignment,
-    registered_effect_steps,
     single_assign_target,
     single_item,
 )
@@ -439,192 +435,57 @@ class _RegexGroupExtractorMethod:
     pattern_attribute_name: str
     matcher_name: str
     group_index: int
+    supported_matcher_names: ClassVar[frozenset[str]] = frozenset(
+        {"search", "match", "fullmatch"}
+    )
 
-
-_REGEX_MATCHER_NAMES = frozenset({"search", "match", "fullmatch"})
-
-
-@dataclass(frozen=True)
-class _RegexExtractorBody:
-    method: ast.FunctionDef
-    assign: ast.Assign
-    returned: ast.Return
-
-
-@dataclass(frozen=True)
-class _RegexExtractorMethodContext:
-    method: ast.FunctionDef
-    match_name: str
-
-
-@dataclass(frozen=True)
-class _RegexExtractorReturnedContext(_RegexExtractorMethodContext):
-    returned: ast.Return
-
-
-@dataclass(frozen=True)
-class _RegexExtractorAssignment(_RegexExtractorReturnedContext):
-    call: ast.Call
-
-
-@dataclass(frozen=True)
-class _RegexExtractorMatcherCall(_RegexExtractorReturnedContext):
-    pattern_attribute_name: str
-    matcher_name: str
-
-
-@dataclass(frozen=True)
-class _RegexExtractorConditionalReturn(_RegexExtractorMatcherCall):
-    group_call: ast.Call
-
-
-class _RegexGroupExtractorStep(RegisteredEffectStep):
-    pass
-
-
-class _RegexExtractorBodyStep(
-    _RegexGroupExtractorStep,
-    AstTypedEffectStep[ast.FunctionDef, _RegexExtractorBody],
-):
-    step_id = "regex_extractor_body"
-    registration_order = 10
-    node_type = ast.FunctionDef
-
-    def project_ast(self, value: ast.FunctionDef) -> _RegexExtractorBody | None:
+    @classmethod
+    def from_method(
+        cls,
+        method: ast.FunctionDef,
+    ) -> "_RegexGroupExtractorMethod | None":
         statements = ast_sequence(
-            _trim_docstring_body(value.body), ast.Assign, ast.Return
+            _trim_docstring_body(method.body), ast.Assign, ast.Return
         )
         if statements is None:
             return None
         assign, returned = statements
-        return _RegexExtractorBody(value, assign, returned)
-
-
-class _RegexExtractorAssignmentStep(
-    _RegexGroupExtractorStep,
-    GuardedEffectStep[_RegexExtractorBody, _RegexExtractorAssignment],
-):
-    step_id = "regex_extractor_assignment"
-    registration_order = 20
-
-    def project(self, value: _RegexExtractorBody) -> _RegexExtractorAssignment | None:
-        assignment = named_call_assignment(value.assign)
+        assignment = named_call_assignment(assign)
         if assignment is None:
             return None
-        return _RegexExtractorAssignment(
-            method=value.method,
-            match_name=assignment.target_name,
-            returned=value.returned,
-            call=assignment.call,
-        )
-
-
-class _RegexExtractorMatcherCallStep(
-    _RegexGroupExtractorStep,
-    GuardedEffectStep[_RegexExtractorAssignment, _RegexExtractorMatcherCall],
-):
-    step_id = "regex_extractor_matcher_call"
-    registration_order = 30
-
-    def project(
-        self, value: _RegexExtractorAssignment
-    ) -> _RegexExtractorMatcherCall | None:
-        match = attribute_call_match(
-            value.call,
-            method_names=_REGEX_MATCHER_NAMES,
+        matcher = attribute_call_match(
+            assignment.call,
+            method_names=cls.supported_matcher_names,
             owner_type=ast.Attribute,
             owner_name="self",
             single_argument_required=True,
         )
-        if match is None:
+        if matcher is None:
             return None
-        return _RegexExtractorMatcherCall(
-            method=value.method,
-            match_name=value.match_name,
-            returned=value.returned,
-            pattern_attribute_name=match.owner.attr,
-            matcher_name=match.attribute.attr,
-        )
-
-
-def _regex_conditional_group_call(
-    value: _RegexExtractorMatcherCall,
-) -> ast.Call | None:
-    ifexp = as_ast(value.returned.value, ast.IfExp)
-    none_orelse = as_ast(ifexp.orelse if ifexp else None, ast.Constant)
-    group_call = as_ast(ifexp.body if ifexp else None, ast.Call)
-    if (
-        ifexp is None
-        or name_id(ifexp.test) != value.match_name
-        or none_orelse is None
-        or (none_orelse.value is not None)
-        or (group_call is None)
-    ):
-        return None
-    return group_call
-
-
-class _RegexExtractorConditionalReturnStep(
-    _RegexGroupExtractorStep,
-    GuardedEffectStep[_RegexExtractorMatcherCall, _RegexExtractorConditionalReturn],
-):
-    step_id = "regex_extractor_conditional_return"
-    registration_order = 40
-
-    def project(
-        self, value: _RegexExtractorMatcherCall
-    ) -> _RegexExtractorConditionalReturn | None:
-        group_call = _regex_conditional_group_call(value)
-        if group_call is None:
+        conditional = as_ast(returned.value, ast.IfExp)
+        if conditional is None or name_id(conditional.test) != assignment.target_name:
             return None
-        return _RegexExtractorConditionalReturn(
-            method=value.method,
-            match_name=value.match_name,
-            returned=value.returned,
-            pattern_attribute_name=value.pattern_attribute_name,
-            matcher_name=value.matcher_name,
-            group_call=group_call,
-        )
-
-
-class _RegexExtractorGroupCallStep(
-    _RegexGroupExtractorStep,
-    GuardedEffectStep[_RegexExtractorConditionalReturn, _RegexGroupExtractorMethod],
-):
-    step_id = "regex_extractor_group_call"
-    registration_order = 50
-
-    def project(
-        self, value: _RegexExtractorConditionalReturn
-    ) -> _RegexGroupExtractorMethod | None:
-        match = attribute_call_match(
-            value.group_call,
+        none_orelse = as_ast(conditional.orelse, ast.Constant)
+        group_call = as_ast(conditional.body, ast.Call)
+        if none_orelse is None or none_orelse.value is not None or group_call is None:
+            return None
+        group = attribute_call_match(
+            group_call,
             method_name="group",
             owner_type=ast.Name,
-            owner_name=value.match_name,
+            owner_name=assignment.target_name,
             single_argument_required=True,
         )
-        group_index = constant_value(match.single_argument) if match else None
+        group_index = constant_value(group.single_argument) if group else None
         if not isinstance(group_index, int):
             return None
-        return _RegexGroupExtractorMethod(
-            method_name=value.method.name,
-            line=value.method.lineno,
-            pattern_attribute_name=value.pattern_attribute_name,
-            matcher_name=value.matcher_name,
+        return cls(
+            method_name=method.name,
+            line=method.lineno,
+            pattern_attribute_name=matcher.owner.attr,
+            matcher_name=matcher.attribute.attr,
             group_index=group_index,
         )
-
-
-def _regex_group_extractor_method(
-    method: ast.FunctionDef,
-) -> _RegexGroupExtractorMethod | None:
-    return cast(
-        _RegexGroupExtractorMethod | None,
-        Maybe.of(method)
-        .bind_all(registered_effect_steps(_RegexGroupExtractorStep))
-        .unwrap_or_none(),
-    )
 
 
 def _regex_group_extractor_family_candidates(
@@ -639,7 +500,7 @@ def _regex_group_extractor_family_candidates(
                 extractor
                 for statement in class_node.body
                 if isinstance(statement, ast.FunctionDef)
-                for extractor in (_regex_group_extractor_method(statement),)
+                for extractor in (_RegexGroupExtractorMethod.from_method(statement),)
                 if extractor is not None
             )
         )
