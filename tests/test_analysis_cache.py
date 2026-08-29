@@ -6053,10 +6053,12 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     assert concrete_context_calls == 1
 
 
-def test_compact_nominal_authority_candidates_match_legacy_ast_candidates(
+def test_compact_nominal_authority_candidates_preserve_semantics(
     tmp_path: Path,
 ) -> None:
     for deleted_shadow in (
+        "_existing_nominal_authority_reuse_candidates",
+        "_nominal_authority_implementation_retreat_candidates",
         "_normalized_authority_name",
         "_is_self_delegate_attribute",
         "_forwarded_delegate_property_name",
@@ -6101,32 +6103,44 @@ def test_compact_nominal_authority_candidates_match_legacy_ast_candidates(
     compact_index = surface_detectors._compact_nominal_authority_index(
         projections, config
     )
-    legacy_index = surface_detectors.NominalAuthorityIndex(modules)
+    reuse_candidates = (
+        surface_detectors._existing_nominal_authority_reuse_candidates_from_index(
+            compact_index
+        )
+    )
+    assert len(reuse_candidates) == 1
+    reuse_candidate = reuse_candidates[0]
+    assert reuse_candidate.class_name == "JobSpecCopy"
+    assert reuse_candidate.compatible_authority_name == "JobSpecBase"
+    assert reuse_candidate.shared_field_names == ("name", "priority")
+    assert reuse_candidate.shared_role_names == ("name_payload", "priority")
+    assert reuse_candidate.reuse_kind == "inherit_base"
 
-    assert surface_detectors._existing_nominal_authority_reuse_candidates_from_index(
-        compact_index
-    ) == surface_detectors._existing_nominal_authority_reuse_candidates_from_index(
-        legacy_index
+    retreat_candidates = (
+        surface_detectors._nominal_authority_implementation_retreat_candidates_from_index(
+            compact_index
+        )
     )
-    assert surface_detectors._nominal_authority_implementation_retreat_candidates_from_index(
-        compact_index
-    ) == surface_detectors._nominal_authority_implementation_retreat_candidates_from_index(
-        legacy_index
-    )
-    for detector_type, collector in (
-        (
-            surface_detectors.ExistingNominalAuthorityReuseDetector,
-            surface_detectors._existing_nominal_authority_reuse_candidates_from_index,
-        ),
+    assert len(retreat_candidates) == 1
+    retreat_candidate = retreat_candidates[0]
+    assert tuple(
+        site.class_name for site in retreat_candidate.retreat_authority_sites
+    ) == ("JobSpecCopy", "JobSpecBase")
+    assert retreat_candidate.shared_field_names == ("name", "priority")
+    assert retreat_candidate.shared_role_names == ("name_payload", "priority")
+
+    for detector_type, expected_candidates in (
+        (surface_detectors.ExistingNominalAuthorityReuseDetector, reuse_candidates),
         (
             surface_detectors.NominalAuthorityImplementationRetreatDetector,
-            surface_detectors._nominal_authority_implementation_retreat_candidates_from_index,
+            retreat_candidates,
         ),
     ):
         instance = detector_type()
+        assert instance._candidate_items(list(modules), config) == expected_candidates
         assert instance._findings_from_compact_context(
             projections, compact_index, config
-        ) == instance._findings_for_candidates(collector(legacy_index), config)
+        ) == instance._findings_for_candidates(expected_candidates, config)
     compact_wrapper_candidates = (
         surface_detectors._compact_pass_through_nominal_wrapper_candidates(projections)
     )

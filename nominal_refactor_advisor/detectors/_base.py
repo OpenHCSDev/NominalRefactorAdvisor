@@ -1929,6 +1929,82 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
         return type(self).candidate_collector(modules, config)
 
 
+CompactCandidateContextT = TypeVar("CompactCandidateContextT")
+
+
+class CompactContextCandidateDetector(
+    CompactModuleProjectionDetectorMixin[CompactProjectionItemT],
+    CrossModuleCandidateDetector[CandidateItemT],
+    Generic[CompactProjectionItemT, CompactCandidateContextT, CandidateItemT],
+    ABC,
+):
+    """Candidate detector with one typed context across direct and cached paths."""
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[CandidateItemT]:
+        projections = type(self).compact_module_projections(modules)
+        return self._candidates_from_compact_context(
+            type(self)._compact_context_from_projections(projections, config),
+            config,
+        )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: tuple[CompactProjectionItemT, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            self._candidates_from_compact_context(
+                type(self)._compact_context_from_projections(projections, config),
+                config,
+            ),
+            config,
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: tuple[CompactProjectionItemT, ...],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections
+        return self._findings_for_candidates(
+            self._candidates_from_compact_context(
+                type(self)._compact_context_from_shared(context),
+                config,
+            ),
+            config,
+        )
+
+    @classmethod
+    @abstractmethod
+    def _compact_context_from_projections(
+        cls,
+        projections: tuple[CompactProjectionItemT, ...],
+        config: DetectorConfig,
+    ) -> CompactCandidateContextT:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def _compact_context_from_shared(
+        cls,
+        context: object | None,
+    ) -> CompactCandidateContextT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _candidates_from_compact_context(
+        self,
+        context: CompactCandidateContextT,
+        config: DetectorConfig,
+    ) -> Sequence[CandidateItemT]:
+        raise NotImplementedError
+
+
 class SortedCandidateItemsMixin(Generic[CandidateItemT]):
     """Optional class-level sorting for flattened candidate collectors."""
 

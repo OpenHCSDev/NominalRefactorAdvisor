@@ -2284,14 +2284,6 @@ def _reuse_kind_for_authority(shape: NominalAuthorityShape) -> str:
     return "compose_mixin" if shape.class_name.endswith("Mixin") else "inherit_base"
 
 
-def _existing_nominal_authority_reuse_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[ExistingNominalAuthorityReuseCandidate, ...]:
-    return _existing_nominal_authority_reuse_candidates_from_index(
-        NominalAuthorityIndex(modules)
-    )
-
-
 def _existing_nominal_authority_reuse_candidates_from_index(
     index: NominalAuthorityIndex,
 ) -> tuple[ExistingNominalAuthorityReuseCandidate, ...]:
@@ -2346,14 +2338,6 @@ def _existing_nominal_authority_reuse_candidates_from_index(
                 item.compatible_authority_name,
             ),
         )
-    )
-
-
-def _nominal_authority_implementation_retreat_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[NominalAuthorityImplementationRetreatCandidate, ...]:
-    return _nominal_authority_implementation_retreat_candidates_from_index(
-        NominalAuthorityIndex(modules)
     )
 
 

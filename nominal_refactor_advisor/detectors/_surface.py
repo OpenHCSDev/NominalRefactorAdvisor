@@ -23,7 +23,6 @@ from ._helpers import (
     _derived_query_index_candidates,
     _existing_nominal_authority_reuse_candidates_from_index,
     _keyword_bag_adapter_candidates,
-    _nominal_authority_implementation_retreat_candidates,
     _nominal_authority_implementation_retreat_candidates_from_index,
 )
 from ._runtime import (
@@ -471,12 +470,57 @@ declare_candidate_rule_detector(
 )
 
 
-class ExistingNominalAuthorityReuseDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector[ExistingNominalAuthorityReuseCandidate],
+CompactNominalAuthorityCandidateT = TypeVar("CompactNominalAuthorityCandidateT")
+
+
+class _CompactNominalAuthorityCandidateDetectorBase(
+    CompactContextCandidateDetector[
+        CompactModuleClassProjection,
+        NominalAuthorityIndex,
+        CompactNominalAuthorityCandidateT,
+    ],
+    Generic[CompactNominalAuthorityCandidateT],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_shared_context_builder = staticmethod(_compact_nominal_authority_index)
+
+    @classmethod
+    def _compact_context_from_projections(
+        cls,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> NominalAuthorityIndex:
+        return _compact_nominal_authority_index(projections, config)
+
+    @classmethod
+    def _compact_context_from_shared(
+        cls,
+        context: object | None,
+    ) -> NominalAuthorityIndex:
+        if not isinstance(context, NominalAuthorityIndex):
+            raise TypeError("nominal authority compact context is missing")
+        return context
+
+    def _candidates_from_compact_context(
+        self,
+        context: NominalAuthorityIndex,
+        config: DetectorConfig,
+    ) -> Sequence[CompactNominalAuthorityCandidateT]:
+        del config
+        return self._candidates_from_index(context)
+
+    @abstractmethod
+    def _candidates_from_index(
+        self, index: NominalAuthorityIndex
+    ) -> Sequence[CompactNominalAuthorityCandidateT]:
+        raise NotImplementedError
+
+
+class ExistingNominalAuthorityReuseDetector(
+    _CompactNominalAuthorityCandidateDetectorBase[
+        ExistingNominalAuthorityReuseCandidate
+    ],
+):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Existing nominal authority should be reused",
@@ -486,32 +530,11 @@ class ExistingNominalAuthorityReuseDetector(
         _NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
-    candidate_collector = staticmethod(_existing_nominal_authority_reuse_candidates)
-
-    def _findings_from_compact_projections(
+    def _candidates_from_index(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _existing_nominal_authority_reuse_candidates_from_index(
-                _compact_nominal_authority_index(projections, config)
-            ),
-            config,
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del projections
-        if not isinstance(context, NominalAuthorityIndex):
-            raise TypeError("nominal authority compact context is missing")
-        return self._findings_for_candidates(
-            _existing_nominal_authority_reuse_candidates_from_index(context), config
-        )
+        index: NominalAuthorityIndex,
+    ) -> Sequence[ExistingNominalAuthorityReuseCandidate]:
+        return _existing_nominal_authority_reuse_candidates_from_index(index)
 
     def _findings_for_candidates(
         self,
@@ -567,13 +590,10 @@ class ExistingNominalAuthorityReuseDetector(
 
 
 class NominalAuthorityImplementationRetreatDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector[
+    _CompactNominalAuthorityCandidateDetectorBase[
         NominalAuthorityImplementationRetreatCandidate
     ],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(_compact_nominal_authority_index)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Implementation mechanics must not split nominal authority identity",
@@ -583,35 +603,11 @@ class NominalAuthorityImplementationRetreatDetector(
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_VIRTUAL_MEMBERSHIP_CAPABILITY_TAGS,
     )
 
-    candidate_collector = staticmethod(
-        _nominal_authority_implementation_retreat_candidates
-    )
-
-    def _findings_from_compact_projections(
+    def _candidates_from_index(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            _nominal_authority_implementation_retreat_candidates_from_index(
-                _compact_nominal_authority_index(projections, config)
-            ),
-            config,
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del projections
-        if not isinstance(context, NominalAuthorityIndex):
-            raise TypeError("nominal authority compact context is missing")
-        return self._findings_for_candidates(
-            _nominal_authority_implementation_retreat_candidates_from_index(context),
-            config,
-        )
+        index: NominalAuthorityIndex,
+    ) -> Sequence[NominalAuthorityImplementationRetreatCandidate]:
+        return _nominal_authority_implementation_retreat_candidates_from_index(index)
 
     def _findings_for_candidates(
         self,

@@ -6701,60 +6701,30 @@ CompactConcreteFamilyCandidateT = TypeVar("CompactConcreteFamilyCandidateT")
 
 
 class _CompactConcreteFamilyDetectorBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCandidateDetector[CompactConcreteFamilyCandidateT],
+    CompactContextCandidateDetector[
+        CompactModuleClassProjection,
+        _CompactConcreteFamilyContext,
+        CompactConcreteFamilyCandidateT,
+    ],
     Generic[CompactConcreteFamilyCandidateT],
-    ABC,
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
 
-    def _candidate_items(
-        self,
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-    ) -> Sequence[CompactConcreteFamilyCandidateT]:
-        projections = type(self).compact_module_projections(modules)
-        return self._candidates_from_compact_context(
-            _compact_concrete_family_context(projections, config),
-            config,
-        )
-
-    def _findings_from_compact_projections(
-        self,
+    @classmethod
+    def _compact_context_from_projections(
+        cls,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            self._candidates_from_compact_context(
-                _compact_concrete_family_context(projections, config),
-                config,
-            ),
-            config,
-        )
+    ) -> _CompactConcreteFamilyContext:
+        return _compact_concrete_family_context(projections, config)
 
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
+    @classmethod
+    def _compact_context_from_shared(
+        cls,
         context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del projections
-        return self._findings_for_candidates(
-            self._candidates_from_compact_context(
-                _compact_concrete_family_context_from_repository(context),
-                config,
-            ),
-            config,
-        )
-
-    @abstractmethod
-    def _candidates_from_compact_context(
-        self,
-        context: _CompactConcreteFamilyContext,
-        config: DetectorConfig,
-    ) -> Sequence[CompactConcreteFamilyCandidateT]:
-        raise NotImplementedError
+    ) -> _CompactConcreteFamilyContext:
+        return _compact_concrete_family_context_from_repository(context)
 
 
 class ManualConcreteSubclassRosterDetector(
