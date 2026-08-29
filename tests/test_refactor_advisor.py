@@ -74,6 +74,7 @@ from nominal_refactor_advisor.calibration import (
 from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import build_class_family_index
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
+from nominal_refactor_advisor.cli import CodemodExecutionMode
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
 from nominal_refactor_advisor.cli import FastPreparseSemanticDescentSourceAuthority
 from nominal_refactor_advisor.cli import FocusedLoopColdAnalysisPolicy
@@ -13457,6 +13458,41 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
     assert args.paths == ["nominal_refactor_advisor", "tests"]
+
+
+def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:
+    parser = argparse.ArgumentParser()
+    for spec in _CLI_ARGUMENT_SPECS:
+        spec.add_to_parser(parser)
+
+    simulation = CodemodExecutionMode.from_namespace(
+        parser.parse_args(["--codemod-simulate"]),
+        parser,
+    )
+
+    assert simulation is CodemodExecutionMode.SIMULATE
+    assert simulation.requested is True
+    assert simulation.unified_diff_requested is True
+    assert simulation.diff_text_requested is False
+    assert simulation.applies_changes is False
+
+    with pytest.raises(SystemExit):
+        CodemodExecutionMode.from_namespace(
+            parser.parse_args(["--codemod-diff", "--codemod-apply"]),
+            parser,
+        )
+    with pytest.raises(SystemExit):
+        CodemodExecutionMode.DIFF.require_valid(
+            parser,
+            fixpoint=True,
+            project_findings=False,
+        )
+    with pytest.raises(SystemExit):
+        CodemodExecutionMode.APPLY.require_valid(
+            parser,
+            fixpoint=False,
+            project_findings=True,
+        )
 
 
 def test_load_authority_boundary_plans_from_json(tmp_path: Path) -> None:

@@ -1652,26 +1652,16 @@ class SelectedOperationCliSource(ABC):
     source_id: ClassVar[str]
     source_family_label: ClassVar[str]
     source_label: ClassVar[str]
-    option_names: ClassVar[tuple[str, ...]]
-    registry_order: ClassVar[int]
-
-    @classmethod
-    def ordered_source_types(cls) -> tuple[type, ...]:
-        return tuple(
-            sorted(
-                cls.__registry__.values(),
-                key=lambda source_type: source_type.registry_order,
-            )
-        )
 
     @classmethod
     def selected_sources(
         cls,
         args: argparse.Namespace,
     ) -> tuple["SelectedOperationCliSource", ...]:
+        sources = tuple(source_type() for source_type in cls.__registry__.values())
         return tuple(
             source
-            for source in (source_type() for source_type in cls.ordered_source_types())
+            for source in sorted(sources, key=lambda item: item.source_label)
             if source.is_supplied(args)
         )
 
@@ -1728,8 +1718,6 @@ class JsonSelectedOperationTargetSelectorSource(SelectedOperationTargetSelectorS
 
     source_id = "json_target_selector"
     source_label = "--codemod-selected-operation-plan"
-    option_names = ("--codemod-selected-operation-plan",)
-    registry_order = 10
 
     def is_supplied(self, args: argparse.Namespace) -> bool:
         return args.codemod_selected_operation_plan is not None
@@ -1782,15 +1770,6 @@ class InlineSourceIndexSelectedOperationTargetSelectorSource(
 
     source_id = "inline_source_index_target"
     source_label = "inline source_index_target selector"
-    option_names = (
-        "--codemod-selected-node-kind",
-        "--codemod-selected-file",
-        "--codemod-selected-qualname",
-        "--codemod-selected-file-pattern",
-        "--codemod-selected-name-pattern",
-        "--codemod-selected-qualname-pattern",
-    )
-    registry_order = 20
     cli_option_names: ClassVar[tuple[str, ...]] = (
         "--codemod-selected-node-kind",
         "--codemod-selected-file",
@@ -1902,8 +1881,6 @@ class JsonSelectedOperationTemplateSource(SelectedOperationTemplateSource):
 
     source_id = "json_operation_template"
     source_label = "--codemod-operation-template"
-    option_names = ("--codemod-operation-template",)
-    registry_order = 10
 
     def is_supplied(self, args: argparse.Namespace) -> bool:
         return args.codemod_operation_template is not None
@@ -1924,8 +1901,6 @@ class ReplaceTextSelectedOperationTemplateSource(SelectedOperationTemplateSource
 
     source_id = "replace_text_operands"
     source_label = "--codemod-selected-replace-text"
-    option_names = ("--codemod-selected-replace-text",)
-    registry_order = 20
 
     def is_supplied(self, args: argparse.Namespace) -> bool:
         return args.codemod_selected_replace_text is not None
@@ -2958,7 +2933,7 @@ class CodemodCliExecution(
         if not self.requested:
             return None
         snapshot = self.required_source_snapshot()
-        if self.execution_request.mode.preflight:
+        if self.execution_request.mode.is_preflight:
             return self.emit_preflight_report(
                 self.execution_request.sequence.preflight_snapshot(snapshot)
             )
@@ -3030,7 +3005,10 @@ class CodemodCliExecution(
         self,
         report: CodemodOperationPreflightReport,
     ) -> int:
-        if self.execution_request.mode.json_report_requested(self.args.json):
+        if self.execution_request.mode.json_report_requested(
+            self.args.json,
+            project_findings=self.execution_request.project_findings,
+        ):
             print(
                 json.dumps(
                     CodemodPreflightFailurePayload(report).to_dict(),
@@ -3078,7 +3056,10 @@ class CodemodCliExecution(
         simulation: CodemodSimulationReport,
         architecture_guard_report: ArchitectureGuardReport,
     ) -> int:
-        if self.execution_request.mode.json_report_requested(self.args.json):
+        if self.execution_request.mode.json_report_requested(
+            self.args.json,
+            project_findings=self.execution_request.project_findings,
+        ):
             print(
                 json.dumps(
                     CodemodSimulationPayload(
@@ -3104,7 +3085,7 @@ class CodemodCliExecution(
         simulation: CodemodSimulationReport,
         plan_sequence_simulation: CodemodPlanSequenceSimulation | None,
     ) -> bool:
-        if not self.execution_request.mode.apply:
+        if not self.execution_request.mode.applies_changes:
             return False
         if plan_sequence_simulation is not None:
             plan_sequence_simulation.apply()
@@ -3120,7 +3101,10 @@ class CodemodCliExecution(
         architecture_guard_report: ArchitectureGuardReport | None,
         plan_sequence_simulation: CodemodPlanSequenceSimulation | None,
     ) -> None:
-        if self.execution_request.mode.json_report_requested(self.args.json):
+        if self.execution_request.mode.json_report_requested(
+            self.args.json,
+            project_findings=self.execution_request.project_findings,
+        ):
             payload = CodemodSimulationPayload(
                 simulation,
                 applied=applied,
@@ -3131,7 +3115,7 @@ class CodemodCliExecution(
                 payload["plan_sequence_simulation"] = plan_sequence_simulation.to_dict()
             projected_findings = self.optional_projected_finding_report(
                 simulation,
-                enabled=self.execution_request.mode.project_findings,
+                enabled=self.execution_request.project_findings,
                 source_sequence=(
                     plan_sequence_simulation.sequence
                     if plan_sequence_simulation is not None
@@ -3176,66 +3160,187 @@ class CodemodCliExecution(
         return snapshot.unified_diff(simulation)
 
 
-@dataclass(frozen=True)
-class CodemodExecutionMode:
-    """Validated codemod execution mode family."""
+def _run_selected_operation_scaffold(
+    command: "CodemodSelectedOperationPlanCliCommand",
+    snapshot: CodemodSourceSnapshot,
+    scaffold: CodemodSelectedOperationPlanScaffoldReport,
+) -> int:
+    del snapshot
+    return command.emit_scaffold(scaffold)
 
-    diff: bool
-    preflight: bool
-    simulate: bool
-    apply: bool
-    fixpoint: bool
-    project_findings: bool
+
+def _run_selected_operation_preflight(
+    command: "CodemodSelectedOperationPlanCliCommand",
+    snapshot: CodemodSourceSnapshot,
+    scaffold: CodemodSelectedOperationPlanScaffoldReport,
+) -> int:
+    return command.emit_preflight_report(snapshot, scaffold)
+
+
+def _run_selected_operation_diff(
+    command: "CodemodSelectedOperationPlanCliCommand",
+    snapshot: CodemodSourceSnapshot,
+    scaffold: CodemodSelectedOperationPlanScaffoldReport,
+) -> int:
+    simulation = command.simulation_for_scaffold(snapshot, scaffold)
+    unified_diff = snapshot.unified_diff(simulation.simulation)
+    if command.args.json:
+        return command.emit_simulation_report(
+            scaffold,
+            simulation,
+            applied=False,
+            unified_diff=unified_diff,
+        )
+    command.write_scaffold_plan_if_requested(scaffold)
+    print(unified_diff, end="")
+    return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
+
+
+def _run_selected_operation_simulation(
+    command: "CodemodSelectedOperationPlanCliCommand",
+    snapshot: CodemodSourceSnapshot,
+    scaffold: CodemodSelectedOperationPlanScaffoldReport,
+) -> int:
+    simulation = command.simulation_for_scaffold(snapshot, scaffold)
+    return command.emit_simulation_report(
+        scaffold,
+        simulation,
+        applied=False,
+        unified_diff=snapshot.unified_diff(simulation.simulation),
+    )
+
+
+def _run_selected_operation_apply(
+    command: "CodemodSelectedOperationPlanCliCommand",
+    snapshot: CodemodSourceSnapshot,
+    scaffold: CodemodSelectedOperationPlanScaffoldReport,
+) -> int:
+    simulation = command.simulation_for_scaffold(snapshot, scaffold)
+    simulation.apply()
+    return command.emit_simulation_report(
+        scaffold,
+        simulation,
+        applied=True,
+        unified_diff=None,
+    )
+
+
+class CodemodExecutionMode(Enum):
+    """Single authority for codemod execution semantics."""
+
+    NONE = ("none", _run_selected_operation_scaffold)
+    PREFLIGHT = ("preflight", _run_selected_operation_preflight)
+    DIFF = ("diff", _run_selected_operation_diff)
+    SIMULATE = ("simulate", _run_selected_operation_simulation)
+    APPLY = ("apply", _run_selected_operation_apply)
+
+    def __new__(
+        cls,
+        value: str,
+        selected_operation_runner: Callable[
+            [
+                "CodemodSelectedOperationPlanCliCommand",
+                CodemodSourceSnapshot,
+                CodemodSelectedOperationPlanScaffoldReport,
+            ],
+            int,
+        ],
+    ) -> "CodemodExecutionMode":
+        member = object.__new__(cls)
+        member._value_ = value
+        return member
+
+    def __init__(
+        self,
+        value: str,
+        selected_operation_runner: Callable[
+            [
+                "CodemodSelectedOperationPlanCliCommand",
+                CodemodSourceSnapshot,
+                CodemodSelectedOperationPlanScaffoldReport,
+            ],
+            int,
+        ],
+    ) -> None:
+        del value
+        self._selected_operation_runner = selected_operation_runner
 
     @classmethod
-    def from_namespace(cls, args: argparse.Namespace) -> "CodemodExecutionMode":
-        return cls(
-            diff=args.codemod_diff,
-            preflight=args.codemod_preflight,
-            simulate=args.codemod_simulate,
-            apply=args.codemod_apply,
-            fixpoint=args.codemod_fixpoint,
-            project_findings=args.codemod_project_findings,
+    def from_namespace(
+        cls,
+        args: argparse.Namespace,
+        parser: argparse.ArgumentParser,
+    ) -> "CodemodExecutionMode":
+        selected = tuple(
+            mode
+            for mode, supplied in (
+                (cls.DIFF, args.codemod_diff),
+                (cls.PREFLIGHT, args.codemod_preflight),
+                (cls.SIMULATE, args.codemod_simulate),
+                (cls.APPLY, args.codemod_apply),
+            )
+            if supplied
         )
+        if len(selected) > 1:
+            parser.error(
+                "--codemod-diff, --codemod-preflight, --codemod-simulate, and "
+                "--codemod-apply are mutually exclusive"
+            )
+        return selected[0] if selected else cls.NONE
 
     @property
     def requested(self) -> bool:
-        return self.mode_count > 0
+        return self is not type(self).NONE
 
     @property
-    def mode_count(self) -> int:
-        return sum((self.diff, self.preflight, self.simulate, self.apply))
+    def is_preflight(self) -> bool:
+        return self is type(self).PREFLIGHT
+
+    @property
+    def applies_changes(self) -> bool:
+        return self is type(self).APPLY
 
     @property
     def unified_diff_requested(self) -> bool:
-        return self.diff or self.simulate
+        return self in (type(self).DIFF, type(self).SIMULATE)
 
     @property
     def diff_text_requested(self) -> bool:
-        return self.diff
+        return self is type(self).DIFF
 
-    def json_report_requested(self, json_flag: bool) -> bool:
-        return json_flag or self.preflight or self.simulate or self.project_findings
-
-    def require_valid(self, parser: argparse.ArgumentParser) -> None:
-        if self.project_findings and not self.simulate:
-            parser.error("--codemod-project-findings requires --codemod-simulate")
-        if self.fixpoint and self.diff:
-            parser.error("--codemod-fixpoint cannot be combined with --codemod-diff")
-        if self.fixpoint and self.preflight:
-            parser.error(
-                "--codemod-fixpoint cannot be combined with --codemod-preflight"
-            )
-        if self.fixpoint and self.simulate:
-            parser.error(
-                "--codemod-fixpoint cannot be combined with --codemod-simulate"
-            )
-        if self.mode_count <= 1:
-            return
-        parser.error(
-            "--codemod-diff, --codemod-preflight, --codemod-simulate, and "
-            "--codemod-apply are mutually exclusive"
+    def json_report_requested(
+        self,
+        json_flag: bool,
+        *,
+        project_findings: bool,
+    ) -> bool:
+        return (
+            json_flag
+            or self in (type(self).PREFLIGHT, type(self).SIMULATE)
+            or project_findings
         )
+
+    def require_valid(
+        self,
+        parser: argparse.ArgumentParser,
+        *,
+        fixpoint: bool,
+        project_findings: bool,
+    ) -> None:
+        if project_findings and self is not type(self).SIMULATE:
+            parser.error("--codemod-project-findings requires --codemod-simulate")
+        if fixpoint and self not in (type(self).NONE, type(self).APPLY):
+            parser.error(
+                "--codemod-fixpoint can only be combined with --codemod-apply"
+            )
+
+    def run_selected_operation(
+        self,
+        command: "CodemodSelectedOperationPlanCliCommand",
+        snapshot: CodemodSourceSnapshot,
+        scaffold: CodemodSelectedOperationPlanScaffoldReport,
+    ) -> int:
+        return self._selected_operation_runner(command, snapshot, scaffold)
 
 
 @dataclass(frozen=True)
@@ -3244,12 +3349,13 @@ class CodemodPlanExecutionRequest:
 
     sequence: CodemodPlanSequence
     mode: CodemodExecutionMode
+    project_findings: bool
 
     @property
     def exact_recipe_execution(self) -> bool:
         return (
             self.mode.requested
-            and not self.mode.project_findings
+            and not self.project_findings
             and self.sequence.has_recipes
             and not self.sequence.has_authority_boundaries
             and not self.sequence.has_architecture_guards
@@ -3325,10 +3431,14 @@ class CodemodScanQueryMode:
     selected_operation_target_selector_source_labels: tuple[str, ...]
     selected_operation_template_source_labels: tuple[str, ...]
     synthesis_has_registered_detector: bool
-    synthesis_execution_requested: bool
+    synthesis_execution_mode: CodemodExecutionMode
 
     @classmethod
-    def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
+    def from_namespace(
+        cls,
+        args: argparse.Namespace,
+        execution_mode: CodemodExecutionMode,
+    ) -> "CodemodScanQueryMode":
         return cls(
             synthesize_plan=args.codemod_synthesize_plan,
             synthesize_class_plan=args.codemod_synthesize_class_plan,
@@ -3347,12 +3457,7 @@ class CodemodScanQueryMode:
                     args.codemod_goal_detectors
                 )
             ),
-            synthesis_execution_requested=(
-                args.codemod_preflight
-                or args.codemod_diff
-                or args.codemod_simulate
-                or args.codemod_apply
-            ),
+            synthesis_execution_mode=execution_mode,
         )
 
     @property
@@ -3370,7 +3475,8 @@ class CodemodScanQueryMode:
         if not self.synthesize_plan:
             return True
         return (
-            self.synthesis_execution_requested or self.synthesis_has_registered_detector
+            self.synthesis_execution_mode.requested
+            or self.synthesis_has_registered_detector
         )
 
     @property
@@ -3520,6 +3626,7 @@ class CodemodScanQueryCliCommand(
     roots: tuple[Path, ...]
     report_roots: tuple[Path, ...]
     semantic_descent_source: SemanticDescentGraphAnalysisSource
+    execution_mode: CodemodExecutionMode
 
     @classmethod
     def run_first(
@@ -3533,6 +3640,7 @@ class CodemodScanQueryCliCommand(
         roots: tuple[Path, ...],
         report_roots: tuple[Path, ...],
         semantic_descent_source: SemanticDescentGraphAnalysisSource,
+        execution_mode: CodemodExecutionMode,
     ) -> int | None:
         for command_type in CliCommand.__registry__.values():
             if not issubclass(command_type, cls):
@@ -3547,6 +3655,7 @@ class CodemodScanQueryCliCommand(
                 roots,
                 report_roots,
                 semantic_descent_source,
+                execution_mode,
             )
             if command.requested:
                 return command.run()
@@ -3556,20 +3665,11 @@ class CodemodScanQueryCliCommand(
 class CodemodSynthesisExecutionCliCommand(CodemodScanQueryCliCommand, ABC):
     """Shared execution surface for finding-backed synthesis commands."""
 
-    @property
-    def synthesis_execution_requested(self) -> bool:
-        return (
-            self.args.codemod_preflight
-            or self.args.codemod_diff
-            or self.args.codemod_simulate
-            or self.args.codemod_apply
-        )
-
     def apply_synthesized_plan(
         self,
         simulation: "FindingRecipePlanSimulation",
     ) -> bool:
-        if not self.args.codemod_apply:
+        if not self.execution_mode.applies_changes:
             return False
         simulation.document_simulation.apply()
         return True
@@ -3602,15 +3702,15 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
             self.args.codemod_plan_out,
             finding_recipe_plan.document.to_dict(),
         )
-        if self.args.codemod_preflight:
+        if self.execution_mode.is_preflight:
             payload = finding_recipe_plan.preflight_snapshot(snapshot).to_dict()
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
-        if self.synthesis_execution_requested:
+        if self.execution_mode.requested:
             simulation = finding_recipe_plan.simulate_snapshot(snapshot)
             unified_diff = snapshot.unified_diff(simulation.simulation)
             applied = self.apply_synthesized_plan(simulation)
-            if self.args.codemod_diff and not self.args.json:
+            if self.execution_mode.diff_text_requested and not self.args.json:
                 print(unified_diff, end="")
                 return CodemodSynthesisExitCodeAuthority(
                     simulation.is_clean
@@ -3642,7 +3742,7 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
     def require_valid_document_only_mode(self) -> None:
         if not self.args.codemod_synthesize_document_only:
             return
-        if self.synthesis_execution_requested:
+        if self.execution_mode.requested:
             self.parser.error(
                 "--codemod-synthesize-document-only cannot be combined with "
                 "--codemod-preflight, --codemod-diff, --codemod-simulate, "
@@ -3671,7 +3771,7 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
             self.args.codemod_plan_out,
             report.finding_plan.document.to_dict(),
         )
-        if self.args.codemod_preflight:
+        if self.execution_mode.is_preflight:
             preflight = report.finding_plan.preflight_snapshot(snapshot)
             payload = {
                 **report.to_dict(),
@@ -3680,11 +3780,11 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
             }
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
-        if self.synthesis_execution_requested:
+        if self.execution_mode.requested:
             simulation = report.finding_plan.simulate_snapshot(snapshot)
             unified_diff = snapshot.unified_diff(simulation.simulation)
             applied = self.apply_synthesized_plan(simulation)
-            if self.args.codemod_diff and not self.args.json:
+            if self.execution_mode.diff_text_requested and not self.args.json:
                 print(unified_diff, end="")
                 return CodemodSynthesisExitCodeAuthority(
                     simulation.is_clean
@@ -3829,165 +3929,6 @@ class CodemodReplacementPlanCliCommand(CodemodSelectorQueryCliCommand):
         return self.args.codemod_replacement_plan
 
 
-class SelectedOperationPlanCliMode(ABC, metaclass=AutoRegisterMeta):
-    """Registered execution mode for selected-operation plan scaffolds."""
-
-    __registry__: ClassVar[dict[str, type["SelectedOperationPlanCliMode"]]] = {}
-    __registry_key__ = "mode_id"
-    __skip_if_no_key__ = True
-
-    mode_id: ClassVar[str]
-    registry_order: ClassVar[int]
-
-    @classmethod
-    def resolve(
-        cls,
-        execution_mode: CodemodExecutionMode,
-    ) -> "SelectedOperationPlanCliMode":
-        for mode_type in cls.ordered_mode_types():
-            mode = mode_type()
-            if mode.matches(execution_mode):
-                return mode
-        raise RuntimeError("selected-operation plan CLI mode registry is empty")
-
-    @classmethod
-    def ordered_mode_types(cls) -> tuple[type["SelectedOperationPlanCliMode"], ...]:
-        return tuple(
-            sorted(
-                cls.__registry__.values(),
-                key=lambda mode_type: mode_type.registry_order,
-            )
-        )
-
-    @abstractmethod
-    def matches(self, execution_mode: CodemodExecutionMode) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    def run(
-        self,
-        command: "CodemodSelectedOperationPlanCliCommand",
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        raise NotImplementedError
-
-
-class SelectedOperationPlanPreflightCliMode(SelectedOperationPlanCliMode):
-    """Preflight a generated selected-operation plan document."""
-
-    mode_id = "preflight"
-    registry_order = 10
-
-    def matches(self, execution_mode: CodemodExecutionMode) -> bool:
-        return execution_mode.preflight
-
-    def run(
-        self,
-        command: "CodemodSelectedOperationPlanCliCommand",
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        return command.emit_preflight_report(snapshot, scaffold)
-
-
-class SelectedOperationPlanDiffCliMode(SelectedOperationPlanCliMode):
-    """Diff a generated selected-operation plan document."""
-
-    mode_id = "diff"
-    registry_order = 20
-
-    def matches(self, execution_mode: CodemodExecutionMode) -> bool:
-        return execution_mode.diff
-
-    def run(
-        self,
-        command: "CodemodSelectedOperationPlanCliCommand",
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        simulation = command.simulation_for_scaffold(snapshot, scaffold)
-        unified_diff = snapshot.unified_diff(simulation.simulation)
-        if command.args.json:
-            return command.emit_simulation_report(
-                scaffold,
-                simulation,
-                applied=False,
-                unified_diff=unified_diff,
-            )
-        command.write_scaffold_plan_if_requested(scaffold)
-        print(unified_diff, end="")
-        return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
-
-
-class SelectedOperationPlanSimulateCliMode(SelectedOperationPlanCliMode):
-    """Simulate a generated selected-operation plan document."""
-
-    mode_id = "simulate"
-    registry_order = 30
-
-    def matches(self, execution_mode: CodemodExecutionMode) -> bool:
-        return execution_mode.simulate
-
-    def run(
-        self,
-        command: "CodemodSelectedOperationPlanCliCommand",
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        simulation = command.simulation_for_scaffold(snapshot, scaffold)
-        return command.emit_simulation_report(
-            scaffold,
-            simulation,
-            applied=False,
-            unified_diff=snapshot.unified_diff(simulation.simulation),
-        )
-
-
-class SelectedOperationPlanApplyCliMode(SelectedOperationPlanCliMode):
-    """Apply a generated selected-operation plan document."""
-
-    mode_id = "apply"
-    registry_order = 40
-
-    def matches(self, execution_mode: CodemodExecutionMode) -> bool:
-        return execution_mode.apply
-
-    def run(
-        self,
-        command: "CodemodSelectedOperationPlanCliCommand",
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        simulation = command.simulation_for_scaffold(snapshot, scaffold)
-        simulation.apply()
-        return command.emit_simulation_report(
-            scaffold,
-            simulation,
-            applied=True,
-            unified_diff=None,
-        )
-
-
-class SelectedOperationPlanScaffoldCliMode(SelectedOperationPlanCliMode):
-    """Emit the generated selected-operation plan scaffold."""
-
-    mode_id = "scaffold"
-    registry_order = 50
-
-    def matches(self, execution_mode: CodemodExecutionMode) -> bool:
-        return not execution_mode.requested
-
-    def run(
-        self,
-        command: "CodemodSelectedOperationPlanCliCommand",
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        del snapshot
-        return command.emit_scaffold(scaffold)
-
-
 class CodemodSelectedOperationPlanCliCommand(CodemodScanQueryCliCommand):
     """Emit an apply-selected-targets plan for selector and operation templates."""
 
@@ -4004,9 +3945,7 @@ class CodemodSelectedOperationPlanCliCommand(CodemodScanQueryCliCommand):
             self.parser,
         ).target_selector(self.args, self.parser)
         scaffold = self.scaffold_for_selector(snapshot, selector)
-        execution_mode = CodemodExecutionMode.from_namespace(self.args)
-        mode = SelectedOperationPlanCliMode.resolve(execution_mode)
-        return mode.run(self, snapshot, scaffold)
+        return self.execution_mode.run_selected_operation(self, snapshot, scaffold)
 
     def emit_scaffold(
         self,
@@ -4133,7 +4072,16 @@ def _main_without_deadline() -> int:
         return early_exit_code
 
     config = DetectorConfig.from_namespace(args)
-    codemod_scan_query_mode = CodemodScanQueryMode.from_namespace(args)
+    codemod_execution_mode = CodemodExecutionMode.from_namespace(args, parser)
+    codemod_execution_mode.require_valid(
+        parser,
+        fixpoint=args.codemod_fixpoint,
+        project_findings=args.codemod_project_findings,
+    )
+    codemod_scan_query_mode = CodemodScanQueryMode.from_namespace(
+        args,
+        codemod_execution_mode,
+    )
     codemod_scan_query_mode.require_valid(parser)
     try:
         json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
@@ -4159,8 +4107,6 @@ def _main_without_deadline() -> int:
             ("--codemod-operation-template", (args.codemod_operation_template,)),
         )
     ).require_at_most_one_stdin(parser)
-    codemod_execution_mode = CodemodExecutionMode.from_namespace(args)
-    codemod_execution_mode.require_valid(parser)
     codemod_requested = (
         args.codemod_plan is not None
         or codemod_execution_mode.requested
@@ -4191,6 +4137,7 @@ def _main_without_deadline() -> int:
     codemod_execution_request = CodemodPlanExecutionRequest(
         sequence=codemod_plan_sequence,
         mode=codemod_execution_mode,
+        project_findings=args.codemod_project_findings,
     )
     if (
         codemod_requested
@@ -4768,7 +4715,7 @@ def _main_without_deadline() -> int:
             config=config,
             parse_workers=args.parse_workers,
             guard_suite=codemod_plan_sequence.guard_suite,
-            dry_run=not args.codemod_apply,
+            dry_run=not codemod_execution_mode.applies_changes,
             initial_scan=workflow_initial_scan,
             max_iterations=args.codemod_fixpoint_max_iterations,
         ).run()
@@ -4793,7 +4740,7 @@ def _main_without_deadline() -> int:
             config=config,
             parse_workers=args.parse_workers,
             guard_suite=codemod_plan_sequence.guard_suite,
-            dry_run=not args.codemod_apply,
+            dry_run=not codemod_execution_mode.applies_changes,
             initial_scan=workflow_initial_scan,
             goal=refactor_goal,
         ).run()
@@ -4850,6 +4797,7 @@ def _main_without_deadline() -> int:
         roots,
         path_scope.report_roots,
         semantic_descent_analysis_source,
+        codemod_execution_mode,
     )
     if scan_query_result is not None:
         return scan_query_result
