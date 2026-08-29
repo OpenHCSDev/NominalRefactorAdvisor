@@ -4783,42 +4783,6 @@ class ParallelRegistryProjectionFamilyDetector(
         )
 
 
-def _compact_repeated_keyed_family_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-    config: DetectorConfig,
-) -> tuple[RepeatedKeyedFamilyCandidate, ...]:
-    roots = tuple(
-        KeyedFamilyRootCandidate(
-            file_path=root.file_path,
-            line=root.line,
-            class_name=root.class_name,
-            family_base_name=root.family_base_name,
-            registry_key_attr_name=root.registry_key_attr_name,
-            lookup_method_name=root.lookup_method_name,
-            lookup_style=root.lookup_style,
-            error_type_name=root.error_type_name,
-            abstract_hook_names=root.abstract_hook_names,
-        )
-        for projection in projections
-        for root in projection.repeated_keyed_family_roots
-    )
-    min_roots = max(3, config.min_registration_sites)
-    grouped: dict[tuple[str, str], list[KeyedFamilyRootCandidate]] = {}
-    for root in roots:
-        grouped.setdefault((root.family_base_name, root.lookup_style), []).append(root)
-    return tuple(
-        RepeatedKeyedFamilyCandidate(
-            family_base_name=family_base_name,
-            lookup_style=lookup_style,
-            roots=sorted_tuple(
-                items, key=lambda item: (item.file_path, item.line, item.class_name)
-            ),
-        )
-        for (family_base_name, lookup_style), items in sorted(grouped.items())
-        if len(items) >= min_roots
-    )
-
-
 def _target_has_repeated_keyed_family_root(
     projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
     config: DetectorConfig,
@@ -4837,7 +4801,7 @@ def _target_has_repeated_keyed_family_root(
 
 class RepeatedKeyedFamilyDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[RepeatedKeyedFamilyCandidate],
+    CrossModuleCandidateDetector[RepeatedKeyedFamilyCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
@@ -4853,13 +4817,37 @@ class RepeatedKeyedFamilyDetector(
         _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
+    @staticmethod
+    def _candidates_from_compact_projections(
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> tuple[RepeatedKeyedFamilyCandidate, ...]:
+        return RepeatedKeyedFamilyCandidate.from_roots(
+            tuple(
+                root
+                for projection in projections
+                for root in projection.repeated_keyed_family_roots
+            ),
+            minimum_root_count=max(3, config.min_registration_sites),
+        )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> tuple[RepeatedKeyedFamilyCandidate, ...]:
+        return self._candidates_from_compact_projections(
+            type(self).compact_module_projections(modules),
+            config,
+        )
+
     def _findings_from_compact_projections(
         self,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
-            _compact_repeated_keyed_family_candidates(projections, config),
+            self._candidates_from_compact_projections(projections, config),
             config,
         )
 
@@ -4875,7 +4863,10 @@ class RepeatedKeyedFamilyDetector(
         registry_keys = ", ".join(
             sorted({root.registry_key_attr_name for root in family_candidate.roots[:8]})
         )
-        evidence = tuple(root.evidence for root in family_candidate.roots[:8])
+        evidence = tuple(
+            SourceLocation(root.file_path, root.line, root.class_name)
+            for root in family_candidate.roots[:8]
+        )
         return self.build_finding(
             (
                 f"Registry roots {class_names} each repeat `{registry_keys}` + `_registry` + "

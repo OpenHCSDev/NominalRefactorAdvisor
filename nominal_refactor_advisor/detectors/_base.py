@@ -154,6 +154,7 @@ from ..class_index import (
     CompactIndexedClass,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
+    CompactRepeatedKeyedFamilyRoot,
     IndexedClass,
     LatentRosterMatch,
     LatentRosterObservation,
@@ -7876,77 +7877,6 @@ class _GuardValidatorAccessProfile:
     accessed_attr_names: tuple[str, ...]
 
 
-def _repeated_keyed_family_candidates(
-    modules: Sequence[ParsedModule], config: DetectorConfig
-) -> tuple[RepeatedKeyedFamilyCandidate, ...]:
-    roots: list[KeyedFamilyRootCandidate] = []
-    for module in modules:
-        for node in (
-            class_node
-            for class_node in module.module.body
-            if isinstance(class_node, ast.ClassDef)
-        ):
-            base_names = CLASS_NODE_AUTHORITY.declared_base_names(node)
-            if "AutoRegisterByClassVar" not in base_names:
-                continue
-            assignments = CLASS_NODE_AUTHORITY.direct_assignments(node)
-            registry_key_attr_name = _constant_string(
-                assignments.get("registry_key_attr")
-            )
-            if registry_key_attr_name is None:
-                continue
-            if not SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(
-                assignments.get("_registry")
-            ):
-                continue
-            lookup_methods = [
-                (method, shape)
-                for method in CLASS_NODE_AUTHORITY.methods(node)
-                if _is_classmethod(method)
-                and method.name.startswith("for_")
-                and (shape := RegistryLookupShape.from_method(method)) is not None
-            ]
-            if len(lookup_methods) != 1:
-                continue
-            lookup_method, lookup_shape = lookup_methods[0]
-            roots.append(
-                KeyedFamilyRootCandidate(
-                    file_path=str(module.path),
-                    line=node.lineno,
-                    class_name=node.name,
-                    family_base_name="AutoRegisterByClassVar",
-                    registry_key_attr_name=registry_key_attr_name,
-                    lookup_method_name=lookup_method.name,
-                    lookup_style=lookup_shape.style,
-                    error_type_name=lookup_shape.error_type_name,
-                    abstract_hook_names=tuple(
-                        (
-                            method.name
-                            for method in CLASS_NODE_AUTHORITY.methods(node)
-                            if _is_abstract_method(method)
-                        )
-                    ),
-                )
-            )
-    min_roots = max(3, config.min_registration_sites)
-    grouped: dict[tuple[str, str], list[KeyedFamilyRootCandidate]] = defaultdict(list)
-    for root in roots:
-        grouped[root.family_base_name, root.lookup_style].append(root)
-    return tuple(
-        (
-            RepeatedKeyedFamilyCandidate(
-                family_base_name=family_base_name,
-                lookup_style=lookup_style,
-                roots=sorted_tuple(
-                    items, key=lambda item: (item.file_path, item.line, item.class_name)
-                ),
-            )
-            for (family_base_name, lookup_style), items in sorted(grouped.items())
-            if len(items) >= min_roots
-        )
-    )
-
-
 def _registry_maturity_missing_signals(
     *,
     registered_case_count: int,
@@ -11922,20 +11852,36 @@ class ParallelRegistryProjectionFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class KeyedFamilyRootCandidate(ClassLineWitnessCandidate):
-    family_base_name: str
-    registry_key_attr_name: str
-    lookup_method_name: str
-    lookup_style: RegistryLookupStyle
-    error_type_name: str | None
-    abstract_hook_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class RepeatedKeyedFamilyCandidate:
     family_base_name: str
     lookup_style: RegistryLookupStyle
-    roots: tuple[KeyedFamilyRootCandidate, ...]
+    roots: tuple[CompactRepeatedKeyedFamilyRoot, ...]
+
+    @classmethod
+    def from_roots(
+        cls,
+        roots: Sequence[CompactRepeatedKeyedFamilyRoot],
+        *,
+        minimum_root_count: int,
+    ) -> tuple[Self, ...]:
+        grouped: dict[
+            tuple[str, RegistryLookupStyle],
+            list[CompactRepeatedKeyedFamilyRoot],
+        ] = defaultdict(list)
+        for root in roots:
+            grouped[root.family_base_name, root.lookup_style].append(root)
+        return tuple(
+            cls(
+                family_base_name=family_base_name,
+                lookup_style=lookup_style,
+                roots=sorted_tuple(
+                    items,
+                    key=lambda item: (item.file_path, item.line, item.class_name),
+                ),
+            )
+            for (family_base_name, lookup_style), items in sorted(grouped.items())
+            if len(items) >= minimum_root_count
+        )
 
 
 @dataclass(frozen=True)

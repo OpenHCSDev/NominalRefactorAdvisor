@@ -5698,9 +5698,12 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
     assert collect_cycles_calls[-1] is True
 
 
-def test_compact_repeated_keyed_family_matches_legacy_ast_candidates(
+def test_compact_repeated_keyed_family_preserves_grouping_semantics(
     tmp_path: Path,
 ) -> None:
+    assert not hasattr(base_detectors, "KeyedFamilyRootCandidate")
+    assert not hasattr(base_detectors, "_repeated_keyed_family_candidates")
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     for module_name, class_name, key_name in (
@@ -5732,12 +5735,31 @@ def test_compact_repeated_keyed_family_matches_legacy_ast_candidates(
         )
     )
 
-    assert systemic_detectors._compact_repeated_keyed_family_candidates(
-        projections,
-        config,
-    ) == systemic_detectors._repeated_keyed_family_candidates(
-        list(modules),
-        config,
+    candidates = (
+        systemic_detectors.RepeatedKeyedFamilyDetector._candidates_from_compact_projections(
+            projections,
+            config,
+        )
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.family_base_name == "AutoRegisterByClassVar"
+    assert candidate.lookup_style is class_index_module.RegistryLookupStyle.TRY_EXCEPT
+    assert tuple(root.class_name for root in candidate.roots) == (
+        "AlphaPolicy",
+        "BetaPolicy",
+        "GammaPolicy",
+    )
+    assert tuple(root.registry_key_attr_name for root in candidate.roots) == (
+        "alpha",
+        "beta",
+        "gamma",
+    )
+    assert tuple(root.lookup_method_name for root in candidate.roots) == (
+        "for_alpha",
+        "for_beta",
+        "for_gamma",
     )
 
 
