@@ -6056,6 +6056,18 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
 def test_compact_nominal_authority_candidates_match_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
+    for deleted_shadow in (
+        "_normalized_authority_name",
+        "_is_self_delegate_attribute",
+        "_forwarded_delegate_property_name",
+        "_forwarded_delegate_call",
+        "_call_forwards_parameters",
+        "_forwarded_delegate_member_name",
+        "_pass_through_nominal_wrapper_candidates_for_class",
+        "_pass_through_nominal_wrapper_candidates",
+    ):
+        assert not hasattr(helper_detectors, deleted_shadow)
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "authority.py").write_text(
@@ -6118,20 +6130,33 @@ def test_compact_nominal_authority_candidates_match_legacy_ast_candidates(
     compact_wrapper_candidates = (
         surface_detectors._compact_pass_through_nominal_wrapper_candidates(projections)
     )
-    legacy_wrapper_candidates = (
-        surface_detectors._pass_through_nominal_wrapper_candidates(modules)
-    )
-    assert compact_wrapper_candidates == legacy_wrapper_candidates
+    assert len(compact_wrapper_candidates) == 1
+    wrapper_candidate = compact_wrapper_candidates[0]
+    assert wrapper_candidate.class_name == "JobSpecWrapper"
+    assert wrapper_candidate.delegate_field_name == "delegate"
+    assert wrapper_candidate.delegate_authority_name == "JobSpecBase"
+    assert wrapper_candidate.forwarded_member_names == ("start", "stop")
     wrapper_detector = surface_detectors.PassThroughNominalWrapperDetector()
     assert wrapper_detector._findings_from_compact_projections(projections, config) == [
         wrapper_detector._finding_for_candidate(candidate)
-        for candidate in legacy_wrapper_candidates
+        for candidate in compact_wrapper_candidates
     ]
 
 
-def test_compact_duplicate_nominal_surface_matches_legacy_ast_candidates(
+def test_compact_duplicate_nominal_surface_preserves_semantics(
     tmp_path: Path,
 ) -> None:
+    for deleted_shadow in (
+        "_public_surface_methods",
+        "_self_attribute_names",
+        "_method_flow_roles",
+        "_call_self_attribute_names",
+        "_constructed_delegate_names",
+        "_nominal_authority_surface_nodes",
+        "_duplicate_nominal_authority_surface_candidates",
+    ):
+        assert not hasattr(nominal_surface_detectors, deleted_shadow)
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "authority.py").write_text(
@@ -6162,14 +6187,17 @@ def test_compact_duplicate_nominal_surface_matches_legacy_ast_candidates(
             projections
         )
     )
-    legacy_candidates = (
-        surface_detectors._duplicate_nominal_authority_surface_candidates(modules)
-    )
-
-    assert compact_candidates == legacy_candidates
+    assert len(compact_candidates) == 1
+    candidate = compact_candidates[0]
+    assert candidate.subject_name == "JobShell"
+    assert candidate.authority_name == "JobAuthority"
+    assert candidate.duplicate_class_names == ("JobShell",)
+    assert candidate.name_family == ("name_payload", "source_path")
+    assert candidate.shared_method_names == ("run",)
+    assert candidate.detection_kind == "delegate_construction"
     assert detector._findings_from_compact_projections(
         projections, config
-    ) == detector._findings_for_candidates(legacy_candidates, config)
+    ) == detector._findings_for_candidates(compact_candidates, config)
 
 
 def test_nominal_surface_indexed_components_match_axis_graph() -> None:

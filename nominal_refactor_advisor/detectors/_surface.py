@@ -33,7 +33,6 @@ from ._runtime import (
 from ._substrate_support import _IGNORED_ANCESTOR_NAMES
 from ._nominal_authority_surface import (
     _compact_duplicate_nominal_authority_surface_candidates,
-    _duplicate_nominal_authority_surface_candidates,
 )
 
 

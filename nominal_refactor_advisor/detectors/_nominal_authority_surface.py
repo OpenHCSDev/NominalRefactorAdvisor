@@ -2,29 +2,17 @@
 
 from __future__ import annotations
 
-import ast
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Sequence, TypeAlias
 
 from ..class_index import CompactModuleClassProjection
 from ..semantic_algebra import FiniteAxisSystem
 from ._base import (
     DuplicateNominalAuthoritySurfaceCandidate,
     NominalAuthorityShape,
-    ParsedModule,
 )
-from ._helpers import (
-    CLASS_NODE_AUTHORITY,
-    HELPER_SYNTAX_PROJECTION_AUTHORITY,
-    _is_dataclass_class,
-    _semantic_role_names_for_fields,
-    _walk_nodes,
-    name_id,
-)
-
-SurfaceMethodNodes: TypeAlias = tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
+from ._helpers import _semantic_role_names_for_fields
 
 
 @dataclass(frozen=True)
@@ -46,127 +34,6 @@ class _NominalAuthoritySurfaceNode:
     @property
     def line(self) -> int:
         return self.shape.line
-
-
-def _public_surface_methods(node: ast.ClassDef) -> SurfaceMethodNodes:
-    return tuple(
-        statement
-        for statement in node.body
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not statement.name.startswith("_")
-    )
-
-
-def _self_attribute_names(node: ast.AST) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                current.attr
-                for current in _walk_nodes(node)
-                if isinstance(current, ast.Attribute)
-                and isinstance(current.value, ast.Name)
-                and current.value.id == "self"
-            }
-        )
-    )
-
-
-def _method_flow_roles(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, tuple[str, ...]]:
-    return (
-        method.name,
-        _semantic_role_names_for_fields(_self_attribute_names(method)),
-    )
-
-
-def _call_self_attribute_names(call: ast.Call) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                current.attr
-                for argument in (
-                    *call.args,
-                    *(keyword.value for keyword in call.keywords),
-                )
-                for current in _walk_nodes(argument)
-                if isinstance(current, ast.Attribute)
-                and isinstance(current.value, ast.Name)
-                and current.value.id == "self"
-            }
-        )
-    )
-
-
-def _constructed_delegate_names(
-    methods: SurfaceMethodNodes,
-    known_class_names: frozenset[str],
-) -> tuple[str, ...]:
-    delegate_names: set[str] = set()
-    for method in methods:
-        for call in _walk_nodes(method):
-            if not isinstance(call, ast.Call):
-                continue
-            callee_name = name_id(call.func)
-            if callee_name is None or callee_name not in known_class_names:
-                continue
-            if len(_call_self_attribute_names(call)) < 2:
-                continue
-            delegate_names.add(callee_name)
-    return tuple(sorted(delegate_names))
-
-
-def _nominal_authority_surface_nodes(
-    modules: Sequence[ParsedModule],
-) -> tuple[_NominalAuthoritySurfaceNode, ...]:
-    class_records: list[tuple[ParsedModule, ast.ClassDef]] = []
-    for module in modules:
-        for node in _walk_nodes(module.module):
-            if isinstance(node, ast.ClassDef):
-                class_records.append((module, node))
-    known_class_names = frozenset(node.name for _, node in class_records)
-
-    nodes: list[_NominalAuthoritySurfaceNode] = []
-    for module, node in class_records:
-        typed_fields = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
-        field_names = tuple(name for name, _ in typed_fields)
-        if len(field_names) < 2:
-            continue
-        methods = _public_surface_methods(node)
-        public_method_names = tuple(sorted(method.name for method in methods))
-        if not public_method_names:
-            continue
-        method_flow_roles = tuple(
-            sorted(
-                flow for method in methods if (flow := _method_flow_roles(method))[1]
-            )
-        )
-        if not method_flow_roles:
-            continue
-        nodes.append(
-            _NominalAuthoritySurfaceNode(
-                shape=NominalAuthorityShape(
-                    file_path=str(module.path),
-                    class_name=node.name,
-                    line=node.lineno,
-                    declared_base_names=CLASS_NODE_AUTHORITY.declared_base_names(node),
-                    ancestor_names=(),
-                    field_names=field_names,
-                    field_type_map=typed_fields,
-                    method_names=public_method_names,
-                    is_abstract=CLASS_NODE_AUTHORITY.is_abstract(node),
-                    is_dataclass_family=_is_dataclass_class(node),
-                ),
-                field_roles=_semantic_role_names_for_fields(field_names),
-                public_method_names=public_method_names,
-                method_flow_roles=method_flow_roles,
-                constructed_delegate_names=_constructed_delegate_names(
-                    methods, known_class_names
-                ),
-            )
-        )
-
-    return _surface_nodes_with_ancestors(tuple(nodes))
 
 
 def _surface_nodes_with_ancestors(
@@ -435,14 +302,6 @@ def _component_duplicate_nominal_authority_surface_candidates(
             )
         )
     return tuple(candidates)
-
-
-def _duplicate_nominal_authority_surface_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[DuplicateNominalAuthoritySurfaceCandidate, ...]:
-    return _duplicate_nominal_authority_surface_candidates_from_nodes(
-        _nominal_authority_surface_nodes(modules)
-    )
 
 
 def _compact_duplicate_nominal_authority_surface_candidates(
