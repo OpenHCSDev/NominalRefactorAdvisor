@@ -27914,38 +27914,36 @@ class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeSt
     """Route class-family semantic mirrors through AutoRegisterMeta recipes."""
 
     metric_type = RegistrationMetrics
-    manual_registration_order: ClassVar[int] = 20
 
     def recipe_for_finding(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        for builder in ContextualSemanticMirrorRecipeBuilder.builders_from_context(
-            finding,
-            context,
-            before_order=self.manual_registration_order,
-        ):
-            recipe = builder.recipe()
-            if recipe is not None:
-                return recipe
+        contextual_recipes = tuple(
+            recipe
+            for builder in ContextualSemanticMirrorRecipeBuilder.builders_from_context(
+                finding,
+                context,
+            )
+            if (recipe := builder.recipe()) is not None
+        )
         manual_recipe = (
             ManualClassRegistrationFindingRecipeSynthesizer().recipe_for_finding(
                 finding,
                 context,
             )
         )
-        if manual_recipe is not None:
-            return manual_recipe
-        for builder in ContextualSemanticMirrorRecipeBuilder.builders_from_context(
-            finding,
-            context,
-            at_or_after_order=self.manual_registration_order,
-        ):
-            recipe = builder.recipe()
-            if recipe is not None:
-                return recipe
-        return None
+        recipes = (
+            *contextual_recipes,
+            *((manual_recipe,) if manual_recipe is not None else ()),
+        )
+        if len(recipes) > 1:
+            raise ValueError(
+                "Registration mirror finding matched multiple recipe declarations: "
+                f"{tuple(recipe.recipe_id for recipe in recipes)!r}"
+            )
+        return recipes[0] if recipes else None
 
     def action_keys_for_finding(
         self,
@@ -28093,21 +28091,22 @@ class ContextualSemanticMirrorRecipeBuilder(
     __skip_if_no_key__ = True
 
     registry_key_suffix: ClassVar[str] = "RecipeBuilder"
-    registry_order: ClassVar[int] = 100
     finding: RefactorFinding
     missing_context_rejection: ClassVar[str]
 
     @classmethod
-    def ordered_builder_types(
+    def builder_types(
         cls,
     ) -> tuple[type["ContextualSemanticMirrorRecipeBuilder"], ...]:
-        return tuple(
-            builder_type
-            for builder_type in sorted(
-                cls.__registry__.values(),
-                key=lambda item: (item.registry_order, item.__name__),
-            )
-            if issubclass(builder_type, cls) and builder_type is not cls
+        """Return registered declarations in stable presentation order."""
+
+        return sorted_tuple(
+            (
+                builder_type
+                for builder_type in cls.__registry__.values()
+                if issubclass(builder_type, cls) and builder_type is not cls
+            ),
+            key=cls.builder_registry_key,
         )
 
     @classmethod
@@ -28115,16 +28114,10 @@ class ContextualSemanticMirrorRecipeBuilder(
         cls,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None,
-        *,
-        before_order: int | None = None,
-        at_or_after_order: int | None = None,
     ) -> tuple["ContextualSemanticMirrorRecipeBuilder", ...]:
         return tuple(
             builder
-            for builder_type in cls.ordered_builder_types()
-            if before_order is None or builder_type.registry_order < before_order
-            if at_or_after_order is None
-            or builder_type.registry_order >= at_or_after_order
+            for builder_type in cls.builder_types()
             if (builder := builder_type.from_context(finding, context)) is not None
         )
 
@@ -28139,7 +28132,7 @@ class ContextualSemanticMirrorRecipeBuilder(
                 f"{cls.builder_registry_key(builder_type)}: "
                 f"{builder_type.rejection_reason_from_context(finding, context)}"
             )
-            for builder_type in cls.ordered_builder_types()
+            for builder_type in cls.builder_types()
         )
 
     @classmethod
@@ -28227,7 +28220,6 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
 ):
     """Build recipes for literal subclass collections that mirror a class family."""
 
-    registry_order = 10
     missing_context_rejection = (
         "class-family collection derivation requires a source selector context"
     )
@@ -28445,7 +28437,6 @@ class AutoregisterInstanceViewRecipeSeed(AutoregisterInstanceViewRecipeSeedDraft
 class AutoregisterInstanceViewRecipeBuilder(ContextualSemanticMirrorRecipeBuilder):
     """Build recipes for constructor-valued views over AutoRegisterMeta families."""
 
-    registry_order = 30
     missing_context_rejection = (
         "instance-view derivation requires a source selector context"
     )

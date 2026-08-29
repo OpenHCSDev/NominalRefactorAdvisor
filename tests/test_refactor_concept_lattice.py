@@ -223,6 +223,10 @@ def test_registered_mapping_and_unpack_cases_publish_no_numeric_precedence() -> 
         codemod.TupleReturnUnpackValueMatcher,
         *codemod.TupleReturnUnpackValueMatcher.__registry__.values(),
     )
+    contextual_registration_declarations = (
+        codemod.ContextualSemanticMirrorRecipeBuilder,
+        *codemod.ContextualSemanticMirrorRecipeBuilder.__registry__.values(),
+    )
 
     assert all(
         not hasattr(declaration, "registration_order")
@@ -231,6 +235,14 @@ def test_registered_mapping_and_unpack_cases_publish_no_numeric_precedence() -> 
     assert all(
         not hasattr(declaration, "registry_order")
         for declaration in unpack_declarations
+    )
+    assert all(
+        not hasattr(declaration, "registry_order")
+        for declaration in contextual_registration_declarations
+    )
+    assert not hasattr(
+        codemod.RegistrationSemanticMirrorRecipeStrategy,
+        "manual_registration_order",
     )
 
 
