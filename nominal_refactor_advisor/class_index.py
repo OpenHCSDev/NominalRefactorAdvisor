@@ -417,6 +417,49 @@ class RegistryLookupStyle(StrEnum):
     MEMBERSHIP_GUARD = "membership_guard"
 
 
+class SelectionGuardKind(StrEnum):
+    EMPTY = "empty"
+    AMBIGUOUS = "ambiguous"
+    NOT_EXACTLY_ONE = "not_exactly_one"
+
+    @classmethod
+    def from_node(
+        cls,
+        node: ast.AST,
+        match_name: str,
+    ) -> "SelectionGuardKind | None":
+        if (
+            isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.Not)
+            and isinstance(node.operand, ast.Name)
+            and node.operand.id == match_name
+        ):
+            return cls.EMPTY
+        if not (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and len(node.comparators) == 1
+            and isinstance(node.left, ast.Call)
+            and isinstance(node.left.func, ast.Name)
+            and node.left.func.id == "len"
+            and len(node.left.args) == 1
+            and isinstance(node.left.args[0], ast.Name)
+            and node.left.args[0].id == match_name
+            and isinstance(node.comparators[0], ast.Constant)
+            and isinstance(node.comparators[0].value, int)
+        ):
+            return None
+        operator = node.ops[0]
+        comparator = node.comparators[0].value
+        if isinstance(operator, ast.NotEq) and comparator == 1:
+            return cls.NOT_EXACTLY_ONE
+        if isinstance(operator, ast.Gt) and comparator == 1:
+            return cls.AMBIGUOUS
+        if isinstance(operator, ast.Eq) and comparator == 0:
+            return cls.EMPTY
+        return None
+
+
 @dataclass(frozen=True)
 class ClsRegistryMembership:
     operator_type: type[ast.cmpop]
@@ -1273,12 +1316,15 @@ def _compact_predicate_selected_methods(
             continue
         match_name, predicate_name, context_name = shape
         guard_kinds = {
-            _compact_selection_guard_kind(candidate.test, match_name)
+            SelectionGuardKind.from_node(candidate.test, match_name)
             for candidate in _trim_leading_docstring(list(statement.body))
             if isinstance(candidate, ast.If)
         }
         if not (
-            "not_exactly_one" in guard_kinds or ({"empty", "ambiguous"} <= guard_kinds)
+            SelectionGuardKind.NOT_EXACTLY_ONE in guard_kinds
+            or (
+                {SelectionGuardKind.EMPTY, SelectionGuardKind.AMBIGUOUS} <= guard_kinds
+            )
         ):
             continue
         if not any(
@@ -1358,39 +1404,6 @@ def _compact_registered_type_match_shape(
         ):
             continue
         return match_name, predicate.func.attr, predicate.args[0].id
-    return None
-
-
-def _compact_selection_guard_kind(node: ast.AST, match_name: str) -> str | None:
-    if (
-        isinstance(node, ast.UnaryOp)
-        and isinstance(node.op, ast.Not)
-        and isinstance(node.operand, ast.Name)
-        and node.operand.id == match_name
-    ):
-        return "empty"
-    if not (
-        isinstance(node, ast.Compare)
-        and len(node.ops) == 1
-        and len(node.comparators) == 1
-        and isinstance(node.left, ast.Call)
-        and isinstance(node.left.func, ast.Name)
-        and node.left.func.id == "len"
-        and len(node.left.args) == 1
-        and isinstance(node.left.args[0], ast.Name)
-        and node.left.args[0].id == match_name
-        and isinstance(node.comparators[0], ast.Constant)
-        and isinstance(node.comparators[0].value, int)
-    ):
-        return None
-    operator = node.ops[0]
-    comparator = node.comparators[0].value
-    if isinstance(operator, ast.NotEq) and comparator == 1:
-        return "not_exactly_one"
-    if isinstance(operator, ast.Gt) and comparator == 1:
-        return "ambiguous"
-    if isinstance(operator, ast.Eq) and comparator == 0:
-        return "empty"
     return None
 
 

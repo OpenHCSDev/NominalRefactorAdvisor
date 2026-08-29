@@ -58,6 +58,7 @@ from ..class_index import (
     CompactClassFamilyIndex,
     CompactIndexedClass,
     CompactModuleClassProjection,
+    SelectionGuardKind,
     build_compact_class_family_index,
     has_complete_concrete_mro_composite,
 )
@@ -5288,104 +5289,6 @@ def _is_selected_match_subscript(node: ast.AST, match_var_name: str) -> bool:
     )
 
 
-@dataclass(frozen=True)
-class _SelectionGuardContext:
-    node: ast.AST
-    match_var_name: str
-
-
-class _SelectionGuardKindStep(RegisteredEffectStep):
-    pass
-
-
-class _UnaryEmptySelectionGuardStep(
-    _SelectionGuardKindStep,
-    GuardedEffectStep[_SelectionGuardContext, str],
-):
-    step_id = "unary_empty_selection_guard"
-    registration_order = 10
-
-    def project(self, value: _SelectionGuardContext) -> str | None:
-        return _unary_empty_selection_guard_kind(value)
-
-
-class _LengthCompareSelectionGuardStep(
-    _SelectionGuardKindStep,
-    GuardedEffectStep[_SelectionGuardContext, str],
-):
-    step_id = "length_compare_selection_guard"
-    registration_order = 20
-
-    def project(self, value: _SelectionGuardContext) -> str | None:
-        return _length_compare_selection_guard_kind(value)
-
-
-def _unary_empty_selection_guard_kind(context: _SelectionGuardContext) -> str | None:
-    unary = as_ast(context.node, ast.UnaryOp)
-    if (
-        unary is None
-        or not isinstance(unary.op, ast.Not)
-        or name_id(unary.operand) != context.match_var_name
-    ):
-        return None
-    return "empty"
-
-
-def _selection_len_arg_name(compare: ast.Compare) -> str | None:
-    length_call = as_ast(compare.left, ast.Call)
-    if length_call is None or _ast_terminal_name(length_call.func) != "len":
-        return None
-    return name_id(single_item(length_call.args))
-
-
-def _selection_int_comparator(compare: ast.Compare) -> int | None:
-    comparator = single_ast(compare.comparators, ast.Constant)
-    if comparator is None:
-        return None
-    return comparator.value if isinstance(comparator.value, int) else None
-
-
-def _selection_compare_operator(compare: ast.Compare) -> ast.cmpop | None:
-    return single_item(compare.ops)
-
-
-_SELECTION_LENGTH_GUARD_KINDS: tuple[(tuple[type[ast.cmpop], int, str], ...)] = (
-    (ast.NotEq, 1, "not_exactly_one"),
-    (ast.Gt, 1, "ambiguous"),
-    (ast.Eq, 0, "empty"),
-)
-
-
-def _length_compare_selection_guard_kind(
-    context: _SelectionGuardContext,
-) -> str | None:
-    compare = as_ast(context.node, ast.Compare)
-    if compare is None or _selection_len_arg_name(compare) != context.match_var_name:
-        return None
-    operator = _selection_compare_operator(compare)
-    comparator_value = _selection_int_comparator(compare)
-    return next(
-        (
-            guard_kind
-            for operator_type, expected_value, guard_kind in _SELECTION_LENGTH_GUARD_KINDS
-            if isinstance(operator, operator_type)
-            and comparator_value == expected_value
-        ),
-        None,
-    )
-
-
-def _selection_guard_kind(node: ast.AST, match_var_name: str) -> str | None:
-    return cast(
-        str | None,
-        Maybe.of(_SelectionGuardContext(node, match_var_name))
-        .bind(
-            FirstSuccessfulEffectStep(registered_effect_steps(_SelectionGuardKindStep))
-        )
-        .unwrap_or_none(),
-    )
-
-
 def _predicate_selected_concrete_family_candidates(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> tuple[PredicateSelectedConcreteFamilyCandidate, ...]:
@@ -5417,12 +5320,13 @@ def _predicate_selected_concrete_family_candidates(
                 continue
             match_var_name, predicate_method_name, context_param_name = selection_shape
             guard_kinds = {
-                _selection_guard_kind(statement.test, match_var_name)
+                SelectionGuardKind.from_node(statement.test, match_var_name)
                 for statement in _trim_docstring_body(list(method.body))
                 if isinstance(statement, ast.If)
             }
-            has_exact_guard = "not_exactly_one" in guard_kinds or (
-                "empty" in guard_kinds and "ambiguous" in guard_kinds
+            has_exact_guard = SelectionGuardKind.NOT_EXACTLY_ONE in guard_kinds or (
+                SelectionGuardKind.EMPTY in guard_kinds
+                and SelectionGuardKind.AMBIGUOUS in guard_kinds
             )
             if not has_exact_guard:
                 continue

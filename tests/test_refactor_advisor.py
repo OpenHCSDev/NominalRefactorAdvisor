@@ -79,6 +79,7 @@ from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import (
     RegistryLookupShape,
     RegistryLookupStyle,
+    SelectionGuardKind,
     build_class_family_index,
 )
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
@@ -19432,6 +19433,40 @@ def test_detects_predicate_selected_concrete_family(tmp_path: Path) -> None:
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "__key_extractor__" in (finding.scaffold or "")
     assert "cls.__registry__.values()" in (finding.scaffold or "")
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_kind"),
+    (
+        ("not matches", SelectionGuardKind.EMPTY),
+        ("len(matches) == 0", SelectionGuardKind.EMPTY),
+        ("len(matches) > 1", SelectionGuardKind.AMBIGUOUS),
+        ("len(matches) != 1", SelectionGuardKind.NOT_EXACTLY_ONE),
+        ("len(other) != 1", None),
+    ),
+)
+def test_selection_guard_kind_owns_full_and_compact_guard_syntax(
+    expression: str,
+    expected_kind: SelectionGuardKind | None,
+) -> None:
+    node = ast.parse(expression, mode="eval").body
+
+    assert SelectionGuardKind.from_node(node, "matches") is expected_kind
+
+
+def test_selection_guard_kind_has_no_parallel_step_or_compact_authority() -> None:
+    removed_step_names = (
+        "_SelectionGuardContext",
+        "_SelectionGuardKindStep",
+        "_UnaryEmptySelectionGuardStep",
+        "_LengthCompareSelectionGuardStep",
+        "_selection_guard_kind",
+    )
+
+    assert all(
+        not hasattr(helper_detectors, name) for name in removed_step_names
+    )
+    assert not hasattr(class_index_module, "_compact_selection_guard_kind")
 
 
 def test_detects_semantic_inheritance_family_missing_membership_ssot(
