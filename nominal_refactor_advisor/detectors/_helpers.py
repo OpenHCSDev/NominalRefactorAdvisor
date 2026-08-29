@@ -6471,56 +6471,25 @@ def _registered_surface_roots(node: ast.AST) -> tuple[str, tuple[str, ...]] | No
     return (accessor_name, root_names)
 
 
-class _RegisteredUnionSurfaceSourceStep(RegisteredEffectStep):
-    pass
+@dataclass(frozen=True)
+class _RegisteredUnionSurfaceSource:
+    owner_name: str
+    value: ast.AST
+    line: int
 
-
-class _RegisteredUnionFunctionSourceStep(
-    _RegisteredUnionSurfaceSourceStep,
-    GuardedEffectStep[ast.AST, tuple[str, ast.AST, int]],
-):
-    step_id = "registered_union_function_source"
-    registration_order = 10
-
-    def accepts(self, value: ast.AST) -> bool:
-        return isinstance(value, (ast.FunctionDef, ast.AsyncFunctionDef))
-
-    def project(self, value: ast.AST) -> tuple[str, ast.AST, int] | None:
-        function = cast(NamedFunctionNode, value)
-        for statement in _trim_docstring_body(function.body):
-            if isinstance(statement, ast.For):
-                return function.name, statement.iter, statement.lineno
-            if isinstance(statement, ast.Assign):
-                return function.name, statement.value, statement.lineno
-        return None
-
-
-class _RegisteredUnionAssignmentSourceStep(
-    _RegisteredUnionSurfaceSourceStep,
-    AstTypedEffectStep[ast.Assign, tuple[str, ast.AST, int]],
-):
-    step_id = "registered_union_assignment_source"
-    registration_order = 20
-    node_type = ast.Assign
-
-    def project_ast(self, value: ast.Assign) -> tuple[str, ast.AST, int] | None:
-        target_name = name_id(single_item(value.targets))
-        return None if target_name is None else (target_name, value.value, value.lineno)
-
-
-def _registered_union_surface_source(
-    node: ast.AST,
-) -> tuple[str, ast.AST, int] | None:
-    return cast(
-        tuple[str, ast.AST, int] | None,
-        Maybe.of(node)
-        .bind(
-            FirstSuccessfulEffectStep(
-                registered_effect_steps(_RegisteredUnionSurfaceSourceStep)
-            )
-        )
-        .unwrap_or_none(),
-    )
+    @classmethod
+    def from_node(cls, node: ast.AST) -> "_RegisteredUnionSurfaceSource | None":
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for statement in _trim_docstring_body(node.body):
+                if isinstance(statement, ast.For):
+                    return cls(node.name, statement.iter, statement.lineno)
+                if isinstance(statement, ast.Assign):
+                    return cls(node.name, statement.value, statement.lineno)
+            return None
+        if not isinstance(node, ast.Assign):
+            return None
+        target_name = name_id(single_item(node.targets))
+        return None if target_name is None else cls(target_name, node.value, node.lineno)
 
 
 def _registered_union_surface_candidates_for_node(
@@ -6528,11 +6497,10 @@ def _registered_union_surface_candidates_for_node(
     node: ast.AST,
     class_defs_by_name: dict[str, ast.ClassDef],
 ) -> Iterable[RegisteredUnionSurfaceCandidate]:
-    source = _registered_union_surface_source(node)
+    source = _RegisteredUnionSurfaceSource.from_node(node)
     if source is None:
         return
-    owner_name, value, line = source
-    registered_surface = _registered_surface_roots(value)
+    registered_surface = _registered_surface_roots(source.value)
     if registered_surface is None:
         return
     accessor_name, root_names = registered_surface
@@ -6556,8 +6524,8 @@ def _registered_union_surface_candidates_for_node(
         return
     yield RegisteredUnionSurfaceCandidate(
         file_path=str(module.path),
-        line=line,
-        owner_name=owner_name,
+        line=source.line,
+        owner_name=source.owner_name,
         accessor_name=accessor_name,
         root_names=root_names,
     )

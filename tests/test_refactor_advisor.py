@@ -26103,6 +26103,30 @@ def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "__key_extractor__" in (finding.scaffold or "")
     assert "UnifiedRegistryRoot.__registry__.values()" in (finding.scaffold or "")
+    removed_step_names = (
+        "_RegisteredUnionSurfaceSourceStep",
+        "_RegisteredUnionFunctionSourceStep",
+        "_RegisteredUnionAssignmentSourceStep",
+        "_registered_union_surface_source",
+    )
+    assert all(
+        not hasattr(helper_detectors, name) for name in removed_step_names
+    )
+
+
+def test_registered_union_surface_source_accepts_named_assignment() -> None:
+    assignment = ast.parse(
+        "ALL_PLUGINS = ("
+        "PluginRegistry.registered_plugins() + "
+        "HandlerRegistry.registered_plugins()"
+        ")\n"
+    ).body[0]
+
+    assert isinstance(assignment, ast.Assign)
+    source = helper_detectors._RegisteredUnionSurfaceSource.from_node(assignment)
+    assert source is not None
+    assert source.owner_name == "ALL_PLUGINS"
+    assert source.value is assignment.value
 
 
 def test_detects_concrete_type_union_annotation_contract(tmp_path: Path) -> None:
