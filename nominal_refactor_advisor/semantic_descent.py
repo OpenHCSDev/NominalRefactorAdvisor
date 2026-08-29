@@ -1644,21 +1644,47 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     foreign_qualified_attribute_token_reference_admitted = True
 
+    @staticmethod
+    def call_projection_is_inadmissible(
+        context: "SemanticAuthorityProjectionResolutionContext",
+        candidate: SemanticMirrorEdgeCandidate,
+    ) -> bool:
+        matched_tokens = frozenset(candidate.match.tokens)
+        matched_token_roles = frozenset(
+            token.role
+            for token in candidate.projection.tokens
+            if token.value in matched_tokens
+        )
+        has_matched_class_reference = (
+            context.projection_semantics.has_matched_class_reference(
+                candidate.projection,
+                candidate.matched_facts,
+            )
+        )
+        return (
+            candidate.projection.kind is PresentationProjectionKind.CALL_LITERAL
+            and (
+                (
+                    context.dataclass_descent.projection_constructs_any_dataclass_authority(
+                        candidate.projection,
+                    )
+                    and not has_matched_class_reference
+                )
+                or (
+                    candidate.match.coverage_ratio < 1.0
+                    and matched_token_roles
+                    == frozenset((PresentationTokenRole.CALL_TARGET,))
+                    and has_matched_class_reference
+                )
+            )
+        )
+
     def edge_is_admissible(
         self,
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
-        if (
-            candidate.projection.kind is PresentationProjectionKind.CALL_LITERAL
-            and context.dataclass_descent.projection_constructs_any_dataclass_authority(
-                candidate.projection,
-            )
-            and not context.projection_semantics.has_matched_class_reference(
-                candidate.projection,
-                candidate.matched_facts,
-            )
-        ):
+        if self.call_projection_is_inadmissible(context, candidate):
             return False
         if (
             context.fact_specificity.matched_facts_are_reused_roles(

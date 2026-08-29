@@ -2800,6 +2800,67 @@ def test_semantic_descent_resolves_bound_constructor_values_to_class_family(
     )
 
 
+def test_partial_class_constructor_composition_is_not_a_family_mirror(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from abc import ABC, abstractmethod\n"
+        "\n"
+        "class ValueCodec(ABC):\n"
+        "    @abstractmethod\n"
+        "    def read(self):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "class StringCodec(ValueCodec):\n"
+        "    def read(self):\n"
+        "        return 'string'\n"
+        "\n"
+        "class IntegerCodec(ValueCodec):\n"
+        "    def read(self):\n"
+        "        return 'integer'\n"
+        "\n"
+        "class BooleanCodec(ValueCodec):\n"
+        "    def read(self):\n"
+        "        return 'boolean'\n"
+        "\n"
+        "class ObjectCodec(ValueCodec):\n"
+        "    def read(self):\n"
+        "        return 'object'\n"
+        "\n"
+        "class BindingSet:\n"
+        "    @classmethod\n"
+        "    def from_specs(cls, *specs):\n"
+        "        return cls()\n"
+        "\n"
+        "class CodecCatalog:\n"
+        "    def __init__(self, codecs):\n"
+        "        self.codecs = codecs\n"
+        "\n"
+        "PLAN_BINDINGS = BindingSet.from_specs(\n"
+        "    ('name', StringCodec()),\n"
+        "    ('count', IntegerCodec()),\n"
+        "    ('enabled', BooleanCodec()),\n"
+        ")\n"
+        "ALL_CODECS = CodecCatalog((\n"
+        "    StringCodec(), IntegerCodec(), BooleanCodec(), ObjectCodec(),\n"
+        "))\n",
+    )
+
+    graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+    codec_authority = next(
+        authority for authority in graph.authorities if authority.name == "ValueCodec"
+    )
+    mirrored_projection_labels = {
+        graph.projection_catalog.projection_for_edge(certificate.edge).label
+        for certificate in graph.missing_descent_certificates
+        if certificate.edge.authority_id == codec_authority.authority_id
+    }
+
+    assert "PLAN_BINDINGS" not in mirrored_projection_labels
+    assert "ALL_CODECS" in mirrored_projection_labels
+
+
 def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
     tmp_path: Path,
 ) -> None:
