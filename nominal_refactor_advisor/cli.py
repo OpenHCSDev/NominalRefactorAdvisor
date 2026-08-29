@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import multiprocessing
 import os
 import sys
 from abc import ABC, abstractmethod
@@ -6334,6 +6335,8 @@ class CliScanDeadlineRequest:
     def terminate_process(self, error: ScanDeadlineExceeded) -> None:
         """Publish the incomplete result and terminate without unwinding workers."""
 
+        for child in multiprocessing.active_children():
+            child.terminate()
         self.emit_timeout(error)
         sys.stdout.flush()
         sys.stderr.flush()

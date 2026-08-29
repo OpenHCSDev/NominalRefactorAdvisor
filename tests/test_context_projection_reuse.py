@@ -319,6 +319,14 @@ def test_process_cli_hard_exits_after_publishing_deadline_payload(
     deadline.stage = "test_projection"
     error = ScanDeadlineExceeded(deadline)
     exit_codes: list[int] = []
+    terminated_children: list[str] = []
+
+    class ActiveChild:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def terminate(self) -> None:
+            terminated_children.append(self.name)
 
     def raise_deadline() -> int:
         raise error
@@ -330,6 +338,11 @@ def test_process_cli_hard_exits_after_publishing_deadline_payload(
     monkeypatch.setattr(cli_module, "_main_without_deadline", raise_deadline)
     monkeypatch.setattr(cli_module.os, "_exit", hard_exit)
     monkeypatch.setattr(
+        cli_module.multiprocessing,
+        "active_children",
+        lambda: (ActiveChild("alpha"), ActiveChild("beta")),
+    )
+    monkeypatch.setattr(
         sys,
         "argv",
         ["nominal-refactor-advisor", "--json", "sample.py"],
@@ -339,6 +352,7 @@ def test_process_cli_hard_exits_after_publishing_deadline_payload(
         cli_module.process_main()
 
     assert exit_codes == [124]
+    assert terminated_children == ["alpha", "beta"]
     assert json.loads(capsys.readouterr().out)["scan_status"] == {
         "complete": False,
         "deadline_exceeded": True,
