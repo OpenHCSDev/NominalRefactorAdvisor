@@ -38,7 +38,6 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from . import patterns as pattern_declarations
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .assignment_projection import (
     ModuleAssignmentNameProjection,
@@ -200,28 +199,117 @@ class CodemodCandidateOrigin(StrEnum):
     TRAJECTORY_STEP = "trajectory_step"
 
 
-class CodemodAutomationLevel(StrEnum):
-    """How much executable authority the advisor has for a candidate."""
-
-    SAFE_MECHANICAL = "safe_mechanical"
-    SIMULATABLE_REWRITE = "simulatable_rewrite"
-    SEMANTIC_AGENT_REQUIRED = "semantic_agent_required"
-
-
 class CodemodSimulationStatus(StrEnum):
     """Whether a candidate currently has source rewrites that can be simulated."""
 
     REWRITE_PLAN_REQUIRED = "rewrite_plan_required"
     READY_TO_SIMULATE = "ready_to_simulate"
 
+    @classmethod
+    def for_candidate(cls, candidate: "CodemodCandidate") -> "CodemodSimulationStatus":
+        if candidate.planned_rewrites:
+            return cls.READY_TO_SIMULATE
+        return cls.REWRITE_PLAN_REQUIRED
+
 
 class CodemodActionability(StrEnum):
     """Agent-facing implementation posture for a codemod candidate."""
 
-    SAFE_MECHANICAL = "safe_mechanical"
-    SIMULATABLE_REWRITE = "simulatable_rewrite"
-    SEMANTIC_AGENT_REFACTOR = "semantic_agent_refactor"
-    SEMANTIC_UNCERTAINTY_REVIEW = "semantic_uncertainty_review"
+    def __new__(
+        cls,
+        value: str,
+        unplanned_message: str,
+        ready_message: str,
+    ) -> "CodemodActionability":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._unplanned_message = unplanned_message
+        member._ready_message = ready_message
+        return member
+
+    SAFE_MECHANICAL = (
+        "safe_mechanical",
+        "Safe mechanical rewrite is available after reviewing the diff.",
+        "Safe mechanical rewrite is available after reviewing the diff.",
+    )
+    SIMULATABLE_REWRITE = (
+        "simulatable_rewrite",
+        "A caller-supplied semantic rewrite plan is available: simulate it, "
+        "inspect the diff, and apply only after the planned authority boundary "
+        "matches the source evidence.",
+        "A caller-supplied semantic rewrite plan is available: simulate it, "
+        "inspect the diff, and apply only after the planned authority boundary "
+        "matches the source evidence.",
+    )
+    SEMANTIC_AGENT_REFACTOR = (
+        "semantic_agent_refactor",
+        "Confidence is sufficient: inspect the source-index targets, design the "
+        "semantic authority boundary, and implement the refactor; stop only if "
+        "domain semantics are genuinely ambiguous.",
+        "Confidence is sufficient and a rewrite plan exists: simulate the plan, "
+        "inspect the diff, and carry the semantic refactor through unless source "
+        "evidence contradicts it.",
+    )
+    SEMANTIC_UNCERTAINTY_REVIEW = (
+        "semantic_uncertainty_review",
+        "Resolve the finding uncertainty before rewriting: inspect the evidence "
+        "and stop only while the semantic authority boundary is genuinely unclear.",
+        "Resolve the finding uncertainty before rewriting: inspect the evidence "
+        "and stop only while the semantic authority boundary is genuinely unclear.",
+    )
+
+    def agent_action(self, simulation_status: CodemodSimulationStatus) -> str:
+        if simulation_status is CodemodSimulationStatus.READY_TO_SIMULATE:
+            return self._ready_message
+        return self._unplanned_message
+
+
+class CodemodAutomationLevel(StrEnum):
+    """How much executable authority the advisor has for a candidate."""
+
+    def __new__(
+        cls,
+        value: str,
+        default_actionability: CodemodActionability,
+        actionable_actionability: CodemodActionability,
+    ) -> "CodemodAutomationLevel":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._default_actionability = default_actionability
+        member._actionable_actionability = actionable_actionability
+        return member
+
+    SAFE_MECHANICAL = (
+        "safe_mechanical",
+        CodemodActionability.SAFE_MECHANICAL,
+        CodemodActionability.SAFE_MECHANICAL,
+    )
+    SIMULATABLE_REWRITE = (
+        "simulatable_rewrite",
+        CodemodActionability.SIMULATABLE_REWRITE,
+        CodemodActionability.SIMULATABLE_REWRITE,
+    )
+    SEMANTIC_AGENT_REQUIRED = (
+        "semantic_agent_required",
+        CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW,
+        CodemodActionability.SEMANTIC_AGENT_REFACTOR,
+    )
+
+    @property
+    def safe_to_apply(self) -> bool:
+        return self is CodemodAutomationLevel.SAFE_MECHANICAL
+
+    def actionability_for(
+        self,
+        candidate: "CodemodCandidate",
+        simulation_status: CodemodSimulationStatus,
+    ) -> CodemodActionability:
+        if (
+            candidate.has_actionable_semantic_confidence
+            or simulation_status is CodemodSimulationStatus.READY_TO_SIMULATE
+        ):
+            return self._actionable_actionability
+        return self._default_actionability
 
 
 class FindingRecipeSynthesisDisposition(StrEnum):
@@ -941,33 +1029,51 @@ class PlannedSourceRewrite(SourceRewriteDelta):
 
 @dataclass(frozen=True)
 class CodemodStrategy:
-    """Registry metadata for one codemod strategy."""
+    """Execution authority and rationale for one codemod candidate."""
 
     strategy_id: str
     automation_level: CodemodAutomationLevel
     reason: str
-    safe_to_apply: bool = False
-
-    def to_dict(self) -> JsonObject:
-        payload = JsonObject(asdict(self))
-        payload["automation_level"] = self.automation_level.value
-        return payload
-
-
-class CodemodStrategySpec(ABC, metaclass=AutoRegisterMeta):
-    """Nominal declaration for codemod strategy metadata."""
-
-    __registry__: ClassVar[dict[str, type["CodemodStrategySpec"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
-
-    registry_key_suffix: ClassVar[str] = "CodemodStrategySpec"
-    strategy: ClassVar[CodemodStrategy]
 
     @classmethod
-    def build_strategy(cls) -> CodemodStrategy:
-        return cls.strategy
+    def semantic_advisory(cls) -> "CodemodStrategy":
+        return cls(
+            strategy_id="semantic-structural-agent-refactor",
+            automation_level=CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED,
+            reason=(
+                "Semantic structural findings identify source targets and refactor "
+                "shape, but the authority boundary must be designed from source "
+                "semantics rather than generated by a blind mechanical rewrite."
+            ),
+        )
+
+    @property
+    def safe_to_apply(self) -> bool:
+        return self.automation_level.safe_to_apply
+
+    def applicability_for(
+        self, candidate: "CodemodCandidate"
+    ) -> "CodemodApplicability":
+        simulation_status = CodemodSimulationStatus.for_candidate(candidate)
+        return CodemodApplicability(
+            strategy=self,
+            simulation_status=simulation_status,
+            actionability=self.automation_level.actionability_for(
+                candidate,
+                simulation_status,
+            ),
+            target_count=candidate.target_count,
+            planned_rewrite_count=len(candidate.planned_rewrites),
+            confidence_basis=candidate.confidence_basis,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "strategy_id": self.strategy_id,
+            "automation_level": self.automation_level.value,
+            "reason": self.reason,
+            "safe_to_apply": self.safe_to_apply,
+        }
 
 
 @dataclass(frozen=True)
@@ -1242,7 +1348,7 @@ class CodemodApplicability:
 
     @property
     def agent_action(self) -> str:
-        return CodemodAgentActionPolicy.message_for(self)
+        return self.actionability.agent_action(self.simulation_status)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -1256,341 +1362,8 @@ class CodemodApplicability:
         }
 
 
-class CodemodAgentActionPolicy(ABC, metaclass=AutoRegisterMeta):
-    """Registered renderer for one codemod actionability posture."""
-
-    __registry__: ClassVar[dict[CodemodActionability, type["CodemodAgentActionPolicy"]]]
-    __registry__ = {}
-    __registry_key__ = "actionability"
-    __skip_if_no_key__ = True
-
-    actionability: ClassVar[CodemodActionability]
-
-    @classmethod
-    def message_for(cls, applicability: CodemodApplicability) -> str:
-        return cls.__registry__[applicability.actionability].agent_action(applicability)
-
-    @classmethod
-    @abstractmethod
-    def agent_action(cls, applicability: CodemodApplicability) -> str:
-        raise NotImplementedError
-
-
-class StaticCodemodAgentActionPolicy(CodemodAgentActionPolicy):
-    """Policy whose agent action text does not depend on candidate state."""
-
-    message: ClassVar[str]
-
-    @classmethod
-    def agent_action(cls, applicability: CodemodApplicability) -> str:
-        del applicability
-        return cls.message
-
-
-class SafeMechanicalCodemodAgentActionPolicy(StaticCodemodAgentActionPolicy):
-    """Agent action for safe mechanical codemods."""
-
-    actionability = CodemodActionability.SAFE_MECHANICAL
-    message = "Safe mechanical rewrite is available after reviewing the diff."
-
-
-class SimulatableCodemodAgentActionPolicy(StaticCodemodAgentActionPolicy):
-    """Agent action for caller-supplied simulatable rewrites."""
-
-    actionability = CodemodActionability.SIMULATABLE_REWRITE
-    message = (
-        "A caller-supplied semantic rewrite plan is available: simulate it, "
-        "inspect the diff, and apply only after the planned authority boundary "
-        "matches the source evidence."
-    )
-
-
-class SemanticUncertaintyCodemodAgentActionPolicy(StaticCodemodAgentActionPolicy):
-    """Agent action for findings below the semantic rewrite confidence gate."""
-
-    actionability = CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW
-    message = (
-        "Resolve the finding uncertainty before rewriting: inspect the evidence "
-        "and stop only while the semantic authority boundary is genuinely unclear."
-    )
-
-
-class SemanticRefactorCodemodAgentActionPolicy(CodemodAgentActionPolicy):
-    """Agent action for high-confidence semantic refactors."""
-
-    actionability = CodemodActionability.SEMANTIC_AGENT_REFACTOR
-    rewrite_plan_required_message = (
-        "Confidence is sufficient: inspect the source-index targets, design the "
-        "semantic authority boundary, and implement the refactor; stop only if "
-        "domain semantics are genuinely ambiguous."
-    )
-    ready_to_simulate_message = (
-        "Confidence is sufficient and a rewrite plan exists: simulate the plan, "
-        "inspect the diff, and carry the semantic refactor through unless source "
-        "evidence contradicts it."
-    )
-
-    @classmethod
-    def agent_action(cls, applicability: CodemodApplicability) -> str:
-        if (
-            applicability.simulation_status
-            is CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
-        ):
-            return cls.rewrite_plan_required_message
-        return cls.ready_to_simulate_message
-
-
-class SemanticAdvisoryCodemodStrategySpec(CodemodStrategySpec):
-    """Default strategy for semantic findings without executable rewrites."""
-
-    strategy = CodemodStrategy(
-        strategy_id="semantic-structural-agent-refactor",
-        automation_level=CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED,
-        reason=(
-            "Semantic structural findings identify source targets and refactor shape, "
-            "but the authority boundary must be designed from source semantics rather "
-            "than generated by a blind mechanical rewrite."
-        ),
-    )
-
-
-class MixedSemanticAdvisoryCodemodStrategySpec(CodemodStrategySpec):
-    """Strategy for opportunities spanning multiple semantic pattern families."""
-
-    strategy = CodemodStrategy(
-        strategy_id="mixed-semantic-structural-agent-refactor",
-        automation_level=CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED,
-        reason=(
-            "The opportunity spans multiple semantic pattern families, so the advisor "
-            "requires the agent to inspect the shared authority boundary and supply an "
-            "explicit rewrite plan."
-        ),
-    )
-
-
-SEMANTIC_ADVISORY_CODEMOD_STRATEGY = (
-    SemanticAdvisoryCodemodStrategySpec.build_strategy()
-)
-MIXED_SEMANTIC_ADVISORY_CODEMOD_STRATEGY = (
-    MixedSemanticAdvisoryCodemodStrategySpec.build_strategy()
-)
-
-
-class CodemodStrategyRegistry:
-    """Lookup table for codemod strategy metadata by refactoring pattern."""
-
-    def __init__(
-        self,
-        pattern_strategies: (
-            Mapping[pattern_declarations.PatternId, CodemodStrategy] | None
-        ) = None,
-        *,
-        fallback_strategy: CodemodStrategy = SEMANTIC_ADVISORY_CODEMOD_STRATEGY,
-        mixed_strategy: CodemodStrategy = MIXED_SEMANTIC_ADVISORY_CODEMOD_STRATEGY,
-    ) -> None:
-        if pattern_strategies is None:
-            self._pattern_strategies = {}
-        else:
-            self._pattern_strategies = dict(pattern_strategies)
-        self._fallback_strategy = fallback_strategy
-        self._mixed_strategy = mixed_strategy
-
-    def strategy_for_opportunity(
-        self, opportunity: RefactorImpactOpportunity
-    ) -> CodemodStrategy:
-        strategies = {
-            self._pattern_strategies[pattern_id]
-            for pattern_id in _opportunity_pattern_ids(opportunity)
-            if pattern_id in self._pattern_strategies
-        }
-        if len(strategies) == 1:
-            return next(iter(strategies))
-        if len(strategies) > 1:
-            return self._mixed_strategy
-        return self._fallback_strategy
-
-    def applicability_for_candidate(
-        self, candidate: "CodemodCandidate"
-    ) -> CodemodApplicability:
-        strategy = candidate.strategy
-        simulation_status = (
-            CodemodSimulationStatus.READY_TO_SIMULATE
-            if candidate.planned_rewrites
-            else CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
-        )
-        actionability = _candidate_actionability(
-            candidate,
-            simulation_status=simulation_status,
-        )
-        return CodemodApplicability(
-            strategy=strategy,
-            simulation_status=simulation_status,
-            actionability=actionability,
-            target_count=candidate.target_count,
-            planned_rewrite_count=len(candidate.planned_rewrites),
-            confidence_basis=_candidate_confidence_basis(candidate),
-        )
-
-
-DEFAULT_CODEMOD_STRATEGY_REGISTRY = CodemodStrategyRegistry()
-
-
 _ACTIONABLE_CONFIDENCE_LEVELS = ConfidenceLevel.actionable_confidence_levels()
 _ACTIONABLE_CERTIFICATION_LEVELS = CertificationLevel.actionable_certification_levels()
-
-
-def _candidate_actionability(
-    candidate: "CodemodCandidate",
-    *,
-    simulation_status: CodemodSimulationStatus,
-) -> CodemodActionability:
-    if candidate.strategy.safe_to_apply:
-        return CodemodActionability.SAFE_MECHANICAL
-    if (
-        candidate.strategy.automation_level
-        is CodemodAutomationLevel.SIMULATABLE_REWRITE
-    ):
-        return CodemodActionability.SIMULATABLE_REWRITE
-    if (
-        candidate.strategy.automation_level
-        is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
-        and _candidate_has_actionable_semantic_confidence(candidate)
-    ):
-        return CodemodActionability.SEMANTIC_AGENT_REFACTOR
-    if (
-        candidate.strategy.automation_level
-        is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
-        and simulation_status is CodemodSimulationStatus.READY_TO_SIMULATE
-    ):
-        return CodemodActionability.SEMANTIC_AGENT_REFACTOR
-    return CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW
-
-
-def _candidate_has_actionable_semantic_confidence(
-    candidate: "CodemodCandidate",
-) -> bool:
-    confidence_levels = set(candidate.opportunity.confidence_levels)
-    certification_levels = set(candidate.opportunity.certification_levels)
-    if not confidence_levels or not certification_levels:
-        return False
-    return (
-        confidence_levels <= _ACTIONABLE_CONFIDENCE_LEVELS
-        and certification_levels <= _ACTIONABLE_CERTIFICATION_LEVELS
-    )
-
-
-def _candidate_confidence_basis(candidate: "CodemodCandidate") -> str:
-    confidence_levels = ", ".join(candidate.opportunity.confidence_levels)
-    certification_levels = ", ".join(candidate.opportunity.certification_levels)
-    if not confidence_levels:
-        confidence_levels = UNKNOWN_CONFIDENCE_BASIS
-    if not certification_levels:
-        certification_levels = UNKNOWN_CONFIDENCE_BASIS
-    return f"confidence={confidence_levels}; certification={certification_levels}"
-
-
-class SourceLocationEvidencePropertyCodemodStrategySpec(CodemodStrategySpec):
-    """Mechanical strategy for SourceLocation evidence descriptor rewrites."""
-
-    strategy = CodemodStrategy(
-        strategy_id="source-location-evidence-property-mechanical",
-        automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-        safe_to_apply=True,
-        reason=(
-            "An exact @property returning SourceLocation(self.file, self.line, self.symbol) "
-            "can be replaced by SourceLocationEvidenceProperty descriptor data."
-        ),
-    )
-
-
-class ZippedSourceLocationEvidencePropertyCodemodStrategySpec(CodemodStrategySpec):
-    """Mechanical strategy for zipped SourceLocation descriptor rewrites."""
-
-    strategy = CodemodStrategy(
-        strategy_id="zipped-source-location-evidence-property-mechanical",
-        automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-        safe_to_apply=True,
-        reason=(
-            "An exact @property returning zipped SourceLocation tuples can be replaced "
-            "by ZippedSourceLocationEvidenceProperty descriptor data."
-        ),
-    )
-
-
-class DerivableDetectorIdCodemodStrategySpec(CodemodStrategySpec):
-    """Mechanical strategy for deleting class-name-derived detector ids."""
-
-    strategy = CodemodStrategy(
-        strategy_id="derivable-detector-id-delete-mechanical",
-        automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-        safe_to_apply=True,
-        reason=(
-            "A detector_id class assignment whose literal exactly matches the "
-            "IssueDetector class-name derivation can be deleted."
-        ),
-    )
-
-
-class DerivableCandidateCollectorCodemodStrategySpec(CodemodStrategySpec):
-    """Mechanical strategy for deleting class-name-derived collectors."""
-
-    strategy = CodemodStrategy(
-        strategy_id="derivable-candidate-collector-delete-mechanical",
-        automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-        safe_to_apply=True,
-        reason=(
-            "A candidate_collector class assignment whose name exactly matches the "
-            "collector-base class-name derivation can be deleted."
-        ),
-    )
-
-
-class DerivableDetectorDeclarationsCodemodStrategySpec(CodemodStrategySpec):
-    """Mechanical strategy for deleting all derivable detector declarations."""
-
-    strategy = CodemodStrategy(
-        strategy_id="derivable-detector-declarations-delete-mechanical",
-        automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-        safe_to_apply=True,
-        reason=(
-            "Detector class declarations that exactly match class-name-derived "
-            "detector_id or candidate_collector conventions can be deleted."
-        ),
-    )
-
-
-class SuppliedAuthorityBoundaryCodemodStrategySpec(CodemodStrategySpec):
-    """Strategy for caller-authored semantic authority boundary rewrites."""
-
-    strategy = CodemodStrategy(
-        strategy_id="supplied-authority-boundary-rewrite",
-        automation_level=CodemodAutomationLevel.SIMULATABLE_REWRITE,
-        reason=(
-            "The caller supplied the semantic authority boundary, so the advisor can "
-            "resolve and simulate explicit source rewrites without claiming the "
-            "boundary choice was mechanically derived."
-        ),
-    )
-
-
-SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = (
-    SourceLocationEvidencePropertyCodemodStrategySpec.build_strategy()
-)
-ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = (
-    ZippedSourceLocationEvidencePropertyCodemodStrategySpec.build_strategy()
-)
-DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY = (
-    DerivableDetectorIdCodemodStrategySpec.build_strategy()
-)
-DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY = (
-    DerivableCandidateCollectorCodemodStrategySpec.build_strategy()
-)
-DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY = (
-    DerivableDetectorDeclarationsCodemodStrategySpec.build_strategy()
-)
-SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY = (
-    SuppliedAuthorityBoundaryCodemodStrategySpec.build_strategy()
-)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2996,16 +2769,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     def candidates_with_automated_rewrites(
         self,
         candidates: Iterable["CodemodCandidate"],
-        *,
-        builders: Iterable["CodemodRewriteBuilder"] | None = None,
     ) -> tuple["CodemodCandidate", ...]:
         return codemod_candidates_with_automated_rewrites(
             candidates,
             self.source_index,
             self.sources_by_file_path,
-            builders=(
-                DEFAULT_CODEMOD_REWRITE_BUILDERS if builders is None else builders
-            ),
         )
 
     def candidates_with_supplied_authority_boundaries(
@@ -3013,9 +2781,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         candidates: Iterable["CodemodCandidate"],
         boundaries: Iterable["AuthorityBoundaryPlan"],
     ) -> tuple["CodemodCandidate", ...]:
-        return self.candidates_with_automated_rewrites(
+        return _codemod_candidates_with_rewrite_builders(
             candidates,
-            builders=(SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
+            self.source_index,
+            self.sources_by_file_path,
+            (SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
         )
 
     def simulate_candidates(
@@ -29975,7 +29745,7 @@ class CodemodCandidate:
     opportunity: RefactorImpactOpportunity
     target_ids: tuple[str, ...]
     planned_rewrites: tuple[PlannedSourceRewrite, ...] = ()
-    strategy: CodemodStrategy = SEMANTIC_ADVISORY_CODEMOD_STRATEGY
+    strategy: CodemodStrategy = field(default_factory=CodemodStrategy.semantic_advisory)
 
     @property
     def candidate_id(self) -> str:
@@ -30010,8 +29780,29 @@ class CodemodCandidate:
         return bool(self.planned_rewrites)
 
     @property
+    def has_actionable_semantic_confidence(self) -> bool:
+        confidence_levels = set(self.opportunity.confidence_levels)
+        certification_levels = set(self.opportunity.certification_levels)
+        if not confidence_levels or not certification_levels:
+            return False
+        return (
+            confidence_levels <= _ACTIONABLE_CONFIDENCE_LEVELS
+            and certification_levels <= _ACTIONABLE_CERTIFICATION_LEVELS
+        )
+
+    @property
+    def confidence_basis(self) -> str:
+        confidence_levels = ", ".join(self.opportunity.confidence_levels)
+        certification_levels = ", ".join(self.opportunity.certification_levels)
+        if not confidence_levels:
+            confidence_levels = UNKNOWN_CONFIDENCE_BASIS
+        if not certification_levels:
+            certification_levels = UNKNOWN_CONFIDENCE_BASIS
+        return f"confidence={confidence_levels}; certification={certification_levels}"
+
+    @property
     def applicability(self) -> CodemodApplicability:
-        return DEFAULT_CODEMOD_STRATEGY_REGISTRY.applicability_for_candidate(self)
+        return self.strategy.applicability_for(self)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -30495,9 +30286,9 @@ class CodemodRewriteBuilder(ABC, metaclass=AutoRegisterMeta):
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "CodemodBuilder"
-    default_enabled: ClassVar[bool] = True
-    registry_order: ClassVar[int] = 100
-    rewrite_strategy: ClassVar[CodemodStrategy]
+    strategy_id: ClassVar[str]
+    strategy_reason: ClassVar[str]
+    automation_level: ClassVar[CodemodAutomationLevel]
 
     @classmethod
     def default_builders(cls) -> tuple["CodemodRewriteBuilder", ...]:
@@ -30505,14 +30296,18 @@ class CodemodRewriteBuilder(ABC, metaclass=AutoRegisterMeta):
             builder_type()
             for builder_type in sorted(
                 cls.__registry__.values(),
-                key=lambda item: (item.registry_order, item.__name__),
+                key=lambda item: item.__name__,
             )
-            if builder_type.default_enabled
+            if issubclass(builder_type, DefaultCodemodRewriteBuilder)
         )
 
     @property
     def strategy(self) -> CodemodStrategy:
-        return type(self).rewrite_strategy
+        return CodemodStrategy(
+            strategy_id=type(self).strategy_id,
+            automation_level=type(self).automation_level,
+            reason=type(self).strategy_reason,
+        )
 
     @abstractmethod
     def build_rewrites(
@@ -30523,20 +30318,11 @@ class CodemodRewriteBuilder(ABC, metaclass=AutoRegisterMeta):
     ) -> tuple[PlannedSourceRewrite, ...]:
         raise NotImplementedError
 
-    def apply(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> CodemodCandidate:
-        rewrites = self.build_rewrites(candidate, source_index, source_by_path)
-        if not rewrites:
-            return candidate
-        return replace(
-            candidate,
-            planned_rewrites=(*candidate.planned_rewrites, *rewrites),
-            strategy=self.strategy,
-        )
+
+class DefaultCodemodRewriteBuilder(CodemodRewriteBuilder, ABC):
+    """Nominal family of rewrite builders enabled in the automatic pass."""
+
+    automation_level = CodemodAutomationLevel.SAFE_MECHANICAL
 
 
 class DescriptorPropertyCodemodBuilder(ABC):
@@ -30544,7 +30330,6 @@ class DescriptorPropertyCodemodBuilder(ABC):
 
     detector_id: ClassVar[str]
     descriptor_assignment_authority: ClassVar[type[DescriptorAssignmentAuthority]]
-    rewrite_rationale: ClassVar[str]
 
     def build_rewrites(
         self,
@@ -30563,7 +30348,7 @@ class DescriptorPropertyCodemodBuilder(ABC):
             descriptor_assignment_builder=type(
                 self
             ).descriptor_assignment_authority.assignment,
-            rationale=self.rewrite_rationale,
+            rationale=self.strategy_reason,
         )
 
 
@@ -30571,7 +30356,6 @@ class ClassStatementDeletionCodemodBuilder(ABC):
     """Shared rewrite algorithm for deleting derivable class statements."""
 
     detector_ids: ClassVar[frozenset[str]]
-    rewrite_rationale: ClassVar[str]
     statement_selector: ClassVar[type[DetectorDeclarationSelector] | None] = None
 
     def candidate_matches(self, candidate: CodemodCandidate) -> bool:
@@ -30606,21 +30390,20 @@ class ClassStatementDeletionCodemodBuilder(ABC):
             source_index,
             source_by_path,
             statement_selector=lambda node: self.selected_statements(node, candidate),
-            rationale=self.rewrite_rationale,
+            rationale=self.strategy_reason,
         )
 
 
 class SourceLocationEvidencePropertyCodemodBuilder(
     DescriptorPropertyCodemodBuilder,
-    CodemodRewriteBuilder,
+    DefaultCodemodRewriteBuilder,
 ):
     """Plan descriptor replacements for exact SourceLocation evidence properties."""
 
-    registry_order = 10
-    rewrite_strategy = SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY
+    strategy_id = "source-location-evidence-property-mechanical"
     detector_id = "source_location_evidence_property"
     descriptor_assignment_authority = SourceLocationDescriptorAssignmentAuthority
-    rewrite_rationale = (
+    strategy_reason = (
         "Replace boilerplate SourceLocation evidence property with "
         "SourceLocationEvidenceProperty descriptor data."
     )
@@ -30628,64 +30411,30 @@ class SourceLocationEvidencePropertyCodemodBuilder(
 
 class ZippedSourceLocationEvidencePropertyCodemodBuilder(
     DescriptorPropertyCodemodBuilder,
-    CodemodRewriteBuilder,
+    DefaultCodemodRewriteBuilder,
 ):
     """Plan descriptor replacements for exact zipped SourceLocation properties."""
 
-    registry_order = 20
-    rewrite_strategy = ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY
+    strategy_id = "zipped-source-location-evidence-property-mechanical"
     detector_id = "zipped_source_location_evidence_property"
     descriptor_assignment_authority = ZippedSourceLocationDescriptorAssignmentAuthority
-    rewrite_rationale = (
+    strategy_reason = (
         "Replace boilerplate zipped SourceLocation evidence property with "
         "ZippedSourceLocationEvidenceProperty descriptor data."
     )
 
 
-class DerivableDetectorIdCodemodBuilder(
-    ClassStatementDeletionCodemodBuilder,
-    CodemodRewriteBuilder,
-):
-    """Plan deletion of redundant detector_id class assignments."""
-
-    registry_order = 40
-    rewrite_strategy = DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY
-    detector_ids = frozenset((DERIVABLE_DETECTOR_ID_FINDING_ID,))
-    statement_selector = DerivableDetectorIdDeclarationSelector
-    rewrite_rationale = (
-        "Delete redundant detector_id; IssueDetector derives the registry key "
-        "from the detector class name."
-    )
-
-
-class DerivableCandidateCollectorCodemodBuilder(
-    ClassStatementDeletionCodemodBuilder,
-    CodemodRewriteBuilder,
-):
-    """Plan deletion of redundant candidate_collector class assignments."""
-
-    registry_order = 50
-    rewrite_strategy = DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY
-    detector_ids = frozenset((DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID,))
-    statement_selector = DerivableCandidateCollectorDeclarationSelector
-    rewrite_rationale = (
-        "Delete redundant candidate_collector; the collector base derives "
-        "the hook from the detector class name."
-    )
-
-
 class DerivableDetectorDeclarationsCodemodBuilder(
     ClassStatementDeletionCodemodBuilder,
-    CodemodRewriteBuilder,
+    DefaultCodemodRewriteBuilder,
 ):
     """Plan deletion of redundant detector declaration class assignments."""
 
-    registry_order = 30
-    rewrite_strategy = DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY
+    strategy_id = "derivable-detector-declarations-delete-mechanical"
     detector_ids = frozenset(
         (DERIVABLE_DETECTOR_ID_FINDING_ID, DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID)
     )
-    rewrite_rationale = (
+    strategy_reason = (
         "Delete redundant detector declarations derived from the detector class name."
     )
 
@@ -30703,8 +30452,13 @@ class DerivableDetectorDeclarationsCodemodBuilder(
 class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
     """Attach caller-supplied rewrites once the authority boundary is declared."""
 
-    default_enabled = False
-    rewrite_strategy = SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY
+    strategy_id = "supplied-authority-boundary-rewrite"
+    automation_level = CodemodAutomationLevel.SIMULATABLE_REWRITE
+    strategy_reason = (
+        "The caller supplied the semantic authority boundary, so the advisor can "
+        "resolve and simulate explicit source rewrites without claiming the boundary "
+        "choice was mechanically derived."
+    )
 
     def __init__(self, plans: Iterable[AuthorityBoundaryPlan]) -> None:
         self._plans = tuple(plans)
@@ -30745,29 +30499,60 @@ class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
         return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
 
 
-DEFAULT_CODEMOD_REWRITE_BUILDERS: tuple[CodemodRewriteBuilder, ...] = (
-    CodemodRewriteBuilder.default_builders()
-)
-
-
 def codemod_candidates_with_automated_rewrites(
     candidates: Iterable[CodemodCandidate],
     source_index: SourceIndex,
     source_by_path: Mapping[str, str],
-    *,
-    builders: Iterable[CodemodRewriteBuilder] = DEFAULT_CODEMOD_REWRITE_BUILDERS,
 ) -> tuple[CodemodCandidate, ...]:
     """Attach available safe mechanical rewrites to advisor candidates."""
 
+    return _codemod_candidates_with_rewrite_builders(
+        candidates,
+        source_index,
+        source_by_path,
+        CodemodRewriteBuilder.default_builders(),
+    )
+
+
+def _codemod_candidates_with_rewrite_builders(
+    candidates: Iterable[CodemodCandidate],
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+    builders: Iterable[CodemodRewriteBuilder],
+) -> tuple[CodemodCandidate, ...]:
     rewrite_builders = tuple(builders)
     automated_candidates = []
     for candidate in candidates:
-        automated = candidate
-        for builder in rewrite_builders:
-            automated = builder.apply(automated, source_index, source_by_path)
-            if automated is not candidate:
-                break
-        automated_candidates.append(automated)
+        rewrite_options = tuple(
+            (builder, rewrites)
+            for builder in rewrite_builders
+            if (
+                rewrites := builder.build_rewrites(
+                    candidate,
+                    source_index,
+                    source_by_path,
+                )
+            )
+        )
+        if len(rewrite_options) > 1:
+            strategy_ids = ", ".join(
+                builder.strategy.strategy_id for builder, _ in rewrite_options
+            )
+            raise ValueError(
+                f"Codemod candidate {candidate.candidate_id} matched multiple rewrite "
+                f"strategies: {strategy_ids}"
+            )
+        if not rewrite_options:
+            automated_candidates.append(candidate)
+            continue
+        builder, rewrites = rewrite_options[0]
+        automated_candidates.append(
+            replace(
+                candidate,
+                planned_rewrites=(*candidate.planned_rewrites, *rewrites),
+                strategy=builder.strategy,
+            )
+        )
     return sorted_tuple(
         automated_candidates,
         key=lambda item: (
@@ -30788,11 +30573,11 @@ def codemod_candidates_with_supplied_authority_boundaries(
 ) -> tuple[CodemodCandidate, ...]:
     """Attach explicit rewrites enabled by caller-declared authority boundaries."""
 
-    return codemod_candidates_with_automated_rewrites(
+    return _codemod_candidates_with_rewrite_builders(
         candidates,
         source_index,
         source_by_path,
-        builders=(SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
+        (SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
     )
 
 
@@ -31016,17 +30801,13 @@ def codemod_candidates_from_impact_ranking(
     source_index: SourceIndex,
     *,
     include_trajectory_steps: bool = True,
-    strategy_registry: CodemodStrategyRegistry = DEFAULT_CODEMOD_STRATEGY_REGISTRY,
 ) -> tuple[CodemodCandidate, ...]:
     """Project impact-ranking opportunities into source-index codemod candidates."""
 
     candidate_index = UniqueIdentityIndexAuthority[
         str, CodemodCandidate, CodemodCandidate
     ]()
-    candidate_collector = OpportunityCandidateCollector(
-        source_index,
-        strategy_registry,
-    )
+    candidate_collector = OpportunityCandidateCollector(source_index)
     for opportunity in impact_ranking.opportunities:
         candidate = candidate_collector.candidate_from_opportunity(
             opportunity,
@@ -31392,7 +31173,6 @@ class OpportunityCandidateCollector:
     """Project impact opportunities into codemod candidates."""
 
     source_index: SourceIndex
-    strategy_registry: CodemodStrategyRegistry
 
     def candidate_from_opportunity(
         self,
@@ -31408,7 +31188,6 @@ class OpportunityCandidateCollector:
             origin=origin,
             opportunity=opportunity,
             target_ids=target_ids,
-            strategy=self.strategy_registry.strategy_for_opportunity(opportunity),
         )
 
 
@@ -31424,18 +31203,6 @@ def _candidate_id(
         )
     )
     return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
-
-
-def _opportunity_pattern_ids(
-    opportunity: RefactorImpactOpportunity,
-) -> tuple[PatternId, ...]:
-    pattern_ids: list[PatternId] = []
-    for pattern_id in opportunity.pattern_ids:
-        try:
-            pattern_ids.append(PatternId(pattern_id))
-        except ValueError:
-            continue
-    return tuple(pattern_ids)
 
 
 def _descriptor_property_rewrites(

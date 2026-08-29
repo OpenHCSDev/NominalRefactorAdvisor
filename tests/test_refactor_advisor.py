@@ -118,12 +118,11 @@ from nominal_refactor_advisor.codemod import (
     CodemodSimulationStatus,
     CodemodSourceSnapshot,
     CodemodStrategy,
-    CodemodStrategyRegistry,
     CodemodTargetSelector,
     ConstructorKwargCollapseConcept,
     ConvertManualRegistryToAutoregisterOperation,
     CreateFileOperation,
-    DEFAULT_CODEMOD_REWRITE_BUILDERS,
+    DefaultCodemodRewriteBuilder,
     FindingRecipeAuthorityClaimGate,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
@@ -576,19 +575,15 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     mechanical_strategy = CodemodStrategy(
         strategy_id="mechanical-test-strategy",
         automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-        reason="test strategy proves registry metadata is carried",
-        safe_to_apply=True,
+        reason="test strategy proves candidate metadata is carried",
     )
-    mechanical_candidates = codemod_candidates_from_impact_ranking(
-        impact_ranking,
-        source_index,
-        strategy_registry=CodemodStrategyRegistry(
-            {PatternId.ABC_TEMPLATE_METHOD: mechanical_strategy}
-        ),
+    mechanical_candidate = replace(
+        candidates[0],
+        strategy=mechanical_strategy,
     )
 
     candidate = candidates[0]
-    mechanical_applicability = mechanical_candidates[0].applicability
+    mechanical_applicability = mechanical_candidate.applicability
     applicability = candidate.applicability
     target_id = candidate.target_ids[0]
     planned_candidate = candidate.with_replacement(
@@ -619,6 +614,11 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
         == CodemodAutomationLevel.SAFE_MECHANICAL
     )
     assert mechanical_applicability.strategy.safe_to_apply is True
+    assert "safe_to_apply" not in CodemodStrategy.__dataclass_fields__
+    assert (
+        mechanical_applicability.actionability is CodemodActionability.SAFE_MECHANICAL
+    )
+    assert "Safe mechanical rewrite" in mechanical_applicability.agent_action
     assert mechanical_applicability.to_dict()["strategy_id"] == (
         mechanical_strategy.to_dict()["strategy_id"]
     )
@@ -632,6 +632,11 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
         planned_applicability.strategy.automation_level
         == CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
     )
+    assert (
+        planned_applicability.actionability
+        is CodemodActionability.SEMANTIC_AGENT_REFACTOR
+    )
+    assert "a rewrite plan exists" in planned_applicability.agent_action
     assert (
         planned_candidate.to_dict()["applicability"]["simulation_status"]
         == "ready_to_simulate"
@@ -744,6 +749,10 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
         == CodemodSimulationStatus.READY_TO_SIMULATE
     )
     assert candidate.applicability.strategy.safe_to_apply is False
+    assert (
+        candidate.applicability.actionability
+        is CodemodActionability.SIMULATABLE_REWRITE
+    )
     assert candidate.applicability.planned_rewrite_count == 1
     assert "+        return AlphaRunAuthority.run(value)" in diff
     assert "return AlphaRunAuthority.run(value)" in rewritten
@@ -4277,19 +4286,24 @@ def test_codemod_plan_document_simulates_and_applies_recipes(
 
 
 def test_default_codemod_rewrite_builders_derive_from_registry() -> None:
-    builder_names = tuple(
-        type(builder).__name__ for builder in DEFAULT_CODEMOD_REWRITE_BUILDERS
-    )
+    builders = CodemodRewriteBuilder.default_builders()
+    builder_names = tuple(type(builder).__name__ for builder in builders)
     default_registry_names = tuple(
         builder_type.__name__
         for builder_type in sorted(
-            CodemodRewriteBuilder.__registry__.values(),
-            key=lambda item: (item.registry_order, item.__name__),
+            (
+                builder_type
+                for builder_type in CodemodRewriteBuilder.__registry__.values()
+                if issubclass(builder_type, DefaultCodemodRewriteBuilder)
+            ),
+            key=lambda item: item.__name__,
         )
-        if builder_type.default_enabled
     )
 
     assert builder_names == default_registry_names
+    assert all(
+        isinstance(builder, DefaultCodemodRewriteBuilder) for builder in builders
+    )
     assert "SuppliedAuthorityBoundaryCodemodBuilder" not in builder_names
 
 
@@ -18830,6 +18844,9 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert not hasattr(nra, "CodemodRefactorGoalWorkflowPlan")
     assert not hasattr(nra, "CodemodWorkflowRunContext")
     assert not hasattr(nra, "ParseCacheRequest")
+    assert not hasattr(nra, "CodemodStrategyRegistry")
+    assert not hasattr(nra, "DerivableDetectorIdCodemodBuilder")
+    assert not hasattr(nra, "DerivableCandidateCollectorCodemodBuilder")
     assert CodemodWorkflowScanRequest.__name__ == "CodemodWorkflowScanRequest"
     assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
     assert (
