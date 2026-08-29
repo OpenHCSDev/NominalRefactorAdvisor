@@ -135,8 +135,8 @@ from nominal_refactor_advisor.codemod import (
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
+    RefactorConcept,
     RefactorRecipe,
-    RefactorRecipeTargetShape,
     RefactorRecipeOperation,
     RefactorRecipeOperationCompiler,
     RefactorRecipeOperationTemplate,
@@ -2163,9 +2163,10 @@ def test_runtime_product_record_findings_synthesize_recipe_plan(
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
-    assert plan.document.recipes[0].target_shape is (
-        RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
+    assert plan.records[0].executable_declaration_name == (
+        "RuntimeProductRecordSchemaFindingRecipeSynthesizer"
     )
+    assert plan.records[0].refactor_concept == "tuple_dict_return_record"
     assert plan.document.recipes[0].operations[0].to_dict()["operation"] == (
         "product_record_to_dataclass"
     )
@@ -4408,7 +4409,7 @@ def test_source_location_descriptor_finding_recipe_replaces_property(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "SourceLocationEvidencePropertyFindingRecipeSynthesizer"
     )
     assert (
@@ -4453,7 +4454,7 @@ def test_zipped_source_location_descriptor_finding_recipe_replaces_property(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "ZippedSourceLocationEvidencePropertyFindingRecipeSynthesizer"
     )
     assert (
@@ -10225,9 +10226,10 @@ def test_prefixed_role_field_bundle_synthesizes_role_carriers(
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
-    assert plan.document.recipes[0].target_shape is (
-        RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER
+    assert plan.records[0].executable_declaration_name == (
+        "PrefixedRoleBundleFindingRecipeSynthesizer"
     )
+    assert plan.records[0].refactor_concept == "prefix_bundle_carrier"
     assert plan.document.recipes[0].operations[0].to_dict()["operation"] == (
         "replace_role_prefixed_fields_with_carriers"
     )
@@ -11453,7 +11455,7 @@ def test_named_function_collector_boilerplate_synthesizes_shared_traversal_recip
 
     assert record.status.value == "planned"
     assert (
-        record.synthesizer_name
+        record.executable_declaration_name
         == "NamedFunctionCollectorBoilerplateFindingRecipeSynthesizer"
     )
     assert plan.expected_removed_finding_count == 1
@@ -11515,7 +11517,7 @@ def test_ast_stream_collector_boilerplate_synthesizes_shared_traversal_recipe(
 
     assert record.status.value == "planned"
     assert (
-        record.synthesizer_name
+        record.executable_declaration_name
         == "AstStreamCollectorBoilerplateFindingRecipeSynthesizer"
     )
     assert plan.expected_removed_finding_count == 1
@@ -13073,9 +13075,10 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert plan.records[0].status.value == "planned"
-    assert plan.document.recipes[0].target_shape == (
-        RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION
+    assert plan.records[0].executable_declaration_name == (
+        "RepeatedBuilderSourceProjectionAuthorityMethod"
     )
+    assert plan.records[0].refactor_concept == "constructor_kwarg_carrier_projection"
     preflight = plan.document.preflight_snapshot(snapshot)
     assert preflight.preflight_failed is False
     resolution = preflight.reports[0].details["resolutions"][0]
@@ -13418,7 +13421,6 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
             "recipes": [
                 {
                     "recipe_id": "alpha-recipe",
-                    "target_shape": "autoregister_strategy_family",
                     "authority_claims": [
                         {
                             "claimed_symbol": "AlphaRunAuthority",
@@ -13460,10 +13462,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     assert document.recipes[0].guard_suite.rules[0].forbidden_attribute_names == (
         "legacy_recipe_value",
     )
-    assert (
-        document.recipes[0].target_shape
-        is RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY
-    )
+    assert "target_shape" not in document.recipes[0].to_dict()
     assert document.recipes[0].authority_claims[0].claimed_symbol == (
         "AlphaRunAuthority"
     )
@@ -13742,29 +13741,10 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
     assert set(workflow_plans) == {"fixpoint", "refactor_goal"}
     assert set(workflow_plan_examples) == {"fixpoint", "refactor_goal"}
     assert refactor_goal_policies["semantic_carrier_extraction"]["default_goal"] is True
-    assert [
-        selector["target_shapes"]
-        for selector in refactor_goal_policies["semantic_carrier_extraction"][
-            "selectors"
-        ]
-    ] == [
-        ["prefix_bundle_carrier"],
-        ["dataclass_inheritance_lift"],
-        ["constructor_kwarg_carrier_projection", "dataclass_context_call_projection"],
-        ["dataclass_payload_projection", "tuple_dict_return_record"],
-        ["boundary_source_context_authority"],
-        ["dead_compatibility_eraser"],
-    ]
-    assert "dataclass_constructor_projection" in (
-        refactor_goal_policies["semantic_carrier_extraction"]["selectors"][2][
-            "executable_mapping_names"
-        ]
-    )
-    assert "flattened_projection_property" in (
-        refactor_goal_policies["semantic_carrier_extraction"]["selectors"][5][
-            "executable_detector_ids"
-        ]
-    )
+    semantic_carrier_policy = refactor_goal_policies["semantic_carrier_extraction"]
+    assert semantic_carrier_policy["refactor_concept"] == "semantic_carrier"
+    assert "selectors" not in semantic_carrier_policy
+    assert "executable_declarations" not in semantic_carrier_policy
     assert [
         field["field_name"] for field in workflow_plans["fixpoint"]["payload_fields"]
     ] == ["workflow", "plan_id", "max_iterations"]
@@ -17167,7 +17147,7 @@ def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers
     )
     recipe = document.recipes[0]
 
-    assert recipe.target_shape is RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE
+    assert "target_shape" not in recipe.to_dict()
     assert simulation.is_clean is False
     assert simulation.architecture_guard_report.violation_count == 1
     assert "legacy_helper" in simulation.architecture_guard_report.violations[0].detail
@@ -18788,8 +18768,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     )
 
 
-def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -> None:
-    from nominal_refactor_advisor.codemod import RefactorRecipeTargetShape
+def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalKind
     from nominal_refactor_advisor.codemod_workflow import (
@@ -18870,52 +18849,38 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
         kind=CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION,
     )
     policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
+    snapshot = CodemodSourceSnapshot.from_modules((), findings)
 
-    selected = policy.target_findings(goal, findings)
-    assert selected[:3] == (
-        prefix,
-        dataclass_lift,
-        constructor,
-    )
-    assert frozenset(selected[3:5]) == frozenset((payload_projection, return_record))
-    assert selected[5:] == (
-        source_context,
+    with pytest.raises(ValueError, match="requires source context"):
+        policy.target_findings(goal, findings)
+    selected = policy.target_findings(goal, findings, snapshot)
+    assert selected == (
         dead_compat,
+        dataclass_lift,
+        prefix,
     )
+    assert (
+        RefactorConcept.leaf_concept_for_declaration(type(policy)).concept_key()
+        == "semantic_carrier"
+    )
+    assert not hasattr(policy, "selectors")
     constructor_policy = CodemodRefactorGoalTargetPolicy.policy_for(
         CodemodRefactorGoalKind.CONSTRUCTOR_KWARG_COLLAPSE
     )
-    assert constructor_policy.selectors[0].mapping_names == frozenset()
-    assert constructor_policy.selectors[0].target_shapes == frozenset(
-        {
-            RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
-            RefactorRecipeTargetShape.DATACLASS_CONTEXT_CALL_PROJECTION,
-        }
-    )
+    assert RefactorConcept.leaf_concept_for_declaration(
+        type(constructor_policy)
+    ).concept_key() == ("constructor_kwarg_collapse")
     tuple_dict_policy = CodemodRefactorGoalTargetPolicy.policy_for(
         CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION
     )
-    assert tuple_dict_policy.selectors[0].target_shapes == frozenset(
-        {
-            RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
-            RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
-        }
-    )
+    assert RefactorConcept.leaf_concept_for_declaration(
+        type(tuple_dict_policy)
+    ).concept_key() == ("tuple_dict_return_nominalization")
     tuple_dict_goal = CodemodRefactorGoal(
         goal_id="tuple-dict",
         kind=CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION,
     )
-    assert frozenset(
-        tuple_dict_policy.target_findings(
-            tuple_dict_goal,
-            findings,
-        )
-    ) == frozenset(
-        (
-            payload_projection,
-            return_record,
-        )
-    )
+    assert tuple_dict_policy.target_findings(tuple_dict_goal, findings, snapshot) == ()
     assert CodemodRefactorGoalTargetPolicy.policy_for(
         CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION
     ).target_findings(
@@ -18924,6 +18889,7 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
             kind=CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION,
         ),
         findings,
+        snapshot,
     ) == (
         prefix,
     )
@@ -18935,6 +18901,7 @@ def test_semantic_carrier_goal_policy_prioritizes_requested_refactor_classes() -
             kind=CodemodRefactorGoalKind.DEAD_COMPATIBILITY_ERASER,
         ),
         findings,
+        snapshot,
     ) == (
         dead_compat,
     )
@@ -19187,8 +19154,7 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert class_payload["synthesis_status_counts"]["planned"] == 1
     assert len(class_payload["site_plans"]) == 1
     assert class_payload["executable"] is True
-    assert class_payload["target_shape"] == "autoregister_class_registry"
-    assert class_payload["target_shapes"] == ("autoregister_class_registry",)
+    assert class_payload["refactor_concepts"] == ("auto_register_class_registry",)
     assert class_payload["sequence"]["stages"][0] == class_payload["document"]
     assert class_payload["site_count"] == 1
     assert site_plan["finding_id"] == class_payload["finding_ids"][0]
@@ -19199,11 +19165,14 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert site_plan["synthesis_record"]["recipe"]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
-    assert site_plan["synthesis_record"]["target_shape"] == (
-        "autoregister_class_registry"
+    assert site_plan["synthesis_record"]["executable_declaration"] == (
+        "ManualClassRegistrationFindingRecipeSynthesizer"
+    )
+    assert site_plan["synthesis_record"]["refactor_concept"] == (
+        "auto_register_class_registry"
     )
     assert recipe["recipe_id"] == "finding-class-codemod-plan"
-    assert recipe["target_shape"] == "autoregister_class_registry"
+    assert "target_shape" not in recipe
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
 
 
@@ -19486,10 +19455,12 @@ def test_finding_recipe_plan_merges_overlapping_role_case_module_rewrites(
     assert plan.expected_removed_finding_count == 2
     assert plan.report.to_dict()["status_counts"] == {"planned": 2}
     assert plan.document.recipes[0].recipe_id == "finding-backed-merged-codemod-plan"
-    assert (
-        plan.document.recipes[0].target_shape
-        is RefactorRecipeTargetShape.ROLE_CASE_AUTHORITY
-    )
+    assert {record.executable_declaration_name for record in plan.records} == {
+        "GenericRoleCaseTableMappingRecipeBuilder"
+    }
+    assert {record.refactor_concept for record in plan.records} == {
+        "role_case_authority"
+    }
     assert len(plan.document.recipes[0].rewrites) == 1
     projected_rewrite = plan.document.recipes[0].rewrites[0]
     assert len(projected_rewrite.contributors) >= 2
@@ -19630,7 +19601,9 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert class_delta["changes"][0]["status"] == "eliminated"
     assert class_delta["projected_result_status"] == "eliminated"
     assert class_delta["class_plan"]["site_count"] == 1
-    assert class_delta["class_plan"]["target_shape"] == "autoregister_class_registry"
+    assert class_delta["class_plan"]["refactor_concepts"] == [
+        "auto_register_class_registry"
+    ]
     assert site_delta["finding_id"] == payload["classes"][0]["finding_ids"][0]
     assert site_delta["status_counts"]["eliminated"] >= 1
     assert site_delta["fulfilled_expected_removal"] is True
@@ -19641,8 +19614,8 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
         ]
         == "convert_manual_registry_to_autoregister"
     )
-    assert site_delta["site_plan"]["synthesis_record"]["target_shape"] == (
-        "autoregister_class_registry"
+    assert site_delta["site_plan"]["synthesis_record"]["refactor_concept"] == (
+        "auto_register_class_registry"
     )
 
 
@@ -19746,6 +19719,8 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
 
 
 def test_codemod_workflow_types_are_public_package_exports() -> None:
+    import nominal_refactor_advisor as nra
+
     from nominal_refactor_advisor import CodemodAuthoringActionRunReport
     from nominal_refactor_advisor import CodemodAuthoringActionRunRequest
     from nominal_refactor_advisor import CodemodAuthoringActionPlan
@@ -19793,13 +19768,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodPlanSequenceSimulation
     from nominal_refactor_advisor import CodemodProjectedFindingReport
     from nominal_refactor_advisor import CodemodRefactorGoal
-    from nominal_refactor_advisor import CodemodRefactorGoalFindingSelector
     from nominal_refactor_advisor import CodemodRefactorGoalKind
     from nominal_refactor_advisor import CodemodRefactorGoalPolicyManifest
     from nominal_refactor_advisor import CodemodRefactorGoalProgress
     from nominal_refactor_advisor import CodemodRefactorGoalReport
-    from nominal_refactor_advisor import CodemodRefactorGoalSelectorCoverage
-    from nominal_refactor_advisor import CodemodRefactorGoalSelectorManifest
     from nominal_refactor_advisor import CodemodRefactorGoalRunner
     from nominal_refactor_advisor import CodemodRefactorGoalStage
     from nominal_refactor_advisor import CodemodRefactorGoalTargetPolicy
@@ -19825,7 +19797,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import NominalBoundaryExtractionGoalTargetPolicy
     from nominal_refactor_advisor import PrefixBundleExtractionGoalTargetPolicy
     from nominal_refactor_advisor import ProjectedScanModuleSet
-    from nominal_refactor_advisor import RefactorRecipeTargetShape
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
     from nominal_refactor_advisor import SemanticCarrierExtractionGoalTargetPolicy
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
@@ -19904,10 +19875,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodFindingClassDelta.__name__ == "CodemodFindingClassDelta"
     assert CodemodFindingClassSignature.__name__ == "CodemodFindingClassSignature"
     assert CodemodFindingClassStatus.MOVED.value == "moved"
-    assert (
-        RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY.value
-        == "autoregister_strategy_family"
-    )
+    assert not hasattr(nra, "RefactorRecipeTargetShape")
     assert finding_change.expected_removed_finding_count == 1
     assert finding_change.to_dict()["finding_delta"]["removed_finding_ids"] == ("a",)
     assert CodemodClassPlanProjectedDelta.__name__ == "CodemodClassPlanProjectedDelta"
@@ -19938,18 +19906,12 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     )
     assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
     assert CodemodRefactorGoal.__name__ == "CodemodRefactorGoal"
-    assert CodemodRefactorGoalFindingSelector.__name__ == (
-        "CodemodRefactorGoalFindingSelector"
-    )
+    assert not hasattr(nra, "CodemodRefactorGoalFindingSelector")
     assert CodemodRefactorGoalPolicyManifest.__name__ == (
         "CodemodRefactorGoalPolicyManifest"
     )
-    assert CodemodRefactorGoalSelectorCoverage.__name__ == (
-        "CodemodRefactorGoalSelectorCoverage"
-    )
-    assert CodemodRefactorGoalSelectorManifest.__name__ == (
-        "CodemodRefactorGoalSelectorManifest"
-    )
+    assert not hasattr(nra, "CodemodRefactorGoalSelectorCoverage")
+    assert not hasattr(nra, "CodemodRefactorGoalSelectorManifest")
     assert (
         CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION.value
         == "nominal_boundary_extraction"
@@ -24056,10 +24018,10 @@ def test_runtime_semantic_branch_chain_synthesizes_dispatch_recipe(
     assert operation["case_key_attribute"] == "runtime_case"
     assert operation["dispatch_axis_expression"] == "materialization_request"
     assert operation["literal_cases"] == ("'local_cover'", "'frontier'")
-    assert (
-        plan.document.recipes[0].target_shape
-        is RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY
+    assert plan.records[0].executable_declaration_name == (
+        "RuntimeSemanticBranchChainFindingRecipeSynthesizer"
     )
+    assert plan.records[0].refactor_concept == "auto_register_strategy_family"
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
     simulation.document_simulation.apply()
@@ -25012,7 +24974,10 @@ def test_flattened_projection_property_findings_synthesize_dead_compatibility_er
     recipe = plan.document.recipes[0]
 
     assert plan.expected_removed_finding_count == 1
-    assert recipe.target_shape is RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE
+    assert plan.records[0].executable_declaration_name == (
+        "FlattenedProjectionPropertyFindingRecipeSynthesizer"
+    )
+    assert plan.records[0].refactor_concept == "dead_compatibility_erasure"
     assert recipe.guard_suite.rules[0].forbidden_attribute_names == (
         "ligand_coords",
         "ligand_radii",
@@ -25170,10 +25135,10 @@ def test_semantic_dict_bag_return_record_synthesizes_nominal_record(
     carrier_name = finding.metrics.plan_source_name
 
     assert plan.records[0].status.value == "planned"
-    assert (
-        plan.document.recipes[0].target_shape
-        == RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
+    assert plan.records[0].executable_declaration_name == (
+        "SemanticDictBagReturnRecordMappingRecipeBuilder"
     )
+    assert plan.records[0].refactor_concept == "tuple_dict_return_record"
     assert carrier_name is not None
     assert f"class {carrier_name}:" in rewritten
     assert "created_dirs: List[Path]" in rewritten
@@ -25223,10 +25188,10 @@ def test_semantic_tuple_return_record_rewrites_unpack_consumers(
     carrier_name = finding.metrics.plan_source_name
 
     assert plan.records[0].status.value == "planned"
-    assert (
-        plan.document.recipes[0].target_shape
-        == RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
+    assert plan.records[0].executable_declaration_name == (
+        "SemanticTupleReturnRecordMappingRecipeBuilder"
     )
+    assert plan.records[0].refactor_concept == "tuple_dict_return_record"
     assert carrier_name is not None
     assert f"class {carrier_name}:" in rewritten
     assert f"return {carrier_name}(left=left, right=right)" in rewritten
@@ -25597,13 +25562,10 @@ def test_existing_nominal_authority_reuse_synthesizes_inheritance_lift(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "ExistingNominalAuthorityReuseFindingRecipeSynthesizer"
     )
-    assert (
-        plan.document.recipes[0].target_shape
-        == RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT
-    )
+    assert plan.records[0].refactor_concept == "dataclass_inheritance_lift"
     assert "class DetachedEventCarrier(EventCarrierBase):" in rewritten
     assert rewritten.count("file_path: str") == 1
     assert rewritten.count("payload: tuple[str, ...]") == 1
@@ -26991,14 +26953,10 @@ def test_formal_boundary_source_scope_return_dict_synthesizes_carrier(
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert plan.records[0].status.value == "planned"
-    assert (
-        plan.records[0].synthesizer_name
-        == "FormalBoundarySourceScopeFindingRecipeSynthesizer"
+    assert plan.records[0].executable_declaration_name == (
+        "BoundarySourceContextReturnDictMappingRecipeBuilder"
     )
-    assert (
-        plan.document.recipes[0].target_shape
-        == RefactorRecipeTargetShape.BOUNDARY_SOURCE_CONTEXT_AUTHORITY
-    )
+    assert plan.records[0].refactor_concept == "boundary_source_context_authority"
     assert "@dataclass(frozen=True)\nclass PolicySourceScopeContext:" in rewritten
     assert "local_state: object" in rewritten
     assert (

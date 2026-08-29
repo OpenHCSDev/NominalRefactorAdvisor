@@ -296,16 +296,13 @@ class FindingRecipeSynthesisStatus(StrEnum):
         self,
         *,
         action_keys: tuple["FindingRecipeActionKey", ...] = (),
-        recipe: "RefactorRecipe | None" = None,
         evaluation: "FindingRecipeEvaluation | None" = None,
         reason: str,
     ) -> "FindingRecipeSynthesisResult":
         return FindingRecipeSynthesisResult(
             status=self,
             evaluation=(
-                evaluation
-                if evaluation is not None
-                else FindingRecipeEvaluation(recipe=recipe)
+                evaluation if evaluation is not None else FindingRecipeEvaluation()
             ),
             action_keys=action_keys,
             reason=reason,
@@ -380,21 +377,131 @@ class RefactorRecipeOperationKind(StrEnum):
     REPLACE_TEXT = "replace_text"
 
 
-class RefactorRecipeTargetShape(StrEnum):
-    """Architectural target shape produced by a synthesized codemod recipe."""
+class RefactorConcept(ABC):
+    """Nominal refactor semantics inherited by executable declarations."""
 
-    AUTOREGISTER_CLASS_REGISTRY = "autoregister_class_registry"
-    AUTOREGISTER_STRATEGY_FAMILY = "autoregister_strategy_family"
-    BOUNDARY_SOURCE_CONTEXT_AUTHORITY = "boundary_source_context_authority"
-    CONSTRUCTOR_KWARG_CARRIER_PROJECTION = "constructor_kwarg_carrier_projection"
-    DATACLASS_CONTEXT_CALL_PROJECTION = "dataclass_context_call_projection"
-    DATACLASS_INHERITANCE_LIFT = "dataclass_inheritance_lift"
-    DATACLASS_PAYLOAD_PROJECTION = "dataclass_payload_projection"
-    DATACLASS_CONSTRUCTOR_PROJECTION = "dataclass_constructor_projection"
-    DEAD_COMPATIBILITY_ERASURE = "dead_compatibility_eraser"
-    PREFIX_BUNDLE_CARRIER = "prefix_bundle_carrier"
-    ROLE_CASE_AUTHORITY = "role_case_authority"
-    TUPLE_DICT_RETURN_RECORD = "tuple_dict_return_record"
+    @classmethod
+    def concept_key(cls) -> str:
+        return class_name_registry_key(cls.__name__.removesuffix("Concept"), cls)
+
+    @classmethod
+    def declaration_types(cls) -> tuple[type["RefactorConcept"], ...]:
+        """Return pure concept declarations without cataloging execution classes."""
+
+        descendants = cls._descendant_types()
+        declarations: set[type[RefactorConcept]] = {cls}
+        while True:
+            discovered = {
+                candidate
+                for candidate in descendants
+                if candidate not in declarations
+                and all(base in declarations for base in candidate.__bases__)
+            }
+            if not discovered:
+                break
+            declarations.update(discovered)
+        declarations_by_key = UniqueIdentityIndexAuthority.declarations_by_handle(
+            declarations,
+            lambda declaration: declaration.concept_key(),
+        )
+        return tuple(declarations_by_key[key] for key in sorted(declarations_by_key))
+
+    @classmethod
+    def _descendant_types(cls) -> frozenset[type["RefactorConcept"]]:
+        descendants: set[type[RefactorConcept]] = set()
+        pending = list(cls.__subclasses__())
+        while pending:
+            candidate = pending.pop()
+            if candidate in descendants:
+                continue
+            descendants.add(candidate)
+            pending.extend(candidate.__subclasses__())
+        return frozenset(descendants)
+
+    @classmethod
+    def leaf_concept_for_declaration(
+        cls,
+        declaration_type: type["RefactorConcept"],
+    ) -> type["RefactorConcept"]:
+        concepts = tuple(
+            concept
+            for concept in cls.declaration_types()
+            if issubclass(declaration_type, concept)
+        )
+        leaves = tuple(
+            concept
+            for concept in concepts
+            if not any(
+                other is not concept and issubclass(other, concept)
+                for other in concepts
+            )
+        )
+        if len(leaves) != 1:
+            raise TypeError(
+                f"{declaration_type.__name__} must inherit exactly one leaf "
+                "RefactorConcept"
+            )
+        return leaves[0]
+
+
+class SemanticCarrierConcept(RefactorConcept):
+    """Replace structurally repeated data movement with nominal ownership."""
+
+
+class PrefixBundleCarrierConcept(SemanticCarrierConcept):
+    """Move repeated prefixed primitive fields into one carrier."""
+
+
+class DataclassInheritanceLiftConcept(SemanticCarrierConcept):
+    """Lift repeated dataclass fields into a nominal base declaration."""
+
+
+class ConstructorKwargCollapseConcept(SemanticCarrierConcept):
+    """Collapse repeated constructor keyword projections behind an authority."""
+
+
+class ConstructorKwargCarrierProjectionConcept(ConstructorKwargCollapseConcept):
+    """Derive constructor keywords through a nominal carrier authority."""
+
+
+class DataclassContextCallProjectionConcept(ConstructorKwargCollapseConcept):
+    """Route call keywords through a dataclass context authority."""
+
+
+class TupleDictReturnNominalizationConcept(SemanticCarrierConcept):
+    """Replace anonymous tuple or mapping results with nominal ownership."""
+
+
+class DataclassPayloadProjectionConcept(TupleDictReturnNominalizationConcept):
+    """Derive payload items from a dataclass declaration."""
+
+
+class TupleDictReturnRecordConcept(TupleDictReturnNominalizationConcept):
+    """Replace anonymous tuple or mapping returns with nominal records."""
+
+
+class BoundarySourceContextAuthorityConcept(SemanticCarrierConcept):
+    """Replace boundary source mappings with a source-context authority."""
+
+
+class DeadCompatibilityErasureConcept(SemanticCarrierConcept):
+    """Erase compatibility projections after their authority is established."""
+
+
+class AutoRegisterConcept(RefactorConcept):
+    """Replace registration mirrors with nominal automatic registration."""
+
+
+class AutoRegisterClassRegistryConcept(AutoRegisterConcept):
+    """Derive a class registry from registered class declarations."""
+
+
+class AutoRegisterStrategyFamilyConcept(AutoRegisterConcept):
+    """Replace closed dispatch with an automatically registered strategy family."""
+
+
+class RoleCaseAuthorityConcept(RefactorConcept):
+    """Move repeated role-case semantics behind a nominal authority."""
 
 
 class SourceNodeDecoratorPolicy(StrEnum):
@@ -14607,7 +14714,6 @@ class RefactorRecipe:
     operations: tuple[RefactorRecipeOperation, ...] = ()
     guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
     reason: str = ""
-    target_shape: RefactorRecipeTargetShape | None = None
     authority_claims: tuple[AuthorityClaim, ...] = ()
 
     @classmethod
@@ -14639,24 +14745,8 @@ class RefactorRecipe:
                 *(recipe.guard_suite for recipe in recipe_tuple)
             ),
             reason=reason,
-            target_shape=cls.shared_target_shape(recipe_tuple),
             authority_claims=cls.shared_authority_claims(recipe_tuple),
         )
-
-    @staticmethod
-    def shared_target_shape(
-        recipes: Iterable["RefactorRecipe"],
-    ) -> RefactorRecipeTargetShape | None:
-        target_shapes = tuple(
-            dict.fromkeys(
-                recipe.target_shape
-                for recipe in recipes
-                if recipe.target_shape is not None
-            )
-        )
-        if len(target_shapes) == 1:
-            return target_shapes[0]
-        return None
 
     @staticmethod
     def shared_authority_claims(
@@ -15563,8 +15653,6 @@ class RefactorRecipe:
                 claim.to_dict() for claim in self.authority_claims
             ),
         }
-        if self.target_shape is not None:
-            payload["target_shape"] = self.target_shape.value
         return payload
 
 
@@ -15625,7 +15713,6 @@ class CodemodPlanDocument:
         recipe = RefactorRecipe(
             recipe_id=f"{target_qualname}-dead-compatibility-eraser",
             reason=eraser_reason,
-            target_shape=RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE,
         ).delete_target(
             target_qualname,
             source_path=source_path,
@@ -16010,7 +16097,6 @@ class CodemodPlanJsonParser:
 
     def refactor_recipe(self, row: JsonValue) -> RefactorRecipe:
         payload = self.object_row(row, "refactor recipe rows")
-        target_shape = self.optional_string_field(payload, "target_shape")
         return RefactorRecipe(
             recipe_id=self.required_string_field(payload, "recipe_id"),
             rewrites=tuple(
@@ -16023,9 +16109,6 @@ class CodemodPlanJsonParser:
             ),
             guard_suite=self.architecture_guard_suite(payload),
             reason=self.optional_string_field(payload, "reason"),
-            target_shape=(
-                RefactorRecipeTargetShape(target_shape) if target_shape else None
-            ),
             authority_claims=self.authority_claims(payload),
         )
 
@@ -16821,7 +16904,6 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
     summary: str
     capability_gap: str
     evaluation: "FindingRecipeEvaluation"
-    synthesizer_name: str = ""
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
     reason: str = ""
 
@@ -16831,7 +16913,6 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
         finding: RefactorFinding,
         status: FindingRecipeSynthesisStatus,
         *,
-        synthesizer: "FindingRecipeSynthesizer | None" = None,
         action_keys: tuple[FindingRecipeActionKey, ...] = (),
         evaluation: "FindingRecipeEvaluation | None" = None,
         reason: str = "",
@@ -16849,7 +16930,6 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
             summary=finding.summary,
             capability_gap=finding.capability_gap,
             evaluation=evaluated_recipe,
-            synthesizer_name="" if synthesizer is None else type(synthesizer).__name__,
             action_keys=action_keys,
             reason=reason,
         )
@@ -16873,11 +16953,18 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
         return recipe.to_dict()
 
     @property
-    def recipe_target_shape(self) -> str:
-        recipe = self.evaluation.recipe
-        if recipe is None or recipe.target_shape is None:
+    def executable_declaration_name(self) -> str:
+        declaration_type = self.evaluation.executable_declaration_type
+        if declaration_type is None:
             return ""
-        return recipe.target_shape.value
+        return declaration_type.__name__
+
+    @property
+    def refactor_concept(self) -> str:
+        concept_type = self.evaluation.refactor_concept_type
+        if concept_type is None:
+            return ""
+        return concept_type.concept_key()
 
     @property
     def semantic_repair_plan(self) -> SemanticDescentRepairPlan | None:
@@ -16902,13 +16989,13 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
             "summary": self.summary,
             "capability_gap": self.capability_gap,
             "status": self.status.value,
-            "synthesizer_name": self.synthesizer_name,
+            "executable_declaration": self.executable_declaration_name,
             "action_keys": tuple(
                 action_key.to_dict() for action_key in self.action_keys
             ),
             "recipe_id": self.recipe_id,
             "recipe": self.recipe_payload,
-            "target_shape": self.recipe_target_shape,
+            "refactor_concept": self.refactor_concept,
             "semantic_repair_plan": (
                 None
                 if self.semantic_repair_plan is None
@@ -17028,7 +17115,6 @@ class FindingRecipeSynthesisResult:
         return FindingRecipeSynthesisRecord.for_finding(
             attempt.finding,
             self.status,
-            synthesizer=attempt.synthesizer,
             action_keys=self.action_keys,
             evaluation=self.evaluation,
             reason=self.reason,
@@ -17042,6 +17128,34 @@ class FindingRecipeEvaluation:
     recipe: RefactorRecipe | None = None
     semantic_repair_plan: SemanticDescentRepairPlan | None = None
     rejection_reason: str = ""
+    executable_declaration_type: type[object] | None = None
+
+    @property
+    def refactor_concept_type(self) -> type[RefactorConcept] | None:
+        declaration_type = self.executable_declaration_type
+        if declaration_type is None or not issubclass(
+            declaration_type, RefactorConcept
+        ):
+            return None
+        return RefactorConcept.leaf_concept_for_declaration(declaration_type)
+
+    @property
+    def required_executable_declaration_type(self) -> type[object]:
+        if self.executable_declaration_type is None:
+            raise TypeError("Finding recipe evaluation has no executable declaration")
+        return self.executable_declaration_type
+
+    def declared_by(self, declaration_type: type[object]) -> Self:
+        if (
+            self.executable_declaration_type is not None
+            and self.executable_declaration_type is not declaration_type
+        ):
+            raise TypeError(
+                "Finding recipe evaluation already belongs to "
+                f"{self.executable_declaration_type.__name__}, not "
+                f"{declaration_type.__name__}"
+            )
+        return replace(self, executable_declaration_type=declaration_type)
 
 
 @dataclass(frozen=True)
@@ -17151,8 +17265,9 @@ class FindingRecipeAuthorityClaimGate:
             return evaluation
         if authority_report.status is CodemodPreflightStatus.PASSED:
             return evaluation
-        return FindingRecipeEvaluation(
-            semantic_repair_plan=evaluation.semantic_repair_plan,
+        return replace(
+            evaluation,
+            recipe=None,
             rejection_reason=cls.rejection_reason(authority_report),
         )
 
@@ -17214,17 +17329,17 @@ class FindingRecipeSynthesisAttempt:
     """Evaluate one finding against the registered executable DSL bridge."""
 
     finding: RefactorFinding
-    synthesizer: "FindingRecipeSynthesizer | None"
     selector_context: CodemodSelectorContext | None
     seen_action_keys: frozenset[FindingRecipeActionKey]
 
     def evaluate(self) -> FindingRecipeSynthesisResult:
+        synthesizer = FindingRecipeSynthesizer.for_finding(self.finding)
         result_status = FindingRecipeSynthesisStatus.NO_SYNTHESIZER
         result_action_keys: tuple[FindingRecipeActionKey, ...] = ()
         result_evaluation = FindingRecipeEvaluation()
         result_reason = result_status.default_reason
-        if self.synthesizer is not None:
-            raw_action_keys = self.synthesizer.action_keys_for_finding(self.finding)
+        if synthesizer is not None:
+            raw_action_keys = synthesizer.action_keys_for_finding(self.finding)
             action_keys = tuple(
                 key
                 for key in raw_action_keys
@@ -17240,7 +17355,7 @@ class FindingRecipeSynthesisAttempt:
                 result_action_keys = raw_action_keys
                 result_reason = result_status.default_reason
             else:
-                evaluation = self.synthesizer.evaluate_recipe_for_finding(
+                evaluation = synthesizer.declared_evaluation_for_finding(
                     self.finding,
                     self.selector_context,
                 )
@@ -17249,6 +17364,7 @@ class FindingRecipeSynthesisAttempt:
                     self.selector_context,
                     self.finding,
                 )
+                result_evaluation = evaluation
                 result_action_keys = action_keys
                 if evaluation.recipe is None:
                     result_status = (
@@ -17400,7 +17516,6 @@ class FindingRecipeClassSitePlan(FindingRecipeSynthesisRecord):
             summary=synthesis_record.summary,
             capability_gap=synthesis_record.capability_gap,
             evaluation=synthesis_record.evaluation,
-            synthesizer_name=synthesis_record.synthesizer_name,
             action_keys=synthesis_record.action_keys,
             reason=synthesis_record.reason,
             replacement_scaffold=context.replacement_plan_scaffold_report(
@@ -17494,20 +17609,14 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         return len(self.site_plans)
 
     @property
-    def target_shapes(self) -> tuple[str, ...]:
+    def refactor_concepts(self) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
-                record.recipe_target_shape
+                record.refactor_concept
                 for record in self.synthesis_records
-                if record.status.planned and record.recipe_target_shape
+                if record.status.planned and record.refactor_concept
             )
         )
-
-    @property
-    def target_shape(self) -> str:
-        if len(self.target_shapes) == 1:
-            return self.target_shapes[0]
-        return ""
 
     @classmethod
     def from_execution_class(
@@ -17559,8 +17668,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             "execution_class": self.execution_class.to_dict(),
             "subsystem": self.execution_class.subsystem,
             "executable": self.executable,
-            "target_shape": self.target_shape,
-            "target_shapes": self.target_shapes,
+            "refactor_concepts": self.refactor_concepts,
             "finding_ids": self.finding_ids,
             "finding_count": self.finding_count,
             **self.finding_plan.to_dict(),
@@ -17786,7 +17894,6 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
     __skip_if_no_key__ = True
 
     detector_id: ClassVar[str]
-    target_shape: ClassVar[RefactorRecipeTargetShape | None] = None
 
     @classmethod
     def has_registered_detector(cls, detector_ids: Iterable[str]) -> bool:
@@ -17800,16 +17907,14 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
         return frozenset(cls.__registry__)
 
     @classmethod
-    def detector_ids_for_target_shapes(
+    def for_finding(
         cls,
-        target_shapes: Iterable[RefactorRecipeTargetShape],
-    ) -> frozenset[str]:
-        shape_set = frozenset(target_shapes)
-        return frozenset(
-            detector_id
-            for detector_id, synthesizer_type in cls.__registry__.items()
-            if synthesizer_type.target_shape in shape_set
-        )
+        finding: RefactorFinding,
+    ) -> "FindingRecipeSynthesizer | None":
+        synthesizer_type = cls.__registry__.get(finding.detector_id)
+        if synthesizer_type is not None:
+            return synthesizer_type()
+        return InferredFindingRecipeSynthesizer.for_finding(finding)
 
     @abstractmethod
     def recipe_for_finding(
@@ -17826,10 +17931,20 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
     ) -> FindingRecipeEvaluation:
         recipe = self.recipe_for_finding(finding, context)
         if recipe is not None:
-            return FindingRecipeEvaluation(recipe=recipe)
+            return FindingRecipeEvaluation(recipe=recipe).declared_by(type(self))
         return FindingRecipeEvaluation(
             rejection_reason=self.rejection_reason_for_finding(finding, context)
-        )
+        ).declared_by(type(self))
+
+    def declared_evaluation_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        evaluation = self.evaluate_recipe_for_finding(finding, context)
+        if evaluation.executable_declaration_type is not None:
+            return evaluation
+        return evaluation.declared_by(type(self))
 
     def action_keys_for_finding(
         self,
@@ -17875,11 +17990,60 @@ class EvaluatedFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
         return super().rejection_reason_for_finding(finding, context)
 
 
-class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+class InferredFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
+    """Resolve an unregistered finding through declaration-owned evidence."""
+
+    @classmethod
+    def for_finding(
+        cls,
+        finding: RefactorFinding,
+    ) -> FindingRecipeSynthesizer | None:
+        matching_types = tuple(
+            synthesizer_type
+            for synthesizer_type in cls.__subclasses__()
+            if synthesizer_type.supports_finding(finding)
+        )
+        if not matching_types:
+            return None
+        if len(matching_types) != 1:
+            raise TypeError(
+                f"Finding {finding.stable_id} matches multiple inferred recipe "
+                "synthesizers: " + ", ".join(item.__name__ for item in matching_types)
+            )
+        return matching_types[0]()
+
+    @classmethod
+    @abstractmethod
+    def supports_finding(cls, finding: RefactorFinding) -> bool:
+        raise NotImplementedError
+
+
+class DynamicallyDeclaredFindingRecipeSynthesizer(
+    EvaluatedFindingRecipeSynthesizer,
+    ABC,
+):
+    """Require dynamic recipe selection to name its exact declaration."""
+
+    def declared_evaluation_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        evaluation = self.evaluate_recipe_for_finding(finding, context)
+        if evaluation.executable_declaration_type is None:
+            raise TypeError(
+                f"{type(self).__name__} did not declare its selected execution type"
+            )
+        return evaluation
+
+
+class RuntimeProductRecordSchemaFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer,
+    TupleDictReturnRecordConcept,
+):
     """Build product_record_to_dataclass recipes from product-record findings."""
 
     detector_id = "runtime_product_record_schema"
-    target_shape = RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
     dynamic_record_name: ClassVar[str] = "dynamic_product_record"
 
     @staticmethod
@@ -17906,7 +18070,6 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesize
                 "Replace runtime product-record schema with AST-visible "
                 "dataclass declarations."
             ),
-            target_shape=RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
         )
         if call_kind.is_batch_materializer:
             return recipe.product_records_to_dataclasses(
@@ -18019,11 +18182,11 @@ class SharedActionKeysForFindingMixin:
 class FlattenedProjectionPropertyFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
     FindingRecipeSynthesizer,
+    DeadCompatibilityErasureConcept,
 ):
     """Delete flattened compatibility properties after nested records are authoritative."""
 
     detector_id = "flattened_projection_property"
-    target_shape = RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE
 
     def recipe_for_finding(
         self,
@@ -18043,7 +18206,6 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-dead-compatibility-eraser",
             reason=reason,
-            target_shape=RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE,
         ).with_architecture_guard(
             ArchitectureGuardRule(
                 rule_id=f"{finding.stable_id}-no-flattened-projection-callers",
@@ -18119,33 +18281,33 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
         )
 
 
-class MappingBuilderFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+class MappingBuilderFindingRecipeSynthesizer(
+    DynamicallyDeclaredFindingRecipeSynthesizer
+):
     """Finding synthesizer backed by the mapping-recipe builder registry."""
-
-    def recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> RefactorRecipe | None:
-        builder = MappingSemanticMirrorRecipeBuilder.builder_for(finding, context)
-        if builder is None:
-            return None
-        return builder.recipe()
 
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        recipe = self.recipe_for_finding(finding, context)
+        builder = MappingSemanticMirrorRecipeBuilder.builder_for(finding, context)
+        if builder is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
+                    finding,
+                    context,
+                )
+            ).declared_by(type(self))
+        recipe = builder.recipe()
         if recipe is not None:
-            return FindingRecipeEvaluation(recipe=recipe)
+            return FindingRecipeEvaluation(recipe=recipe).declared_by(type(builder))
         return FindingRecipeEvaluation(
             rejection_reason=MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
                 finding,
                 context,
             )
-        )
+        ).declared_by(type(builder))
 
     def action_keys_for_finding(
         self,
@@ -18199,11 +18361,11 @@ class SemanticTupleReturnRecordFindingRecipeSynthesizer(
 class RepeatedFieldFamilyFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
     EvaluatedFindingRecipeSynthesizer,
+    DataclassInheritanceLiftConcept,
 ):
     """Build executable carrier-collapse recipes for dataclass field families."""
 
     detector_id = "repeated_field_family"
-    target_shape = RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT
 
     def evaluate_recipe_for_finding(
         self,
@@ -18303,7 +18465,6 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(
                     "Lift duplicated dataclass field declarations into a shared "
                     "nominal base."
                 ),
-                target_shape=RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT,
             ).collapse_fields_to_carrier(
                 source_path,
                 carrier_name=carrier_name,
@@ -18573,7 +18734,6 @@ class ExistingNominalAuthorityReuseRecipeParts:
                 "Reuse the existing nominal authority instead of duplicating "
                 "its field family."
             ),
-            target_shape=RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT,
         ).collapse_fields_to_carrier(
             self.source_path,
             carrier_name=self.authority_class_name,
@@ -18584,12 +18744,12 @@ class ExistingNominalAuthorityReuseRecipeParts:
 
 
 class ExistingNominalAuthorityReuseFindingRecipeSynthesizer(
-    EvaluatedFindingRecipeSynthesizer
+    EvaluatedFindingRecipeSynthesizer,
+    DataclassInheritanceLiftConcept,
 ):
     """Reuse an existing same-file nominal carrier instead of generating another."""
 
     detector_id = "existing_nominal_authority_reuse"
-    target_shape = RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT
 
     def evaluate_recipe_for_finding(
         self,
@@ -18647,7 +18807,6 @@ class PrefixedRoleBundleRecipeParts:
                 "Extract role-prefixed primitive fields into nominal role carrier "
                 "records."
             ),
-            target_shape=RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER,
         )
 
 
@@ -18655,11 +18814,11 @@ class PrefixedRoleBundleFindingRecipeSynthesizer(
     SharedActionKeysForFindingMixin,
     SourcePathMetricsRecipeRequirementMixin,
     EvaluatedFindingRecipeSynthesizer,
+    PrefixBundleCarrierConcept,
 ):
     """Synthesize nominal carrier extraction for role-prefixed fields."""
 
     detector_id = "prefixed_role_field_bundle"
-    target_shape = RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER
     rejection_type = PrefixedRoleBundleRecipeRejection
     metric_type = PrefixedRoleBundleMetrics
     missing_context_reason = (
@@ -18924,11 +19083,11 @@ class ParallelPrimitiveCarrierRejection(FindingRecipeRequirementRejection):
 class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
     SourcePathMetricsRecipeRequirementMixin,
     EvaluatedFindingRecipeSynthesizer,
+    PrefixBundleCarrierConcept,
 ):
     """Collapse exact primitive role bundles into a nominal carrier."""
 
     detector_id = "parallel_primitive_carrier"
-    target_shape = RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER
     rejection_type = ParallelPrimitiveCarrierRejection
     metric_type = MappingMetrics
     missing_context_reason = (
@@ -18962,7 +19121,6 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
                     "Extract repeated prefix/role primitive fields into one nominal "
                     "bundle carrier."
                 ),
-                target_shape=RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER,
             ).collapse_fields_to_carrier(
                 parts.source_path,
                 carrier_name=parts.carrier_name,
@@ -20454,7 +20612,14 @@ class RepeatedBuilderAuthorityMethod(
     """Generated builder-authority method signature and constructor mapping."""
 
     constructor_arguments: tuple[RepeatedBuilderConstructorArgument, ...]
-    target_shape: RefactorRecipeTargetShape | None = None
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderSourceProjectionAuthorityMethod(
+    RepeatedBuilderAuthorityMethod,
+    ConstructorKwargCarrierProjectionConcept,
+):
+    """Builder method that derives constructor fields from one source object."""
 
 
 @dataclass(frozen=True)
@@ -20480,13 +20645,11 @@ class RepeatedAuthorityRecipeParts(AuthorityClaimCarrier):
     """Executable rewrite sequence for one repeated-call authority extraction."""
 
     rewrite_steps: tuple[RepeatedAuthorityTargetRewrite, ...]
-    target_shape: RefactorRecipeTargetShape | None = None
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
             reason=self.recipe_reason,
-            target_shape=self.target_shape,
         ).with_authority_claim(self.authority_claim)
         for rewrite_step in self.rewrite_steps:
             recipe = recipe.replace_target(
@@ -20505,6 +20668,7 @@ class RepeatedBuilderAuthorityRecipeParts(RepeatedAuthorityRecipeParts):
     recipe_reason = (
         "Move repeated constructor field mapping behind an owned builder authority."
     )
+    authority_method: RepeatedBuilderAuthorityMethod
 
 
 @dataclass(frozen=True)
@@ -20551,7 +20715,9 @@ class RepeatedMethodCallAuthorityExtraction(
     calls: tuple[ast.Call, ...]
 
 
-class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesizer):
+class RepeatedBuilderCallFindingRecipeSynthesizer(
+    DynamicallyDeclaredFindingRecipeSynthesizer
+):
     """Build class-owned constructor authority recipes for repeated builder calls."""
 
     detector_id = "repeated_builder_calls"
@@ -20566,15 +20732,20 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                 rejection_reason=(
                     "repeated-builder authority extraction requires a source selector context"
                 )
-            )
+            ).declared_by(type(self))
         parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
         if rejection_reason:
-            return FindingRecipeEvaluation(rejection_reason=rejection_reason)
+            return FindingRecipeEvaluation(
+                rejection_reason=rejection_reason
+            ).declared_by(type(self))
         if parts is None:
             return FindingRecipeEvaluation(
                 rejection_reason="repeated-builder authority extraction found no recipe parts"
-            )
-        return FindingRecipeEvaluation(recipe=parts.recipe_for(finding))
+            ).declared_by(type(self))
+        evaluation = FindingRecipeEvaluation(recipe=parts.recipe_for(finding))
+        if isinstance(parts, RepeatedBuilderAuthorityRecipeParts):
+            return evaluation.declared_by(type(parts.authority_method))
+        return evaluation.declared_by(type(self))
 
     def recipe_parts_for_finding(
         self,
@@ -20697,7 +20868,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                     *call_rewrites,
                 ),
                 authority_claim=AstTargetAuthorityClaim.from_target(constructor_target),
-                target_shape=method.target_shape,
+                authority_method=method,
             ),
             "",
         )
@@ -21283,7 +21454,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         source_field_name: str,
     ) -> RepeatedBuilderAuthorityMethod:
         parameter_name = cls.source_projection_parameter_name(metrics)
-        return RepeatedBuilderAuthorityMethod(
+        return RepeatedBuilderSourceProjectionAuthorityMethod(
             method_name=f"from_{parameter_name}",
             parameters=(
                 RepeatedBuilderAuthorityParameter(
@@ -21300,7 +21471,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                 )
                 for field_name, value_source in templates[0].value_sources_by_field
             ),
-            target_shape=RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
         )
 
     @classmethod
@@ -23694,7 +23864,10 @@ class ManualRegistryRecipeParts(ManualRegistryConversionCarrier):
     source_path: str
 
 
-class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+class ManualClassRegistrationFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer,
+    AutoRegisterClassRegistryConcept,
+):
     """Build AutoRegisterMeta conversion recipes for manual class registries."""
 
     detector_id = MANUAL_CLASS_REGISTRATION_FINDING_ID
@@ -23877,7 +24050,6 @@ class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-convert-manual-registry",
             reason="Replace manual registry writes with AutoRegisterMeta.",
-            target_shape=RefactorRecipeTargetShape.AUTOREGISTER_CLASS_REGISTRY,
         ).convert_manual_registry_to_autoregister(
             source_path,
             base_name=autoregister_base_name(
@@ -23979,11 +24151,12 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         self,
         finding: RefactorFinding,
         recipe: RefactorRecipe,
+        declaration_type: type[object],
     ) -> FindingRecipeEvaluation:
         return FindingRecipeEvaluation(
             recipe=recipe,
             semantic_repair_plan=self.repair_plan_from_recipe(finding, recipe),
-        )
+        ).declared_by(declaration_type)
 
     def rejection_reason_for_finding(
         self,
@@ -24003,10 +24176,10 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
             return FindingRecipeEvaluation(
                 recipe=repair_plan.recipe,
                 semantic_repair_plan=repair_plan,
-            )
+            ).declared_by(type(self))
         return FindingRecipeEvaluation(
             rejection_reason=self.rejection_reason_for_finding(finding, context)
-        )
+        ).declared_by(type(self))
 
 
 class TypedMetricSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy, ABC):
@@ -24448,7 +24621,6 @@ class MappingSemanticMirrorRecipeBuilder(
     __registry_key__ = "mapping_name"
     __skip_if_no_key__ = True
     mapping_name: ClassVar[str]
-    target_shape: ClassVar[RefactorRecipeTargetShape | None] = None
     registration_order: ClassVar[int] = 100
 
     finding: RefactorFinding
@@ -24502,35 +24674,6 @@ class MappingSemanticMirrorRecipeBuilder(
     @classmethod
     def registered_mapping_names(cls) -> frozenset[str]:
         return frozenset(cls.__registry__)
-
-    @classmethod
-    def mapping_names_for_target_shapes(
-        cls,
-        target_shapes: Iterable[RefactorRecipeTargetShape],
-    ) -> frozenset[str]:
-        shape_set = frozenset(target_shapes)
-        return frozenset(
-            mapping_name
-            for mapping_name, builder_type in cls.__registry__.items()
-            if builder_type.target_shape in shape_set
-        )
-
-    @classmethod
-    def target_shapes_for_finding(
-        cls,
-        finding: RefactorFinding,
-    ) -> frozenset[RefactorRecipeTargetShape]:
-        if not isinstance(finding.metrics, MappingMetrics):
-            return frozenset()
-        mapping_name = finding.metrics.plan_mapping_name
-        if mapping_name is None:
-            return frozenset()
-        return frozenset(
-            builder_type.target_shape
-            for builder_type in cls.builder_types_for(mapping_name)
-            if builder_type.target_shape is not None
-            and builder_type.matches_finding_shape(finding)
-        )
 
     @classmethod
     def matches_finding_shape(cls, finding: RefactorFinding) -> bool:
@@ -25708,7 +25851,6 @@ class DataclassPayloadProjectionRecipeParts(FindingRecipeParts):
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-dataclass-payload-projection",
             reason="Derive mirrored payload keys from the dataclass authority.",
-            target_shape=RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
         )
         if self.import_source is not None:
             recipe = recipe.ensure_import(
@@ -25739,11 +25881,11 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         ReturnDictProjectionTarget,
         DataclassPayloadProjectionRecipeParts,
     ],
+    DataclassPayloadProjectionConcept,
 ):
     """Derive return-dict payload keys from the mirrored dataclass authority."""
 
     mapping_name: ClassVar[str] = "dataclass_payload_projection"
-    target_shape = RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION
     registration_order: ClassVar[int] = 1000
     payload_method_name: ClassVar[str] = "payload_from_field_values"
 
@@ -25945,7 +26087,6 @@ class DataclassKeyValueSequenceProjectionRecipeParts(FindingRecipeParts):
             reason=(
                 "Derive mirrored key/value payload items from the dataclass authority."
             ),
-            target_shape=RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
         )
         if self.import_source is not None:
             recipe = recipe.ensure_import(
@@ -25978,11 +26119,11 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         ReturnKeyValueSequenceProjectionTarget,
         DataclassKeyValueSequenceProjectionRecipeParts,
     ],
+    DataclassPayloadProjectionConcept,
 ):
     """Derive returned ``("field", value)`` items from a dataclass authority."""
 
     mapping_name: ClassVar[str] = "dataclass_key_value_sequence_projection"
-    target_shape = RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION
     registration_order: ClassVar[int] = 1001
     payload_method_name: ClassVar[str] = "payload_items_from_field_values"
 
@@ -26175,7 +26316,6 @@ class BoundarySourceContextReturnDictRecipeParts(
                     "Replace formal source-scope string-key return data with a "
                     "declared source-context carrier."
                 ),
-                target_shape=RefactorRecipeTargetShape.BOUNDARY_SOURCE_CONTEXT_AUTHORITY,
             )
             .ensure_import(
                 self.source_path,
@@ -26236,11 +26376,11 @@ class BoundarySourceContextCarrierSelection:
 class BoundarySourceContextReturnDictMappingRecipeBuilder(
     ReturnDictFieldValueExtractor,
     PartsBackedMappingRecipeBuilder[BoundarySourceContextReturnDictRecipeParts],
+    BoundarySourceContextAuthorityConcept,
 ):
     """Nominalize formal source-scope return dictionaries as dataclass carriers."""
 
     mapping_name: ClassVar[str] = "formal_boundary_source_scope_return_dict"
-    target_shape = RefactorRecipeTargetShape.BOUNDARY_SOURCE_CONTEXT_AUTHORITY
     registration_order: ClassVar[int] = 80
     context_mapping_prefix: ClassVar[str] = "formal_boundary_source_scope_"
 
@@ -26439,7 +26579,6 @@ class SemanticReturnDictRecordRecipeParts(FunctionProjectionTarget, FindingRecip
                     "Replace the anonymous return dictionary with a nominal "
                     "result record."
                 ),
-                target_shape=RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
             )
             .ensure_import(
                 self.source_path,
@@ -26484,11 +26623,11 @@ class SemanticReturnDictRecordRecipeParts(FunctionProjectionTarget, FindingRecip
 class SemanticDictBagReturnRecordMappingRecipeBuilder(
     ReturnDictFieldValueExtractor,
     PartsBackedMappingRecipeBuilder[SemanticReturnDictRecordRecipeParts],
+    TupleDictReturnRecordConcept,
 ):
     """Nominalize ordinary semantic return dictionaries as dataclass records."""
 
     mapping_name: ClassVar[str] = "semantic_dict_bag_return_dict_record"
-    target_shape = RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
     registration_order: ClassVar[int] = 75
 
     finding: RefactorFinding
@@ -26703,7 +26842,6 @@ class SemanticTupleReturnRecordRecipeParts(
                     "Replace the positional tuple return with a nominal result "
                     "record and rewrite unpack consumers to named projections."
                 ),
-                target_shape=RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
             )
             .ensure_import(
                 self.source_path,
@@ -26752,11 +26890,11 @@ class SemanticTupleReturnRecordRecipeParts(
 @dataclass(frozen=True, kw_only=True)
 class SemanticTupleReturnRecordMappingRecipeBuilder(
     PartsBackedMappingRecipeBuilder[SemanticTupleReturnRecordRecipeParts],
+    TupleDictReturnRecordConcept,
 ):
     """Nominalize tuple returns and same-file unpack consumers."""
 
     mapping_name: ClassVar[str] = "semantic_tuple_return_record"
-    target_shape = RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD
     registration_order: ClassVar[int] = 76
 
     finding: RefactorFinding
@@ -26999,7 +27137,6 @@ class DataclassConstructorProjectionRecipeParts(FindingRecipeParts):
             reason=(
                 "Derive mirrored constructor fields from the dataclass authority method."
             ),
-            target_shape=RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
         )
         if self.import_source is not None:
             recipe = recipe.ensure_import(
@@ -27079,12 +27216,12 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
     DataclassCallProjectionMappingRecipeBuilder[
         DataclassConstructorProjectionCallTarget,
         DataclassConstructorProjectionRecipeParts,
-    ]
+    ],
+    ConstructorKwargCarrierProjectionConcept,
 ):
     """Derive constructor keyword mirrors through an existing dataclass method."""
 
     mapping_name: ClassVar[str] = "dataclass_constructor_projection"
-    target_shape = RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION
     registration_order: ClassVar[int] = 1010
     metrics_rejection_reason: ClassVar[str] = (
         "dataclass constructor projection requires mapping metrics"
@@ -27324,7 +27461,6 @@ class DataclassContextCallProjectionRecipeParts(FindingRecipeParts):
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-dataclass-context-call-projection",
             reason="Move loose call keywords behind the dataclass context authority.",
-            target_shape=RefactorRecipeTargetShape.DATACLASS_CONTEXT_CALL_PROJECTION,
         )
         if self.import_source is not None:
             recipe = recipe.ensure_import(
@@ -27346,12 +27482,12 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
     DataclassCallProjectionMappingRecipeBuilder[
         DataclassContextCallProjectionTarget,
         DataclassContextCallProjectionRecipeParts,
-    ]
+    ],
+    DataclassContextCallProjectionConcept,
 ):
     """Route loose call keyword mirrors through a dataclass context authority."""
 
     mapping_name: ClassVar[str] = "dataclass_context_call_projection"
-    target_shape = RefactorRecipeTargetShape.DATACLASS_CONTEXT_CALL_PROJECTION
     registration_order: ClassVar[int] = 1005
     metrics_rejection_reason: ClassVar[str] = (
         "dataclass context call projection requires mapping metrics"
@@ -27602,7 +27738,10 @@ class GenericRoleCaseFileRewrite(ReplacementSource):
 
 
 @dataclass(frozen=True, kw_only=True)
-class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder):
+class GenericRoleCaseTableMappingRecipeBuilder(
+    MappingSemanticMirrorRecipeBuilder,
+    RoleCaseAuthorityConcept,
+):
     """Derive exact role-case string literals from one nominal authority."""
 
     mapping_name: ClassVar[str] = "generic_role_case_table"
@@ -27615,7 +27754,6 @@ class GenericRoleCaseTableMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilde
         recipe = RefactorRecipe(
             recipe_id=f"{self.finding.stable_id}-derive-generic-role-case-table",
             reason="Derive repeated role-case literals from one nominal authority.",
-            target_shape=RefactorRecipeTargetShape.ROLE_CASE_AUTHORITY,
         )
         for target_rewrite in parts.file_rewrites:
             recipe = recipe.replace_target(
@@ -28450,7 +28588,6 @@ class LocalRoleCaseLogicRecipeParts:
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-extract-local-role-case-authority",
                 reason="Move local role-case literals behind a nominal authority.",
-                target_shape=RefactorRecipeTargetShape.ROLE_CASE_AUTHORITY,
             )
             .insert_before_target(
                 self.insertion_qualname,
@@ -28879,7 +29016,10 @@ class LocalRoleCaseGuardExtractionStrategy(LocalRoleCaseExtractionStrategy):
 
 
 @dataclass(frozen=True, kw_only=True)
-class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder):
+class LocalRoleCaseLogicMappingRecipeBuilder(
+    MappingSemanticMirrorRecipeBuilder,
+    RoleCaseAuthorityConcept,
+):
     """Extract local role-case maps into a nominal authority recipe."""
 
     mapping_name: ClassVar[str] = "local_role_case_logic"
@@ -30218,19 +30358,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
             builder_recipe = builder.recipe()
             if builder_recipe is not None:
                 return builder_recipe
-        context_effect = Maybe.of(context).combine(
-            lambda selector_context: EnumSubsetSemanticMirrorRecipeBuilder(
-                source_index=selector_context.source_index,
-                sources_by_file_path=selector_context.sources_by_file_path,
-                class_family_index=selector_context.class_family_index,
-                module_node_cache=selector_context.module_nodes_by_file_path,
-                ast_target_node_cache=selector_context.ast_target_nodes_by_id,
-                module_import_graph_cache=selector_context.module_import_graph,
-                finding=finding,
-            ).parts(),
-            lambda selector_context, parts: parts.recipe_for(finding),
-        )
-        return context_effect.unwrap_or_none()
+        return self.enum_subset_recipe_for_finding(finding, context)
 
     def evaluate_recipe_for_finding(
         self,
@@ -30241,16 +30369,26 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         if builder is not None:
             builder_recipe = builder.recipe()
             if builder_recipe is not None:
-                return self.evaluation_from_recipe(finding, builder_recipe)
+                return self.evaluation_from_recipe(
+                    finding,
+                    builder_recipe,
+                    type(builder),
+                )
             return FindingRecipeEvaluation(
                 rejection_reason=self.rejection_reason_from_builder(
                     finding,
                     builder.rejection_reason(),
                 )
-            )
-        recipe = self.enum_subset_recipe_for_finding(finding, context)
-        if recipe is not None:
-            return self.evaluation_from_recipe(finding, recipe)
+            ).declared_by(type(builder))
+        enum_subset_builder = self.enum_subset_builder_for_finding(finding, context)
+        if enum_subset_builder is not None:
+            parts = enum_subset_builder.parts()
+            if parts is not None:
+                return self.evaluation_from_recipe(
+                    finding,
+                    parts.recipe_for(finding),
+                    type(enum_subset_builder),
+                )
         return FindingRecipeEvaluation(
             rejection_reason=self.rejection_reason_from_builder(
                 finding,
@@ -30259,7 +30397,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                     context,
                 ),
             )
-        )
+        ).declared_by(type(self))
 
     def action_keys_for_finding(
         self,
@@ -30298,20 +30436,29 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        return (
-            Maybe.of(context)
-            .combine(
-                lambda selector_context: EnumSubsetSemanticMirrorRecipeBuilder(
-                    source_index=selector_context.source_index,
-                    sources_by_file_path=selector_context.sources_by_file_path,
-                    class_family_index=selector_context.class_family_index,
-                    module_node_cache=selector_context.module_nodes_by_file_path,
-                    ast_target_node_cache=selector_context.ast_target_nodes_by_id,
-                    finding=finding,
-                ).parts(),
-                lambda selector_context, parts: parts.recipe_for(finding),
-            )
-            .unwrap_or_none()
+        builder = self.enum_subset_builder_for_finding(finding, context)
+        if builder is None:
+            return None
+        parts = builder.parts()
+        if parts is None:
+            return None
+        return parts.recipe_for(finding)
+
+    @staticmethod
+    def enum_subset_builder_for_finding(
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> EnumSubsetSemanticMirrorRecipeBuilder | None:
+        if context is None:
+            return None
+        return EnumSubsetSemanticMirrorRecipeBuilder(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
+            module_node_cache=context.module_nodes_by_file_path,
+            ast_target_node_cache=context.ast_target_nodes_by_id,
+            module_import_graph_cache=context.module_import_graph,
+            finding=finding,
         )
 
     @staticmethod
@@ -30450,11 +30597,13 @@ class BranchSemanticMirrorRecipeStrategy(
                 rejection_reason=(
                     "branch-chain semantic mirror extraction requires a source selector context"
                 )
-            )
+            ).declared_by(type(self))
         recipe = builder.recipe()
         if recipe is not None:
-            return self.evaluation_from_recipe(finding, recipe)
-        return FindingRecipeEvaluation(rejection_reason=builder.rejection_reason())
+            return self.evaluation_from_recipe(finding, recipe, type(builder))
+        return FindingRecipeEvaluation(
+            rejection_reason=builder.rejection_reason()
+        ).declared_by(type(builder))
 
     @staticmethod
     def builder_for_finding(
@@ -30484,20 +30633,22 @@ def _semantic_mirror_method_name(mapping_name: str) -> str:
     return identifier
 
 
-class SemanticMirrorRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+class SemanticMirrorRegistrationFindingRecipeSynthesizer(
+    DynamicallyDeclaredFindingRecipeSynthesizer,
+    InferredFindingRecipeSynthesizer,
+):
     """Build metric-specific recipes for semantic mirror findings."""
 
     detector_id = "semantic_mirror_without_descent"
 
-    def recipe_for_finding(
-        self,
+    @classmethod
+    def supports_finding(
+        cls,
         finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> RefactorRecipe | None:
-        strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding)
-        if strategy is None:
-            return None
-        return strategy.recipe_for_finding(finding, context)
+    ) -> bool:
+        from .detectors import IssueDetector
+
+        return finding.detector_id in IssueDetector.semantic_mirror_detector_ids()
 
     def action_keys_for_finding(
         self,
@@ -30508,16 +30659,6 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesize
             return ()
         return strategy.action_keys_for_finding(finding)
 
-    def rejection_reason_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> str:
-        strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding)
-        if strategy is None:
-            return "semantic mirror metrics have no registered recipe strategy"
-        return strategy.rejection_reason_for_finding(finding, context)
-
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
@@ -30527,11 +30668,15 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesize
         if strategy is None:
             return FindingRecipeEvaluation(
                 rejection_reason="semantic mirror metrics have no registered recipe strategy"
-            )
+            ).declared_by(type(self))
         return strategy.evaluate_recipe_for_finding(finding, context)
 
 
-class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
+class LiteralDispatchFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer,
+    AutoRegisterStrategyFamilyConcept,
+    ABC,
+):
     """Build strategy-family recipes for simple literal dispatch findings."""
 
     case_key_attribute: ClassVar[str] = "case"
@@ -30630,7 +30775,6 @@ class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-dispatch-to-polymorphism",
             reason="Replace literal dispatch with AutoRegisterMeta strategy family.",
-            target_shape=RefactorRecipeTargetShape.AUTOREGISTER_STRATEGY_FAMILY,
         ).dispatch_to_polymorphism(
             target_digest.qualname,
             source_path=target_digest.file_path,
@@ -30719,8 +30863,17 @@ class InlineLiteralDispatchFindingRecipeSynthesizer(
     detector_id = INLINE_LITERAL_DISPATCH_FINDING_ID
 
 
-class DispatchMetricsFindingRecipeSynthesizer(LiteralDispatchFindingRecipeSynthesizer):
-    """Fallback recipe bridge for findings that already expose dispatch metrics."""
+class DispatchMetricsFindingRecipeSynthesizer(
+    LiteralDispatchFindingRecipeSynthesizer,
+    InferredFindingRecipeSynthesizer,
+):
+    """Recipe bridge for findings that already expose dispatch metrics."""
+
+    @classmethod
+    def supports_finding(cls, finding: RefactorFinding) -> bool:
+        return finding.metrics.plan_dispatch_axis is not None and bool(
+            finding.metrics.plan_literal_cases
+        )
 
 
 class RuntimeSemanticBranchChainFindingRecipeSynthesizer(
@@ -30820,7 +30973,6 @@ class ProjectedBatchRewriteSet:
         self,
         *,
         guard_suite: ArchitectureGuardSuite | None = None,
-        target_shape: RefactorRecipeTargetShape | None = None,
         authority_claims: Iterable[AuthorityClaim] = (),
     ) -> RefactorRecipe:
         return RefactorRecipe(
@@ -30839,7 +30991,6 @@ class ProjectedBatchRewriteSet:
                 "source-merge pass."
             ),
             guard_suite=guard_suite or ArchitectureGuardSuite(),
-            target_shape=target_shape,
             authority_claims=tuple(authority_claims),
         )
 
@@ -30874,7 +31025,6 @@ class FindingRecipePlanBuilder:
         for finding in self.scoped_findings():
             attempt = FindingRecipeSynthesisAttempt(
                 finding=finding,
-                synthesizer=self.synthesizer_for(finding),
                 selector_context=selector_context,
                 seen_action_keys=frozenset(seen_action_keys),
             )
@@ -30895,10 +31045,11 @@ class FindingRecipePlanBuilder:
                     FindingRecipeSynthesisRecord.for_finding(
                         finding,
                         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
-                        synthesizer=attempt.synthesizer,
                         action_keys=result.action_keys,
                         evaluation=FindingRecipeEvaluation(
                             rejection_reason=overlap_reason,
+                        ).declared_by(
+                            result.evaluation.required_executable_declaration_type
                         ),
                         reason=overlap_reason,
                     )
@@ -31032,7 +31183,6 @@ class FindingRecipePlanBuilder:
                     guard_suite=ArchitectureGuardSuite().merge(
                         *(recipe.guard_suite for recipe in recipe_tuple)
                     ),
-                    target_shape=RefactorRecipe.shared_target_shape(recipe_tuple),
                     authority_claims=RefactorRecipe.shared_authority_claims(
                         recipe_tuple
                     ),
@@ -31296,35 +31446,6 @@ class FindingRecipePlanBuilder:
 
     def includes_finding(self, finding: RefactorFinding) -> bool:
         return not self.detector_ids or finding.detector_id in self.detector_ids
-
-    def synthesizer_for(
-        self,
-        finding: RefactorFinding,
-    ) -> FindingRecipeSynthesizer | None:
-        if not self.includes_finding(finding):
-            return None
-        synthesizer_type = FindingRecipeSynthesizer.__registry__.get(
-            finding.detector_id
-        )
-        if synthesizer_type is not None:
-            return synthesizer_type()
-        if self.finding_has_dispatch_recipe_shape(finding):
-            return DispatchMetricsFindingRecipeSynthesizer()
-        if self.finding_has_semantic_mirror_role(finding):
-            return SemanticMirrorRegistrationFindingRecipeSynthesizer()
-        return None
-
-    @staticmethod
-    def finding_has_dispatch_recipe_shape(finding: RefactorFinding) -> bool:
-        return finding.metrics.plan_dispatch_axis is not None and bool(
-            finding.metrics.plan_literal_cases
-        )
-
-    @staticmethod
-    def finding_has_semantic_mirror_role(finding: RefactorFinding) -> bool:
-        from .detectors import IssueDetector
-
-        return finding.detector_id in IssueDetector.semantic_mirror_detector_ids()
 
 
 def codemod_plan_from_findings(

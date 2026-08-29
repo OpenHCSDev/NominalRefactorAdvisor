@@ -1071,7 +1071,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert record.detector_id == "semantic_mirror_without_descent"
     assert record.status.value == "planned"
     assert (
-        record.synthesizer_name == "SemanticMirrorRegistrationFindingRecipeSynthesizer"
+        record.executable_declaration_name == "RegistrationSemanticMirrorRecipeStrategy"
     )
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert operation["registry_name"] == "STEP_TABLE"
@@ -1162,7 +1162,7 @@ def test_semantic_mirror_role_finding_uses_shared_synthesis_route(
     assert record.detector_id == "local_role_case_logic"
     assert record.status.value == "planned"
     assert (
-        record.synthesizer_name == "SemanticMirrorRegistrationFindingRecipeSynthesizer"
+        record.executable_declaration_name == "LocalRoleCaseLogicMappingRecipeBuilder"
     )
     assert record.action_keys
     assert operation_kinds == ("insert_before_target", "replace_function_body")
@@ -1444,7 +1444,7 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer"
     )
     assert {operation["attribute_name"] for operation in operations} == {
@@ -1520,7 +1520,7 @@ def test_semantic_inheritance_family_ssot_synthesizes_registered_root(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "SemanticInheritanceFamilySSOTFindingRecipeSynthesizer"
     )
     assert (
@@ -1565,7 +1565,7 @@ def test_derived_metric_count_synthesizes_constructor_rewrite(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "DerivedMetricCountBoilerplateFindingRecipeSynthesizer"
     )
     assert operation["operation"] == "replace_text"
@@ -1607,7 +1607,7 @@ def test_duplicate_visitor_methods_synthesize_alias_rewrite(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "DuplicateVisitorMethodBodyFindingRecipeSynthesizer"
     )
     assert operation["operation"] == "replace_text"
@@ -1653,7 +1653,7 @@ def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "RepeatedFieldFamilyFindingRecipeSynthesizer"
     )
     assert operation["operation"] == "collapse_fields_to_carrier"
@@ -1810,10 +1810,10 @@ def test_parallel_primitive_carrier_synthesis_collapses_exact_dataclass_fields(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "ParallelPrimitiveCarrierFindingRecipeSynthesizer"
     )
-    assert plan.records[0].recipe_target_shape == "prefix_bundle_carrier"
+    assert plan.records[0].refactor_concept == "prefix_bundle_carrier"
     assert operation["operation"] == "collapse_fields_to_carrier"
     assert operation["carrier_name"] == "SourceLocationEvidencePropertyBase"
     assert "class SourceLocationEvidencePropertyBase:" in rewritten
@@ -1888,7 +1888,7 @@ def test_parallel_primitive_carrier_uses_field_prefix_when_class_names_do_not_na
     operation = plan.document.recipes[0].operations[0].to_dict()
 
     assert plan.records[0].status.value == "planned"
-    assert plan.records[0].recipe_target_shape == "prefix_bundle_carrier"
+    assert plan.records[0].refactor_concept == "prefix_bundle_carrier"
     assert operation["carrier_name"] == "SourceWorkspaceCarrier"
 
 
@@ -2212,7 +2212,7 @@ def test_identity_keyword_forwarding_shell_synthesizes_inline_delete_recipe(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
+        plan.records[0].executable_declaration_name
         == "IdentityKeywordForwardingShellFindingRecipeSynthesizer"
     )
     assert len(recipe["rewrites"]) == 1
@@ -2317,8 +2317,7 @@ def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
 
     assert plan.records[0].status.value == "planned"
     assert (
-        plan.records[0].synthesizer_name
-        == "RepeatedBuilderCallFindingRecipeSynthesizer"
+        plan.records[0].executable_declaration_name == "RepeatedBuilderAuthorityMethod"
     )
     assert len(recipe["rewrites"]) == 4
     assert "def from_sources(" in rewritten
@@ -2892,7 +2891,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert record.status.value == "planned"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert record.recipe_target_shape == "dataclass_payload_projection"
+    assert record.refactor_concept == "dataclass_payload_projection"
     assert record.semantic_repair_plan is not None
     assert record.semantic_repair_plan.repair_kind == "mapping"
     assert tuple(
@@ -2954,7 +2953,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     assert record.status.value == "planned"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert record.recipe_target_shape == "dataclass_payload_projection"
+    assert record.refactor_concept == "dataclass_payload_projection"
     assert "def payload_items_from_field_values(cls, **values)" in rewritten_source
     assert "*WorkflowModel.payload_items_from_field_values(" in rewritten_source
     assert "workflow_id=self.workflow_id" in rewritten_source
@@ -3050,7 +3049,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     ]
 
     assert record.status.value == "planned"
-    assert record.recipe_target_shape == "dataclass_payload_projection"
+    assert record.refactor_concept == "dataclass_payload_projection"
     assert simulation.is_clean is True
     assert tuple(
         operation.operation_kind().value for operation in recipe.operations
@@ -3189,7 +3188,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "planned"
-    assert record.recipe_target_shape == "constructor_kwarg_carrier_projection"
+    assert record.refactor_concept == "constructor_kwarg_carrier_projection"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert tuple(
@@ -3249,7 +3248,7 @@ def test_semantic_mirror_context_call_projection_synthesizes_dataclass_context_r
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "planned"
-    assert record.recipe_target_shape == "dataclass_context_call_projection"
+    assert record.refactor_concept == "dataclass_context_call_projection"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert tuple(

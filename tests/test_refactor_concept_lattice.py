@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+import nominal_refactor_advisor as advisor
+from nominal_refactor_advisor import codemod
+from nominal_refactor_advisor import codemod_workflow
+from nominal_refactor_advisor.analysis import analyze_modules
+from nominal_refactor_advisor.ast_tools import parse_python_modules
+
+EXPECTED_CONCEPT_DECLARATIONS = frozenset(
+    {
+        codemod.RefactorConcept,
+        codemod.SemanticCarrierConcept,
+        codemod.PrefixBundleCarrierConcept,
+        codemod.DataclassInheritanceLiftConcept,
+        codemod.ConstructorKwargCollapseConcept,
+        codemod.ConstructorKwargCarrierProjectionConcept,
+        codemod.DataclassContextCallProjectionConcept,
+        codemod.TupleDictReturnNominalizationConcept,
+        codemod.DataclassPayloadProjectionConcept,
+        codemod.TupleDictReturnRecordConcept,
+        codemod.BoundarySourceContextAuthorityConcept,
+        codemod.DeadCompatibilityErasureConcept,
+        codemod.AutoRegisterConcept,
+        codemod.AutoRegisterClassRegistryConcept,
+        codemod.AutoRegisterStrategyFamilyConcept,
+        codemod.RoleCaseAuthorityConcept,
+    }
+)
+
+EXPECTED_EXECUTABLE_CONCEPTS = {
+    codemod.RuntimeProductRecordSchemaFindingRecipeSynthesizer: (
+        codemod.TupleDictReturnRecordConcept
+    ),
+    codemod.FlattenedProjectionPropertyFindingRecipeSynthesizer: (
+        codemod.DeadCompatibilityErasureConcept
+    ),
+    codemod.RepeatedFieldFamilyFindingRecipeSynthesizer: (
+        codemod.DataclassInheritanceLiftConcept
+    ),
+    codemod.ExistingNominalAuthorityReuseFindingRecipeSynthesizer: (
+        codemod.DataclassInheritanceLiftConcept
+    ),
+    codemod.PrefixedRoleBundleFindingRecipeSynthesizer: (
+        codemod.PrefixBundleCarrierConcept
+    ),
+    codemod.ParallelPrimitiveCarrierFindingRecipeSynthesizer: (
+        codemod.PrefixBundleCarrierConcept
+    ),
+    codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
+        codemod.ConstructorKwargCarrierProjectionConcept
+    ),
+    codemod.ManualClassRegistrationFindingRecipeSynthesizer: (
+        codemod.AutoRegisterClassRegistryConcept
+    ),
+    codemod.DataclassPayloadProjectionMappingRecipeBuilder: (
+        codemod.DataclassPayloadProjectionConcept
+    ),
+    codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder: (
+        codemod.DataclassPayloadProjectionConcept
+    ),
+    codemod.BoundarySourceContextReturnDictMappingRecipeBuilder: (
+        codemod.BoundarySourceContextAuthorityConcept
+    ),
+    codemod.SemanticDictBagReturnRecordMappingRecipeBuilder: (
+        codemod.TupleDictReturnRecordConcept
+    ),
+    codemod.SemanticTupleReturnRecordMappingRecipeBuilder: (
+        codemod.TupleDictReturnRecordConcept
+    ),
+    codemod.DataclassConstructorProjectionMappingRecipeBuilder: (
+        codemod.ConstructorKwargCarrierProjectionConcept
+    ),
+    codemod.DataclassContextCallProjectionMappingRecipeBuilder: (
+        codemod.DataclassContextCallProjectionConcept
+    ),
+    codemod.GenericRoleCaseTableMappingRecipeBuilder: (
+        codemod.RoleCaseAuthorityConcept
+    ),
+    codemod.LocalRoleCaseLogicMappingRecipeBuilder: (codemod.RoleCaseAuthorityConcept),
+    codemod.StringDispatchFindingRecipeSynthesizer: (
+        codemod.AutoRegisterStrategyFamilyConcept
+    ),
+    codemod.NumericLiteralDispatchFindingRecipeSynthesizer: (
+        codemod.AutoRegisterStrategyFamilyConcept
+    ),
+    codemod.InlineLiteralDispatchFindingRecipeSynthesizer: (
+        codemod.AutoRegisterStrategyFamilyConcept
+    ),
+    codemod.RuntimeSemanticBranchChainFindingRecipeSynthesizer: (
+        codemod.AutoRegisterStrategyFamilyConcept
+    ),
+}
+
+EXPECTED_MAPPING_DECLARATIONS = {
+    "dataclass_constructor_projection": (
+        codemod.DataclassConstructorProjectionMappingRecipeBuilder
+    ),
+    "dataclass_context_call_projection": (
+        codemod.DataclassContextCallProjectionMappingRecipeBuilder
+    ),
+    "dataclass_key_value_sequence_projection": (
+        codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder
+    ),
+    "dataclass_payload_projection": (
+        codemod.DataclassPayloadProjectionMappingRecipeBuilder
+    ),
+    "formal_boundary_source_scope_return_dict": (
+        codemod.BoundarySourceContextReturnDictMappingRecipeBuilder
+    ),
+    "generic_role_case_table": codemod.GenericRoleCaseTableMappingRecipeBuilder,
+    "local_role_case_logic": codemod.LocalRoleCaseLogicMappingRecipeBuilder,
+    "semantic_dict_bag_return_dict_record": (
+        codemod.SemanticDictBagReturnRecordMappingRecipeBuilder
+    ),
+    "semantic_tuple_return_record": (
+        codemod.SemanticTupleReturnRecordMappingRecipeBuilder
+    ),
+}
+
+
+def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
+    assert frozenset(codemod.RefactorConcept.declaration_types()) == (
+        EXPECTED_CONCEPT_DECLARATIONS
+    )
+    assert "__registry__" not in codemod.RefactorConcept.__dict__
+    assert all(
+        "__registry__" not in declaration_type.__dict__
+        for declaration_type in EXPECTED_CONCEPT_DECLARATIONS
+    )
+
+
+def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
+    assert {
+        declaration_type: codemod.RefactorConcept.leaf_concept_for_declaration(
+            declaration_type
+        )
+        for declaration_type in EXPECTED_EXECUTABLE_CONCEPTS
+    } == EXPECTED_EXECUTABLE_CONCEPTS
+
+
+@pytest.mark.parametrize(
+    ("parent_concept", "expected_leaves"),
+    (
+        (
+            codemod.ConstructorKwargCollapseConcept,
+            frozenset(
+                {
+                    codemod.ConstructorKwargCarrierProjectionConcept,
+                    codemod.DataclassContextCallProjectionConcept,
+                }
+            ),
+        ),
+        (
+            codemod.TupleDictReturnNominalizationConcept,
+            frozenset(
+                {
+                    codemod.DataclassPayloadProjectionConcept,
+                    codemod.TupleDictReturnRecordConcept,
+                }
+            ),
+        ),
+        (
+            codemod.AutoRegisterConcept,
+            frozenset(
+                {
+                    codemod.AutoRegisterClassRegistryConcept,
+                    codemod.AutoRegisterStrategyFamilyConcept,
+                }
+            ),
+        ),
+    ),
+)
+def test_parent_concepts_match_descendants_by_mro(
+    parent_concept: type[codemod.RefactorConcept],
+    expected_leaves: frozenset[type[codemod.RefactorConcept]],
+) -> None:
+    matching_leaves = {
+        leaf_concept
+        for declaration_type, leaf_concept in EXPECTED_EXECUTABLE_CONCEPTS.items()
+        if issubclass(declaration_type, parent_concept)
+    }
+
+    assert matching_leaves == expected_leaves
+
+
+def test_unrelated_concepts_do_not_match() -> None:
+    assert not issubclass(
+        codemod.RuntimeProductRecordSchemaFindingRecipeSynthesizer,
+        codemod.AutoRegisterConcept,
+    )
+    assert not issubclass(
+        codemod.StringDispatchFindingRecipeSynthesizer,
+        codemod.SemanticCarrierConcept,
+    )
+    assert not issubclass(
+        codemod.DataclassPayloadProjectionMappingRecipeBuilder,
+        codemod.RoleCaseAuthorityConcept,
+    )
+
+
+def test_mapping_builder_identity_and_concept_are_registry_derived() -> None:
+    assert codemod.MappingSemanticMirrorRecipeBuilder.__registry__ == (
+        EXPECTED_MAPPING_DECLARATIONS
+    )
+    assert all(
+        codemod.RefactorConcept.leaf_concept_for_declaration(builder_type)
+        is EXPECTED_EXECUTABLE_CONCEPTS[builder_type]
+        for builder_type in EXPECTED_MAPPING_DECLARATIONS.values()
+    )
+
+
+def _repeated_builder_declaration_for_source(
+    tmp_path: Path,
+    source: str,
+) -> tuple[type[object], ...]:
+    module_path = tmp_path / "pkg" / "mod.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text(source, encoding="utf-8")
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "repeated_builder_calls"
+    )
+    assert len(findings) == 1
+    snapshot = codemod.CodemodSourceSnapshot.from_modules(modules, findings)
+    synthesizer = codemod.FindingRecipeSynthesizer.for_finding(findings[0])
+    assert synthesizer is not None
+    evaluation = synthesizer.declared_evaluation_for_finding(findings[0], snapshot)
+    return (evaluation.required_executable_declaration_type,)
+
+
+def test_repeated_builder_dynamic_rule_preserves_the_exact_concept_leaf(
+    tmp_path: Path,
+) -> None:
+    declarations = _repeated_builder_declaration_for_source(
+        tmp_path,
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RuntimePlan:\n"
+        "    pose_id: str\n"
+        "    score: float\n"
+        "    theorem_handles: tuple[str, ...]\n\n\n"
+        "def alpha(candidate):\n"
+        "    return RuntimePlan(\n"
+        "        pose_id=candidate.pose_id,\n"
+        "        score=candidate.score,\n"
+        "        theorem_handles=tuple(candidate.theorem_handles),\n"
+        "    )\n\n\n"
+        "def beta(entry):\n"
+        "    return RuntimePlan(\n"
+        "        pose_id=entry.pose_id,\n"
+        "        score=entry.score,\n"
+        "        theorem_handles=tuple(entry.theorem_handles),\n"
+        "    )\n",
+    )
+
+    assert declarations == (codemod.RepeatedBuilderSourceProjectionAuthorityMethod,)
+    assert (
+        codemod.RefactorConcept.leaf_concept_for_declaration(declarations[0])
+        is codemod.ConstructorKwargCarrierProjectionConcept
+    )
+
+
+def test_repeated_builder_nonconcept_rule_does_not_inherit_a_carrier_leaf(
+    tmp_path: Path,
+) -> None:
+    declarations = _repeated_builder_declaration_for_source(
+        tmp_path,
+        "def main(builder):\n"
+        '    builder.register("--json", action="store_true", help="JSON")\n'
+        '    builder.register("--plans", action="store_true", help="Plans")\n'
+        '    builder.register("--workers", type=int, default=3, help="Workers")\n'
+        '    builder.register("--exclude", action="append", default=[], help="Exclude")\n'
+        "    return builder\n",
+    )
+
+    assert declarations == (codemod.RepeatedBuilderCallFindingRecipeSynthesizer,)
+    assert not issubclass(declarations[0], codemod.RefactorConcept)
+
+
+def test_semantic_carrier_and_goal_manifests_are_mro_derived() -> None:
+    manifests = {
+        manifest.goal_kind: manifest
+        for manifest in codemod_workflow.codemod_refactor_goal_policy_manifests()
+    }
+
+    for (
+        goal_kind,
+        policy_type,
+    ) in codemod_workflow.CodemodRefactorGoalTargetPolicy.__registry__.items():
+        manifest = manifests[goal_kind]
+        if not issubclass(policy_type, codemod.RefactorConcept):
+            assert manifest.refactor_concept is None
+            continue
+        concept_type = codemod.RefactorConcept.leaf_concept_for_declaration(policy_type)
+        assert manifest.refactor_concept == concept_type.concept_key()
+
+    semantic_carrier_manifest = manifests[
+        codemod_workflow.CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
+    ]
+    assert semantic_carrier_manifest.refactor_concept == "semantic_carrier"
+
+
+def test_target_shape_and_selector_mirror_authorities_are_absent() -> None:
+    assert not hasattr(advisor, "RefactorRecipeTargetShape")
+    assert not hasattr(codemod, "RefactorRecipeTargetShape")
+    assert "target_shape" not in codemod.RefactorRecipe.__dataclass_fields__
+    assert not hasattr(advisor, "CodemodRefactorGoalFindingSelector")
+    assert not hasattr(codemod_workflow, "CodemodRefactorGoalFindingSelector")
+    assert not hasattr(codemod_workflow, "SelectorBackedRefactorGoalTargetPolicy")
+    assert all(
+        "selectors" not in manifest.to_dict()
+        and "target_shapes" not in manifest.to_dict()
+        for manifest in codemod_workflow.codemod_refactor_goal_policy_manifests()
+    )

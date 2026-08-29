@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
@@ -27,6 +27,7 @@ from .analysis import (
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .codemod import (
     ArchitectureGuardSuite,
+    BoundarySourceContextAuthorityConcept,
     CodemodDslFieldKind,
     CodemodDslRegistryEntryFieldManifest,
     CodemodDslRegistryEntryManifest,
@@ -34,8 +35,12 @@ from .codemod import (
     CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
     CodemodPlanSequenceContinuationReport,
+    CodemodSelectorContext,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
+    ConstructorKwargCollapseConcept,
+    DataclassInheritanceLiftConcept,
+    DeadCompatibilityErasureConcept,
     FindingRecipeClassPlanBoundary,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
@@ -46,12 +51,14 @@ from .codemod import (
     FindingRecipeSynthesisReport,
     JsonObject,
     JsonValue,
-    MappingSemanticMirrorRecipeBuilder,
-    RefactorRecipeTargetShape,
+    PrefixBundleCarrierConcept,
+    RefactorConcept,
+    SemanticCarrierConcept,
+    TupleDictReturnNominalizationConcept,
     module_name_from_source_path,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
-from .models import MappingMetrics, RefactorFinding
+from .models import RefactorFinding
 from .source_index import SourceIndex
 
 
@@ -707,19 +714,23 @@ class CodemodRefactorGoalTargetPolicy(ABC, metaclass=AutoRegisterMeta):
         self,
         goal: CodemodRefactorGoal,
         findings: Iterable[RefactorFinding],
+        selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[RefactorFinding, ...]:
         return tuple(
-            finding for finding in findings if self.matches_finding(goal, finding)
+            finding
+            for finding in findings
+            if self.matches_finding(goal, finding, selector_context)
         )
 
     def matches_finding(
         self,
         goal: CodemodRefactorGoal,
         finding: RefactorFinding,
+        selector_context: CodemodSelectorContext | None = None,
     ) -> bool:
         if goal.has_explicit_targets:
             return self.explicit_target_matches_finding(goal, finding)
-        return self.default_target_matches_finding(finding)
+        return self.default_target_matches_finding(finding, selector_context)
 
     @staticmethod
     def explicit_target_matches_finding(
@@ -733,158 +744,23 @@ class CodemodRefactorGoalTargetPolicy(ABC, metaclass=AutoRegisterMeta):
         return int(finding.pattern_id) in goal.pattern_ids
 
     @abstractmethod
-    def default_target_matches_finding(self, finding: RefactorFinding) -> bool:
+    def default_target_matches_finding(
+        self,
+        finding: RefactorFinding,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> bool:
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
-class CodemodRefactorGoalFindingSelector:
-    """Detector and mapping-name evidence for one executable refactor family."""
-
-    detector_ids: frozenset[str] = frozenset()
-    mapping_names: frozenset[str] = frozenset()
-    target_shapes: frozenset[RefactorRecipeTargetShape] = frozenset()
-
-    def matches(self, finding: RefactorFinding) -> bool:
-        return (
-            self.matches_detector(finding)
-            or self.matches_mapping_name(finding)
-            or self.matches_target_shape(finding)
-        )
-
-    def matches_detector(self, finding: RefactorFinding) -> bool:
-        return finding.detector_id in self.detector_ids
-
-    def matches_mapping_name(self, finding: RefactorFinding) -> bool:
-        return (
-            bool(self.mapping_names)
-            and isinstance(finding.metrics, MappingMetrics)
-            and finding.metrics.plan_mapping_name in self.mapping_names
-        )
-
-    def matches_target_shape(self, finding: RefactorFinding) -> bool:
-        if not self.target_shapes:
-            return False
-        return (
-            finding.detector_id
-            in FindingRecipeSynthesizer.detector_ids_for_target_shapes(
-                self.target_shapes,
-            )
-        ) or self.matches_mapping_target_shape(finding)
-
-    def matches_mapping_target_shape(self, finding: RefactorFinding) -> bool:
-        return bool(
-            self.target_shapes
-            & MappingSemanticMirrorRecipeBuilder.target_shapes_for_finding(finding)
-        )
-
-    def to_manifest_payload(self) -> JsonObject:
-        return {
-            "detector_ids": tuple(sorted(self.detector_ids)),
-            "mapping_names": tuple(sorted(self.mapping_names)),
-            "target_shapes": tuple(sorted(shape.value for shape in self.target_shapes)),
-        }
-
-    def executable_detector_ids(self) -> tuple[str, ...]:
-        detector_ids = (
-            self.detector_ids
-            | FindingRecipeSynthesizer.detector_ids_for_target_shapes(
-                self.target_shapes
-            )
-        )
-        registered_detector_ids = FindingRecipeSynthesizer.registered_detector_ids()
-        return tuple(sorted(detector_ids & registered_detector_ids))
-
-    def executable_mapping_names(self) -> tuple[str, ...]:
-        mapping_names = (
-            self.mapping_names
-            | MappingSemanticMirrorRecipeBuilder.mapping_names_for_target_shapes(
-                self.target_shapes
-            )
-        )
-        registered_mapping_names = (
-            MappingSemanticMirrorRecipeBuilder.registered_mapping_names()
-        )
-        return tuple(sorted(mapping_names & registered_mapping_names))
-
-    def advisory_detector_ids(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(self.detector_ids - frozenset(self.executable_detector_ids()))
-        )
-
-    def advisory_mapping_names(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(self.mapping_names - frozenset(self.executable_mapping_names()))
-        )
-
-
-@dataclass(frozen=True)
-class CodemodRefactorGoalSelectorCoverage:
-    """Executable and advisory recipe coverage for one refactor-goal selector."""
-
-    executable_detector_ids: tuple[str, ...]
-    executable_mapping_names: tuple[str, ...]
-    advisory_detector_ids: tuple[str, ...]
-    advisory_mapping_names: tuple[str, ...]
-
-    @classmethod
-    def from_selector(
-        cls,
-        selector: CodemodRefactorGoalFindingSelector,
-    ) -> "CodemodRefactorGoalSelectorCoverage":
-        return cls(
-            executable_detector_ids=selector.executable_detector_ids(),
-            executable_mapping_names=selector.executable_mapping_names(),
-            advisory_detector_ids=selector.advisory_detector_ids(),
-            advisory_mapping_names=selector.advisory_mapping_names(),
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "executable_detector_ids": self.executable_detector_ids,
-            "executable_mapping_names": self.executable_mapping_names,
-            "advisory_detector_ids": self.advisory_detector_ids,
-            "advisory_mapping_names": self.advisory_mapping_names,
-        }
-
-
-@dataclass(frozen=True)
-class CodemodRefactorGoalSelectorManifest:
-    """Selector identity plus executable/advisory coverage for one goal lane."""
-
-    selector_index: int
-    selector: CodemodRefactorGoalFindingSelector
-    coverage: CodemodRefactorGoalSelectorCoverage
-
-    @classmethod
-    def from_selector(
-        cls,
-        selector_index: int,
-        selector: CodemodRefactorGoalFindingSelector,
-    ) -> "CodemodRefactorGoalSelectorManifest":
-        return cls(
-            selector_index=selector_index,
-            selector=selector,
-            coverage=CodemodRefactorGoalSelectorCoverage.from_selector(selector),
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "selector_index": self.selector_index,
-            **self.selector.to_manifest_payload(),
-            **self.coverage.to_dict(),
-        }
-
-
-@dataclass(frozen=True)
 class CodemodRefactorGoalPolicyManifest:
-    """Registry-derived policy row for one high-level refactor goal."""
+    """MRO-derived executable declarations for one high-level refactor goal."""
 
     goal_kind: CodemodRefactorGoalKind
     class_name: str
     description: str
     default_goal: bool
-    selectors: tuple[CodemodRefactorGoalSelectorManifest, ...]
+    refactor_concept: str | None
 
     @classmethod
     def from_policy_type(
@@ -892,20 +768,18 @@ class CodemodRefactorGoalPolicyManifest:
         goal_kind: CodemodRefactorGoalKind,
         policy_type: type["CodemodRefactorGoalTargetPolicy"],
     ) -> "CodemodRefactorGoalPolicyManifest":
-        policy = policy_type()
-        selectors = (
-            policy.selectors
-            if isinstance(policy, SelectorBackedRefactorGoalTargetPolicy)
-            else ()
+        concept_type = (
+            RefactorConcept.leaf_concept_for_declaration(policy_type)
+            if issubclass(policy_type, RefactorConcept)
+            else None
         )
         return cls(
             goal_kind=goal_kind,
             class_name=policy_type.__name__,
             description=codemod_refactor_goal_policy_description(policy_type),
             default_goal=goal_kind is CodemodRefactorGoalKind.default(),
-            selectors=tuple(
-                CodemodRefactorGoalSelectorManifest.from_selector(index, selector)
-                for index, selector in enumerate(selectors)
+            refactor_concept=(
+                None if concept_type is None else concept_type.concept_key()
             ),
         )
 
@@ -915,41 +789,32 @@ class CodemodRefactorGoalPolicyManifest:
             "class_name": self.class_name,
             "description": self.description,
             "default_goal": self.default_goal,
-            "selectors": tuple(selector.to_dict() for selector in self.selectors),
+            "refactor_concept": self.refactor_concept,
         }
 
 
-class SelectorBackedRefactorGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
-    """Goal policy whose default target set is a nominal selector sequence."""
+class ConceptBackedRefactorGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
+    """Select findings through their executable declaration's concept MRO."""
 
-    selectors: ClassVar[tuple[CodemodRefactorGoalFindingSelector, ...]] = ()
-
-    def target_findings(
+    def default_target_matches_finding(
         self,
-        goal: CodemodRefactorGoal,
-        findings: Iterable[RefactorFinding],
-    ) -> tuple[RefactorFinding, ...]:
-        selected = super().target_findings(goal, findings)
-        if goal.has_explicit_targets:
-            return selected
-        return tuple(
-            sorted(
-                selected,
-                key=lambda finding: (
-                    self.selector_rank(finding),
-                    finding.stable_id,
-                ),
-            )
+        finding: RefactorFinding,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> bool:
+        if selector_context is None:
+            raise ValueError("concept-backed goal selection requires source context")
+        synthesizer = FindingRecipeSynthesizer.for_finding(finding)
+        if synthesizer is None:
+            return False
+        evaluation = synthesizer.declared_evaluation_for_finding(
+            finding,
+            selector_context,
         )
-
-    def default_target_matches_finding(self, finding: RefactorFinding) -> bool:
-        return any(selector.matches(finding) for selector in self.selectors)
-
-    def selector_rank(self, finding: RefactorFinding) -> int:
-        for index, selector in enumerate(self.selectors):
-            if selector.matches(finding):
-                return index
-        return len(self.selectors)
+        concept_type = RefactorConcept.leaf_concept_for_declaration(type(self))
+        return issubclass(
+            evaluation.required_executable_declaration_type,
+            concept_type,
+        )
 
 
 class NominalBoundaryExtractionGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
@@ -963,108 +828,76 @@ class NominalBoundaryExtractionGoalTargetPolicy(CodemodRefactorGoalTargetPolicy)
 
         return IssueDetector.ssot_authority_detector_ids()
 
-    def default_target_matches_finding(self, finding: RefactorFinding) -> bool:
+    def default_target_matches_finding(
+        self,
+        finding: RefactorFinding,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> bool:
+        del selector_context
         return finding.detector_id in self.default_detector_ids()
 
 
-class PrefixBundleExtractionGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+class PrefixBundleExtractionGoalTargetPolicy(
+    PrefixBundleCarrierConcept,
+    ConceptBackedRefactorGoalTargetPolicy,
+):
     """Target flattened prefix/role fields that can become nominal carriers."""
 
     goal_kind = CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION
-    selectors = (
-        CodemodRefactorGoalFindingSelector(
-            target_shapes=frozenset({RefactorRecipeTargetShape.PREFIX_BUNDLE_CARRIER})
-        ),
-    )
 
 
-class DataclassInheritanceLiftGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+class DataclassInheritanceLiftGoalTargetPolicy(
+    DataclassInheritanceLiftConcept,
+    ConceptBackedRefactorGoalTargetPolicy,
+):
     """Target duplicated dataclass field sets and existing authority reuse."""
 
     goal_kind = CodemodRefactorGoalKind.DATACLASS_INHERITANCE_LIFT
-    selectors = (
-        CodemodRefactorGoalFindingSelector(
-            target_shapes=frozenset(
-                {RefactorRecipeTargetShape.DATACLASS_INHERITANCE_LIFT}
-            )
-        ),
-    )
 
 
-class ConstructorKwargCollapseGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+class ConstructorKwargCollapseGoalTargetPolicy(
+    ConstructorKwargCollapseConcept,
+    ConceptBackedRefactorGoalTargetPolicy,
+):
     """Target constructor keyword mirrors that can route through carriers."""
 
     goal_kind = CodemodRefactorGoalKind.CONSTRUCTOR_KWARG_COLLAPSE
-    selectors = (
-        CodemodRefactorGoalFindingSelector(
-            target_shapes=frozenset(
-                {
-                    RefactorRecipeTargetShape.CONSTRUCTOR_KWARG_CARRIER_PROJECTION,
-                    RefactorRecipeTargetShape.DATACLASS_CONTEXT_CALL_PROJECTION,
-                }
-            )
-        ),
-    )
 
 
 class TupleDictReturnNominalizationGoalTargetPolicy(
-    SelectorBackedRefactorGoalTargetPolicy
+    TupleDictReturnNominalizationConcept,
+    ConceptBackedRefactorGoalTargetPolicy,
 ):
     """Target positional tuple returns, return dicts, and product records."""
 
     goal_kind = CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION
-    selectors = (
-        CodemodRefactorGoalFindingSelector(
-            target_shapes=frozenset(
-                {
-                    RefactorRecipeTargetShape.DATACLASS_PAYLOAD_PROJECTION,
-                    RefactorRecipeTargetShape.TUPLE_DICT_RETURN_RECORD,
-                }
-            )
-        ),
-    )
 
 
 class BoundarySourceContextRewriteGoalTargetPolicy(
-    SelectorBackedRefactorGoalTargetPolicy
+    BoundarySourceContextAuthorityConcept,
+    ConceptBackedRefactorGoalTargetPolicy,
 ):
     """Target string-key formal source scopes for typed context authorities."""
 
     goal_kind = CodemodRefactorGoalKind.BOUNDARY_SOURCE_CONTEXT_REWRITE
-    selectors = (
-        CodemodRefactorGoalFindingSelector(
-            target_shapes=frozenset(
-                {RefactorRecipeTargetShape.BOUNDARY_SOURCE_CONTEXT_AUTHORITY}
-            )
-        ),
-    )
 
 
-class DeadCompatibilityEraserGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
+class DeadCompatibilityEraserGoalTargetPolicy(
+    DeadCompatibilityErasureConcept,
+    ConceptBackedRefactorGoalTargetPolicy,
+):
     """Target obsolete compatibility surfaces after structural replacement."""
 
     goal_kind = CodemodRefactorGoalKind.DEAD_COMPATIBILITY_ERASER
-    selectors = (
-        CodemodRefactorGoalFindingSelector(
-            target_shapes=frozenset(
-                {RefactorRecipeTargetShape.DEAD_COMPATIBILITY_ERASURE}
-            )
-        ),
-    )
 
 
-class SemanticCarrierExtractionGoalTargetPolicy(SelectorBackedRefactorGoalTargetPolicy):
-    """Prioritize the carrier/authority refactor sequence used by the DSL."""
+class SemanticCarrierExtractionGoalTargetPolicy(
+    SemanticCarrierConcept,
+    ConceptBackedRefactorGoalTargetPolicy,
+):
+    """Target executable declarations in the semantic-carrier concept family."""
 
     goal_kind = CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
-    selectors = (
-        *PrefixBundleExtractionGoalTargetPolicy.selectors,
-        *DataclassInheritanceLiftGoalTargetPolicy.selectors,
-        *ConstructorKwargCollapseGoalTargetPolicy.selectors,
-        *TupleDictReturnNominalizationGoalTargetPolicy.selectors,
-        *BoundarySourceContextRewriteGoalTargetPolicy.selectors,
-        *DeadCompatibilityEraserGoalTargetPolicy.selectors,
-    )
 
 
 @dataclass(frozen=True)
@@ -1448,16 +1281,27 @@ class CodemodRefactorGoalProgress:
         goal: CodemodRefactorGoal,
         before_findings: Iterable[RefactorFinding],
         after_findings: Iterable[RefactorFinding],
+        *,
+        before_snapshot: CodemodSourceSnapshot,
+        after_snapshot: CodemodSourceSnapshot,
     ) -> "CodemodRefactorGoalProgress":
         target_policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
         return cls(
             before_target_finding_ids=tuple(
                 finding.stable_id
-                for finding in target_policy.target_findings(goal, before_findings)
+                for finding in target_policy.target_findings(
+                    goal,
+                    before_findings,
+                    before_snapshot,
+                )
             ),
             after_target_finding_ids=tuple(
                 finding.stable_id
-                for finding in target_policy.target_findings(goal, after_findings)
+                for finding in target_policy.target_findings(
+                    goal,
+                    after_findings,
+                    after_snapshot,
+                )
             ),
         )
 
@@ -2237,9 +2081,7 @@ class CodemodSimulationFindingProjection:
             after_scan=after_scan,
             source_sequence=self.source_sequence,
             expected_removed_finding_ids=self.expected_removed_finding_ids,
-            scan_mode=(
-                "evidence_local_partial" if self.report_roots else "exact"
-            ),
+            scan_mode=("evidence_local_partial" if self.report_roots else "exact"),
             include_source_index=self.include_source_index,
             include_continuation=self.include_continuation,
         )
@@ -2644,7 +2486,11 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             raise ValueError("goal max_stages must be at least 1")
         stages: list[CodemodRefactorGoalStage] = []
         active_scan = self.scan(0)
-        if not self.target_policy.target_findings(self.goal, active_scan.findings):
+        if not self.target_policy.target_findings(
+            self.goal,
+            active_scan.findings,
+            active_scan.source_snapshot,
+        ):
             return self._run_report_authority(
                 (),
                 active_scan,
@@ -2717,13 +2563,17 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
         stage_index: int,
         scan: CodemodFixpointScan,
     ) -> CodemodRefactorGoalStageAttempt:
-        target_findings = self.target_policy.target_findings(self.goal, scan.findings)
+        snapshot = scan.source_snapshot
+        target_findings = self.target_policy.target_findings(
+            self.goal,
+            scan.findings,
+            snapshot,
+        )
         if not target_findings:
             return CodemodRefactorGoalStageAttempt(
                 stage_index=stage_index,
                 target_finding_count=0,
             )
-        snapshot = scan.source_snapshot
         plan = snapshot.plan_from_findings(
             target_findings,
             detector_ids=self.goal.detector_ids,
@@ -2751,6 +2601,8 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             self.goal,
             scan.findings,
             projected_scan.findings,
+            before_snapshot=snapshot,
+            after_snapshot=projected_scan.source_snapshot,
         )
         return CodemodRefactorGoalStageAttempt(
             stage_index=stage_index,
@@ -2878,6 +2730,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
                 for finding in self.target_policy.target_findings(
                     self.goal,
                     scan.findings,
+                    scan.source_snapshot,
                 )
             ),
             terminal_synthesis_report=(
