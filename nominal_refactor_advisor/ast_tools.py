@@ -671,6 +671,14 @@ def _effective_parse_workers(parse_workers: int) -> int:
 
 
 @dataclass(frozen=True)
+class CompactModuleIdentity:
+    """Shared source identity for AST-free per-module projections."""
+
+    module_name: str
+    file_path: str
+
+
+@dataclass(frozen=True)
 class ParsedModule:
     """Parsed Python module together with its source text and path."""
 

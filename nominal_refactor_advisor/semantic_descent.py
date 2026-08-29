@@ -31,6 +31,7 @@ from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
+    CompactModuleIdentity,
     ParsedModule,
     PythonModulePathIdentity,
     PythonSourcePathPolicy,
@@ -1114,11 +1115,9 @@ class SemanticClassSupplement:
 
 
 @dataclass(frozen=True)
-class CompactSemanticModuleProjection:
+class CompactSemanticModuleProjection(CompactModuleIdentity):
     """One module's deferred semantic projections and class supplements."""
 
-    module_name: str
-    file_path: str
     projections: tuple[PresentationProjection, ...]
     class_supplements: tuple[SemanticClassSupplement, ...]
 

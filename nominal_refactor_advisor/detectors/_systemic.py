@@ -18,7 +18,12 @@ from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
 )
-from ..ast_tools import SourceModule, fingerprint_function, module_syntax_index
+from ..ast_tools import (
+    CompactModuleIdentity,
+    SourceModule,
+    fingerprint_function,
+    module_syntax_index,
+)
 from ..class_index import CompactNamedProjectionSurface, CompactSortedKeyCall
 from ..native_syntax import NativePythonSyntaxIndex
 from ..registry_normal_form import (
@@ -36,9 +41,7 @@ from ._helpers import _facade_only_nominal_authority_candidates
 
 
 @dataclass(frozen=True)
-class CompactConcreteTypeCaseFunctionFact:
-    file_path: str
-    module_name: str
+class CompactConcreteTypeCaseFunctionFact(CompactModuleIdentity):
     line: int
     function_name: str
     subject_expression: str
@@ -66,9 +69,7 @@ class CompactInfrastructureDeclarationFact:
 
 
 @dataclass(frozen=True)
-class CompactRemainingSystemicModuleProjection:
-    file_path: str
-    module_name: str
+class CompactRemainingSystemicModuleProjection(CompactModuleIdentity):
     concrete_type_functions: tuple[CompactConcreteTypeCaseFunctionFact, ...]
     implicit_self_mixins: tuple[CompactImplicitSelfMixinFact, ...]
     infrastructure_declarations: tuple[CompactInfrastructureDeclarationFact, ...]

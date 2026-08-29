@@ -24,6 +24,7 @@ from ..ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     BuiltinCallName,
     CollectedFamily,
+    CompactModuleIdentity,
     ParsedModule,
     SourceModule,
     collect_family_items,
@@ -13744,11 +13745,9 @@ class _VariantMethodSurface:
 
 
 @dataclass(frozen=True)
-class CompactNominalBypassModuleProjection:
+class CompactNominalBypassModuleProjection(CompactModuleIdentity):
     """AST-free local facts shared by nominal-bypass global joins."""
 
-    module_name: str
-    file_path: str
     isinstance_scatters: tuple[IsinstanceFamilyScatterCandidate, ...]
     repeated_templates: tuple[CrossClassSmallMethodTemplateCandidate, ...]
     wrapper_chains: tuple[WrapperChainCandidate, ...]

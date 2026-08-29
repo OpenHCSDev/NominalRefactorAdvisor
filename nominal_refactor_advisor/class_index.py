@@ -24,6 +24,7 @@ from typing import Self
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
+    CompactModuleIdentity,
     CollectedFamily,
     ParsedModule,
     SourceModule,
@@ -172,11 +173,9 @@ def has_complete_concrete_mro_composite(
 
 
 @dataclass(frozen=True)
-class CompactModuleClassHeader:
+class CompactModuleClassHeader(CompactModuleIdentity):
     """Module surface required to reconstruct its compact class index."""
 
-    module_name: str
-    file_path: str
     import_aliases: tuple[tuple[str, str], ...]
     classes: tuple[CompactIndexedClass, ...]
 
