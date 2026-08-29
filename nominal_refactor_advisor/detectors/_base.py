@@ -154,6 +154,8 @@ from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     IndexedClass,
+    LatentRosterMatch,
+    LatentRosterObservation,
     RegistryLookupShape,
     RegistryLookupStyle,
     _module_import_aliases,
@@ -11514,16 +11516,10 @@ class AutoRegisterMetaRentCandidate(InheritanceFamilyRentSurface):
 
 @dataclass(frozen=True)
 class LatentImplementationRosterCandidate(ClassLineWitnessCandidate):
-    roster_name: str
-    roster_kind: str
-    roster_member_names: tuple[str, ...]
+    roster: LatentRosterObservation
+    match: LatentRosterMatch
     concrete_class_names: tuple[str, ...]
     key_attr_name: str | None
-    projection_role: str
-    projection_policy_hint: str | None
-    coverage_ratio: float
-    missing_member_names: tuple[str, ...]
-    line_count: int
 
 
 @dataclass(frozen=True)

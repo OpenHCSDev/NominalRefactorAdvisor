@@ -5645,6 +5645,11 @@ def test_compact_concrete_family_candidates_match_legacy_ast_candidates(
 def test_compact_roster_candidates_match_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
+    assert not hasattr(class_index_module, "CompactLatentRosterObservation")
+    assert not hasattr(helper_detectors, "_LatentRosterObservation")
+    assert not hasattr(helper_detectors, "LatentRosterProjectionAuthority")
+    assert not hasattr(helper_detectors, "LATENT_ROSTER_PROJECTION_AUTHORITY")
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "base.py").write_text(
@@ -5701,11 +5706,23 @@ def test_compact_roster_candidates_match_legacy_ast_candidates(
     ) == runtime_detectors._manual_concrete_subclass_roster_candidates(
         list(modules), config
     )
-    assert runtime_detectors._compact_latent_implementation_roster_candidates(
-        context, config
-    ) == runtime_detectors._latent_implementation_roster_candidates(
-        list(modules), config
+    latent_candidates = (
+        runtime_detectors._compact_latent_implementation_roster_candidates(
+            context, config
+        )
     )
+    assert {
+        (
+            candidate.class_name,
+            candidate.roster.roster_name,
+            candidate.key_attr_name,
+            candidate.match.coverage_ratio,
+        )
+        for candidate in latent_candidates
+    } == {
+        ("Exporter", "EXPORT_FORMATS", "format", 1.0),
+        ("Exporter", "DEFAULT_EXPORTERS", None, 1.0),
+    }
     legacy_index = surface_detectors.NominalAuthorityIndex(modules)
     assert surface_detectors._compact_manual_family_roster_candidates(
         projections, context

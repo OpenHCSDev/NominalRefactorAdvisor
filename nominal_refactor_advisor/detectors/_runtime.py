@@ -36,11 +36,12 @@ from ..class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
-    CompactLatentRosterObservation,
     CompactManualSubclassRosterRoot,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     IndexedClass,
+    LatentRosterMatch,
+    LatentRosterObservation,
     ModuleClassReferenceResolver,
     build_class_family_index,
     build_compact_class_family_index,
@@ -6753,9 +6754,7 @@ class ManualConcreteSubclassRosterDetector(
 
 class LatentImplementationRosterDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[
-        LatentImplementationRosterCandidate
-    ],
+    CrossModuleCandidateDetector[LatentImplementationRosterCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
@@ -6770,6 +6769,17 @@ class LatentImplementationRosterDetector(
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
         _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> tuple[LatentImplementationRosterCandidate, ...]:
+        projections = type(self).compact_module_projections(modules)
+        return _compact_latent_implementation_roster_candidates(
+            _compact_concrete_family_context(projections, config),
+            config,
+        )
 
     def _findings_from_compact_projections(
         self,
@@ -6799,11 +6809,13 @@ class LatentImplementationRosterDetector(
     def _finding_for_candidate(
         self, roster_candidate: LatentImplementationRosterCandidate
     ) -> RefactorFinding:
+        roster = roster_candidate.roster
+        match = roster_candidate.match
         key_attr = roster_candidate.key_attr_name or "derived_registry_key"
         projection_suffix = (
-            f" with subset policy `{roster_candidate.projection_policy_hint}`; "
-            f"missing {roster_candidate.missing_member_names}"
-            if roster_candidate.projection_policy_hint is not None
+            f" with subset policy `{match.projection_policy_hint}`; "
+            f"missing {match.missing_member_names}"
+            if match.projection_policy_hint is not None
             else ""
         )
         projection_expression = (
@@ -6822,9 +6834,9 @@ class LatentImplementationRosterDetector(
         )
         return self.build_finding(
             (
-                f"`{roster_candidate.roster_name}` is a `{roster_candidate.roster_kind}` roster "
-                f"{roster_candidate.roster_member_names} via `{roster_candidate.projection_role}` "
-                f"covering {roster_candidate.coverage_ratio:.2f} of concrete `{roster_candidate.class_name}` "
+                f"`{roster.roster_name}` is a `{roster.roster_kind}` roster "
+                f"{roster.member_names} via `{roster.projection_role}` "
+                f"covering {match.coverage_ratio:.2f} of concrete `{roster_candidate.class_name}` "
                 f"implementations {roster_candidate.concrete_class_names}; derive it from registry key `{key_attr}`"
                 f"{projection_suffix}."
             ),
@@ -6834,20 +6846,20 @@ class LatentImplementationRosterDetector(
                 "from metaclass_registry import AutoRegisterMeta\n\n"
                 f"class {roster_candidate.class_name}(ABC, metaclass=AutoRegisterMeta):\n"
                 f"{registry_block}\n\n"
-                f"{roster_candidate.roster_name} = {projection_expression}"
+                f"{roster.roster_name} = {projection_expression}"
             ),
             codemod_patch=(
-                f"# Delete manual roster `{roster_candidate.roster_name}`.\n"
+                f"# Delete manual roster `{roster.roster_name}`.\n"
                 f"# Promote `{roster_candidate.class_name}` to `ABC, metaclass=AutoRegisterMeta` and derive this projection from `__registry__`"
                 + (
-                    f" through a named `{roster_candidate.projection_policy_hint}` subset policy."
-                    if roster_candidate.projection_policy_hint is not None
+                    f" through a named `{match.projection_policy_hint}` subset policy."
+                    if match.projection_policy_hint is not None
                     else "."
                 )
             ),
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(roster_candidate.concrete_class_names),
-                registry_name=roster_candidate.roster_name,
+                registry_name=roster.roster_name,
                 class_names=roster_candidate.concrete_class_names,
             ),
         )
@@ -6877,7 +6889,7 @@ def _compact_concrete_descendants(
 @dataclass(frozen=True)
 class _CompactConcreteFamilyContext:
     class_index: CompactClassFamilyIndex
-    latent_rosters: tuple[CompactLatentRosterObservation, ...]
+    latent_rosters: tuple[LatentRosterObservation, ...]
 
 
 def _compact_concrete_family_context(
@@ -7007,13 +7019,11 @@ def _compact_descendant_key_values(
 
 
 def _compact_matched_latent_roster_key_attr(
-    roster: CompactLatentRosterObservation,
+    roster: LatentRosterObservation,
     key_values_by_attr: tuple[tuple[str, tuple[str, ...]], ...],
-) -> tuple[str, tuple[float, tuple[str, ...], str | None]] | None:
+) -> tuple[str, LatentRosterMatch] | None:
     for key_attr_name, key_values in key_values_by_attr:
-        match = LATENT_ROSTER_PROJECTION_AUTHORITY.match(
-            roster.member_names, key_values, roster.roster_name
-        )
+        match = roster.match(key_values)
         if match is not None:
             return key_attr_name, match
     return None
@@ -7055,14 +7065,8 @@ def _compact_latent_implementation_roster_candidates(
         )
         for roster in context.latent_rosters:
             key_attr_name: str | None = None
-            match = LATENT_ROSTER_PROJECTION_AUTHORITY.match(
-                roster.member_names,
-                concrete_class_names,
-                roster.roster_name,
-            ) or LATENT_ROSTER_PROJECTION_AUTHORITY.match(
-                roster.member_names,
-                concrete_simple_names,
-                roster.roster_name,
+            match = roster.match(concrete_class_names) or roster.match(
+                concrete_simple_names
             )
             if match is None:
                 key_match = _compact_matched_latent_roster_key_attr(
@@ -7073,22 +7077,15 @@ def _compact_latent_implementation_roster_candidates(
                     key_attr_name, match = key_match
             if match is None:
                 continue
-            coverage_ratio, missing_member_names, projection_policy_hint = match
             candidates.append(
                 LatentImplementationRosterCandidate(
                     file_path=roster.file_path,
                     line=roster.line,
                     class_name=_compact_class_display_name(indexed_class, class_index),
-                    roster_name=roster.roster_name,
-                    roster_kind=roster.roster_kind,
-                    roster_member_names=roster.member_names,
+                    roster=roster,
+                    match=match,
                     concrete_class_names=concrete_class_names,
                     key_attr_name=key_attr_name,
-                    projection_role=roster.projection_role,
-                    projection_policy_hint=projection_policy_hint,
-                    coverage_ratio=coverage_ratio,
-                    missing_member_names=missing_member_names,
-                    line_count=roster.line_count,
                 )
             )
     return tuple(candidates)
