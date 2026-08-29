@@ -55,7 +55,6 @@ from ..class_index import (
     CompactModuleClassProjection,
     SelectionGuardKind,
     build_compact_class_family_index,
-    has_complete_concrete_mro_composite,
 )
 from ..taxonomy import LabeledStrEnum
 
@@ -3929,254 +3928,6 @@ def _is_dataclass_class(node: ast.ClassDef) -> bool:
     return False
 
 
-def _module_string_constant_assignments(module: ParsedModule) -> dict[str, str]:
-    constants: dict[str, str] = {}
-    for binding in SUPPORT_PROJECTION_AUTHORITY.module_named_value_bindings(module):
-        if (string_value := _constant_string(binding.value)) is not None:
-            constants[binding.name] = string_value
-    return constants
-
-
-def _class_direct_string_member_assignments(node: ast.ClassDef) -> dict[str, str]:
-    members: dict[str, str] = {}
-    for statement in node.body:
-        value_node: ast.AST | None = None
-        target_name: str | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name):
-                target_name = target.id
-                value_node = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target,
-            ast.Name,
-        ):
-            target_name = statement.target.id
-            value_node = statement.value
-        if target_name is None:
-            continue
-        if (string_value := _constant_string(value_node)) is not None:
-            members[target_name] = string_value
-    return members
-
-
-def _module_string_enum_member_assignments(
-    module: ParsedModule,
-) -> dict[tuple[str, str], str]:
-    enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
-    members: dict[tuple[str, str], str] = {}
-    for statement in module.module.body:
-        if not isinstance(statement, ast.ClassDef):
-            continue
-        if (
-            not set(CLASS_NODE_AUTHORITY.declared_base_names(statement))
-            & enum_base_names
-        ):
-            continue
-        for member_name, string_value in _class_direct_string_member_assignments(
-            statement
-        ).items():
-            members[(statement.name, member_name)] = string_value
-    return members
-
-
-def _enum_member_value_reference(node: ast.AST | None) -> tuple[str, str] | None:
-    if not (
-        isinstance(node, ast.Attribute)
-        and node.attr == "value"
-        and isinstance(node.value, ast.Attribute)
-        and isinstance(node.value.value, ast.Name)
-    ):
-        return None
-    return node.value.value.id, node.value.attr
-
-
-def _constant_string_or_module_constant(
-    node: ast.AST | None,
-    module: ParsedModule,
-    module_string_constants: dict[str, str],
-) -> str | None:
-    if (string_value := _constant_string(node)) is not None:
-        return string_value
-    if (enum_ref := _enum_member_value_reference(node)) is not None:
-        return _module_string_enum_member_assignments(module).get(enum_ref)
-    if isinstance(node, ast.Name):
-        return module_string_constants.get(node.id) or node.id
-    if isinstance(node, ast.Attribute) and node.attr == "__registry_key__":
-        return node.attr
-    return None
-
-
-def _autoregister_registry_key_attr_name(
-    module: ParsedModule,
-    node: ast.ClassDef,
-) -> str | None:
-    assignments = CLASS_NODE_AUTHORITY.direct_assignments(node)
-    module_string_constants = _module_string_constant_assignments(module)
-    explicit_key = _constant_string_or_module_constant(
-        assignments.get("__registry_key__"),
-        module,
-        module_string_constants,
-    )
-    if explicit_key is not None:
-        return explicit_key
-    stable_key_axis = assignments.get("stable_key_axis")
-    if (
-        isinstance(stable_key_axis, ast.Name)
-        and stable_key_axis.id == "__registry_key__"
-    ):
-        return stable_key_axis.id
-    stable_key_name = _constant_string_or_module_constant(
-        stable_key_axis,
-        module,
-        module_string_constants,
-    )
-    if stable_key_name is not None:
-        return stable_key_name
-    registry_family = assignments.get("__registry_family__")
-    return _registry_family_key_attr_name(registry_family)
-
-
-def _inherited_autoregister_registry_key_attr_name(
-    class_index: ClassFamilyIndex,
-    modules_by_path: dict[str, ParsedModule],
-    indexed_class: IndexedClass,
-) -> str | None:
-    for symbol in (
-        indexed_class.symbol,
-        *class_index.ancestor_symbols(indexed_class.symbol),
-    ):
-        current_class = class_index.class_for(symbol)
-        if current_class is None:
-            continue
-        module = modules_by_path.get(current_class.file_path)
-        if module is None:
-            continue
-        key_attr_name = _autoregister_registry_key_attr_name(module, current_class.node)
-        if key_attr_name is not None:
-            return key_attr_name
-    return None
-
-
-def _registry_family_key_attr_name(node: ast.AST | None) -> str | None:
-    if not isinstance(node, ast.Call):
-        return None
-    if not (
-        (isinstance(node.func, ast.Name) and node.func.id == "RegistryFamily")
-        or (isinstance(node.func, ast.Attribute) and node.func.attr == "RegistryFamily")
-    ):
-        return None
-    if not node.args:
-        return None
-    key_arg = node.args[0]
-    key_literal = _constant_string(key_arg)
-    if key_literal is not None:
-        return key_literal
-    if isinstance(key_arg, ast.Attribute):
-        return key_arg.attr.lower()
-    return None
-
-
-def _autoregister_key_extractor_name(node: ast.ClassDef) -> str | None:
-    extractor = CLASS_NODE_AUTHORITY.direct_assignments(node).get("__key_extractor__")
-    if extractor is None:
-        return None
-    return ast.unparse(extractor)
-
-
-def _inherited_autoregister_key_extractor_name(
-    class_index: ClassFamilyIndex, indexed_class: IndexedClass
-) -> str | None:
-    for symbol in (
-        indexed_class.symbol,
-        *class_index.ancestor_symbols(indexed_class.symbol),
-    ):
-        current_class = class_index.class_for(symbol)
-        if current_class is None:
-            continue
-        key_extractor_name = _autoregister_key_extractor_name(current_class.node)
-        if key_extractor_name is not None:
-            return key_extractor_name
-    return None
-
-
-def _references_dunder_registry(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    return any(
-        (
-            isinstance(node, ast.Attribute)
-            and node.attr in {"__registry__", "_registry", "registry"}
-            for node in _walk_nodes(method)
-        )
-    )
-
-
-class HelperDispatchAlgebraAuthority:
-    def autoregister_registry_projection_names(
-        self, node: ast.ClassDef
-    ) -> tuple[str, ...]:
-        return tuple(
-            (
-                method.name
-                for method in CLASS_NODE_AUTHORITY.methods(node)
-                if _references_dunder_registry(method)
-            )
-        )
-
-    def registry_materialization_kind(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str
-    ) -> str | None:
-        append_args = HELPER_SUPPORT_PROJECTION_AUTHORITY.result_append_args(
-            node, result_name
-        )
-        if len(append_args) != 1:
-            return None
-        arg = append_args[0]
-        if isinstance(arg, ast.Call):
-            return "instantiate"
-        if isinstance(arg, ast.Name):
-            return _TYPE_NAME_LITERAL
-        return "projection"
-
-    def repeated_property_hook_metrics(
-        self, class_names: tuple[str, ...], property_name: str
-    ) -> RepeatedMethodMetrics:
-        return RepeatedMethodMetrics.from_duplicate_family(
-            duplicate_site_count=len(class_names),
-            statement_count=1,
-            class_count=len(class_names),
-            method_symbols=tuple(
-                (f"{class_name}.{property_name}" for class_name in class_names)
-            ),
-        )
-
-
-HELPER_DISPATCH_ALGEBRA_AUTHORITY = HelperDispatchAlgebraAuthority()
-
-
-def _autoregister_behavior_method_names(
-    indexed_class: IndexedClass, concrete_descendants: tuple[IndexedClass, ...]
-) -> tuple[str, ...]:
-    registry_projection_names = set(
-        HELPER_DISPATCH_ALGEBRA_AUTHORITY.autoregister_registry_projection_names(
-            indexed_class.node
-        )
-    )
-    return sorted_tuple(
-        {
-            method.name
-            for class_node in (
-                indexed_class.node,
-                *(descendant.node for descendant in concrete_descendants),
-            )
-            for method in CLASS_NODE_AUTHORITY.methods(class_node)
-            if not method.name.startswith("__")
-            and method.name not in registry_projection_names
-        }
-    )
-
-
 def _autoregister_membership_object_count(
     *,
     concrete_class_names: tuple[str, ...],
@@ -4243,100 +3994,6 @@ def _autoregister_rent_certificate(
         ),
         residual_object_count=residual_object_count,
         independent_source_count=independent_source_count,
-    )
-
-
-def _function_calls_autoregister_meta(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    return any(
-        (
-            isinstance(node, ast.Call)
-            and (
-                (isinstance(node.func, ast.Name) and node.func.id == "AutoRegisterMeta")
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "AutoRegisterMeta"
-                )
-            )
-            for node in _walk_nodes(function)
-        )
-    )
-
-
-def _node_mentions_any_symbol(node: ast.AST, symbol_names: frozenset[str]) -> bool:
-    for child in _walk_nodes(node):
-        if isinstance(child, ast.Name) and child.id in symbol_names:
-            return True
-        if isinstance(child, ast.Constant) and child.value in symbol_names:
-            return True
-        if isinstance(child, ast.Attribute) and child.attr in symbol_names:
-            return True
-    return False
-
-
-@dataclass(frozen=True)
-class AutoRegisterFunctionReference(ReceiverAttributeReference):
-    """Precomputed function-level facts used by AutoRegister rent analysis."""
-
-    referenced_symbols: frozenset[str]
-    calls_autoregister_meta: bool
-
-
-def _autoregister_function_references(
-    modules: Sequence[ParsedModule],
-) -> tuple[AutoRegisterFunctionReference, ...]:
-    references: list[AutoRegisterFunctionReference] = []
-    for module in modules:
-        file_path = str(module.path)
-        if file_path.startswith("tests/") or "/tests/" in file_path:
-            continue
-        for qualname, function in _iter_named_functions(module):
-            nodes = _walk_nodes(function)
-            referenced_symbols: set[str] = set()
-            receiver_attribute_refs: set[tuple[str, str]] = set()
-            calls_autoregister_meta = False
-            for node in nodes:
-                if isinstance(node, ast.Name):
-                    referenced_symbols.add(node.id)
-                    continue
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    referenced_symbols.add(node.value)
-                    continue
-                if isinstance(node, ast.Attribute):
-                    referenced_symbols.add(node.attr)
-                    if isinstance(node.value, ast.Name):
-                        receiver_attribute_refs.add((node.value.id, node.attr))
-                    continue
-                if isinstance(node, ast.Call):
-                    terminal_name = _ast_terminal_name(node.func)
-                    if terminal_name == "AutoRegisterMeta":
-                        calls_autoregister_meta = True
-            references.append(
-                AutoRegisterFunctionReference(
-                    qualname=qualname,
-                    referenced_symbols=frozenset(referenced_symbols),
-                    calls_autoregister_meta=calls_autoregister_meta,
-                    receiver_attribute_refs=sorted_tuple(receiver_attribute_refs),
-                )
-            )
-    return tuple(references)
-
-
-def _autoregister_dynamic_factory_symbols(
-    references: Sequence[AutoRegisterFunctionReference],
-    *,
-    family_name: str,
-    concrete_class_names: tuple[str, ...],
-) -> tuple[str, ...]:
-    symbol_names = frozenset((family_name, *concrete_class_names))
-    return sorted_tuple(
-        {
-            reference.qualname
-            for reference in references
-            if reference.calls_autoregister_meta
-            and not reference.referenced_symbols.isdisjoint(symbol_names)
-        }
     )
 
 
@@ -4443,141 +4100,6 @@ def _all_missing_axis_predicate_candidates(
     return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
         module, _all_missing_axis_predicates_for_function
     )
-
-
-def _autoregister_meta_rent_candidates(
-    modules: list[ParsedModule], config: DetectorConfig
-) -> tuple[AutoRegisterMetaRentCandidate, ...]:
-    class_index = build_class_family_index(modules)
-    modules_by_path = {str(module.path): module for module in modules}
-    function_references = _autoregister_function_references(modules)
-    min_leaf_count = max(2, config.min_registration_sites)
-    candidates: list[AutoRegisterMetaRentCandidate] = []
-    for indexed_class in sorted(
-        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
-    ):
-        if indexed_class.file_path.startswith("tests/") or "/tests/" in (
-            indexed_class.file_path
-        ):
-            continue
-        node = indexed_class.node
-        if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(node):
-            continue
-        concrete_descendants = tuple(
-            descendant
-            for descendant in CLASS_INDEX_PROJECTION.descendant_classes(
-                class_index, indexed_class.symbol
-            )
-            if not CLASS_NODE_AUTHORITY.is_abstract(descendant.node)
-        )
-        concrete_class_names = CLASS_INDEX_PROJECTION.display_names(
-            concrete_descendants, class_index
-        )
-        family_name = CLASS_INDEX_PROJECTION.display_name(indexed_class, class_index)
-        dynamic_factory_symbols = _autoregister_dynamic_factory_symbols(
-            function_references,
-            family_name=family_name,
-            concrete_class_names=concrete_class_names,
-        )
-        module = modules_by_path.get(indexed_class.file_path)
-        if module is None:
-            continue
-        registry_key_attr_name = _inherited_autoregister_registry_key_attr_name(
-            class_index, modules_by_path, indexed_class
-        )
-        key_extractor_name = _inherited_autoregister_key_extractor_name(
-            class_index, indexed_class
-        )
-        registry_projection_names = (
-            HELPER_DISPATCH_ALGEBRA_AUTHORITY.autoregister_registry_projection_names(
-                node
-            )
-        )
-        consumer_symbols = REGISTRY_CONSUMER_SYMBOL_PROJECTION.symbols_from_references(
-            function_references,
-            family_name=family_name,
-            lookup_method_names=registry_projection_names,
-        )
-        behavior_method_names = _autoregister_behavior_method_names(
-            indexed_class, concrete_descendants
-        )
-        node_abstract_method_names = (
-            HELPER_SYNTAX_PROJECTION_AUTHORITY.abstract_method_names(node)
-        )
-        missing_rent_signals = _autoregister_missing_rent_signals(
-            concrete_class_names=concrete_class_names,
-            dynamic_factory_symbols=dynamic_factory_symbols,
-            registry_key_attr_name=registry_key_attr_name,
-            key_extractor_name=key_extractor_name,
-            behavior_method_names=behavior_method_names,
-            abstract_method_names=node_abstract_method_names,
-            registry_projection_names=registry_projection_names,
-            consumer_symbols=consumer_symbols,
-            min_leaf_count=min_leaf_count,
-        )
-        if missing_rent_signals == ("registered_leaf_axis",) and (
-            behavior_method_names
-            or node_abstract_method_names
-            or registry_projection_names
-            or consumer_symbols
-        ):
-            continue
-        if not missing_rent_signals:
-            continue
-        membership_object_count = _autoregister_membership_object_count(
-            concrete_class_names=concrete_class_names,
-            dynamic_factory_symbols=dynamic_factory_symbols,
-            behavior_method_names=behavior_method_names,
-            abstract_method_names=node_abstract_method_names,
-            registry_projection_names=registry_projection_names,
-            consumer_symbols=consumer_symbols,
-        )
-        certificate = _autoregister_rent_certificate(
-            manual_object_count=membership_object_count,
-            class_name=family_name,
-            registry_axis_name=registry_key_attr_name
-            or key_extractor_name
-            or "class_identity",
-            semantic_axis_names=(
-                *behavior_method_names,
-                *node_abstract_method_names,
-                *registry_projection_names,
-                *dynamic_factory_symbols,
-            ),
-            residual_object_count=len(concrete_class_names)
-            + len(dynamic_factory_symbols),
-            independent_source_count=max(
-                1, len(concrete_class_names) + len(dynamic_factory_symbols)
-            ),
-        )
-        candidates.append(
-            AutoRegisterMetaRentCandidate(
-                file_path=indexed_class.file_path,
-                line=indexed_class.line,
-                class_name=family_name,
-                concrete_class_names=concrete_class_names,
-                dynamic_factory_symbols=dynamic_factory_symbols,
-                registry_key_attr_name=registry_key_attr_name,
-                key_extractor_name=key_extractor_name,
-                behavior_method_names=behavior_method_names,
-                abstract_method_names=node_abstract_method_names,
-                registry_projection_names=registry_projection_names,
-                consumer_symbols=consumer_symbols,
-                missing_rent_signals=missing_rent_signals,
-                membership_object_count=membership_object_count,
-                derived_projection_count=_autoregister_derived_projection_count(
-                    registry_key_attr_name=registry_key_attr_name,
-                    key_extractor_name=key_extractor_name,
-                    behavior_method_names=behavior_method_names,
-                    abstract_method_names=node_abstract_method_names,
-                    registry_projection_names=registry_projection_names,
-                    consumer_symbols=consumer_symbols,
-                ),
-                rent_margin=certificate.certified_description_length_savings,
-                compression_certificate=certificate,
-            )
-        )
-    return tuple(candidates)
 
 
 def _registered_type_match_assignment_shape(
@@ -6411,94 +5933,6 @@ class QueueExtendingSubclassLoopRule(SubclassLoopRule):
         return current_name if extends_queue else None
 
 
-class SubclassTraversalProfile:
-    def seed(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> tuple[str, str] | None:
-        for statement in _trim_docstring_body(node.body):
-            if (
-                not isinstance(statement, ast.Assign)
-                or len(statement.targets) != 1
-                or (not isinstance(statement.targets[0], ast.Name))
-            ):
-                continue
-            if (
-                root_expression := HELPER_SYNTAX_PROJECTION_AUTHORITY.subclasses_root_expression(
-                    statement.value
-                )
-            ) is None:
-                continue
-            return statement.targets[0].id, root_expression
-        return None
-
-    def filter_names(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-        current_name: str,
-    ) -> tuple[str, ...]:
-        return sorted_tuple(
-            set(SubclassFilterNameRule.matches_anywhere(node, current_name))
-        )
-
-    def loop_profile(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef, queue_name: str
-    ) -> str | None:
-        return SubclassLoopRule.first_match_anywhere(node, queue_name)
-
-    def materialization_kind(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str | None
-    ) -> str | None:
-        return (
-            Maybe.of(result_name)
-            .combine(
-                lambda name: HELPER_DISPATCH_ALGEBRA_AUTHORITY.registry_materialization_kind(
-                    node, name
-                ),
-                lambda name, materialization_kind: (
-                    materialization_kind
-                    if HELPER_SUPPORT_PROJECTION_AUTHORITY.result_append_args(
-                        node, name
-                    )
-                    else None
-                ),
-            )
-            .unwrap_or_none()
-        )
-
-    def site(
-        self,
-        module: ParsedModule,
-        qualname: str,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> SubclassTraversalSite | None:
-        return (
-            Maybe.of(self.seed(node))
-            .combine(
-                lambda seed: self.loop_profile(node, seed[0]),
-                lambda seed, current_name: (seed, current_name),
-            )
-            .combine(
-                lambda context: self.materialization_kind(
-                    node,
-                    _returned_sequence_name(node),
-                ),
-                lambda context, materialization_kind: SubclassTraversalSite(
-                    file_path=str(module.path),
-                    line=node.lineno,
-                    symbol=qualname,
-                    root_expression=context[0][1],
-                    materialization_kind=materialization_kind,
-                    registry_attribute_names=_registry_attribute_names(node),
-                    filter_names=self.filter_names(node, context[1]),
-                ),
-            )
-            .unwrap_or_none()
-        )
-
-
-SUBCLASS_TRAVERSAL_PROFILE = SubclassTraversalProfile()
-
-
 def _registry_attribute_names(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, ...]:
@@ -6570,14 +6004,68 @@ class SubclassTraversalSiteFamily(CollectedFamily[SubclassTraversalSite]):
         )
     )
 
+    @staticmethod
+    def _seed(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[str, str] | None:
+        for statement in _trim_docstring_body(node.body):
+            if (
+                not isinstance(statement, ast.Assign)
+                or len(statement.targets) != 1
+                or not isinstance(statement.targets[0], ast.Name)
+            ):
+                continue
+            root_expression = (
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.subclasses_root_expression(
+                    statement.value
+                )
+            )
+            if root_expression is not None:
+                return statement.targets[0].id, root_expression
+        return None
+
+    @classmethod
+    def site(
+        cls,
+        module: ParsedModule,
+        qualname: str,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> SubclassTraversalSite | None:
+        seed = cls._seed(node)
+        if seed is None:
+            return None
+        current_name = SubclassLoopRule.first_match_anywhere(node, seed[0])
+        if current_name is None:
+            return None
+        result_name = _returned_sequence_name(node)
+        if result_name is None:
+            return None
+        append_arguments = HELPER_SUPPORT_PROJECTION_AUTHORITY.result_append_args(
+            node, result_name
+        )
+        if len(append_arguments) != 1:
+            return None
+        return SubclassTraversalSite(
+            file_path=str(module.path),
+            line=node.lineno,
+            symbol=qualname,
+            root_expression=seed[1],
+            materialization_kind=SubclassMaterializationKind.from_append_argument(
+                append_arguments[0]
+            ),
+            registry_attribute_names=_registry_attribute_names(node),
+            filter_names=sorted_tuple(
+                set(SubclassFilterNameRule.matches_anywhere(node, current_name))
+            ),
+        )
+
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[SubclassTraversalSite]:
-        del cls
         return [
             site
             for qualname, function in _iter_named_functions(parsed_module)
             if (
-                site := SUBCLASS_TRAVERSAL_PROFILE.site(
+                site := cls.site(
                     parsed_module,
                     qualname,
                     cast(ast.FunctionDef | ast.AsyncFunctionDef, function),
@@ -6611,7 +6099,7 @@ def _native_subclass_traversal_sites(
             if b"__subclasses__" not in syntax_index.source_for(function_node):
                 continue
             function = syntax_index.function_for(function_node)
-            site = SUBCLASS_TRAVERSAL_PROFILE.site(
+            site = SubclassTraversalSiteFamily.site(
                 parsed_module,
                 syntax_index.class_qualified_function_name(function_node),
                 function,

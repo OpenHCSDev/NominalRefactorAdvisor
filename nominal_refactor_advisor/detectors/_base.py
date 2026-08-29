@@ -30,6 +30,7 @@ from typing import (
     Generic,
     Iterable,
     ParamSpec,
+    Self,
     Sequence,
     TYPE_CHECKING,
     TypedDict,
@@ -120,6 +121,7 @@ from ..ast_tools import (
     MethodShape,
     MethodShapeFamily,
     ParsedModule,
+    PythonSourcePathPolicy,
     SourceModule,
     ProjectionHelperShape,
     ProjectionHelperObservationFamily,
@@ -4187,9 +4189,7 @@ class DispatchAlgebraAuthority:
         for indexed_class in sorted(
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
-            if indexed_class.file_path.startswith("tests/") or "/tests/" in (
-                indexed_class.file_path
-            ):
+            if PythonSourcePathPolicy.is_test_path(Path(indexed_class.file_path)):
                 continue
             node = indexed_class.node
             key_type_name = SYNTAX_PROJECTION_AUTHORITY.keyed_family_key_type_name(node)
@@ -4204,10 +4204,22 @@ class DispatchAlgebraAuthority:
             family_name = CLASS_INDEX_PROJECTION.display_name(
                 indexed_class, class_index
             )
-            consumer_symbols = REGISTRY_CONSUMER_SYMBOL_PROJECTION.symbols(
-                modules,
-                family_name=family_name,
-                lookup_method_names=lookup_method_names,
+            lookup_method_name_set = set(lookup_method_names)
+            consumer_symbols = sorted_tuple(
+                {
+                    qualname
+                    for module in modules
+                    if not PythonSourcePathPolicy.is_test_path(module.path)
+                    for qualname, function in _iter_named_functions(module)
+                    if not qualname.startswith(f"{family_name}.")
+                    if any(
+                        attribute is not None
+                        and attribute.attr in lookup_method_name_set
+                        and name_id(attribute.value) == family_name
+                        for node in _walk_nodes(function)
+                        for attribute in (as_ast(node, ast.Attribute),)
+                    )
+                }
             )
             registered_case_names = _registered_keyed_case_names(
                 class_index, indexed_class, registry_key_attr_name
@@ -8114,78 +8126,6 @@ def _keyed_type_registry_injectivity_proof(
     )
 
 
-@dataclass(frozen=True)
-class ReceiverAttributeReference:
-    """Precomputed receiver.attr references for one function-like scope."""
-
-    qualname: str
-    receiver_attribute_refs: tuple[tuple[str, str], ...]
-
-
-class RegistryConsumerSymbolProjection:
-    def symbols_from_modules(
-        self,
-        modules: Sequence[ParsedModule],
-        *,
-        family_name: str,
-        lookup_method_names: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        lookup_method_name_set = set(lookup_method_names)
-        consumer_symbols: set[str] = set()
-        for module in modules:
-            file_path = str(module.path)
-            if file_path.startswith("tests/") or "/tests/" in file_path:
-                continue
-            for qualname, function in _iter_named_functions(module):
-                if qualname.startswith(f"{family_name}."):
-                    continue
-                for node in _walk_nodes(function):
-                    attribute = as_ast(node, ast.Attribute)
-                    if (
-                        attribute is None
-                        or attribute.attr not in lookup_method_name_set
-                    ):
-                        continue
-                    if name_id(attribute.value) == family_name:
-                        consumer_symbols.add(qualname)
-        return sorted_tuple(consumer_symbols)
-
-    def symbols_from_references(
-        self,
-        references: Sequence[ReceiverAttributeReference],
-        *,
-        family_name: str,
-        lookup_method_names: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        lookup_method_name_set = set(lookup_method_names)
-        consumer_symbols: set[str] = set()
-        for reference in references:
-            if reference.qualname.startswith(f"{family_name}."):
-                continue
-            if any(
-                receiver_name == family_name and attr_name in lookup_method_name_set
-                for receiver_name, attr_name in reference.receiver_attribute_refs
-            ):
-                consumer_symbols.add(reference.qualname)
-        return sorted_tuple(consumer_symbols)
-
-    def symbols(
-        self,
-        modules: Sequence[ParsedModule],
-        *,
-        family_name: str,
-        lookup_method_names: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        return self.symbols_from_modules(
-            modules,
-            family_name=family_name,
-            lookup_method_names=lookup_method_names,
-        )
-
-
-REGISTRY_CONSUMER_SYMBOL_PROJECTION = RegistryConsumerSymbolProjection()
-
-
 def _registry_maturity_missing_signals(
     *,
     registered_case_count: int,
@@ -11760,6 +11700,18 @@ class PropertyHookGroup(ClassLineNumbersGroup):
     base_name: str
     property_name: str
 
+    @property
+    def repeated_method_metrics(self) -> RepeatedMethodMetrics:
+        return RepeatedMethodMetrics.from_duplicate_family(
+            duplicate_site_count=len(self.class_names),
+            statement_count=1,
+            class_count=len(self.class_names),
+            method_symbols=tuple(
+                f"{class_name}.{self.property_name}"
+                for class_name in self.class_names
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class PropertyAliasHookGroup(PropertyHookGroup):
@@ -11912,11 +11864,20 @@ class ExportPolicyPredicateCandidate(
     root_type_names: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class RegistryTraversalGroup(ClassLineNumbersGroup):
-    method_names: tuple[str, ...]
-    materialization_kinds: tuple[str, ...]
-    registry_attribute_names: tuple[str, ...]
+class SubclassMaterializationKind(StrEnum):
+    """Result projection performed by one subclass-family traversal."""
+
+    INSTANTIATE = "instantiate"
+    TYPE = _TYPE_NAME_LITERAL
+    PROJECTION = "projection"
+
+    @classmethod
+    def from_append_argument(cls, argument: ast.AST) -> Self:
+        if isinstance(argument, ast.Call):
+            return cls.INSTANTIATE
+        if isinstance(argument, ast.Name):
+            return cls.TYPE
+        return cls.PROJECTION
 
 
 @dataclass(frozen=True)
@@ -11925,7 +11886,7 @@ class SubclassTraversalSite:
     line: int
     symbol: str
     root_expression: str
-    materialization_kind: str
+    materialization_kind: SubclassMaterializationKind
     registry_attribute_names: tuple[str, ...]
     filter_names: tuple[str, ...]
 
@@ -11938,7 +11899,7 @@ class SubclassTraversalGroup:
     file_paths: tuple[str, ...]
     line_numbers: tuple[int, ...]
     root_expressions: tuple[str, ...]
-    materialization_kinds: tuple[str, ...]
+    materialization_kinds: tuple[SubclassMaterializationKind, ...]
     registry_attribute_names: tuple[str, ...]
     filter_names: tuple[str, ...]
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from typing import ClassVar, TypeAlias
 from metaclass_registry import AutoRegisterMeta
 
@@ -24,8 +23,6 @@ from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_regis
 from ..semantic_match import (
     Maybe,
     attribute_call_match,
-    constant_value,
-    named_call_assignment,
 )
 from ._base import *
 from ._helpers import *
@@ -910,9 +907,7 @@ class RepeatedPropertyAliasHookDetector(
             codemod_patch=(
                 f"# Move `{hook_group.property_name}` <- `self.{hook_group.returned_attribute}` into one shared mixin or intermediate base for `{hook_group.base_name}`."
             ),
-            metrics=HELPER_DISPATCH_ALGEBRA_AUTHORITY.repeated_property_hook_metrics(
-                hook_group.class_names, hook_group.property_name
-            ),
+            metrics=hook_group.repeated_method_metrics,
         )
 
 
@@ -965,9 +960,7 @@ class ConstantPropertyHookDetector(
             evidence,
             scaffold=scaffold,
             codemod_patch=patch,
-            metrics=HELPER_DISPATCH_ALGEBRA_AUTHORITY.repeated_property_hook_metrics(
-                hook_group.class_names, hook_group.property_name
-            ),
+            metrics=hook_group.repeated_method_metrics,
         )
 
 
@@ -2222,6 +2215,9 @@ class RegistryTraversalSubstrateDetector(
         filter_clause = (
             "" if not group.filter_names else f" with filter hooks {group.filter_names}"
         )
+        materialization_modes = tuple(
+            kind.value for kind in group.materialization_kinds
+        )
         scaffold = (
             f"import re\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\ndef materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    return tuple(\n        materialize(item)\n        for item in root.__registry__.values()\n        if include(item)\n    )"
             if group.registry_attribute_names
@@ -2233,7 +2229,7 @@ class RegistryTraversalSubstrateDetector(
             self.build_finding(
                 (
                     f"Helpers {', '.join(group.symbols[:6])} repeat subclass-family traversal from roots {group.root_expressions[:6]}"
-                    f"{registry_clause}{filter_clause} with materialization modes {group.materialization_kinds}."
+                    f"{registry_clause}{filter_clause} with materialization modes {materialization_modes}."
                 ),
                 evidence,
                 scaffold=scaffold,

@@ -172,15 +172,58 @@ class CollectedFamilyContentSignatureIndexSchema:
     version: int = 1
 
 
-CollectedFamilyContentSignatureIndexKey: TypeAlias = tuple[
-    str,
-    str,
-    str,
-    str,
-    str,
-    str,
-    str,
-]
+@dataclass(frozen=True)
+class CollectedFamilySchemaIdentity:
+    """Nominal identity of one collected family and its persisted item schema."""
+
+    family_module: str
+    family_qualname: str
+    item_type_module: str
+    item_type_qualname: str
+    item_schema_signature: str
+
+    @classmethod
+    def from_family(
+        cls,
+        family: type["CollectedFamily[object]"],
+    ) -> "CollectedFamilySchemaIdentity":
+        item_type = family.item_type
+        return cls(
+            family_module=family.__module__,
+            family_qualname=family.__qualname__,
+            item_type_module=item_type.__module__,
+            item_type_qualname=item_type.__qualname__,
+            item_schema_signature=family.item_schema_signature(),
+        )
+
+
+@dataclass(frozen=True)
+class CollectedFamilyContentSignatureIndexKey:
+    """Stable lookup key for one source-family content signature."""
+
+    path_text: str
+    module_name: str
+    family_schema: CollectedFamilySchemaIdentity
+    demand_signature: str
+
+
+@dataclass(frozen=True)
+class CollectedFamilyCacheBundleEntry:
+    """One family schema and its optional focused-demand projection."""
+
+    family_schema: CollectedFamilySchemaIdentity
+    demand_signature: str = ""
+
+    @classmethod
+    def from_family(
+        cls,
+        family: type["CollectedFamily[object]"],
+        demand_signature: str = "",
+    ) -> "CollectedFamilyCacheBundleEntry":
+        return cls(
+            family_schema=CollectedFamilySchemaIdentity.from_family(family),
+            demand_signature=demand_signature,
+        )
 
 
 @dataclass(frozen=True)
@@ -203,10 +246,7 @@ class CollectedFamilyCacheIdentity:
     path: str
     module_name: str
     source_signature: str
-    family_module: str
-    family_qualname: str
-    item_type_module: str
-    item_type_qualname: str
+    family_schema: CollectedFamilySchemaIdentity
     python_version: tuple[int, int]
     schema: CollectedFamilyCacheSchema
 
@@ -269,9 +309,7 @@ class CollectedFamilyContentSignatureIndex:
         ):
             for key, source_signature, content_signature in payload.entries:
                 if (
-                    isinstance(key, tuple)
-                    and len(key) == 7
-                    and all(isinstance(part, str) for part in key)
+                    isinstance(key, CollectedFamilyContentSignatureIndexKey)
                     and isinstance(source_signature, str)
                     and isinstance(content_signature, str)
                 ):
@@ -286,14 +324,11 @@ class CollectedFamilyContentSignatureIndex:
         family: type["CollectedFamily[object]"],
         demand_signature: str | None,
     ) -> CollectedFamilyContentSignatureIndexKey:
-        return (
-            path_text,
-            module_name,
-            family.__module__,
-            family.__qualname__,
-            family.item_type.__module__,
-            family.item_type.__qualname__,
-            demand_signature or "",
+        return CollectedFamilyContentSignatureIndexKey(
+            path_text=path_text,
+            module_name=module_name,
+            family_schema=CollectedFamilySchemaIdentity.from_family(family),
+            demand_signature=demand_signature or "",
         )
 
     def lookup(
@@ -347,7 +382,10 @@ class CollectedFamilyContentSignatureIndex:
             family_cache_schema=collected_family_cache_schema,
             python_version=(sys.version_info.major, sys.version_info.minor),
             entries=tuple(
-                (key, *entry) for key, entry in sorted(self._entries.items())
+                (key, *entry)
+                for key, entry in sorted(
+                    self._entries.items(), key=lambda item: repr(item[0])
+                )
             ),
         )
         temp_path = self.cache_dir / f".{self._file_name}.{os.getpid()}.tmp"
@@ -1443,6 +1481,44 @@ class CollectedFamily(
         return REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)
 
     @classmethod
+    @lru_cache(maxsize=None)
+    def item_schema_signature(cls) -> str:
+        """Derive persisted-item compatibility from the nominal item declaration."""
+
+        item_type = cls.item_type
+        declared_fields = (
+            tuple(
+                (
+                    item.name,
+                    repr(item.type),
+                    item.init,
+                    item.kw_only,
+                )
+                for item in fields(item_type)
+            )
+            if is_dataclass(item_type)
+            else tuple(
+                (
+                    name,
+                    repr(annotation),
+                )
+                for owner in reversed(item_type.__mro__)
+                for name, annotation in owner.__dict__.get("__annotations__", {}).items()
+            )
+        )
+        return hashlib.blake2s(
+            repr(
+                (
+                    "collected-family-item-schema-v1",
+                    item_type.__module__,
+                    item_type.__qualname__,
+                    declared_fields,
+                )
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
+    @classmethod
     def collect_source(
         cls,
         source_module: SourceModule,
@@ -1552,15 +1628,11 @@ def _collected_family_cache_identity(
     parsed_module: ParsedModule,
     family: type[CollectedFamily[ShapeItemT]],
 ) -> CollectedFamilyCacheIdentity:
-    item_type = family.item_type
     return CollectedFamilyCacheIdentity(
         path=str(parsed_module.path.resolve()),
         module_name=parsed_module.module_name,
         source_signature=_source_signature(parsed_module.source),
-        family_module=family.__module__,
-        family_qualname=family.__qualname__,
-        item_type_module=item_type.__module__,
-        item_type_qualname=item_type.__qualname__,
+        family_schema=CollectedFamilySchemaIdentity.from_family(family),
         python_version=(sys.version_info.major, sys.version_info.minor),
         schema=collected_family_cache_schema,
     )
@@ -1739,10 +1811,7 @@ def _collected_family_cache_identity_for_source_signature(
         path=str(path.resolve()),
         module_name=module_name,
         source_signature=source_signature,
-        family_module=family.__module__,
-        family_qualname=family.__qualname__,
-        item_type_module=family.item_type.__module__,
-        item_type_qualname=family.item_type.__qualname__,
+        family_schema=CollectedFamilySchemaIdentity.from_family(family),
         python_version=(sys.version_info.major, sys.version_info.minor),
         schema=collected_family_cache_schema,
     )
@@ -1770,10 +1839,7 @@ def _collected_family_demand_cache_identity_for_source_signature(
         path=base.path,
         module_name=base.module_name,
         source_signature=base.source_signature,
-        family_module=base.family_module,
-        family_qualname=base.family_qualname,
-        item_type_module=base.item_type_module,
-        item_type_qualname=base.item_type_qualname,
+        family_schema=base.family_schema,
         python_version=base.python_version,
         schema=base.schema,
         demand_signature=resolved_demand_signature,
@@ -1863,15 +1929,15 @@ def collected_family_cache_bundle_is_complete_for_source_signature(
 
     if family_cache_dir is None:
         return False
-    family_rows = tuple(
-        _collected_family_cache_bundle_row(family) for family in families
+    family_entries = tuple(
+        CollectedFamilyCacheBundleEntry.from_family(family) for family in families
     )
     marker_path = _collected_family_cache_bundle_marker_path(
         path=path,
         module_name=module_name,
         source_signature=source_signature,
         family_cache_dir=family_cache_dir,
-        family_rows=family_rows,
+        family_entries=family_entries,
     )
     if _collected_family_cache_bundle_marker_is_complete(marker_path):
         return True
@@ -1907,9 +1973,9 @@ def collected_family_demand_cache_bundle_is_complete_for_source_signature(
         family: (demand, demand_signature)
         for family, demand, demand_signature in family_demands
     }
-    family_rows = tuple(
-        (
-            *_collected_family_cache_bundle_row(family),
+    family_entries = tuple(
+        CollectedFamilyCacheBundleEntry.from_family(
+            family,
             demands_by_family.get(family, (None, ""))[1],
         )
         for family in families
@@ -1919,7 +1985,7 @@ def collected_family_demand_cache_bundle_is_complete_for_source_signature(
         module_name=module_name,
         source_signature=source_signature,
         family_cache_dir=family_cache_dir,
-        family_rows=family_rows,
+        family_entries=family_entries,
     )
     if _collected_family_cache_bundle_marker_is_complete(marker_path):
         return True
@@ -1950,24 +2016,13 @@ def collected_family_demand_cache_bundle_is_complete_for_source_signature(
     return True
 
 
-def _collected_family_cache_bundle_row(
-    family: type[CollectedFamily],
-) -> tuple[str, str, str, str]:
-    return (
-        family.__module__,
-        family.__qualname__,
-        family.item_type.__module__,
-        family.item_type.__qualname__,
-    )
-
-
 def _collected_family_cache_bundle_marker_path(
     *,
     path: Path,
     module_name: str,
     source_signature: str,
     family_cache_dir: Path,
-    family_rows: tuple[tuple[str, ...], ...],
+    family_entries: tuple[CollectedFamilyCacheBundleEntry, ...],
 ) -> Path:
     bundle_payload = repr(
         (
@@ -1977,7 +2032,7 @@ def _collected_family_cache_bundle_marker_path(
             source_signature,
             (sys.version_info.major, sys.version_info.minor),
             collected_family_cache_schema,
-            family_rows,
+            family_entries,
         )
     ).encode("utf-8")
     marker_token = hashlib.blake2s(bundle_payload, digest_size=16).hexdigest()

@@ -21,11 +21,11 @@ from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 from tree_sitter import Node
 
 from ..ast_tools import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     BuiltinCallName,
     CollectedFamily,
     CompactModuleIdentity,
     ParsedModule,
+    PythonSourcePathPolicy,
     SourceModule,
     collect_family_items,
     module_syntax_index,
@@ -43,7 +43,6 @@ from ..class_index import (
     IndexedClass,
     LatentRosterMatch,
     LatentRosterObservation,
-    ModuleClassReferenceResolver,
     build_class_family_index,
     build_compact_class_family_index,
     has_complete_concrete_mro_composite,
@@ -75,15 +74,11 @@ from ..source_index import (
 )
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import *
-from ._base import (
-    CrossModuleCollectorCandidateDetector,
-    high_confidence_certified_spec,
-)
+from ._base import high_confidence_certified_spec
 from ._helpers import *
 from ._helpers import (
     _FunctionWrapperContext,
     _accessor_wrapper_groups,
-    _autoregister_meta_rent_candidates,
     _projection_helper_groups,
     _wrapper_chain_candidates_from_function_candidates,
 )
@@ -7695,9 +7690,7 @@ def _compact_autoregister_meta_rent_candidates(
     for indexed_class in sorted(
         class_index.classes_by_symbol.values(), key=lambda item: item.symbol
     ):
-        if indexed_class.file_path.startswith("tests/") or "/tests/" in (
-            indexed_class.file_path
-        ):
+        if PythonSourcePathPolicy.is_test_path(Path(indexed_class.file_path)):
             continue
         if not indexed_class.declares_autoregister_meta:
             continue
@@ -7806,7 +7799,7 @@ def _compact_autoregister_meta_rent_candidates(
 
 class AutoRegisterMetaUnderRentedDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[AutoRegisterMetaRentCandidate],
+    CrossModuleCandidateDetector[AutoRegisterMetaRentCandidate],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_report_context_promotion_predicate = staticmethod(
@@ -7823,7 +7816,16 @@ class AutoRegisterMetaUnderRentedDetector(
         _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
     detector_id = "autoregister_meta_under_rented"
-    candidate_collector = _autoregister_meta_rent_candidates
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> tuple[AutoRegisterMetaRentCandidate, ...]:
+        return _compact_autoregister_meta_rent_candidates(
+            type(self).compact_module_projections(modules),
+            config,
+        )
 
     def _findings_from_compact_projections(
         self,

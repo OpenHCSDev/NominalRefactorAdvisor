@@ -27,6 +27,7 @@ from .ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
     ParsedModule,
+    PythonSourcePathPolicy,
     SourceModule,
     _walk_nodes,
     module_syntax_index,
@@ -3397,8 +3398,9 @@ def _compact_class_syntax_facets(
 ) -> CompactClassSyntaxFacets:
     syntax_index = module_syntax_index(parsed_module.module)
     file_path = str(parsed_module.path)
-    collect_autoregister = collect_autoregister and not (
-        file_path.startswith("tests/") or "/tests/" in file_path
+    collect_autoregister = (
+        collect_autoregister
+        and not PythonSourcePathPolicy.is_test_path(parsed_module.path)
     )
     builders_by_function_id = (
         {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import importlib.util
 import os
 from pathlib import Path
@@ -2190,6 +2190,8 @@ def test_native_subclass_traversal_projection_matches_ast_family(
     )
 
     assert native == collect_family_items(parsed_module, family)
+    assert native is not None
+    assert native[0].materialization_kind is base_detectors.SubclassMaterializationKind.TYPE
 
 
 def test_native_export_policy_projection_matches_ast_family(
@@ -4447,6 +4449,58 @@ def test_compact_family_cache_rejects_zero_byte_failed_write(tmp_path: Path) -> 
     )
 
 
+def test_compact_family_cache_identity_derives_item_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @dataclass(frozen=True)
+    class StringItem:
+        value: str
+
+    @dataclass(frozen=True)
+    class IntegerItem:
+        value: int
+
+    StringItem.__module__ = IntegerItem.__module__ = "fixture"
+    StringItem.__qualname__ = IntegerItem.__qualname__ = "SchemaItem"
+    source_path = tmp_path / "mod.py"
+    identity_kwargs = {
+        "path": source_path,
+        "module_name": "mod",
+        "source_signature": "source",
+        "family": ExportDictShapeFamily,
+    }
+
+    monkeypatch.setattr(ExportDictShapeFamily, "item_type", StringItem)
+    ExportDictShapeFamily.item_schema_signature.cache_clear()
+    string_identity = (
+        ast_tools_module._collected_family_cache_identity_for_source_signature(
+            **identity_kwargs
+        )
+    )
+    monkeypatch.setattr(ExportDictShapeFamily, "item_type", IntegerItem)
+    ExportDictShapeFamily.item_schema_signature.cache_clear()
+    integer_identity = (
+        ast_tools_module._collected_family_cache_identity_for_source_signature(
+            **identity_kwargs
+        )
+    )
+
+    assert (
+        string_identity.family_schema.item_type_module
+        == integer_identity.family_schema.item_type_module
+    )
+    assert (
+        string_identity.family_schema.item_type_qualname
+        == integer_identity.family_schema.item_type_qualname
+    )
+    assert (
+        string_identity.family_schema.item_schema_signature
+        != integer_identity.family_schema.item_schema_signature
+    )
+    assert string_identity.cache_token != integer_identity.cache_token
+
+
 def test_compact_global_detector_shards_partially_reuse_across_report_targets(
     tmp_path: Path,
 ) -> None:
@@ -5160,6 +5214,11 @@ def test_compact_semantic_inheritance_projection_matches_legacy_ast_candidates(
 def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
+    assert not hasattr(helper_detectors, "_autoregister_meta_rent_candidates")
+    assert not hasattr(helper_detectors, "AutoRegisterFunctionReference")
+    assert not hasattr(helper_detectors, "_autoregister_function_references")
+    assert not hasattr(helper_detectors, "_autoregister_dynamic_factory_symbols")
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "family.py").write_text(
@@ -5197,13 +5256,19 @@ def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
         modules
     )
 
-    assert runtime_detectors._compact_autoregister_meta_rent_candidates(
+    candidates = runtime_detectors._compact_autoregister_meta_rent_candidates(
         projections,
         config,
-    ) == runtime_detectors._autoregister_meta_rent_candidates(
-        list(modules),
-        config,
     )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.class_name == "Exporter"
+    assert candidate.concrete_class_names == ("CsvExporter", "JsonExporter")
+    assert candidate.behavior_method_names == ("emit",)
+    assert candidate.abstract_method_names == ("emit",)
+    assert candidate.registry_projection_names == ("for_format",)
+    assert candidate.missing_rent_signals == ("stable_key_axis",)
 
 
 def test_compact_keyed_registry_axis_facts_match_legacy_ast_facts(

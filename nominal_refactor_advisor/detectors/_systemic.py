@@ -11,6 +11,7 @@ from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
+from pathlib import Path
 import re
 
 from ..semantic_algebra import ObjectFamilyShape
@@ -20,6 +21,7 @@ from ..semantic_description_length import (
 )
 from ..ast_tools import (
     CompactModuleIdentity,
+    PythonSourcePathPolicy,
     SourceModule,
     fingerprint_function,
     module_syntax_index,
@@ -4990,9 +4992,7 @@ def _compact_keyed_registry_axis_facts(
     min_consumer_count = max(2, config.min_registration_sites)
     facts: list[KeyedRegistryAxisFact] = []
     for indexed_class in sorted(registry_classes, key=lambda item: item.symbol):
-        if indexed_class.file_path.startswith("tests/") or "/tests/" in (
-            indexed_class.file_path
-        ):
+        if PythonSourcePathPolicy.is_test_path(Path(indexed_class.file_path)):
             continue
         key_type_name = indexed_class.keyed_family_key_type_name
         registry_key_attr_name = _compact_string_literal(
