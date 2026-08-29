@@ -25,7 +25,7 @@ Canonical Authorities
 
 The main authorities are:
 
-- ``nominal_refactor_advisor.patterns.PATTERN_SPECS`` for canonical pattern metadata
+- ``nominal_refactor_advisor.patterns.PatternId`` for canonical pattern identity and metadata
 - ``nominal_refactor_advisor.detectors.IssueDetector`` for the detector registry
 - ``nominal_refactor_advisor.models`` for findings, plans, and metrics
 - ``nominal_refactor_advisor.planner`` for subsystem-level plan synthesis

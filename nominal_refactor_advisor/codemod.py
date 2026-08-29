@@ -365,6 +365,41 @@ class RefactorConcept(ABC):
         return tuple(declarations_by_key[key] for key in sorted(declarations_by_key))
 
     @classmethod
+    def declaration_for_key(cls, key: str) -> type["RefactorConcept"]:
+        """Resolve one exact declaration from the declaration-derived key view."""
+
+        declarations_by_key = UniqueIdentityIndexAuthority.declarations_by_handle(
+            cls.declaration_types(),
+            lambda declaration: declaration.concept_key(),
+        )
+        try:
+            return declarations_by_key[key]
+        except KeyError as error:
+            raise ValueError(f"Unknown refactor concept {key!r}") from error
+
+    @classmethod
+    def matches_finding(
+        cls,
+        finding: RefactorFinding,
+        selector_context: "CodemodSelectorContext | None" = None,
+    ) -> bool:
+        """Select findings through their executable declaration's concept MRO."""
+
+        if selector_context is None:
+            raise ValueError("concept-backed goal selection requires source context")
+        synthesizer = FindingRecipeSynthesizer.for_finding(finding)
+        if synthesizer is None:
+            return False
+        evaluation = synthesizer.declared_evaluation_for_finding(
+            finding,
+            selector_context,
+        )
+        return issubclass(
+            evaluation.required_executable_declaration_type,
+            cls,
+        )
+
+    @classmethod
     def _descendant_types(cls) -> frozenset[type["RefactorConcept"]]:
         descendants: set[type[RefactorConcept]] = set()
         pending = list(cls.__subclasses__())
@@ -400,6 +435,21 @@ class RefactorConcept(ABC):
                 "RefactorConcept"
             )
         return leaves[0]
+
+
+class NominalBoundaryConcept(RefactorConcept):
+    """Select SSOT authority-boundary findings for nominal extraction."""
+
+    @classmethod
+    def matches_finding(
+        cls,
+        finding: RefactorFinding,
+        selector_context: "CodemodSelectorContext | None" = None,
+    ) -> bool:
+        del cls, selector_context
+        from .detectors import IssueDetector
+
+        return finding.detector_id in IssueDetector.ssot_authority_detector_ids()
 
 
 class SemanticCarrierConcept(RefactorConcept):
@@ -790,11 +840,14 @@ class SourceRewriteContributor:
         )
 
     @property
-    def identity(self) -> tuple[str, str, int]:
+    def identity(self) -> tuple[str, str, int, str, int, int]:
         return (
             self.recipe_id,
             self.plan_item_declaration,
             self.plan_item_index,
+            self.file_path,
+            self.line,
+            self.end_line,
         )
 
     @classmethod
@@ -803,7 +856,7 @@ class SourceRewriteContributor:
         *contributor_groups: Iterable["SourceRewriteContributor"],
     ) -> tuple["SourceRewriteContributor", ...]:
         contributor_index = UniqueIdentityIndexAuthority[
-            tuple[str, str, int],
+            tuple[str, str, int, str, int, int],
             SourceRewriteContributor,
             SourceRewriteContributor,
         ]()
@@ -833,7 +886,7 @@ class SourceRewriteContributor:
         cls,
         payload: Mapping[str, JsonValue],
     ) -> "SourceRewriteContributor":
-        reader = SourceRewritePlanPayload(payload)
+        reader = CodemodPayload(payload)
         plan_item_index = payload.get("plan_item_index")
         line = payload.get("line")
         end_line = payload.get("end_line")
@@ -842,7 +895,7 @@ class SourceRewriteContributor:
             for value in (plan_item_index, line, end_line)
         ):
             raise ValueError("Source rewrite contributor geometry must be non-negative")
-        return cls(
+        contributor = cls(
             recipe_id=reader.required_string("recipe_id"),
             plan_item_declaration=reader.required_string("plan_item_declaration"),
             plan_item_index=plan_item_index,
@@ -851,6 +904,11 @@ class SourceRewriteContributor:
             end_line=end_line,
             source_hash=reader.required_string("source_hash"),
         )
+        reader.require_supported_fields(
+            contributor.to_dict(),
+            role="source rewrite contributor",
+        )
+        return contributor
 
     def to_dict(self) -> JsonObject:
         return {
@@ -2164,7 +2222,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
 
     @classmethod
     def from_mapping(cls, fields: Mapping[str, JsonValue]) -> "SourceRewriteTarget":
-        payload = SourceRewritePlanPayload(fields)
+        payload = CodemodPayload(fields)
         return payload.source_target()
 
     def optional_file_path(self, source_index: SourceIndex) -> str | None:
@@ -3614,7 +3672,12 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
         selector_type = cls.__registry__.get(selector_key)
         if selector_type is None:
             raise ValueError(f"Unsupported target selector: {selector_key}")
-        return selector_type.from_selector_payload(payload)
+        selector = selector_type.from_selector_payload(payload)
+        CodemodPayload(payload).require_supported_fields(
+            selector.to_dict(),
+            role=f"{selector_key} selector",
+        )
+        return selector
 
     @classmethod
     def from_selector_payload(
@@ -4240,16 +4303,16 @@ class CodemodReplacementPlanScaffoldReport(CodemodPlanScaffoldReport):
         recipe = RefactorRecipe(
             recipe_id="selected-target-replacement-scaffold",
             reason="Edit replacement_source values, then run --codemod-simulate.",
-            rewrites=tuple(cls.rewrite_for_record(record) for record in records),
+            operations=tuple(cls.operation_for_record(record) for record in records),
         )
         return CodemodPlanDocument(recipes=(recipe,))
 
     @staticmethod
-    def rewrite_for_record(
+    def operation_for_record(
         record: CodemodTargetSourceRecord,
-    ) -> "RefactorRecipeRewrite":
+    ) -> "ReplaceTargetOperation":
         target = record.target
-        return RefactorRecipeRewrite(
+        return ReplaceTargetOperation(
             target=SourceRewriteTarget(
                 qualname=target.qualname,
                 file_path=target.file_path,
@@ -4400,10 +4463,25 @@ def _call_surface_name(node: ast.AST) -> str:
 
 
 @dataclass(frozen=True)
-class SourceRewritePlanPayload:
-    """Typed reader for source rewrite plan payloads."""
+class CodemodPayload:
+    """Typed reader and declaration-derived field gate for codemod payloads."""
 
     fields: Mapping[str, JsonValue]
+
+    def require_supported_fields(
+        self,
+        canonical_payload: Mapping[str, JsonValue],
+        *,
+        role: str,
+    ) -> None:
+        """Reject fields absent from the nominal declaration's own projection."""
+
+        unsupported_fields = tuple(sorted(set(self.fields) - set(canonical_payload)))
+        if unsupported_fields:
+            raise ValueError(
+                f"Unsupported {role} field(s): "
+                f"{', '.join(repr(field) for field in unsupported_fields)}"
+            )
 
     def required_string(self, field_name: str) -> str:
         value = self.fields.get(field_name)
@@ -4446,12 +4524,17 @@ class RecipeCallReplacement(SourceRewriteTargetReference):
     def from_json_value(cls, value: JsonValue) -> "RecipeCallReplacement":
         if not isinstance(value, Mapping):
             raise ValueError("Call replacement entries must be objects")
-        payload = SourceRewritePlanPayload(value)
-        return cls(
+        payload = CodemodPayload(value)
+        replacement = cls(
             target=SourceRewriteTarget.from_mapping(value),
             old_source=payload.required_string(OLD_SOURCE_PAYLOAD_FIELD),
             new_source=payload.required_string(NEW_SOURCE_PAYLOAD_FIELD),
         )
+        payload.require_supported_fields(
+            replacement.to_dict(),
+            role="call replacement",
+        )
+        return replacement
 
     def to_dict(self) -> JsonObject:
         return {
@@ -4561,9 +4644,7 @@ class RefactorRecipeOperationTemplate:
         return template
 
     def validate(self) -> None:
-        operation_key = SourceRewritePlanPayload(self.fields).required_string(
-            "operation"
-        )
+        operation_key = CodemodPayload(self.fields).required_string("operation")
         operation_type = RefactorRecipeOperation.__registry__.get(operation_key)
         if operation_type is None:
             raise ValueError(f"Unsupported recipe operation: {operation_key}")
@@ -4842,29 +4923,12 @@ class SourceRewritePlanItem(SourceRewriteTargetReference):
         return default
 
 
-@dataclass(frozen=True, kw_only=True)
-class SourceRewritePlanRow(ReplacementSource, SourceRewritePlanItem):
-    """Validated source rewrite row shared by recipe and boundary parsing."""
-
-
-@dataclass(frozen=True, kw_only=True)
-class AuthorityBoundaryRewrite(ReplacementSource, SourceRewritePlanItem):
-    """Caller-supplied rewrite for one source-index target."""
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "replacement_source": self.replacement_source,
-            **self.target.to_dict(),
-            "rationale": self.rationale,
-        }
-
-
 @dataclass(frozen=True)
 class AuthorityBoundaryPlan:
     """Semantic boundary declaration that enables explicit semantic rewrites."""
 
     boundary_id: str
-    rewrites: tuple[AuthorityBoundaryRewrite, ...]
+    operations: tuple["ReplaceTargetOperation", ...]
     detector_ids: tuple[str, ...] = ()
     opportunity_kinds: tuple[str, ...] = ()
     opportunity_labels: tuple[str, ...] = ()
@@ -4887,55 +4951,11 @@ class AuthorityBoundaryPlan:
     def to_dict(self) -> JsonObject:
         return {
             "boundary_id": self.boundary_id,
-            "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
+            "operations": tuple(operation.to_dict() for operation in self.operations),
             "detector_ids": self.detector_ids,
             "opportunity_kinds": self.opportunity_kinds,
             "opportunity_labels": self.opportunity_labels,
             "reason": self.reason,
-        }
-
-
-@dataclass(frozen=True, kw_only=True)
-class RefactorRecipeRewrite(ReplacementSource, SourceRewritePlanItem):
-    """One recipe step that replaces a source-index target."""
-
-    contributors: tuple[SourceRewriteContributor, ...] = ()
-
-    def planned_rewrite(
-        self,
-        source_index: SourceIndex,
-        *,
-        recipe_id: str,
-        plan_item_index: int,
-        sources_by_file_path: Mapping[str, str] | None,
-    ) -> PlannedSourceRewrite:
-        target_identifier = self.target.required_target_id(source_index)
-        contributors = self.contributors
-        if not contributors and sources_by_file_path is not None:
-            contributors = (
-                SourceRewriteContributor.from_target(
-                    recipe_id=recipe_id,
-                    plan_item_declaration=type(self).__name__,
-                    plan_item_index=plan_item_index,
-                    target=source_index.target_by_id[target_identifier],
-                    sources_by_file_path=sources_by_file_path,
-                ),
-            )
-        return PlannedSourceRewrite(
-            target_id=target_identifier,
-            replacement_source=self.replacement_source,
-            rationale=self.rationale,
-            contributors=contributors,
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            **self.target.to_dict(),
-            "replacement_source": self.replacement_source,
-            "rationale": self.rationale,
-            "contributors": tuple(
-                contributor.to_dict() for contributor in self.contributors
-            ),
         }
 
 
@@ -5967,15 +5987,20 @@ class RefactorRecipeOperation(
         cls,
         payload: Mapping[str, JsonValue],
     ) -> "RefactorRecipeOperation":
-        plan_payload = SourceRewritePlanPayload(payload)
+        plan_payload = CodemodPayload(payload)
         operation_key = plan_payload.required_string("operation")
         operation_type = cls.__registry__.get(operation_key)
         if operation_type is None:
             raise ValueError(f"Unsupported recipe operation: {operation_key}")
-        return operation_type.from_operation_payload(
+        operation = operation_type.from_operation_payload(
             plan_payload.source_target(),
             plan_payload,
         )
+        plan_payload.require_supported_fields(
+            operation.to_dict(),
+            role=f"{operation_key} operation",
+        )
+        return operation
 
     def to_dict(self) -> JsonObject:
         return {
@@ -5989,7 +6014,7 @@ class RefactorRecipeOperation(
     def from_operation_payload(
         cls,
         target: SourceRewriteTarget,
-        payload: SourceRewritePlanPayload,
+        payload: CodemodPayload,
     ) -> "RefactorRecipeOperation":
         constructor_kwargs: dict[str, object] = {}
         for binding in cls.payload_binding_set():
@@ -6035,6 +6060,29 @@ class RefactorRecipeOperation(
     ) -> tuple[NominalSourceEdit, ...]:
         del selector_context
         return self.source_edits(source_index, source_by_path)
+
+    def originated_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        recipe_id: str,
+        plan_item_index: int,
+        selector_context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        origin = SourceEditOrigin(
+            recipe_id=recipe_id,
+            plan_item_declaration=type(self).__name__,
+            plan_item_index=plan_item_index,
+        )
+        return tuple(
+            edit.with_origin(origin)
+            for edit in self.source_edits_with_context(
+                source_index,
+                source_by_path,
+                selector_context=selector_context,
+            )
+        )
 
     def preflight_reports(
         self,
@@ -6110,6 +6158,114 @@ class RefactorRecipeOperation(
         return CodemodSelectorContext(
             source_index=source_index,
             sources_by_file_path=source_by_path,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceTargetOperation(RefactorRecipeOperation):
+    """Replace one exact source-index target with caller-declared source."""
+
+    replacement_source: str
+    contributors: tuple[SourceRewriteContributor, ...] = ()
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> "ReplaceTargetOperation":
+        plan_payload = CodemodPayload(payload)
+        operation_key = plan_payload.required_string("operation")
+        if operation_key != cls.operation_key():
+            raise ValueError(
+                f"Expected {cls.operation_key()!r} operation, got {operation_key!r}"
+            )
+        operation = cls.from_operation_payload(
+            plan_payload.source_target(),
+            plan_payload,
+        )
+        plan_payload.require_supported_fields(
+            operation.to_dict(),
+            role=f"{operation_key} operation",
+        )
+        return operation
+
+    @classmethod
+    def from_operation_payload(
+        cls,
+        target: SourceRewriteTarget,
+        payload: CodemodPayload,
+    ) -> "ReplaceTargetOperation":
+        contributor_rows = payload.fields.get("contributors", ())
+        if contributor_rows is None:
+            contributor_rows = ()
+        if not isinstance(contributor_rows, (list, tuple)):
+            raise ValueError("replace_target contributors must be an array")
+        return cls(
+            target=target,
+            replacement_source=payload.required_string("replacement_source"),
+            rationale=payload.string_or_empty("rationale"),
+            contributors=tuple(
+                cls.contributor_from_json_value(row) for row in contributor_rows
+            ),
+        )
+
+    @staticmethod
+    def contributor_from_json_value(
+        value: JsonValue,
+    ) -> SourceRewriteContributor:
+        if not isinstance(value, Mapping):
+            raise ValueError("replace_target contributors must be objects")
+        return SourceRewriteContributor.from_mapping(value)
+
+    def operation_payload(self) -> JsonObject:
+        return {
+            "replacement_source": self.replacement_source,
+            "contributors": tuple(
+                contributor.to_dict() for contributor in self.contributors
+            ),
+        }
+
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[NominalSourceEdit, ...]:
+        del source_by_path
+        _target_identifier, target = self.target_digest(source_index)
+        return (
+            SourceSpanReplacement(
+                file_path=target.file_path,
+                start_line=target.line,
+                end_line=target.end_line,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    self.replacement_source
+                ),
+                rationale=self.rationale,
+                contributors=self.contributors,
+            ),
+        )
+
+    def originated_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        recipe_id: str,
+        plan_item_index: int,
+        selector_context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        if self.contributors:
+            return self.source_edits_with_context(
+                source_index,
+                source_by_path,
+                selector_context=selector_context,
+            )
+        return super().originated_edits(
+            source_index,
+            source_by_path,
+            recipe_id=recipe_id,
+            plan_item_index=plan_item_index,
+            selector_context=selector_context,
         )
 
 
@@ -13495,15 +13651,10 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         self,
         recipe_id: str,
         operations: Iterable[RefactorRecipeOperation],
-        *,
-        plan_item_index_offset: int = 0,
     ) -> tuple[PlannedSourceRewrite, ...]:
         edits = tuple(
             edit
-            for plan_item_index, operation in enumerate(
-                operations,
-                start=plan_item_index_offset,
-            )
+            for plan_item_index, operation in enumerate(operations)
             for edit in self._originated_edits(
                 recipe_id,
                 plan_item_index,
@@ -13520,20 +13671,12 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         plan_item_index: int,
         operation: RefactorRecipeOperation,
     ) -> tuple[NominalSourceEdit, ...]:
-        edits = operation.source_edits_with_context(
+        return operation.originated_edits(
             self.source_index,
             self.sources_by_file_path,
+            recipe_id=recipe_id,
+            plan_item_index=plan_item_index,
             selector_context=self,
-        )
-        return tuple(
-            edit.with_origin(
-                SourceEditOrigin(
-                    recipe_id=recipe_id,
-                    plan_item_declaration=type(operation).__name__,
-                    plan_item_index=plan_item_index,
-                )
-            )
-            for edit in edits
         )
 
     def _resolved_physical_edits(
@@ -13619,16 +13762,7 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
                 replacement.rationale for replacement in group.replacements
             ),
             contributors=SourceRewriteContributor.merge(
-                *(
-                    tuple(
-                        contributor.for_target(
-                            target,
-                            self.sources_by_file_path,
-                        )
-                        for contributor in replacement.contributors
-                    )
-                    for replacement in group.replacements
-                )
+                *(replacement.contributors for replacement in group.replacements)
             ),
         )
 
@@ -13692,7 +13826,6 @@ class RefactorRecipe:
     """Executable batch of source rewrites and post-refactor invariants."""
 
     recipe_id: str
-    rewrites: tuple[RefactorRecipeRewrite, ...] = ()
     operations: tuple[RefactorRecipeOperation, ...] = ()
     guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
     reason: str = ""
@@ -13717,9 +13850,6 @@ class RefactorRecipe:
             raise ValueError("At least one recipe is required for composition")
         return cls(
             recipe_id=recipe_id,
-            rewrites=tuple(
-                rewrite for recipe in recipe_tuple for rewrite in recipe.rewrites
-            ),
             operations=tuple(
                 operation for recipe in recipe_tuple for operation in recipe.operations
             ),
@@ -13743,8 +13873,8 @@ class RefactorRecipe:
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return tuple(
             target
-            for item in (*self.rewrites, *self.operations)
-            for target in item.referenced_source_targets()
+            for operation in self.operations
+            for target in operation.referenced_source_targets()
         )
 
     def has_effective_rewrites(
@@ -13752,7 +13882,7 @@ class RefactorRecipe:
         selector_context: CodemodSelectorContext | None,
     ) -> bool:
         if selector_context is None:
-            return bool(self.rewrites or self.operations)
+            return bool(self.operations)
         if self.created_source_paths(selector_context.source_index):
             return True
         return bool(
@@ -13780,640 +13910,20 @@ class RefactorRecipe:
             return self.guard_suite
         return guard_suite.merge(self.guard_suite)
 
-    def replace_target(
+    def with_operation(
         self,
-        replacement_source: str,
-        *,
-        target_identifier: str | None = None,
-        qualname: str | None = None,
-        source_path: str | None = None,
-        rationale: str = "",
+        operation: RefactorRecipeOperation,
     ) -> "RefactorRecipe":
-        target = SourceRewriteTarget(
-            target_id=target_identifier,
-            qualname=qualname,
-            file_path=source_path,
-        )
-        rewrite = RefactorRecipeRewrite(
-            target=target,
-            replacement_source=replacement_source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, rewrites=(*self.rewrites, rewrite))
+        """Append one exact operation under the recipe rationale policy."""
 
-    def create_file(
-        self,
-        source_path: str,
-        source: str = "",
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = CreateFileOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            payload_value=source,
-            rationale=rationale or self.reason,
+        resolved_operation = replace(
+            operation,
+            rationale=operation.rationale or self.reason,
         )
-        return replace(self, operations=(*self.operations, operation))
-
-    def insert_before_target(
-        self,
-        target_qualname: str,
-        source: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = InsertBeforeTargetOperation(
-            target=SourceRewriteTarget(
-                qualname=target_qualname,
-                file_path=source_path,
-            ),
-            payload_value=source,
-            rationale=rationale or self.reason,
+        return replace(
+            self,
+            operations=(*self.operations, resolved_operation),
         )
-        return replace(self, operations=(*self.operations, operation))
-
-    def insert_after_target(
-        self,
-        target_qualname: str,
-        source: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = InsertAfterTargetOperation(
-            target=SourceRewriteTarget(
-                qualname=target_qualname,
-                file_path=source_path,
-            ),
-            payload_value=source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def insert_after_imports(
-        self,
-        source_path: str,
-        source: str,
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = InsertAfterImportsOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            payload_value=source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def ensure_import(
-        self,
-        source_path: str,
-        import_source: str,
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = EnsureImportOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            payload_value=import_source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def remove_import_names(
-        self,
-        source_path: str,
-        module_name: str,
-        import_names: Iterable[str],
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = RemoveImportNamesOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            module_name=module_name,
-            import_names=tuple(import_names),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def move_symbol_to_module(
-        self,
-        symbol_qualname: str,
-        destination_path: str,
-        *,
-        source_path: str | None = None,
-        replacement_import: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = MoveSymbolToModuleOperation(
-            target=SourceRewriteTarget(
-                qualname=symbol_qualname,
-                file_path=source_path,
-            ),
-            destination_path=destination_path,
-            replacement_import=MovedSymbolImportPolicy.from_source(replacement_import),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def move_symbols_to_module(
-        self,
-        source_path: str,
-        symbol_qualnames: Iterable[str],
-        destination_path: str,
-        *,
-        replacement_import: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = MoveSymbolsToModuleOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            symbol_qualnames=tuple(symbol_qualnames),
-            destination_path=destination_path,
-            replacement_import=MovedSymbolImportPolicy.from_source(replacement_import),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def delete_target(
-        self,
-        target_qualname: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = DeleteTargetOperation(
-            target=SourceRewriteTarget(
-                qualname=target_qualname,
-                file_path=source_path,
-            ),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def apply_selected_targets(
-        self,
-        selector: CodemodTargetSelector,
-        operation_templates: Iterable[RefactorRecipeOperationTemplate],
-        *,
-        selection_count: SelectionCountExpectation | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ApplySelectedTargetsOperation(
-            target=SourceRewriteTarget(),
-            selector=selector,
-            selection_count=selection_count or SelectionCountExpectation(),
-            operation_templates=tuple(operation_templates),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def delete_selected_targets(
-        self,
-        selector: CodemodTargetSelector,
-        *,
-        selection_count: SelectionCountExpectation | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = DeleteSelectedTargetsOperation(
-            target=SourceRewriteTarget(),
-            selector=selector,
-            selection_count=selection_count or SelectionCountExpectation(),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def extract_authority(
-        self,
-        helper_qualname: str,
-        authority_source: str,
-        *,
-        call_replacements: Iterable[RecipeCallReplacement] = (),
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ExtractAuthorityOperation(
-            target=SourceRewriteTarget(
-                qualname=helper_qualname,
-                file_path=source_path,
-            ),
-            payload_value=authority_source,
-            call_replacements=tuple(call_replacements),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def declare_authority(
-        self,
-        source_path: str,
-        authority_claim: AuthorityClaim,
-        authority_source: str,
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = DeclareAuthorityOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            authority_claim=authority_claim,
-            payload_value=authority_source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def extract_methods_to_class(
-        self,
-        source_class_qualname: str,
-        destination_class_name: str,
-        method_names: Iterable[str],
-        *,
-        source_path: str | None = None,
-        field_declaration_sources: Iterable[str] = (),
-        class_base_names: Iterable[str] = (),
-        class_decorator_sources: Iterable[str] = (),
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ExtractMethodsToClassOperation(
-            target=SourceRewriteTarget(
-                qualname=source_class_qualname,
-                file_path=source_path,
-            ),
-            destination_class_name=destination_class_name,
-            extracted_method_names=tuple(method_names),
-            field_declaration_sources=tuple(field_declaration_sources),
-            class_base_names=tuple(class_base_names),
-            class_decorator_sources=tuple(class_decorator_sources),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def add_class_base(
-        self,
-        class_qualname: str,
-        base_name: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = AddClassBaseOperation(
-            target=SourceRewriteTarget(
-                qualname=class_qualname,
-                file_path=source_path,
-            ),
-            payload_value=base_name,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def remove_class_base(
-        self,
-        class_qualname: str,
-        base_name: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = RemoveClassBaseOperation(
-            target=SourceRewriteTarget(
-                qualname=class_qualname,
-                file_path=source_path,
-            ),
-            payload_value=base_name,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def expose_global_candidate_cache_context(
-        self,
-        class_qualname: str,
-        *,
-        candidate_type_name: str,
-        candidate_collector_name: str,
-        source_path: str | None = None,
-        candidate_collector_scope: str = "modules",
-        candidate_collector_uses_config: bool = False,
-        candidate_item_sort_attributes: Iterable[str] = (),
-        replaced_base_name: str = "IssueDetector",
-        import_source: str = "",
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ExposeGlobalCandidateCacheContextOperation(
-            target=SourceRewriteTarget(
-                qualname=class_qualname,
-                file_path=source_path,
-            ),
-            candidate_type_name=candidate_type_name,
-            candidate_collector_name=candidate_collector_name,
-            candidate_collector_scope=candidate_collector_scope,
-            candidate_collector_uses_config=candidate_collector_uses_config,
-            candidate_item_sort_attributes=tuple(candidate_item_sort_attributes),
-            replaced_base_name=replaced_base_name,
-            import_source=import_source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def collapse_fields_to_carrier(
-        self,
-        source_path: str,
-        *,
-        carrier_name: str,
-        class_names: Iterable[str],
-        field_declaration_sources: Iterable[str],
-        carrier_base_names: Iterable[str] = (),
-        carrier_dataclass_arguments: Iterable[str] = ("frozen=True",),
-        inherited_field_names: Iterable[str] = (),
-        insert_carrier: bool = True,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = CollapseFieldsToCarrierOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            carrier_name=carrier_name,
-            class_names=tuple(class_names),
-            field_declaration_sources=tuple(field_declaration_sources),
-            carrier_base_names=tuple(carrier_base_names),
-            carrier_dataclass_arguments=tuple(carrier_dataclass_arguments),
-            inherited_field_names=tuple(inherited_field_names),
-            insert_carrier=insert_carrier,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def replace_fields_with_carrier(
-        self,
-        source_path: str,
-        *,
-        class_name: str,
-        carrier_field_declaration: str,
-        field_projection_pairs: Iterable[str],
-        constructor_names: Iterable[str] = (),
-        attribute_owner_expressions: Iterable[str] = (),
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ReplaceFieldsWithCarrierOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            class_name=class_name,
-            carrier_field_declaration=carrier_field_declaration,
-            field_projection_pairs=tuple(field_projection_pairs),
-            constructor_names=tuple(constructor_names),
-            attribute_owner_expressions=tuple(attribute_owner_expressions),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def replace_role_prefixed_fields_with_carriers(
-        self,
-        source_path: str,
-        *,
-        class_name: str,
-        carrier_source: str,
-        carrier_field_declarations: Iterable[str],
-        field_projection_pairs: Iterable[str],
-        constructor_names: Iterable[str] = (),
-        attribute_owner_expressions: Iterable[str] = (),
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ReplaceRolePrefixedFieldsWithCarriersOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            class_name=class_name,
-            carrier_source=carrier_source,
-            carrier_field_declarations=tuple(carrier_field_declarations),
-            field_projection_pairs=tuple(field_projection_pairs),
-            constructor_names=tuple(constructor_names),
-            attribute_owner_expressions=tuple(attribute_owner_expressions),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def convert_manual_registry_to_autoregister(
-        self,
-        source_path: str,
-        *,
-        base_name: str,
-        registry_name: str,
-        registry_key_attribute: str,
-        class_key_pairs: Iterable[str],
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ConvertManualRegistryToAutoregisterOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            base_name=base_name,
-            registry_name=registry_name,
-            registry_key_attribute=registry_key_attribute,
-            class_key_pairs=tuple(class_key_pairs),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def dispatch_to_polymorphism(
-        self,
-        function_qualname: str,
-        *,
-        source_path: str | None,
-        dispatch_axis_expression: str,
-        literal_cases: Iterable[str],
-        base_name: str,
-        case_key_attribute: str,
-        method_name: str,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = DispatchToPolymorphismOperation(
-            target=SourceRewriteTarget(
-                qualname=function_qualname,
-                file_path=source_path,
-            ),
-            dispatch_axis_expression=dispatch_axis_expression,
-            literal_cases=tuple(literal_cases),
-            base_name=base_name,
-            case_key_attribute=case_key_attribute,
-            method_name=method_name,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def promote_class_declarations(
-        self,
-        source_path: str,
-        base_name: str,
-        class_names: Iterable[str],
-        declaration_names: Iterable[str],
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = PromoteClassDeclarationsOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            base_name=base_name,
-            class_names=tuple(class_names),
-            declaration_names=tuple(declaration_names),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def promote_class_methods(
-        self,
-        source_path: str,
-        base_name: str,
-        class_names: Iterable[str],
-        method_names: Iterable[str],
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = PromoteClassMethodsOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            base_name=base_name,
-            class_names=tuple(class_names),
-            method_names=tuple(method_names),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def replace_text(
-        self,
-        target_qualname: str | None,
-        old_source: str,
-        new_source: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ReplaceTextOperation(
-            target=SourceRewriteTarget(
-                qualname=target_qualname,
-                file_path=source_path,
-            ),
-            old_source=old_source,
-            new_source=new_source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def delete_class_assignment(
-        self,
-        class_qualname: str,
-        attribute_name: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = DeleteClassAssignmentOperation(
-            target=SourceRewriteTarget(
-                qualname=class_qualname,
-                file_path=source_path,
-            ),
-            payload_value=attribute_name,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def delete_module_assignments(
-        self,
-        source_path: str,
-        assignment_names: Iterable[str],
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = DeleteModuleAssignmentsOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            assignment_names=tuple(assignment_names),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def replace_module_assignment(
-        self,
-        source_path: str,
-        assignment_name: str,
-        source: str,
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ReplaceModuleAssignmentOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            assignment_name=assignment_name,
-            payload_value=source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def derive_autoregister_instance_view(
-        self,
-        source_path: str,
-        base_name: str,
-        assignment_name: str,
-        class_key_pairs: Iterable[str],
-        *,
-        method_name: str = "instances_by_registry_key",
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = DeriveAutoregisterInstanceViewOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            base_name=base_name,
-            assignment_name=assignment_name,
-            class_key_pairs=tuple(class_key_pairs),
-            method_name=method_name,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def replace_function_signature(
-        self,
-        function_qualname: str,
-        signature_source: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ReplaceFunctionSignatureOperation(
-            target=SourceRewriteTarget(
-                qualname=function_qualname,
-                file_path=source_path,
-            ),
-            payload_value=signature_source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def replace_function_body(
-        self,
-        function_qualname: str,
-        body_source: str,
-        *,
-        source_path: str | None = None,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ReplaceFunctionBodyOperation(
-            target=SourceRewriteTarget(
-                qualname=function_qualname,
-                file_path=source_path,
-            ),
-            payload_value=body_source,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def product_record_to_dataclass(
-        self,
-        source_path: str,
-        record_name: str,
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ProductRecordToDataclassOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            payload_value=record_name,
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
-
-    def product_records_to_dataclasses(
-        self,
-        source_path: str,
-        record_names: Iterable[str],
-        *,
-        rationale: str = "",
-    ) -> "RefactorRecipe":
-        operation = ProductRecordsToDataclassesOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            record_names=tuple(record_names),
-            rationale=rationale or self.reason,
-        )
-        return replace(self, operations=(*self.operations, operation))
 
     def source_rewrite_batch(
         self,
@@ -14422,20 +13932,11 @@ class RefactorRecipe:
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[PlannedSourceRewrite, ...]:
-        rewrite_batch = tuple(
-            rewrite.planned_rewrite(
-                source_index,
-                recipe_id=self.recipe_id,
-                plan_item_index=plan_item_index,
-                sources_by_file_path=source_by_path,
-            )
-            for plan_item_index, rewrite in enumerate(self.rewrites)
-        )
         if not self.operations:
-            return rewrite_batch
+            return ()
         if source_by_path is None:
             raise ValueError("Recipe operations require source text")
-        operation_rewrites = RefactorRecipeOperationCompiler(
+        return RefactorRecipeOperationCompiler(
             source_index=source_index,
             sources_by_file_path=source_by_path,
             class_family_index=(
@@ -14456,9 +13957,7 @@ class RefactorRecipe:
         ).planned_rewrites(
             self.recipe_id,
             self.operations,
-            plan_item_index_offset=len(self.rewrites),
         )
-        return (*rewrite_batch, *operation_rewrites)
 
     def created_source_paths(
         self,
@@ -14578,7 +14077,6 @@ class RefactorRecipe:
     def authority_text_surfaces(self) -> tuple[str, ...]:
         surfaces = (
             self.reason,
-            *(rewrite.rationale for rewrite in self.rewrites),
             *(operation.rationale for operation in self.operations),
         )
         return tuple(
@@ -14627,7 +14125,6 @@ class RefactorRecipe:
     def to_dict(self) -> JsonObject:
         payload: JsonObject = {
             "recipe_id": self.recipe_id,
-            "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
             "operations": tuple(operation.to_dict() for operation in self.operations),
             ARCHITECTURE_GUARDS_PAYLOAD_FIELD: self.guard_suite.to_dict(),
             "reason": self.reason,
@@ -14695,10 +14192,14 @@ class CodemodPlanDocument:
         recipe = RefactorRecipe(
             recipe_id=f"{target_qualname}-dead-compatibility-eraser",
             reason=eraser_reason,
-        ).delete_target(
-            target_qualname,
-            source_path=source_path,
-            rationale=eraser_reason,
+        ).with_operation(
+            DeleteTargetOperation(
+                target=SourceRewriteTarget(
+                    qualname=target_qualname,
+                    file_path=source_path,
+                ),
+                rationale=eraser_reason,
+            )
         )
         guard = ArchitectureGuardRule(
             rule_id=rule_id or f"{target_qualname}-no-residual-compat-calls",
@@ -15004,20 +14505,30 @@ class CodemodPlanJsonParser:
 
     def parse_sequence(self, payload: JsonObject) -> CodemodPlanSequence:
         if self.is_sequence_payload(payload):
-            return CodemodPlanSequence(
+            sequence = CodemodPlanSequence(
                 documents=tuple(
                     self.parse_document(row)
                     for row in self.array_field(payload, STAGES_PAYLOAD_FIELD)
                 )
             )
+            CodemodPayload(payload).require_supported_fields(
+                sequence.to_dict(),
+                role="plan sequence",
+            )
+            return sequence
         return CodemodPlanSequence.from_document(self.parse_document(payload))
 
     def parse_document(self, payload: JsonObject) -> CodemodPlanDocument:
-        return CodemodPlanDocument(
+        document = CodemodPlanDocument(
             authority_boundaries=self.authority_boundaries(payload),
             recipes=self.recipes(payload),
             guard_suite=self.architecture_guard_suite(payload),
         )
+        CodemodPayload(payload).require_supported_fields(
+            document.to_dict(),
+            role="plan document",
+        )
+        return document
 
     def authority_boundaries(
         self,
@@ -15051,34 +14562,32 @@ class CodemodPlanJsonParser:
     def authority_boundary_plan(self, row: JsonValue) -> AuthorityBoundaryPlan:
         payload = self.object_row(row, "authority boundary plan rows")
         boundary_id = self.required_string_field(payload, "boundary_id")
-        return AuthorityBoundaryPlan(
+        plan = AuthorityBoundaryPlan(
             boundary_id=boundary_id,
-            rewrites=tuple(
-                self.authority_boundary_rewrite(item)
-                for item in self.array_field(payload, "rewrites")
+            operations=tuple(
+                self.authority_boundary_operation(item)
+                for item in self.array_field(payload, "operations")
             ),
             detector_ids=self.string_tuple_field(payload, "detector_ids"),
             opportunity_kinds=self.string_tuple_field(payload, "opportunity_kinds"),
             opportunity_labels=self.string_tuple_field(payload, "opportunity_labels"),
             reason=self.optional_string_field(payload, "reason"),
         )
+        CodemodPayload(payload).require_supported_fields(
+            plan.to_dict(),
+            role="authority boundary",
+        )
+        return plan
 
-    def authority_boundary_rewrite(self, row: JsonValue) -> AuthorityBoundaryRewrite:
-        rewrite_row = self.source_rewrite_plan_row(row, "authority boundary rewrites")
-        return AuthorityBoundaryRewrite(
-            target=rewrite_row.target,
-            replacement_source=rewrite_row.replacement_source,
-            rationale=rewrite_row.rationale,
+    def authority_boundary_operation(self, row: JsonValue) -> ReplaceTargetOperation:
+        return ReplaceTargetOperation.from_dict(
+            self.object_row(row, "authority boundary replace_target operations")
         )
 
     def refactor_recipe(self, row: JsonValue) -> RefactorRecipe:
         payload = self.object_row(row, "refactor recipe rows")
-        return RefactorRecipe(
+        recipe = RefactorRecipe(
             recipe_id=self.required_string_field(payload, "recipe_id"),
-            rewrites=tuple(
-                self.refactor_recipe_rewrite(item)
-                for item in self.array_field(payload, "rewrites")
-            ),
             operations=tuple(
                 self.refactor_recipe_operation(item)
                 for item in self.array_field(payload, "operations")
@@ -15087,6 +14596,11 @@ class CodemodPlanJsonParser:
             reason=self.optional_string_field(payload, "reason"),
             authority_claims=self.authority_claims(payload),
         )
+        CodemodPayload(payload).require_supported_fields(
+            recipe.to_dict(),
+            role="refactor recipe",
+        )
+        return recipe
 
     def authority_claims(self, payload: JsonObject) -> tuple[AuthorityClaim, ...]:
         return tuple(
@@ -15096,48 +14610,20 @@ class CodemodPlanJsonParser:
 
     def authority_claim(self, row: JsonValue) -> AuthorityClaim:
         payload = self.object_row(row, "authority claim rows")
-        return AuthorityClaim.from_mapping(payload)
-
-    def refactor_recipe_rewrite(self, row: JsonValue) -> RefactorRecipeRewrite:
-        payload = self.object_row(row, "refactor recipe rewrites")
-        rewrite_row = self.source_rewrite_plan_row(row, "refactor recipe rewrites")
-        return RefactorRecipeRewrite(
-            target=rewrite_row.target,
-            replacement_source=rewrite_row.replacement_source,
-            rationale=rewrite_row.rationale,
-            contributors=tuple(
-                SourceRewriteContributor.from_mapping(
-                    self.object_row(item, "source rewrite contributors")
-                )
-                for item in self.array_field(payload, "contributors")
-            ),
+        claim = AuthorityClaim.from_mapping(payload)
+        CodemodPayload(payload).require_supported_fields(
+            claim.to_dict(),
+            role="authority claim",
         )
+        return claim
 
     def refactor_recipe_operation(self, row: JsonValue) -> RefactorRecipeOperation:
         payload = self.object_row(row, "refactor recipe operations")
         return RefactorRecipeOperation.from_dict(payload)
 
-    def source_rewrite_plan_row(
-        self,
-        row: JsonValue,
-        row_role: str,
-    ) -> SourceRewritePlanRow:
-        payload = self.object_row(row, row_role)
-        return SourceRewritePlanRow(
-            target=self.source_rewrite_target(payload),
-            replacement_source=self.required_string_field(
-                payload,
-                "replacement_source",
-            ),
-            rationale=self.optional_string_field(payload, "rationale"),
-        )
-
-    def source_rewrite_target(self, payload: JsonObject) -> SourceRewriteTarget:
-        return SourceRewritePlanPayload(payload).source_target()
-
     def architecture_guard_rule(self, row: JsonValue) -> ArchitectureGuardRule:
         payload = self.object_row(row, "architecture guard rules")
-        return ArchitectureGuardRule(
+        rule = ArchitectureGuardRule(
             rule_id=self.required_string_field(payload, "rule_id"),
             forbidden_attribute_names=self.string_tuple_field(
                 payload,
@@ -15154,6 +14640,11 @@ class CodemodPlanJsonParser:
             file_path_suffixes=self.string_tuple_field(payload, "file_path_suffixes"),
             reason=self.optional_string_field(payload, "reason"),
         )
+        CodemodPayload(payload).require_supported_fields(
+            rule.to_dict(),
+            role="architecture guard",
+        )
+        return rule
 
     def object_row(self, value: JsonValue, row_role: str) -> JsonObject:
         if not isinstance(value, dict):
@@ -16943,14 +16434,20 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(
             ),
         )
         if call_kind.is_batch_materializer:
-            return recipe.product_records_to_dataclasses(
-                action_keys[0].file_path,
-                tuple(action_key.subject_name for action_key in action_keys),
+            return recipe.with_operation(
+                ProductRecordsToDataclassesOperation(
+                    target=SourceRewriteTarget(file_path=action_keys[0].file_path),
+                    record_names=tuple(
+                        action_key.subject_name for action_key in action_keys
+                    ),
+                )
             )
         for action_key in action_keys:
-            recipe = recipe.product_record_to_dataclass(
-                action_key.file_path,
-                action_key.subject_name,
+            recipe = recipe.with_operation(
+                ProductRecordToDataclassOperation(
+                    target=SourceRewriteTarget(file_path=action_key.file_path),
+                    payload_value=action_key.subject_name,
+                )
             )
         return recipe
 
@@ -17086,10 +16583,14 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
             )
         )
         for property_symbol in property_symbols:
-            recipe = recipe.delete_target(
-                property_symbol,
-                source_path=source_path,
-                rationale=reason,
+            recipe = recipe.with_operation(
+                DeleteTargetOperation(
+                    target=SourceRewriteTarget(
+                        qualname=property_symbol,
+                        file_path=source_path,
+                    ),
+                    rationale=reason,
+                )
             )
         return recipe
 
@@ -17336,12 +16837,14 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(
                     "Lift duplicated dataclass field declarations into a shared "
                     "nominal base."
                 ),
-            ).collapse_fields_to_carrier(
-                source_path,
-                carrier_name=carrier_name,
-                class_names=metrics.class_names,
-                field_declaration_sources=field_declarations,
-                carrier_dataclass_arguments=carrier_dataclass_arguments,
+            ).with_operation(
+                CollapseFieldsToCarrierOperation(
+                    target=SourceRewriteTarget(file_path=source_path),
+                    carrier_name=carrier_name,
+                    class_names=metrics.class_names,
+                    field_declaration_sources=field_declarations,
+                    carrier_dataclass_arguments=carrier_dataclass_arguments,
+                )
             )
         )
 
@@ -17605,12 +17108,14 @@ class ExistingNominalAuthorityReuseRecipeParts:
                 "Reuse the existing nominal authority instead of duplicating "
                 "its field family."
             ),
-        ).collapse_fields_to_carrier(
-            self.source_path,
-            carrier_name=self.authority_class_name,
-            class_names=(self.local_class_name,),
-            field_declaration_sources=self.field_declarations,
-            insert_carrier=False,
+        ).with_operation(
+            CollapseFieldsToCarrierOperation(
+                target=SourceRewriteTarget(file_path=self.source_path),
+                carrier_name=self.authority_class_name,
+                class_names=(self.local_class_name,),
+                field_declaration_sources=self.field_declarations,
+                insert_carrier=False,
+            )
         )
 
 
@@ -17992,12 +17497,14 @@ class ParallelPrimitiveCarrierFindingRecipeSynthesizer(
                     "Extract repeated prefix/role primitive fields into one nominal "
                     "bundle carrier."
                 ),
-            ).collapse_fields_to_carrier(
-                parts.source_path,
-                carrier_name=parts.carrier_name,
-                class_names=parts.class_names,
-                field_declaration_sources=parts.field_declarations,
-                carrier_dataclass_arguments=parts.carrier_dataclass_arguments,
+            ).with_operation(
+                CollapseFieldsToCarrierOperation(
+                    target=SourceRewriteTarget(file_path=parts.source_path),
+                    carrier_name=parts.carrier_name,
+                    class_names=parts.class_names,
+                    field_declaration_sources=parts.field_declarations,
+                    carrier_dataclass_arguments=parts.carrier_dataclass_arguments,
+                )
             )
         )
 
@@ -18404,10 +17911,12 @@ class IdentityKeywordForwardingShellRecipeParts(AuthorityClaimCarrier):
             ),
         ).with_authority_claim(self.authority_claim)
         for call_rewrite in self.call_rewrites:
-            recipe = recipe.replace_target(
-                call_rewrite.replacement_source,
-                target_identifier=call_rewrite.target.target_id,
-                rationale="Inline identity keyword forwarding shell call.",
+            recipe = recipe.with_operation(
+                ReplaceTargetOperation(
+                    target=SourceRewriteTarget(target_id=call_rewrite.target.target_id),
+                    replacement_source=call_rewrite.replacement_source,
+                    rationale="Inline identity keyword forwarding shell call.",
+                )
             )
         return recipe
 
@@ -18663,10 +18172,12 @@ class CollectorExtraction(
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-{self.collector_recipe_id_suffix}",
             reason=self.collector_recipe_reason,
-        ).replace_target(
-            replacement_source,
-            target_identifier=self.target.target_id,
-            rationale=self.collector_recipe_rationale,
+        ).with_operation(
+            ReplaceTargetOperation(
+                target=SourceRewriteTarget(target_id=self.target.target_id),
+                replacement_source=replacement_source,
+                rationale=self.collector_recipe_rationale,
+            )
         )
 
     def replacement_source(self) -> str | None:
@@ -19523,10 +19034,12 @@ class RepeatedAuthorityRecipeParts(AuthorityClaimCarrier):
             reason=self.recipe_reason,
         ).with_authority_claim(self.authority_claim)
         for rewrite_step in self.rewrite_steps:
-            recipe = recipe.replace_target(
-                rewrite_step.replacement_source,
-                target_identifier=rewrite_step.target.target_id,
-                rationale=rewrite_step.rationale,
+            recipe = recipe.with_operation(
+                ReplaceTargetOperation(
+                    target=SourceRewriteTarget(target_id=rewrite_step.target.target_id),
+                    replacement_source=rewrite_step.replacement_source,
+                    rationale=rewrite_step.rationale,
+                )
             )
         return recipe
 
@@ -21072,11 +20585,16 @@ class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-promote-class-declarations",
             reason="Promote repeated class-level declarations to a shared base.",
-        ).promote_class_declarations(
-            source_path,
-            finding.metrics.plan_mapping_name,
-            tuple(action_key.subject_name for action_key in action_keys),
-            finding.metrics.plan_field_names,
+        ).with_operation(
+            PromoteClassDeclarationsOperation(
+                target=SourceRewriteTarget(file_path=source_path),
+                base_name=finding.metrics.plan_mapping_name,
+                class_names=tuple(
+                    (action_key.subject_name for action_key in action_keys)
+                ),
+                declaration_names=tuple(finding.metrics.plan_field_names),
+                rationale="",
+            )
         )
         return recipe
 
@@ -21194,11 +20712,14 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
             recipe=RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-promote-class-methods",
                 reason="Promote exact repeated class methods to a shared mixin.",
-            ).promote_class_methods(
-                promotion.source_path,
-                self.base_name_for_methods(promotion.method_names),
-                promotion.class_names,
-                promotion.method_names,
+            ).with_operation(
+                PromoteClassMethodsOperation(
+                    target=SourceRewriteTarget(file_path=promotion.source_path),
+                    base_name=self.base_name_for_methods(promotion.method_names),
+                    class_names=tuple(promotion.class_names),
+                    method_names=tuple(promotion.method_names),
+                    rationale="",
+                )
             )
         )
 
@@ -21525,11 +21046,15 @@ class DuplicateVisitorAliasRecipeParts(DuplicateVisitorBase):
             reason="Replace duplicate visitor hook bodies with explicit aliases.",
         )
         for old_source, new_source in self.replacements:
-            recipe = recipe.replace_text(
-                self.class_name,
-                old_source,
-                new_source,
-                source_path=self.source_path,
+            recipe = recipe.with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.class_name, file_path=self.source_path
+                    ),
+                    old_source=old_source,
+                    new_source=new_source,
+                    rationale="",
+                )
             )
         return recipe
 
@@ -21654,10 +21179,14 @@ class ClassAssignmentDeletionRecipePlan:
             reason=metadata.recipe_reason,
         )
         for assignment_name in self.assignment_names:
-            recipe = recipe.delete_class_assignment(
-                self.class_subject,
-                assignment_name,
-                source_path=self.source_path,
+            recipe = recipe.with_operation(
+                DeleteClassAssignmentOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.class_subject, file_path=self.source_path
+                    ),
+                    payload_value=assignment_name,
+                    rationale="",
+                )
             )
         return recipe
 
@@ -21755,32 +21284,37 @@ class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
                 recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
                 reason=self.recipe_reason,
             )
-            .ensure_import(
-                source_path,
-                "from abc import ABC, abstractmethod\n",
-                rationale=(
-                    "Import ABC and abstractmethod for registered inheritance roots."
-                ),
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=source_path),
+                    payload_value="from abc import ABC, abstractmethod\n",
+                    rationale="Import ABC and abstractmethod for registered inheritance roots.",
+                )
             )
-            .ensure_import(
-                source_path,
-                "from typing import ClassVar\n",
-                rationale="Import ClassVar for registry declarations.",
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=source_path),
+                    payload_value="from typing import ClassVar\n",
+                    rationale="Import ClassVar for registry declarations.",
+                )
             )
-            .ensure_import(
-                source_path,
-                "from metaclass_registry import AutoRegisterMeta\n",
-                rationale="Import AutoRegisterMeta for class-time registration.",
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=source_path),
+                    payload_value="from metaclass_registry import AutoRegisterMeta\n",
+                    rationale="Import AutoRegisterMeta for class-time registration.",
+                )
             )
-            .replace_text(
-                family_name,
-                "".join(header_authority.current_header_lines),
-                (
-                    "".join(self.autoregister_header_lines(header_authority))
-                    + declaration_source
-                ),
-                source_path=source_path,
-                rationale=self.recipe_reason,
+            .with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname=family_name, file_path=source_path
+                    ),
+                    old_source="".join(header_authority.current_header_lines),
+                    new_source="".join(self.autoregister_header_lines(header_authority))
+                    + declaration_source,
+                    rationale=self.recipe_reason,
+                )
             )
         )
         recipe = self.with_intermediate_contract_rewrites(
@@ -21896,15 +21430,15 @@ class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
             if contract_source is None:
                 continue
             old_source, new_source = contract_source
-            planned_recipe = planned_recipe.replace_text(
-                class_name,
-                old_source,
-                new_source,
-                source_path=target.file_path,
-                rationale=(
-                    "Keep intermediate registered-family classes abstract until "
-                    "leaves bind their declared class contracts."
-                ),
+            planned_recipe = planned_recipe.with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname=class_name, file_path=target.file_path
+                    ),
+                    old_source=old_source,
+                    new_source=new_source,
+                    rationale="Keep intermediate registered-family classes abstract until leaves bind their declared class contracts.",
+                )
             )
         return planned_recipe
 
@@ -22261,15 +21795,16 @@ class DerivedMetricCountBoilerplateFindingRecipeSynthesizer(FindingRecipeSynthes
     ) -> RefactorRecipe:
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-metric-count-constructor",
-            reason=(
-                "Replace explicit metric count fields with the metric constructor "
-                "that derives counts from authoritative collections."
-            ),
-        ).replace_text(
-            None,
-            replacement.old_source,
-            replacement.new_source,
-            source_path=action_key.file_path,
+            reason="Replace explicit metric count fields with the metric constructor that derives counts from authoritative collections.",
+        ).with_operation(
+            ReplaceTextOperation(
+                target=SourceRewriteTarget(
+                    qualname=None, file_path=action_key.file_path
+                ),
+                old_source=replacement.old_source,
+                new_source=replacement.new_source,
+                rationale="",
+            )
         )
 
     def single_action_key_for_finding(
@@ -22653,9 +22188,14 @@ class ModuleAssignmentDeletionFindingRecipeSynthesizer(
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
             reason=self.recipe_reason,
-        ).delete_module_assignments(
-            source_path,
-            tuple(action_key.subject_name for action_key in action_keys),
+        ).with_operation(
+            DeleteModuleAssignmentsOperation(
+                target=SourceRewriteTarget(file_path=source_path),
+                assignment_names=tuple(
+                    (action_key.subject_name for action_key in action_keys)
+                ),
+                rationale="",
+            )
         )
 
 
@@ -22921,15 +22461,17 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-convert-manual-registry",
             reason="Replace manual registry writes with AutoRegisterMeta.",
-        ).convert_manual_registry_to_autoregister(
-            source_path,
-            base_name=autoregister_base_name(
-                finding.metrics.plan_class_names,
-                registry_name,
-            ),
-            registry_name=registry_name,
-            registry_key_attribute=DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-            class_key_pairs=class_key_pairs,
+        ).with_operation(
+            ConvertManualRegistryToAutoregisterOperation(
+                target=SourceRewriteTarget(file_path=source_path),
+                base_name=autoregister_base_name(
+                    finding.metrics.plan_class_names, registry_name
+                ),
+                registry_name=registry_name,
+                registry_key_attribute=DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+                class_key_pairs=tuple(class_key_pairs),
+                rationale="",
+            )
         )
 
     def action_keys_for_finding(
@@ -23351,20 +22893,34 @@ class EnumSubsetSemanticMirrorRecipeParts:
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-enum-subset-mapping",
             reason="Move enum subset projection behind the enum authority.",
-        ).replace_target(
-            source_bundle.authority_replacement_source,
-            qualname=self.authority.qualname,
-            source_path=self.authority.source_path,
+        ).with_operation(
+            ReplaceTargetOperation(
+                target=SourceRewriteTarget(
+                    target_id=None,
+                    qualname=self.authority.qualname,
+                    file_path=self.authority.source_path,
+                ),
+                replacement_source=source_bundle.authority_replacement_source,
+                rationale="",
+            )
         )
         if self.projection.projection_path != self.authority.source_path:
-            recipe = recipe.ensure_import(
-                self.projection.projection_path,
-                source_bundle.authority_import_source,
+            recipe = recipe.with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(
+                        file_path=self.projection.projection_path
+                    ),
+                    payload_value=source_bundle.authority_import_source,
+                    rationale="",
+                )
             )
-        return recipe.replace_module_assignment(
-            self.projection.projection_path,
-            self.projection.mapping_name,
-            source_bundle.mapping_replacement_source,
+        return recipe.with_operation(
+            ReplaceModuleAssignmentOperation(
+                target=SourceRewriteTarget(file_path=self.projection.projection_path),
+                assignment_name=self.projection.mapping_name,
+                payload_value=source_bundle.mapping_replacement_source,
+                rationale="",
+            )
         )
 
 
@@ -24724,23 +24280,35 @@ class DataclassPayloadProjectionRecipeParts(FindingRecipeParts):
             reason="Derive mirrored payload keys from the dataclass authority.",
         )
         if self.import_source is not None:
-            recipe = recipe.ensure_import(
-                self.projection.source_path,
-                self.import_source,
-                rationale="Import the dataclass authority used by the projection.",
+            recipe = recipe.with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=self.projection.source_path),
+                    payload_value=self.import_source,
+                    rationale="Import the dataclass authority used by the projection.",
+                )
             )
-        recipe = recipe.replace_text(
-            self.projection.function_qualname,
-            self.projection_old_source,
-            self.projection_new_source,
-            source_path=self.projection.source_path,
-            rationale="Replace mirrored return-dict keys with an authority-owned projection.",
+        recipe = recipe.with_operation(
+            ReplaceTextOperation(
+                target=SourceRewriteTarget(
+                    qualname=self.projection.function_qualname,
+                    file_path=self.projection.source_path,
+                ),
+                old_source=self.projection_old_source,
+                new_source=self.projection_new_source,
+                rationale="Replace mirrored return-dict keys with an authority-owned projection.",
+            )
         )
         if self.authority_replacement_source is not None:
-            recipe = recipe.replace_target(
-                self.authority_replacement_source,
-                target_identifier=self.authority.target.target_id,
-                rationale="Add the authority-owned payload projection method.",
+            recipe = recipe.with_operation(
+                ReplaceTargetOperation(
+                    target=SourceRewriteTarget(
+                        target_id=self.authority.target.target_id,
+                        qualname=None,
+                        file_path=None,
+                    ),
+                    replacement_source=self.authority_replacement_source,
+                    rationale="Add the authority-owned payload projection method.",
+                )
             )
         return recipe
 
@@ -24960,26 +24528,35 @@ class DataclassKeyValueSequenceProjectionRecipeParts(FindingRecipeParts):
             ),
         )
         if self.import_source is not None:
-            recipe = recipe.ensure_import(
-                self.projection.source_path,
-                self.import_source,
-                rationale="Import the dataclass authority used by the projection.",
+            recipe = recipe.with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=self.projection.source_path),
+                    payload_value=self.import_source,
+                    rationale="Import the dataclass authority used by the projection.",
+                )
             )
-        recipe = recipe.replace_text(
-            self.projection.function_qualname,
-            self.projection_old_source,
-            self.projection_new_source,
-            source_path=self.projection.source_path,
-            rationale=(
-                "Replace mirrored key/value return items with an "
-                "authority-owned projection."
-            ),
+        recipe = recipe.with_operation(
+            ReplaceTextOperation(
+                target=SourceRewriteTarget(
+                    qualname=self.projection.function_qualname,
+                    file_path=self.projection.source_path,
+                ),
+                old_source=self.projection_old_source,
+                new_source=self.projection_new_source,
+                rationale="Replace mirrored key/value return items with an authority-owned projection.",
+            )
         )
         if self.authority_replacement_source is not None:
-            recipe = recipe.replace_target(
-                self.authority_replacement_source,
-                target_identifier=self.authority.target.target_id,
-                rationale="Add the authority-owned key/value item projection method.",
+            recipe = recipe.with_operation(
+                ReplaceTargetOperation(
+                    target=SourceRewriteTarget(
+                        target_id=self.authority.target.target_id,
+                        qualname=None,
+                        file_path=None,
+                    ),
+                    replacement_source=self.authority_replacement_source,
+                    rationale="Add the authority-owned key/value item projection method.",
+                )
             )
         return recipe
 
@@ -25183,28 +24760,33 @@ class BoundarySourceContextReturnDictRecipeParts(
         return (
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-source-context-carrier",
-                reason=(
-                    "Replace formal source-scope string-key return data with a "
-                    "declared source-context carrier."
-                ),
+                reason="Replace formal source-scope string-key return data with a declared source-context carrier.",
             )
-            .ensure_import(
-                self.source_path,
-                "from dataclasses import dataclass\n",
-                rationale="Import the dataclass decorator for the source-context carrier.",
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=self.source_path),
+                    payload_value="from dataclasses import dataclass\n",
+                    rationale="Import the dataclass decorator for the source-context carrier.",
+                )
             )
-            .insert_before_target(
-                self.insertion_qualname,
-                self.carrier_source(),
-                source_path=self.source_path,
-                rationale="Declare the nominal source-context carrier at the owner boundary.",
+            .with_operation(
+                InsertBeforeTargetOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.insertion_qualname, file_path=self.source_path
+                    ),
+                    payload_value=self.carrier_source(),
+                    rationale="Declare the nominal source-context carrier at the owner boundary.",
+                )
             )
-            .replace_text(
-                self.function_qualname,
-                self.old_source,
-                self.new_source,
-                source_path=self.source_path,
-                rationale="Return the source-context carrier instead of a string-key dict.",
+            .with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.function_qualname, file_path=self.source_path
+                    ),
+                    old_source=self.old_source,
+                    new_source=self.new_source,
+                    rationale="Return the source-context carrier instead of a string-key dict.",
+                )
             )
         )
 
@@ -25446,28 +25028,33 @@ class SemanticReturnDictRecordRecipeParts(FunctionProjectionTarget, FindingRecip
         return (
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-return-dict-record",
-                reason=(
-                    "Replace the anonymous return dictionary with a nominal "
-                    "result record."
-                ),
+                reason="Replace the anonymous return dictionary with a nominal result record.",
             )
-            .ensure_import(
-                self.source_path,
-                "from dataclasses import dataclass\n",
-                rationale="Import the dataclass decorator for the result record.",
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=self.source_path),
+                    payload_value="from dataclasses import dataclass\n",
+                    rationale="Import the dataclass decorator for the result record.",
+                )
             )
-            .insert_before_target(
-                self.insertion_qualname,
-                self.carrier_source(),
-                source_path=self.source_path,
-                rationale="Declare the nominal result record at the producer boundary.",
+            .with_operation(
+                InsertBeforeTargetOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.insertion_qualname, file_path=self.source_path
+                    ),
+                    payload_value=self.carrier_source(),
+                    rationale="Declare the nominal result record at the producer boundary.",
+                )
             )
-            .replace_text(
-                self.function_qualname,
-                self.old_source,
-                self.new_source,
-                source_path=self.source_path,
-                rationale="Return the nominal record instead of a string-key dict.",
+            .with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.function_qualname, file_path=self.source_path
+                    ),
+                    old_source=self.old_source,
+                    new_source=self.new_source,
+                    rationale="Return the nominal record instead of a string-key dict.",
+                )
             )
         )
 
@@ -25709,37 +25296,45 @@ class SemanticTupleReturnRecordRecipeParts(
         recipe = (
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-tuple-return-record",
-                reason=(
-                    "Replace the positional tuple return with a nominal result "
-                    "record and rewrite unpack consumers to named projections."
-                ),
+                reason="Replace the positional tuple return with a nominal result record and rewrite unpack consumers to named projections.",
             )
-            .ensure_import(
-                self.source_path,
-                "from dataclasses import dataclass\n",
-                rationale="Import the dataclass decorator for the tuple result record.",
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=self.source_path),
+                    payload_value="from dataclasses import dataclass\n",
+                    rationale="Import the dataclass decorator for the tuple result record.",
+                )
             )
-            .insert_before_target(
-                self.insertion_qualname,
-                self.carrier_source(),
-                source_path=self.source_path,
-                rationale="Declare the nominal tuple result record at the producer boundary.",
+            .with_operation(
+                InsertBeforeTargetOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.insertion_qualname, file_path=self.source_path
+                    ),
+                    payload_value=self.carrier_source(),
+                    rationale="Declare the nominal tuple result record at the producer boundary.",
+                )
             )
-            .replace_text(
-                self.function_qualname,
-                self.return_old_source,
-                self.return_new_source,
-                source_path=self.source_path,
-                rationale="Return the nominal record instead of positional values.",
+            .with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.function_qualname, file_path=self.source_path
+                    ),
+                    old_source=self.return_old_source,
+                    new_source=self.return_new_source,
+                    rationale="Return the nominal record instead of positional values.",
+                )
             )
         )
         for rewrite in self.consumer_rewrites:
-            recipe = recipe.replace_text(
-                rewrite.function_qualname,
-                rewrite.old_source,
-                rewrite.new_source,
-                source_path=self.source_path,
-                rationale="Project named fields from the tuple result record.",
+            recipe = recipe.with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname=rewrite.function_qualname, file_path=self.source_path
+                    ),
+                    old_source=rewrite.old_source,
+                    new_source=rewrite.new_source,
+                    rationale="Project named fields from the tuple result record.",
+                )
             )
         return recipe
 
@@ -26010,19 +25605,23 @@ class DataclassConstructorProjectionRecipeParts(FindingRecipeParts):
             ),
         )
         if self.import_source is not None:
-            recipe = recipe.ensure_import(
-                self.projection.source_path,
-                self.import_source,
-                rationale="Import the dataclass authority used by the projection.",
+            recipe = recipe.with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=self.projection.source_path),
+                    payload_value=self.import_source,
+                    rationale="Import the dataclass authority used by the projection.",
+                )
             )
-        return recipe.replace_text(
-            self.projection.function_qualname,
-            self.projection_old_source,
-            self.projection_new_source,
-            source_path=self.projection.source_path,
-            rationale=(
-                "Replace mirrored constructor fields with an authority-owned method."
-            ),
+        return recipe.with_operation(
+            ReplaceTextOperation(
+                target=SourceRewriteTarget(
+                    qualname=self.projection.function_qualname,
+                    file_path=self.projection.source_path,
+                ),
+                old_source=self.projection_old_source,
+                new_source=self.projection_new_source,
+                rationale="Replace mirrored constructor fields with an authority-owned method.",
+            )
         )
 
 
@@ -26334,17 +25933,23 @@ class DataclassContextCallProjectionRecipeParts(FindingRecipeParts):
             reason="Move loose call keywords behind the dataclass context authority.",
         )
         if self.import_source is not None:
-            recipe = recipe.ensure_import(
-                self.projection.source_path,
-                self.import_source,
-                rationale="Import the dataclass context authority used by the call.",
+            recipe = recipe.with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=self.projection.source_path),
+                    payload_value=self.import_source,
+                    rationale="Import the dataclass context authority used by the call.",
+                )
             )
-        return recipe.replace_text(
-            self.projection.function_qualname,
-            self.projection_old_source,
-            self.projection_new_source,
-            source_path=self.projection.source_path,
-            rationale="Replace mirrored loose keywords with a nominal context value.",
+        return recipe.with_operation(
+            ReplaceTextOperation(
+                target=SourceRewriteTarget(
+                    qualname=self.projection.function_qualname,
+                    file_path=self.projection.source_path,
+                ),
+                old_source=self.projection_old_source,
+                new_source=self.projection_new_source,
+                rationale="Replace mirrored loose keywords with a nominal context value.",
+            )
         )
 
 
@@ -26627,10 +26232,16 @@ class GenericRoleCaseTableMappingRecipeBuilder(
             reason="Derive repeated role-case literals from one nominal authority.",
         )
         for target_rewrite in parts.file_rewrites:
-            recipe = recipe.replace_target(
-                target_rewrite.replacement_source,
-                target_identifier=target_rewrite.module_target.target_id,
-                rationale=("Derive role-case literals from the shared authority."),
+            recipe = recipe.with_operation(
+                ReplaceTargetOperation(
+                    target=SourceRewriteTarget(
+                        target_id=target_rewrite.module_target.target_id,
+                        qualname=None,
+                        file_path=None,
+                    ),
+                    replacement_source=target_rewrite.replacement_source,
+                    rationale="Derive role-case literals from the shared authority.",
+                )
             )
         return recipe
 
@@ -27457,15 +27068,25 @@ class LocalRoleCaseLogicRecipeParts:
                 recipe_id=f"{finding.stable_id}-extract-local-role-case-authority",
                 reason="Move local role-case literals behind a nominal authority.",
             )
-            .insert_before_target(
-                self.insertion_qualname,
-                authority_source,
-                source_path=self.source_path,
+            .with_operation(
+                InsertBeforeTargetOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.insertion_qualname, file_path=self.source_path
+                    ),
+                    payload_value=authority_source,
+                    rationale="",
+                )
             )
-            .replace_function_body(
-                self.function_qualname,
-                self.extraction.delegating_body_source(self.authority_name),
-                source_path=self.source_path,
+            .with_operation(
+                ReplaceFunctionBodyOperation(
+                    target=SourceRewriteTarget(
+                        qualname=self.function_qualname, file_path=self.source_path
+                    ),
+                    payload_value=self.extraction.delegating_body_source(
+                        self.authority_name
+                    ),
+                    rationale="",
+                )
             )
         )
 
@@ -28839,14 +28460,20 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
             reason="Derive subclass collection from the class-family authority.",
         )
         if self.projection_path != self.authority_path:
-            recipe = recipe.ensure_import(
-                self.projection_path,
-                self.import_source(),
+            recipe = recipe.with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=self.projection_path),
+                    payload_value=self.import_source(),
+                    rationale="",
+                )
             )
-        return recipe.replace_module_assignment(
-            self.projection_path,
-            self.assignment_name,
-            self.assignment_source,
+        return recipe.with_operation(
+            ReplaceModuleAssignmentOperation(
+                target=SourceRewriteTarget(file_path=self.projection_path),
+                assignment_name=self.assignment_name,
+                payload_value=self.assignment_source,
+                rationale="",
+            )
         )
 
 
@@ -29087,12 +28714,15 @@ class AutoregisterInstanceViewRecipeBuilder(ContextualSemanticMirrorRecipeBuilde
         return RefactorRecipe(
             recipe_id=f"{self.finding.stable_id}-derive-autoregister-instance-view",
             reason="Derive instance view from existing AutoRegisterMeta registry.",
-        ).derive_autoregister_instance_view(
-            parts.source_path,
-            parts.base_name,
-            parts.assignment_name,
-            parts.class_key_pairs,
-            method_name=parts.method_name,
+        ).with_operation(
+            DeriveAutoregisterInstanceViewOperation(
+                target=SourceRewriteTarget(file_path=parts.source_path),
+                base_name=parts.base_name,
+                assignment_name=parts.assignment_name,
+                class_key_pairs=tuple(parts.class_key_pairs),
+                method_name=parts.method_name,
+                rationale="",
+            )
         )
 
     def parts(self) -> AutoregisterInstanceViewRecipeParts | None:
@@ -29643,14 +29273,18 @@ class LiteralDispatchFindingRecipeSynthesizer(
         return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-dispatch-to-polymorphism",
             reason="Replace literal dispatch with AutoRegisterMeta strategy family.",
-        ).dispatch_to_polymorphism(
-            target_digest.qualname,
-            source_path=target_digest.file_path,
-            dispatch_axis_expression=dispatch_axis_expression,
-            literal_cases=finding.metrics.plan_literal_cases,
-            base_name=dispatch_strategy_base_name(node.name),
-            case_key_attribute=self.case_key_attribute,
-            method_name=self.method_name,
+        ).with_operation(
+            DispatchToPolymorphismOperation(
+                target=SourceRewriteTarget(
+                    qualname=target_digest.qualname, file_path=target_digest.file_path
+                ),
+                dispatch_axis_expression=dispatch_axis_expression,
+                literal_cases=tuple(finding.metrics.plan_literal_cases),
+                base_name=dispatch_strategy_base_name(node.name),
+                case_key_attribute=self.case_key_attribute,
+                method_name=self.method_name,
+                rationale="",
+            )
         )
 
     def action_keys_for_finding(
@@ -29845,8 +29479,8 @@ class ProjectedBatchRewriteSet:
     ) -> RefactorRecipe:
         return RefactorRecipe(
             recipe_id="finding-backed-merged-codemod-plan",
-            rewrites=tuple(
-                RefactorRecipeRewrite(
+            operations=tuple(
+                ReplaceTargetOperation(
                     target=SourceRewriteTarget(target_id=rewrite.target_id),
                     replacement_source=rewrite.replacement_source,
                     rationale=rewrite.rationale,
@@ -30758,12 +30392,15 @@ class DescriptorPropertyFindingRecipeSynthesizer(
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
             reason=self.recipe_reason,
-        ).replace_text(
-            class_target.qualname,
-            old_source,
-            new_source,
-            source_path=class_target.file_path,
-            rationale=self.recipe_reason,
+        ).with_operation(
+            ReplaceTextOperation(
+                target=SourceRewriteTarget(
+                    qualname=class_target.qualname, file_path=class_target.file_path
+                ),
+                old_source=old_source,
+                new_source=new_source,
+                rationale=self.recipe_reason,
+            )
         )
         return FindingRecipeEvaluation(recipe=recipe)
 
@@ -31075,27 +30712,33 @@ class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[PlannedSourceRewrite, ...]:
-        del source_by_path
         rewrites: list[PlannedSourceRewrite] = []
         for plan in self._plans:
             if not plan.matches(candidate):
                 continue
-            for boundary_rewrite in plan.rewrites:
-                target_id = boundary_rewrite.target.required_target_id(
+            operations: list[ReplaceTargetOperation] = []
+            for operation in plan.operations:
+                target_id = operation.target.required_target_id(
                     source_index,
                     eligible_target_ids=candidate.target_ids,
                 )
-                rewrites.append(
-                    PlannedSourceRewrite(
-                        target_id=target_id,
-                        replacement_source=boundary_rewrite.replacement_source,
+                operations.append(
+                    replace(
+                        operation,
+                        target=SourceRewriteTarget(target_id=target_id),
                         rationale=(
-                            boundary_rewrite.rationale
+                            operation.rationale
                             or plan.reason
                             or f"Apply supplied authority boundary {plan.boundary_id}."
                         ),
                     )
                 )
+            rewrites.extend(
+                RefactorRecipeOperationCompiler(
+                    source_index=source_index,
+                    sources_by_file_path=source_by_path,
+                ).planned_rewrites(plan.boundary_id, operations)
+            )
         return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
 
 

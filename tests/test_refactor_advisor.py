@@ -95,8 +95,10 @@ from nominal_refactor_advisor.codemod import (
     ArchitectureGuardViolationKind,
     AstTargetNodeIndex,
     AstTargetNodeIndexCache,
+    AddClassBaseOperation,
+    ApplySelectedTargetsOperation,
     AuthorityBoundaryPlan,
-    AuthorityBoundaryRewrite,
+    CollapseFieldsToCarrierOperation,
     CodemodActionability,
     CodemodAutomationLevel,
     CodemodOperationPreflightError,
@@ -118,6 +120,9 @@ from nominal_refactor_advisor.codemod import (
     CodemodStrategy,
     CodemodStrategyRegistry,
     CodemodTargetSelector,
+    ConstructorKwargCollapseConcept,
+    ConvertManualRegistryToAutoregisterOperation,
+    CreateFileOperation,
     DEFAULT_CODEMOD_REWRITE_BUILDERS,
     FindingRecipeAuthorityClaimGate,
     FindingRecipeClassPlan,
@@ -126,15 +131,43 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeSynthesisStatus,
     FindingEvidenceTargetSelector,
     FindingRecipeEvaluation,
+    DeclareAuthorityOperation,
+    DeadCompatibilityErasureConcept,
+    DeleteClassAssignmentOperation,
+    DeleteTargetOperation,
+    DispatchToPolymorphismOperation,
+    EnsureImportOperation,
+    ExposeGlobalCandidateCacheContextOperation,
+    ExtractAuthorityOperation,
+    ExtractMethodsToClassOperation,
     InheritanceEdgeTargetSelector,
+    InsertAfterImportsOperation,
+    InsertAfterTargetOperation,
+    InsertBeforeTargetOperation,
+    MoveSymbolToModuleOperation,
+    MoveSymbolsToModuleOperation,
+    MovedSymbolImportPolicy,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
     RefactorConcept,
     RefactorRecipe,
     RefactorRecipeOperationTemplate,
+    RemoveClassBaseOperation,
+    RemoveImportNamesOperation,
+    ReplaceFieldsWithCarrierOperation,
+    ReplaceFunctionBodyOperation,
+    ReplaceFunctionSignatureOperation,
+    ReplaceModuleAssignmentOperation,
+    ReplaceTargetOperation,
+    ReplaceTextOperation,
+    ProductRecordToDataclassOperation,
+    PromoteClassMethodsOperation,
+    PrefixBundleCarrierConcept,
     RecipeCallReplacement,
     SelectionCountExpectation,
+    SemanticCarrierConcept,
+    TupleDictReturnNominalizationConcept,
     SourceRewriteTarget,
     SourceRewriteSimulationPayload,
     SourceRewriteContributor,
@@ -212,9 +245,9 @@ from nominal_refactor_advisor.observation_graph import (
     StructuralExecutionLevel,
     build_observation_graph,
 )
-from nominal_refactor_advisor.patterns import ActionBuilderId, PATTERN_SPECS, PatternId
+from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import (
-    PATTERN_CATALOG,
+    _plan_actions,
     build_refactor_execution_plan,
     build_refactor_plans,
 )
@@ -653,8 +686,8 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
             AuthorityBoundaryPlan(
                 boundary_id="alpha-run-authority",
                 detector_ids=("orbit_detector",),
-                rewrites=(
-                    AuthorityBoundaryRewrite(
+                operations=(
+                    ReplaceTargetOperation(
                         replacement_source=(
                             "    def run(self, value):\n"
                             "        return AlphaRunAuthority.run(value)\n"
@@ -678,8 +711,8 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
                 AuthorityBoundaryPlan(
                     boundary_id="unresolved-alpha-boundary",
                     detector_ids=("orbit_detector",),
-                    rewrites=(
-                        AuthorityBoundaryRewrite(
+                    operations=(
+                        ReplaceTargetOperation(
                             replacement_source="class Alpha:\n    pass\n",
                             target=SourceRewriteTarget(
                                 file_path=module_path.as_posix(),
@@ -804,11 +837,15 @@ def test_codemod_apply_rejects_source_changed_after_simulation(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = (
         RefactorRecipe("rewrite-alpha")
-        .replace_text(
-            "Alpha",
-            "value = 1",
-            "value = 2",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            ReplaceTextOperation(
+                target=SourceRewriteTarget(
+                    qualname="Alpha",
+                    file_path=module_path.as_posix(),
+                ),
+                old_source="value = 1",
+                new_source="value = 2",
+            )
         )
         .simulate_snapshot(snapshot)
     )
@@ -829,9 +866,11 @@ def test_codemod_apply_rejects_create_path_that_appeared_after_simulation(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = CodemodPlanDocument(
         recipes=(
-            RefactorRecipe("create-generated").create_file(
-                generated_path.as_posix(),
-                "GENERATED = 1\n",
+            RefactorRecipe("create-generated").with_operation(
+                CreateFileOperation(
+                    target=SourceRewriteTarget(file_path=generated_path.as_posix()),
+                    payload_value="GENERATED = 1\n",
+                )
             ),
         )
     ).simulate_snapshot(snapshot)
@@ -857,17 +896,25 @@ def test_codemod_multifile_commit_failure_rolls_back_prior_files(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = CodemodPlanDocument(
         recipes=(
-            RefactorRecipe("rewrite-alpha").replace_text(
-                "Alpha",
-                "value = 1",
-                "value = 10",
-                source_path=alpha_path.as_posix(),
+            RefactorRecipe("rewrite-alpha").with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname="Alpha",
+                        file_path=alpha_path.as_posix(),
+                    ),
+                    old_source="value = 1",
+                    new_source="value = 10",
+                )
             ),
-            RefactorRecipe("rewrite-beta").replace_text(
-                "Beta",
-                "value = 2",
-                "value = 20",
-                source_path=beta_path.as_posix(),
+            RefactorRecipe("rewrite-beta").with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname="Beta",
+                        file_path=beta_path.as_posix(),
+                    ),
+                    old_source="value = 2",
+                    new_source="value = 20",
+                )
             ),
         )
     ).simulate_snapshot(snapshot)
@@ -917,16 +964,29 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
             recipe_id="route-alpha-beta",
             reason="Replace both implementations.",
         )
-        .replace_target(
-            "    def run(self, value):\n        return AlphaAuthority.run(value)\n",
-            qualname="Alpha.run",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            ReplaceTargetOperation(
+                replacement_source=(
+                    "    def run(self, value):\n"
+                    "        return AlphaAuthority.run(value)\n"
+                ),
+                target=SourceRewriteTarget(
+                    qualname="Alpha.run",
+                    file_path=module_path.as_posix(),
+                ),
+            )
         )
-        .replace_target(
-            "    def render(self, value):\n"
-            "        return BetaAuthority.render(value)\n",
-            qualname="Beta.render",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            ReplaceTargetOperation(
+                replacement_source=(
+                    "    def render(self, value):\n"
+                    "        return BetaAuthority.render(value)\n"
+                ),
+                target=SourceRewriteTarget(
+                    qualname="Beta.render",
+                    file_path=module_path.as_posix(),
+                ),
+            )
         )
     )
 
@@ -970,10 +1030,17 @@ def test_codemod_source_snapshot_executes_recipe_document(
     recipe = RefactorRecipe(
         recipe_id="route-alpha",
         reason="Replace the implementation.",
-    ).replace_target(
-        "    def run(self, value):\n        return AlphaAuthority.run(value)\n",
-        qualname="Alpha.run",
-        source_path=module_path.as_posix(),
+    ).with_operation(
+        ReplaceTargetOperation(
+            replacement_source=(
+                "    def run(self, value):\n"
+                "        return AlphaAuthority.run(value)\n"
+            ),
+            target=SourceRewriteTarget(
+                qualname="Alpha.run",
+                file_path=module_path.as_posix(),
+            ),
+        )
     )
     document = CodemodPlanDocument(
         recipes=(recipe,),
@@ -1047,9 +1114,11 @@ def test_codemod_create_file_rejects_existing_source_without_mutation(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument(
         recipes=(
-            RefactorRecipe("replace-existing-with-create").create_file(
-                module_path.as_posix(),
-                "LOST = 2\n",
+            RefactorRecipe("replace-existing-with-create").with_operation(
+                CreateFileOperation(
+                    target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                    payload_value="LOST = 2\n",
+                )
             ),
         )
     )
@@ -1072,13 +1141,17 @@ def test_codemod_create_file_rejects_duplicate_source_authorities(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument(
         recipes=(
-            RefactorRecipe("first-create").create_file(
-                generated_path.as_posix(),
-                "FIRST = 1\n",
+            RefactorRecipe("first-create").with_operation(
+                CreateFileOperation(
+                    target=SourceRewriteTarget(file_path=generated_path.as_posix()),
+                    payload_value="FIRST = 1\n",
+                )
             ),
-            RefactorRecipe("second-create").create_file(
-                generated_path.as_posix(),
-                "SECOND = 2\n",
+            RefactorRecipe("second-create").with_operation(
+                CreateFileOperation(
+                    target=SourceRewriteTarget(file_path=generated_path.as_posix()),
+                    payload_value="SECOND = 2\n",
+                )
             ),
         )
     )
@@ -1183,10 +1256,12 @@ def test_codemod_preflight_accepts_declared_authority_claim(
     recipe = RefactorRecipe(
         recipe_id="declared-authority-route",
         reason="route through authority",
-    ).declare_authority(
-        module_path.as_posix(),
-        claim,
-        "class MissingAuthority(ABC):\n    pass\n\n",
+    ).with_operation(
+        DeclareAuthorityOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            authority_claim=claim,
+            payload_value="class MissingAuthority(ABC):\n    pass\n\n",
+        )
     )
 
     preflight = CodemodPlanDocument(recipes=(recipe,)).preflight_snapshot(snapshot)
@@ -1249,15 +1324,23 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
     source_by_path = {module_path.as_posix(): module_path.read_text()}
     recipe = (
         RefactorRecipe(recipe_id="mechanical-dsl")
-        .delete_class_assignment(
-            "Detector",
-            "detector_id",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            DeleteClassAssignmentOperation(
+                target=SourceRewriteTarget(
+                    qualname="Detector",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="detector_id",
+            )
         )
-        .replace_function_body(
-            "Detector.normalize",
-            "return value + 1",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            ReplaceFunctionBodyOperation(
+                target=SourceRewriteTarget(
+                    qualname="Detector.normalize",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="return value + 1",
+            )
         )
     )
 
@@ -1302,18 +1385,28 @@ def test_recipe_operation_target_nodes_reuse_snapshot_cache(
     source_by_path = {module_path.as_posix(): module_path.read_text()}
     recipe = (
         RefactorRecipe(recipe_id="cached-target-node-resolution")
-        .insert_before_target(
-            "Detector",
-            "class DetectorAuthority:\n"
-            "    @staticmethod\n"
-            "    def normalize(value):\n"
-            "        return value\n\n",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            InsertBeforeTargetOperation(
+                target=SourceRewriteTarget(
+                    qualname="Detector",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value=(
+                    "class DetectorAuthority:\n"
+                    "    @staticmethod\n"
+                    "    def normalize(value):\n"
+                    "        return value\n\n"
+                ),
+            )
         )
-        .replace_function_body(
-            "Detector.normalize",
-            "return DetectorAuthority.normalize(value)",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            ReplaceFunctionBodyOperation(
+                target=SourceRewriteTarget(
+                    qualname="Detector.normalize",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="return DetectorAuthority.normalize(value)",
+            )
         )
     )
     original = AstTargetNodeIndex.nodes_by_target_identifier_uncached
@@ -1361,10 +1454,14 @@ def test_projected_finding_report_uses_focused_partial_scan(
     snapshot = CodemodSourceSnapshot.from_modules(modules)
     simulation = (
         RefactorRecipe(recipe_id="project-changed-source")
-        .replace_function_body(
-            "Changed.value",
-            "return 3",
-            source_path=changed_path.as_posix(),
+        .with_operation(
+            ReplaceFunctionBodyOperation(
+                target=SourceRewriteTarget(
+                    qualname="Changed.value",
+                    file_path=changed_path.as_posix(),
+                ),
+                payload_value="return 3",
+            )
         )
         .simulate_snapshot(snapshot)
         .simulation
@@ -1455,10 +1552,14 @@ def test_projected_finding_report_omits_compact_global_detectors(
     snapshot = CodemodSourceSnapshot.from_modules(modules)
     simulation = (
         RefactorRecipe(recipe_id="project-changed-source")
-        .replace_function_body(
-            "Changed.value",
-            "return 3",
-            source_path=changed_path.as_posix(),
+        .with_operation(
+            ReplaceFunctionBodyOperation(
+                target=SourceRewriteTarget(
+                    qualname="Changed.value",
+                    file_path=changed_path.as_posix(),
+                ),
+                payload_value="return 3",
+            )
         )
         .simulate_snapshot(snapshot)
         .simulation
@@ -1644,35 +1745,59 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
             recipe_id="context-mro-refactor",
             reason="route parser state through a nominal context base",
         )
-        .insert_before_target(
-            "Parser",
-            "class ParseContext:\n    pass\n\n",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            InsertBeforeTargetOperation(
+                target=SourceRewriteTarget(
+                    qualname="Parser",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="class ParseContext:\n    pass\n\n",
+            )
         )
-        .add_class_base(
-            "Parser",
-            "ParseContext",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            AddClassBaseOperation(
+                target=SourceRewriteTarget(
+                    qualname="Parser",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="ParseContext",
+            )
         )
-        .replace_function_signature(
-            "Parser.parse",
-            "def parse(self, value, *, context):",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            ReplaceFunctionSignatureOperation(
+                target=SourceRewriteTarget(
+                    qualname="Parser.parse",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="def parse(self, value, *, context):",
+            )
         )
-        .replace_function_body(
-            "Parser.parse",
-            "return context.prepare(value)",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            ReplaceFunctionBodyOperation(
+                target=SourceRewriteTarget(
+                    qualname="Parser.parse",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="return context.prepare(value)",
+            )
         )
-        .insert_after_target(
-            "Parser",
-            "\n\nclass ParserAuthority:\n    pass\n",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            InsertAfterTargetOperation(
+                target=SourceRewriteTarget(
+                    qualname="Parser",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="\n\nclass ParserAuthority:\n    pass\n",
+            )
         )
-        .remove_class_base(
-            "LegacyWorker",
-            "LegacyBase",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            RemoveClassBaseOperation(
+                target=SourceRewriteTarget(
+                    qualname="LegacyWorker",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="LegacyBase",
+            )
         )
     )
 
@@ -1731,15 +1856,23 @@ def test_refactor_recipe_rewrites_multiline_class_base_headers(
             recipe_id="multiline-class-base",
             reason="Rewrite class bases across the full header span.",
         )
-        .add_class_base(
-            "WorkerAdd",
-            "AddedBase",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            AddClassBaseOperation(
+                target=SourceRewriteTarget(
+                    qualname="WorkerAdd",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="AddedBase",
+            )
         )
-        .remove_class_base(
-            "WorkerRemove",
-            "RemovedBase",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            RemoveClassBaseOperation(
+                target=SourceRewriteTarget(
+                    qualname="WorkerRemove",
+                    file_path=module_path.as_posix(),
+                ),
+                payload_value="RemovedBase",
+            )
         )
     )
 
@@ -1791,13 +1924,15 @@ def test_refactor_recipe_collapses_fields_to_carrier(
     recipe = RefactorRecipe(
         recipe_id="collapse-semantic-key",
         reason="Move duplicated semantic key ownership into a nominal carrier.",
-    ).collapse_fields_to_carrier(
-        module_path.as_posix(),
-        carrier_name="SemanticKeyCarrier",
-        class_names=("AlphaSignal", "BetaSignal"),
-        field_declaration_sources=("semantic_key: str",),
-        carrier_base_names=("SourceLineReference",),
-        inherited_field_names=("file_path", "line"),
+    ).with_operation(
+        CollapseFieldsToCarrierOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            carrier_name="SemanticKeyCarrier",
+            class_names=("AlphaSignal", "BetaSignal"),
+            field_declaration_sources=("semantic_key: str",),
+            carrier_base_names=("SourceLineReference",),
+            inherited_field_names=("file_path", "line"),
+        )
     )
     document = CodemodPlanDocument.from_json_value(
         CodemodPlanDocument(recipes=(recipe,)).to_dict()
@@ -1859,12 +1994,14 @@ def test_refactor_recipe_collapses_fields_to_existing_carrier(
     recipe = RefactorRecipe(
         recipe_id="reuse-existing-carrier",
         reason="Reuse the existing semantic carrier instead of generating a duplicate.",
-    ).collapse_fields_to_carrier(
-        module_path.as_posix(),
-        carrier_name="ExistingCarrier",
-        class_names=("AlphaSignal", "BetaSignal"),
-        field_declaration_sources=("semantic_key: str",),
-        insert_carrier=False,
+    ).with_operation(
+        CollapseFieldsToCarrierOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            carrier_name="ExistingCarrier",
+            class_names=("AlphaSignal", "BetaSignal"),
+            field_declaration_sources=("semantic_key: str",),
+            insert_carrier=False,
+        )
     )
 
     simulation = CodemodPlanDocument(recipes=(recipe,)).simulate(
@@ -1921,15 +2058,17 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     recipe = RefactorRecipe(
         recipe_id="reuse-static-payload-stats",
         reason="Collapse projected payload facts into the existing stats carrier.",
-    ).replace_fields_with_carrier(
-        module_path.as_posix(),
-        class_name="EmbeddedStaticPayloadCandidate",
-        carrier_field_declaration="static_payload_stats: StaticPayloadStats",
-        field_projection_pairs=(
-            "static_payload_line_count=payload_line_count",
-            "marker_kinds=marker_kinds",
-        ),
-        attribute_owner_expressions=("payload_candidate",),
+    ).with_operation(
+        ReplaceFieldsWithCarrierOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            class_name="EmbeddedStaticPayloadCandidate",
+            carrier_field_declaration="static_payload_stats: StaticPayloadStats",
+            field_projection_pairs=(
+                "static_payload_line_count=payload_line_count",
+                "marker_kinds=marker_kinds",
+            ),
+            attribute_owner_expressions=("payload_candidate",),
+        )
     )
 
     simulation = CodemodPlanDocument(recipes=(recipe,)).simulate(
@@ -2001,8 +2140,18 @@ def test_refactor_recipe_converts_product_records_to_dataclasses(
     source_by_path = {module_path.as_posix(): module_path.read_text()}
     recipe = (
         RefactorRecipe(recipe_id="runtime-records-to-dataclasses")
-        .product_record_to_dataclass(module_path.as_posix(), "LocalRecord")
-        .product_record_to_dataclass(module_path.as_posix(), "GeneratedRecord")
+        .with_operation(
+            ProductRecordToDataclassOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                payload_value="LocalRecord",
+            )
+        )
+        .with_operation(
+            ProductRecordToDataclassOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                payload_value="GeneratedRecord",
+            )
+        )
     )
 
     simulation = recipe.simulate(
@@ -2713,11 +2862,13 @@ def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
-    recipe = RefactorRecipe(recipe_id="promote-repeated-methods").promote_class_methods(
-        module_path.as_posix(),
-        "SharedEmitMixin",
-        ("Alpha", "Beta"),
-        ("emit",),
+    recipe = RefactorRecipe(recipe_id="promote-repeated-methods").with_operation(
+        PromoteClassMethodsOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            base_name="SharedEmitMixin",
+            class_names=("Alpha", "Beta"),
+            method_names=("emit",),
+        )
     )
 
     simulation = recipe.simulate(
@@ -3084,9 +3235,11 @@ def test_refactor_recipe_inserts_after_module_imports(
     source_index = build_source_index(modules, ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
-    recipe = RefactorRecipe(recipe_id="add-context-import").insert_after_imports(
-        module_path.as_posix(),
-        "from parser_context import ParseContext\n",
+    recipe = RefactorRecipe(recipe_id="add-context-import").with_operation(
+        InsertAfterImportsOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            payload_value="from parser_context import ParseContext\n",
+        )
     )
 
     simulation = recipe.simulate(
@@ -3128,16 +3281,30 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
 
     recipe = (
         RefactorRecipe(recipe_id="delete-obsolete-helper")
-        .ensure_import(
-            module_path.as_posix(), "from parser_context import ParseContext\n"
+        .with_operation(
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                payload_value="from parser_context import ParseContext\n",
+            )
         )
-        .replace_text(
-            "Parser.parse",
-            "obsolete_helper(source)",
-            "source",
-            source_path=module_path.as_posix(),
+        .with_operation(
+            ReplaceTextOperation(
+                target=SourceRewriteTarget(
+                    qualname="Parser.parse",
+                    file_path=module_path.as_posix(),
+                ),
+                old_source="obsolete_helper(source)",
+                new_source="source",
+            )
         )
-        .delete_target("obsolete_helper", source_path=module_path.as_posix())
+        .with_operation(
+            DeleteTargetOperation(
+                target=SourceRewriteTarget(
+                    qualname="obsolete_helper",
+                    file_path=module_path.as_posix(),
+                )
+            )
+        )
     )
 
     simulation = recipe.simulate(
@@ -3161,8 +3328,11 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
     second_source_by_path = {module_path.as_posix(): module_path.read_text()}
     second_simulation = (
         RefactorRecipe(recipe_id="ensure-existing-import")
-        .ensure_import(
-            module_path.as_posix(), "from parser_context import ParseContext\n"
+        .with_operation(
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                payload_value="from parser_context import ParseContext\n",
+            )
         )
         .simulate(
             reparsed_index,
@@ -3193,7 +3363,12 @@ def test_refactor_recipe_ensure_import_merges_existing_from_import(
 
     simulation = (
         RefactorRecipe(recipe_id="merge-import")
-        .ensure_import(module_path.as_posix(), "from .taxonomy import LabeledStrEnum\n")
+        .with_operation(
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                payload_value="from .taxonomy import LabeledStrEnum\n",
+            )
+        )
         .simulate(
             source_index,
             source_by_path,
@@ -3222,9 +3397,13 @@ def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
 
     simulation = (
         RefactorRecipe(recipe_id="star-import-satisfied")
-        .ensure_import(
-            module_path.as_posix(),
-            "from ._base import CrossModuleCollectorCandidateDetector\n",
+        .with_operation(
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                payload_value=(
+                    "from ._base import CrossModuleCollectorCandidateDetector\n"
+                ),
+            )
         )
         .simulate(
             source_index,
@@ -3265,12 +3444,16 @@ def test_expose_global_candidate_cache_context_operation(
 
     simulation = (
         RefactorRecipe("contextualize-alpha")
-        .expose_global_candidate_cache_context(
-            "AlphaDetector",
-            source_path=module_path.as_posix(),
-            candidate_type_name="Candidate",
-            candidate_collector_name="_candidates",
-            candidate_collector_uses_config=True,
+        .with_operation(
+            ExposeGlobalCandidateCacheContextOperation(
+                target=SourceRewriteTarget(
+                    qualname="AlphaDetector",
+                    file_path=module_path.as_posix(),
+                ),
+                candidate_type_name="Candidate",
+                candidate_collector_name="_candidates",
+                candidate_collector_uses_config=True,
+            )
         )
         .simulate(
             source_index,
@@ -3421,21 +3604,29 @@ def test_operation_compiler_coalesces_identical_line_replacements(
 
     simulation = (
         RefactorRecipe("contextualize-two-detectors")
-        .expose_global_candidate_cache_context(
-            "AlphaDetector",
-            source_path=module_path.as_posix(),
-            candidate_type_name="Candidate",
-            candidate_collector_name="_alpha_candidates",
-            candidate_collector_scope="module_items",
-            candidate_item_sort_attributes=("name",),
+        .with_operation(
+            ExposeGlobalCandidateCacheContextOperation(
+                target=SourceRewriteTarget(
+                    qualname="AlphaDetector",
+                    file_path=module_path.as_posix(),
+                ),
+                candidate_type_name="Candidate",
+                candidate_collector_name="_alpha_candidates",
+                candidate_collector_scope="module_items",
+                candidate_item_sort_attributes=("name",),
+            )
         )
-        .expose_global_candidate_cache_context(
-            "BetaDetector",
-            source_path=module_path.as_posix(),
-            candidate_type_name="Candidate",
-            candidate_collector_name="_beta_candidates",
-            candidate_collector_scope="module_items",
-            candidate_item_sort_attributes=("name",),
+        .with_operation(
+            ExposeGlobalCandidateCacheContextOperation(
+                target=SourceRewriteTarget(
+                    qualname="BetaDetector",
+                    file_path=module_path.as_posix(),
+                ),
+                candidate_type_name="Candidate",
+                candidate_collector_name="_beta_candidates",
+                candidate_collector_scope="module_items",
+                candidate_item_sort_attributes=("name",),
+            )
         )
         .simulate(
             source_index,
@@ -3490,11 +3681,15 @@ def test_expose_global_candidate_cache_context_collapses_existing_candidate_meth
 
     simulation = (
         RefactorRecipe("contextualize-existing-alpha")
-        .expose_global_candidate_cache_context(
-            "AlphaDetector",
-            source_path=module_path.as_posix(),
-            candidate_type_name="Candidate",
-            candidate_collector_name="_candidates",
+        .with_operation(
+            ExposeGlobalCandidateCacheContextOperation(
+                target=SourceRewriteTarget(
+                    qualname="AlphaDetector",
+                    file_path=module_path.as_posix(),
+                ),
+                candidate_type_name="Candidate",
+                candidate_collector_name="_candidates",
+            )
         )
         .simulate(
             source_index,
@@ -3531,10 +3726,12 @@ def test_refactor_recipe_replaces_module_assignment(
 
     recipe = RefactorRecipe(
         recipe_id="derive-active-modes",
-    ).replace_module_assignment(
-        module_path.as_posix(),
-        "ACTIVE_MODES",
-        "ACTIVE_MODES = Mode.active_modes()",
+    ).with_operation(
+        ReplaceModuleAssignmentOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            assignment_name="ACTIVE_MODES",
+            payload_value="ACTIVE_MODES = Mode.active_modes()",
+        )
     )
 
     simulation = recipe.simulate(
@@ -3567,10 +3764,12 @@ def test_refactor_recipe_removes_import_names(
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
-    recipe = RefactorRecipe(recipe_id="remove-unused-import").remove_import_names(
-        module_path.as_posix(),
-        "pkg.alpha",
-        ("Beta",),
+    recipe = RefactorRecipe(recipe_id="remove-unused-import").with_operation(
+        RemoveImportNamesOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            module_name="pkg.alpha",
+            import_names=("Beta",),
+        )
     )
 
     simulation = recipe.simulate(
@@ -3603,14 +3802,14 @@ def test_refactor_recipe_converts_manual_registry_to_autoregister(
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
-    recipe = RefactorRecipe(
-        recipe_id="manual-registry-to-autoregister"
-    ).convert_manual_registry_to_autoregister(
-        module_path.as_posix(),
-        base_name="RegisteredHandler",
-        registry_name="REGISTRY",
-        registry_key_attribute="registry_key",
-        class_key_pairs=("AlphaHandler='alpha'", "BetaHandler='beta'"),
+    recipe = RefactorRecipe(recipe_id="manual-registry-to-autoregister").with_operation(
+        ConvertManualRegistryToAutoregisterOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            base_name="RegisteredHandler",
+            registry_name="REGISTRY",
+            registry_key_attribute="registry_key",
+            class_key_pairs=("AlphaHandler='alpha'", "BetaHandler='beta'"),
+        )
     )
     simulation = recipe.simulate(
         source_index,
@@ -3648,14 +3847,18 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
 
     recipe = RefactorRecipe(
         recipe_id="literal-dispatch-to-polymorphism"
-    ).dispatch_to_polymorphism(
-        "render",
-        source_path=module_path.as_posix(),
-        dispatch_axis_expression="kind",
-        literal_cases=("'csv'", "'json'"),
-        base_name="RenderDispatchCase",
-        case_key_attribute="case",
-        method_name="apply",
+    ).with_operation(
+        DispatchToPolymorphismOperation(
+            target=SourceRewriteTarget(
+                qualname="render",
+                file_path=module_path.as_posix(),
+            ),
+            dispatch_axis_expression="kind",
+            literal_cases=("'csv'", "'json'"),
+            base_name="RenderDispatchCase",
+            case_key_attribute="case",
+            method_name="apply",
+        )
     )
     simulation = recipe.simulate(
         source_index,
@@ -3711,11 +3914,17 @@ def test_refactor_recipe_moves_decorated_symbol_between_modules(
         destination_path.as_posix(): destination_path.read_text(),
     }
 
-    recipe = RefactorRecipe(recipe_id="move-helper").move_symbol_to_module(
-        "Helper",
-        destination_path.as_posix(),
-        source_path=source_path.as_posix(),
-        replacement_import="from pkg.destination import Helper\n",
+    recipe = RefactorRecipe(recipe_id="move-helper").with_operation(
+        MoveSymbolToModuleOperation(
+            target=SourceRewriteTarget(
+                qualname="Helper",
+                file_path=source_path.as_posix(),
+            ),
+            destination_path=destination_path.as_posix(),
+            replacement_import=MovedSymbolImportPolicy.from_source(
+                "from pkg.destination import Helper\n"
+            ),
+        )
     )
     operation = recipe.operations[0].to_dict()
 
@@ -3781,11 +3990,15 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
         destination_path.as_posix(): destination_path.read_text(),
     }
 
-    recipe = RefactorRecipe(recipe_id="move-helper-closure").move_symbols_to_module(
-        source_path.as_posix(),
-        ("LocalBase", "Helper"),
-        destination_path.as_posix(),
-        replacement_import="from pkg.destination import Helper\n",
+    recipe = RefactorRecipe(recipe_id="move-helper-closure").with_operation(
+        MoveSymbolsToModuleOperation(
+            target=SourceRewriteTarget(file_path=source_path.as_posix()),
+            symbol_qualnames=("LocalBase", "Helper"),
+            destination_path=destination_path.as_posix(),
+            replacement_import=MovedSymbolImportPolicy.from_source(
+                "from pkg.destination import Helper\n"
+            ),
+        )
     )
     operation = recipe.operations[0]
     report = operation.dependency_report(source_index, source_by_path)
@@ -3846,10 +4059,12 @@ def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
         source_path.as_posix(): source_path.read_text(),
         destination_path.as_posix(): destination_path.read_text(),
     }
-    recipe = RefactorRecipe(recipe_id="move-helper-only").move_symbols_to_module(
-        source_path.as_posix(),
-        ("Helper",),
-        destination_path.as_posix(),
+    recipe = RefactorRecipe(recipe_id="move-helper-only").with_operation(
+        MoveSymbolsToModuleOperation(
+            target=SourceRewriteTarget(file_path=source_path.as_posix()),
+            symbol_qualnames=("Helper",),
+            destination_path=destination_path.as_posix(),
+        )
     )
 
     with pytest.raises(
@@ -3886,23 +4101,27 @@ def test_refactor_recipe_extracts_authority(
     source_index = build_source_index(modules, ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
-    recipe = RefactorRecipe(recipe_id="extract-helper-authority").extract_authority(
-        "old_helper",
-        (
-            "class HelperAuthority:\n"
-            "    @staticmethod\n"
-            "    def normalize(value):\n"
-            "        return value.strip()\n"
-        ),
-        source_path=module_path.as_posix(),
-        call_replacements=(
-            RecipeCallReplacement(
-                target=SourceRewriteTarget(
-                    qualname="Parser.parse",
-                    file_path=module_path.as_posix(),
+    recipe = RefactorRecipe(recipe_id="extract-helper-authority").with_operation(
+        ExtractAuthorityOperation(
+            target=SourceRewriteTarget(
+                qualname="old_helper",
+                file_path=module_path.as_posix(),
+            ),
+            payload_value=(
+                "class HelperAuthority:\n"
+                "    @staticmethod\n"
+                "    def normalize(value):\n"
+                "        return value.strip()\n"
+            ),
+            call_replacements=(
+                RecipeCallReplacement(
+                    target=SourceRewriteTarget(
+                        qualname="Parser.parse",
+                        file_path=module_path.as_posix(),
+                    ),
+                    old_source="old_helper(value)",
+                    new_source="HelperAuthority.normalize(value)",
                 ),
-                old_source="old_helper(value)",
-                new_source="HelperAuthority.normalize(value)",
             ),
         ),
     )
@@ -3946,23 +4165,27 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
     sequence = CodemodPlanSequence.from_document(
         CodemodPlanDocument(
             recipes=(
-                RefactorRecipe(recipe_id="multi-file-authority").extract_authority(
-                    "old_helper",
-                    (
-                        "class HelperAuthority:\n"
-                        "    @staticmethod\n"
-                        "    def normalize(value):\n"
-                        "        return value.strip()\n"
-                    ),
-                    source_path=helper_path.as_posix(),
-                    call_replacements=(
-                        RecipeCallReplacement(
-                            target=SourceRewriteTarget(
-                                qualname="Parser.parse",
-                                file_path=parser_path.as_posix(),
+                RefactorRecipe(recipe_id="multi-file-authority").with_operation(
+                    ExtractAuthorityOperation(
+                        target=SourceRewriteTarget(
+                            qualname="old_helper",
+                            file_path=helper_path.as_posix(),
+                        ),
+                        payload_value=(
+                            "class HelperAuthority:\n"
+                            "    @staticmethod\n"
+                            "    def normalize(value):\n"
+                            "        return value.strip()\n"
+                        ),
+                        call_replacements=(
+                            RecipeCallReplacement(
+                                target=SourceRewriteTarget(
+                                    qualname="Parser.parse",
+                                    file_path=parser_path.as_posix(),
+                                ),
+                                old_source="old_helper(value)",
+                                new_source="HelperAuthority.normalize(value)",
                             ),
-                            old_source="old_helper(value)",
-                            new_source="HelperAuthority.normalize(value)",
                         ),
                     ),
                 ),
@@ -4009,23 +4232,27 @@ def test_codemod_plan_document_simulates_and_applies_recipes(
     source_by_path = {module_path.as_posix(): module_path.read_text()}
     document = CodemodPlanDocument(
         recipes=(
-            RefactorRecipe(recipe_id="document-authority-extraction").extract_authority(
-                "old_helper",
-                (
-                    "class HelperAuthority:\n"
-                    "    @staticmethod\n"
-                    "    def normalize(value):\n"
-                    "        return value.strip()\n"
-                ),
-                source_path=module_path.as_posix(),
-                call_replacements=(
-                    RecipeCallReplacement(
-                        target=SourceRewriteTarget(
-                            qualname="Parser.parse",
-                            file_path=module_path.as_posix(),
+            RefactorRecipe(recipe_id="document-authority-extraction").with_operation(
+                ExtractAuthorityOperation(
+                    target=SourceRewriteTarget(
+                        qualname="old_helper",
+                        file_path=module_path.as_posix(),
+                    ),
+                    payload_value=(
+                        "class HelperAuthority:\n"
+                        "    @staticmethod\n"
+                        "    def normalize(value):\n"
+                        "        return value.strip()\n"
+                    ),
+                    call_replacements=(
+                        RecipeCallReplacement(
+                            target=SourceRewriteTarget(
+                                qualname="Parser.parse",
+                                file_path=module_path.as_posix(),
+                            ),
+                            old_source="old_helper(value)",
+                            new_source="HelperAuthority.normalize(value)",
                         ),
-                        old_source="old_helper(value)",
-                        new_source="HelperAuthority.normalize(value)",
                     ),
                 ),
             ),
@@ -6245,12 +6472,7 @@ def test_planner_orders_registry_normal_form_path(tmp_path: Path) -> None:
     assert "rerun NRA before promoting" in plan.plan_steps[3]
 
 
-def test_pattern_action_catalog_derives_from_registered_action_builders() -> None:
-    expected_action_ids = {
-        pattern.action_builder_id
-        for pattern in PATTERN_SPECS.values()
-        if pattern.action_builder_id is not None
-    }
+def test_pattern_action_builder_emits_registered_pattern_actions() -> None:
     registry_finding = _finding_spec(
         PatternId.AUTO_REGISTER_META,
         "Registry needs normal form",
@@ -6263,17 +6485,8 @@ def test_pattern_action_catalog_derives_from_registered_action_builders() -> Non
         (SourceLocation("pkg/mod.py", 10, "ModeRunner"),),
     )
 
-    actions = PATTERN_CATALOG.plan_actions(
-        "pkg", (PatternId.AUTO_REGISTER_META,), (registry_finding,)
-    )
+    actions = _plan_actions("pkg", (PatternId.AUTO_REGISTER_META,), (registry_finding,))
 
-    assert set(PATTERN_CATALOG.action_builders) == expected_action_ids
-    assert (
-        PATTERN_CATALOG.action_builders[
-            ActionBuilderId.CLOSED_FAMILY_DISPATCH
-        ].__class__.__name__
-        == "ClosedFamilyDispatchActionBuilder"
-    )
     assert [action.kind for action in actions] == [
         "create_metaclass",
         "add_declarative_hooks",
@@ -13238,8 +13451,9 @@ def test_load_authority_boundary_plans_from_json(tmp_path: Path) -> None:
                         "boundary_id": "alpha-run",
                         "detector_ids": ["orbit_detector"],
                         "opportunity_kinds": ["ast-target"],
-                        "rewrites": [
+                        "operations": [
                             {
+                                "operation": "replace_target",
                                 "file_path": "pkg/mod.py",
                                 "target_qualname": "Alpha.run",
                                 "replacement_source": (
@@ -13261,7 +13475,7 @@ def test_load_authority_boundary_plans_from_json(tmp_path: Path) -> None:
     assert plans[0].boundary_id == "alpha-run"
     assert plans[0].detector_ids == ("orbit_detector",)
     assert plans[0].opportunity_kinds == ("ast-target",)
-    assert plans[0].rewrites[0].target.qualname == "Alpha.run"
+    assert plans[0].operations[0].target.qualname == "Alpha.run"
 
 
 def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
@@ -13270,8 +13484,9 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
             "authority_boundaries": [
                 {
                     "boundary_id": "alpha-run",
-                    "rewrites": [
+                    "operations": [
                         {
+                            "operation": "replace_target",
                             "target_qualname": "Alpha.run",
                             "replacement_source": (
                                 "    def run(self, value):\n"
@@ -13305,8 +13520,9 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
                             "forbidden_attribute_names": ["legacy_recipe_value"],
                         }
                     ],
-                    "rewrites": [
+                    "operations": [
                         {
+                            "operation": "replace_target",
                             "target_qualname": "Alpha.run",
                             "file_path": "pkg/mod.py",
                             "replacement_source": (
@@ -13338,7 +13554,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
         "AlphaRunAuthority"
     )
     assert document.recipes[0].authority_claims[0].qualname == "AlphaRunAuthority"
-    assert document.recipes[0].rewrites[0].target.file_path == "pkg/mod.py"
+    assert document.recipes[0].operations[0].target.file_path == "pkg/mod.py"
 
 
 def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
@@ -13351,8 +13567,9 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
                 "authority_boundaries": [
                     {
                         "boundary_id": "alpha-run",
-                        "rewrites": [
+                        "operations": [
                             {
+                                "operation": "replace_target",
                                 "target_qualname": "Alpha.run",
                                 "file_path": "pkg/mod.py",
                                 "replacement_source": (
@@ -13366,8 +13583,9 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
                 "recipes": [
                     {
                         "recipe_id": "replace-alpha",
-                        "rewrites": [
+                        "operations": [
                             {
+                                "operation": "replace_target",
                                 "target_qualname": "Alpha.run",
                                 "file_path": "pkg/mod.py",
                                 "replacement_source": (
@@ -13838,19 +14056,31 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
         documents=(
             CodemodPlanDocument(
                 recipes=(
-                    RefactorRecipe("create-generated").create_file(
-                        generated_path.as_posix(),
-                        "class Generated:\n    def run(self):\n        return 1\n",
+                    RefactorRecipe("create-generated").with_operation(
+                        CreateFileOperation(
+                            target=SourceRewriteTarget(
+                                file_path=generated_path.as_posix()
+                            ),
+                            payload_value=(
+                                "class Generated:\n"
+                                "    def run(self):\n"
+                                "        return 1\n"
+                            ),
+                        )
                     ),
                 )
             ),
             CodemodPlanDocument(
                 recipes=(
-                    RefactorRecipe("rewrite-generated").replace_text(
-                        "Generated.run",
-                        "return 1",
-                        "return 2",
-                        source_path=generated_path.as_posix(),
+                    RefactorRecipe("rewrite-generated").with_operation(
+                        ReplaceTextOperation(
+                            target=SourceRewriteTarget(
+                                qualname="Generated.run",
+                                file_path=generated_path.as_posix(),
+                            ),
+                            old_source="return 1",
+                            new_source="return 2",
+                        )
                     ),
                 )
             ),
@@ -13894,17 +14124,25 @@ def test_codemod_sequential_report_projection_preserves_same_file_changes(
         "class Alpha:\n    value = 1\n\n\nclass Beta:\n    value = 2\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    alpha_recipe = RefactorRecipe("rewrite-alpha").replace_text(
-        "Alpha",
-        "value = 1",
-        "value = 10",
-        source_path=module_path.as_posix(),
+    alpha_recipe = RefactorRecipe("rewrite-alpha").with_operation(
+        ReplaceTextOperation(
+            target=SourceRewriteTarget(
+                qualname="Alpha",
+                file_path=module_path.as_posix(),
+            ),
+            old_source="value = 1",
+            new_source="value = 10",
+        )
     )
-    beta_recipe = RefactorRecipe("rewrite-beta").replace_text(
-        "Beta",
-        "value = 2",
-        "value = 20",
-        source_path=module_path.as_posix(),
+    beta_recipe = RefactorRecipe("rewrite-beta").with_operation(
+        ReplaceTextOperation(
+            target=SourceRewriteTarget(
+                qualname="Beta",
+                file_path=module_path.as_posix(),
+            ),
+            old_source="value = 2",
+            new_source="value = 20",
+        )
     )
     alpha_report = alpha_recipe.simulate_snapshot(snapshot).simulation
     same_base_beta_report = beta_recipe.simulate_snapshot(snapshot).simulation
@@ -13938,11 +14176,15 @@ def test_codemod_document_empty_guard_avoids_after_snapshot_rebuild(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     document = CodemodPlanDocument(
         recipes=(
-            RefactorRecipe("rewrite-alpha").replace_text(
-                "Alpha.run",
-                "return 1",
-                "return 2",
-                source_path=module_path.as_posix(),
+            RefactorRecipe("rewrite-alpha").with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname="Alpha.run",
+                        file_path=module_path.as_posix(),
+                    ),
+                    old_source="return 1",
+                    new_source="return 2",
+                )
             ),
         )
     )
@@ -13982,31 +14224,43 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
         documents=(
             CodemodPlanDocument(
                 recipes=(
-                    RefactorRecipe("rewrite-alpha-once").replace_text(
-                        "Alpha.run",
-                        "return 1",
-                        "return 2",
-                        source_path=module_path.as_posix(),
+                    RefactorRecipe("rewrite-alpha-once").with_operation(
+                        ReplaceTextOperation(
+                            target=SourceRewriteTarget(
+                                qualname="Alpha.run",
+                                file_path=module_path.as_posix(),
+                            ),
+                            old_source="return 1",
+                            new_source="return 2",
+                        )
                     ),
                 )
             ),
             CodemodPlanDocument(
                 recipes=(
-                    RefactorRecipe("rewrite-alpha-twice").replace_text(
-                        "Alpha.run",
-                        "return 2",
-                        "return 3",
-                        source_path=module_path.as_posix(),
+                    RefactorRecipe("rewrite-alpha-twice").with_operation(
+                        ReplaceTextOperation(
+                            target=SourceRewriteTarget(
+                                qualname="Alpha.run",
+                                file_path=module_path.as_posix(),
+                            ),
+                            old_source="return 2",
+                            new_source="return 3",
+                        )
                     ),
                 )
             ),
             CodemodPlanDocument(
                 recipes=(
-                    RefactorRecipe("rewrite-alpha-third").replace_text(
-                        "Alpha.run",
-                        "return 3",
-                        "return 4",
-                        source_path=module_path.as_posix(),
+                    RefactorRecipe("rewrite-alpha-third").with_operation(
+                        ReplaceTextOperation(
+                            target=SourceRewriteTarget(
+                                qualname="Alpha.run",
+                                file_path=module_path.as_posix(),
+                            ),
+                            old_source="return 3",
+                            new_source="return 4",
+                        )
                     ),
                 )
             ),
@@ -14122,21 +14376,27 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
         documents=(
             CodemodPlanDocument(
                 recipes=(
-                    RefactorRecipe("create-generated-record").create_file(
-                        generated_path.as_posix(),
-                        "from nominal_refactor_advisor.record_algebra import (\n"
-                        "    materialize_product_record,\n"
-                        "    product_record_spec,\n"
-                        ")\n\n\n"
-                        "class SemanticRecord:\n"
-                        "    pass\n\n\n"
-                        "materialize_product_record(\n"
-                        "    product_record_spec(\n"
-                        '        "GeneratedRecord",\n'
-                        '        "path: str",\n'
-                        '        "SemanticRecord",\n'
-                        "    )\n"
-                        ")\n",
+                    RefactorRecipe("create-generated-record").with_operation(
+                        CreateFileOperation(
+                            target=SourceRewriteTarget(
+                                file_path=generated_path.as_posix()
+                            ),
+                            payload_value=(
+                                "from nominal_refactor_advisor.record_algebra import (\n"
+                                "    materialize_product_record,\n"
+                                "    product_record_spec,\n"
+                                ")\n\n\n"
+                                "class SemanticRecord:\n"
+                                "    pass\n\n\n"
+                                "materialize_product_record(\n"
+                                "    product_record_spec(\n"
+                                '        "GeneratedRecord",\n'
+                                '        "path: str",\n'
+                                '        "SemanticRecord",\n'
+                                "    )\n"
+                                ")\n"
+                            ),
+                        )
                     ),
                 )
             ),
@@ -15143,10 +15403,11 @@ def test_module_cli_scaffolds_editable_replacement_plan(
     )
     scaffold_payload = json.loads(scaffold_result.stdout)
     plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
-    rewrite = plan_payload["recipes"][0]["rewrites"][0]
+    rewrite = plan_payload["recipes"][0]["operations"][0]
 
     assert scaffold_result.returncode == 0, scaffold_result.stderr
     assert scaffold_payload["selected_count"] == 1
+    assert rewrite["operation"] == "replace_target"
     assert rewrite["target_id"] is None
     assert rewrite["target_qualname"] == "Alpha.run"
     assert rewrite["file_path"] == module_path.as_posix()
@@ -15791,8 +16052,9 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                 "authority_boundaries": [
                     {
                         "boundary_id": "alpha-run",
-                        "rewrites": [
+                        "operations": [
                             {
+                                "operation": "replace_target",
                                 "target_qualname": "Alpha.run",
                                 "replacement_source": (
                                     "    def run(self, value):\n"
@@ -15820,17 +16082,16 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                     {
                         "recipe_id": "alpha-recipe",
                         "reason": "batch exact source-index rewrites",
-                        "rewrites": [
+                        "operations": [
                             {
+                                "operation": "replace_target",
                                 "target_qualname": "Alpha.run",
                                 "file_path": "pkg/mod.py",
                                 "replacement_source": (
                                     "    def run(self, value):\n"
                                     "        return AlphaRunAuthority.run(value)\n"
                                 ),
-                            }
-                        ],
-                        "operations": [
+                            },
                             {
                                 "operation": "add_class_base",
                                 "target_qualname": "Alpha",
@@ -15922,37 +16183,37 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert document.has_architecture_guards is True
     assert document.authority_boundaries[0].boundary_id == "alpha-run"
     assert document.recipes[0].recipe_id == "alpha-recipe"
-    assert document.recipes[0].rewrites[0].target.qualname == "Alpha.run"
-    assert document.recipes[0].operations[0].to_dict()["operation"] == (
+    assert document.recipes[0].operations[0].target.qualname == "Alpha.run"
+    assert document.recipes[0].operations[1].to_dict()["operation"] == (
         "add_class_base"
     )
-    assert document.recipes[0].operations[1].to_dict()["operation"] == (
+    assert document.recipes[0].operations[2].to_dict()["operation"] == (
         "delete_class_assignment"
     )
-    assert document.recipes[0].operations[2].to_dict()["operation"] == "ensure_import"
-    assert document.recipes[0].operations[3].to_dict()["operation"] == "replace_text"
-    assert document.recipes[0].operations[4].to_dict()["operation"] == "delete_target"
-    assert document.recipes[0].operations[5].to_dict()["operation"] == (
+    assert document.recipes[0].operations[3].to_dict()["operation"] == "ensure_import"
+    assert document.recipes[0].operations[4].to_dict()["operation"] == "replace_text"
+    assert document.recipes[0].operations[5].to_dict()["operation"] == "delete_target"
+    assert document.recipes[0].operations[6].to_dict()["operation"] == (
         "delete_selected_targets"
     )
-    assert document.recipes[0].operations[5].to_dict()["selector"]["selector"] == (
+    assert document.recipes[0].operations[6].to_dict()["selector"]["selector"] == (
         "source_index_target"
     )
-    assert document.recipes[0].operations[6].to_dict()["operation"] == (
+    assert document.recipes[0].operations[7].to_dict()["operation"] == (
         "apply_selected_targets"
     )
     assert (
         document.recipes[0]
-        .operations[6]
+        .operations[7]
         .to_dict()["operation_templates"][0]["operation"]
         == "replace_text"
     )
-    assert document.recipes[0].operations[7].to_dict()["operation"] == (
+    assert document.recipes[0].operations[8].to_dict()["operation"] == (
         "extract_authority"
     )
     assert (
         document.recipes[0]
-        .operations[7]
+        .operations[8]
         .to_dict()["call_replacements"][0]["new_source"]
         == "LegacyHelperAuthority().run(value)"
     )
@@ -16203,22 +16464,25 @@ def test_apply_selected_targets_builder_accepts_template_sequence(
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
-    recipe = RefactorRecipe(recipe_id="builder-selected").apply_selected_targets(
-        SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.METHOD,),
-            file_paths=(module_path.as_posix(),),
-            qualnames=("Alpha.run", "Beta.run"),
-        ),
-        (
-            RefactorRecipeOperationTemplate.from_payload(
-                {
-                    "operation": "replace_text",
-                    "old_source": "legacy(value)",
-                    "new_source": "modern(value)",
-                }
+    recipe = RefactorRecipe(recipe_id="builder-selected").with_operation(
+        ApplySelectedTargetsOperation(
+            target=SourceRewriteTarget(),
+            selector=SourceIndexTargetSelector(
+                node_kinds=(AstTargetNodeKind.METHOD,),
+                file_paths=(module_path.as_posix(),),
+                qualnames=("Alpha.run", "Beta.run"),
             ),
+            operation_templates=(
+                RefactorRecipeOperationTemplate.from_payload(
+                    {
+                        "operation": "replace_text",
+                        "old_source": "legacy(value)",
+                        "new_source": "modern(value)",
+                    }
+                ),
+            ),
+            selection_count=SelectionCountExpectation(exact=2),
         ),
-        selection_count=SelectionCountExpectation(exact=2),
     )
     assert recipe.operations[0].to_dict()["selection_count"] == {"exact": 2}
 
@@ -16322,11 +16586,15 @@ def test_extract_methods_to_class_builder_simulates_method_owner_extraction(
     source_by_path = {module_path.as_posix(): module_path.read_text()}
     recipe = RefactorRecipe(
         recipe_id="extract-method-owner",
-    ).extract_methods_to_class(
-        "SourceAuthority",
-        "ResolutionAuthority",
-        ("resolve",),
-        source_path=module_path.as_posix(),
+    ).with_operation(
+        ExtractMethodsToClassOperation(
+            target=SourceRewriteTarget(
+                qualname="SourceAuthority",
+                file_path=module_path.as_posix(),
+            ),
+            destination_class_name="ResolutionAuthority",
+            extracted_method_names=("resolve",),
+        )
     )
 
     simulation = recipe.simulate(
@@ -16577,21 +16845,25 @@ def test_apply_selected_targets_rejects_unknown_target_template_field(
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
-    recipe = RefactorRecipe(recipe_id="bad-template").apply_selected_targets(
-        SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.METHOD,),
-            file_paths=(module_path.as_posix(),),
-            qualnames=("Alpha.run",),
-        ),
-        (
-            RefactorRecipeOperationTemplate.from_payload(
-                {
-                    "operation": "replace_text",
-                    "old_source": "legacy()",
-                    "new_source": "${target.missing_field}()",
-                }
+    recipe = RefactorRecipe(recipe_id="bad-template").with_operation(
+        ApplySelectedTargetsOperation(
+            target=SourceRewriteTarget(),
+            selector=SourceIndexTargetSelector(
+                node_kinds=(AstTargetNodeKind.METHOD,),
+                file_paths=(module_path.as_posix(),),
+                qualnames=("Alpha.run",),
             ),
-        ),
+            operation_templates=(
+                RefactorRecipeOperationTemplate.from_payload(
+                    {
+                        "operation": "replace_text",
+                        "old_source": "legacy()",
+                        "new_source": "${target.missing_field}()",
+                    }
+                ),
+            ),
+            selection_count=SelectionCountExpectation(),
+        )
     )
 
     with pytest.raises(ValueError, match="Unsupported target template field"):
@@ -17326,11 +17598,15 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
             context: CodemodSelectorContext | None = None,
         ) -> RefactorRecipe | None:
             del finding, context
-            return RefactorRecipe("extract-alpha-semantic-fact").replace_text(
-                "Alpha.run",
-                "return 'old'",
-                "return 'new'",
-                source_path=module_path.as_posix(),
+            return RefactorRecipe("extract-alpha-semantic-fact").with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname="Alpha.run",
+                        file_path=module_path.as_posix(),
+                    ),
+                    old_source="return 'old'",
+                    new_source="return 'new'",
+                )
             )
 
     previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
@@ -17433,11 +17709,15 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
             context: CodemodSelectorContext | None = None,
         ) -> RefactorRecipe | None:
             del finding, context
-            return RefactorRecipe("extract-report-semantic-fact").replace_text(
-                "Report.run",
-                "return 'old'",
-                "return 'new'",
-                source_path=report_path.as_posix(),
+            return RefactorRecipe("extract-report-semantic-fact").with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname="Report.run",
+                        file_path=report_path.as_posix(),
+                    ),
+                    old_source="return 'old'",
+                    new_source="return 'new'",
+                )
             )
 
     previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
@@ -17526,11 +17806,15 @@ def test_codemod_workflow_plan_runs_goal_from_json(
             context: CodemodSelectorContext | None = None,
         ) -> RefactorRecipe | None:
             del finding, context
-            return RefactorRecipe("workflow-plan-extract-alpha").replace_text(
-                "Alpha.run",
-                "return 'old'",
-                "return 'new'",
-                source_path=module_path.as_posix(),
+            return RefactorRecipe("workflow-plan-extract-alpha").with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(
+                        qualname="Alpha.run",
+                        file_path=module_path.as_posix(),
+                    ),
+                    old_source="return 'old'",
+                    new_source="return 'new'",
+                )
             )
 
     previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
@@ -17542,7 +17826,7 @@ def test_codemod_workflow_plan_runs_goal_from_json(
                 "plan_id": "extract-alpha-goal",
                 "goal": {
                     "goal_id": "extract-alpha-goal",
-                    "kind": "nominal_boundary_extraction",
+                    "concept": "nominal_boundary",
                     "detector_ids": [detector_id],
                     "max_stages": 2,
                 },
@@ -17626,7 +17910,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
             "plan_id": "unsupported-goal",
             "goal": {
                 "goal_id": "unsupported-goal",
-                "kind": "nominal_boundary_extraction",
+                "concept": "nominal_boundary",
                 "detector_ids": [detector_id],
                 "max_stages": 1,
             },
@@ -17679,10 +17963,6 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
 
 def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalKind
-    from nominal_refactor_advisor.codemod_workflow import (
-        CodemodRefactorGoalTargetPolicy,
-    )
 
     def finding(
         detector_id: str,
@@ -17755,65 +18035,37 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
 
     goal = CodemodRefactorGoal(
         goal_id="semantic-carrier-priority",
-        kind=CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION,
+        concept_type=SemanticCarrierConcept,
     )
-    policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
     snapshot = CodemodSourceSnapshot.from_modules((), findings)
 
     with pytest.raises(ValueError, match="requires source context"):
-        policy.target_findings(goal, findings)
-    selected = policy.target_findings(goal, findings, snapshot)
+        goal.target_findings(findings)
+    selected = goal.target_findings(findings, snapshot)
     assert selected == (
         dead_compat,
         dataclass_lift,
         prefix,
     )
+    assert RefactorConcept.leaf_concept_for_declaration(
+        goal.concept_type
+    ).concept_key() == ("semantic_carrier")
     assert (
-        RefactorConcept.leaf_concept_for_declaration(type(policy)).concept_key()
-        == "semantic_carrier"
-    )
-    assert not hasattr(policy, "selectors")
-    constructor_policy = CodemodRefactorGoalTargetPolicy.policy_for(
-        CodemodRefactorGoalKind.CONSTRUCTOR_KWARG_COLLAPSE
-    )
-    assert RefactorConcept.leaf_concept_for_declaration(
-        type(constructor_policy)
-    ).concept_key() == ("constructor_kwarg_collapse")
-    tuple_dict_policy = CodemodRefactorGoalTargetPolicy.policy_for(
-        CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION
-    )
-    assert RefactorConcept.leaf_concept_for_declaration(
-        type(tuple_dict_policy)
-    ).concept_key() == ("tuple_dict_return_nominalization")
-    tuple_dict_goal = CodemodRefactorGoal(
-        goal_id="tuple-dict",
-        kind=CodemodRefactorGoalKind.TUPLE_DICT_RETURN_NOMINALIZATION,
-    )
-    assert tuple_dict_policy.target_findings(tuple_dict_goal, findings, snapshot) == ()
-    assert CodemodRefactorGoalTargetPolicy.policy_for(
-        CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION
-    ).target_findings(
         CodemodRefactorGoal(
-            goal_id="prefix",
-            kind=CodemodRefactorGoalKind.PREFIX_BUNDLE_EXTRACTION,
-        ),
-        findings,
-        snapshot,
-    ) == (
-        prefix,
+            goal_id="tuple-dict",
+            concept_type=TupleDictReturnNominalizationConcept,
+        ).target_findings(findings, snapshot)
+        == ()
     )
-    assert CodemodRefactorGoalTargetPolicy.policy_for(
-        CodemodRefactorGoalKind.DEAD_COMPATIBILITY_ERASER
-    ).target_findings(
-        CodemodRefactorGoal(
-            goal_id="dead-compat",
-            kind=CodemodRefactorGoalKind.DEAD_COMPATIBILITY_ERASER,
-        ),
-        findings,
-        snapshot,
-    ) == (
-        dead_compat,
-    )
+    assert CodemodRefactorGoal(
+        goal_id="prefix",
+        concept_type=PrefixBundleCarrierConcept,
+    ).target_findings(findings, snapshot) == (prefix,)
+    assert CodemodRefactorGoal(
+        goal_id="dead-compat",
+        concept_type=DeadCompatibilityErasureConcept,
+    ).target_findings(findings, snapshot) == (dead_compat,)
+    assert ConstructorKwargCollapseConcept.concept_key() == "constructor_kwarg_collapse"
 
 
 def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
@@ -17847,7 +18099,7 @@ def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
             tmp_path.as_posix(),
             "--no-cache",
             "--codemod-refactor-goal",
-            "nominal_boundary_extraction",
+            "nominal_boundary",
             "--codemod-goal-detector",
             "runtime_product_record_schema",
             "--codemod-goal-plan-out",
@@ -18370,8 +18622,8 @@ def test_finding_recipe_plan_merges_overlapping_role_case_module_rewrites(
     assert {record.refactor_concept for record in plan.records} == {
         "role_case_authority"
     }
-    assert len(plan.document.recipes[0].rewrites) == 1
-    projected_rewrite = plan.document.recipes[0].rewrites[0]
+    assert len(simulation.simulation.rewrites) == 1
+    projected_rewrite = simulation.simulation.rewrites[0]
     assert len(projected_rewrite.contributors) >= 2
     assert (
         len({contributor.recipe_id for contributor in projected_rewrite.contributors})
@@ -18651,12 +18903,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodPlanSequenceSimulation
     from nominal_refactor_advisor import CodemodProjectedFindingReport
     from nominal_refactor_advisor import CodemodRefactorGoal
-    from nominal_refactor_advisor import CodemodRefactorGoalKind
     from nominal_refactor_advisor import CodemodRefactorGoalProgress
     from nominal_refactor_advisor import CodemodRefactorGoalReport
     from nominal_refactor_advisor import CodemodRefactorGoalRunner
     from nominal_refactor_advisor import CodemodRefactorGoalStage
-    from nominal_refactor_advisor import CodemodRefactorGoalTargetPolicy
     from nominal_refactor_advisor import CodemodRefactorGoalWorkflowPlan
     from nominal_refactor_advisor import CodemodWorkflowStopReason
     from nominal_refactor_advisor import CodemodSimulationFindingProjection
@@ -18670,17 +18920,11 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import ParseCacheRequest
     from nominal_refactor_advisor import FindingRecipeClassPlan
     from nominal_refactor_advisor import FindingRecipeClassPlanReport
-    from nominal_refactor_advisor import BoundarySourceContextRewriteGoalTargetPolicy
-    from nominal_refactor_advisor import ConstructorKwargCollapseGoalTargetPolicy
-    from nominal_refactor_advisor import DataclassInheritanceLiftGoalTargetPolicy
-    from nominal_refactor_advisor import DeadCompatibilityEraserGoalTargetPolicy
-    from nominal_refactor_advisor import NominalBoundaryExtractionGoalTargetPolicy
-    from nominal_refactor_advisor import PrefixBundleExtractionGoalTargetPolicy
+    from nominal_refactor_advisor import NominalBoundaryConcept
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
-    from nominal_refactor_advisor import SemanticCarrierExtractionGoalTargetPolicy
+    from nominal_refactor_advisor import ReplaceTargetOperation
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
-    from nominal_refactor_advisor import TupleDictReturnNominalizationGoalTargetPolicy
 
     assert CodemodPlanJsonParser().recipes({}) == ()
     delta = CodemodFindingDelta(
@@ -18731,54 +18975,15 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert not hasattr(nra, "CodemodRefactorGoalFindingSelector")
     assert not hasattr(nra, "CodemodRefactorGoalSelectorCoverage")
     assert not hasattr(nra, "CodemodRefactorGoalSelectorManifest")
-    assert (
-        CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION.value
-        == "nominal_boundary_extraction"
-    )
-    assert (
-        CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION.value
-        == "semantic_carrier_extraction"
-    )
-    assert CodemodRefactorGoalKind.default() is (
-        CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
-    )
-    assert CodemodRefactorGoal(goal_id="default-carrier").kind is (
-        CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
+    assert CodemodRefactorGoal(goal_id="default-carrier").concept_type is (
+        SemanticCarrierConcept
     )
     assert CodemodRefactorGoalProgress.__name__ == "CodemodRefactorGoalProgress"
     assert CodemodRefactorGoalReport.__name__ == "CodemodRefactorGoalReport"
     assert CodemodRefactorGoalRunner.__name__ == "CodemodRefactorGoalRunner"
     assert CodemodRefactorGoalStage.__name__ == "CodemodRefactorGoalStage"
-    assert (
-        CodemodRefactorGoalTargetPolicy.policy_for(
-            CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
-        ).__class__
-        is NominalBoundaryExtractionGoalTargetPolicy
-    )
-    assert (
-        CodemodRefactorGoalTargetPolicy.policy_for(
-            CodemodRefactorGoalKind.SEMANTIC_CARRIER_EXTRACTION
-        ).__class__
-        is SemanticCarrierExtractionGoalTargetPolicy
-    )
-    assert PrefixBundleExtractionGoalTargetPolicy.__name__ == (
-        "PrefixBundleExtractionGoalTargetPolicy"
-    )
-    assert DataclassInheritanceLiftGoalTargetPolicy.__name__ == (
-        "DataclassInheritanceLiftGoalTargetPolicy"
-    )
-    assert ConstructorKwargCollapseGoalTargetPolicy.__name__ == (
-        "ConstructorKwargCollapseGoalTargetPolicy"
-    )
-    assert TupleDictReturnNominalizationGoalTargetPolicy.__name__ == (
-        "TupleDictReturnNominalizationGoalTargetPolicy"
-    )
-    assert BoundarySourceContextRewriteGoalTargetPolicy.__name__ == (
-        "BoundarySourceContextRewriteGoalTargetPolicy"
-    )
-    assert DeadCompatibilityEraserGoalTargetPolicy.__name__ == (
-        "DeadCompatibilityEraserGoalTargetPolicy"
-    )
+    assert NominalBoundaryConcept.concept_key() == "nominal_boundary"
+    assert ReplaceTargetOperation.operation_key() == "replace_target"
     assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
     assert CodemodWorkflowReport.__name__ == "CodemodWorkflowReport"
     assert CodemodWorkflowPlan.__name__ == "CodemodWorkflowPlan"

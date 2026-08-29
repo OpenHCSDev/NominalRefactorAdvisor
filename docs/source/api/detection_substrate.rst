@@ -14,13 +14,14 @@ Detector Base Classes
 Planning Substrate
 ------------------
 
-Planning metadata is carried by ``PATTERN_SPECS`` in
+Planning metadata is carried by ``PatternId`` members in
 :mod:`nominal_refactor_advisor.patterns`. The planner module provides the
 subsystem-level composition surface that consumes that metadata.
 
 For maintainers, the important split is:
 
-- ``PATTERN_SPECS`` defines dependencies, synergy, and builder selection
+- each ``PatternId`` member defines its dependencies, synergy, phase, and metadata
+- the registered planner builder families derive specialised behaviour directly from ``PatternId`` keys
 - ``build_refactor_plans`` clusters findings and materializes plan output
 - the planner module's internal builder families turn pattern metadata into
   concrete plan steps and action records

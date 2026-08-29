@@ -22,7 +22,7 @@ python -m sphinx -b html docs/source docs/_build/html
 
 The docs are intentionally code-derived where possible:
 
-- pattern docs are generated from `PATTERN_SPECS`
+- pattern docs are generated from `PatternId` declarations
 - detector docs are generated from the registered `IssueDetector` family
 
 Start with:

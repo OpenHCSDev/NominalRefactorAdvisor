@@ -6,17 +6,21 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
+    CodemodPlanDocument,
     CodemodSourceSnapshot,
+    EnsureImportOperation,
     ImportNameRemoval,
     ImportFromModuleName,
     ModuleImportMutation,
     NominalSourceEdit,
     PhysicalSourceEdit,
     RefactorRecipe,
+    ReplaceFieldsWithCarrierOperation,
     SourceEditOrigin,
     SourceFileCreation,
     SourceInsertion,
     SourceSpanReplacement,
+    SourceRewriteTarget,
 )
 
 
@@ -185,13 +189,25 @@ def test_compiler_unions_imports_and_carrier_projection_stays_granular(
     )
     recipe = (
         RefactorRecipe("typed-source-edits")
-        .ensure_import(module_path.as_posix(), "from pkg.types import Alpha\n")
-        .ensure_import(module_path.as_posix(), "from pkg.types import Beta\n")
-        .replace_fields_with_carrier(
-            module_path.as_posix(),
-            class_name="Candidate",
-            carrier_field_declaration="stats: Stats",
-            field_projection_pairs=("count=count",),
+        .with_operation(
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                payload_value="from pkg.types import Alpha\n",
+            )
+        )
+        .with_operation(
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                payload_value="from pkg.types import Beta\n",
+            )
+        )
+        .with_operation(
+            ReplaceFieldsWithCarrierOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                class_name="Candidate",
+                carrier_field_declaration="stats: Stats",
+                field_projection_pairs=("count=count",),
+            )
         )
     )
     carrier_edits = recipe.operations[-1].source_edits(
@@ -216,3 +232,47 @@ def test_compiler_unions_imports_and_carrier_projection_stays_granular(
     assert "Alpha" in rewritten
     assert "Beta" in rewritten
     assert "stats: Stats" in rewritten
+
+
+def test_plan_parser_rejects_obsolete_parallel_rewrite_surface() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported refactor recipe field\(s\): 'rewrites'",
+    ):
+        CodemodPlanDocument.from_json_value(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "obsolete-rewrite-lane",
+                        "rewrites": [
+                            {
+                                "target_qualname": "Alpha.run",
+                                "replacement_source": "def run(self): pass\n",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported replace_target operation field\(s\): 'legacy_target'",
+    ):
+        CodemodPlanDocument.from_json_value(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "unknown-operation-field",
+                        "operations": [
+                            {
+                                "operation": "replace_target",
+                                "target_qualname": "Alpha.run",
+                                "replacement_source": "def run(self): pass\n",
+                                "legacy_target": "Alpha.run",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )

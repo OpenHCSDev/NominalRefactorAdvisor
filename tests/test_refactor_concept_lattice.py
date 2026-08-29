@@ -13,6 +13,7 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 EXPECTED_CONCEPT_DECLARATIONS = frozenset(
     {
         codemod.RefactorConcept,
+        codemod.NominalBoundaryConcept,
         codemod.SemanticCarrierConcept,
         codemod.PrefixBundleCarrierConcept,
         codemod.DataclassInheritanceLiftConcept,

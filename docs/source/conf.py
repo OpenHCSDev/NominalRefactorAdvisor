@@ -29,9 +29,11 @@ exclude_patterns = ["_build", "api/_generated"]
 autosummary_generate = True
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
+autodoc_typehints_format = "fully-qualified"
 autodoc_class_signature = "mixed"
 autodoc_inherit_docstrings = False
 add_module_names = False
+nitpick_ignore = [("py:class", "PatternId")]
 
 html_theme = "alabaster"
 

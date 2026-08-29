@@ -9,13 +9,10 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
+    NominalBoundaryConcept,
     codemod_plan_from_findings,
 )
-from nominal_refactor_advisor.codemod_workflow import (
-    CodemodRefactorGoal,
-    CodemodRefactorGoalKind,
-    CodemodRefactorGoalTargetPolicy,
-)
+from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
 from nominal_refactor_advisor.detectors import (
     DetectorCacheGranularity,
     DetectorConfig,
@@ -895,9 +892,8 @@ def test_nominal_boundary_goal_targets_all_ssot_authority_findings_by_default() 
     findings = (mirror_finding, non_mirror_ssot_finding, ordinary_finding)
     goal = CodemodRefactorGoal(
         goal_id="semantic-descent",
-        kind=CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION,
+        concept_type=NominalBoundaryConcept,
     )
-    target_policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
 
     assert (
         non_mirror_ssot_finding.detector_id
@@ -907,9 +903,10 @@ def test_nominal_boundary_goal_targets_all_ssot_authority_findings_by_default() 
         non_mirror_ssot_finding.detector_id
         not in IssueDetector.semantic_mirror_detector_ids()
     )
-    assert tuple(
-        finding.detector_id for finding in target_policy.target_findings(goal, findings)
-    ) == ("semantic_mirror_without_descent", "repeated_builder_calls")
+    assert tuple(finding.detector_id for finding in goal.target_findings(findings)) == (
+        "semantic_mirror_without_descent",
+        "repeated_builder_calls",
+    )
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(
@@ -2215,8 +2212,9 @@ def test_identity_keyword_forwarding_shell_synthesizes_inline_delete_recipe(
         plan.records[0].executable_declaration_name
         == "IdentityKeywordForwardingShellFindingRecipeSynthesizer"
     )
-    assert len(recipe["rewrites"]) == 1
-    assert recipe["operations"] == ()
+    assert [operation["operation"] for operation in recipe["operations"]] == [
+        "replace_target",
+    ]
     assert "def item" not in rewritten
     assert "return (SupportItem(name=name, value=value),)" in rewritten
     assert "return SupportItem(name=name, value=value)" in rewritten
@@ -2319,7 +2317,12 @@ def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
     assert (
         plan.records[0].executable_declaration_name == "RepeatedBuilderAuthorityMethod"
     )
-    assert len(recipe["rewrites"]) == 4
+    assert [operation["operation"] for operation in recipe["operations"]] == [
+        "replace_target",
+        "replace_target",
+        "replace_target",
+        "replace_target",
+    ]
     assert "def from_sources(" in rewritten
     assert rewritten.count("BranchItem.from_sources(") == 3
     assert "return cls(" in rewritten
@@ -2896,6 +2899,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert record.semantic_repair_plan.repair_kind == "mapping"
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
         "replace_text",
+        "replace_target",
     )
     assert "def payload_from_field_values(cls, **values)" in rewritten_source
     assert "**RefactorAction.payload_from_field_values(" in rewritten_source
@@ -3054,6 +3058,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
         "ensure_import",
         "replace_text",
+        "replace_target",
     )
     assert "def payload_from_field_values(cls, **values)" in rewritten_model
     assert "from .model import RefactorAction" in rewritten_report
@@ -3292,23 +3297,22 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     simulation = plan.simulate_snapshot(snapshot)
     recipe_payload = plan.document.to_dict()["recipes"][0]
     operations = recipe_payload["operations"]
-    rewrites = recipe_payload["rewrites"]
 
     assert plan.records[0].status.value == "planned"
     assert simulation.is_clean is True
-    assert len(rewrites) == 1
     assert (
         "def actionable_confidence_levels(cls) -> frozenset[str]"
-        in rewrites[0]["replacement_source"]
+        in operations[0]["replacement_source"]
     )
     assert [operation["operation"] for operation in operations] == [
+        "replace_target",
         "ensure_import",
         "replace_module_assignment",
     ]
     assert (
-        operations[0]["import_source"] == "from pkg.taxonomy import ConfidenceLevel\n"
+        operations[1]["import_source"] == "from pkg.taxonomy import ConfidenceLevel\n"
     )
-    assert operations[1]["source"] == (
+    assert operations[2]["source"] == (
         "_ACTIONABLE_CONFIDENCE_LEVELS = ConfidenceLevel.actionable_confidence_levels()"
     )
 
@@ -3879,7 +3883,12 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
     )
 
     assert plan.records[0].status.value == "planned"
-    assert plan.document.recipes[0].operations[0].to_dict()["import_source"] == (
+    import_operation = next(
+        operation
+        for operation in plan.document.recipes[0].operations
+        if operation.operation_key() == "ensure_import"
+    )
+    assert import_operation.to_dict()["import_source"] == (
         "from pkg.taxonomy import ConfidenceLevel\n"
     )
 

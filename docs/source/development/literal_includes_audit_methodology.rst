@@ -12,7 +12,7 @@ hand-maintained symbol lists.
 
 In this repository that means:
 
-- generated pattern docs come from ``PATTERN_SPECS``
+- generated pattern docs come from ``PatternId`` declarations
 - generated detector docs come from the registered ``IssueDetector`` family
 - API pages use ``automodule`` and object references for stable roots
 - development pages explain rationale and maintenance procedure rather than

@@ -5,7 +5,11 @@ from typing import Iterable
 
 from nominal_refactor_advisor.detectors import IssueDetector
 from nominal_refactor_advisor.models import FindingSpec
-from nominal_refactor_advisor.patterns import PATTERN_SPECS, PatternSpec
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.planner import (
+    PatternActionBuilder,
+    PatternPlanStepBuilder,
+)
 
 
 def generate_api_reference_pages(source_dir: Path) -> None:
@@ -14,9 +18,7 @@ def generate_api_reference_pages(source_dir: Path) -> None:
     detector_types = IssueDetector.registered_detector_types()
     _write_if_changed(
         generated_dir / "pattern_catalog.rst",
-        _render_pattern_catalog(
-            sorted(PATTERN_SPECS.values(), key=lambda item: item.pattern_id.value)
-        ),
+        _render_pattern_catalog(list(PatternId)),
     )
     _write_if_changed(
         generated_dir / "detector_catalog.rst", _render_detector_catalog(detector_types)
@@ -27,6 +29,14 @@ def generate_api_reference_pages(source_dir: Path) -> None:
     )
     detector_reference_dir = source_dir / "api" / "detector_reference"
     detector_reference_dir.mkdir(parents=True, exist_ok=True)
+    detector_reference_paths = {
+        detector_reference_dir / f"{detector_type.detector_id}.rst"
+        for detector_type in detector_types
+    }
+    for stale_path in (
+        set(detector_reference_dir.glob("*.rst")) - detector_reference_paths
+    ):
+        stale_path.unlink()
     for detector_type in detector_types:
         _write_if_changed(
             detector_reference_dir / f"{detector_type.detector_id}.rst",
@@ -34,12 +44,12 @@ def generate_api_reference_pages(source_dir: Path) -> None:
         )
 
 
-def _render_pattern_catalog(patterns: list[PatternSpec]) -> str:
+def _render_pattern_catalog(patterns: list[PatternId]) -> str:
     lines = [
-        ".. This file is generated from nominal_refactor_advisor.patterns.PATTERN_SPECS.",
+        ".. This file is generated from nominal_refactor_advisor.patterns.PatternId.",
         ".. Do not edit manually.",
         "",
-        "This catalog is generated from ``nominal_refactor_advisor.patterns.PATTERN_SPECS``.",
+        "This catalog is generated from ``nominal_refactor_advisor.patterns.PatternId``.",
         "The code metadata remains the authoritative source; this page is only a rendered view.",
         "",
         "Summary",
@@ -57,20 +67,16 @@ def _render_pattern_catalog(patterns: list[PatternSpec]) -> str:
     ]
     for pattern in patterns:
         dependencies = _pattern_id_list(pattern.dependencies) or "None"
-        plan_builder = (
-            f"``{pattern.plan_step_builder_id.value}``"
-            if pattern.plan_step_builder_id is not None
-            else "None"
+        plan_builder = _registered_builder_name(
+            PatternPlanStepBuilder.__registry__, pattern
         )
-        action_builder = (
-            f"``{pattern.action_builder_id.value}``"
-            if pattern.action_builder_id is not None
-            else "None"
+        action_builder = _registered_builder_name(
+            PatternActionBuilder.__registry__, pattern
         )
         lines.extend(
             [
-                f"   * - ``{pattern.pattern_id.value}``",
-                f"     - {pattern.name}",
+                f"   * - ``{pattern.value}``",
+                f"     - {pattern.display_name}",
                 f"     - ``{pattern.priority}``",
                 f"     - {dependencies}",
                 f"     - {plan_builder}",
@@ -79,7 +85,7 @@ def _render_pattern_catalog(patterns: list[PatternSpec]) -> str:
         )
     lines.extend(["", "Patterns", "--------", ""])
     for pattern in patterns:
-        title = f"Pattern {pattern.pattern_id.value}: {pattern.name}"
+        title = f"Pattern {pattern.value}: {pattern.display_name}"
         lines.extend(
             [
                 title,
@@ -91,16 +97,8 @@ def _render_pattern_catalog(patterns: list[PatternSpec]) -> str:
                 f":Dependencies: {_pattern_id_list(pattern.dependencies) or 'None'}",
                 f":Synergy: {_pattern_id_list(pattern.synergy_with) or 'None'}",
                 f":Witness capabilities: {_capability_list(pattern.witness_capabilities) or 'None'}",
-                (
-                    f":Plan builder: ``{pattern.plan_step_builder_id.value}``"
-                    if pattern.plan_step_builder_id is not None
-                    else ":Plan builder: None"
-                ),
-                (
-                    f":Action builder: ``{pattern.action_builder_id.value}``"
-                    if pattern.action_builder_id is not None
-                    else ":Action builder: None"
-                ),
+                f":Plan builder: {_registered_builder_name(PatternPlanStepBuilder.__registry__, pattern)}",
+                f":Action builder: {_registered_builder_name(PatternActionBuilder.__registry__, pattern)}",
                 "",
                 "First moves:",
                 "",
@@ -117,6 +115,15 @@ def _render_pattern_catalog(patterns: list[PatternSpec]) -> str:
                 lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _registered_builder_name(
+    registry: dict[PatternId, type],
+    pattern: PatternId,
+) -> str:
+    if pattern not in registry:
+        return "None"
+    return f"``{registry[pattern].__name__}``"
 
 
 def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) -> str:
@@ -242,10 +249,10 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
                 "-------------------------",
                 "",
                 f":Pattern: ``{finding_spec.pattern_id.value}``",
-                f":Title: {finding_spec.title}",
-                f":Why: {finding_spec.why}",
-                f":Capability gap: {finding_spec.capability_gap}",
-                f":Relation context: {finding_spec.relation_context}",
+                f":Title: {_rst_field_value(finding_spec.title)}",
+                f":Why: {_rst_field_value(finding_spec.why)}",
+                f":Capability gap: {_rst_field_value(finding_spec.capability_gap)}",
+                f":Relation context: {_rst_field_value(finding_spec.relation_context)}",
                 f":Default confidence: ``{finding_spec.confidence.name}``",
                 f":Default certification: ``{finding_spec.certification.name}``",
                 (
@@ -276,6 +283,10 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
 
 def _pattern_id_list(pattern_ids: Iterable[object]) -> str:
     return ", ".join((f"``{pattern_id.value}``" for pattern_id in pattern_ids))
+
+
+def _rst_field_value(value: str) -> str:
+    return value.replace("**", r"\*\*")
 
 
 def _capability_list(capabilities: Iterable[object]) -> str:

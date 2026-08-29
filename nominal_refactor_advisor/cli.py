@@ -89,6 +89,7 @@ from .codemod import (
     NEW_SOURCE_PAYLOAD_FIELD,
     OLD_SOURCE_PAYLOAD_FIELD,
     PlannedSourceRewrite,
+    RefactorConcept,
     RefactorRecipeOperationPlanTemplate,
     RefactorRecipeOperationTemplate,
     ReplaceTextOperation,
@@ -108,7 +109,6 @@ from .codemod_workflow import (
     CodemodFixpointScan,
     CodemodProjectedFindingReport,
     CodemodRefactorGoal,
-    CodemodRefactorGoalKind,
     CodemodRefactorGoalReport,
     CodemodSimulationFindingProjection,
     CodemodWorkflowPlan,
@@ -133,7 +133,7 @@ from .impact_ranking import (
 )
 from .models import RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
-from .patterns import PATTERN_SPECS, PatternId
+from .patterns import PatternId
 from .planner import (
     RefactorExecutionPlanLoopProjection,
     RefactorExecutionPlanReport,
@@ -718,7 +718,10 @@ _CLI_ARGUMENT_SPECS = (
             value_type=str,
             help=(
                 "Run a goal-directed staged DSL refactor. Supported goals: "
-                + ", ".join(kind.value for kind in CodemodRefactorGoalKind)
+                + ", ".join(
+                    concept_type.concept_key()
+                    for concept_type in RefactorConcept.declaration_types()
+                )
                 + "."
             ),
         ),
@@ -794,7 +797,7 @@ class JsonFindingCounts:
             "by_pattern": tuple(
                 {
                     "pattern_id": pattern_id,
-                    "pattern_name": PATTERN_SPECS[PatternId(pattern_id)].name,
+                    "pattern_name": PatternId(pattern_id).display_name,
                     "count": count,
                 }
                 for pattern_id, count in (
@@ -2113,16 +2116,19 @@ def codemod_refactor_goal_from_args(
     """Build the high-level codemod goal requested by CLI flags."""
 
     try:
-        goal_kind = CodemodRefactorGoalKind(args.codemod_refactor_goal)
+        concept_type = RefactorConcept.declaration_for_key(args.codemod_refactor_goal)
     except ValueError as error:
-        choices = ", ".join(item.value for item in CodemodRefactorGoalKind)
+        choices = ", ".join(
+            declaration.concept_key()
+            for declaration in RefactorConcept.declaration_types()
+        )
         raise ValueError(
             f"unknown codemod refactor goal {args.codemod_refactor_goal!r}; "
             f"choose one of {choices}"
         ) from error
     return CodemodRefactorGoal(
-        goal_id=goal_kind.value,
-        kind=goal_kind,
+        goal_id=concept_type.concept_key(),
+        concept_type=concept_type,
         target_finding_ids=tuple(args.codemod_goal_finding_ids),
         detector_ids=tuple(args.codemod_goal_detectors),
         pattern_ids=tuple(args.codemod_goal_patterns),
@@ -2162,7 +2168,7 @@ def format_plans_markdown(plans: list[RefactorPlan]) -> str:
     lines = ["Subsystem plans:"]
     for index, plan in enumerate(plans, start=1):
         pattern_sequence = plan.pattern_sequence
-        primary = PATTERN_SPECS[pattern_sequence.primary_pattern_id]
+        primary = pattern_sequence.primary_pattern_id
         order = " -> ".join(
             (
                 f"Pattern {pattern_id.value}"
@@ -2172,12 +2178,12 @@ def format_plans_markdown(plans: list[RefactorPlan]) -> str:
         lines.append(f"{index}. {plan.subsystem}")
         lines.append(f"   - Summary: {plan.summary}")
         lines.append(
-            f"   - Primary pattern: Pattern {primary.pattern_id.value}: {primary.name}"
+            f"   - Primary pattern: Pattern {primary.value}: {primary.display_name}"
         )
         if pattern_sequence.secondary_pattern_ids:
             secondary = ", ".join(
                 (
-                    f"Pattern {pattern_id.value}: {PATTERN_SPECS[pattern_id].name}"
+                    f"Pattern {pattern_id.value}: {pattern_id.display_name}"
                     for pattern_id in pattern_sequence.secondary_pattern_ids
                 )
             )
@@ -2257,7 +2263,7 @@ def format_execution_plan_markdown(
     ]
     for index, execution_class in enumerate(execution_plan.classes, start=1):
         pattern_sequence = execution_class.pattern_sequence
-        primary = PATTERN_SPECS[pattern_sequence.primary_pattern_id]
+        primary = pattern_sequence.primary_pattern_id
         order = " -> ".join(
             (
                 f"Pattern {pattern_id.value}"
@@ -2282,7 +2288,7 @@ def format_execution_plan_markdown(
             f"{execution_class.symbol_root_count} symbol root(s)"
         )
         lines.append(
-            f"   - Primary pattern: Pattern {primary.pattern_id.value}: {primary.name}"
+            f"   - Primary pattern: Pattern {primary.value}: {primary.display_name}"
         )
         lines.append(f"   - Application order: {order}")
         lines.append(f"   - First batch move: {execution_class.first_batch_move}")
@@ -2555,10 +2561,10 @@ class MarkdownReportRenderer(ABC):
             return "No refactoring findings."
         lines: list[str] = []
         for index, finding in enumerate(findings, start=1):
-            pattern = PATTERN_SPECS[finding.pattern_id]
+            pattern = finding.pattern_id
             lines.append(f"{index}. {finding.title}")
             lines.append(f"   - Stable id: {finding.stable_id}")
-            lines.append(f"   - Pattern {pattern.pattern_id.value}: {pattern.name}")
+            lines.append(f"   - Pattern {pattern.value}: {pattern.display_name}")
             lines.append(f"   - Summary: {finding.summary}")
             lines.append(f"   - Capability gap: {finding.capability_gap}")
             lines.append(f"   - Prescription: {pattern.prescription}")

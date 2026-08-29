@@ -82,7 +82,7 @@ For downstream use, treat these as the main supported surfaces:
 - ``analyze_path`` for finding generation
 - ``plan_path`` and ``build_refactor_plans`` for composed plan synthesis
 - ``AnalysisReport``, ``RefactorFinding``, and ``RefactorPlan`` for results
-- ``PATTERN_SPECS`` for canonical pattern metadata
+- ``PatternId`` for canonical pattern identity and metadata
 
 How To Read The Rest Of The Docs
 --------------------------------

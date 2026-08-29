@@ -16,13 +16,12 @@ import hashlib
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
-from typing import Callable, ClassVar, Generic, Hashable, Sequence, TypeVar
+from typing import Callable, ClassVar, Hashable, Sequence, TypeVar
 
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .deadline import scan_deadline_checkpoint
 from .detectors import IssueDetector
 from .factorization import RefactorMove, RefactorPhase, RefactorTrajectorySearch
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .registry_normal_form import RegistryNormalFormPolicy
 from .models import (
     CERTIFIED,
@@ -39,8 +38,7 @@ from .models import (
     SourceLocation,
 )
 from metaclass_registry import AutoRegisterMeta
-from .patterns import PATTERN_SPECS, ActionBuilderId, PatternId, PlanStepBuilderId
-from .semantic_shape_algebra import ExhaustivePolicyCatalog
+from .patterns import PatternId
 from .semantic_description_length import CompressionCertificate, SemanticCostVector
 from .taxonomy import (
     CapabilityTag,
@@ -66,12 +64,6 @@ class _FindingCluster:
             findings=findings,
             evidence=_FINDING_PROJECTION.combined_evidence(findings),
         )
-
-
-@dataclass(frozen=True)
-class _PatternTrajectoryPolicy:
-    pattern_id: PatternId
-    phase: RefactorPhase
 
 
 @dataclass(frozen=True)
@@ -146,68 +138,6 @@ class RefactorExecutionPlanLoopProjection(RefactorExecutionPlanReport):
         )
 
 
-_PATTERN_TRAJECTORY_POLICY_ROWS = (
-    _PatternTrajectoryPolicy(PatternId.NOMINAL_BOUNDARY, RefactorPhase.NORMALIZE),
-    _PatternTrajectoryPolicy(PatternId.DISCRIMINATED_UNION, RefactorPhase.NORMALIZE),
-    _PatternTrajectoryPolicy(
-        PatternId.CLOSED_FAMILY_DISPATCH, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(PatternId.CONFIG_CONTRACTS, RefactorPhase.NORMALIZE),
-    _PatternTrajectoryPolicy(
-        PatternId.ABC_TEMPLATE_METHOD, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.AUTO_REGISTER_META, RefactorPhase.ESTABLISH_OWNER
-    ),
-    _PatternTrajectoryPolicy(PatternId.TYPE_LINEAGE, RefactorPhase.NORMALIZE),
-    _PatternTrajectoryPolicy(PatternId.DUAL_AXIS_RESOLUTION, RefactorPhase.NAME_AXIS),
-    _PatternTrajectoryPolicy(
-        PatternId.VIRTUAL_MEMBERSHIP, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.DYNAMIC_INTERFACE, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.SENTINEL_TYPE_MARKER, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.TYPE_NAMESPACE_INJECTION, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.BIDIRECTIONAL_LOOKUP, RefactorPhase.ESTABLISH_OWNER
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.AUTHORITATIVE_SCHEMA, RefactorPhase.ESTABLISH_OWNER
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.STAGED_ORCHESTRATION, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(PatternId.AUTHORITATIVE_CONTEXT, RefactorPhase.NAME_AXIS),
-    _PatternTrajectoryPolicy(
-        PatternId.NOMINAL_STRATEGY_FAMILY, RefactorPhase.NAME_AXIS
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.DESCRIPTOR_DERIVED_VIEW, RefactorPhase.DELETE_SHADOW
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.NOMINAL_INTERFACE_WITNESS, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.NOMINAL_WITNESS_CARRIER, RefactorPhase.DERIVE_AUTHORITY
-    ),
-    _PatternTrajectoryPolicy(
-        PatternId.LOCAL_VALUE_AUTHORITY, RefactorPhase.DELETE_SHADOW
-    ),
-)
-
-
-_PATTERN_TRAJECTORY_POLICY_CATALOG = ExhaustivePolicyCatalog.for_enum(
-    PatternId,
-    _PATTERN_TRAJECTORY_POLICY_ROWS,
-    lambda row: row.pattern_id,
-)
-
-
 @dataclass(frozen=True)
 class RegistryNormalFormPolicyCatalog:
     policies_by_detector_id: dict[str, RegistryNormalFormPolicy]
@@ -241,34 +171,16 @@ _REGISTRY_NORMAL_FORM_POLICY_CATALOG = (
 )
 
 
-_RegistryKeyT = TypeVar("_RegistryKeyT", bound=Hashable)
-_RegisteredBuilderT = TypeVar("_RegisteredBuilderT", bound="RegisteredBuilderFamily")
-
-
-class RegisteredBuilderFamily(Generic[_RegistryKeyT]):
-    __registry__: dict[Hashable, type]
-    __registry_key__: str
+class PatternPlanStepBuilder(ABC, metaclass=AutoRegisterMeta):
+    __registry__: ClassVar[dict[PatternId, type["PatternPlanStepBuilder"]]] = {}
+    __registry_key__ = "pattern_id"
+    __skip_if_no_key__ = True
 
     @classmethod
-    def instances_by_registry_key(
-        cls: type[_RegisteredBuilderT], key_type: type[_RegistryKeyT]
-    ) -> dict[_RegistryKeyT, _RegisteredBuilderT]:
-        key_attribute = cls.__registry_key__
-        return {
-            registered_type.__dict__[key_attribute]: registered_type()
-            for registered_type in cls.__registry__.values()
-            if key_attribute in registered_type.__dict__
-            if isinstance(registered_type.__dict__[key_attribute], key_type)
-        }
-
-
-class PatternPlanStepBuilder(
-    RegisteredBuilderFamily[PlanStepBuilderId], ABC, metaclass=AutoRegisterMeta
-):
-    __registry__ = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
+    def for_pattern(cls, pattern_id: PatternId) -> "PatternPlanStepBuilder":
+        if pattern_id in cls.__registry__:
+            return cls.__registry__[pattern_id]()
+        return GenericPatternPlanStepBuilder()
 
     @abstractmethod
     def build(
@@ -287,14 +199,14 @@ class GenericPatternPlanStepBuilder(PatternPlanStepBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
-        pattern = PATTERN_SPECS[pattern_id]
         return (
-            f"Apply Pattern {pattern_id.value} in `{subsystem}`: {pattern.prescription}"
+            f"Apply Pattern {pattern_id.value} in `{subsystem}`: "
+            f"{pattern_id.prescription}"
         )
 
 
 class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
-    registry_key = PlanStepBuilderId.TEMPLATE_METHOD
+    pattern_id = PatternId.ABC_TEMPLATE_METHOD
 
     def build(
         self,
@@ -314,7 +226,7 @@ class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class AutoRegisterPlanStepBuilder(PatternPlanStepBuilder):
-    registry_key = PlanStepBuilderId.AUTO_REGISTER
+    pattern_id = PatternId.AUTO_REGISTER_META
 
     def build(
         self,
@@ -327,7 +239,7 @@ class AutoRegisterPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class AuthoritativeMappingPlanStepBuilder(PatternPlanStepBuilder):
-    registry_key = PlanStepBuilderId.AUTHORITATIVE_MAPPING
+    pattern_id = PatternId.AUTHORITATIVE_SCHEMA
 
     def build(
         self,
@@ -340,7 +252,7 @@ class AuthoritativeMappingPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class ClosedFamilyDispatchPlanStepBuilder(PatternPlanStepBuilder):
-    registry_key = PlanStepBuilderId.CLOSED_FAMILY_DISPATCH
+    pattern_id = PatternId.CLOSED_FAMILY_DISPATCH
 
     def build(
         self,
@@ -353,7 +265,7 @@ class ClosedFamilyDispatchPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class BidirectionalRegistryPlanStepBuilder(PatternPlanStepBuilder):
-    registry_key = PlanStepBuilderId.BIDIRECTIONAL_REGISTRY
+    pattern_id = PatternId.BIDIRECTIONAL_LOOKUP
 
     def build(
         self,
@@ -510,13 +422,16 @@ class FindingProjection:
 _FINDING_PROJECTION = FindingProjection()
 
 
-class PatternActionBuilder(
-    RegisteredBuilderFamily[ActionBuilderId], ABC, metaclass=AutoRegisterMeta
-):
-    __registry__ = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
+class PatternActionBuilder(ABC, metaclass=AutoRegisterMeta):
+    __registry__: ClassVar[dict[PatternId, type["PatternActionBuilder"]]] = {}
+    __registry_key__ = "pattern_id"
     __skip_if_no_key__ = True
+
+    @classmethod
+    def for_pattern(cls, pattern_id: PatternId) -> "PatternActionBuilder":
+        if pattern_id in cls.__registry__:
+            return cls.__registry__[pattern_id]()
+        return GenericPatternActionBuilder()
 
     def _build_from_templates(
         self,
@@ -709,7 +624,7 @@ class GenericPatternActionBuilder(PatternActionBuilder):
     ) -> tuple[RefactorAction, ...]:
         template = ActionTemplate(
             kind="apply_pattern",
-            description=f"Apply Pattern {pattern_id.value}: {PATTERN_SPECS[pattern_id].prescription}",
+            description=f"Apply Pattern {pattern_id.value}: {pattern_id.prescription}",
             confidence=MEDIUM_CONFIDENCE,
         )
         return self._build_from_templates(subsystem, findings, (template,))
@@ -728,7 +643,7 @@ class TemplatedPatternActionBuilder(PatternActionBuilder):
 
 
 class AbcFamilyActionBuilder(PatternActionBuilder):
-    registry_key = ActionBuilderId.ABC_FAMILY
+    pattern_id = PatternId.ABC_TEMPLATE_METHOD
 
     def build(
         self,
@@ -746,7 +661,7 @@ class AbcFamilyActionBuilder(PatternActionBuilder):
 
 
 class ClosedFamilyDispatchActionBuilder(TemplatedPatternActionBuilder):
-    registry_key = ActionBuilderId.CLOSED_FAMILY_DISPATCH
+    pattern_id = PatternId.CLOSED_FAMILY_DISPATCH
     templates = (
         ActionTemplate(
             kind="create_dispatch_authority",
@@ -765,7 +680,7 @@ class ClosedFamilyDispatchActionBuilder(TemplatedPatternActionBuilder):
 
 
 class AutoRegisterActionBuilder(TemplatedPatternActionBuilder):
-    registry_key = ActionBuilderId.AUTO_REGISTER
+    pattern_id = PatternId.AUTO_REGISTER_META
     templates = (
         ActionTemplate(
             kind="create_metaclass",
@@ -789,7 +704,7 @@ class AutoRegisterActionBuilder(TemplatedPatternActionBuilder):
 
 
 class BidirectionalLookupActionBuilder(TemplatedPatternActionBuilder):
-    registry_key = ActionBuilderId.BIDIRECTIONAL_LOOKUP
+    pattern_id = PatternId.BIDIRECTIONAL_LOOKUP
     templates = (
         ActionTemplate(
             kind="create_bidirectional_registry",
@@ -808,7 +723,7 @@ class BidirectionalLookupActionBuilder(TemplatedPatternActionBuilder):
 
 
 class AuthoritativeSchemaActionBuilder(TemplatedPatternActionBuilder):
-    registry_key = ActionBuilderId.AUTHORITATIVE_SCHEMA
+    pattern_id = PatternId.AUTHORITATIVE_SCHEMA
     templates = (
         ActionTemplate(
             kind="create_authoritative_schema",
@@ -826,88 +741,31 @@ class AuthoritativeSchemaActionBuilder(TemplatedPatternActionBuilder):
     )
 
 
-_GENERIC_PATTERN_PLAN_STEP_BUILDER = GenericPatternPlanStepBuilder()
-_GENERIC_PATTERN_ACTION_BUILDER = GenericPatternActionBuilder()
+def _plan_step(
+    subsystem: str,
+    pattern_id: PatternId,
+    findings: tuple[RefactorFinding, ...],
+) -> str:
+    supporting = tuple(
+        finding for finding in findings if finding.pattern_id == pattern_id
+    )
+    builder = PatternPlanStepBuilder.for_pattern(pattern_id)
+    return builder.build(subsystem, pattern_id, supporting)
 
-_PATTERN_PLAN_STEP_BUILDERS: dict[PlanStepBuilderId, PatternPlanStepBuilder] = (
-    PatternPlanStepBuilder.instances_by_registry_key(PlanStepBuilderId)
-)
 
-_PATTERN_ACTION_BUILDERS: dict[ActionBuilderId, PatternActionBuilder] = (
-    PatternActionBuilder.instances_by_registry_key(ActionBuilderId)
-)
-
-
-@dataclass(frozen=True)
-class PatternCatalog:
-    """Authoritative catalog for pattern metadata and derived builders."""
-
-    plan_step_builders: dict[PlanStepBuilderId, PatternPlanStepBuilder]
-    action_builders: dict[ActionBuilderId, PatternActionBuilder]
-
-    def priority(self, pattern_id: PatternId) -> int:
-        pattern = PATTERN_SPECS.get(pattern_id)
-        return 0 if pattern is None else pattern.priority
-
-    def dependencies(self, pattern_id: PatternId) -> tuple[PatternId, ...]:
-        pattern = PATTERN_SPECS.get(pattern_id)
-        return () if pattern is None else pattern.dependencies
-
-    def synergy_with(self, pattern_id: PatternId) -> tuple[PatternId, ...]:
-        pattern = PATTERN_SPECS.get(pattern_id)
-        return () if pattern is None else pattern.synergy_with
-
-    def patterns_are_synergistic(self, left: PatternId, right: PatternId) -> bool:
-        """Project the symmetric relation from declaration-owned pattern rows."""
-
-        return right in self.synergy_with(left) or left in self.synergy_with(right)
-
-    def plan_step_builder(self, pattern_id: PatternId) -> PatternPlanStepBuilder | None:
-        pattern = PATTERN_SPECS.get(pattern_id)
-        if pattern is None or pattern.plan_step_builder_id is None:
-            return None
-        return self.plan_step_builders.get(pattern.plan_step_builder_id)
-
-    def action_builder(self, pattern_id: PatternId) -> PatternActionBuilder | None:
-        pattern = PATTERN_SPECS.get(pattern_id)
-        if pattern is None or pattern.action_builder_id is None:
-            return None
-        return self.action_builders.get(pattern.action_builder_id)
-
-    def plan_step(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> str:
-        supporting = [
+def _plan_actions(
+    subsystem: str,
+    pattern_ids: Sequence[PatternId],
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[RefactorAction, ...]:
+    actions: list[RefactorAction] = []
+    for pattern_id in pattern_ids:
+        supporting = tuple(
             finding for finding in findings if finding.pattern_id == pattern_id
-        ]
-        builder = (
-            self.plan_step_builder(pattern_id) or _GENERIC_PATTERN_PLAN_STEP_BUILDER
         )
-        return builder.build(subsystem, pattern_id, tuple(supporting))
-
-    def plan_actions(
-        self,
-        subsystem: str,
-        pattern_ids: Sequence[PatternId],
-        findings: tuple[RefactorFinding, ...],
-    ) -> tuple[RefactorAction, ...]:
-        actions: list[RefactorAction] = []
-        for pattern_id in pattern_ids:
-            supporting = tuple(
-                (finding for finding in findings if finding.pattern_id == pattern_id)
-            )
-            builder = self.action_builder(pattern_id) or _GENERIC_PATTERN_ACTION_BUILDER
-            actions.extend(builder.build(subsystem, pattern_id, supporting))
-        return tuple(actions)
-
-
-PATTERN_CATALOG = PatternCatalog(
-    plan_step_builders=_PATTERN_PLAN_STEP_BUILDERS,
-    action_builders=_PATTERN_ACTION_BUILDERS,
-)
+        builder = PatternActionBuilder.for_pattern(pattern_id)
+        actions.extend(builder.build(subsystem, pattern_id, supporting))
+    return tuple(actions)
 
 
 def build_refactor_plans(
@@ -1189,7 +1047,7 @@ class _FindingRelationFacts:
             )
         left_pattern = self.finding.pattern_id
         right_pattern = right.finding.pattern_id
-        if PATTERN_CATALOG.patterns_are_synergistic(left_pattern, right_pattern):
+        if left_pattern.is_synergistic_with(right_pattern):
             score += 1
             reasons.append(
                 f"synergistic patterns {left_pattern.value}/{right_pattern.value}"
@@ -1430,7 +1288,7 @@ class ExecutionPartitionAxis(SemanticRecord):
     def sort_key(self) -> tuple[int, str, str]:
         return (
             self.pattern.value,
-            PATTERN_SPECS[self.pattern].name,
+            self.pattern.display_name,
             self.evidence_file.as_posix(),
         )
 
@@ -1628,9 +1486,7 @@ def _plan_for_cluster(
     plan_steps = _build_plan_steps(
         cluster.subsystem, ordered_patterns, cluster.findings
     )
-    actions = PATTERN_CATALOG.plan_actions(
-        cluster.subsystem, ordered_patterns, cluster.findings
-    )
+    actions = _plan_actions(cluster.subsystem, ordered_patterns, cluster.findings)
     trajectories = (
         _build_escape_trajectories(cluster.findings) if include_trajectories else ()
     )
@@ -1677,13 +1533,13 @@ def _select_pattern_cover(
         for subset in combinations(pattern_ids, size):
             covered = set()
             for pattern_id in subset:
-                covered.update(PATTERN_SPECS[pattern_id].witness_capabilities)
+                covered.update(pattern_id.witness_capabilities)
             if not required_capabilities <= covered:
                 continue
             score = (
                 sum((pattern_counts[pattern_id] for pattern_id in subset)),
                 sum((certified_counts[pattern_id] for pattern_id in subset)),
-                sum((PATTERN_CATALOG.priority(pattern_id) for pattern_id in subset)),
+                sum((pattern_id.priority for pattern_id in subset)),
                 tuple((pattern_counts[pattern_id] for pattern_id in subset)),
             )
             if best_score is None or score > best_score:
@@ -1702,7 +1558,7 @@ def _order_patterns(
 
     pattern_set = set(pattern_ids)
     dependencies = {
-        pattern_id: set(PATTERN_CATALOG.dependencies(pattern_id)) & pattern_set
+        pattern_id: set(pattern_id.dependencies) & pattern_set
         for pattern_id in pattern_ids
     }
     pattern_counts = Counter(finding.pattern_id for finding in findings)
@@ -1719,7 +1575,7 @@ def _order_patterns(
     while ready:
         ready.sort(
             key=lambda pattern_id: (
-                PATTERN_CATALOG.priority(pattern_id),
+                pattern_id.priority,
                 pattern_counts[pattern_id],
                 certified_counts[pattern_id],
                 -pattern_id,
@@ -1741,7 +1597,7 @@ def _order_patterns(
             pattern_id for pattern_id in pattern_ids if pattern_id not in ordered
         ]
         remaining.sort(
-            key=lambda pattern_id: (PATTERN_CATALOG.priority(pattern_id), -pattern_id),
+            key=lambda pattern_id: (pattern_id.priority, -pattern_id),
             reverse=True,
         )
         ordered.extend(remaining)
@@ -1822,14 +1678,14 @@ def _plan_summary(
     ordered_patterns: Sequence[PatternId],
     findings: tuple[RefactorFinding, ...],
 ) -> str:
-    primary = PATTERN_SPECS[ordered_patterns[0]]
+    primary = ordered_patterns[0]
     if len(ordered_patterns) == 1:
-        return f"`{subsystem}` clusters {len(findings)} finding(s) into Pattern {primary.pattern_id.value} as the authoritative refactor witness."
+        return f"`{subsystem}` clusters {len(findings)} finding(s) into Pattern {primary.value} as the authoritative refactor witness."
     secondary = ", ".join(
         (f"Pattern {pattern_id.value}" for pattern_id in ordered_patterns[1:])
     )
     return (
-        f"`{subsystem}` needs Pattern {primary.pattern_id.value} as the primary witness, "
+        f"`{subsystem}` needs Pattern {primary.value} as the primary witness, "
         f"with {secondary} as supporting helpers."
     )
 
@@ -1850,12 +1706,12 @@ def _current_partial_view(findings: tuple[RefactorFinding, ...]) -> str:
 def _canonical_normal_form(
     pattern_ids: Sequence[PatternId], findings: tuple[RefactorFinding, ...]
 ) -> str:
-    primary = PATTERN_SPECS[pattern_ids[0]].canonical_shape
+    primary = pattern_ids[0].canonical_shape
     registry_clause = _registry_normal_form_clause(findings)
     if len(pattern_ids) == 1:
         return f"{registry_clause}; then {primary}" if registry_clause else primary
     supporting = "; then ".join(
-        (PATTERN_SPECS[pattern_id].canonical_shape for pattern_id in pattern_ids[1:])
+        (pattern_id.canonical_shape for pattern_id in pattern_ids[1:])
     )
     normal_form = f"{primary}; then {supporting}"
     return f"{registry_clause}; then {normal_form}" if registry_clause else normal_form
@@ -1877,10 +1733,7 @@ def _build_plan_steps(
 ) -> tuple[str, ...]:
     steps = list(_registry_normal_form_steps(subsystem, findings))
     steps.extend(
-        (
-            PATTERN_CATALOG.plan_step(subsystem, pattern_id, findings)
-            for pattern_id in pattern_ids
-        )
+        (_plan_step(subsystem, pattern_id, findings) for pattern_id in pattern_ids)
     )
     steps.append(
         f"Delete superseded partial views in `{subsystem}` and route call sites through the new authorities."
@@ -2011,7 +1864,7 @@ class _TrajectoryMoveFactory:
 
     @property
     def phase(self) -> RefactorPhase:
-        return _PATTERN_TRAJECTORY_POLICY_CATALOG.lookup(self.finding.pattern_id).phase
+        return self.finding.pattern_id.phase
 
     @property
     def debt_justification(self) -> str | None:
@@ -2036,14 +1889,14 @@ def _trajectory_prerequisites(
     return frozenset(
         (
             dependency
-            for dependency in PATTERN_CATALOG.dependencies(pattern_id)
+            for dependency in pattern_id.dependencies
             if dependency in present_patterns
         )
     )
 
 
 def _trajectory_unlocks(pattern_id: PatternId) -> frozenset[Hashable]:
-    return frozenset((pattern_id, *PATTERN_CATALOG.synergy_with(pattern_id)))
+    return frozenset((pattern_id, *pattern_id.synergy_with))
 
 
 def _missing_capabilities_for_blocked_moves(
@@ -2061,7 +1914,7 @@ def _missing_capabilities_for_blocked_moves(
 
 def _capability_name(capability: Hashable) -> str:
     if isinstance(capability, PatternId):
-        return f"Pattern {capability.value}: {PATTERN_SPECS[capability].name}"
+        return f"Pattern {capability.value}: {capability.display_name}"
     return str(capability)
 
 
