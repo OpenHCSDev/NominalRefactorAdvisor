@@ -118,6 +118,8 @@ from .semantic_descent import (
 from .semantic_match import (
     Maybe,
     as_ast,
+    loaded_concrete_nominal_descendants,
+    loaded_nominal_descendants,
     single_item,
 )
 from .source_index import (
@@ -432,7 +434,7 @@ class RefactorConcept(ABC):
     def declaration_types(cls) -> tuple[type["RefactorConcept"], ...]:
         """Return pure concept declarations without cataloging execution classes."""
 
-        descendants = cls._descendant_types()
+        descendants = frozenset(loaded_nominal_descendants(cls))
         declarations: set[type[RefactorConcept]] = {cls}
         while True:
             discovered = {
@@ -484,18 +486,6 @@ class RefactorConcept(ABC):
             evaluation.required_executable_declaration_type,
             cls,
         )
-
-    @classmethod
-    def _descendant_types(cls) -> frozenset[type["RefactorConcept"]]:
-        descendants: set[type[RefactorConcept]] = set()
-        pending = list(cls.__subclasses__())
-        while pending:
-            candidate = pending.pop()
-            if candidate in descendants:
-                continue
-            descendants.add(candidate)
-            pending.extend(candidate.__subclasses__())
-        return frozenset(descendants)
 
     @classmethod
     def leaf_concept_for_declaration(
@@ -635,7 +625,6 @@ class AuthorityClaimPayload:
     """Payload field ownership for recipe authority claims."""
 
     field_name: ClassVar[str] = "authority_claims"
-    claim_field_name: ClassVar[str] = "authority_claim"
 
 
 class AuthorityLanguageSurfacePolicy:
@@ -15866,32 +15855,32 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
 
 
 class MappingBuilderFindingRecipeSynthesizer(
-    DynamicallyDeclaredFindingRecipeSynthesizer
+    DynamicallyDeclaredFindingRecipeSynthesizer,
+    ABC,
 ):
-    """Finding synthesizer backed by the mapping-recipe builder registry."""
+    """Finding bridge whose declaration owns its exact recipe builder."""
+
+    builder_type: ClassVar[type["MappingSemanticMirrorRecipeBuilder"]]
 
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        builder = MappingSemanticMirrorRecipeBuilder.declared_builder_for(
+        builder = self.builder_type.from_context(
             finding,
             context,
         )
         if builder is None:
             return FindingRecipeEvaluation(
-                rejection_reason=MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
-                    finding,
-                    context,
-                )
+                rejection_reason="mapping recipe construction requires source context"
             ).declared_by(type(self))
         recipe = builder.recipe()
         if recipe is not None:
             return FindingRecipeEvaluation(recipe=recipe).declared_by(type(builder))
         return FindingRecipeEvaluation(
             rejection_reason=builder.rejection_reason()
-        ).declared_by(type(self))
+        ).declared_by(type(builder))
 
     def action_keys_for_finding(
         self,
@@ -15908,39 +15897,6 @@ class MappingBuilderFindingRecipeSynthesizer(
             finding,
             ((evidence.file_path, f"{mapping_name}->{source_name}"),),
         )
-
-    def rejection_reason_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> str:
-        return MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
-            finding,
-            context,
-        )
-
-
-class FormalBoundarySourceScopeFindingRecipeSynthesizer(
-    MappingBuilderFindingRecipeSynthesizer
-):
-    """Build source-context carrier recipes for formal source-scope findings."""
-
-    detector_id = "formal_boundary_stringly_source_scope"
-
-
-class SemanticDictBagFindingRecipeSynthesizer(MappingBuilderFindingRecipeSynthesizer):
-    """Build nominal return-record recipes for executable semantic dict bags."""
-
-    detector_id = "semantic_dict_bag"
-
-
-class SemanticTupleReturnRecordFindingRecipeSynthesizer(
-    MappingBuilderFindingRecipeSynthesizer
-):
-    """Build nominal result-record recipes for executable tuple returns."""
-
-    detector_id = "semantic_tuple_return_record"
-
 
 class RepeatedFieldFamilyFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
@@ -21708,26 +21664,19 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
 class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
     """Metric-specific recipe strategy for semantic mirror findings."""
 
-    __registry__: ClassVar[dict[str, type["SemanticMirrorFindingRecipeStrategy"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = _suffix_trimmed_class_name_registry_key
+    __registry__: ClassVar[
+        dict[type[FindingMetrics], type["SemanticMirrorFindingRecipeStrategy"]]
+    ] = {}
+    __registry_key__ = "metric_type"
     __skip_if_no_key__ = True
-    registry_key_suffix: ClassVar[str] = "SemanticMirrorRecipeStrategy"
 
     @classmethod
     def strategy_for(
         cls,
         finding: RefactorFinding,
     ) -> "SemanticMirrorFindingRecipeStrategy | None":
-        for strategy_type in cls.__registry__.values():
-            strategy = strategy_type()
-            if strategy.matches(finding):
-                return strategy
-        return None
-
-    @abstractmethod
-    def matches(self, finding: RefactorFinding) -> bool:
-        raise NotImplementedError
+        strategy_type = cls.__registry__.get(type(finding.metrics))
+        return strategy_type() if strategy_type is not None else None
 
     @abstractmethod
     def recipe_for_finding(
@@ -21745,7 +21694,11 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         raise NotImplementedError
 
     def repair_kind(self) -> str:
-        return _suffix_trimmed_class_name_registry_key(type(self).__name__, type(self))
+        strategy_type = type(self)
+        return class_name_registry_key(
+            strategy_type.__name__.removesuffix("SemanticMirrorRecipeStrategy"),
+            strategy_type,
+        )
 
     def repair_plan_for_finding(
         self,
@@ -21813,10 +21766,6 @@ class TypedMetricSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrateg
     metric_type: ClassVar[
         type[BranchCountMetrics] | type[MappingMetrics] | type[RegistrationMetrics]
     ]
-
-    def matches(self, finding: RefactorFinding) -> bool:
-        return isinstance(finding.metrics, self.metric_type)
-
 
 @dataclass(frozen=True)
 class FindingSemanticMirrorLocations:
@@ -21972,6 +21921,41 @@ class SemanticMirrorRecipeSeedLocations:
 
     def projection_is_kind(self, kind: SemanticMirrorProjectionKind) -> bool:
         return self.projection_endpoint().projection_kind is kind
+
+
+@dataclass(frozen=True)
+class SemanticMirrorImportBoundary:
+    """Resolved source paths for one projection-to-authority descent."""
+
+    projection_path: str
+    authority_path: str
+
+    @classmethod
+    def from_seed(
+        cls,
+        seed: SemanticMirrorRecipeSeedLocations,
+        context: CodemodSelectorContext,
+    ) -> "SemanticMirrorImportBoundary | None":
+        projection_path = SourcePathResolutionAuthority.from_source_index(
+            seed.projection_file_path(),
+            context.source_index,
+        ).optional_path()
+        authority_path = SourcePathResolutionAuthority.from_source_index(
+            seed.authority_file_path(),
+            context.source_index,
+        ).optional_path()
+        if projection_path is None or authority_path is None:
+            return None
+        return cls(
+            projection_path=projection_path,
+            authority_path=authority_path,
+        )
+
+    def import_would_create_cycle(self, context: CodemodSelectorContext) -> bool:
+        return context.module_import_graph.import_would_create_cycle(
+            importing_file_path=self.projection_path,
+            imported_file_path=self.authority_path,
+        )
 
 
 @dataclass(frozen=True)
@@ -22252,34 +22236,10 @@ class EnumSubsetSemanticMirrorRecipeBuilder(CodemodSelectorContext):
 class MappingSemanticMirrorRecipeBuilder(
     CodemodSelectorContext,
     ABC,
-    metaclass=AutoRegisterMeta,
 ):
-    """Registered recipe declaration for one mapping-mirror family."""
-
-    __registry__: ClassVar[dict[str, type["MappingSemanticMirrorRecipeBuilder"]]] = {}
-    __registry_key__ = "mapping_name"
-    __skip_if_no_key__ = True
-    mapping_name: ClassVar[str]
+    """Recipe declaration for one mapping-mirror family."""
 
     finding: RefactorFinding
-
-    @classmethod
-    def declared_builder_for(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> "MappingSemanticMirrorRecipeBuilder | None":
-        if context is None:
-            return None
-        if not isinstance(finding.metrics, MappingMetrics):
-            return None
-        mapping_name = finding.metrics.plan_mapping_name
-        if mapping_name is None:
-            return None
-        builder_type = cls.__registry__.get(mapping_name)
-        if builder_type is None:
-            return None
-        return builder_type.from_context(finding, context)
 
     @classmethod
     def from_context(
@@ -22299,17 +22259,6 @@ class MappingSemanticMirrorRecipeBuilder(
             finding=finding,
         )
 
-    @classmethod
-    def rejection_reason_from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> str:
-        builder = cls.declared_builder_for(finding, context)
-        if builder is None:
-            return "no registered mapping-mirror recipe builder matched the finding"
-        return builder.rejection_reason()
-
     @abstractmethod
     def recipe(self) -> RefactorRecipe | None:
         raise NotImplementedError
@@ -22317,6 +22266,48 @@ class MappingSemanticMirrorRecipeBuilder(
     @abstractmethod
     def rejection_reason(self) -> str:
         raise NotImplementedError
+
+
+class InferredSemanticMirrorMappingRecipeBuilder(ABC):
+    """Nominal marker for builders selected by successful structural projection."""
+
+    @classmethod
+    def builder_types(
+        cls,
+    ) -> tuple[type[MappingSemanticMirrorRecipeBuilder], ...]:
+        return tuple(
+            cast(type[MappingSemanticMirrorRecipeBuilder], builder_type)
+            for builder_type in loaded_concrete_nominal_descendants(cls)
+        )
+
+
+@dataclass(frozen=True)
+class InferredMappingRecipeSelection:
+    """One unambiguous inferred builder and the recipe it produced."""
+
+    builder: MappingSemanticMirrorRecipeBuilder
+    recipe: RefactorRecipe
+
+    @classmethod
+    def from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> "InferredMappingRecipeSelection | None":
+        candidates = tuple(
+            cls(builder=builder, recipe=recipe)
+            for builder_type in InferredSemanticMirrorMappingRecipeBuilder.builder_types()
+            for builder in (builder_type.from_context(finding, context),)
+            if builder is not None
+            for recipe in (builder.recipe(),)
+            if recipe is not None
+        )
+        if len(candidates) > 1:
+            raise ValueError(
+                "Mapping mirror finding produced multiple inferred recipes: "
+                f"{tuple(type(candidate.builder).__name__ for candidate in candidates)!r}"
+            )
+        return candidates[0] if candidates else None
 
 
 class FindingRecipeParts(ABC):
@@ -23234,23 +23225,13 @@ class DataclassAuthorityMappingRecipeBuilder(
     ) -> RecipePartsT | None:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return None
-        projection_source_path = SourcePathResolutionAuthority.from_source_index(
-            seed.projection_file_path(),
-            self.source_index,
-        ).optional_path()
-        authority_source_path = SourcePathResolutionAuthority.from_source_index(
-            seed.authority_file_path(),
-            self.source_index,
-        ).optional_path()
-        if projection_source_path is None or authority_source_path is None:
+        import_boundary = SemanticMirrorImportBoundary.from_seed(seed, self)
+        if import_boundary is None:
             return None
-        if self.module_import_graph.import_would_create_cycle(
-            importing_file_path=projection_source_path,
-            imported_file_path=authority_source_path,
-        ):
+        if import_boundary.import_would_create_cycle(self):
             return None
-        authority = self.authority_target(seed, authority_source_path)
-        projection = self.projection_target(seed, projection_source_path)
+        authority = self.authority_target(seed, import_boundary.authority_path)
+        projection = self.projection_target(seed, import_boundary.projection_path)
         return (
             Maybe.of((authority, projection))
             .filter(lambda row: row[0] is not None and row[1] is not None)
@@ -23446,11 +23427,11 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         ReturnDictProjectionTarget,
         DataclassPayloadProjectionRecipeParts,
     ],
+    InferredSemanticMirrorMappingRecipeBuilder,
     DataclassPayloadProjectionConcept,
 ):
     """Derive return-dict payload keys from the mirrored dataclass authority."""
 
-    mapping_name: ClassVar[str] = "dataclass_payload_projection"
     payload_method_name: ClassVar[str] = "payload_from_field_values"
 
     finding: RefactorFinding
@@ -23463,20 +23444,10 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         ).optional_seed_locations()
         if locations is None:
             return "dataclass payload projection requires projection and authority locations"
-        projection_source_path = SourcePathResolutionAuthority.from_source_index(
-            locations.projection_file_path(),
-            self.source_index,
-        ).optional_path()
-        authority_source_path = SourcePathResolutionAuthority.from_source_index(
-            locations.authority_file_path(),
-            self.source_index,
-        ).optional_path()
-        if projection_source_path is None or authority_source_path is None:
+        import_boundary = SemanticMirrorImportBoundary.from_seed(locations, self)
+        if import_boundary is None:
             return "dataclass payload projection requires source-index-resolved files"
-        if self.module_import_graph.import_would_create_cycle(
-            importing_file_path=projection_source_path,
-            imported_file_path=authority_source_path,
-        ):
+        if import_boundary.import_would_create_cycle(self):
             return "dataclass payload projection import would create a module cycle"
         if self.parts is not None:
             return "dataclass payload projection has an executable authority-key recipe"
@@ -23685,11 +23656,11 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         ReturnKeyValueSequenceProjectionTarget,
         DataclassKeyValueSequenceProjectionRecipeParts,
     ],
+    InferredSemanticMirrorMappingRecipeBuilder,
     DataclassPayloadProjectionConcept,
 ):
     """Derive returned ``("field", value)`` items from a dataclass authority."""
 
-    mapping_name: ClassVar[str] = "dataclass_key_value_sequence_projection"
     payload_method_name: ClassVar[str] = "payload_items_from_field_values"
 
     finding: RefactorFinding
@@ -23943,7 +23914,6 @@ class BoundarySourceContextReturnDictMappingRecipeBuilder(
 ):
     """Nominalize formal source-scope return dictionaries as dataclass carriers."""
 
-    mapping_name: ClassVar[str] = "formal_boundary_source_scope_return_dict"
     finding: RefactorFinding
 
     def rejection_reason(self) -> str:
@@ -24179,19 +24149,11 @@ class SemanticDictBagReturnRecordMappingRecipeBuilder(
 ):
     """Nominalize ordinary semantic return dictionaries as dataclass records."""
 
-    mapping_name: ClassVar[str] = "semantic_dict_bag_return_dict_record"
-
     finding: RefactorFinding
 
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return "semantic return-record extraction requires mapping metrics"
-        if self.finding.metrics.plan_mapping_name != self.mapping_name:
-            return (
-                "semantic dict bag extraction is executable for anonymous return "
-                "records; parameter payloads and serialization bags need distinct "
-                "call-site rewrites"
-            )
         evidence = FindingPrimaryEvidence(self.finding).source_location
         if evidence is None:
             return "semantic return-record extraction requires primary source evidence"
@@ -24453,15 +24415,11 @@ class SemanticTupleReturnRecordMappingRecipeBuilder(
 ):
     """Nominalize tuple returns and same-file unpack consumers."""
 
-    mapping_name: ClassVar[str] = "semantic_tuple_return_record"
-
     finding: RefactorFinding
 
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return "semantic tuple-return extraction requires mapping metrics"
-        if self.finding.metrics.plan_mapping_name != self.mapping_name:
-            return "semantic tuple-return extraction only handles tuple-return metrics"
         if FindingPrimaryEvidence(self.finding).source_location is None:
             return "semantic tuple-return extraction requires primary source evidence"
         if self.parts is not None:
@@ -24768,11 +24726,11 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         DataclassConstructorProjectionCallTarget,
         DataclassConstructorProjectionRecipeParts,
     ],
+    InferredSemanticMirrorMappingRecipeBuilder,
     ConstructorKwargCarrierProjectionConcept,
 ):
     """Derive constructor keyword mirrors through an existing dataclass method."""
 
-    mapping_name: ClassVar[str] = "dataclass_constructor_projection"
     metrics_rejection_reason: ClassVar[str] = (
         "dataclass constructor projection requires mapping metrics"
     )
@@ -25039,11 +24997,11 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
         DataclassContextCallProjectionTarget,
         DataclassContextCallProjectionRecipeParts,
     ],
+    InferredSemanticMirrorMappingRecipeBuilder,
     DataclassContextCallProjectionConcept,
 ):
     """Route loose call keyword mirrors through a dataclass context authority."""
 
-    mapping_name: ClassVar[str] = "dataclass_context_call_projection"
     metrics_rejection_reason: ClassVar[str] = (
         "dataclass context call projection requires mapping metrics"
     )
@@ -25299,7 +25257,6 @@ class GenericRoleCaseTableMappingRecipeBuilder(
 ):
     """Derive exact role-case string literals from one nominal authority."""
 
-    mapping_name: ClassVar[str] = "generic_role_case_table"
     finding: RefactorFinding
 
     def recipe(self) -> RefactorRecipe | None:
@@ -26229,7 +26186,6 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
 ):
     """Extract local role-case maps into a nominal authority recipe."""
 
-    mapping_name: ClassVar[str] = "local_role_case_logic"
     finding: RefactorFinding
     _source_segments_by_path: dict[str, SourceLineSegmentAuthority] = field(
         default_factory=dict,
@@ -27070,6 +27026,49 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
         )
 
 
+class FormalBoundarySourceScopeFindingRecipeSynthesizer(
+    MappingBuilderFindingRecipeSynthesizer
+):
+    """Build source-context carrier recipes for formal source-scope findings."""
+
+    detector_id = "formal_boundary_stringly_source_scope"
+    builder_type = BoundarySourceContextReturnDictMappingRecipeBuilder
+
+
+class SemanticDictBagFindingRecipeSynthesizer(MappingBuilderFindingRecipeSynthesizer):
+    """Build nominal return-record recipes for executable semantic dict bags."""
+
+    detector_id = "semantic_dict_bag"
+    builder_type = SemanticDictBagReturnRecordMappingRecipeBuilder
+
+
+class SemanticTupleReturnRecordFindingRecipeSynthesizer(
+    MappingBuilderFindingRecipeSynthesizer
+):
+    """Build nominal result-record recipes for executable tuple returns."""
+
+    detector_id = "semantic_tuple_return_record"
+    builder_type = SemanticTupleReturnRecordMappingRecipeBuilder
+
+
+class GenericRoleCaseTableFindingRecipeSynthesizer(
+    MappingBuilderFindingRecipeSynthesizer
+):
+    """Build shared authority recipes for generic role-case tables."""
+
+    detector_id = "generic_role_case_table"
+    builder_type = GenericRoleCaseTableMappingRecipeBuilder
+
+
+class LocalRoleCaseLogicFindingRecipeSynthesizer(
+    MappingBuilderFindingRecipeSynthesizer
+):
+    """Build shared authority recipes for local role-case logic."""
+
+    detector_id = "local_role_case_logic"
+    builder_type = LocalRoleCaseLogicMappingRecipeBuilder
+
+
 class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrategy):
     """Route class-family semantic mirrors through AutoRegisterMeta recipes."""
 
@@ -27745,14 +27744,12 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        builder = MappingSemanticMirrorRecipeBuilder.declared_builder_for(
+        selection = InferredMappingRecipeSelection.from_context(
             finding,
             context,
         )
-        if builder is not None:
-            builder_recipe = builder.recipe()
-            if builder_recipe is not None:
-                return builder_recipe
+        if selection is not None:
+            return selection.recipe
         return self.enum_subset_recipe_for_finding(finding, context)
 
     def evaluate_recipe_for_finding(
@@ -27760,24 +27757,16 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        builder = MappingSemanticMirrorRecipeBuilder.declared_builder_for(
+        selection = InferredMappingRecipeSelection.from_context(
             finding,
             context,
         )
-        if builder is not None:
-            builder_recipe = builder.recipe()
-            if builder_recipe is not None:
-                return self.evaluation_from_recipe(
-                    finding,
-                    builder_recipe,
-                    type(builder),
-                )
-            return FindingRecipeEvaluation(
-                rejection_reason=self.rejection_reason_from_builder(
-                    finding,
-                    builder.rejection_reason(),
-                )
-            ).declared_by(type(self))
+        if selection is not None:
+            return self.evaluation_from_recipe(
+                finding,
+                selection.recipe,
+                type(selection.builder),
+            )
         enum_subset_builder = self.enum_subset_builder_for_finding(finding, context)
         if enum_subset_builder is not None:
             parts = enum_subset_builder.parts()
@@ -27788,13 +27777,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                     type(enum_subset_builder),
                 )
         return FindingRecipeEvaluation(
-            rejection_reason=self.rejection_reason_from_builder(
-                finding,
-                MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
-                    finding,
-                    context,
-                ),
-            )
+            rejection_reason=self.rejection_reason_for_finding(finding, context)
         ).declared_by(type(self))
 
     def action_keys_for_finding(
@@ -27816,17 +27799,21 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> str:
-        builder_reason = (
-            MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
-                finding,
-                context,
+        if context is not None:
+            seed = FindingSemanticMirrorLocations(finding).optional_seed_locations()
+            import_boundary = (
+                SemanticMirrorImportBoundary.from_seed(seed, context)
+                if seed is not None
+                else None
             )
-        )
+            if import_boundary is not None and import_boundary.import_would_create_cycle(
+                context
+            ):
+                return "semantic authority import would create a module cycle"
         return (
             "semantic mapping mirror has a stable DSL action key, but no safe "
             f"mapping recipe exists yet to derive `{finding.metrics.plan_mapping_name}` "
-            f"from `{finding.metrics.plan_source_name}`; registered builder result: "
-            f"{builder_reason}"
+            f"from `{finding.metrics.plan_source_name}`"
         )
 
     def enum_subset_recipe_for_finding(
@@ -27857,18 +27844,6 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
             ast_target_node_cache=context.ast_target_nodes_by_id,
             module_import_graph_cache=context.module_import_graph,
             finding=finding,
-        )
-
-    @staticmethod
-    def rejection_reason_from_builder(
-        finding: RefactorFinding,
-        builder_reason: str,
-    ) -> str:
-        return (
-            "semantic mapping mirror has a stable DSL action key, but no safe "
-            f"mapping recipe exists yet to derive `{finding.metrics.plan_mapping_name}` "
-            f"from `{finding.metrics.plan_source_name}`; registered builder result: "
-            f"{builder_reason}"
         )
 
     @staticmethod

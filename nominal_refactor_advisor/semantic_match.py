@@ -20,7 +20,7 @@ OwnerT = TypeVar("OwnerT", bound=ast.AST)
 DeclarationT = TypeVar("DeclarationT")
 
 
-def _loaded_nominal_descendants(
+def loaded_nominal_descendants(
     root: type[DeclarationT],
 ) -> tuple[type[DeclarationT], ...]:
     """Derive the loaded nominal family without a parallel registry."""
@@ -38,6 +38,18 @@ def _loaded_nominal_descendants(
     return tuple(descendants)
 
 
+def loaded_concrete_nominal_descendants(
+    root: type[DeclarationT],
+) -> tuple[type[DeclarationT], ...]:
+    """Derive the concrete members of a loaded nominal family."""
+
+    return tuple(
+        declaration_type
+        for declaration_type in loaded_nominal_descendants(root)
+        if not inspect.isabstract(declaration_type)
+    )
+
+
 class EffectStep(ABC, Generic[T, U]):
     """Nominal stage in a typed semantic matching effect pipeline."""
 
@@ -51,7 +63,7 @@ class EffectStep(ABC, Generic[T, U]):
     def family_types(cls) -> tuple[type["EffectStep[Any, Any]"], ...]:
         """Return the loaded nominal family rooted at this declaration."""
 
-        return (cls, *_loaded_nominal_descendants(cls))
+        return (cls, *loaded_nominal_descendants(cls))
 
     @classmethod
     def declares_source_member(
@@ -156,8 +168,7 @@ class AstPredicateRule(ABC, Generic[ContextT, AstT, U]):
     def rules(cls) -> tuple["AstPredicateRule[ContextT, ast.AST, U]", ...]:
         return tuple(
             cast(AstPredicateRule[ContextT, ast.AST, U], rule_type())
-            for rule_type in _loaded_nominal_descendants(cls)
-            if not inspect.isabstract(rule_type)
+            for rule_type in loaded_concrete_nominal_descendants(cls)
         )
 
     @classmethod

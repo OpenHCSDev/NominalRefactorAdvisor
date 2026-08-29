@@ -97,31 +97,39 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ),
 }
 
-EXPECTED_MAPPING_DECLARATIONS = {
-    "dataclass_constructor_projection": (
-        codemod.DataclassConstructorProjectionMappingRecipeBuilder
-    ),
-    "dataclass_context_call_projection": (
-        codemod.DataclassContextCallProjectionMappingRecipeBuilder
-    ),
-    "dataclass_key_value_sequence_projection": (
-        codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder
-    ),
-    "dataclass_payload_projection": (
-        codemod.DataclassPayloadProjectionMappingRecipeBuilder
-    ),
-    "formal_boundary_source_scope_return_dict": (
+EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
+    {
+        codemod.DataclassConstructorProjectionMappingRecipeBuilder,
+        codemod.DataclassContextCallProjectionMappingRecipeBuilder,
+        codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
+        codemod.DataclassPayloadProjectionMappingRecipeBuilder,
+    }
+)
+
+EXPECTED_DECLARED_MAPPING_BRIDGES = {
+    codemod.FormalBoundarySourceScopeFindingRecipeSynthesizer: (
         codemod.BoundarySourceContextReturnDictMappingRecipeBuilder
     ),
-    "generic_role_case_table": codemod.GenericRoleCaseTableMappingRecipeBuilder,
-    "local_role_case_logic": codemod.LocalRoleCaseLogicMappingRecipeBuilder,
-    "semantic_dict_bag_return_dict_record": (
+    codemod.GenericRoleCaseTableFindingRecipeSynthesizer: (
+        codemod.GenericRoleCaseTableMappingRecipeBuilder
+    ),
+    codemod.LocalRoleCaseLogicFindingRecipeSynthesizer: (
+        codemod.LocalRoleCaseLogicMappingRecipeBuilder
+    ),
+    codemod.SemanticDictBagFindingRecipeSynthesizer: (
         codemod.SemanticDictBagReturnRecordMappingRecipeBuilder
     ),
-    "semantic_tuple_return_record": (
+    codemod.SemanticTupleReturnRecordFindingRecipeSynthesizer: (
         codemod.SemanticTupleReturnRecordMappingRecipeBuilder
     ),
 }
+
+EXPECTED_MAPPING_DECLARATIONS = frozenset(
+    {
+        *EXPECTED_INFERRED_MAPPING_DECLARATIONS,
+        *EXPECTED_DECLARED_MAPPING_BRIDGES.values(),
+    }
+)
 
 
 def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
@@ -204,21 +212,42 @@ def test_unrelated_concepts_do_not_match() -> None:
     )
 
 
-def test_mapping_builder_identity_and_concept_are_registry_derived() -> None:
-    assert codemod.MappingSemanticMirrorRecipeBuilder.__registry__ == (
-        EXPECTED_MAPPING_DECLARATIONS
+def test_mapping_builder_identity_is_nominal_or_bridge_owned() -> None:
+    assert frozenset(
+        codemod.InferredSemanticMirrorMappingRecipeBuilder.builder_types()
+    ) == EXPECTED_INFERRED_MAPPING_DECLARATIONS
+    assert {
+        synthesizer_type: synthesizer_type.builder_type
+        for synthesizer_type in EXPECTED_DECLARED_MAPPING_BRIDGES
+    } == EXPECTED_DECLARED_MAPPING_BRIDGES
+    assert "__registry__" not in codemod.MappingSemanticMirrorRecipeBuilder.__dict__
+    assert all(
+        not hasattr(builder_type, "mapping_name")
+        for builder_type in EXPECTED_MAPPING_DECLARATIONS
     )
     assert all(
         codemod.RefactorConcept.leaf_concept_for_declaration(builder_type)
         is EXPECTED_EXECUTABLE_CONCEPTS[builder_type]
-        for builder_type in EXPECTED_MAPPING_DECLARATIONS.values()
+        for builder_type in EXPECTED_MAPPING_DECLARATIONS
+    )
+
+
+def test_semantic_mirror_strategy_identity_is_metric_type_derived() -> None:
+    assert codemod.SemanticMirrorFindingRecipeStrategy.__registry__ == {
+        codemod.RegistrationMetrics: codemod.RegistrationSemanticMirrorRecipeStrategy,
+        codemod.MappingMetrics: codemod.MappingSemanticMirrorRecipeStrategy,
+        codemod.BranchCountMetrics: codemod.BranchSemanticMirrorRecipeStrategy,
+    }
+    assert not hasattr(
+        codemod.TypedMetricSemanticMirrorRecipeStrategy,
+        "matches",
     )
 
 
 def test_registered_mapping_and_unpack_cases_publish_no_numeric_precedence() -> None:
     mapping_declarations = (
         codemod.MappingSemanticMirrorRecipeBuilder,
-        *EXPECTED_MAPPING_DECLARATIONS.values(),
+        *EXPECTED_MAPPING_DECLARATIONS,
     )
     unpack_declarations = (
         codemod.TupleReturnUnpackValueMatcher,

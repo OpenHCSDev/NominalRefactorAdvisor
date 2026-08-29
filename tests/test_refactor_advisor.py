@@ -18081,6 +18081,7 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
     selected = goal.target_findings(findings, snapshot)
     assert selected == (
         dead_compat,
+        source_context,
         dataclass_lift,
         prefix,
     )
