@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
-from typing import ClassVar, Iterable, Sequence
+from typing import Generic, Iterable, Sequence, TypeVar
 
 from tree_sitter import Node
 
@@ -19,7 +19,6 @@ from ..class_index import (
     CompactModuleClassProjectionFamily,
 )
 from ..collection_algebra import sorted_tuple
-from ..constructor_algebra import ConstructorParameterField
 from ..models import MappingMetrics
 from ..native_syntax import NativePythonSyntaxIndex
 from ..patterns import PatternId
@@ -31,15 +30,13 @@ from ._base import (
     RefactorFinding,
     SourceLocation,
     high_confidence_spec,
+    CompactContextCandidateDetector,
     CompactModuleProjectionDetectorMixin,
     CrossModuleCollectorCandidateDetector,
     compact_class_repository_context,
     require_compact_class_repository_context,
 )
-from ._helpers import (
-    HELPER_SYNTAX_PROJECTION_AUTHORITY,
-    _semantic_role_names_for_fields,
-)
+from ._helpers import _semantic_role_names_for_fields
 from ._substrate_support import (
     _IGNORED_ANCESTOR_NAMES,
     _class_ancestor_name_map,
@@ -197,12 +194,6 @@ def _semantic_role_for_identity_field(name: str) -> str | None:
     return "_".join(role_tokens)
 
 
-def _annotation_is_primitive_carrier(node: ast.AST | None) -> bool:
-    if node is None:
-        return True
-    return _annotation_text_is_primitive_carrier(ast.unparse(node))
-
-
 def _annotation_text_is_primitive_carrier(text: str) -> bool:
     return any(
         token in text
@@ -217,191 +208,8 @@ def _annotation_text_is_primitive_carrier(text: str) -> bool:
     )
 
 
-def _class_identity_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    names: list[str] = []
-    for statement in node.body:
-        if not isinstance(statement, ast.AnnAssign):
-            continue
-        if not isinstance(statement.target, ast.Name):
-            continue
-        field_name = statement.target.id
-        if _semantic_role_for_identity_field(field_name) is None:
-            continue
-        if not _annotation_is_primitive_carrier(statement.annotation):
-            continue
-        names.append(field_name)
-    return tuple(names)
-
-
-def _module_parallel_primitive_bundles(
-    module: ParsedModule,
-) -> tuple[ParallelPrimitiveFieldBundle, ...]:
-    bundles: list[ParallelPrimitiveFieldBundle] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        field_names = _class_identity_field_names(node)
-        semantic_roles = tuple(
-            role
-            for field_name in field_names
-            if (role := _semantic_role_for_identity_field(field_name)) is not None
-        )
-        if len(semantic_roles) < _MIN_PARALLEL_PRIMITIVE_FIELDS:
-            continue
-        bundles.append(
-            ParallelPrimitiveFieldBundle(
-                file_path=str(module.path),
-                module_name=module.module_name,
-                line=node.lineno,
-                class_name=node.name,
-                field_names=field_names,
-                semantic_roles=semantic_roles,
-            )
-        )
-    return tuple(bundles)
-
-
-def _literal_string_tuple(node: ast.AST) -> tuple[str, ...]:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return (node.value,)
-    if isinstance(node, (ast.Tuple, ast.List)):
-        return tuple(
-            value.value
-            for value in node.elts
-            if isinstance(value, ast.Constant) and isinstance(value.value, str)
-        )
-    return ()
-
-
-def _class_slot_names(node: ast.ClassDef) -> tuple[str, ...]:
-    for statement in node.body:
-        if not isinstance(statement, ast.Assign):
-            continue
-        if not any(
-            isinstance(target, ast.Name) and target.id == "__slots__"
-            for target in statement.targets
-        ):
-            continue
-        return _literal_string_tuple(statement.value)
-    return ()
-
-
-def _parameter_annotation_map(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> dict[str, str]:
-    annotations: dict[str, str] = {}
-    for argument in (
-        *function.args.posonlyargs,
-        *function.args.args,
-        *function.args.kwonlyargs,
-    ):
-        if argument.arg in {"self", "cls"} or argument.annotation is None:
-            continue
-        annotations[argument.arg] = ast.unparse(argument.annotation)
-    return annotations
-
-
-def _assigned_self_attribute(
-    statement: ast.stmt,
-) -> tuple[str, ast.AST | None] | None:
-    target: ast.AST | None = None
-    value: ast.AST | None = None
-    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-        target = statement.targets[0]
-        value = statement.value
-    elif isinstance(statement, ast.AnnAssign):
-        target = statement.target
-        value = statement.value
-    if not (
-        isinstance(target, ast.Attribute)
-        and isinstance(target.value, ast.Name)
-        and target.value.id == "self"
-    ):
-        return None
-    return target.attr, value
-
-
-def _expression_name_references(node: ast.AST | None) -> frozenset[str]:
-    if node is None:
-        return frozenset()
-    return frozenset(
-        current.id for current in ast.walk(node) if isinstance(current, ast.Name)
-    )
-
-
-def _constructor_field_type_map(node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
-    slots = set(_class_slot_names(node))
-    typed_fields: dict[str, str] = {}
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if statement.name != "__init__":
-            continue
-        annotations = _parameter_annotation_map(statement)
-        parameter_names = tuple(annotations)
-        for inner in statement.body:
-            assignment = _assigned_self_attribute(inner)
-            if assignment is None:
-                continue
-            field_name, value = assignment
-            if slots and field_name not in slots:
-                continue
-            constructor_field = ConstructorParameterField.from_assignment(
-                field_name=field_name,
-                parameter_names=parameter_names,
-                value_references=_expression_name_references(value),
-            )
-            if constructor_field is None:
-                continue
-            typed_fields.setdefault(
-                constructor_field.field_name,
-                annotations[constructor_field.source_name],
-            )
-    return sorted_tuple(typed_fields.items())
-
-
-def _carrier_field_type_map(node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
-    field_type_map = dict(HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node))
-    for field_name, annotation_text in _constructor_field_type_map(node):
-        field_type_map.setdefault(field_name, annotation_text)
-    return sorted_tuple(field_type_map.items())
-
-
 def _looks_like_reusable_carrier_name(name: str) -> bool:
     return name.endswith(_CARRIER_NAME_SUFFIXES)
-
-
-def _module_carrier_surfaces(module: ParsedModule) -> tuple[CarrierSurface, ...]:
-    surfaces: list[CarrierSurface] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        if not _public_name(node.name):
-            continue
-        field_type_map = _carrier_field_type_map(node)
-        if len(field_type_map) < _MIN_CARRIER_REUSE_FIELDS:
-            continue
-        field_names = tuple(name for name, _ in field_type_map)
-        role_names = _semantic_role_names_for_fields(field_names)
-        if len(role_names) < _MIN_CARRIER_REUSE_ROLES:
-            continue
-        surfaces.append(
-            CarrierSurface(
-                file_path=str(module.path),
-                module_name=module.module_name,
-                line=node.lineno,
-                class_name=node.name,
-                field_names=field_names,
-                field_type_map=field_type_map,
-                role_names=role_names,
-                base_names=HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node),
-                nominal_ancestor_names=(),
-            )
-        )
-    return sorted_tuple(
-        surfaces,
-        key=lambda surface: (surface.file_path, surface.line, surface.class_name),
-    )
 
 
 def _compact_parallel_primitive_bundle(
@@ -675,19 +483,6 @@ def _carrier_reuse_candidate(
     )
 
 
-def _available_carrier_reuse_candidates(
-    modules: Sequence[ParsedModule],
-) -> tuple[AvailableCarrierReuseCandidate, ...]:
-    surfaces = _carrier_surfaces_with_ancestors(
-        tuple(
-            surface
-            for module in modules
-            for surface in _module_carrier_surfaces(module)
-        )
-    )
-    return _available_carrier_reuse_candidates_from_surfaces(surfaces)
-
-
 def _available_carrier_reuse_candidates_from_surfaces(
     surfaces: tuple[CarrierSurface, ...],
 ) -> tuple[AvailableCarrierReuseCandidate, ...]:
@@ -727,23 +522,6 @@ def _available_carrier_reuse_candidates_from_surfaces(
     return _selected_available_carrier_reuse_candidates(candidates_by_local)
 
 
-def _exhaustive_available_carrier_reuse_candidates_from_surfaces(
-    surfaces: tuple[CarrierSurface, ...],
-) -> tuple[AvailableCarrierReuseCandidate, ...]:
-    authorities = _carrier_authority_surfaces(surfaces)
-    candidates_by_local: dict[
-        tuple[str, int, str], list[AvailableCarrierReuseCandidate]
-    ] = defaultdict(list)
-    for local in surfaces:
-        for authority in authorities:
-            candidate = _carrier_reuse_candidate(local, authority)
-            if candidate is not None:
-                candidates_by_local[
-                    (local.file_path, local.line, local.class_name)
-                ].append(candidate)
-    return _selected_available_carrier_reuse_candidates(candidates_by_local)
-
-
 def _selected_available_carrier_reuse_candidates(
     candidates_by_local: dict[
         tuple[str, int, str], list[AvailableCarrierReuseCandidate]
@@ -779,18 +557,6 @@ def _compact_available_carrier_reuse_candidates(
 ) -> tuple[AvailableCarrierReuseCandidate, ...]:
     return _available_carrier_reuse_candidates_from_surfaces(
         _carrier_surfaces_with_ancestors(_compact_carrier_surfaces(projections))
-    )
-
-
-def _parallel_primitive_carrier_candidates(
-    modules: list[ParsedModule],
-) -> tuple[ParallelPrimitiveCarrierCandidate, ...]:
-    return _parallel_primitive_carrier_candidates_from_bundles(
-        tuple(
-            bundle
-            for module in modules
-            for bundle in _module_parallel_primitive_bundles(module)
-        )
     )
 
 
@@ -1925,63 +1691,82 @@ class CompactCarrierReuseContext:
     available_candidates: tuple[AvailableCarrierReuseCandidate, ...]
     parallel_candidates: tuple[ParallelPrimitiveCarrierCandidate, ...]
 
+    @classmethod
+    def from_projections(
+        cls,
+        projections: tuple[CompactModuleClassProjection, ...],
+    ) -> "CompactCarrierReuseContext":
+        return cls(
+            available_candidates=_compact_available_carrier_reuse_candidates(
+                projections
+            ),
+            parallel_candidates=_compact_parallel_primitive_carrier_candidates(
+                projections
+            ),
+        )
 
-def _compact_carrier_reuse_context(
-    projections: tuple[CompactModuleClassProjection, ...],
-    config: DetectorConfig,
-) -> CompactCarrierReuseContext:
-    del config
-    return CompactCarrierReuseContext(
-        available_candidates=_compact_available_carrier_reuse_candidates(projections),
-        parallel_candidates=_compact_parallel_primitive_carrier_candidates(projections),
-    )
+
+CarrierReuseCandidateT = TypeVar("CarrierReuseCandidateT")
 
 
 class _CompactCarrierReuseDetectorBase(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    CrossModuleCollectorCandidateDetector,
+    CompactContextCandidateDetector[
+        CompactModuleClassProjection,
+        CompactCarrierReuseContext,
+        CarrierReuseCandidateT,
+    ],
+    Generic[CarrierReuseCandidateT],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
-    compact_candidate_attribute: ClassVar[str]
 
-    def _findings_from_compact_projections(
-        self,
+    @classmethod
+    def _compact_context_from_projections(
+        cls,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_from_compact_context(
-            projections,
-            compact_class_repository_context(projections, config),
-            config,
-        )
+    ) -> CompactCarrierReuseContext:
+        del config
+        return CompactCarrierReuseContext.from_projections(projections)
 
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
+    @classmethod
+    def _compact_context_from_shared(
+        cls,
         context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
+    ) -> CompactCarrierReuseContext:
         if isinstance(context, CompactCarrierReuseContext):
-            carrier_context = context
-        else:
-            repository = require_compact_class_repository_context(context)
-            carrier_context = repository.cached(
-                _compact_carrier_reuse_context,
-                lambda: _compact_carrier_reuse_context(projections, config),
-            )
-        return self._findings_for_candidates(
-            getattr(carrier_context, type(self).compact_candidate_attribute),
-            config,
+            return context
+        repository = require_compact_class_repository_context(context)
+        return repository.cached(
+            CompactCarrierReuseContext,
+            lambda: CompactCarrierReuseContext.from_projections(
+                repository.projections
+            ),
         )
 
 
-class _CompactAvailableCarrierReuseDetectorBase(_CompactCarrierReuseDetectorBase):
-    compact_candidate_attribute = "available_candidates"
+class _CompactAvailableCarrierReuseDetectorBase(
+    _CompactCarrierReuseDetectorBase[AvailableCarrierReuseCandidate]
+):
+    def _candidates_from_compact_context(
+        self,
+        context: CompactCarrierReuseContext,
+        config: DetectorConfig,
+    ) -> Sequence[AvailableCarrierReuseCandidate]:
+        del config
+        return context.available_candidates
 
 
-class _CompactParallelPrimitiveCarrierDetectorBase(_CompactCarrierReuseDetectorBase):
-    compact_candidate_attribute = "parallel_candidates"
+class _CompactParallelPrimitiveCarrierDetectorBase(
+    _CompactCarrierReuseDetectorBase[ParallelPrimitiveCarrierCandidate]
+):
+    def _candidates_from_compact_context(
+        self,
+        context: CompactCarrierReuseContext,
+        config: DetectorConfig,
+    ) -> Sequence[ParallelPrimitiveCarrierCandidate]:
+        del config
+        return context.parallel_candidates
 
 
 class AvailableCarrierReuseDetector(_CompactAvailableCarrierReuseDetectorBase):
@@ -2001,8 +1786,6 @@ class AvailableCarrierReuseDetector(_CompactAvailableCarrierReuseDetectorBase):
             ObservationTag.NORMALIZED_AST,
         ),
     )
-
-    candidate_collector = staticmethod(_available_carrier_reuse_candidates)
 
     def _findings_for_candidates(
         self,
@@ -2076,8 +1859,6 @@ class ParallelPrimitiveCarrierDetector(_CompactParallelPrimitiveCarrierDetectorB
             ObservationTag.NORMALIZED_AST,
         ),
     )
-
-    candidate_collector = staticmethod(_parallel_primitive_carrier_candidates)
 
     def _findings_for_candidates(
         self,

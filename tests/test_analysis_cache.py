@@ -6542,7 +6542,7 @@ def _write_compact_carrier_reuse_fixture(package_root: Path) -> None:
     )
 
 
-def test_compact_carrier_reuse_candidates_match_legacy_ast_candidates(
+def test_compact_carrier_reuse_candidates_preserve_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -6552,39 +6552,55 @@ def test_compact_carrier_reuse_candidates_match_legacy_ast_candidates(
     projections = abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_module_projections(
         modules
     )
-    context = abstraction_reuse_detectors._compact_carrier_reuse_context(
-        projections, config
+    context = abstraction_reuse_detectors.CompactCarrierReuseContext.from_projections(
+        projections
     )
-    carrier_surfaces = abstraction_reuse_detectors._carrier_surfaces_with_ancestors(
-        abstraction_reuse_detectors._compact_carrier_surfaces(projections)
-    )
-    assert abstraction_reuse_detectors._available_carrier_reuse_candidates_from_surfaces(
-        carrier_surfaces
-    ) == abstraction_reuse_detectors._exhaustive_available_carrier_reuse_candidates_from_surfaces(
-        carrier_surfaces
-    )
-    detector_legacy_pairs = (
+    detector_candidate_pairs = (
         (
             abstraction_reuse_detectors.AvailableCarrierReuseDetector,
             context.available_candidates,
-            abstraction_reuse_detectors._available_carrier_reuse_candidates(modules),
         ),
         (
             abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector,
             context.parallel_candidates,
-            abstraction_reuse_detectors._parallel_primitive_carrier_candidates(
-                list(modules)
-            ),
         ),
     )
 
-    for detector_type, compact_candidates, legacy_candidates in detector_legacy_pairs:
-        assert compact_candidates == legacy_candidates
+    for detector_type, compact_candidates in detector_candidate_pairs:
         detector = detector_type()
+        assert detector._candidate_items(list(modules), config) == compact_candidates
         assert detector._findings_from_compact_context(
             projections, context, config
-        ) == detector._findings_for_candidates(legacy_candidates, config)
+        ) == detector._findings_for_candidates(compact_candidates, config)
         assert compact_candidates
+        assert "candidate_collector" not in detector_type.__dict__
+    available = context.available_candidates[0]
+    assert available.local.class_name == "LocalEnvelope"
+    assert available.authority.class_name == "RequestCarrier"
+    assert available.shared_roles == (
+        "request_id",
+        "source_path",
+        "workspace_root",
+    )
+    parallel = context.parallel_candidates[0]
+    assert parallel.semantic_roles == ("request", "source", "workspace")
+    assert tuple(bundle.class_name for bundle in parallel.bundles) == (
+        "LocalEnvelope",
+        "RequestCarrier",
+    )
+    for removed_name in (
+        "_compact_carrier_reuse_context",
+        "_available_carrier_reuse_candidates",
+        "_parallel_primitive_carrier_candidates",
+        "_module_carrier_surfaces",
+        "_module_parallel_primitive_bundles",
+        "_exhaustive_available_carrier_reuse_candidates_from_surfaces",
+    ):
+        assert not hasattr(abstraction_reuse_detectors, removed_name)
+    assert not hasattr(
+        abstraction_reuse_detectors._CompactCarrierReuseDetectorBase,
+        "compact_candidate_attribute",
+    )
 
 
 def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
@@ -6842,12 +6858,15 @@ def test_carrier_reuse_detectors_share_one_compact_context(
         abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector,
     )
     calls = 0
-    original_builder = abstraction_reuse_detectors._compact_carrier_reuse_context
+    original_builder = (
+        abstraction_reuse_detectors.CompactCarrierReuseContext.from_projections
+    )
 
     def counting_builder(projections, config):
         nonlocal calls
+        del config
         calls += 1
-        return original_builder(projections, config)
+        return original_builder(projections)
 
     for detector_type in detector_types:
         monkeypatch.setattr(
