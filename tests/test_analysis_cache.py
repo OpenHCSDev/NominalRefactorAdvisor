@@ -6603,7 +6603,7 @@ def test_compact_carrier_reuse_candidates_preserve_semantics_without_ast_shadow(
     )
 
 
-def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
+def test_compact_available_abstraction_reuse_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -6647,9 +6647,6 @@ def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
     modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
     detector = abstraction_reuse_detectors.AvailableAbstractionReuseDetector()
     projections = type(detector).compact_module_projections(modules)
-    legacy_candidates = (
-        abstraction_reuse_detectors._available_abstraction_reuse_candidates(modules)
-    )
     compact_candidates = (
         abstraction_reuse_detectors._compact_available_abstraction_reuse_candidates(
             projections
@@ -6697,13 +6694,19 @@ def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
         )
     )
 
-    assert compact_candidates == legacy_candidates
     assert compact_candidates == exhaustive_candidates
-    assert compact_candidates
+    assert len(compact_candidates) == 1
+    assert compact_candidates[0].local.symbol == "DebugToolbarWidget.__init__"
+    assert compact_candidates[0].authority.name == "ButtonPanel"
+    assert not hasattr(
+        abstraction_reuse_detectors,
+        "_available_abstraction_reuse_candidates",
+    )
+    assert "candidate_collector" not in type(detector).__dict__
     config = DetectorConfig()
     assert detector._findings_from_compact_projections(
         projections, config
-    ) == detector._findings_for_candidates(legacy_candidates, config)
+    ) == detector._findings_for_candidates(compact_candidates, config)
     accumulator = accumulate_compact_global_projections_for_roots(
         (tmp_path,),
         (type(detector),),
@@ -6711,7 +6714,7 @@ def test_compact_available_abstraction_reuse_matches_legacy_ast_candidates(
     )
     assert accumulator.projection_count == len(modules)
     assert accumulator.findings_by_detector(config)[type(detector)] == (
-        detector._findings_for_candidates(legacy_candidates, config)
+        detector._findings_for_candidates(compact_candidates, config)
     )
     target_path = package_root / "debug_toolbar.py"
     report_scope = AnalysisPathScope(
