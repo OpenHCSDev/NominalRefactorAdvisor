@@ -9,7 +9,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import ClassVar, Generic, TypeAlias, TypeVar
+from typing import ClassVar, TypeAlias
 from metaclass_registry import AutoRegisterMeta
 
 from ..semantic_algebra import ObjectFamilyShape
@@ -22,14 +22,10 @@ from ..ast_tools import SourceModule
 from ..native_syntax import NativePythonSyntaxIndex
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
-    AstTypedEffectStep,
-    GuardedEffectStep,
     Maybe,
-    RegisteredEffectStep,
     attribute_call_match,
     constant_value,
     named_call_assignment,
-    registered_effect_steps,
 )
 from ._base import *
 from ._helpers import *
@@ -2285,11 +2281,11 @@ class ModuleConstructorPolicyFamilyCandidate:
 
 
 def _catalog_installing_mixin_candidate(method: ast.FunctionDef) -> str | None:
-    return cast(
-        str | None,
-        Maybe.of(method)
-        .bind_all(registered_effect_steps(_CatalogInstallingMixinStep))
-        .unwrap_or_none(),
+    return (
+        Maybe.of(_CatalogInstallingMixinShape.from_method(method))
+        .filter(lambda shape: shape.calls_super_init_subclass)
+        .project(lambda shape: shape.catalog_attribute())
+        .unwrap_or_none()
     )
 
 
@@ -2298,31 +2294,14 @@ class _CatalogInstallingMixinShape:
     first_call: ast.Call
     second_call: ast.Call
 
-
-@dataclass(frozen=True)
-class _ExpressionCallPair:
-    first_call: ast.Call
-    second_call: ast.Call
-
-
-class _CatalogInstallingMixinStep(RegisteredEffectStep):
-    pass
-
-
-_FunctionCallPairResult = TypeVar("_FunctionCallPairResult")
-
-
-class _NamedFunctionExprCallPairStep(
-    AstTypedEffectStep[ast.FunctionDef, _FunctionCallPairResult],
-    Generic[_FunctionCallPairResult],
-):
-    node_type = ast.FunctionDef
-    function_name: ClassVar[str]
-
-    def project_ast(self, value: ast.FunctionDef) -> _FunctionCallPairResult | None:
+    @classmethod
+    def from_method(
+        cls,
+        method: ast.FunctionDef,
+    ) -> "_CatalogInstallingMixinShape | None":
         return (
-            Maybe.of(value)
-            .filter(lambda function: function.name == self.function_name)
+            Maybe.of(method)
+            .filter(lambda function: function.name == "__init_subclass__")
             .project(
                 lambda function: ast_sequence(
                     _trim_docstring_body(function.body), ast.Expr, ast.Expr
@@ -2330,85 +2309,35 @@ class _NamedFunctionExprCallPairStep(
             )
             .project(
                 lambda statements: Maybe.of(as_ast(statements[0].value, ast.Call))
-                .combine(
-                    lambda first_call: as_ast(statements[1].value, ast.Call),
-                    lambda first_call, second_call: _ExpressionCallPair(
-                        first_call=first_call,
-                        second_call=second_call,
-                    ),
+                .with_projection(
+                    lambda _first_call: as_ast(statements[1].value, ast.Call)
                 )
+                .map(lambda calls: cls(*calls))
                 .unwrap_or_none()
-            )
-            .project(
-                lambda call_pair: self.project_call_pair(
-                    call_pair.first_call,
-                    call_pair.second_call,
-                )
             )
             .unwrap_or_none()
         )
 
-    @abstractmethod
-    def project_call_pair(
-        self, first_call: ast.Call, second_call: ast.Call
-    ) -> _FunctionCallPairResult | None:
-        raise NotImplementedError
-
-
-class _CatalogInitSubclassBodyStep(
-    _CatalogInstallingMixinStep,
-    _NamedFunctionExprCallPairStep[_CatalogInstallingMixinShape],
-):
-    step_id = "catalog_init_subclass_body"
-    registration_order = 10
-    function_name = "__init_subclass__"
-
-    def project_call_pair(
-        self, first_call: ast.Call, second_call: ast.Call
-    ) -> _CatalogInstallingMixinShape:
-        return _CatalogInstallingMixinShape(first_call, second_call)
-
-
-class _CatalogSuperInitSubclassStep(
-    _CatalogInstallingMixinStep,
-    GuardedEffectStep[_CatalogInstallingMixinShape, _CatalogInstallingMixinShape],
-):
-    step_id = "catalog_super_init_subclass"
-    registration_order = 20
-
-    def project(
-        self, value: _CatalogInstallingMixinShape
-    ) -> _CatalogInstallingMixinShape | None:
+    @property
+    def calls_super_init_subclass(self) -> bool:
         match = attribute_call_match(
-            value.first_call,
+            self.first_call,
             method_name="__init_subclass__",
             owner_type=ast.Call,
             argument_count=0,
             allow_keywords=False,
         )
-        if match is None or name_id(match.owner.func) != "super":
-            return None
-        return value
+        return match is not None and name_id(match.owner.func) == "super"
 
-
-class _CatalogInstallAttributeStep(
-    _CatalogInstallingMixinStep,
-    GuardedEffectStep[_CatalogInstallingMixinShape, str],
-):
-    step_id = "catalog_install_attribute"
-    registration_order = 30
-
-    def project(self, value: _CatalogInstallingMixinShape) -> str | None:
+    def catalog_attribute(self) -> str | None:
         match = attribute_call_match(
-            value.second_call,
+            self.second_call,
             method_name="install",
             owner_type=ast.Attribute,
             owner_name="cls",
             single_argument_name="cls",
         )
-        if match is None:
-            return None
-        return match.owner.attr
+        return Maybe.of(match).map(lambda item: item.owner.attr).unwrap_or_none()
 
 
 def _catalog_installing_mixin_family_candidates(

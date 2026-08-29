@@ -16,6 +16,7 @@ from typing import cast
 import pytest
 
 import nominal_refactor_advisor.ast_tools as ast_tools_module
+import nominal_refactor_advisor.detectors._structural as structural_detectors
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
@@ -26217,6 +26218,41 @@ def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:
     assert "AlphaMixin" in finding.summary
     assert "__beta_catalog__" in finding.summary
     assert "CatalogInstallingMixin" in (finding.scaffold or "")
+    removed_step_types = (
+        "_CatalogInstallingMixinStep",
+        "_ExpressionCallPair",
+        "_NamedFunctionExprCallPairStep",
+        "_CatalogInitSubclassBodyStep",
+        "_CatalogSuperInitSubclassStep",
+        "_CatalogInstallAttributeStep",
+    )
+    assert all(
+        not hasattr(structural_detectors, name) for name in removed_step_types
+    )
+
+
+@pytest.mark.parametrize(
+    "method_source",
+    (
+        "def __init_subclass__(cls):\n"
+        "    super().__init_subclass__(1)\n"
+        "    cls.__catalog__.install(cls)\n",
+        "def __init_subclass__(cls):\n"
+        "    super().__init_subclass__()\n"
+        "    cls.__catalog__.register(cls)\n",
+        "def __init_subclass__(cls):\n"
+        "    prepare()\n"
+        "    super().__init_subclass__()\n"
+        "    cls.__catalog__.install(cls)\n",
+    ),
+)
+def test_catalog_installing_mixin_shape_rejects_nonmatching_methods(
+    method_source: str,
+) -> None:
+    method = ast.parse(method_source).body[0]
+
+    assert isinstance(method, ast.FunctionDef)
+    assert structural_detectors._catalog_installing_mixin_candidate(method) is None
 
 
 def test_detects_regex_group_extractor_family(tmp_path: Path) -> None:
