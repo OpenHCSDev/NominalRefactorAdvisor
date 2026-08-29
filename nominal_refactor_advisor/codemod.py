@@ -3181,7 +3181,9 @@ class SelectorArrayPayloadValueCodec(
 class OperationTemplateArrayPayloadValueCodec(
     PayloadValueCodec[tuple["RefactorRecipeOperationTemplate", ...]]
 ):
-    """Required selected-target operation-template array semantics."""
+    """Selected-target operation-template array semantics."""
+
+    is_required: bool = True
 
     def read(
         self,
@@ -3189,6 +3191,8 @@ class OperationTemplateArrayPayloadValueCodec(
         field_name: str,
     ) -> tuple["RefactorRecipeOperationTemplate", ...]:
         value = payload.get(field_name)
+        if value is None and not self.is_required:
+            return ()
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"Expected operation-template array field {field_name!r}")
         return tuple(
@@ -3201,6 +3205,51 @@ class OperationTemplateArrayPayloadValueCodec(
         ):
             raise TypeError(
                 "operation-template payload codec requires operation templates"
+            )
+        return tuple(item.to_dict() for item in value)
+
+
+@dataclass(frozen=True)
+class SetupOperationArrayPayloadValueCodec(
+    PayloadValueCodec[tuple["RefactorRecipeOperation", ...]]
+):
+    """Optional setup-operation array excluding selected-target operations."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple["RefactorRecipeOperation", ...]:
+        value = payload.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected setup-operation array field {field_name!r}")
+        if not all(isinstance(item, Mapping) for item in value):
+            raise ValueError("setup operation entries must be objects")
+        operations = tuple(
+            RefactorRecipeOperation.from_dict(
+                cast(Mapping[str, JsonValue], item)
+            )
+            for item in value
+        )
+        if any(
+            isinstance(operation, SelectedTargetsOperation)
+            for operation in operations
+        ):
+            raise ValueError(
+                "setup_operations must not include selected-target operations"
+            )
+        return operations
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, RefactorRecipeOperation)
+            and not isinstance(item, SelectedTargetsOperation)
+            for item in value
+        ):
+            raise TypeError(
+                "setup-operation payload codec requires non-selected recipe operations"
             )
         return tuple(item.to_dict() for item in value)
 
@@ -4047,17 +4096,7 @@ class CodemodSelectedOperationPlanScaffoldReport(CodemodPlanScaffoldReport):
                     for target in self.selector_resolution.selected_targets
                 ),
                 "missing_target_ids": self.selector_resolution.missing_target_ids,
-                "operation_plan_template": self.operation_plan_template.to_dict(),
-                "setup_operations": tuple(
-                    operation.to_dict()
-                    for operation in self.operation_plan_template.recipe.operations
-                ),
-                "operation_templates": tuple(
-                    template.to_dict()
-                    for template in (
-                        self.operation_plan_template.selected_operation_templates
-                    )
-                ),
+                **self.operation_plan_template.to_dict(),
                 "document": self.document.to_dict(),
             }
         )
@@ -4362,17 +4401,40 @@ class RefactorRecipeOperationPlanTemplate:
         "Apply operation plan template to the resolved selector."
     )
 
-    recipe: "RefactorRecipe" = field(
-        default_factory=lambda: RefactorRecipe(
-            recipe_id=RefactorRecipeOperationPlanTemplate.default_recipe_id,
-            reason=RefactorRecipeOperationPlanTemplate.default_reason,
-        )
+    recipe_id: str = default_recipe_id
+    reason: str = default_reason
+    setup_operations: tuple["RefactorRecipeOperation", ...] = ()
+    operation_templates: tuple[RefactorRecipeOperationTemplate, ...] = ()
+    payload_bindings: ClassVar[
+        PayloadBindingSet["RefactorRecipeOperationPlanTemplate", object]
+    ] = PayloadBindingSet.from_specs(
+        (
+            "recipe_id",
+            "recipe_id",
+            StringPayloadValueCodec(
+                is_required=False,
+                missing_value=default_recipe_id,
+            ),
+        ),
+        (
+            "reason",
+            "reason",
+            StringPayloadValueCodec(
+                is_required=False,
+                missing_value=default_reason,
+            ),
+        ),
+        (
+            "setup_operations",
+            "setup_operations",
+            SetupOperationArrayPayloadValueCodec(),
+        ),
+        (
+            OPERATION_TEMPLATES_PAYLOAD_FIELD,
+            "operation_templates",
+            OperationTemplateArrayPayloadValueCodec(is_required=False),
+        ),
     )
-    selected_operation_templates: tuple[RefactorRecipeOperationTemplate, ...] = ()
-
-    @classmethod
-    def dsl_field_names(cls) -> tuple[str, ...]:
-        return tuple(cls().to_dict())
 
     @classmethod
     def from_json_value(
@@ -4403,107 +4465,27 @@ class RefactorRecipeOperationPlanTemplate:
             raise ValueError(
                 "codemod operation template JSON must contain at least one template"
             )
-        return cls(selected_operation_templates=template_tuple)
+        return cls(operation_templates=template_tuple)
 
     @classmethod
     def from_payload(
         cls,
         payload: Mapping[str, JsonValue],
     ) -> "RefactorRecipeOperationPlanTemplate":
-        setup_operations = cls.setup_operations_from_payload(payload)
-        operation_templates = cls.operation_templates_from_payload(payload)
-        if not setup_operations and not operation_templates:
+        constructor_kwargs: dict[str, object] = {}
+        for binding in cls.payload_bindings:
+            constructor_kwargs.update(binding.constructor_kwargs(payload))
+        template = cls(**constructor_kwargs)
+        if not template.setup_operations and not template.operation_templates:
             raise ValueError(
                 "operation plan template requires setup_operations or "
                 "operation_templates"
             )
-        return cls(
-            recipe=RefactorRecipe(
-                recipe_id=cls.optional_string_with_default(
-                    payload,
-                    "recipe_id",
-                    cls.default_recipe_id,
-                ),
-                reason=cls.optional_string_with_default(
-                    payload,
-                    "reason",
-                    cls.default_reason,
-                ),
-                operations=setup_operations,
-            ),
-            selected_operation_templates=operation_templates,
+        CodemodPayload(payload).require_supported_fields(
+            template.to_dict(),
+            role="operation plan template",
         )
-
-    @classmethod
-    def setup_operations_from_payload(
-        cls,
-        payload: Mapping[str, JsonValue],
-    ) -> tuple["RefactorRecipeOperation", ...]:
-        if "setup_operations" not in payload:
-            return ()
-        value = payload["setup_operations"]
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("setup_operations must be an array")
-        operations = tuple(
-            RefactorRecipeOperation.from_dict(cls.required_mapping(item))
-            for item in value
-        )
-        for operation in operations:
-            if isinstance(operation, SelectedTargetsOperation):
-                raise ValueError(
-                    "setup_operations must not include selected-target operations"
-                )
-        return operations
-
-    @classmethod
-    def operation_templates_from_payload(
-        cls,
-        payload: Mapping[str, JsonValue],
-    ) -> tuple[RefactorRecipeOperationTemplate, ...]:
-        if OPERATION_TEMPLATES_PAYLOAD_FIELD not in payload:
-            return ()
-        value = payload[OPERATION_TEMPLATES_PAYLOAD_FIELD]
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("operation_templates must be an array")
-        return tuple(
-            RefactorRecipeOperationTemplate.from_json_value(item) for item in value
-        )
-
-    @staticmethod
-    def required_mapping(value: JsonValue) -> Mapping[str, JsonValue]:
-        if not isinstance(value, Mapping):
-            raise ValueError("setup operation entries must be objects")
-        return value
-
-    @staticmethod
-    def optional_string(
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> str | None:
-        value = payload.get(field_name)
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError(f"Expected string field {field_name!r}")
-        return value
-
-    @classmethod
-    def optional_string_with_default(
-        cls,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-        default_value: str,
-    ) -> str:
-        value = cls.optional_string(payload, field_name)
-        if value is None:
-            return default_value
-        if value == "":
-            return default_value
-        return value
+        return template
 
     def recipe_for_selection(
         self,
@@ -4511,30 +4493,29 @@ class RefactorRecipeOperationPlanTemplate:
         *,
         selected_count: int,
     ) -> "RefactorRecipe":
-        operations: tuple[RefactorRecipeOperation, ...] = self.recipe.operations
-        if self.selected_operation_templates:
+        operations = self.setup_operations
+        if self.operation_templates:
             operations = (
                 *operations,
                 ApplySelectedTargetsOperation(
                     target=SourceRewriteTarget(),
                     selector=selector,
                     selection_count=SelectionCountExpectation(exact=selected_count),
-                    operation_templates=self.selected_operation_templates,
+                    operation_templates=self.operation_templates,
                     rationale=("Apply operation templates to the selected target set."),
                 ),
             )
-        return replace(self.recipe, operations=operations)
+        return RefactorRecipe(
+            recipe_id=self.recipe_id,
+            operations=operations,
+            reason=self.reason,
+        )
 
     def to_dict(self) -> JsonObject:
         return {
-            "recipe_id": self.recipe.recipe_id,
-            "reason": self.recipe.reason,
-            "setup_operations": tuple(
-                operation.to_dict() for operation in self.recipe.operations
-            ),
-            "operation_templates": tuple(
-                template.to_dict() for template in self.selected_operation_templates
-            ),
+            key: value
+            for binding in self.payload_bindings
+            for key, value in binding.payload_items(self)
         }
 
 
@@ -13433,10 +13414,6 @@ class RefactorRecipe:
     authority_claims: tuple[AuthorityClaim, ...] = ()
 
     @classmethod
-    def dsl_field_names(cls) -> tuple[str, ...]:
-        return tuple(cls(recipe_id="").to_dict())
-
-    @classmethod
     def compose(
         cls,
         recipes: Iterable["RefactorRecipe"],
@@ -13745,10 +13722,6 @@ class CodemodPlanDocument:
     guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
 
     @classmethod
-    def dsl_field_names(cls) -> tuple[str, ...]:
-        return tuple(cls().to_dict())
-
-    @classmethod
     def compose(
         cls,
         documents: Iterable["CodemodPlanDocument"],
@@ -13946,10 +13919,6 @@ class CodemodPlanSequence:
     """Ordered codemod documents resolved against each prior simulated stage."""
 
     documents: tuple[CodemodPlanDocument, ...] = ()
-
-    @classmethod
-    def dsl_field_names(cls) -> tuple[str, ...]:
-        return tuple(cls().to_dict())
 
     @classmethod
     def compose(

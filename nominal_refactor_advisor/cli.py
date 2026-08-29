@@ -1821,31 +1821,6 @@ class InlineSourceIndexSelectedOperationTargetSelectorSource(
         return tuple(field.payload_item(args) for field in self.cli_fields())
 
 
-def load_codemod_operation_templates(
-    path: Path,
-) -> tuple[RefactorRecipeOperationTemplate, ...]:
-    """Load one or more target-local codemod operation templates from JSON."""
-
-    payload = JsonDocumentSource(path).load()
-    if isinstance(payload, Mapping):
-        return (
-            RefactorRecipeOperationTemplate.from_json_value(
-                cast(Mapping[str, JsonValue], payload)
-            ),
-        )
-    if isinstance(payload, list):
-        templates = tuple(
-            RefactorRecipeOperationTemplate.from_json_value(item)
-            for item in cast(list[JsonValue], payload)
-        )
-        if not templates:
-            raise ValueError(
-                "codemod operation template JSON must contain at least one template"
-            )
-        return templates
-    raise ValueError("codemod operation template JSON must be an object or array")
-
-
 def load_codemod_operation_plan_template(
     path: Path,
 ) -> RefactorRecipeOperationPlanTemplate:

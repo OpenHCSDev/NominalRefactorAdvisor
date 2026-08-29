@@ -18,8 +18,9 @@ from nominal_refactor_advisor.codemod import (
     PayloadBindingSet,
     PayloadValueCodec,
     RecipeCallReplacement,
-    RefactorRecipeOperationTemplate,
     RefactorRecipeOperation,
+    RefactorRecipeOperationTemplate,
+    RefactorRecipeOperationPlanTemplate,
     ReplaceTextOperation,
     ReplacementImportPayloadValueCodec,
     SelectionCountExpectation,
@@ -44,7 +45,11 @@ def test_registered_payload_bindings_own_exact_codec_leaves() -> None:
         for declaration_type in CodemodTargetSelector.__registry__.values()
     )
 
-    for binding_set in (*operation_binding_sets, *selector_binding_sets):
+    for binding_set in (
+        *operation_binding_sets,
+        *selector_binding_sets,
+        RefactorRecipeOperationPlanTemplate.payload_bindings,
+    ):
         assert isinstance(binding_set, PayloadBindingSet)
         for binding in binding_set:
             assert isinstance(binding.codec, PayloadValueCodec)
@@ -107,6 +112,33 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         assert codec.read({"value": serialized}, "value") == value
 
 
+def test_operation_plan_template_bindings_round_trip_the_complete_schema() -> None:
+    template = RefactorRecipeOperationPlanTemplate.from_payload(
+        {
+            "recipe_id": "selected-modernization",
+            "reason": "Create one helper and update the selected methods.",
+            "setup_operations": (
+                {
+                    "operation": "create_file",
+                    "file_path": "pkg/generated.py",
+                    "source": "",
+                },
+            ),
+            "operation_templates": (
+                {
+                    "operation": "replace_text",
+                    "old_source": "legacy(value)",
+                    "new_source": "modern(value)",
+                },
+            ),
+        }
+    )
+
+    assert RefactorRecipeOperationPlanTemplate.from_json_value(template.to_dict()) == (
+        template
+    )
+
+
 def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
     with pytest.raises(ValueError, match="non-empty string"):
         StringPayloadValueCodec().read({}, "name")
@@ -114,3 +146,16 @@ def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
         IntegerPayloadValueCodec(is_required=True).serialize(None)
     with pytest.raises(TypeError, match="MovedSymbolImportPolicy"):
         ReplacementImportPayloadValueCodec().serialize("from pkg import value")
+    with pytest.raises(ValueError, match="Unsupported operation plan template field"):
+        RefactorRecipeOperationPlanTemplate.from_payload(
+            {
+                "operation_templates": (
+                    {
+                        "operation": "replace_text",
+                        "old_source": "legacy(value)",
+                        "new_source": "modern(value)",
+                    },
+                ),
+                "recipe_label": "mirrored-name",
+            }
+        )
