@@ -2255,20 +2255,6 @@ class RegistryTraversalSubstrateDetector(
 
 
 @dataclass(frozen=True)
-class ExcessiveBlankLineRunCandidate:
-    file_path: str
-    start_line: int
-    end_line: int
-    blank_line_count: int
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(
-            self.file_path, self.start_line, f"blank-lines:{self.blank_line_count}"
-        )
-
-
-@dataclass(frozen=True)
 class CatalogInstallingMixinFamilyCandidate(ClassLineNumbersGroup):
     catalog_attribute_names: tuple[str, ...]
 
@@ -2296,83 +2282,6 @@ class ModuleConstructorPolicyFamilyCandidate:
     field_names: tuple[str, ...]
 
     evidence = ZippedSourceLocationEvidenceProperty("line_numbers", "row_names")
-
-
-def _docstring_line_ranges(root: ast.AST) -> set[int]:
-    protected: set[int] = set()
-
-    for node in _walk_nodes(root):
-        if not isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            continue
-        if not node.body or not _is_docstring_expr(node.body[0]):
-            continue
-        start = node.body[0].lineno
-        end = node.body[0].end_lineno or start
-        if start is None or end is None:
-            continue
-        protected.update(range(start, end + 1))
-    return protected
-
-
-def _excessive_blank_line_run_candidates(
-    module: ParsedModule,
-) -> tuple[ExcessiveBlankLineRunCandidate, ...]:
-    protected_lines = _docstring_line_ranges(module.module)
-    class_body_ranges = _class_body_line_ranges(module.module)
-    candidates: list[ExcessiveBlankLineRunCandidate] = []
-    run_start: int | None = None
-    run_length = 0
-
-    def flush(end_line: int) -> None:
-        nonlocal run_start, run_length
-        if run_start is not None and (
-            run_length > 4
-            or (
-                run_length > 1
-                and _line_range_is_nested_in(run_start, end_line, class_body_ranges)
-            )
-        ):
-            candidates.append(
-                ExcessiveBlankLineRunCandidate(
-                    file_path=str(module.path),
-                    start_line=run_start,
-                    end_line=end_line,
-                    blank_line_count=run_length,
-                )
-            )
-        run_start = None
-        run_length = 0
-
-    source_lines = module.source.splitlines()
-    for line_number, line in enumerate(source_lines, 1):
-        if line_number in protected_lines or line.strip():
-            flush(line_number - 1)
-            continue
-        if run_start is None:
-            run_start = line_number
-        run_length += 1
-    flush(len(source_lines))
-    return tuple(candidates)
-
-
-def _class_body_line_ranges(module: ast.Module) -> tuple[range, ...]:
-    return tuple(
-        (
-            range(node.body[0].lineno, (node.end_lineno or node.body[-1].lineno) + 1)
-            for node in _walk_nodes(module)
-            if isinstance(node, ast.ClassDef) and node.body
-        )
-    )
-
-
-def _line_range_is_nested_in(
-    start_line: int, end_line: int, ranges: tuple[range, ...]
-) -> bool:
-    return any(
-        (start_line in line_range and end_line in line_range for line_range in ranges)
-    )
 
 
 def _catalog_installing_mixin_candidate(method: ast.FunctionDef) -> str | None:
@@ -2873,53 +2782,6 @@ declare_candidate_rule_detector(
         ),
     ),
     candidate_collector=_accumulator_fold_family_candidates,
-)
-
-
-declare_candidate_rule_detector(
-    ExcessiveBlankLineRunCandidate,
-    high_confidence_certified_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Nonsemantic blank source regions should be collapsed",
-        "A contiguous run of blank source lines outside docstrings carries no semantic information. It inflates the module and hides true structure without adding an abstraction boundary.",
-        "compact source layout with no nonsemantic blank-line payload",
-        "source contains an empty region larger than a canonical separator",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_CAPABILITY_TAGS,
-        (ObservationTag.NORMALIZED_AST,),
-    ),
-    summary=lambda blank_candidate: f"`{blank_candidate.file_path}` has {blank_candidate.blank_line_count} contiguous blank lines from {blank_candidate.start_line} to {blank_candidate.end_line}.",
-    scaffold=lambda blank_candidate: "# Delete the nonsemantic blank-line run.\n# Keep at most the canonical separator needed by the surrounding declarations.",
-    codemod_patch=lambda blank_candidate: f"# Collapse blank lines {blank_candidate.start_line}-{blank_candidate.end_line} in `{blank_candidate.file_path}`.",
-    metrics=lambda blank_candidate: RepeatedMethodMetrics.from_duplicate_family(
-        duplicate_site_count=blank_candidate.blank_line_count,
-        statement_count=1,
-        class_count=0,
-        method_symbols=("blank-line-run",),
-    ),
-    candidate_collector=_excessive_blank_line_run_candidates,
-)
-
-
-declare_candidate_rule_detector(
-    ReadabilityCompressedLineCandidate,
-    high_confidence_certified_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Overcompressed source layout should expand to readable structure",
-        "Semantic compression belongs in named abstractions, registries, catalogs, and shared algorithms. Packing several source authorities onto one physical line or creating very long lines removes readability without removing semantic duplication.",
-        "readable physical layout around already-compressed semantic authorities",
-        "a source line is too long, uses semicolon-separated statements, or keeps a compound suite inline",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _NORMALIZED_AST_OBSERVATION_TAGS,
-    ),
-    summary=lambda line_candidate: f"`{line_candidate.file_path}` line {line_candidate.line} is readability-compressed ({line_candidate.reason}; {line_candidate.char_count} chars).",
-    scaffold=lambda line_candidate: "Expand physical layout with a formatter; keep semantic compression in named abstractions, not packed source lines.",
-    codemod_patch=lambda line_candidate: f"# Reformat `{line_candidate.file_path}` around line {line_candidate.line}; split statements/suites and wrap long expressions.",
-    metrics=lambda line_candidate: MappingMetrics.from_field_names(
-        mapping_site_count=line_candidate.statement_count,
-        mapping_name="readability-compressed-line",
-        field_names=tuple(line_candidate.reason.split(", ")),
-    ),
-    candidate_collector=_readability_compressed_line_candidates,
 )
 
 

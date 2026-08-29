@@ -35,10 +35,8 @@ from ..semantic_identity import SemanticRoleIdentityToken
 from ..semantic_match import effect_step_class_family_authority
 from ..impact_ranking import RefactorImpactKey
 
-import io
 import pickle
 import re
-import tokenize
 import zlib
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -15991,114 +15989,6 @@ def _enum_metadata_table_candidates(
                     )
                 )
     return tuple(candidates)
-
-
-_READABILITY_COMPRESSED_LINE_LIMIT = 140
-_READABILITY_STRING_TOKEN_TYPE_NAMES = (
-    "STRING",
-    "FSTRING_START",
-    "FSTRING_MIDDLE",
-    "FSTRING_END",
-    "TSTRING_START",
-    "TSTRING_MIDDLE",
-    "TSTRING_END",
-)
-_READABILITY_STRING_TOKEN_TYPES = frozenset(
-    token_type
-    for token_type, token_type_name in tokenize.tok_name.items()
-    if token_type_name in _READABILITY_STRING_TOKEN_TYPE_NAMES
-)
-_READABILITY_INLINE_SUITE_TYPES = (
-    ast.FunctionDef,
-    ast.AsyncFunctionDef,
-    ast.ClassDef,
-    ast.If,
-    ast.For,
-    ast.AsyncFor,
-    ast.While,
-    ast.With,
-    ast.AsyncWith,
-)
-
-
-def _readability_semicolon_counts(source: str) -> dict[int, int]:
-    counts: dict[int, int] = defaultdict(int)
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if token.type == tokenize.OP and token.string == ";":
-            counts[token.start[0]] += 1
-    return counts
-
-
-def _readability_line_length(line: str) -> int:
-    return len(line.expandtabs(4).rstrip("\n\r"))
-
-
-def _readability_line_is_comment_or_blank(line: str) -> bool:
-    stripped = line.strip()
-    return not stripped or stripped.startswith("#")
-
-
-def _readability_line_has_string_token(line: str) -> bool:
-    try:
-        return any(
-            token.type in _READABILITY_STRING_TOKEN_TYPES
-            for token in tokenize.generate_tokens(io.StringIO(f"{line}\n").readline)
-        )
-    except tokenize.TokenError:
-        return True
-
-
-def _readability_compressed_line_candidates(
-    module: ParsedModule,
-) -> tuple[ReadabilityCompressedLineCandidate, ...]:
-    lines = module.source.splitlines()
-    reasons_by_line: dict[int, set[str]] = defaultdict(set)
-    statement_counts_by_line: dict[int, int] = defaultdict(lambda: 1)
-
-    for line_number, line in enumerate(lines, 1):
-        if _readability_line_is_comment_or_blank(line):
-            continue
-        if _readability_line_length(
-            line
-        ) > _READABILITY_COMPRESSED_LINE_LIMIT and not _readability_line_has_string_token(
-            line
-        ):
-            reasons_by_line[line_number].add("overlong physical line")
-
-    for line_number, semicolon_count in _readability_semicolon_counts(
-        module.source
-    ).items():
-        reasons_by_line[line_number].add("semicolon-separated statements")
-        statement_counts_by_line[line_number] = max(
-            statement_counts_by_line[line_number],
-            semicolon_count + 1,
-        )
-
-    for node in _walk_nodes(module.module):
-        if not isinstance(node, _READABILITY_INLINE_SUITE_TYPES):
-            continue
-        body = node.body
-        first_body_statement = body[0] if body else None
-        if (
-            isinstance(first_body_statement, ast.stmt)
-            and first_body_statement.lineno == node.lineno
-        ):
-            reasons_by_line[node.lineno].add(f"inline {type(node).__name__} suite")
-            statement_counts_by_line[node.lineno] = max(
-                statement_counts_by_line[node.lineno],
-                len(body),
-            )
-
-    return tuple(
-        ReadabilityCompressedLineCandidate(
-            file_path=str(module.path),
-            line=line_number,
-            char_count=_readability_line_length(lines[line_number - 1]),
-            reason=", ".join(sorted(reasons)),
-            statement_count=statement_counts_by_line[line_number],
-        )
-        for line_number, reasons in sorted(reasons_by_line.items())
-    )
 
 
 _TUPLE_INDEX_OPACITY_CARRIER_CALLS = frozenset(

@@ -3687,8 +3687,6 @@ class MarkdownReportRenderer(ABC):
         lines = [
             f"   - {scan.label}: {scan.finding_count} finding(s), "
             f"{scan.production_finding_count} production, "
-            f"{scan.semantic_production_finding_count} semantic production, "
-            f"{scan.readability_finding_count} readability, "
             f"{scan.test_only_finding_count} test-only; "
             f"{scan.elapsed_seconds:.3f}s/{scan.scan_budget_seconds:.3f}s",
             f"     proof: {'pass' if scan.proof_passes else 'fail'}; "

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Generic, Iterable, TypeAlias, TypeVar
 
 from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
-from .collection_algebra import sorted_tuple
+from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .models import RefactorFinding, SourceLocation, stable_source_location_id
 
 IndexKeyT = TypeVar("IndexKeyT")
@@ -246,18 +246,23 @@ class TargetsByFileIndex:
 class EvidenceDigestBuilder:
     """Build evidence rows while preserving stable evidence identity."""
 
-    _source_locations_by_id: dict[str, SourceLocation]
+    _source_location_index: UniqueIdentityIndexAuthority[
+        str, SourceLocation, SourceLocation
+    ]
     _finding_ids_by_evidence_id: TupleListIndexBuilder[str, str]
 
     def __init__(self) -> None:
-        self._source_locations_by_id = {}
+        self._source_location_index = UniqueIdentityIndexAuthority()
         self._finding_ids_by_evidence_id = TupleListIndexBuilder()
 
     def append_finding(self, finding: RefactorFinding) -> None:
         for source_location in finding.evidence:
             evidence_id = stable_source_location_id(source_location)
-            if evidence_id not in self._source_locations_by_id:
-                self._source_locations_by_id[evidence_id] = source_location
+            self._source_location_index.add(
+                evidence_id,
+                source_location,
+                source_location,
+            )
             self._finding_ids_by_evidence_id.append(evidence_id, finding.stable_id)
 
     def build(
@@ -267,6 +272,7 @@ class EvidenceDigestBuilder:
         target_resolver: "EvidenceTargetResolver",
     ) -> tuple[EvidenceDigest, ...]:
         finding_ids_by_evidence = self._finding_ids_by_evidence_id.to_tuple_index()
+        source_locations_by_id = self._source_location_index.values_by_handle()
         return tuple(
             EvidenceDigest(
                 evidence_id=evidence_id,
@@ -277,9 +283,7 @@ class EvidenceDigestBuilder:
                 finding_ids=sorted_tuple(set(finding_ids_by_evidence[evidence_id])),
                 target_ids=target_resolver.target_ids_for_evidence(source_location),
             )
-            for evidence_id, source_location in sorted(
-                self._source_locations_by_id.items()
-            )
+            for evidence_id, source_location in sorted(source_locations_by_id.items())
         )
 
 
@@ -338,12 +342,25 @@ class SourceIndex:
     evidence: tuple[EvidenceDigest, ...] = ()
 
     @cached_property
+    def file_by_id(self) -> dict[str, SourceFileDigest]:
+        return UniqueIdentityIndexAuthority.declarations_by_handle(
+            self.files,
+            lambda item: item.file_id,
+        )
+
+    @cached_property
     def evidence_by_id(self) -> dict[str, EvidenceDigest]:
-        return {item.evidence_id: item for item in self.evidence}
+        return UniqueIdentityIndexAuthority.declarations_by_handle(
+            self.evidence,
+            lambda item: item.evidence_id,
+        )
 
     @cached_property
     def target_by_id(self) -> dict[str, AstTargetDigest]:
-        return {item.target_id: item for item in self.ast_targets}
+        return UniqueIdentityIndexAuthority.declarations_by_handle(
+            self.ast_targets,
+            lambda item: item.target_id,
+        )
 
     @cached_property
     def target_index_by_file(self) -> TargetsByFileIndex:
@@ -453,7 +470,9 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
         self.file_id = file_id
         self.file_path = file_path
         self.targets: list[AstTargetDigest] = []
-        self.target_node_cache: AstTargetNodeMap = {}
+        self.target_node_index = UniqueIdentityIndexAuthority[
+            str, AstTargetDigest, AstTargetNode
+        ]()
 
     def traverse_statements(self, body: list[ast.stmt]) -> None:
         for node in iter_statement_definition_nodes(body):
@@ -505,22 +524,21 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
             line=line,
             end_line=end_line,
         )
-        self.targets.append(
-            AstTargetDigest(
-                target_id=target_id,
-                file_id=self.file_id,
-                file_path=self.file_path,
-                node_type=node_kind.value,
-                name=node.name,
-                qualname=qualname,
-                line=line,
-                end_line=end_line,
-                parameters=parameters,
-                decorators=decorators,
-                base_names=base_names,
-            )
+        target = AstTargetDigest(
+            target_id=target_id,
+            file_id=self.file_id,
+            file_path=self.file_path,
+            node_type=node_kind.value,
+            name=node.name,
+            qualname=qualname,
+            line=line,
+            end_line=end_line,
+            parameters=parameters,
+            decorators=decorators,
+            base_names=base_names,
         )
-        self.target_node_cache[target_id] = node
+        self.targets.append(target)
+        self.target_node_index.add(target_id, target, node)
 
     @staticmethod
     def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
@@ -599,7 +617,7 @@ class AstTargetDigestsAuthority:
         visitor.visit(module.module)
         return AstTargetBuildArtifacts(
             targets=(self.module_target_digest(module, file_digest), *visitor.targets),
-            node_cache=AstTargetNodeCache(visitor.target_node_cache),
+            node_cache=AstTargetNodeCache(visitor.target_node_index.values_by_handle()),
         )
 
     def module_target_digest(
@@ -701,13 +719,17 @@ class SourceIndexBuildAuthority:
         files = self._file_digests()
         target_artifacts = self._target_artifacts(files)
         targets_by_file = TargetsByFileIndex.from_targets(target_artifacts.targets)
+        findings_by_id = UniqueIdentityIndexAuthority.declarations_by_handle(
+            self.findings,
+            lambda finding: finding.stable_id,
+        )
         source_index = SourceIndex(
             files=files,
             ast_targets=target_artifacts.targets,
             evidence=EvidenceDigestsAuthority(
                 file_ids_by_path=self._file_ids_by_path(files),
                 targets_by_file=targets_by_file,
-            ).digests(self.findings),
+            ).digests(findings_by_id.values()),
         )
         self._warm_lookup_indexes(source_index)
         return SourceIndexBuildArtifacts(
@@ -725,25 +747,36 @@ class SourceIndexBuildAuthority:
     ) -> AstTargetBuildArtifacts:
         authority = AstTargetDigestsAuthority()
         targets: list[AstTargetDigest] = []
-        target_node_cache: AstTargetNodeMap = {}
+        target_node_index = UniqueIdentityIndexAuthority[
+            str, AstTargetDigest, AstTargetNode
+        ]()
         for module, file_digest in zip(self.modules, files, strict=True):
             artifacts = authority.artifacts(module, file_digest)
             targets.extend(artifacts.targets)
-            target_node_cache.update(artifacts.node_cache.nodes_by_target_id)
+            targets_by_id = UniqueIdentityIndexAuthority.declarations_by_handle(
+                artifacts.targets,
+                lambda target: target.target_id,
+            )
+            for target_id, node in artifacts.node_cache.nodes_by_target_id.items():
+                target_node_index.add(target_id, targets_by_id[target_id], node)
         return AstTargetBuildArtifacts(
             targets=tuple(targets),
-            node_cache=AstTargetNodeCache(target_node_cache),
+            node_cache=AstTargetNodeCache(target_node_index.values_by_handle()),
         )
 
     @staticmethod
     def _file_ids_by_path(
         files: Iterable[SourceFileDigest],
     ) -> dict[str, str]:
-        return {item.file_path: item.file_id for item in files}
+        index = UniqueIdentityIndexAuthority[str, SourceFileDigest, str]()
+        for item in files:
+            index.add(item.file_path, item, item.file_id)
+        return index.values_by_handle()
 
     @staticmethod
     def _warm_lookup_indexes(source_index: SourceIndex) -> None:
         _ = (
+            source_index.file_by_id,
             source_index.evidence_by_id,
             source_index.target_by_id,
             source_index.targets_by_file,

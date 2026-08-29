@@ -38,7 +38,6 @@ from ..semantic_descent import (
     PresentationProjectionKind,
     PresentationProjection,
     SemanticAuthority,
-    SemanticDescentCertificateBuilder,
     SemanticDescentGraph,
     SemanticDescentGraphCacheIdentity,
     SemanticDescentGraphSpace,
@@ -258,14 +257,17 @@ class SemanticMirrorWithoutDescentDetector(
         *,
         class_index: CompactClassFamilyIndex | None = None,
     ) -> CompactFindingStream:
-        graph_space, mirror_edges = build_compact_semantic_mirror_resolution(
+        graph_space, resolution = build_compact_semantic_mirror_resolution(
             semantic_projections,
             class_projections,
             class_index=class_index,
         )
-        certificate_builder = SemanticDescentCertificateBuilder(graph_space)
-        edge_queue: list[MirrorEdge | None] = list(mirror_edges)
-        del mirror_edges
+        edge_queue: list[MirrorEdge | None] = [
+            edge
+            for relation in resolution.relations
+            for edge in relation.missing_descent_relations()
+        ]
+        del resolution
 
         def finding_chunks() -> Iterator[tuple[RefactorFinding, ...]]:
             chunk: list[RefactorFinding] = []
@@ -276,7 +278,7 @@ class SemanticMirrorWithoutDescentDetector(
                 chunk.append(
                     self._finding_for_certificate(
                         graph_space,
-                        certificate_builder.certificate_for_edge(edge),
+                        edge.certificate(graph_space),
                     )
                 )
                 edge_queue[index] = None
@@ -297,7 +299,7 @@ class SemanticMirrorWithoutDescentDetector(
         del modules, config
         return [
             self._finding_for_certificate(graph, certificate)
-            for certificate in graph.certificates
+            for certificate in graph.missing_descent_certificates
         ]
 
     def _collect_focused_findings_from_graph(
@@ -311,7 +313,7 @@ class SemanticMirrorWithoutDescentDetector(
         del modules, config
         return [
             self._finding_for_certificate(graph, certificate)
-            for certificate in graph.certificates
+            for certificate in graph.missing_descent_certificates
             if any(
                 includes_path(Path(evidence.file_path))
                 for evidence in self._certificate_evidence(graph, certificate)

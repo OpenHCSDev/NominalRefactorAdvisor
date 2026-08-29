@@ -58,7 +58,7 @@ from .class_index import (
     build_compact_class_family_index,
     overlay_class_family_index,
 )
-from .collection_algebra import sorted_tuple
+from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .deadline import scan_deadline_checkpoint
 from .models import (
     FindingMetrics,
@@ -301,6 +301,7 @@ class DescentStatus(StrEnum):
     """Whether a presentation descends to its semantic authority."""
 
     MIRRORED_WITHOUT_DESCENT = "mirrored_without_descent"
+    DESCENDS_TO_AUTHORITY = "descends_to_authority"
 
 
 class SemanticDescentGraphCacheReadError(RuntimeError):
@@ -311,7 +312,7 @@ class SemanticDescentGraphCacheReadError(RuntimeError):
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 8
+    version: int = 9
     digest_size: int = 16
 
 
@@ -732,7 +733,7 @@ class AuthorityClaimCarrier(SemanticRecord):
 class AuthorityProofEdge(SemanticRecord):
     """Concrete graph/source edge proving an authority claim."""
 
-    edge_kind: str
+    edge_kind: AuthorityProofEdgeKind
     authority_id: str
     authority_kind: str
     file_path: str
@@ -749,7 +750,7 @@ class AuthorityProofEdge(SemanticRecord):
         detail: str = "",
     ) -> "AuthorityProofEdge":
         return cls(
-            edge_kind=edge_kind.value,
+            edge_kind=edge_kind,
             authority_id=authority.authority_id,
             authority_kind=authority.kind.value,
             file_path=authority.location.file_path,
@@ -798,7 +799,7 @@ class AuthorityClaimResolution(SemanticRecord):
         detail: str = "recipe declares this authority boundary",
     ) -> "AuthorityClaimResolution":
         proof = AuthorityProofEdge(
-            edge_kind=AuthorityProofEdgeKind.EXPLICIT_DECLARATION.value,
+            edge_kind=AuthorityProofEdgeKind.EXPLICIT_DECLARATION,
             authority_id=claim.authority_id or claim.claimed_symbol,
             authority_kind=claim.authority_kind,
             file_path=claim.file_path,
@@ -935,6 +936,10 @@ class PresentationAuthorityConstruction:
 
     type_name: str
     field_tokens: tuple[str, ...]
+    call_target_parts: tuple[str, ...] = ()
+
+    def queries_authority(self, authority: SemanticAuthority) -> bool:
+        return authority.name in self.call_target_parts[:-1]
 
 
 @dataclass(frozen=True)
@@ -1011,6 +1016,7 @@ class PresentationProjection(SemanticProjectionReference):
     tokens: tuple[PresentationToken, ...]
     source_text: str
     owner_constructions: tuple[PresentationAuthorityConstruction, ...] = ()
+    projection_constructions: tuple[PresentationAuthorityConstruction, ...] = ()
     key_value_pairs: tuple[PresentationKeyValuePair, ...] = ()
     class_symbols: tuple[str, ...] = ()
     class_reference_parts: tuple[tuple[str, ...], ...] = ()
@@ -1223,15 +1229,15 @@ class SemanticAuthorityAffinityPolicy:
 
 
 @dataclass(frozen=True)
-class SemanticMirrorMatch:
-    """Fact/token overlap carried by one semantic mirror edge."""
+class SemanticAuthorityMatch:
+    """Fact/token overlap carried by one authority-projection relation."""
 
     fact_refs: tuple[SemanticFactReference, ...]
     tokens: tuple[str, ...]
     coverage_ratio: float
 
     @classmethod
-    def from_facts(cls, facts: tuple[SemanticFact, ...]) -> "SemanticMirrorMatch":
+    def from_facts(cls, facts: tuple[SemanticFact, ...]) -> "SemanticAuthorityMatch":
         return cls(
             fact_refs=tuple(
                 SemanticFactReference(fact.authority_id, fact.fact_id) for fact in facts
@@ -1252,7 +1258,7 @@ class SemanticMirrorMatch:
         facts: tuple[SemanticFact, ...],
         matches_by_fact_id: dict[str, set[str]],
         fact_references_by_id: dict[str, SemanticFactReference] | None = None,
-    ) -> "SemanticMirrorMatch | None":
+    ) -> "SemanticAuthorityMatch | None":
         if len(facts) < 2:
             return None
         active_fact_references = (
@@ -1287,10 +1293,192 @@ class SemanticMirrorMatch:
 
 
 @dataclass(frozen=True)
-class MirrorEdge(SemanticAuthorityProjectionReference):
-    """Candidate relation between a raw projection and a nominal authority."""
+class SemanticAuthorityProjectionRelation(
+    SemanticAuthorityProjectionReference,
+    ABC,
+):
+    """Nominal classification of one authority-projection relationship."""
 
-    match: SemanticMirrorMatch
+    match: SemanticAuthorityMatch
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        """Return the unique authority-projection endpoint identity."""
+        return (self.authority_id, self.projection_id)
+
+    @abstractmethod
+    def certificate(
+        self,
+        graph_space: "SemanticDescentGraphSpace",
+    ) -> "SemanticDescentCertificate":
+        """Build the certificate owned by this relation leaf."""
+
+    @abstractmethod
+    def missing_descent_relations(self) -> tuple["MirrorEdge", ...]:
+        """Project this relation into the detector's failure-only view."""
+
+    @abstractmethod
+    def rebase_proof_paths(
+        self,
+        source_roots: tuple[str, ...],
+        target_roots: tuple[str, ...],
+    ) -> "SemanticAuthorityProjectionRelation":
+        """Rebase source-bearing proof paths owned by this relation."""
+
+    @abstractmethod
+    def proof_file_paths(self) -> tuple[str, ...]:
+        """Return source paths carried only by positive proof edges."""
+
+
+@dataclass(frozen=True)
+class MirrorEdge(SemanticAuthorityProjectionRelation):
+    """Projection that repeats authority facts without a derivation path."""
+
+    missing_derivation_path: str = ""
+
+    def certificate(
+        self,
+        graph_space: "SemanticDescentGraphSpace",
+    ) -> "DescentCertificate":
+        if self.missing_derivation_path:
+            return DescentCertificate.mirrored_without_descent(
+                self,
+                self.missing_derivation_path,
+            )
+        authority = graph_space.authority_catalog.authority_for_edge(self)
+        projection = graph_space.projection_catalog.projection_for_edge(self)
+        return DescentCertificate.from_mirror_candidate(
+            self,
+            SemanticMirrorEdgeCandidate(
+                projection=projection,
+                authority=authority,
+                facts=(),
+                match=self.match,
+            ),
+        )
+
+    def missing_descent_relations(self) -> tuple["MirrorEdge", ...]:
+        return (self,)
+
+    def rebase_proof_paths(
+        self,
+        source_roots: tuple[str, ...],
+        target_roots: tuple[str, ...],
+    ) -> "MirrorEdge":
+        del source_roots, target_roots
+        return self
+
+    def proof_file_paths(self) -> tuple[str, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
+class SemanticDerivationEdge(SemanticAuthorityProjectionRelation):
+    """Positive source-backed derivation from a projection to its authority."""
+
+    proof_edges: tuple[AuthorityProofEdge, ...]
+
+    def certificate(
+        self,
+        graph_space: "SemanticDescentGraphSpace",
+    ) -> "SemanticDerivationCertificate":
+        del graph_space
+        return SemanticDerivationCertificate(self)
+
+    def missing_descent_relations(self) -> tuple[MirrorEdge, ...]:
+        return ()
+
+    def rebase_proof_paths(
+        self,
+        source_roots: tuple[str, ...],
+        target_roots: tuple[str, ...],
+    ) -> "SemanticDerivationEdge":
+        return replace(
+            self,
+            proof_edges=tuple(
+                replace(
+                    proof,
+                    file_path=rebase_checkout_path(
+                        proof.file_path,
+                        source_roots,
+                        target_roots,
+                    ),
+                )
+                for proof in self.proof_edges
+            ),
+        )
+
+    def proof_file_paths(self) -> tuple[str, ...]:
+        return tuple(proof.file_path for proof in self.proof_edges)
+
+
+@dataclass(frozen=True)
+class SemanticAuthorityProjectionResolution:
+    """Complete typed classification of authority-projection candidates."""
+
+    relations: tuple[SemanticAuthorityProjectionRelation, ...] = ()
+
+    @classmethod
+    def suppressed(cls) -> "SemanticAuthorityProjectionResolution":
+        return cls()
+
+    @classmethod
+    def mirrored(
+        cls,
+        candidate: "SemanticMirrorEdgeCandidate",
+    ) -> "SemanticAuthorityProjectionResolution":
+        return cls(
+            relations=(
+                MirrorEdge(
+                    authority_id=candidate.authority.authority_id,
+                    projection_id=candidate.projection.projection_id,
+                    match=candidate.match,
+                ),
+            ),
+        )
+
+    @classmethod
+    def derived(
+        cls,
+        candidate: "SemanticMirrorEdgeCandidate",
+        proof_edges: tuple[AuthorityProofEdge, ...],
+    ) -> "SemanticAuthorityProjectionResolution":
+        if not proof_edges:
+            raise ValueError("semantic derivation requires at least one proof edge")
+        return cls(
+            relations=(
+                SemanticDerivationEdge(
+                    authority_id=candidate.authority.authority_id,
+                    projection_id=candidate.projection.projection_id,
+                    match=candidate.match,
+                    proof_edges=proof_edges,
+                ),
+            ),
+        )
+
+    @classmethod
+    def combine(
+        cls,
+        resolutions: Iterable["SemanticAuthorityProjectionResolution"],
+    ) -> "SemanticAuthorityProjectionResolution":
+        relation_index = UniqueIdentityIndexAuthority[
+            tuple[str, str],
+            SemanticAuthorityProjectionRelation,
+            SemanticAuthorityProjectionRelation,
+        ]()
+        for resolution in resolutions:
+            for relation in resolution.relations:
+                relation_index.add(relation.identity, relation, relation)
+        return cls(
+            relations=sorted_tuple(
+                relation_index.values_by_handle().values(),
+                key=lambda item: (
+                    -item.match.fact_count,
+                    item.authority_id,
+                    item.projection_id,
+                ),
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -1300,7 +1488,7 @@ class SemanticMirrorEdgeCandidate:
     projection: PresentationProjection
     authority: SemanticAuthority
     facts: tuple[SemanticFact, ...]
-    match: SemanticMirrorMatch
+    match: SemanticAuthorityMatch
 
     @cached_property
     def matched_facts(self) -> tuple[SemanticFact, ...]:
@@ -1357,19 +1545,28 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 
     def edge_is_admissible(
         self,
-        context: "SemanticMirrorResolutionContext",
+        context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         del context, candidate
         return True
 
-    def projection_descends_to_authority(
+    def classify(
         self,
-        context: "SemanticMirrorResolutionContext",
+        context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
-    ) -> bool:
-        del context, candidate
-        return False
+    ) -> SemanticAuthorityProjectionResolution:
+        if not self.edge_is_admissible(context, candidate):
+            return SemanticAuthorityProjectionResolution.suppressed()
+        return self.classify_admissible(context, candidate)
+
+    def classify_admissible(
+        self,
+        context: "SemanticAuthorityProjectionResolutionContext",
+        candidate: SemanticMirrorEdgeCandidate,
+    ) -> SemanticAuthorityProjectionResolution:
+        del context
+        return SemanticAuthorityProjectionResolution.mirrored(candidate)
 
 
 class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
@@ -1379,7 +1576,7 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        context: "SemanticMirrorResolutionContext",
+        context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
@@ -1437,7 +1634,7 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        context: "SemanticMirrorResolutionContext",
+        context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
@@ -1524,26 +1721,31 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
             )
         )
 
-    def projection_descends_to_authority(
+    def classify_admissible(
         self,
-        context: "SemanticMirrorResolutionContext",
+        context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
-    ) -> bool:
-        return (
-            context.dataclass_descent.projection_descends_to_authority(
-                candidate.projection,
-                candidate.authority,
-            )
-            or context.dataclass_descent.projection_owner_constructs_dataclass_authority(
-                candidate.projection,
-                candidate.authority,
-                candidate.matched_facts,
-            )
-            or context.dataclass_descent.projection_shares_dataclass_base_with_authority(
-                candidate.projection,
-                candidate.authority,
-            )
+    ) -> SemanticAuthorityProjectionResolution:
+        proof_edges = context.dataclass_descent.derivation_proof_edges(
+            candidate.projection,
+            candidate.authority,
+            candidate.matched_facts,
         )
+        if proof_edges:
+            return SemanticAuthorityProjectionResolution.derived(
+                candidate,
+                proof_edges,
+            )
+        if context.dataclass_descent.projection_owner_constructs_dataclass_authority(
+            candidate.projection,
+            candidate.authority,
+            candidate.matched_facts,
+        ) or context.dataclass_descent.projection_shares_dataclass_base_with_authority(
+            candidate.projection,
+            candidate.authority,
+        ):
+            return SemanticAuthorityProjectionResolution.suppressed()
+        return SemanticAuthorityProjectionResolution.mirrored(candidate)
 
 
 class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
@@ -1554,7 +1756,7 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        context: "SemanticMirrorResolutionContext",
+        context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
@@ -1626,7 +1828,10 @@ class SemanticFactAuthorityIndex:
     def fact(self, fact_id: str) -> SemanticFact:
         return self.by_id[fact_id]
 
-    def facts_for_edge(self, edge: MirrorEdge) -> tuple[SemanticFact, ...]:
+    def facts_for_edge(
+        self,
+        edge: SemanticAuthorityProjectionRelation,
+    ) -> tuple[SemanticFact, ...]:
         return tuple(self.fact(fact_ref.fact_id) for fact_ref in edge.match.fact_refs)
 
 
@@ -1716,7 +1921,10 @@ class SemanticAuthorityCatalog:
     def authority(self, authority_id: str) -> SemanticAuthority:
         return self.by_id[authority_id]
 
-    def authority_for_edge(self, edge: MirrorEdge) -> SemanticAuthority:
+    def authority_for_edge(
+        self,
+        edge: SemanticAuthorityProjectionRelation,
+    ) -> SemanticAuthority:
         return self.authority(edge.authority_id)
 
 
@@ -1733,7 +1941,10 @@ class PresentationProjectionCatalog:
     def projection(self, projection_id: str) -> PresentationProjection:
         return self.by_id[projection_id]
 
-    def projection_for_edge(self, edge: MirrorEdge) -> PresentationProjection:
+    def projection_for_edge(
+        self,
+        edge: SemanticAuthorityProjectionRelation,
+    ) -> PresentationProjection:
         return self.projection(edge.projection_id)
 
 
@@ -1848,12 +2059,32 @@ class ProjectionClassSymbolFactMatcher:
 
 
 @dataclass(frozen=True)
-class DescentCertificate:
-    """Concrete proof object for one semantic-descent classification."""
+class SemanticDescentCertificate(SemanticRecord, ABC):
+    """Nominal certificate emitted by one authority-projection relation leaf."""
 
-    status: DescentStatus
+    edge: SemanticAuthorityProjectionRelation
+
+    @property
+    @abstractmethod
+    def status(self) -> DescentStatus:
+        """Return the nominal result state owned by this certificate leaf."""
+
+    def to_dict(self) -> dict[str, object]:
+        payload = super().to_dict()
+        payload["status"] = self.status.value
+        return payload
+
+
+@dataclass(frozen=True)
+class DescentCertificate(SemanticDescentCertificate):
+    """Certificate for a mirror relation that lacks semantic descent."""
+
     edge: MirrorEdge
     missing_derivation_path: str
+
+    @property
+    def status(self) -> DescentStatus:
+        return DescentStatus.MIRRORED_WITHOUT_DESCENT
 
     @classmethod
     def mirrored_without_descent(
@@ -1861,11 +2092,7 @@ class DescentCertificate:
         edge: MirrorEdge,
         path_description: str,
     ) -> "DescentCertificate":
-        return cls(
-            DescentStatus.MIRRORED_WITHOUT_DESCENT,
-            edge,
-            path_description,
-        )
+        return cls(edge, path_description)
 
     @classmethod
     def from_mirror_candidate(
@@ -1877,31 +2104,18 @@ class DescentCertificate:
 
 
 @dataclass(frozen=True)
-class SemanticDescentCertificateBuilder:
-    """Build cached descent certificates from resolved mirror edges."""
+class SemanticDerivationCertificate(SemanticDescentCertificate):
+    """Positive certificate preserving the source edges that prove descent."""
 
-    graph_space: "SemanticDescentGraphSpace"
+    edge: SemanticDerivationEdge
 
-    def certificates_for_edges(
-        self,
-        edges: tuple[MirrorEdge, ...],
-    ) -> tuple[DescentCertificate, ...]:
-        return tuple(self.certificate_for_edge(edge) for edge in edges)
+    @property
+    def status(self) -> DescentStatus:
+        return DescentStatus.DESCENDS_TO_AUTHORITY
 
-    def certificate_for_edge(self, edge: MirrorEdge) -> DescentCertificate:
-        authority = self.graph_space.authority_catalog.authority_for_edge(edge)
-        projection = self.graph_space.projection_catalog.projection_for_edge(edge)
-        candidate = SemanticMirrorEdgeCandidate(
-            projection=projection,
-            authority=authority,
-            # Certificate wording depends only on the resolved endpoints.  The
-            # matched fact references remain carried by ``edge.match``; resolving
-            # every reference back into a full fact tuple here duplicated work
-            # already completed by the mirror resolver.
-            facts=(),
-            match=edge.match,
-        )
-        return DescentCertificate.from_mirror_candidate(edge, candidate)
+    @property
+    def proof_edges(self) -> tuple[AuthorityProofEdge, ...]:
+        return self.edge.proof_edges
 
 
 @dataclass(frozen=True)
@@ -1941,11 +2155,44 @@ class SemanticDescentGraphSpace:
 
 @dataclass(frozen=True)
 class SemanticDescentGraph(SemanticDescentGraphSpace):
-    """Repository-level graph of authorities, projections, and descent failures."""
+    """Repository graph with one nominal authority-projection relation set."""
 
-    mirror_edges: tuple[MirrorEdge, ...]
-    certificates: tuple[DescentCertificate, ...]
+    relations: tuple[SemanticAuthorityProjectionRelation, ...]
     class_index: ClassFamilyIndex | None = None
+
+    @property
+    def certificates(self) -> tuple[SemanticDescentCertificate, ...]:
+        return tuple(relation.certificate(self) for relation in self.relations)
+
+    @property
+    def missing_descent_relations(self) -> tuple[MirrorEdge, ...]:
+        return tuple(
+            missing_relation
+            for relation in self.relations
+            for missing_relation in relation.missing_descent_relations()
+        )
+
+    @property
+    def missing_descent_certificates(self) -> tuple[DescentCertificate, ...]:
+        return tuple(
+            relation.certificate(self) for relation in self.missing_descent_relations
+        )
+
+    @classmethod
+    def from_resolution(
+        cls,
+        graph_space: SemanticDescentGraphSpace,
+        resolution: SemanticAuthorityProjectionResolution,
+        *,
+        class_index: ClassFamilyIndex | None = None,
+    ) -> "SemanticDescentGraph":
+        return cls(
+            authorities=graph_space.authorities,
+            facts=graph_space.facts,
+            projections=graph_space.projections,
+            relations=resolution.relations,
+            class_index=class_index,
+        )
 
     def overlay_modules(
         self,
@@ -1957,190 +2204,6 @@ class SemanticDescentGraph(SemanticDescentGraphSpace):
             base_graph=self,
             changed_modules=changed_modules,
         ).graph()
-
-
-@dataclass(frozen=True)
-class SemanticFactMirrorSignature:
-    """Mirror-relevant fact state, independent of presentation locations."""
-
-    kind: SemanticFactKind
-    name: str
-    aliases: tuple[str, ...]
-
-    @classmethod
-    def from_fact(cls, fact: SemanticFact) -> "SemanticFactMirrorSignature":
-        return cls(fact.kind, fact.name, fact.aliases)
-
-
-@dataclass(frozen=True)
-class SemanticAuthorityMirrorSignature:
-    """Mirror-relevant authority state, independent of presentation locations."""
-
-    kind: SemanticAuthorityKind
-    name: str
-    fact_ids: tuple[str, ...]
-
-    @classmethod
-    def from_authority(
-        cls,
-        authority: SemanticAuthority,
-    ) -> "SemanticAuthorityMirrorSignature":
-        return cls(authority.kind, authority.name, authority.fact_ids)
-
-
-@dataclass(frozen=True)
-class SemanticAuthorityMirrorState:
-    """Authority plus owned facts as seen by mirror resolution."""
-
-    authority: SemanticAuthorityMirrorSignature
-    facts: tuple[tuple[str, SemanticFactMirrorSignature], ...]
-
-    @classmethod
-    def from_authority(
-        cls,
-        authority: SemanticAuthority,
-        facts: tuple[SemanticFact, ...],
-    ) -> "SemanticAuthorityMirrorState":
-        return cls(
-            SemanticAuthorityMirrorSignature.from_authority(authority),
-            sorted_tuple(
-                (
-                    fact.fact_id,
-                    SemanticFactMirrorSignature.from_fact(fact),
-                )
-                for fact in facts
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class PresentationProjectionMirrorSignature:
-    """Mirror-relevant projection state, independent of line-number identity."""
-
-    kind: PresentationProjectionKind
-    label: str
-    owner_symbol: str
-    tokens: tuple[PresentationToken, ...]
-    owner_constructions: tuple[PresentationAuthorityConstruction, ...]
-    key_value_pairs: tuple[PresentationKeyValuePair, ...]
-    class_symbols: tuple[str, ...]
-
-    @classmethod
-    def from_projection(
-        cls,
-        projection: PresentationProjection,
-    ) -> "PresentationProjectionMirrorSignature":
-        return cls(
-            projection.kind,
-            projection.label,
-            projection.owner_symbol,
-            projection.tokens,
-            projection.owner_constructions,
-            projection.key_value_pairs,
-            projection.class_symbols,
-        )
-
-
-@dataclass(frozen=True)
-class PresentationProjectionIdOverlay:
-    """Map cached projection ids onto current ids when mirror semantics match."""
-
-    base_projections: tuple[PresentationProjection, ...]
-    current_projections: tuple[PresentationProjection, ...]
-
-    @cached_property
-    def base_by_id(self) -> dict[str, PresentationProjection]:
-        return {
-            projection.projection_id: projection for projection in self.base_projections
-        }
-
-    @cached_property
-    def current_by_id(self) -> dict[str, PresentationProjection]:
-        return {
-            projection.projection_id: projection
-            for projection in self.current_projections
-        }
-
-    @cached_property
-    def unique_base_ids_by_signature(
-        self,
-    ) -> dict[PresentationProjectionMirrorSignature, str]:
-        return self.unique_ids_by_signature(self.base_projections)
-
-    @cached_property
-    def unique_current_ids_by_signature(
-        self,
-    ) -> dict[PresentationProjectionMirrorSignature, str]:
-        return self.unique_ids_by_signature(self.current_projections)
-
-    def current_projection_id_for_base_id(
-        self,
-        projection_id: str,
-    ) -> str | None:
-        base_projection = self.base_by_id.get(projection_id)
-        if base_projection is None:
-            return None
-        return self.current_projection_id_for_base_projection(base_projection)
-
-    def current_projection_id_for_base_projection(
-        self,
-        projection: PresentationProjection,
-    ) -> str | None:
-        signature = PresentationProjectionMirrorSignature.from_projection(projection)
-        current_projection = self.current_by_id.get(projection.projection_id)
-        if (
-            current_projection is not None
-            and PresentationProjectionMirrorSignature.from_projection(
-                current_projection
-            )
-            == signature
-        ):
-            return current_projection.projection_id
-        if self.unique_base_ids_by_signature.get(signature) != projection.projection_id:
-            return None
-        return self.unique_current_ids_by_signature.get(signature)
-
-    def base_projection_id_for_current_projection(
-        self,
-        projection: PresentationProjection,
-    ) -> str | None:
-        signature = PresentationProjectionMirrorSignature.from_projection(projection)
-        base_projection = self.base_by_id.get(projection.projection_id)
-        if (
-            base_projection is not None
-            and PresentationProjectionMirrorSignature.from_projection(base_projection)
-            == signature
-        ):
-            return base_projection.projection_id
-        if (
-            self.unique_current_ids_by_signature.get(signature)
-            != projection.projection_id
-        ):
-            return None
-        return self.unique_base_ids_by_signature.get(signature)
-
-    def changed_projection_ids(self) -> frozenset[str]:
-        return frozenset(
-            projection.projection_id
-            for projection in self.current_projections
-            if self.base_projection_id_for_current_projection(projection) is None
-        )
-
-    @staticmethod
-    def unique_ids_by_signature(
-        projections: tuple[PresentationProjection, ...],
-    ) -> dict[PresentationProjectionMirrorSignature, str]:
-        ids_by_signature: dict[PresentationProjectionMirrorSignature, list[str]] = {}
-        for projection in projections:
-            ids_by_signature.setdefault(
-                PresentationProjectionMirrorSignature.from_projection(projection),
-                [],
-            ).append(projection.projection_id)
-        return {
-            signature: projection_ids[0]
-            for signature, projection_ids in ids_by_signature.items()
-            if len(projection_ids) == 1
-        }
 
 
 @dataclass(frozen=True)
@@ -2159,16 +2222,10 @@ class SemanticDescentGraphModuleOverlay:
             facts,
             projections,
         )
-        mirror_edges = self.merged_mirror_edges(graph_space, class_index)
-        certificates = SemanticDescentCertificateBuilder(
-            graph_space
-        ).certificates_for_edges(mirror_edges)
-        return SemanticDescentGraph(
-            authorities=authorities,
-            facts=facts,
-            projections=projections,
-            mirror_edges=mirror_edges,
-            certificates=certificates,
+        resolution = self.merged_resolution(graph_space, class_index)
+        return SemanticDescentGraph.from_resolution(
+            graph_space,
+            resolution,
             class_index=class_index,
         )
 
@@ -2181,125 +2238,17 @@ class SemanticDescentGraphModuleOverlay:
             class_index,
         ).build()
 
-    def merged_mirror_edges(
+    def merged_resolution(
         self,
         graph_space: SemanticDescentGraphSpace,
         class_index: ClassFamilyIndex,
-    ) -> tuple[MirrorEdge, ...]:
-        projection_overlay = PresentationProjectionIdOverlay(
-            self.base_graph.projections,
-            graph_space.projections,
-        )
-        changed_projection_ids = projection_overlay.changed_projection_ids()
-        changed_authority_ids = self.changed_authority_ids(
-            graph_space.authorities,
-            graph_space.facts,
-        )
-        current_authority_ids = frozenset(
-            authority.authority_id for authority in graph_space.authorities
-        )
-        retained_edges = self.retained_mirror_edges(
-            projection_overlay,
-            current_authority_ids,
-            changed_authority_ids,
-        )
-        resolver = SemanticMirrorResolver(
+    ) -> SemanticAuthorityProjectionResolution:
+        return SemanticMirrorResolver(
             graph_space.authorities,
             graph_space.facts,
             graph_space.projections,
             class_index,
-        )
-        recomputed_edges = (
-            *resolver.edges_for_projection_ids(changed_projection_ids),
-            *resolver.edges_for_authority_ids(changed_authority_ids),
-        )
-        return self._deduplicate_edges((*retained_edges, *recomputed_edges))
-
-    def retained_mirror_edges(
-        self,
-        projection_overlay: PresentationProjectionIdOverlay,
-        current_authority_ids: frozenset[str],
-        changed_authority_ids: frozenset[str],
-    ) -> tuple[MirrorEdge, ...]:
-        retained_edges: list[MirrorEdge] = []
-        for edge in self.base_graph.mirror_edges:
-            if (
-                edge.authority_id not in current_authority_ids
-                or edge.authority_id in changed_authority_ids
-            ):
-                continue
-            current_projection_id = (
-                projection_overlay.current_projection_id_for_base_id(edge.projection_id)
-            )
-            if current_projection_id is None:
-                continue
-            retained_edges.append(
-                MirrorEdge(
-                    authority_id=edge.authority_id,
-                    projection_id=current_projection_id,
-                    match=edge.match,
-                )
-            )
-        return tuple(retained_edges)
-
-    def changed_projection_ids(
-        self,
-        projections: tuple[PresentationProjection, ...],
-    ) -> frozenset[str]:
-        return PresentationProjectionIdOverlay(
-            self.base_graph.projections,
-            projections,
-        ).changed_projection_ids()
-
-    def authority_mirror_state(
-        self,
-        authority: SemanticAuthority,
-        facts_by_authority_id: FactsByAuthorityId,
-    ) -> SemanticAuthorityMirrorState:
-        return SemanticAuthorityMirrorState.from_authority(
-            authority,
-            facts_by_authority_id.get(authority.authority_id, ()),
-        )
-
-    def changed_authority_ids(
-        self,
-        authorities: tuple[SemanticAuthority, ...],
-        facts: tuple[SemanticFact, ...],
-    ) -> frozenset[str]:
-        base_authorities = self.base_graph.authority_catalog.by_id
-        base_facts = self.base_graph.facts_by_authority_id
-        current_facts = SemanticFactAuthorityIndex(facts).by_authority_id
-        current_authorities = {
-            authority.authority_id: authority for authority in authorities
-        }
-        changed_ids = {
-            authority.authority_id
-            for authority in authorities
-            if authority.authority_id not in base_authorities
-            or self.authority_mirror_state(authority, current_facts)
-            != self.authority_mirror_state(
-                base_authorities[authority.authority_id],
-                base_facts,
-            )
-        }
-        changed_ids.update(
-            authority_id
-            for authority_id in base_authorities
-            if authority_id not in current_authorities
-        )
-        return frozenset(changed_ids)
-
-    @staticmethod
-    def _deduplicate_edges(edges: tuple[MirrorEdge, ...]) -> tuple[MirrorEdge, ...]:
-        by_reference = {(edge.authority_id, edge.projection_id): edge for edge in edges}
-        return sorted_tuple(
-            by_reference.values(),
-            key=lambda item: (
-                -item.match.fact_count,
-                item.authority_id,
-                item.projection_id,
-            ),
-        )
+        ).resolve()
 
     def merged_class_index(self) -> ClassFamilyIndex:
         if self.base_graph.class_index is None:
@@ -2403,8 +2352,8 @@ class SemanticDescentGraphReport(SemanticRecord):
     authority_count: int
     fact_count: int
     projection_count: int
-    mirror_edge_count: int
-    certificate_count: int
+    relation_count: int
+    missing_descent_count: int
     authorities_by_kind: tuple[SemanticDescentAuthorityKindCount, ...]
     projections_by_kind: tuple[SemanticDescentProjectionKindCount, ...]
     top_certificates: tuple[SemanticDescentCertificateSummary, ...]
@@ -2420,8 +2369,8 @@ class SemanticDescentGraphReport(SemanticRecord):
             authority_count=len(graph.authorities),
             fact_count=len(graph.facts),
             projection_count=len(graph.projections),
-            mirror_edge_count=len(graph.mirror_edges),
-            certificate_count=len(graph.certificates),
+            relation_count=len(graph.relations),
+            missing_descent_count=len(graph.missing_descent_relations),
             authorities_by_kind=tuple(
                 SemanticDescentAuthorityKindCount(authority_kind, count)
                 for authority_kind, count in sorted(
@@ -2441,7 +2390,7 @@ class SemanticDescentGraphReport(SemanticRecord):
             top_certificates=tuple(
                 SemanticDescentCertificateSummary.from_graph(graph, certificate)
                 for certificate in sorted_tuple(
-                    graph.certificates,
+                    graph.missing_descent_certificates,
                     key=lambda item: (
                         -item.edge.match.fact_count,
                         graph.authority_catalog.authority_for_edge(item.edge).name,
@@ -2482,9 +2431,9 @@ class SemanticDescentGraphPayloadReport(SemanticRecord):
         )
         active_graph_source = "repository"
         if (
-            not repository_report.certificate_count
+            not repository_report.missing_descent_count
             and finding_backed_report is not None
-            and finding_backed_report.certificate_count
+            and finding_backed_report.missing_descent_count
         ):
             active_graph_source = "finding_backed"
         return cls(
@@ -2535,7 +2484,6 @@ class FindingBackedSemanticDescentGraphRequest:
         facts: list[SemanticFact] = []
         projections: list[PresentationProjection] = []
         edges: list[MirrorEdge] = []
-        certificates: list[DescentCertificate] = []
         for finding in self.findings:
             authority = FindingBackedAuthorityProjection.authority(
                 finding,
@@ -2547,24 +2495,27 @@ class FindingBackedSemanticDescentGraphRequest:
                 authority,
                 finding_facts,
                 projection,
+                finding,
             )
             authorities.append(authority)
             facts.extend(finding_facts)
             projections.append(projection)
             edges.append(edge)
-            certificates.append(
-                FindingBackedCertificateProjection.certificate(finding, edge)
-            )
-        return SemanticDescentGraph(
+        graph_space = SemanticDescentGraphSpace(
             authorities=sorted_tuple(authorities, key=lambda item: item.authority_id),
             facts=sorted_tuple(facts, key=lambda item: item.fact_id),
             projections=sorted_tuple(projections, key=lambda item: item.projection_id),
-            mirror_edges=sorted_tuple(edges, key=lambda item: item.projection_id),
-            certificates=sorted_tuple(
-                certificates,
-                key=lambda item: item.edge.projection_id,
+        )
+        graph = SemanticDescentGraph.from_resolution(
+            graph_space,
+            SemanticAuthorityProjectionResolution(
+                relations=sorted_tuple(
+                    edges,
+                    key=lambda item: item.projection_id,
+                ),
             ),
         )
+        return graph
 
 
 class FindingBackedAuthorityProjection:
@@ -2775,25 +2726,13 @@ class FindingBackedMirrorEdgeProjection:
         authority: SemanticAuthority,
         facts: tuple[SemanticFact, ...],
         projection: PresentationProjection,
+        finding: RefactorFinding,
     ) -> MirrorEdge:
         return MirrorEdge(
             authority_id=authority.authority_id,
             projection_id=projection.projection_id,
-            match=SemanticMirrorMatch.from_facts(facts),
-        )
-
-
-class FindingBackedCertificateProjection:
-    """Project detector finding relation context into descent certificates."""
-
-    @staticmethod
-    def certificate(
-        finding: RefactorFinding,
-        edge: MirrorEdge,
-    ) -> DescentCertificate:
-        return DescentCertificate.mirrored_without_descent(
-            edge,
-            (
+            match=SemanticAuthorityMatch.from_facts(facts),
+            missing_derivation_path=(
                 finding.relation_context
                 or "detector finding reports a mirror without a derivation path"
             ),
@@ -3081,6 +3020,12 @@ def rebase_semantic_descent_graph(
             )
             if location.file_path
         }
+        file_paths.update(
+            file_path
+            for relation in graph.relations
+            for file_path in relation.proof_file_paths()
+            if file_path
+        )
         if graph.class_index is not None:
             file_paths.update(
                 indexed_class.file_path
@@ -3131,6 +3076,10 @@ def rebase_semantic_descent_graph(
                 ),
             )
             for projection in graph.projections
+        ),
+        relations=tuple(
+            relation.rebase_proof_paths(source_roots, target_roots)
+            for relation in graph.relations
         ),
         class_index=_rebase_class_family_index(
             graph.class_index,
@@ -3444,26 +3393,21 @@ def _build_semantic_descent_graph_cached(
     scan_deadline_checkpoint("semantic_descent_projections")
     projections = SemanticProjectionCollector(tuple(modules), class_index).collect()
     scan_deadline_checkpoint("semantic_descent_mirror_edges")
-    mirror_edges = SemanticMirrorResolver(
+    resolution = SemanticMirrorResolver(
         authorities,
         facts,
         projections,
         class_index,
-    ).edges()
+    ).resolve()
     graph_space = SemanticDescentGraphSpace(
         authorities,
         facts,
         projections,
     )
     scan_deadline_checkpoint("semantic_descent_certificates")
-    certificate_builder = SemanticDescentCertificateBuilder(graph_space)
-    certificates = certificate_builder.certificates_for_edges(mirror_edges)
-    return SemanticDescentGraph(
-        authorities=authorities,
-        facts=facts,
-        projections=projections,
-        mirror_edges=mirror_edges,
-        certificates=certificates,
+    return SemanticDescentGraph.from_resolution(
+        graph_space,
+        resolution,
         class_index=class_index,
     )
 
@@ -4241,7 +4185,7 @@ def build_compact_semantic_mirror_resolution(
     class_projections: tuple[CompactModuleClassProjection, ...],
     *,
     class_index: CompactClassFamilyIndex | None = None,
-) -> tuple[SemanticDescentGraphSpace, tuple[MirrorEdge, ...]]:
+) -> tuple[SemanticDescentGraphSpace, SemanticAuthorityProjectionResolution]:
     """Resolve edges, then release matching-only caches before publication."""
 
     resolver = build_compact_semantic_mirror_resolver(
@@ -4249,13 +4193,13 @@ def build_compact_semantic_mirror_resolution(
         class_projections,
         class_index=class_index,
     )
-    mirror_edges = resolver.edges()
+    resolution = resolver.resolve()
     graph_space = SemanticDescentGraphSpace(
         resolver.authorities,
         resolver.facts,
         resolver.projections,
     )
-    return graph_space, mirror_edges
+    return graph_space, resolution
 
 
 def build_compact_semantic_descent_graph(
@@ -4266,22 +4210,12 @@ def build_compact_semantic_descent_graph(
 ) -> SemanticDescentGraph:
     """Build the exact semantic graph from AST-free repository projections."""
 
-    graph_space, mirror_edges = build_compact_semantic_mirror_resolution(
+    graph_space, resolution = build_compact_semantic_mirror_resolution(
         semantic_projections,
         class_projections,
         class_index=class_index,
     )
-    certificates = SemanticDescentCertificateBuilder(
-        graph_space
-    ).certificates_for_edges(mirror_edges)
-    return SemanticDescentGraph(
-        authorities=graph_space.authorities,
-        facts=graph_space.facts,
-        projections=graph_space.projections,
-        mirror_edges=mirror_edges,
-        certificates=certificates,
-        class_index=None,
-    )
+    return SemanticDescentGraph.from_resolution(graph_space, resolution)
 
 
 @dataclass
@@ -4609,7 +4543,9 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
     def _projection_constructions(
         value: ast.AST,
     ) -> tuple[PresentationAuthorityConstruction, ...]:
-        return PresentationAuthorityConstructionCollector.constructions_for_node(value)
+        return PresentationAuthorityConstructionCollector.constructions_for_projection(
+            value
+        )
 
     def _projection_key_value_pairs(
         self,
@@ -4688,6 +4624,10 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 ),
                 source_text="",
                 owner_constructions=sorted_tuple(
+                    frozenset(projection_constructions),
+                    key=lambda item: (item.type_name, item.field_tokens),
+                ),
+                projection_constructions=sorted_tuple(
                     frozenset(projection_constructions),
                     key=lambda item: (item.type_name, item.field_tokens),
                 ),
@@ -5219,15 +5159,6 @@ class DataclassProjectionDescentAuthority:
     ) -> dict[str, frozenset[str]]:
         return {}
 
-    def projection_descends_to_authority(
-        self,
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return authority.authority_id in self.descent_authority_ids_for_projection(
-            projection
-        )
-
     def projection_descends_to_any_dataclass_authority(
         self,
         projection: PresentationProjection,
@@ -5326,8 +5257,118 @@ class DataclassProjectionDescentAuthority:
                     construction.type_name
                 )
                 & self.dataclass_authority_ids
-                for construction in projection.owner_constructions
+                for construction in projection.projection_constructions
             )
+        )
+
+    def derivation_proof_edges(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> tuple[AuthorityProofEdge, ...]:
+        class_proof = self._class_derivation_proof(projection, authority)
+        if class_proof:
+            return class_proof
+        direct_construction_proof = self._construction_derivation_proof(
+            projection,
+            authority,
+            matched_facts,
+            projection.projection_constructions,
+            self.construction_resolver.construction_type_descends_to_authority,
+            AuthorityProofEdgeKind.OWNS_FIELD_SET,
+            "projection constructs the authority-owned field set",
+        )
+        if direct_construction_proof:
+            return direct_construction_proof
+        return self._construction_derivation_proof(
+            projection,
+            authority,
+            matched_facts,
+            projection.projection_constructions,
+            self.construction_resolver.construction_type_materializes_authority,
+            AuthorityProofEdgeKind.PROVIDES_QUERY_METHOD,
+            "projection uses a declared materializer for the authority-owned field set",
+        )
+
+    def _class_derivation_proof(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> tuple[AuthorityProofEdge, ...]:
+        projection_class_symbol = (
+            self.projection_class_symbol_lineage.class_symbol_for_projection(projection)
+        )
+        if projection_class_symbol is None:
+            return ()
+        class_authority_ids = {
+            projection_class_symbol,
+            *self.projection_class_symbol_lineage.ancestor_symbols_for_class(
+                projection_class_symbol
+            ),
+        }
+        if authority.authority_id not in class_authority_ids:
+            return ()
+        indexed_class = self.projection_class_symbol_lineage.class_index.class_for(
+            projection_class_symbol
+        )
+        if indexed_class is None:
+            return ()
+        owns_authority = projection_class_symbol == authority.authority_id
+        return (
+            AuthorityProofEdge(
+                edge_kind=(
+                    AuthorityProofEdgeKind.OWNS_FIELD_SET
+                    if owns_authority
+                    else AuthorityProofEdgeKind.INHERITS_FROM
+                ),
+                authority_id=authority.authority_id,
+                authority_kind=authority.kind.value,
+                file_path=indexed_class.file_path,
+                line=indexed_class.line,
+                symbol=indexed_class.symbol,
+                detail=(
+                    "projection is owned by the dataclass authority"
+                    if owns_authority
+                    else "projection owner inherits the dataclass authority"
+                ),
+            ),
+        )
+
+    def _construction_derivation_proof(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+        constructions: tuple[PresentationAuthorityConstruction, ...],
+        accepts_construction: ConstructionAuthorityPredicate,
+        edge_kind: AuthorityProofEdgeKind,
+        detail: str,
+    ) -> tuple[AuthorityProofEdge, ...]:
+        if not self._constructions_derive_dataclass_authority(
+            constructions,
+            authority,
+            matched_facts,
+            accepts_construction,
+        ):
+            return ()
+        if any(
+            construction.queries_authority(authority)
+            and accepts_construction(construction, authority)
+            for construction in constructions
+        ):
+            edge_kind = AuthorityProofEdgeKind.PROVIDES_QUERY_METHOD
+            detail = "projection calls an authority-owned derivation method"
+        return (
+            AuthorityProofEdge(
+                edge_kind=edge_kind,
+                authority_id=authority.authority_id,
+                authority_kind=authority.kind.value,
+                file_path=projection.location.file_path,
+                line=projection.location.line,
+                symbol=projection.location.symbol,
+                detail=detail,
+            ),
         )
 
     def projection_owner_constructs_dataclass_authority(
@@ -5412,8 +5453,8 @@ class DataclassProjectionDescentAuthority:
             if authority_id in self.dataclass_authority_ids
         )
         return any(
-            self._projection_owner_derives_dataclass_authority_from_tokens(
-                projection,
+            self._constructions_derive_dataclass_authority_from_tokens(
+                projection.owner_constructions,
                 self.dataclass_authorities_by_id[authority_id],
                 self.fact_tokens_for_authority(authority_id),
                 self.construction_resolver.construction_type_materializes_authority,
@@ -5428,23 +5469,37 @@ class DataclassProjectionDescentAuthority:
         matched_facts: tuple[SemanticFact, ...],
         accepts_construction: ConstructionAuthorityPredicate,
     ) -> bool:
+        return self._constructions_derive_dataclass_authority(
+            projection.owner_constructions,
+            authority,
+            matched_facts,
+            accepts_construction,
+        )
+
+    @classmethod
+    def _constructions_derive_dataclass_authority(
+        cls,
+        constructions: tuple[PresentationAuthorityConstruction, ...],
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+        accepts_construction: ConstructionAuthorityPredicate,
+    ) -> bool:
         if not matched_facts:
             return False
-        matched_tokens = frozenset(
-            variant
-            for fact in matched_facts
-            for variant in normalized_name_variants(fact.name)
-        )
-        return self._projection_owner_derives_dataclass_authority_from_tokens(
-            projection,
+        return cls._constructions_derive_dataclass_authority_from_tokens(
+            constructions,
             authority,
-            matched_tokens,
+            frozenset(
+                variant
+                for fact in matched_facts
+                for variant in normalized_name_variants(fact.name)
+            ),
             accepts_construction,
         )
 
     @staticmethod
-    def _projection_owner_derives_dataclass_authority_from_tokens(
-        projection: PresentationProjection,
+    def _constructions_derive_dataclass_authority_from_tokens(
+        constructions: tuple[PresentationAuthorityConstruction, ...],
         authority: SemanticAuthority,
         matched_tokens: frozenset[str],
         accepts_construction: ConstructionAuthorityPredicate,
@@ -5452,7 +5507,7 @@ class DataclassProjectionDescentAuthority:
         if not matched_tokens:
             return False
         descended_field_tokens: set[str] = set()
-        for construction in projection.owner_constructions:
+        for construction in constructions:
             if not accepts_construction(construction, authority):
                 continue
             descended_field_tokens.update(construction.field_tokens)
@@ -5462,7 +5517,7 @@ class DataclassProjectionDescentAuthority:
 
 
 @dataclass(frozen=True)
-class SemanticMirrorResolutionContext:
+class SemanticAuthorityProjectionResolutionContext:
     """Composed policy context for deciding mirror admissibility and descent."""
 
     projection_semantics: ProjectionSemanticAuthority
@@ -5517,67 +5572,28 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         )
 
     @cached_property
-    def resolution_context(self) -> SemanticMirrorResolutionContext:
-        return SemanticMirrorResolutionContext(
+    def resolution_context(self) -> SemanticAuthorityProjectionResolutionContext:
+        return SemanticAuthorityProjectionResolutionContext(
             projection_semantics=self.projection_semantics,
             dataclass_descent=self.dataclass_descent,
             fact_specificity=self.fact_specificity_index,
         )
 
-    def edges(self) -> tuple[MirrorEdge, ...]:
-        return self._edges_for(self.projections, None)
-
-    def edges_for_projection_ids(
-        self,
-        projection_ids: frozenset[str],
-    ) -> tuple[MirrorEdge, ...]:
-        if not projection_ids:
-            return ()
-        return self._edges_for(
-            tuple(
-                projection
-                for projection in self.projections
-                if projection.projection_id in projection_ids
-            ),
-            None,
-        )
-
-    def edges_for_authority_ids(
-        self,
-        authority_ids: frozenset[str],
-    ) -> tuple[MirrorEdge, ...]:
-        if not authority_ids:
-            return ()
-        return self._edges_for(self.projections, authority_ids)
-
-    def _edges_for(
-        self,
-        projections: tuple[PresentationProjection, ...],
-        authority_ids: frozenset[str] | None,
-    ) -> tuple[MirrorEdge, ...]:
-        edges: list[MirrorEdge] = []
-        for projection in projections:
+    def resolve(self) -> SemanticAuthorityProjectionResolution:
+        classifications: list[SemanticAuthorityProjectionResolution] = []
+        for projection in self.projections:
             for authority_id, matches in self._matches_by_authority(
                 projection,
             ).items():
-                if authority_ids is not None and authority_id not in authority_ids:
-                    continue
-                edge = self._edge_for(
-                    projection,
-                    self.authority_catalog.authority(authority_id),
-                    self.fact_authority_index.facts_for_authority(authority_id),
-                    matches,
+                classifications.append(
+                    self._resolution_for(
+                        projection,
+                        self.authority_catalog.authority(authority_id),
+                        self.fact_authority_index.facts_for_authority(authority_id),
+                        matches,
+                    )
                 )
-                if edge is not None:
-                    edges.append(edge)
-        return sorted_tuple(
-            edges,
-            key=lambda item: (
-                -item.match.fact_count,
-                item.authority_id,
-                item.projection_id,
-            ),
-        )
+        return SemanticAuthorityProjectionResolution.combine(classifications)
 
     def _matches_by_authority(
         self,
@@ -5684,20 +5700,20 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             ).foreign_qualified_attribute_token_reference_admitted
         )
 
-    def _edge_for(
+    def _resolution_for(
         self,
         projection: PresentationProjection,
         authority: SemanticAuthority,
         facts: tuple[SemanticFact, ...],
         matches_by_fact_id: dict[str, set[str]],
-    ) -> MirrorEdge | None:
-        match = SemanticMirrorMatch.from_authority_matches(
+    ) -> SemanticAuthorityProjectionResolution:
+        match = SemanticAuthorityMatch.from_authority_matches(
             facts,
             matches_by_fact_id,
             self.fact_references_by_id,
         )
         if match is None:
-            return None
+            return SemanticAuthorityProjectionResolution.suppressed()
         candidate = SemanticMirrorEdgeCandidate(
             projection=projection,
             authority=authority,
@@ -5705,15 +5721,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             match=match,
         )
         policy = self.policy_catalog.policy_for_authority(authority)
-        if not policy.edge_is_admissible(self.resolution_context, candidate):
-            return None
-        if policy.projection_descends_to_authority(self.resolution_context, candidate):
-            return None
-        return MirrorEdge(
-            authority_id=authority.authority_id,
-            projection_id=projection.projection_id,
-            match=candidate.match,
-        )
+        return policy.classify(self.resolution_context, candidate)
 
 
 class NormalizeNameProjection:
@@ -5984,6 +5992,23 @@ class SequencePresentationTokenProjector(PresentationTokenNodeProjector):
         return tuple(tokens)
 
 
+class StarredPresentationTokenProjector(PresentationTokenNodeProjector):
+    """Preserve semantic tokens exposed through iterable unpacking."""
+
+    node_type = ast.Starred
+
+    @classmethod
+    def tokens_for_node(
+        cls,
+        node: ast.AST,
+        role: PresentationTokenRole,
+    ) -> tuple[PresentationToken, ...]:
+        del cls
+        if not isinstance(node, ast.Starred):
+            raise TypeError(f"Expected ast.Starred, got {type(node)!r}")
+        return PresentationTokenProjection.tokens_for_node(node.value, role)
+
+
 class CallPresentationTokenProjector(PresentationTokenNodeProjector):
     """Project call targets, positional arguments, and keyword arguments."""
 
@@ -6096,11 +6121,32 @@ class PresentationAuthorityConstructionCollector:
         cls,
         node: ast.AST,
     ) -> tuple[PresentationAuthorityConstruction, ...]:
+        return cls._constructions_for_node(node, minimum_field_count=2)
+
+    @classmethod
+    def constructions_for_projection(
+        cls,
+        node: ast.AST,
+    ) -> tuple[PresentationAuthorityConstruction, ...]:
+        return cls._constructions_for_node(node, minimum_field_count=1)
+
+    @classmethod
+    def _constructions_for_node(
+        cls,
+        node: ast.AST,
+        *,
+        minimum_field_count: int,
+    ) -> tuple[PresentationAuthorityConstruction, ...]:
         constructions: list[PresentationAuthorityConstruction] = []
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
                 continue
-            constructions.extend(cls.constructions_for_call(child))
+            constructions.extend(
+                cls._constructions_for_call(
+                    child,
+                    minimum_field_count=minimum_field_count,
+                )
+            )
         return sorted_tuple(
             frozenset(constructions),
             key=lambda item: (item.type_name, item.field_tokens),
@@ -6111,14 +6157,24 @@ class PresentationAuthorityConstructionCollector:
         cls,
         node: ast.Call,
     ) -> tuple[PresentationAuthorityConstruction, ...]:
+        return cls._constructions_for_call(node, minimum_field_count=2)
+
+    @classmethod
+    def _constructions_for_call(
+        cls,
+        node: ast.Call,
+        *,
+        minimum_field_count: int,
+    ) -> tuple[PresentationAuthorityConstruction, ...]:
         field_tokens = cls.constructor_field_tokens(node)
-        if len(field_tokens) < 2:
+        if len(field_tokens) < minimum_field_count:
             return ()
         type_names = cls.construction_type_names(node)
         return tuple(
             PresentationAuthorityConstruction(
                 type_name=type_name,
                 field_tokens=field_tokens,
+                call_target_parts=AttributeChainAuthority.chain(node.func),
             )
             for type_name in type_names
         )

@@ -145,6 +145,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
     SourceRewriteSimulationPayload,
     SourceLineReplacement,
+    SourceRewriteContributor,
     SourceOffsetReplacement,
     SourceTextGeometry,
     SourceIndexTargetSelector,
@@ -628,7 +629,7 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
@@ -763,10 +764,30 @@ def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overl
     )
     authority = PlannedRewriteSelectionAuthority(source_index)
 
+    first_contributor = SourceRewriteContributor.from_target(
+        recipe_id="first-recipe",
+        plan_item_declaration="FirstOperation",
+        plan_item_index=0,
+        target=source_index.target_by_id[target_ids["Alpha.run"]],
+        sources_by_file_path={module_path.as_posix(): source},
+    )
+    second_contributor = replace(
+        first_contributor,
+        recipe_id="second-recipe",
+        plan_item_declaration="SecondOperation",
+    )
+    coalesced = authority.select(
+        (
+            replace(run_rewrite, contributors=(first_contributor,)),
+            replace(run_rewrite, contributors=(second_contributor,)),
+        )
+    )
+
     assert authority.select((run_rewrite, run_rewrite, stop_rewrite)) == (
         run_rewrite,
         stop_rewrite,
     )
+    assert coalesced[0].contributors == (first_contributor, second_contributor)
     simulation = simulate_planned_rewrites(
         source_index,
         (run_rewrite, run_rewrite),
@@ -791,12 +812,16 @@ def test_codemod_apply_rejects_source_changed_after_simulation(
         "class Alpha:\n    value = 1\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    simulation = RefactorRecipe("rewrite-alpha").replace_text(
-        "Alpha",
-        "value = 1",
-        "value = 2",
-        source_path=module_path.as_posix(),
-    ).simulate_snapshot(snapshot)
+    simulation = (
+        RefactorRecipe("rewrite-alpha")
+        .replace_text(
+            "Alpha",
+            "value = 1",
+            "value = 2",
+            source_path=module_path.as_posix(),
+        )
+        .simulate_snapshot(snapshot)
+    )
     intervening_source = "class Alpha:\n    value = 99\n"
     module_path.write_text(intervening_source)
 
@@ -903,7 +928,7 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
             reason="Replace both implementations.",
         )
         .replace_target(
-            "    def run(self, value):\n" "        return AlphaAuthority.run(value)\n",
+            "    def run(self, value):\n        return AlphaAuthority.run(value)\n",
             qualname="Alpha.run",
             source_path=module_path.as_posix(),
         )
@@ -948,7 +973,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -956,7 +981,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
         recipe_id="route-alpha",
         reason="Replace the implementation.",
     ).replace_target(
-        "    def run(self, value):\n" "        return AlphaAuthority.run(value)\n",
+        "    def run(self, value):\n        return AlphaAuthority.run(value)\n",
         qualname="Alpha.run",
         source_path=module_path.as_posix(),
     )
@@ -998,7 +1023,7 @@ def test_codemod_preflight_rejects_unclaimed_authority_rationale(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -1084,9 +1109,7 @@ def test_codemod_preflight_accepts_source_backed_authority_claim(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass AlphaAuthority:\n"
-        "    def run(self, value):\n"
-        "        return value\n",
+        "\nclass AlphaAuthority:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -1119,7 +1142,7 @@ def test_codemod_preflight_emits_finding_for_unresolved_authority_claim(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -1257,6 +1280,15 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
 
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
+    contributor_declarations = {
+        contributor.plan_item_declaration
+        for contributor in simulation.simulation.rewrites[0].contributors
+    }
+    assert contributor_declarations == {
+        "DeleteClassAssignmentOperation",
+        "ReplaceFunctionBodyOperation",
+    }
+    assert simulation.simulation.to_dict()["rewrites"][0]["contributors"]
     assert "-    detector_id = 'manual_detector'" in diff
     assert "+        return value + 1" in diff
     simulation.apply()
@@ -1273,9 +1305,7 @@ def test_recipe_operation_target_nodes_reuse_snapshot_cache(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Detector:\n"
-        "    def normalize(self, value):\n"
-        "        return value\n",
+        "\nclass Detector:\n    def normalize(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
@@ -1330,12 +1360,12 @@ def test_projected_finding_report_uses_focused_partial_scan(
     _write_module(
         tmp_path,
         "pkg/changed.py",
-        "class Changed:\n" "    def value(self):\n" "        return 1\n",
+        "class Changed:\n    def value(self):\n        return 1\n",
     )
     _write_module(
         tmp_path,
         "pkg/other.py",
-        "class Other:\n" "    def value(self):\n" "        return 2\n",
+        "class Other:\n    def value(self):\n        return 2\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -1425,12 +1455,12 @@ def test_projected_finding_report_omits_compact_global_detectors(
     _write_module(
         tmp_path,
         "pkg/changed.py",
-        "class Changed:\n" "    def value(self):\n" "        return 1\n",
+        "class Changed:\n    def value(self):\n        return 1\n",
     )
     _write_module(
         tmp_path,
         "pkg/other.py",
-        "class Other:\n" "    def value(self):\n" "        return 2\n",
+        "class Other:\n    def value(self):\n        return 2\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -2340,8 +2370,7 @@ def test_finding_evidence_selector_resolves_role_case_owner_subject(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "class ProjectionSurfaceAuthority:\n"
-        "    ROLE_CASES = {'alpha': 1, 'beta': 2}\n",
+        "class ProjectionSurfaceAuthority:\n    ROLE_CASES = {'alpha': 1, 'beta': 2}\n",
     )
     modules = parse_python_modules(tmp_path)
     finding = RefactorFinding(
@@ -2475,9 +2504,7 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
     assert plan.expected_removed_finding_ids == ()
     assert plan.report.planned_count == 0
     assert plan.report.rejected_count == 1
-    assert payload["synthesis_report"]["status_counts"] == {
-        "no_effective_rewrites": 1
-    }
+    assert payload["synthesis_report"]["status_counts"] == {"no_effective_rewrites": 1}
 
 
 def test_source_index_target_selector_supports_regex_patterns(
@@ -3198,10 +3225,7 @@ def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "from ._base import *\n"
-        "\n\n"
-        "class LocalDetector(IssueDetector):\n"
-        "    pass\n",
+        "from ._base import *\n\n\nclass LocalDetector(IssueDetector):\n    pass\n",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
@@ -3461,6 +3485,100 @@ def test_operation_compiler_rejects_conflicting_same_span_replacements() -> None
         match="Conflicting replacements target the same source span pkg/mod.py:4-4",
     ):
         RefactorRecipeOperationCompiler._coalesced_replacements(replacements)
+
+
+def test_operation_compiler_unions_contributors_for_equivalent_composition() -> None:
+    first_contributor = SourceRewriteContributor(
+        recipe_id="first-recipe",
+        plan_item_declaration="FirstOperation",
+        plan_item_index=0,
+        file_path="pkg/mod.py",
+        line=1,
+        end_line=1,
+        source_hash="first-source-hash",
+    )
+    second_contributor = replace(
+        first_contributor,
+        recipe_id="second-recipe",
+        plan_item_declaration="SecondOperation",
+        source_hash="second-source-hash",
+    )
+    contributor_set = (first_contributor, second_contributor)
+
+    exact = RefactorRecipeOperationCompiler._coalesced_replacements(
+        (
+            SourceLineReplacement(
+                file_path="pkg/mod.py",
+                start_line=4,
+                end_line=4,
+                replacement_lines=("VALUE = 1\n",),
+                contributors=(first_contributor,),
+            ),
+            SourceLineReplacement(
+                file_path="pkg/mod.py",
+                start_line=4,
+                end_line=4,
+                replacement_lines=("VALUE = 1\n",),
+                contributors=(second_contributor,),
+            ),
+        )
+    )
+    import_union = RefactorRecipeOperationCompiler._coalesced_replacements(
+        (
+            SourceLineReplacement(
+                file_path="pkg/mod.py",
+                start_line=1,
+                end_line=0,
+                replacement_lines=("from pkg.types import Alpha\n",),
+                contributors=(first_contributor,),
+            ),
+            SourceLineReplacement(
+                file_path="pkg/mod.py",
+                start_line=1,
+                end_line=0,
+                replacement_lines=("from pkg.types import Beta\n",),
+                contributors=(second_contributor,),
+            ),
+        )
+    )
+    insertion = RefactorRecipeOperationCompiler._coalesced_replacements(
+        (
+            SourceLineReplacement(
+                file_path="pkg/mod.py",
+                start_line=8,
+                end_line=7,
+                replacement_lines=("ALPHA = 1\n",),
+                contributors=(first_contributor,),
+            ),
+            SourceLineReplacement(
+                file_path="pkg/mod.py",
+                start_line=8,
+                end_line=7,
+                replacement_lines=("BETA = 2\n",),
+                contributors=(second_contributor,),
+            ),
+        )
+    )
+
+    assert exact[0].contributors == contributor_set
+    assert import_union[0].contributors == contributor_set
+    assert "Alpha" in "".join(import_union[0].replacement_lines)
+    assert "Beta" in "".join(import_union[0].replacement_lines)
+    assert insertion[0].contributors == contributor_set
+    assert insertion[0].replacement_lines == ("ALPHA = 1\n", "BETA = 2\n")
+
+    with pytest.raises(ValueError, match="resolves to unequal declarations"):
+        RefactorRecipeOperationCompiler._coalesced_replacements(
+            (
+                exact[0],
+                replace(
+                    exact[0],
+                    contributors=(
+                        replace(first_contributor, source_hash="colliding-hash"),
+                    ),
+                ),
+            )
+        )
 
 
 def test_expose_global_candidate_cache_context_collapses_existing_candidate_method(
@@ -3783,7 +3901,7 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     _write_module(
         tmp_path,
         "pkg/destination.py",
-        "class Existing:\n" "    pass\n",
+        "class Existing:\n    pass\n",
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {
@@ -3848,7 +3966,7 @@ def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "class LocalBase:\n" "    pass\n\n\n" "class Helper(LocalBase):\n" "    pass\n",
+        "class LocalBase:\n    pass\n\n\nclass Helper(LocalBase):\n    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
     source_index = build_source_index(parse_python_modules(tmp_path), ())
@@ -3943,7 +4061,7 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
     _write_module(
         tmp_path,
         "pkg/helpers.py",
-        "def old_helper(value):\n" "    return value.strip()\n",
+        "def old_helper(value):\n    return value.strip()\n",
     )
     _write_module(
         tmp_path,
@@ -6481,10 +6599,7 @@ def test_economics_proof_report_serializes_gate_and_budget(tmp_path: Path) -> No
     assert payload["change_budget"]["advisor_backend"]["net_added"] == 5
     assert "Economics proof:" in markdown
     assert "Overall: pass" in markdown
-    assert (
-        "repository: 0 finding(s), 0 production, 0 semantic production, "
-        "0 readability, 0 test-only"
-    ) in markdown
+    assert "repository: 0 finding(s), 0 production, 0 test-only" in markdown
 
 
 def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> None:
@@ -6877,8 +6992,7 @@ class RepairRequest:
 
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id == "carrier_composition_retreat"
-        for finding in findings
+        finding.detector_id == "carrier_composition_retreat" for finding in findings
     )
 
 
@@ -7087,7 +7201,9 @@ def rewrite_foreign_contract(contract, value):
         "RuntimeContract.write_dynamic_field" in item.summary
         for item in reflection_findings
     )
-    assert any("rewrite_foreign_contract" in item.summary for item in reflection_findings)
+    assert any(
+        "rewrite_foreign_contract" in item.summary for item in reflection_findings
+    )
 
 
 def test_detects_builtin_locals_calls(tmp_path: Path) -> None:
@@ -14251,9 +14367,7 @@ def test_module_cli_apply_cannot_bypass_authority_preflight(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
-    original_source = (
-        "class Alpha:\n    def run(self, value):\n        return value\n"
-    )
+    original_source = "class Alpha:\n    def run(self, value):\n        return value\n"
     _write_module(tmp_path, "pkg/mod.py", original_source)
     plan_payload = {
         "recipes": [
@@ -14310,9 +14424,7 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
                 recipes=(
                     RefactorRecipe("create-generated").create_file(
                         generated_path.as_posix(),
-                        "class Generated:\n"
-                        "    def run(self):\n"
-                        "        return 1\n",
+                        "class Generated:\n    def run(self):\n        return 1\n",
                     ),
                 )
             ),
@@ -14363,10 +14475,7 @@ def test_codemod_sequential_report_projection_preserves_same_file_changes(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "class Alpha:\n"
-        "    value = 1\n\n\n"
-        "class Beta:\n"
-        "    value = 2\n",
+        "class Alpha:\n    value = 1\n\n\nclass Beta:\n    value = 2\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     alpha_recipe = RefactorRecipe("rewrite-alpha").replace_text(
@@ -14408,7 +14517,7 @@ def test_codemod_document_empty_guard_avoids_after_snapshot_rebuild(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self):\n" "        return 1\n",
+        "\nclass Alpha:\n    def run(self):\n        return 1\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     document = CodemodPlanDocument(
@@ -14451,7 +14560,7 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self):\n" "        return 1\n",
+        "\nclass Alpha:\n    def run(self):\n        return 1\n",
     )
     sequence = CodemodPlanSequence(
         documents=(
@@ -14558,7 +14667,7 @@ def test_codemod_source_snapshot_reuses_source_index_target_nodes(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self):\n" "        return 1\n",
+        "\nclass Alpha:\n    def run(self):\n        return 1\n",
     )
 
     def fail_reindex(*args: object, **kwargs: object) -> dict[str, ast.AST]:
@@ -15067,7 +15176,7 @@ def test_module_cli_preflights_multi_symbol_move_failure_from_stdin(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "class LocalBase:\n" "    pass\n\n\n" "class Helper(LocalBase):\n" "    pass\n",
+        "class LocalBase:\n    pass\n\n\nclass Helper(LocalBase):\n    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
     plan_payload = {
@@ -15126,7 +15235,7 @@ def test_module_cli_reports_multi_symbol_move_preflight_failure_from_stdin(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "class LocalBase:\n" "    pass\n\n\n" "class Helper(LocalBase):\n" "    pass\n",
+        "class LocalBase:\n    pass\n\n\nclass Helper(LocalBase):\n    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
     plan_payload = {
@@ -16699,8 +16808,7 @@ def test_module_cli_executes_multifile_selected_operation_plan_template(
                         "operation": "create_file",
                         "file_path": "pkg/generated.py",
                         "source": (
-                            "def modern(name, value):\n"
-                            "    return f'{name}:{value}'\n"
+                            "def modern(name, value):\n    return f'{name}:{value}'\n"
                         ),
                     }
                 ],
@@ -16746,7 +16854,7 @@ def test_module_cli_executes_multifile_selected_operation_plan_template(
     assert operations[1]["operation"] == "apply_selected_targets"
     assert payload["scaffold"]["setup_operations"][0]["operation"] == "create_file"
     assert generated_path.read_text() == (
-        "def modern(name, value):\n" "    return f'{name}:{value}'\n"
+        "def modern(name, value):\n    return f'{name}:{value}'\n"
     )
     assert "modern('Alpha.run', value)" in module_path.read_text()
     assert "modern('Beta.run', value)" in module_path.read_text()
@@ -17352,7 +17460,7 @@ def test_apply_selected_targets_rejects_selection_count_underflow(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self):\n" "        return legacy()\n",
+        "\nclass Alpha:\n    def run(self):\n        return legacy()\n",
     )
     plan_path = tmp_path / "codemod-plan.json"
     plan_path.write_text(
@@ -17575,7 +17683,7 @@ def test_apply_selected_targets_rejects_unknown_target_template_field(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self):\n" "        return legacy()\n",
+        "\nclass Alpha:\n    def run(self):\n        return legacy()\n",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
@@ -17811,8 +17919,7 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
         ),
         facts=(),
         projections=(),
-        mirror_edges=(),
-        certificates=(),
+        relations=(),
         class_index=build_class_family_index(parse_python_modules(package_root)),
     )
     SemanticDescentGraphCache(semantic_cache_dir).store(
@@ -18227,12 +18334,18 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
     from nominal_refactor_advisor.codemod_workflow import CodemodFixpointRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
 
-    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/existing.py",
+        "\ndef materialize_schema(spec):\n    return spec.build()\n",
+    )
     created_path = tmp_path / "pkg/generated.py"
     created_source = (
+        "def _materialize_schema(spec):\n"
+        "    return spec.build()\n\n\n"
         "class GeneratedAlpha:\n"
         "    pass\n"
-        "\n\n\n\n\n"
+        "\n\n"
         "class GeneratedBeta:\n"
         "    pass\n"
     )
@@ -18268,7 +18381,7 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
     assert projected_module.module_name == "pkg.generated"
     assert any(
         (
-            finding.detector_id == "excessive_blank_line_run"
+            finding.detector_id == "private_helper_shadow"
             and any(
                 evidence.file_path == created_path.as_posix()
                 for evidence in finding.evidence
@@ -18293,7 +18406,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self):\n" "        return 'old'\n",
+        "\nclass Alpha:\n    def run(self):\n        return 'old'\n",
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
@@ -18388,12 +18501,12 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
     _write_module(
         tmp_path,
         "pkg/report.py",
-        "\nclass Report:\n" "    def run(self):\n" "        return 'old'\n",
+        "\nclass Report:\n    def run(self):\n        return 'old'\n",
     )
     _write_module(
         tmp_path,
         "pkg/context.py",
-        "\nclass Context:\n" "    def run(self):\n" "        return 'old'\n",
+        "\nclass Context:\n    def run(self):\n        return 'old'\n",
     )
     modules = parse_python_modules(tmp_path)
 
@@ -18493,7 +18606,7 @@ def test_codemod_workflow_plan_runs_goal_from_json(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self):\n" "        return 'old'\n",
+        "\nclass Alpha:\n    def run(self):\n        return 'old'\n",
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
@@ -18604,7 +18717,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self):\n" "        return 'old'\n",
+        "\nclass Alpha:\n    def run(self):\n        return 'old'\n",
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
@@ -18890,7 +19003,11 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/existing.py",
+        "\ndef materialize_schema(spec):\n    return spec.build()\n",
+    )
     created_path = tmp_path / "pkg/generated.py"
     plan_path = tmp_path / "codemod-plan.json"
     plan_path.write_text(
@@ -18904,9 +19021,11 @@ def test_module_cli_simulates_projected_findings_for_created_files(
                                 "operation": "create_file",
                                 "file_path": created_path.as_posix(),
                                 "source": (
+                                    "def _materialize_schema(spec):\n"
+                                    "    return spec.build()\n\n\n"
                                     "class GeneratedAlpha:\n"
                                     "    pass\n"
-                                    "\n\n\n\n\n"
+                                    "\n\n"
                                     "class GeneratedBeta:\n"
                                     "    pass\n"
                                 ),
@@ -18958,7 +19077,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     assert "projected_finding_recipe_plan" not in projected_findings
     assert "projected_finding_continuation" not in projected_findings
     assert any(
-        finding["detector_id"] == "excessive_blank_line_run"
+        finding["detector_id"] == "private_helper_shadow"
         and any(
             evidence["file_path"] == created_path.as_posix()
             for evidence in finding["evidence"]
@@ -19126,12 +19245,12 @@ def test_codemod_class_plan_groups_semantic_findings_by_authority(
     _write_module(
         tmp_path,
         "pkg/first.py",
-        ("class FirstAxisConsumer:\n" "    role_cases = {'applied': 1, 'diff': 2}\n"),
+        ("class FirstAxisConsumer:\n    role_cases = {'applied': 1, 'diff': 2}\n"),
     )
     _write_module(
         tmp_path,
         "pkg/second.py",
-        ("class SecondAxisConsumer:\n" "    role_cases = {'applied': 3, 'diff': 4}\n"),
+        ("class SecondAxisConsumer:\n    role_cases = {'applied': 3, 'diff': 4}\n"),
     )
     first = RefactorFinding(
         detector_id="generic_role_case_table",
@@ -19372,11 +19491,38 @@ def test_finding_recipe_plan_merges_overlapping_role_case_module_rewrites(
         is RefactorRecipeTargetShape.ROLE_CASE_AUTHORITY
     )
     assert len(plan.document.recipes[0].rewrites) == 1
+    projected_rewrite = plan.document.recipes[0].rewrites[0]
+    assert len(projected_rewrite.contributors) >= 2
+    assert (
+        len({contributor.recipe_id for contributor in projected_rewrite.contributors})
+        >= 2
+    )
     assert simulation.is_clean is True
     assert "+class AxisRoleCaseAuthority:" in diff
     assert "+class ImageRoleCaseAuthority:" in diff
     assert "AxisRoleCaseAuthority.APPLIED" in diff
     assert "ImageRoleCaseAuthority.CLEAN" in diff
+
+    serialized_document = plan.document.to_dict()
+    module_path.write_text(
+        module_path.read_text().replace(
+            "class FourthAxisConsumer:\n",
+            "class FourthAxisConsumer :\n",
+        )
+    )
+    changed_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        (first, second),
+    )
+
+    with pytest.raises(
+        CodemodSourceRevisionError,
+        match="Compiled source rewrite contributor no longer matches",
+    ):
+        CodemodPlanDocument.from_json_value(serialized_document).simulate_snapshot(
+            changed_snapshot,
+            backend=CodemodBackend.AST_SPAN,
+        )
 
 
 def test_module_cli_synthesizes_class_plan_with_scaffolds(
@@ -19915,7 +20061,7 @@ def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     plan_path = tmp_path / "codemod-plan.json"
     plan_path.write_text(
@@ -21785,10 +21931,7 @@ def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "class Alpha:\n"
-        "    KIND = 'shared'\n\n"
-        "class Beta:\n"
-        "    KIND = 'shared'\n",
+        "class Alpha:\n    KIND = 'shared'\n\nclass Beta:\n    KIND = 'shared'\n",
     )
 
     result = subprocess.run(
@@ -21831,7 +21974,7 @@ def test_module_cli_cold_focused_loop_reports_partial_local_analysis(
     _write_module(
         tmp_path,
         "pkg/alpha.py",
-        "class Alpha:\n" "    FLAG = 'enabled'\n",
+        "class Alpha:\n    FLAG = 'enabled'\n",
     )
     _write_module(
         tmp_path,
@@ -21900,10 +22043,7 @@ def test_module_cli_loop_execution_plan_survives_summary_cache_hit(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "class Alpha:\n"
-        "    KIND = 'shared'\n\n"
-        "class Beta:\n"
-        "    KIND = 'shared'\n",
+        "class Alpha:\n    KIND = 'shared'\n\nclass Beta:\n    KIND = 'shared'\n",
     )
     command = [
         sys.executable,
@@ -22012,8 +22152,7 @@ def test_json_payload_agent_reports_semantic_descent_graph_for_mirrors(
 
     assert graph_payload["active_graph_source"] == "repository"
     assert repository_graph_payload["authority_count"] >= 1
-    assert repository_graph_payload["mirror_edge_count"] >= 1
-    assert repository_graph_payload["certificate_count"] >= 1
+    assert repository_graph_payload["missing_descent_count"] >= 1
     assert top_certificates[0]["authority_name"] == "Handler"
     assert top_certificates[0]["projection_label"] == "HANDLERS"
     assert top_certificates[0]["projection_kind"] == "mapping_literal"
@@ -27203,109 +27342,6 @@ def test_detects_residual_closed_axis_branching(tmp_path: Path) -> None:
     assert "ScoringPolicy" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "return cls.__registry__[key]()" in (finding.scaffold or "")
-
-
-def test_detects_excessive_blank_line_runs(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\n".join(
-            [
-                "def alpha():",
-                "    return 1",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "def beta():",
-                "    return 2",
-            ]
-        ),
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "excessive_blank_line_run"
-        )
-    )
-    assert "5 contiguous blank lines" in finding.summary
-    assert "Collapse blank lines" in (finding.codemod_patch or "")
-
-
-def test_detects_intra_class_blank_line_runs(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\n".join(
-            [
-                "class Alpha:",
-                "    marker = True",
-                "",
-                "",
-                "    def run(self):",
-                "        return 1",
-            ]
-        ),
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "excessive_blank_line_run"
-        )
-    )
-    assert "2 contiguous blank lines" in finding.summary
-
-
-def test_detects_readability_compressed_source_lines(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\n".join(
-            [
-                "def alpha(): left = 1; right = 2; return left + right",
-                "VALUE = " + " + ".join((f"name_{index}" for index in range(24))),
-            ]
-        ),
-    )
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "readability_compressed_line"
-    ]
-    summaries = "\n".join((finding.summary for finding in findings))
-    assert "semicolon-separated statements" in summaries
-    assert "inline FunctionDef suite" in summaries
-    assert "overlong physical line" in summaries
-    assert all(
-        (finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY for finding in findings)
-    )
-
-
-def test_readability_compressed_source_lines_skip_multiline_string_fragments(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\n".join(
-            [
-                "def alpha():",
-                '    prompt = f"""This is a deliberately long multiline string header whose single physical line is not independently tokenizable as a complete Python source line.',
-                "    {value}",
-                '    """',
-                "    return prompt",
-            ]
-        ),
-    )
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "readability_compressed_line"
-    ]
-    assert not findings
 
 
 def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:

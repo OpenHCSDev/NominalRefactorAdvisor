@@ -1100,23 +1100,18 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
                 target_projections_by_family.get(family, ()),
                 config,
             )
-            if demand is not None and not family.report_demand_includes_context(
-                demand
-            ):
+            if demand is not None and not family.report_demand_includes_context(demand):
                 return False
         for family in getattr(cls, "compact_report_candidate_anchor_families", ()):
             demand = family.report_demand(
                 target_projections_by_family.get(family, ()),
                 config,
             )
-            if demand is not None and not family.report_demand_includes_context(
-                demand
-            ):
+            if demand is not None and not family.report_demand_includes_context(demand):
                 return False
         if cls.compact_report_context_requires_target_projection:
             return any(
-                target_projections_by_family.get(family, ())
-                for family in families
+                target_projections_by_family.get(family, ()) for family in families
             )
         return True
 
@@ -1796,9 +1791,7 @@ class SourceModuleCollectorCandidateDetector(
 ):
     """Module candidate detector with an exact shared-source fast path."""
 
-    source_candidate_collector: ClassVar[
-        SourceModuleCandidateCollector[CandidateItemT]
-    ]
+    source_candidate_collector: ClassVar[SourceModuleCandidateCollector[CandidateItemT]]
 
     def _findings_for_source(
         self,
@@ -1806,9 +1799,7 @@ class SourceModuleCollectorCandidateDetector(
         syntax_index: NativePythonSyntaxIndex,
         config: DetectorConfig,
     ) -> list[RefactorFinding] | None:
-        candidates = type(self).source_candidate_collector(
-            module, syntax_index, config
-        )
+        candidates = type(self).source_candidate_collector(module, syntax_index, config)
         if candidates is None:
             return None
         return [self._finding_for_candidate(candidate) for candidate in candidates]
@@ -2015,9 +2006,9 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
     detector_name: str | None = None
     detector_base: type[IssueDetector] = ModuleCollectorCandidateDetector
     candidate_collector: DetectorCollector[CandidateItemT] | None = None
-    source_candidate_collector: SourceModuleCandidateCollector[CandidateItemT] | None = (
-        None
-    )
+    source_candidate_collector: (
+        SourceModuleCandidateCollector[CandidateItemT] | None
+    ) = None
     detector_priority: int | None = None
     registry_normal_form_policy: RegistryNormalFormPolicy | None = None
 
@@ -13861,13 +13852,6 @@ class EnumMetadataTableCandidate(ClassLineWitnessCandidate):
     table_name: str
     property_names: tuple[str, ...]
     case_count: int
-
-
-@dataclass(frozen=True)
-class ReadabilityCompressedLineCandidate(LineWitnessCandidate):
-    char_count: int
-    reason: str
-    statement_count: int
 
 
 @dataclass(frozen=True)

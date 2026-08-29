@@ -58,7 +58,7 @@ from .candidate_collection_semantics import (
 )
 from .class_index import ClassFamilyIndex, build_class_family_index
 from .codemod_spacing import DestinationInsertionSpacing
-from .collection_algebra import sorted_tuple
+from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .detectors._base import (
     CandidateCollectorBaseShape,
     CandidateCollectorScope,
@@ -645,11 +645,177 @@ class ReplacementSource:
 
 
 @dataclass(frozen=True, kw_only=True)
+class SourceRewriteContributor:
+    """Nominal plan-item provenance plus its executable source precondition."""
+
+    recipe_id: str
+    plan_item_declaration: str
+    plan_item_index: int
+    file_path: str
+    line: int
+    end_line: int
+    source_hash: str
+
+    @classmethod
+    def from_target(
+        cls,
+        *,
+        recipe_id: str,
+        plan_item_declaration: str,
+        plan_item_index: int,
+        target: AstTargetDigest,
+        sources_by_file_path: Mapping[str, str],
+    ) -> "SourceRewriteContributor":
+        return cls.from_source_span(
+            recipe_id=recipe_id,
+            plan_item_declaration=plan_item_declaration,
+            plan_item_index=plan_item_index,
+            file_path=target.file_path,
+            line=target.line,
+            end_line=target.end_line,
+            sources_by_file_path=sources_by_file_path,
+        )
+
+    @classmethod
+    def from_line_replacement(
+        cls,
+        *,
+        recipe_id: str,
+        plan_item_declaration: str,
+        plan_item_index: int,
+        replacement: "SourceLineReplacement",
+        sources_by_file_path: Mapping[str, str],
+    ) -> "SourceRewriteContributor":
+        return cls.from_source_span(
+            recipe_id=recipe_id,
+            plan_item_declaration=plan_item_declaration,
+            plan_item_index=plan_item_index,
+            file_path=replacement.file_path,
+            line=replacement.start_line,
+            end_line=replacement.end_line,
+            sources_by_file_path=sources_by_file_path,
+        )
+
+    @classmethod
+    def from_source_span(
+        cls,
+        *,
+        recipe_id: str,
+        plan_item_declaration: str,
+        plan_item_index: int,
+        file_path: str,
+        line: int,
+        end_line: int,
+        sources_by_file_path: Mapping[str, str],
+    ) -> "SourceRewriteContributor":
+        source = sources_by_file_path[file_path]
+        return cls(
+            recipe_id=recipe_id,
+            plan_item_declaration=plan_item_declaration,
+            plan_item_index=plan_item_index,
+            file_path=file_path,
+            line=line,
+            end_line=end_line,
+            source_hash=CodemodSourceRevision.hash_source(
+                SourceLineSpan(line, end_line).source_from(source)
+            ),
+        )
+
+    def for_target(
+        self,
+        target: AstTargetDigest,
+        sources_by_file_path: Mapping[str, str],
+    ) -> "SourceRewriteContributor":
+        return type(self).from_target(
+            recipe_id=self.recipe_id,
+            plan_item_declaration=self.plan_item_declaration,
+            plan_item_index=self.plan_item_index,
+            target=target,
+            sources_by_file_path=sources_by_file_path,
+        )
+
+    @property
+    def identity(self) -> tuple[str, str, int]:
+        return (
+            self.recipe_id,
+            self.plan_item_declaration,
+            self.plan_item_index,
+        )
+
+    @classmethod
+    def merge(
+        cls,
+        *contributor_groups: Iterable["SourceRewriteContributor"],
+    ) -> tuple["SourceRewriteContributor", ...]:
+        contributor_index = UniqueIdentityIndexAuthority[
+            tuple[str, str, int],
+            SourceRewriteContributor,
+            SourceRewriteContributor,
+        ]()
+        for contributor_group in contributor_groups:
+            for contributor in contributor_group:
+                contributor_index.add(
+                    contributor.identity,
+                    contributor,
+                    contributor,
+                )
+        return tuple(contributor_index.values_by_handle().values())
+
+    def require_source(self, sources_by_file_path: Mapping[str, str]) -> None:
+        source = sources_by_file_path.get(self.file_path)
+        if source is None or self.source_hash != CodemodSourceRevision.hash_source(
+            SourceLineSpan(self.line, self.end_line).source_from(source)
+        ):
+            raise CodemodSourceRevisionError(
+                "Compiled source rewrite contributor no longer matches "
+                f"{self.file_path}:{self.line}-{self.end_line}: "
+                f"{self.recipe_id}/{self.plan_item_declaration}"
+                f"[{self.plan_item_index}]"
+            )
+
+    @classmethod
+    def from_mapping(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> "SourceRewriteContributor":
+        reader = SourceRewritePlanPayload(payload)
+        plan_item_index = payload.get("plan_item_index")
+        line = payload.get("line")
+        end_line = payload.get("end_line")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (plan_item_index, line, end_line)
+        ):
+            raise ValueError("Source rewrite contributor geometry must be non-negative")
+        return cls(
+            recipe_id=reader.required_string("recipe_id"),
+            plan_item_declaration=reader.required_string("plan_item_declaration"),
+            plan_item_index=plan_item_index,
+            file_path=reader.required_string("file_path"),
+            line=line,
+            end_line=end_line,
+            source_hash=reader.required_string("source_hash"),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "recipe_id": self.recipe_id,
+            "plan_item_declaration": self.plan_item_declaration,
+            "plan_item_index": self.plan_item_index,
+            "file_path": self.file_path,
+            "line": self.line,
+            "end_line": self.end_line,
+            "source_hash": self.source_hash,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class SourceRewriteDelta(ReplacementSource):
     """Replacement source and operation shared by planned and simulated rewrites."""
 
     operation: RewriteOperation = RewriteOperation.REPLACE_TARGET
     rationale: str = ""
+    contributors: tuple[SourceRewriteContributor, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -878,7 +1044,7 @@ class AuthorityClaimSourceIndexResolver:
                 status=AuthorityClaimStatus.RESOLVED,
                 proof_edges=(
                     AuthorityProofEdge(
-                        edge_kind=AuthorityProofEdgeKind.SOURCE_INDEX_TARGET.value,
+                        edge_kind=AuthorityProofEdgeKind.SOURCE_INDEX_TARGET,
                         authority_id=target.target_id,
                         authority_kind=claim.authority_kind,
                         file_path=target.file_path,
@@ -894,7 +1060,7 @@ class AuthorityClaimSourceIndexResolver:
                 status=AuthorityClaimStatus.AMBIGUOUS,
                 proof_edges=tuple(
                     AuthorityProofEdge(
-                        edge_kind=AuthorityProofEdgeKind.SOURCE_INDEX_TARGET.value,
+                        edge_kind=AuthorityProofEdgeKind.SOURCE_INDEX_TARGET,
                         authority_id=target.target_id,
                         authority_kind=claim.authority_kind,
                         file_path=target.file_path,
@@ -1397,6 +1563,9 @@ class SimulatedSourceRewrite(SourceTargetSpan, SourceRewriteDelta):
             "line": self.line,
             "end_line": self.end_line,
             "rationale": self.rationale,
+            "contributors": tuple(
+                contributor.to_dict() for contributor in self.contributors
+            ),
         }
 
 
@@ -2484,11 +2653,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodSourceSnapshot":
         path_tuple = tuple(source_paths)
         duplicate_paths = tuple(
-            sorted(
-                path
-                for path, count in Counter(path_tuple).items()
-                if count > 1
-            )
+            sorted(path for path, count in Counter(path_tuple).items() if count > 1)
         )
         existing_paths = tuple(
             sorted(set(path_tuple).intersection(self.sources_by_file_path))
@@ -2612,9 +2777,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         return RefactorRecipeSimulation(
             recipe=recipe,
             simulation=document_simulation.simulation,
-            architecture_guard_report=(
-                document_simulation.architecture_guard_report
-            ),
+            architecture_guard_report=(document_simulation.architecture_guard_report),
         )
 
     def simulate_document(
@@ -4636,12 +4799,33 @@ class AuthorityBoundaryPlan:
 class RefactorRecipeRewrite(ReplacementSource, SourceRewritePlanItem):
     """One recipe step that replaces a source-index target."""
 
-    def planned_rewrite(self, source_index: SourceIndex) -> PlannedSourceRewrite:
+    contributors: tuple[SourceRewriteContributor, ...] = ()
+
+    def planned_rewrite(
+        self,
+        source_index: SourceIndex,
+        *,
+        recipe_id: str,
+        plan_item_index: int,
+        sources_by_file_path: Mapping[str, str] | None,
+    ) -> PlannedSourceRewrite:
         target_identifier = self.target.required_target_id(source_index)
+        contributors = self.contributors
+        if not contributors and sources_by_file_path is not None:
+            contributors = (
+                SourceRewriteContributor.from_target(
+                    recipe_id=recipe_id,
+                    plan_item_declaration=type(self).__name__,
+                    plan_item_index=plan_item_index,
+                    target=source_index.target_by_id[target_identifier],
+                    sources_by_file_path=sources_by_file_path,
+                ),
+            )
         return PlannedSourceRewrite(
             target_id=target_identifier,
             replacement_source=self.replacement_source,
             rationale=self.rationale,
+            contributors=contributors,
         )
 
     def to_dict(self) -> JsonObject:
@@ -4649,6 +4833,9 @@ class RefactorRecipeRewrite(ReplacementSource, SourceRewritePlanItem):
             **self.target.to_dict(),
             "replacement_source": self.replacement_source,
             "rationale": self.rationale,
+            "contributors": tuple(
+                contributor.to_dict() for contributor in self.contributors
+            ),
         }
 
 
@@ -4661,6 +4848,7 @@ class SourceLineReplacement:
     end_line: int
     replacement_lines: tuple[str, ...] = ()
     rationale: str = ""
+    contributors: tuple[SourceRewriteContributor, ...] = ()
 
     @classmethod
     def delete_target(
@@ -4690,6 +4878,7 @@ class SourceLineDiffAuthority:
         original_lines: tuple[str, ...],
         candidate_lines: tuple[str, ...],
         rationale: str,
+        contributors: tuple[SourceRewriteContributor, ...] = (),
     ) -> tuple[SourceLineReplacement, ...]:
         prefix_count = cls.common_prefix_count(original_lines, candidate_lines)
         suffix_count = cls.common_suffix_count(
@@ -4734,6 +4923,7 @@ class SourceLineDiffAuthority:
                         + replacement_end
                     ],
                     rationale=rationale,
+                    contributors=contributors,
                 )
             )
         return tuple(replacements)
@@ -7647,6 +7837,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         if end_col_offset is None:
             raise ValueError(f"Node has no source end column: {node!r}")
         return geometry.line_offsets[end_lineno - 1] + end_col_offset
+
 
 @dataclass(frozen=True)
 class RoleCarrierFieldProjection:
@@ -14072,19 +14263,55 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
 
     def planned_rewrites(
         self,
+        recipe_id: str,
         operations: Iterable[RefactorRecipeOperation],
+        *,
+        plan_item_index_offset: int = 0,
     ) -> tuple[PlannedSourceRewrite, ...]:
         replacements = self._coalesced_replacements(
             replacement
-            for operation in operations
-            for replacement in operation.line_replacements_with_context(
-                self.source_index,
-                self.sources_by_file_path,
-                selector_context=self,
+            for plan_item_index, operation in enumerate(
+                operations,
+                start=plan_item_index_offset,
+            )
+            for replacement in self._contributed_replacements(
+                recipe_id,
+                plan_item_index,
+                operation,
             )
         )
         groups = self._merged_replacement_groups(replacements)
         return tuple(self._planned_rewrite(group) for group in groups)
+
+    def _contributed_replacements(
+        self,
+        recipe_id: str,
+        plan_item_index: int,
+        operation: RefactorRecipeOperation,
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = operation.line_replacements_with_context(
+            self.source_index,
+            self.sources_by_file_path,
+            selector_context=self,
+        )
+        return tuple(
+            replace(
+                replacement,
+                contributors=SourceRewriteContributor.merge(
+                    replacement.contributors,
+                    (
+                        SourceRewriteContributor.from_line_replacement(
+                            recipe_id=recipe_id,
+                            plan_item_declaration=type(operation).__name__,
+                            plan_item_index=plan_item_index,
+                            replacement=replacement,
+                            sources_by_file_path=self.sources_by_file_path,
+                        ),
+                    ),
+                ),
+            )
+            for replacement in replacements
+        )
 
     @staticmethod
     def _coalesced_replacements(
@@ -14121,6 +14348,9 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
                 first,
                 rationale=_joined_rationales(
                     replacement.rationale for replacement in replacements
+                ),
+                contributors=SourceRewriteContributor.merge(
+                    *(replacement.contributors for replacement in replacements)
                 ),
             )
         content_insertion_replacement = (
@@ -14164,6 +14394,9 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
             rationale=_joined_rationales(
                 replacement.rationale for replacement in replacements
             ),
+            contributors=SourceRewriteContributor.merge(
+                *(replacement.contributors for replacement in replacements)
+            ),
         )
 
     @staticmethod
@@ -14205,6 +14438,9 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
             rationale=_joined_rationales(
                 replacement.rationale for replacement in replacements
             ),
+            contributors=SourceRewriteContributor.merge(
+                *(replacement.contributors for replacement in replacements)
+            ),
         )
 
     @staticmethod
@@ -14226,6 +14462,9 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
             replacement_lines=replacement_lines,
             rationale=_joined_rationales(
                 replacement.rationale for replacement in replacements
+            ),
+            contributors=SourceRewriteContributor.merge(
+                *(replacement.contributors for replacement in replacements)
             ),
         )
 
@@ -14289,6 +14528,18 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
             replacement_source=replacement_source,
             rationale=_joined_rationales(
                 replacement.rationale for replacement in group.replacements
+            ),
+            contributors=SourceRewriteContributor.merge(
+                *(
+                    tuple(
+                        contributor.for_target(
+                            target,
+                            self.sources_by_file_path,
+                        )
+                        for contributor in replacement.contributors
+                    )
+                    for replacement in group.replacements
+                )
             ),
         )
 
@@ -14382,9 +14633,7 @@ class RefactorRecipe:
                 rewrite for recipe in recipe_tuple for rewrite in recipe.rewrites
             ),
             operations=tuple(
-                operation
-                for recipe in recipe_tuple
-                for operation in recipe.operations
+                operation for recipe in recipe_tuple for operation in recipe.operations
             ),
             guard_suite=ArchitectureGuardSuite().merge(
                 *(recipe.guard_suite for recipe in recipe_tuple)
@@ -15102,7 +15351,13 @@ class RefactorRecipe:
         selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[PlannedSourceRewrite, ...]:
         rewrite_batch = tuple(
-            rewrite.planned_rewrite(source_index) for rewrite in self.rewrites
+            rewrite.planned_rewrite(
+                source_index,
+                recipe_id=self.recipe_id,
+                plan_item_index=plan_item_index,
+                sources_by_file_path=source_by_path,
+            )
+            for plan_item_index, rewrite in enumerate(self.rewrites)
         )
         if not self.operations:
             return rewrite_batch
@@ -15127,7 +15382,9 @@ class RefactorRecipe:
                 else None
             ),
         ).planned_rewrites(
+            self.recipe_id,
             self.operations,
+            plan_item_index_offset=len(self.rewrites),
         )
         return (*rewrite_batch, *operation_rewrites)
 
@@ -15653,10 +15910,7 @@ class CodemodPlanSequence:
             stage_reports=tuple(stage_reports),
             final_snapshot=active_snapshot,
             simulation=CodemodSimulationReport.from_sequential_reports(
-                (
-                    stage.document_simulation.simulation
-                    for stage in stage_reports
-                ),
+                (stage.document_simulation.simulation for stage in stage_reports),
             ),
             architecture_guard_report=self.guard_suite.evaluate(
                 active_snapshot.source_index,
@@ -15786,11 +16040,18 @@ class CodemodPlanJsonParser:
         return AuthorityClaim.from_mapping(payload)
 
     def refactor_recipe_rewrite(self, row: JsonValue) -> RefactorRecipeRewrite:
+        payload = self.object_row(row, "refactor recipe rewrites")
         rewrite_row = self.source_rewrite_plan_row(row, "refactor recipe rewrites")
         return RefactorRecipeRewrite(
             target=rewrite_row.target,
             replacement_source=rewrite_row.replacement_source,
             rationale=rewrite_row.rationale,
+            contributors=tuple(
+                SourceRewriteContributor.from_mapping(
+                    self.object_row(item, "source rewrite contributors")
+                )
+                for item in self.array_field(payload, "contributors")
+            ),
         )
 
     def refactor_recipe_operation(self, row: JsonValue) -> RefactorRecipeOperation:
@@ -15958,7 +16219,7 @@ class CodemodSourceRevision:
 
 
 class CodemodSourceRevisionError(ValueError):
-    """Raised when a simulated write no longer matches its source revision."""
+    """Raised when codemod source no longer matches a required revision."""
 
 
 @dataclass(frozen=True)
@@ -15972,9 +16233,7 @@ class CodemodSimulationReport:
     base_revisions: tuple[CodemodSourceRevision, ...]
 
     def __post_init__(self) -> None:
-        revision_paths = tuple(
-            revision.file_path for revision in self.base_revisions
-        )
+        revision_paths = tuple(revision.file_path for revision in self.base_revisions)
         if len(revision_paths) != len(frozenset(revision_paths)):
             raise ValueError("Codemod source revisions require unique file paths")
         if frozenset(revision_paths) != frozenset(self.changed_file_paths):
@@ -16041,8 +16300,7 @@ class CodemodSimulationReport:
                 parse_valid=all(report.parse_valid for report in report_tuple),
             ),
             base_revisions=tuple(
-                initial_revisions[file_path]
-                for file_path in sorted(initial_revisions)
+                initial_revisions[file_path] for file_path in sorted(initial_revisions)
             ),
         )
 
@@ -16063,9 +16321,7 @@ class CodemodSimulationReport:
 
     @property
     def base_revision_by_file_path(self) -> Mapping[str, CodemodSourceRevision]:
-        return {
-            revision.file_path: revision for revision in self.base_revisions
-        }
+        return {revision.file_path: revision for revision in self.base_revisions}
 
     def require_current_sources(self, *, encoding: str = "utf-8") -> None:
         for revision in self.base_revisions:
@@ -17002,9 +17258,7 @@ class FindingRecipeSynthesisAttempt:
                 elif not evaluation.recipe.has_effective_rewrites(
                     self.selector_context
                 ):
-                    result_status = (
-                        FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
-                    )
+                    result_status = FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
                     result_evaluation = evaluation
                     result_reason = result_status.default_reason
                 else:
@@ -17285,8 +17539,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         recipes = tuple(
             record.evaluation.recipe
             for record in records
-            if record.status.planned
-            and record.evaluation.recipe is not None
+            if record.status.planned and record.evaluation.recipe is not None
         )
         if not recipes:
             return CodemodPlanDocument()
@@ -17453,7 +17706,7 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         )
         certificates_by_projection_id = {
             certificate.edge.projection_id: certificate
-            for certificate in graph.certificates
+            for certificate in graph.missing_descent_certificates
         }
         grouped: dict[tuple[str, str], list[RefactorFinding]] = defaultdict(list)
         for finding in semantic_findings:
@@ -17484,7 +17737,10 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
     ) -> tuple[tuple[RefactorFinding, ...], ...]:
         if not findings:
             return ()
-        findings_by_id = {finding.stable_id: finding for finding in findings}
+        findings_by_id = UniqueIdentityIndexAuthority.declarations_by_handle(
+            findings,
+            lambda finding: finding.stable_id,
+        )
         execution_plan = build_refactor_execution_plan(list(findings), root)
         return tuple(
             tuple(
@@ -30574,6 +30830,7 @@ class ProjectedBatchRewriteSet:
                     target=SourceRewriteTarget(target_id=rewrite.target_id),
                     replacement_source=rewrite.replacement_source,
                     rationale=rewrite.rationale,
+                    contributors=rewrite.contributors,
                 )
                 for rewrite in self.rewrites
             ),
@@ -30858,6 +31115,18 @@ class FindingRecipePlanBuilder:
             target_id=target.target_id,
             replacement_source=replacement_source,
             rationale=_joined_rationales(rewrite.rationale for rewrite in rewrites),
+            contributors=SourceRewriteContributor.merge(
+                *(
+                    tuple(
+                        contributor.for_target(
+                            target,
+                            selector_context.sources_by_file_path,
+                        )
+                        for contributor in replacement.contributors
+                    )
+                    for replacement in replacements
+                )
+            ),
         )
 
     @staticmethod
@@ -30873,6 +31142,7 @@ class FindingRecipePlanBuilder:
             original_lines=original_lines,
             candidate_lines=replacement_lines,
             rationale=rewrite.rationale,
+            contributors=rewrite.contributors,
         )
 
     @classmethod
@@ -31075,7 +31345,7 @@ def codemod_plan_from_findings(
 class CodemodCandidate:
     """Impact-ranked rewrite candidate with optional executable rewrite plans."""
 
-    origin: CodemodCandidateOrigin
+    origin: CodemodCandidateOrigin = field(compare=False)
     opportunity: RefactorImpactOpportunity
     target_ids: tuple[str, ...]
     planned_rewrites: tuple[PlannedSourceRewrite, ...] = ()
@@ -32115,7 +32385,9 @@ def codemod_candidates_from_impact_ranking(
 ) -> tuple[CodemodCandidate, ...]:
     """Project impact-ranking opportunities into source-index codemod candidates."""
 
-    candidates_by_id: dict[str, CodemodCandidate] = {}
+    candidate_index = UniqueIdentityIndexAuthority[
+        str, CodemodCandidate, CodemodCandidate
+    ]()
     candidate_collector = OpportunityCandidateCollector(
         source_index,
         strategy_registry,
@@ -32126,7 +32398,7 @@ def codemod_candidates_from_impact_ranking(
             CodemodCandidateOrigin.IMPACT_OPPORTUNITY,
         )
         if candidate is not None:
-            candidates_by_id[candidate.candidate_id] = candidate
+            candidate_index.add(candidate.candidate_id, candidate, candidate)
 
     if include_trajectory_steps:
         for trajectory in impact_ranking.trajectories:
@@ -32136,11 +32408,10 @@ def codemod_candidates_from_impact_ranking(
                     CodemodCandidateOrigin.TRAJECTORY_STEP,
                 )
                 if candidate is not None:
-                    if candidate.candidate_id not in candidates_by_id:
-                        candidates_by_id[candidate.candidate_id] = candidate
+                    candidate_index.add(candidate.candidate_id, candidate, candidate)
 
     return sorted_tuple(
-        candidates_by_id.values(),
+        candidate_index.values_by_handle().values(),
         key=lambda item: (
             -item.load_bearing_score,
             -item.predicted_removed_finding_count,
@@ -32262,6 +32533,8 @@ class SourceRewriteSimulationAuthority:
         for item in resolved:
             if item.target.file_path not in self.source_by_path:
                 raise KeyError(f"Missing source text for {item.target.file_path!r}")
+            for contributor in item.rewrite.contributors:
+                contributor.require_source(self.source_by_path)
 
         sources = dict(self.source_by_path)
         simulated: list[SimulatedSourceRewrite] = []
@@ -32336,6 +32609,7 @@ class SourceRewriteSimulationAuthority:
             original_source=original_source,
             replacement_source="".join(replacement_lines),
             rationale=rewrite.rationale,
+            contributors=rewrite.contributors,
         )
 
     def replacement_lines(self, replacement_source: str) -> list[str]:
@@ -32400,11 +32674,38 @@ class PlannedRewriteSelectionAuthority:
                 rewrite=rewrite,
                 target=self.required_target(rewrite),
             )
-            for rewrite in dict.fromkeys(rewrites)
+            for rewrite in self.coalesced_exact_rewrites(rewrites)
         )
         ordered = sorted_tuple(resolved, key=self.resolved_sort_key)
         self.require_disjoint(ordered)
         return ordered
+
+    @staticmethod
+    def coalesced_exact_rewrites(
+        rewrites: Iterable[PlannedSourceRewrite],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        rewrites_by_edit: dict[
+            tuple[str, RewriteOperation, str], PlannedSourceRewrite
+        ] = {}
+        for rewrite in rewrites:
+            edit_key = (
+                rewrite.target_id,
+                rewrite.operation,
+                rewrite.replacement_source,
+            )
+            existing = rewrites_by_edit.get(edit_key)
+            if existing is None:
+                rewrites_by_edit[edit_key] = rewrite
+                continue
+            rewrites_by_edit[edit_key] = replace(
+                existing,
+                rationale=_joined_rationales((existing.rationale, rewrite.rationale)),
+                contributors=SourceRewriteContributor.merge(
+                    existing.contributors,
+                    rewrite.contributors,
+                ),
+            )
+        return tuple(rewrites_by_edit.values())
 
     def select(
         self,
@@ -32927,12 +33228,12 @@ class AstTargetNodeIndex:
         source_index: SourceIndex,
         geometry_index: AstTargetNodeGeometryIndex,
     ) -> dict[str, _TargetNode]:
-        nodes_by_target_identifier: dict[str, _TargetNode] = {}
+        node_index = UniqueIdentityIndexAuthority[str, AstTargetDigest, _TargetNode]()
         for target in source_index.ast_targets:
             node = geometry_index.node_for_target(target)
             if node is not None:
-                nodes_by_target_identifier[target.target_id] = node
-        return nodes_by_target_identifier
+                node_index.add(target.target_id, target, node)
+        return node_index.values_by_handle()
 
     def function_nodes_by_target_identifier(self) -> dict[str, _FunctionNode]:
         return {

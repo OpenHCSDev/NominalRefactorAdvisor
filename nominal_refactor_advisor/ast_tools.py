@@ -164,7 +164,7 @@ ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 class CollectedFamilyCacheSchema:
     """Schema identity for persisted collected-family item projections."""
 
-    version: int = 21
+    version: int = 22
     max_payload_bytes: int = 100_000
 
 
@@ -1400,9 +1400,7 @@ class CollectedFamily(
     report_presence_predicate: ClassVar[
         Callable[[tuple[object, ...], object], bool] | None
     ] = None
-    report_demand_context_predicate: ClassVar[
-        Callable[[object], bool] | None
-    ] = None
+    report_demand_context_predicate: ClassVar[Callable[[object], bool] | None] = None
 
     @classmethod
     def registered_families(cls) -> CollectedFamilyTypes:
@@ -4006,8 +4004,9 @@ def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
     return (
         Maybe.of(as_ast(node, ast.Call))
         .filter(
-            lambda call: isinstance(call.func, ast.Name)
-            and call.func.id in wrapper_names
+            lambda call: (
+                isinstance(call.func, ast.Name) and call.func.id in wrapper_names
+            )
         )
         .combine(
             lambda call: _self_attribute_name(single_call_arg(call)),
@@ -4557,8 +4556,10 @@ def _export_dict_shape(
             )
         )
         .filter(
-            lambda export_context: len(export_context.key_pairs) >= 3
-            and len(export_context.key_pairs) == len(export_context.dict_node.keys)
+            lambda export_context: (
+                len(export_context.key_pairs) >= 3
+                and len(export_context.key_pairs) == len(export_context.dict_node.keys)
+            )
         )
         .unwrap_or_none()
     )

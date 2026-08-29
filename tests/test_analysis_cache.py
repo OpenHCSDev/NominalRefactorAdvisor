@@ -131,8 +131,7 @@ def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGr
         authorities=authorities,
         facts=(),
         projections=(),
-        mirror_edges=(),
-        certificates=(),
+        relations=(),
     )
 
 
@@ -719,8 +718,7 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
         ),
         facts=(),
         projections=(),
-        mirror_edges=(),
-        certificates=(),
+        relations=(),
     )
     graph_cache.store(graph_identity_a, graph)
 
@@ -1383,8 +1381,7 @@ def test_graph_detector_uses_cached_repo_graph_for_changed_module_analysis(
         ),
         facts=(),
         projections=(),
-        mirror_edges=(),
-        certificates=(),
+        relations=(),
     )
     SemanticDescentGraphCache(graph_cache_dir).store(
         SemanticDescentGraphCacheIdentity.from_roots((package_root,)),
@@ -1488,8 +1485,7 @@ def test_uncached_analysis_preserves_cached_repo_graph_source(
         ),
         facts=(),
         projections=(),
-        mirror_edges=(),
-        certificates=(),
+        relations=(),
     )
     SemanticDescentGraphCache(graph_cache_dir).store(
         SemanticDescentGraphCacheIdentity.from_roots((package_root,)),
@@ -1927,8 +1923,7 @@ def test_parallel_compact_root_analysis_returns_uncached_projection_fallbacks(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "generated_policy.py").write_text(
-        "# generated from policy schema\n"
-        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
         encoding="utf-8",
     )
     (package_root / "runtime.py").write_text(
@@ -2242,7 +2237,7 @@ def test_native_support_prelude_projection_matches_ast_family(
     )
     module_path = package_root / "alpha.py"
     module_path.write_text(
-        "from .support import *\n" "@decorator\n" "class AlphaMixin: pass\n",
+        "from .support import *\n@decorator\nclass AlphaMixin: pass\n",
         encoding="utf-8",
     )
     parsed_module = next(
@@ -3117,9 +3112,7 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         classes=(
             replace(
                 base_class,
-                direct_assignment_expressions=(
-                    ("registry_key_attr", "'kind'"),
-                ),
+                direct_assignment_expressions=(("registry_key_attr", "'kind'"),),
                 keyed_family_key_type_name="Kind",
             ),
         ),
@@ -3133,7 +3126,10 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
             runtime_detectors.LatentImplementationRosterDetector,
             replace(empty_projection, latent_rosters=(object(),)),
         ),
-        (runtime_detectors.AutoRegisterMetaUnderRentedDetector, autoregister_projection),
+        (
+            runtime_detectors.AutoRegisterMetaUnderRentedDetector,
+            autoregister_projection,
+        ),
         (
             runtime_detectors.PredicateSelectedConcreteFamilyDetector,
             predicate_projection,
@@ -3291,9 +3287,7 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
         (replace(empty_target, classes=(target_root,)),),
         DetectorConfig(),
     )
-    assert isinstance(
-        positive_demand, class_index_module.CompactClassProjectionDemand
-    )
+    assert isinstance(positive_demand, class_index_module.CompactClassProjectionDemand)
     assert positive_demand.include_autoregister_references is True
 
 
@@ -3551,9 +3545,7 @@ def test_native_public_delegate_demand_matches_imported_callsites(
     target_path = package_root / "target.py"
     context_path = package_root / "context.py"
     target_path.write_text(
-        "from pkg.library import public_api\n"
-        "\n"
-        "result = public_api()\n",
+        "from pkg.library import public_api\n\nresult = public_api()\n",
         encoding="utf-8",
     )
     context_source = (
@@ -3994,7 +3986,7 @@ def test_projection_semantic_cache_reuses_detector_after_irrelevant_source_chang
     package_root.mkdir()
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     (package_root / "roles.py").write_text(
-        "class SelectedRole:\n" "    selected_value: int\n",
+        "class SelectedRole:\n    selected_value: int\n",
         encoding="utf-8",
     )
     target_path = package_root / "target.py"
@@ -4139,8 +4131,7 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "generated_policy.py").write_text(
-        "# generated from policy schema\n"
-        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
         encoding="utf-8",
     )
     (package_root / "runtime.py").write_text(
@@ -4423,8 +4414,7 @@ def test_compact_global_detector_shards_partially_reuse_across_report_targets(
     generated_path = package_root / "generated_policy.py"
     runtime_path = package_root / "runtime.py"
     generated_path.write_text(
-        "# generated from policy schema\n"
-        "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
+        "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
         encoding="utf-8",
     )
     runtime_path.write_text(
@@ -4938,19 +4928,11 @@ def test_compact_top_level_definitions_match_private_helper_legacy_candidates(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "authority.py").write_text(
-        "def normalize(value):\n"
-        "    return value\n"
-        "\n"
-        "class Catalog:\n"
-        "    pass\n",
+        "def normalize(value):\n    return value\n\nclass Catalog:\n    pass\n",
         encoding="utf-8",
     )
     (package_root / "consumer.py").write_text(
-        "def _normalize(value):\n"
-        "    return value\n"
-        "\n"
-        "class _Catalog:\n"
-        "    pass\n",
+        "def _normalize(value):\n    return value\n\nclass _Catalog:\n    pass\n",
         encoding="utf-8",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
@@ -5027,11 +5009,7 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "family.py").write_text(
-        "class Boundary:\n"
-        "    pass\n"
-        "\n"
-        "class ConcreteBoundary(Boundary):\n"
-        "    pass\n",
+        "class Boundary:\n    pass\n\nclass ConcreteBoundary(Boundary):\n    pass\n",
         encoding="utf-8",
     )
     (package_root / "consumer.py").write_text(
@@ -6540,7 +6518,7 @@ def _write_compact_private_helper_cluster_fixture(package_root: Path) -> None:
         encoding="utf-8",
     )
     (package_root / "consumer.py").write_text(
-        "def inspect_fields(node):\n" "    return _class_field_names(node)\n",
+        "def inspect_fields(node):\n    return _class_field_names(node)\n",
         encoding="utf-8",
     )
 
@@ -7025,15 +7003,12 @@ def test_nominal_bypass_ast_demand_skips_context_without_dispatch_facts(
 ) -> None:
     module_path = tmp_path / "context.py"
     module_path.write_text(
-        "def unrelated(value):\n"
-        "    return value + 1\n",
+        "def unrelated(value):\n    return value + 1\n",
         encoding="utf-8",
     )
     module = parse_python_modules(tmp_path, use_parse_cache=False)[0]
 
-    def unexpected_collection(
-        *_args: object, **_kwargs: object
-    ) -> tuple[object, ...]:
+    def unexpected_collection(*_args: object, **_kwargs: object) -> tuple[object, ...]:
         raise AssertionError("context-only ancillary facets must not be collected")
 
     monkeypatch.setattr(
@@ -7241,6 +7216,8 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         "class Request:\n"
         "    title: str\n"
         "    status: str\n\n"
+        "    def to_dict(self):\n"
+        "        return {'title': self.title, 'status': self.status}\n\n"
         "REQUEST_FIELDS = ('title', 'status')\n"
         "REQUEST_COLUMNS = ('title', 'status')\n",
         encoding="utf-8",
@@ -7298,7 +7275,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     )
     fact_reference_by_id: dict[str, object] = {}
     reused_fact_reference = False
-    for edge in compact_graph.mirror_edges:
+    for edge in compact_graph.missing_descent_relations:
         for fact_reference in edge.match.fact_refs:
             previous = fact_reference_by_id.get(fact_reference.fact_id)
             if previous is None:
@@ -7310,28 +7287,23 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     assert compact_graph.authorities == legacy_graph.authorities
     assert compact_graph.facts == legacy_graph.facts
     assert compact_graph.projections == legacy_graph.projections
-    assert compact_graph.mirror_edges == legacy_graph.mirror_edges
+    assert compact_graph.relations == legacy_graph.relations
     assert compact_graph.certificates == legacy_graph.certificates
-    config = DetectorConfig()
-
-    def unexpected_certificate_batch(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError("compact publishing must stream certificates")
-
-    monkeypatch.setattr(
-        semantic_descent_module.SemanticDescentCertificateBuilder,
-        "certificates_for_edges",
-        unexpected_certificate_batch,
+    assert len(compact_graph.certificates) > len(
+        compact_graph.missing_descent_certificates
     )
+    config = DetectorConfig()
     original_resolution = (
         semantic_descent_detectors.build_compact_semantic_mirror_resolution
     )
     released_edge_refs: list[weakref.ReferenceType[object]] = []
 
     def tracked_resolution(*args, **kwargs):
-        graph_space, edges = original_resolution(*args, **kwargs)
-        released_edge_refs.append(weakref.ref(edges[0]))
-        return graph_space, edges
+        graph_space, resolution = original_resolution(*args, **kwargs)
+        released_edge_refs.append(
+            weakref.ref(resolution.relations[0].missing_descent_relations()[0])
+        )
+        return graph_space, resolution
 
     monkeypatch.setattr(
         semantic_descent_detectors,
@@ -7653,7 +7625,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     )
     assert len(partition.compact_global_detector_types) == 69
     assert len(partition.ast_retaining_context_detector_types) == 0
-    assert len(partition.per_module_detector_types) == 184
+    assert len(partition.per_module_detector_types) == 182
 
 
 def test_parse_cache_persists_semantic_source_hash(
@@ -7792,11 +7764,11 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "authority.py").write_text(
-        "class Step:\n" "    pass\n",
+        "class Step:\n    pass\n",
         encoding="utf-8",
     )
     (package_root / "members.py").write_text(
-        "class LoadStep(Step):\n" "    step_id = 'load'\n",
+        "class LoadStep(Step):\n    step_id = 'load'\n",
         encoding="utf-8",
     )
     (package_root / "registry.py").write_text(
@@ -7850,7 +7822,7 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
     registry_path = package_root / "registry.py"
     authority_path.write_text("class Step:\n    pass\n", encoding="utf-8")
     members_path.write_text(
-        "class LoadStep(Step):\n" "    step_id = 'load'\n",
+        "class LoadStep(Step):\n    step_id = 'load'\n",
         encoding="utf-8",
     )
     registry_path.write_text(
@@ -7929,7 +7901,7 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
         "class Step:\n    pass\n", encoding="utf-8"
     )
     members_path.write_text(
-        "class LoadStep(Step):\n" "    step_id = 'load'\n",
+        "class LoadStep(Step):\n    step_id = 'load'\n",
         encoding="utf-8",
     )
     (package_root / "registry.py").write_text(
@@ -8071,7 +8043,7 @@ def test_contextual_module_cache_invalidates_when_repo_context_changes(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "roles.py").write_text(
-        "class AvoidWidgetsWindow:\n" "    pass\n",
+        "class AvoidWidgetsWindow:\n    pass\n",
         encoding="utf-8",
     )
     (package_root / "consumer.py").write_text(
@@ -8139,7 +8111,7 @@ def test_private_reference_contextual_cache_invalidates_when_reference_edge_chan
     )
     consumer_path = package_root / "consumer.py"
     consumer_path.write_text(
-        "def use(value):\n" "    return value\n",
+        "def use(value):\n    return value\n",
         encoding="utf-8",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"

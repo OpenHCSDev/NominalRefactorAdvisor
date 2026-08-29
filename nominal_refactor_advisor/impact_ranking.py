@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TypeAlias
 
+from .collection_algebra import UniqueIdentityIndexAuthority
 from .models import (
     ImpactDelta,
     RefactorFinding,
@@ -310,7 +311,10 @@ class RefactorImpactRankingRequest:
 
     @cached_property
     def _findings_by_id(self) -> dict[str, RefactorFinding]:
-        return {finding.stable_id: finding for finding in self.findings}
+        return UniqueIdentityIndexAuthority.declarations_by_handle(
+            self.findings,
+            lambda finding: finding.stable_id,
+        )
 
     @cached_property
     def _all_finding_ids(self) -> frozenset[str]:

@@ -18,7 +18,7 @@ from operator import attrgetter
 from pathlib import Path
 from typing import Callable, ClassVar, Generic, Hashable, Sequence, TypeVar
 
-from .collection_algebra import sorted_tuple
+from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .deadline import scan_deadline_checkpoint
 from .detectors import IssueDetector
 from .factorization import RefactorMove, RefactorPhase, RefactorTrajectorySearch
@@ -1309,7 +1309,10 @@ class _FindingRelationGraph:
                 (edge.left_finding_id, edge.right_finding_id): edge
                 for edge in ordered_edges
             },
-            facts_by_finding_id={fact.stable_id: fact for fact in facts},
+            facts_by_finding_id=UniqueIdentityIndexAuthority.declarations_by_handle(
+                facts,
+                lambda fact: fact.stable_id,
+            ),
         )
 
     def internal_edges_for(

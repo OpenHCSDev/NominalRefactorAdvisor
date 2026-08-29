@@ -40,11 +40,12 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
+    AuthorityProofEdgeKind,
     ConstructionAuthorityResolver,
     PresentationAuthorityConstruction,
-    PresentationProjectionIdOverlay,
     PresentationTokenRole,
     SemanticAuthorityKind,
+    SemanticDerivationCertificate,
     SemanticMirrorResolver,
     PresentationProjectionKind,
     SemanticAuthorityMirrorPolicy,
@@ -52,6 +53,7 @@ from nominal_refactor_advisor.semantic_descent import (
     SemanticDescentGraphCacheIdentity,
     build_finding_backed_semantic_descent_graph,
     build_semantic_descent_graph,
+    rebase_semantic_descent_graph,
     semantic_descent_finding_projection_id,
 )
 from nominal_refactor_advisor.semantic_refactor_gate import SemanticRefactorGateWorkItem
@@ -322,7 +324,7 @@ def test_constructed_dataclass_inverse_index_matches_pairwise_resolution(
     assert tuple(resolver.candidate_refs_by_token) == (qualified_token,)
     assert next(iter(resolver.candidate_refs_by_token)) is qualified_token
 
-    resolver.edges()
+    resolver.resolve()
     retained_token_ids = {
         id(token) for projection in resolver.projections for token in projection.tokens
     } | {id(qualified_token)}
@@ -360,7 +362,7 @@ def test_semantic_descent_graph_flags_manual_class_family_projection(
 
     certificate = next(
         item
-        for item in graph.certificates
+        for item in graph.missing_descent_certificates
         if item.edge.authority_id == handler_authority.authority_id
     )
     projection = graph.projection_catalog.projection_for_edge(certificate.edge)
@@ -413,17 +415,6 @@ def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
         base_graph,
         tuple(parse_python_modules(tmp_path)),
     )
-    class_index = overlay.merged_class_index()
-    authorities, facts = overlay.merged_authorities_and_facts(class_index)
-    projections = overlay.merged_projections(class_index)
-    projection_overlay = PresentationProjectionIdOverlay(
-        base_graph.projections,
-        projections,
-    )
-
-    assert projection_overlay.changed_projection_ids() == frozenset()
-    assert overlay.changed_authority_ids(authorities, facts) == frozenset()
-
     updated_graph = overlay.graph()
     updated_projection = next(
         projection
@@ -432,13 +423,52 @@ def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
     )
     certificate = next(
         item
-        for item in updated_graph.certificates
+        for item in updated_graph.missing_descent_certificates
         if item.edge.projection_id == updated_projection.projection_id
     )
 
     assert updated_projection.projection_id != base_projection.projection_id
     assert updated_projection.location.line == base_projection.location.line + 1
     assert certificate.edge.projection_id == updated_projection.projection_id
+
+
+def test_semantic_graph_overlay_recomputes_positive_proof_locations(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Report:\n"
+        "    backend: str\n"
+        "    parse_valid: bool\n"
+        "\n"
+        "    def to_dict(self):\n"
+        "        return {\n"
+        "            'backend': self.backend,\n"
+        "            'parse_valid': self.parse_valid,\n"
+        "        }\n"
+    )
+    module_path = _write_module(tmp_path, source)
+    base_graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+    base_proof = next(
+        certificate.proof_edges[0]
+        for certificate in base_graph.certificates
+        if isinstance(certificate, SemanticDerivationCertificate)
+    )
+
+    module_path.write_text(f"\n{source}", encoding="utf-8")
+    updated_graph = base_graph.overlay_modules(
+        tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+    )
+    updated_proof = next(
+        certificate.proof_edges[0]
+        for certificate in updated_graph.certificates
+        if isinstance(certificate, SemanticDerivationCertificate)
+    )
+
+    assert updated_proof.file_path == base_proof.file_path
+    assert updated_proof.line == base_proof.line + 1
 
 
 def test_semantic_descent_graph_flags_returned_declaration_table(
@@ -465,7 +495,7 @@ def test_semantic_descent_graph_flags_returned_declaration_table(
     )
     certificate = next(
         item
-        for item in graph.certificates
+        for item in graph.missing_descent_certificates
         if item.edge.authority_id == field_authority.authority_id
     )
     projection = graph.projection_catalog.projection_for_edge(certificate.edge)
@@ -620,7 +650,7 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
         item.stable_id for item in expected_findings
     ]
     assert len(rendered_certificates) == len(focused_findings)
-    assert len(rendered_certificates) < len(graph.certificates)
+    assert len(rendered_certificates) < len(graph.missing_descent_certificates)
 
 
 def test_semantic_mirror_detector_uses_semantic_descent_context_signature(
@@ -684,7 +714,7 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
 
     authority = graph.authorities[0]
     projection = graph.projections[0]
-    certificate = graph.certificates[0]
+    certificate = graph.missing_descent_certificates[0]
 
     assert authority.name == "Step"
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
@@ -722,7 +752,7 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
         authority_evidence_index_by_detector_id={},
     )
     authority = graph.authorities[0]
-    certificate = graph.certificates[0]
+    certificate = graph.missing_descent_certificates[0]
 
     assert authority.name == "AxisRoleAuthority"
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
@@ -2935,6 +2965,32 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
         < rewritten_source.index("('description', self.description)")
         < rewritten_source.index("command_action_ids=self.command_action_ids")
     )
+    module_path.write_text(rewritten_source, encoding="utf-8")
+    migrated_graph = build_semantic_descent_graph(
+        parse_python_modules(tmp_path),
+        use_cache=False,
+    )
+    workflow_authority = next(
+        authority
+        for authority in migrated_graph.authorities
+        if authority.name == "WorkflowModel"
+    )
+    migrated_derivation = next(
+        certificate
+        for certificate in migrated_graph.certificates
+        if certificate.status
+        is semantic_descent_module.DescentStatus.DESCENDS_TO_AUTHORITY
+        and certificate.edge.authority_id == workflow_authority.authority_id
+    )
+
+    assert all(
+        certificate.edge.authority_id != workflow_authority.authority_id
+        for certificate in migrated_graph.missing_descent_certificates
+    )
+    assert migrated_derivation.status.value == "descends_to_authority"
+    assert migrated_derivation.proof_edges[0].edge_kind is (
+        AuthorityProofEdgeKind.PROVIDES_QUERY_METHOD
+    )
 
 
 def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_recipe(
@@ -3256,8 +3312,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
         operations[0]["import_source"] == "from pkg.taxonomy import ConfidenceLevel\n"
     )
     assert operations[1]["source"] == (
-        "_ACTIONABLE_CONFIDENCE_LEVELS = "
-        "ConfidenceLevel.actionable_confidence_levels()"
+        "_ACTIONABLE_CONFIDENCE_LEVELS = ConfidenceLevel.actionable_confidence_levels()"
     )
 
 
@@ -3590,7 +3645,7 @@ def test_semantic_descent_treats_empty_enum_base_as_class_family_authority(
         graph.projection_catalog.projection_for_edge(certificate.edge).label
         == "MODE_ENUMS"
         and certificate.edge.authority_id == authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -3859,7 +3914,28 @@ def test_semantic_descent_treats_module_constructor_assignment_as_descent(
     )
     assert all(
         certificate.edge.authority_id != decoder_authority.authority_id
+        for certificate in graph.missing_descent_certificates
+    )
+    decoder_derivation = next(
+        certificate
         for certificate in graph.certificates
+        if certificate.status
+        is semantic_descent_module.DescentStatus.DESCENDS_TO_AUTHORITY
+        and certificate.edge.authority_id == decoder_authority.authority_id
+    )
+    assert isinstance(decoder_derivation, SemanticDerivationCertificate)
+    assert decoder_derivation.proof_edges[0].edge_kind is (
+        AuthorityProofEdgeKind.OWNS_FIELD_SET
+    )
+    decoder_projection = graph.projection_catalog.projection_for_edge(
+        decoder_derivation.edge
+    )
+    assert decoder_projection.projection_constructions == (
+        PresentationAuthorityConstruction(
+            "Decoder",
+            ("projection", "type_label", "validation_error"),
+            ("Decoder",),
+        ),
     )
 
 
@@ -3895,7 +3971,7 @@ def test_semantic_descent_treats_constructor_collection_as_descent(
     )
     assert all(
         certificate.edge.authority_id != action_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -3937,7 +4013,7 @@ def test_semantic_descent_treats_declared_materializer_class_as_descent(
     )
     assert not any(
         certificate.edge.authority_id == finding_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -3997,7 +4073,8 @@ def test_semantic_descent_treats_descriptor_literal_fields_as_descent(
         if authority.name in {"SourceLineReference", "CandidateOrder"}
     }
     certificate_authority_ids = {
-        certificate.edge.authority_id for certificate in graph.certificates
+        certificate.edge.authority_id
+        for certificate in graph.missing_descent_certificates
     }
     assert authority_ids["SourceLineReference"] not in certificate_authority_ids
     assert authority_ids["CandidateOrder"] not in certificate_authority_ids
@@ -4040,7 +4117,7 @@ def test_semantic_descent_ignores_local_constructor_assignment_projection(
     )
     assert all(
         certificate.edge.authority_id != span_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4072,7 +4149,7 @@ def test_semantic_descent_requires_specific_affinity_for_small_dataclass_overlap
     )
     assert all(
         certificate.edge.authority_id != parts_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4098,7 +4175,7 @@ def test_semantic_descent_ignores_enum_member_keyed_projection(
     assert mode_authority.kind is SemanticAuthorityKind.ENUM
     assert not any(
         certificate.edge.authority_id == mode_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4135,7 +4212,7 @@ def test_semantic_descent_treats_instance_field_tuple_as_schema_descent(
     assert observation_authority.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
     assert not any(
         certificate.edge.authority_id == observation_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4167,7 +4244,18 @@ def test_semantic_descent_treats_dataclass_owned_payload_as_schema_descent(
     assert report_authority.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
     assert not any(
         certificate.edge.authority_id == report_authority.authority_id
+        for certificate in graph.missing_descent_certificates
+    )
+    report_derivation = next(
+        certificate
         for certificate in graph.certificates
+        if certificate.status
+        is semantic_descent_module.DescentStatus.DESCENDS_TO_AUTHORITY
+        and certificate.edge.authority_id == report_authority.authority_id
+    )
+    assert isinstance(report_derivation, SemanticDerivationCertificate)
+    assert report_derivation.proof_edges[0].edge_kind is (
+        AuthorityProofEdgeKind.OWNS_FIELD_SET
     )
 
 
@@ -4200,7 +4288,18 @@ def test_semantic_descent_treats_dataclass_subclass_payload_as_schema_descent(
     assert report_authority.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
     assert not any(
         certificate.edge.authority_id == report_authority.authority_id
+        for certificate in graph.missing_descent_certificates
+    )
+    report_derivation = next(
+        certificate
         for certificate in graph.certificates
+        if certificate.status
+        is semantic_descent_module.DescentStatus.DESCENDS_TO_AUTHORITY
+        and certificate.edge.authority_id == report_authority.authority_id
+    )
+    assert isinstance(report_derivation, SemanticDerivationCertificate)
+    assert report_derivation.proof_edges[0].edge_kind is (
+        AuthorityProofEdgeKind.INHERITS_FROM
     )
 
 
@@ -4231,7 +4330,7 @@ def test_semantic_descent_reports_external_dataclass_payload_projection(
     )
     assert any(
         certificate.edge.authority_id == report_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4292,7 +4391,7 @@ def test_semantic_descent_reports_constructor_catalog_schema_projection(
     )
     certificate = next(
         item
-        for item in graph.certificates
+        for item in graph.missing_descent_certificates
         if item.edge.authority_id == registration_shape_authority.authority_id
     )
     projection = graph.projection_catalog.projection_for_edge(certificate.edge)
@@ -4341,7 +4440,7 @@ def test_semantic_descent_treats_constructor_guard_as_dataclass_descent(
     )
     assert not any(
         certificate.edge.authority_id == field_access_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4384,7 +4483,7 @@ def test_semantic_descent_treats_direct_dataclass_construction_as_sibling_descen
     )
     assert not any(
         certificate.edge.authority_id == blank_line_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4444,7 +4543,7 @@ def test_semantic_descent_treats_nominal_record_construction_as_complete_descent
     assert not any(
         graph.projection_catalog.projection_for_edge(certificate.edge).label
         in nominal_record_projection_labels
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4493,7 +4592,7 @@ def test_semantic_descent_treats_subclass_construction_as_schema_descent(
     )
     assert not any(
         certificate.edge.authority_id == boundary_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4527,7 +4626,7 @@ def test_semantic_descent_ignores_unrelated_partial_dataclass_vocabulary(
 
     assert not any(
         certificate.edge.authority_id == context_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4545,7 +4644,8 @@ def test_semantic_descent_treats_shared_dataclass_base_as_descent(
         "\n"
         "@dataclass(frozen=True)\n"
         "class RuntimeZipDescriptor(ZipDescriptorShape):\n"
-        "    pass\n"
+        "    line_numbers_attribute_name: str\n"
+        "    symbol_names_attribute_name: str\n"
         "\n"
         "@dataclass(frozen=True)\n"
         "class ParsedZipDescriptor(ZipDescriptorShape):\n"
@@ -4564,10 +4664,36 @@ def test_semantic_descent_treats_shared_dataclass_base_as_descent(
         for authority in graph.authorities
         if authority.name == "ZipDescriptorShape"
     )
+    sibling_authority = next(
+        authority
+        for authority in graph.authorities
+        if authority.name == "RuntimeZipDescriptor"
+    )
+    assert graph.class_index is not None
+    resolver = SemanticMirrorResolver(
+        authorities=graph.authorities,
+        facts=graph.facts,
+        projections=graph.projections,
+        class_index=graph.class_index,
+    )
+    sibling_candidate_projection = next(
+        projection
+        for projection in graph.projections
+        if sibling_authority.authority_id in resolver._matches_by_authority(projection)
+    )
 
     assert not any(
         certificate.edge.authority_id == shape_authority.authority_id
+        for certificate in graph.missing_descent_certificates
+    )
+    assert not any(
+        certificate.edge.authority_id == sibling_authority.authority_id
         for certificate in graph.certificates
+    )
+    assert not any(
+        relation.authority_id == sibling_authority.authority_id
+        and relation.projection_id == sibling_candidate_projection.projection_id
+        for relation in graph.relations
     )
 
 
@@ -4604,7 +4730,7 @@ def test_semantic_descent_ignores_partial_schema_overlap_for_owned_payload(
     )
     assert not any(
         certificate.edge.authority_id == rewrite_delta_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4646,7 +4772,7 @@ def test_semantic_descent_ignores_low_specificity_full_schema_overlap(
     )
     assert not any(
         certificate.edge.authority_id == rewrite_delta_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4674,7 +4800,7 @@ def test_semantic_descent_ignores_prose_payload_literals(
     )
     assert not any(
         certificate.edge.authority_id == mode_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4712,7 +4838,7 @@ def test_semantic_descent_keeps_uppercase_enum_member_identity(
     )
     assert not any(
         certificate.edge.authority_id == observation_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
     action_authority = next(
         authority
@@ -4721,7 +4847,7 @@ def test_semantic_descent_keeps_uppercase_enum_member_identity(
     )
     assert not any(
         certificate.edge.authority_id == action_authority.authority_id
-        for certificate in graph.certificates
+        for certificate in graph.missing_descent_certificates
     )
 
 
@@ -4745,7 +4871,7 @@ def test_semantic_descent_graph_cache_invalidates_on_source_change(
         parse_python_modules(tmp_path, cache_dir=parse_cache_dir),
         cache_dir=graph_cache_dir,
     )
-    assert not first_graph.certificates
+    assert not first_graph.missing_descent_certificates
     assert tuple(graph_cache_dir.glob("*.pickle"))
 
     module_path.write_text(
@@ -4772,5 +4898,95 @@ def test_semantic_descent_graph_cache_invalidates_on_source_change(
         == "STEP_TABLE"
         and "authority registry or subclass family"
         in certificate.missing_derivation_path
-        for certificate in second_graph.certificates
+        for certificate in second_graph.missing_descent_certificates
     )
+
+
+def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Report:\n"
+        "    backend: str\n"
+        "    parse_valid: bool\n"
+        "\n"
+        "    def to_dict(self):\n"
+        "        return {\n"
+        "            'backend': self.backend,\n"
+        "            'parse_valid': self.parse_valid,\n"
+        "        }\n",
+    )
+    graph_cache_dir = tmp_path / ".nra-cache" / "semantic_descent"
+    first_graph = build_semantic_descent_graph(
+        parse_python_modules(tmp_path, use_parse_cache=False),
+        cache_dir=graph_cache_dir,
+    )
+    positive_certificate = next(
+        certificate
+        for certificate in first_graph.certificates
+        if certificate.status
+        is semantic_descent_module.DescentStatus.DESCENDS_TO_AUTHORITY
+    )
+    assert isinstance(positive_certificate, SemanticDerivationCertificate)
+
+    def unexpected_graph_rebuild(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("positive relations must load from the graph cache")
+
+    monkeypatch.setattr(
+        semantic_descent_module,
+        "_build_semantic_descent_graph_cached",
+        unexpected_graph_rebuild,
+    )
+    cached_graph = build_semantic_descent_graph(
+        parse_python_modules(tmp_path, use_parse_cache=False),
+        cache_dir=graph_cache_dir,
+    )
+
+    assert cached_graph.relations == first_graph.relations
+    assert cached_graph.certificates == first_graph.certificates
+    assert cached_graph.certificates[0].to_dict()["status"] == ("descends_to_authority")
+
+
+def test_semantic_descent_graph_rebase_moves_positive_proof_paths(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Report:\n"
+        "    backend: str\n"
+        "    parse_valid: bool\n"
+        "\n"
+        "    def to_dict(self):\n"
+        "        return {\n"
+        "            'backend': self.backend,\n"
+        "            'parse_valid': self.parse_valid,\n"
+        "        }\n"
+    )
+    source_root = tmp_path / "checkout-a"
+    target_root = tmp_path / "checkout-b"
+    _write_module(source_root, source)
+    target_module = _write_module(target_root, source)
+    graph = build_semantic_descent_graph(
+        parse_python_modules(source_root, use_parse_cache=False)
+    )
+
+    rebased_graph = rebase_semantic_descent_graph(
+        graph,
+        (str(source_root),),
+        (str(target_root),),
+    )
+    proof = next(
+        certificate.proof_edges[0]
+        for certificate in rebased_graph.certificates
+        if isinstance(certificate, SemanticDerivationCertificate)
+    )
+
+    assert proof.file_path == str(target_module)

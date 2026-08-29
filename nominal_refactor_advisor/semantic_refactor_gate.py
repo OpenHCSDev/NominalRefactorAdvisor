@@ -181,7 +181,7 @@ class DescentCertificateFindingAuthority:
         self,
     ) -> dict[str, tuple[DescentCertificate, ...]]:
         grouped: dict[str, list[DescentCertificate]] = defaultdict(list)
-        for certificate in self.graph.certificates:
+        for certificate in self.graph.missing_descent_certificates:
             grouped[certificate.edge.projection_id].append(certificate)
         return {
             projection_id: tuple(certificates)
@@ -189,10 +189,10 @@ class DescentCertificateFindingAuthority:
         }
 
     @cached_property
-    def certificate_rank_by_identity(self) -> dict[int, int]:
+    def certificate_rank_by_relation_identity(self) -> dict[tuple[str, str], int]:
         return {
-            id(certificate): rank
-            for rank, certificate in enumerate(self.graph.certificates)
+            certificate.edge.identity: rank
+            for rank, certificate in enumerate(self.graph.missing_descent_certificates)
         }
 
     def certificate_for_finding(
@@ -226,8 +226,8 @@ class DescentCertificateFindingAuthority:
         return tuple(
             sorted(
                 certificates,
-                key=lambda certificate: self.certificate_rank_by_identity[
-                    id(certificate)
+                key=lambda certificate: self.certificate_rank_by_relation_identity[
+                    certificate.edge.identity
                 ],
             )
         )
