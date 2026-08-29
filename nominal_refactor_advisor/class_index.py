@@ -15,6 +15,7 @@ import re
 import zlib
 from collections import defaultdict
 from dataclasses import MISSING, dataclass, field, fields, replace
+from enum import StrEnum
 from functools import cached_property, lru_cache
 from heapq import merge
 from pathlib import Path
@@ -411,6 +412,123 @@ class CompactAutoRegisterReferenceIndex:
     encoded_edges: str
 
 
+class RegistryLookupStyle(StrEnum):
+    TRY_EXCEPT = "try_except"
+    MEMBERSHIP_GUARD = "membership_guard"
+
+
+@dataclass(frozen=True)
+class ClsRegistryMembership:
+    operator_type: type[ast.cmpop]
+    key_expr: str
+
+    @classmethod
+    def from_node(cls, node: ast.AST) -> "ClsRegistryMembership | None":
+        if not (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], (ast.In, ast.NotIn))
+            and len(node.comparators) == 1
+            and RegistryLookupShape.is_cls_registry_attribute(node.comparators[0])
+        ):
+            return None
+        return cls(type(node.ops[0]), ast.unparse(node.left))
+
+
+@dataclass(frozen=True)
+class RegistryLookupShape:
+    """Recognized syntax for a class-owned ``_registry`` lookup."""
+
+    key_expr: str
+    error_type_name: str | None
+    style: RegistryLookupStyle
+
+    @staticmethod
+    def is_cls_registry_attribute(node: ast.AST | None) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "_registry"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "cls"
+        )
+
+    @classmethod
+    def key_expr_from_subscript(cls, node: ast.AST | None) -> str | None:
+        if not (
+            isinstance(node, ast.Subscript)
+            and cls.is_cls_registry_attribute(node.value)
+        ):
+            return None
+        return ast.unparse(node.slice)
+
+    @classmethod
+    def references_registry(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        return any(cls.is_cls_registry_attribute(node) for node in ast.walk(method))
+
+    @staticmethod
+    def _raise_type_name(node: ast.Raise | None) -> str | None:
+        if node is None or node.exc is None:
+            return None
+        expression = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+        return _terminal_reference_name(expression)
+
+    @classmethod
+    def from_method(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "RegistryLookupShape | None":
+        body = _trim_method_docstring(method)
+        if len(body) == 1 and isinstance(body[0], ast.Try):
+            try_node = body[0]
+            if (
+                not try_node.orelse
+                and not try_node.finalbody
+                and len(try_node.handlers) == 1
+                and _terminal_reference_name(try_node.handlers[0].type) == "KeyError"
+                and len(try_node.body) == 1
+                and isinstance(try_node.body[0], ast.Return)
+                and (key_expr := cls.key_expr_from_subscript(try_node.body[0].value))
+                is not None
+            ):
+                raised = next(
+                    (
+                        statement
+                        for statement in try_node.handlers[0].body
+                        if isinstance(statement, ast.Raise)
+                    ),
+                    None,
+                )
+                return cls(
+                    key_expr,
+                    cls._raise_type_name(raised),
+                    RegistryLookupStyle.TRY_EXCEPT,
+                )
+        if len(body) < 2 or not isinstance(body[0], ast.If):
+            return None
+        guard = body[0]
+        returned = body[-1]
+        membership = ClsRegistryMembership.from_node(guard.test)
+        if not (
+            isinstance(returned, ast.Return)
+            and membership is not None
+            and membership.operator_type is ast.NotIn
+            and cls.key_expr_from_subscript(returned.value) == membership.key_expr
+        ):
+            return None
+        raised = next(
+            (statement for statement in guard.body if isinstance(statement, ast.Raise)),
+            None,
+        )
+        return cls(
+            membership.key_expr,
+            cls._raise_type_name(raised),
+            RegistryLookupStyle.MEMBERSHIP_GUARD,
+        )
+
+
 @dataclass(frozen=True)
 class CompactRepeatedKeyedFamilyRoot:
     file_path: str
@@ -419,7 +537,7 @@ class CompactRepeatedKeyedFamilyRoot:
     family_base_name: str
     registry_key_attr_name: str
     lookup_method_name: str
-    lookup_style: str
+    lookup_style: RegistryLookupStyle
     error_type_name: str | None
     abstract_hook_names: tuple[str, ...]
 
@@ -3007,13 +3125,7 @@ def _is_classmethod(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 def _method_references_cls_registry(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
-    return any(
-        isinstance(subnode, ast.Attribute)
-        and subnode.attr == "_registry"
-        and isinstance(subnode.value, ast.Name)
-        and subnode.value.id == "cls"
-        for subnode in ast.walk(method)
-    )
+    return RegistryLookupShape.references_registry(method)
 
 
 def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
@@ -3050,86 +3162,6 @@ def _trim_method_docstring(
     return body
 
 
-def _cls_registry_subscript_key(node: ast.AST | None) -> str | None:
-    if not (
-        isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Attribute)
-        and node.value.attr == "_registry"
-        and isinstance(node.value.value, ast.Name)
-        and node.value.value.id == "cls"
-    ):
-        return None
-    return ast.unparse(node.slice)
-
-
-def _raise_type_name(node: ast.Raise | None) -> str | None:
-    if node is None or node.exc is None:
-        return None
-    expression = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
-    return _terminal_reference_name(expression)
-
-
-def _try_registry_lookup_shape(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, str | None] | None:
-    body = _trim_method_docstring(method)
-    if len(body) != 1 or not isinstance(body[0], ast.Try):
-        return None
-    try_node = body[0]
-    if try_node.orelse or try_node.finalbody or len(try_node.handlers) != 1:
-        return None
-    handler = try_node.handlers[0]
-    if _terminal_reference_name(handler.type) != "KeyError":
-        return None
-    if len(try_node.body) != 1 or not isinstance(try_node.body[0], ast.Return):
-        return None
-    if _cls_registry_subscript_key(try_node.body[0].value) is None:
-        return None
-    raised = next(
-        (statement for statement in handler.body if isinstance(statement, ast.Raise)),
-        None,
-    )
-    return "try_except", _raise_type_name(raised)
-
-
-def _membership_registry_lookup_shape(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, str | None] | None:
-    body = _trim_method_docstring(method)
-    if len(body) < 2 or not isinstance(body[0], ast.If):
-        return None
-    guard = body[0]
-    if not isinstance(body[-1], ast.Return):
-        return None
-    test = guard.test
-    if not (
-        isinstance(test, ast.Compare)
-        and len(test.ops) == 1
-        and isinstance(test.ops[0], ast.NotIn)
-        and len(test.comparators) == 1
-        and isinstance(test.comparators[0], ast.Attribute)
-        and test.comparators[0].attr == "_registry"
-        and isinstance(test.comparators[0].value, ast.Name)
-        and test.comparators[0].value.id == "cls"
-    ):
-        return None
-    if _cls_registry_subscript_key(body[-1].value) != ast.unparse(test.left):
-        return None
-    raised = next(
-        (statement for statement in guard.body if isinstance(statement, ast.Raise)),
-        None,
-    )
-    return "membership_guard", _raise_type_name(raised)
-
-
-def _registry_lookup_shape(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, str | None] | None:
-    return _try_registry_lookup_shape(method) or _membership_registry_lookup_shape(
-        method
-    )
-
-
 def _compact_repeated_keyed_family_roots(
     parsed_module: ParsedModule,
 ) -> tuple[CompactRepeatedKeyedFamilyRoot, ...]:
@@ -3161,11 +3193,11 @@ def _compact_repeated_keyed_family_roots(
             if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
             if _is_classmethod(method)
             and method.name.startswith("for_")
-            and (shape := _registry_lookup_shape(method)) is not None
+            and (shape := RegistryLookupShape.from_method(method)) is not None
         )
         if len(lookup_methods) != 1:
             continue
-        lookup_method, (lookup_style, error_type_name) = lookup_methods[0]
+        lookup_method, lookup_shape = lookup_methods[0]
         roots.append(
             CompactRepeatedKeyedFamilyRoot(
                 file_path=str(parsed_module.path),
@@ -3174,8 +3206,8 @@ def _compact_repeated_keyed_family_roots(
                 family_base_name="AutoRegisterByClassVar",
                 registry_key_attr_name=registry_key_attr_name,
                 lookup_method_name=lookup_method.name,
-                lookup_style=lookup_style,
-                error_type_name=error_type_name,
+                lookup_style=lookup_shape.style,
+                error_type_name=lookup_shape.error_type_name,
                 abstract_hook_names=tuple(
                     method.name
                     for method in node.body

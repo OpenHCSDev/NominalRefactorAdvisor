@@ -56,13 +56,10 @@ from ..semantic_match import (
     AstTypedEffectStep,
     AstPredicateGrammar,
     AstPredicateRule,
-    FirstSuccessfulEffectStep,
     GuardedEffectStep,
     Maybe,
     NamedCallAssignment,
     NamedValueBinding,
-    RegisteredEffectStep,
-    SingleCompareEffectStep,
     as_ast,
     ast_sequence,
     attribute_call_match,
@@ -73,7 +70,6 @@ from ..semantic_match import (
     name_id,
     named_call_assignment,
     named_value_binding,
-    registered_effect_steps,
     single_assign_target,
     single_ast,
     single_call_arg,
@@ -154,12 +150,15 @@ from ..ast_tools import (
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..class_index import (
+    ClsRegistryMembership,
     ClassFamilyIndex,
     CompactClassFamilyIndex,
     CompactIndexedClass,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     IndexedClass,
+    RegistryLookupShape,
+    RegistryLookupStyle,
     _module_import_aliases,
     build_class_family_index,
     build_compact_class_family_index,
@@ -4077,21 +4076,6 @@ class DispatchAlgebraAuthority:
             return None
         return (value, trimmed[0].lineno)
 
-    def registry_lookup_shape(
-        self,
-        method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> RegistryLookupShape | None:
-        return cast(
-            RegistryLookupShape | None,
-            Maybe.of(method)
-            .bind(
-                FirstSuccessfulEffectStep(
-                    registered_effect_steps(_RegistryLookupShapeStep)
-                )
-            )
-            .unwrap_or_none(),
-        )
-
     def keyed_family_axis_specs(
         self, modules: Sequence[ParsedModule]
     ) -> tuple[_KeyedFamilyAxisSpec, ...]:
@@ -4193,18 +4177,6 @@ class DispatchAlgebraAuthority:
                 )
             )
         return tuple(specs)
-
-    def cls_registry_membership_test(self, node: ast.AST) -> tuple[str, str] | None:
-        return cast(
-            tuple[str, str] | None,
-            Maybe.of(node)
-            .bind(
-                FirstSuccessfulEffectStep(
-                    registered_effect_steps(_ClsRegistryMembershipStep)
-                )
-            )
-            .unwrap_or_none(),
-        )
 
     def keyed_registry_axis_fact_records(
         self, modules: Sequence[ParsedModule], config: DetectorConfig
@@ -7942,80 +7914,6 @@ def _is_classmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
-def _is_cls_registry_attribute(node: ast.AST | None) -> bool:
-    attribute = as_ast(node, ast.Attribute)
-    return (
-        attribute is not None
-        and attribute.attr == "_registry"
-        and (name_id(attribute.value) == "cls")
-    )
-
-
-def _cls_registry_key_expr(node: ast.AST) -> str | None:
-    subscript = as_ast(node, ast.Subscript)
-    if subscript is None or not _is_cls_registry_attribute(subscript.value):
-        return None
-    return ast.unparse(subscript.slice)
-
-
-class _ClsRegistryMembershipStep(RegisteredEffectStep):
-    pass
-
-
-class _ClsRegistryMembershipCompareStep(
-    _ClsRegistryMembershipStep,
-    SingleCompareEffectStep[tuple[str, str]],
-):
-    operator_label: ClassVar[str]
-
-    def project_compare(self, left: ast.AST, right: ast.AST) -> tuple[str, str] | None:
-        if not _is_cls_registry_attribute(right):
-            return None
-        return self.operator_label, ast.unparse(left)
-
-
-class _ClsRegistryInMembershipStep(_ClsRegistryMembershipCompareStep):
-    step_id = "cls_registry_in_membership"
-    registration_order = 10
-    operator_type = ast.In
-    operator_label = "in"
-
-
-class _ClsRegistryNotInMembershipStep(_ClsRegistryMembershipCompareStep):
-    step_id = "cls_registry_not_in_membership"
-    registration_order = 20
-    operator_type = ast.NotIn
-    operator_label = "not_in"
-
-
-def _raise_exception_type_name(node: ast.Raise) -> str | None:
-    if node.exc is None:
-        return None
-    if isinstance(node.exc, ast.Call):
-        return _call_name(node.exc.func)
-    return _call_name(node.exc)
-
-
-@dataclass(frozen=True)
-class RegistryLookupShape:
-    key_expr: str
-    error_type_name: str | None
-    style: str
-
-
-@dataclass(frozen=True)
-class _TryRegistryLookupBody:
-    returned: ast.Return
-    handler: ast.ExceptHandler
-
-
-@dataclass(frozen=True)
-class _GuardedRegistryLookupBody:
-    guard: ast.If
-    returned: ast.Return
-    key_expr: str
-
-
 @dataclass(frozen=True)
 class GuardValidatorSubjectSurface:
     subject_param_name: str
@@ -8039,137 +7937,6 @@ class _GuardValidatorContext(GuardValidatorSubjectSurface):
 class _GuardValidatorAccessProfile:
     guard_count: int
     accessed_attr_names: tuple[str, ...]
-
-
-class _RegistryLookupShapeStep(RegisteredEffectStep):
-    pass
-
-
-class _TryExceptRegistryLookupStep(
-    _RegistryLookupShapeStep,
-    GuardedEffectStep[(ast.FunctionDef | ast.AsyncFunctionDef, RegistryLookupShape)],
-):
-    step_id = "try_except_registry_lookup"
-    registration_order = 10
-
-    def project(
-        self, value: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> RegistryLookupShape | None:
-        return _try_except_registry_lookup_shape(value)
-
-
-class _MembershipGuardRegistryLookupStep(
-    _RegistryLookupShapeStep,
-    GuardedEffectStep[(ast.FunctionDef | ast.AsyncFunctionDef, RegistryLookupShape)],
-):
-    step_id = "membership_guard_registry_lookup"
-    registration_order = 20
-
-    def project(
-        self, value: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> RegistryLookupShape | None:
-        return _membership_guard_registry_lookup_shape(value)
-
-
-def _single_try_registry_lookup_body(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> _TryRegistryLookupBody | None:
-    return (
-        Maybe.of(single_ast(_trim_docstring_body(list(method.body)), ast.Try))
-        .filter(
-            lambda try_node: not try_node.orelse
-            and not try_node.finalbody
-            and len(try_node.handlers) == 1
-        )
-        .combine(
-            lambda try_node: single_ast(try_node.body, ast.Return),
-            lambda try_node, returned: (
-                _TryRegistryLookupBody(
-                    returned,
-                    try_node.handlers[0],
-                )
-                if returned.value is not None
-                and _ast_terminal_name(try_node.handlers[0].type) == "KeyError"
-                else None
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _try_except_registry_lookup_shape(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> RegistryLookupShape | None:
-    return (
-        Maybe.of(_single_try_registry_lookup_body(method))
-        .combine(
-            lambda lookup_body: _cls_registry_key_expr(lookup_body.returned.value),
-            lambda lookup_body, key_expr: RegistryLookupShape(
-                key_expr=key_expr,
-                error_type_name=_try_lookup_raise_type_name(lookup_body.handler),
-                style="try_except",
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _try_lookup_raise_type_name(handler: ast.ExceptHandler) -> str | None:
-    raise_stmt = next(
-        (stmt for stmt in handler.body if isinstance(stmt, ast.Raise)), None
-    )
-    return None if raise_stmt is None else _raise_exception_type_name(raise_stmt)
-
-
-def _guarded_registry_lookup_body(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> _GuardedRegistryLookupBody | None:
-    body = _trim_docstring_body(list(method.body))
-    return (
-        Maybe.of(body if len(body) >= 2 else None)
-        .combine(
-            lambda statements: as_ast(statements[0], ast.If),
-            lambda statements, guard: (statements, guard),
-        )
-        .combine(
-            lambda context: as_ast(context[0][-1], ast.Return),
-            lambda context, returned: (
-                (context[1], returned) if returned.value is not None else None
-            ),
-        )
-        .combine(
-            lambda context: DISPATCH_ALGEBRA_AUTHORITY.cls_registry_membership_test(
-                context[0].test
-            ),
-            lambda context, membership: (
-                _GuardedRegistryLookupBody(context[0], context[1], membership[1])
-                if membership[0] == "not_in"
-                else None
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _membership_guard_registry_lookup_shape(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> RegistryLookupShape | None:
-    lookup_body = _guarded_registry_lookup_body(method)
-    if lookup_body is None:
-        return None
-    returned_key = _cls_registry_key_expr(lookup_body.returned.value)
-    if returned_key != lookup_body.key_expr:
-        return None
-    raise_stmt = next(
-        (stmt for stmt in lookup_body.guard.body if isinstance(stmt, ast.Raise)), None
-    )
-    return RegistryLookupShape(
-        key_expr=lookup_body.key_expr,
-        error_type_name=(
-            None if raise_stmt is None else _raise_exception_type_name(raise_stmt)
-        ),
-        style="membership_guard",
-    )
 
 
 def _repeated_keyed_family_candidates(
@@ -8200,8 +7967,7 @@ def _repeated_keyed_family_candidates(
                 for method in CLASS_NODE_AUTHORITY.methods(node)
                 if _is_classmethod(method)
                 and method.name.startswith("for_")
-                and (shape := DISPATCH_ALGEBRA_AUTHORITY.registry_lookup_shape(method))
-                is not None
+                and (shape := RegistryLookupShape.from_method(method)) is not None
             ]
             if len(lookup_methods) != 1:
                 continue
@@ -8251,7 +8017,7 @@ def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
             for method in CLASS_NODE_AUTHORITY.methods(node)
             if _is_classmethod(method)
             and (
-                DISPATCH_ALGEBRA_AUTHORITY.registry_lookup_shape(method) is not None
+                RegistryLookupShape.from_method(method) is not None
                 or _method_references_cls_registry(method)
             )
         )
@@ -8261,7 +8027,7 @@ def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
 def _method_references_cls_registry(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
-    return any((_is_cls_registry_attribute(node) for node in _walk_nodes(method)))
+    return RegistryLookupShape.references_registry(method)
 
 
 def _registered_keyed_case_names(
@@ -9249,12 +9015,10 @@ def _manual_record_registration_key_expr(body: list[ast.stmt]) -> str | None:
     first_statement = body[0] if len(body) >= 2 else None
     if not isinstance(first_statement, ast.If):
         return None
-    membership = DISPATCH_ALGEBRA_AUTHORITY.cls_registry_membership_test(
-        first_statement.test
-    )
-    if membership is None or membership[0] != "in":
+    membership = ClsRegistryMembership.from_node(first_statement.test)
+    if membership is None or membership.operator_type is not ast.In:
         return None
-    return membership[1]
+    return membership.key_expr
 
 
 def _manual_record_registration_constructor(
@@ -9264,7 +9028,10 @@ def _manual_record_registration_constructor(
         (
             statement
             for statement in body
-            if _cls_registry_key_expr(single_assign_target(statement)) == key_expr
+            if RegistryLookupShape.key_expr_from_subscript(
+                single_assign_target(statement)
+            )
+            == key_expr
         ),
         None,
     )
@@ -9317,8 +9084,7 @@ def _manual_keyed_record_table_group_candidates(
             for method in CLASS_NODE_AUTHORITY.methods(node)
             if _is_classmethod(method)
             and method.name.startswith("for_")
-            and (shape := DISPATCH_ALGEBRA_AUTHORITY.registry_lookup_shape(method))
-            is not None
+            and (shape := RegistryLookupShape.from_method(method)) is not None
         ]
         if len(lookup_methods) != 1:
             continue
@@ -12711,7 +12477,7 @@ class KeyedFamilyRootCandidate(ClassLineWitnessCandidate):
     family_base_name: str
     registry_key_attr_name: str
     lookup_method_name: str
-    lookup_style: str
+    lookup_style: RegistryLookupStyle
     error_type_name: str | None
     abstract_hook_names: tuple[str, ...]
 
@@ -12719,7 +12485,7 @@ class KeyedFamilyRootCandidate(ClassLineWitnessCandidate):
 @dataclass(frozen=True)
 class RepeatedKeyedFamilyCandidate:
     family_base_name: str
-    lookup_style: str
+    lookup_style: RegistryLookupStyle
     roots: tuple[KeyedFamilyRootCandidate, ...]
 
 
@@ -12835,7 +12601,7 @@ class ManualRecordRegistrationShape:
 class ManualKeyedRecordTableClassCandidate(ClassLineWitnessCandidate):
     register_method_name: str
     lookup_method_name: str
-    lookup_style: str
+    lookup_style: RegistryLookupStyle
     key_field_name: str
     key_expr: str
     constructor_field_names: tuple[str, ...]

@@ -32,7 +32,12 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..semantic_identity import SemanticRoleIdentityToken
-from ..semantic_match import effect_step_class_family_authority
+from ..semantic_match import (
+    FirstSuccessfulEffectStep,
+    RegisteredEffectStep,
+    effect_step_class_family_authority,
+    registered_effect_steps,
+)
 from ..impact_ranking import RefactorImpactKey
 
 import pickle

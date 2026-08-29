@@ -16,6 +16,7 @@ from typing import cast
 import pytest
 
 import nominal_refactor_advisor.ast_tools as ast_tools_module
+import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.detectors._structural as structural_detectors
 import nominal_refactor_advisor.detectors._structural_step_regex_extractor as regex_extractor_detectors
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
@@ -75,7 +76,11 @@ from nominal_refactor_advisor.calibration import (
     run_calibration_manifest,
 )
 from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
-from nominal_refactor_advisor.class_index import build_class_family_index
+from nominal_refactor_advisor.class_index import (
+    RegistryLookupShape,
+    RegistryLookupStyle,
+    build_class_family_index,
+)
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CodemodExecutionMode
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
@@ -10848,6 +10853,81 @@ def test_detects_repeated_keyed_family(tmp_path: Path) -> None:
     assert "KeyedNominalFamily" in (finding.scaffold or "")
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "cls.__registry__[key]" in (finding.scaffold or "")
+
+
+@pytest.mark.parametrize(
+    ("method_source", "expected_style"),
+    (
+        (
+            "@classmethod\n"
+            "def for_key(cls, key):\n"
+            "    try:\n"
+            "        return cls._registry[key]\n"
+            "    except KeyError:\n"
+            "        raise ValueError(key)\n",
+            RegistryLookupStyle.TRY_EXCEPT,
+        ),
+        (
+            "@classmethod\n"
+            "def for_key(cls, key):\n"
+            "    if key not in cls._registry:\n"
+            "        raise ValueError(key)\n"
+            "    return cls._registry[key]\n",
+            RegistryLookupStyle.MEMBERSHIP_GUARD,
+        ),
+    ),
+)
+def test_registry_lookup_shape_owns_full_and_compact_lookup_syntax(
+    method_source: str,
+    expected_style: RegistryLookupStyle,
+) -> None:
+    method = ast.parse(method_source).body[0]
+
+    assert isinstance(method, ast.FunctionDef)
+    shape = RegistryLookupShape.from_method(method)
+    assert shape is not None
+    assert shape.key_expr == "key"
+    assert shape.error_type_name == "ValueError"
+    assert shape.style is expected_style
+
+
+def test_registry_lookup_shape_rejects_mismatched_guard_and_return_keys() -> None:
+    method = ast.parse(
+        "@classmethod\n"
+        "def for_key(cls, key):\n"
+        "    if key not in cls._registry:\n"
+        "        raise ValueError(key)\n"
+        "    return cls._registry[other]\n"
+    ).body[0]
+
+    assert isinstance(method, ast.FunctionDef)
+    assert RegistryLookupShape.from_method(method) is None
+
+
+def test_registry_lookup_shape_has_no_parallel_detector_authority() -> None:
+    removed_base_names = (
+        "RegistryLookupShape",
+        "_ClsRegistryMembershipStep",
+        "_ClsRegistryMembershipCompareStep",
+        "_ClsRegistryInMembershipStep",
+        "_ClsRegistryNotInMembershipStep",
+        "_RegistryLookupShapeStep",
+        "_TryExceptRegistryLookupStep",
+        "_MembershipGuardRegistryLookupStep",
+    )
+    removed_index_helpers = (
+        "_try_registry_lookup_shape",
+        "_membership_registry_lookup_shape",
+        "_registry_lookup_shape",
+    )
+
+    assert base_detectors.RegistryLookupShape is RegistryLookupShape
+    assert all(
+        not hasattr(base_detectors, name)
+        for name in removed_base_names
+        if name != "RegistryLookupShape"
+    )
+    assert all(not hasattr(class_index_module, name) for name in removed_index_helpers)
 
 
 def test_detects_manual_keyed_record_table(tmp_path: Path) -> None:
