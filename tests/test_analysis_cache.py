@@ -7522,7 +7522,7 @@ def test_nominal_bypass_ast_demand_skips_context_without_dispatch_facts(
     assert actual == []
 
 
-def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidates(
+def test_compact_nominal_bypass_and_variant_candidates_own_global_analysis(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7585,7 +7585,6 @@ def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidat
     nominal_projections = groups[
         runtime_detectors.CompactNominalBypassModuleProjectionFamily
     ]
-    class_projections = groups[runtime_detectors.CompactModuleClassProjectionFamily]
     source_module = SourceModule(
         path=modules[0].path,
         module_name=modules[0].module_name,
@@ -7599,42 +7598,41 @@ def test_compact_nominal_bypass_and_variant_candidates_match_legacy_ast_candidat
     )
     assert tuple(native_nominal_projections or ()) == nominal_projections
 
-    legacy_bypass = runtime_detectors._nominal_authority_bypass_candidates(
-        list(modules)
+    compact_bypass = bypass_detector._candidates_from_compact_projection_groups(
+        groups,
+        config,
     )
-    compact_bypass = (
-        runtime_detectors._nominal_authority_bypass_candidates_from_compact_projections(
-            nominal_projections,
-            class_projections,
-        )
-    )
-    legacy_variants = runtime_detectors._variant_method_family_candidates(list(modules))
-    compact_variants = (
-        runtime_detectors._variant_method_family_candidates_from_compact_projections(
-            nominal_projections
-        )
+    compact_variants = variant_detector._candidates_from_compact_projections(
+        nominal_projections,
+        config,
     )
 
-    assert len(compact_bypass) == len(legacy_bypass) == 1
-    assert len(compact_variants) == len(legacy_variants) == 1
-    assert compact_bypass[0].composition_signals == (
-        legacy_bypass[0].composition_signals
-    )
-    assert compact_variants[0].composition_signals == (
-        legacy_variants[0].composition_signals
-    )
+    assert len(compact_bypass) == 1
+    assert len(compact_variants) == 1
+    assert bypass_detector._candidate_items(list(modules), config) == compact_bypass
+    assert variant_detector._candidate_items(list(modules), config) == compact_variants
+    assert "candidate_collector" not in type(bypass_detector).__dict__
+    assert "candidate_collector" not in type(variant_detector).__dict__
+    for removed_name in (
+        "_indexed_classes_for_type_names",
+        "_shared_nominal_base_classes",
+        "CancelableCompositionSignalQuery",
+        "_nominal_authority_bypass_candidates",
+        "_variant_method_family_candidates",
+    ):
+        assert not hasattr(runtime_detectors, removed_name)
     assert bypass_detector._findings_from_compact_projection_groups(
         groups,
         config,
     ) == [
-        bypass_detector._finding_for_candidate(candidate) for candidate in legacy_bypass
+        bypass_detector._finding_for_candidate(candidate) for candidate in compact_bypass
     ]
     assert variant_detector._findings_from_compact_projections(
         nominal_projections,
         config,
     ) == [
         variant_detector._finding_for_candidate(candidate)
-        for candidate in legacy_variants
+        for candidate in compact_variants
     ]
 
     accumulator = accumulate_compact_global_projections_for_roots(

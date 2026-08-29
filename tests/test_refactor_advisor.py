@@ -9441,26 +9441,13 @@ def test_detects_two_case_isinstance_family_dispatch(tmp_path: Path) -> None:
     assert "polymorphic ABC/base method" in (scatter_finding.codemod_patch or "")
 
 
-def test_abc_polymorphism_detector_skips_composition_index_without_shared_base(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_abc_polymorphism_detector_requires_shared_base(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         "\nclass AlphaPayload:\n    pass\n\n\nclass BetaPayload:\n    pass\n\n\ndef render_payload(value):\n    if isinstance(value, AlphaPayload):\n        return value.alpha()\n    if isinstance(value, BetaPayload):\n        return value.beta()\n    return None\n",
     )
     modules = parse_python_modules(tmp_path)
-
-    def fail_build_source_index(*args: object, **kwargs: object) -> object:
-        del args, kwargs
-        raise AssertionError("composition source index should not be built")
-
-    monkeypatch.setattr(
-        runtime_detectors,
-        "build_source_index",
-        fail_build_source_index,
-    )
 
     findings = (
         runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector().detect(
@@ -9472,26 +9459,13 @@ def test_abc_polymorphism_detector_skips_composition_index_without_shared_base(
     assert findings == []
 
 
-def test_variant_method_detector_skips_composition_index_without_seed(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_variant_method_detector_requires_a_variant_seed(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         "\nclass VariantSurface:\n    def alpha_value(self, request):\n        return request.alpha\n\n    def beta_value(self, request):\n        return request.beta\n",
     )
     modules = parse_python_modules(tmp_path)
-
-    def fail_build_source_index(*args: object, **kwargs: object) -> object:
-        del args, kwargs
-        raise AssertionError("composition source index should not be built")
-
-    monkeypatch.setattr(
-        runtime_detectors,
-        "build_source_index",
-        fail_build_source_index,
-    )
 
     findings = runtime_detectors.AlgebraicVariantMethodFamilyDetector().detect(
         modules,

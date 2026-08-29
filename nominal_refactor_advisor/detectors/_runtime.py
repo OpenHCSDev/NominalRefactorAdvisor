@@ -42,17 +42,14 @@ from ..class_index import (
     CompactManualSubclassRosterRoot,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
-    IndexedClass,
     LatentRosterMatch,
     LatentRosterObservation,
-    build_class_family_index,
     build_compact_class_family_index,
     has_complete_concrete_mro_composite,
 )
 from ..codemod import (
     CancelableCompositionSignal,
     CancelableCompositionSignalTargetAuthority,
-    detect_cancelable_composition_signals,
 )
 from ..collection_algebra import sorted_tuple
 from ..deadline import scan_deadline_checkpoint
@@ -67,7 +64,7 @@ from ..patterns import PatternId
 from ..semantic_algebra import DispatchAxisExpression, ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..semantic_identity import SemanticRoleIdentityToken
-from ..source_index import build_source_index, build_source_index_artifacts
+from ..source_index import build_source_index_artifacts
 from ..source_index import (
     STABLE_ID_AUTHORITY,
     AstTargetDigest,
@@ -11968,8 +11965,8 @@ _IDENTIFIER_STOP_TOKENS = frozenset(
 class _NominalAuthorityBypassSeed:
     module_name: str
     scatter: IsinstanceFamilyScatterCandidate
-    indexed_classes: tuple[IndexedClass | CompactIndexedClass, ...]
-    shared_base: IndexedClass | CompactIndexedClass
+    indexed_classes: tuple[CompactIndexedClass, ...]
+    shared_base: CompactIndexedClass
 
 
 @dataclass(frozen=True)
@@ -12084,70 +12081,6 @@ class SemanticTokenAuthority:
             if len(token) >= 3 and token not in _IDENTIFIER_STOP_TOKENS
         }
         return frozenset(tokens)
-
-
-def _indexed_classes_for_type_names(
-    module: ParsedModule,
-    class_index: ClassFamilyIndex,
-    type_names: tuple[str, ...],
-) -> tuple[IndexedClass, ...]:
-    indexed_classes: list[IndexedClass] = []
-    seen_symbols: set[str] = set()
-    for type_name in type_names:
-        simple_name = type_name.rsplit(".", 1)[-1]
-        indexed_class = SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
-            module, class_index, simple_name
-        )
-        if indexed_class is None or indexed_class.symbol in seen_symbols:
-            continue
-        seen_symbols.add(indexed_class.symbol)
-        indexed_classes.append(indexed_class)
-    return tuple(indexed_classes)
-
-
-def _shared_nominal_base_classes(
-    class_index: ClassFamilyIndex, indexed_classes: tuple[IndexedClass, ...]
-) -> tuple[IndexedClass, ...]:
-    if len(indexed_classes) < 2:
-        return ()
-    checked_symbols = {indexed_class.symbol for indexed_class in indexed_classes}
-    common_symbols = set(
-        _indexed_ancestor_symbols(class_index, indexed_classes[0].symbol)
-    )
-    for indexed_class in indexed_classes[1:]:
-        common_symbols &= set(
-            _indexed_ancestor_symbols(class_index, indexed_class.symbol)
-        )
-    base_classes = tuple(
-        indexed_class
-        for symbol in sorted(common_symbols)
-        if symbol not in checked_symbols
-        if (indexed_class := class_index.class_for(symbol)) is not None
-        if not indexed_class.simple_name.startswith("_")
-    )
-    abstract_bases = tuple(
-        indexed_class
-        for indexed_class in base_classes
-        if CLASS_NODE_AUTHORITY.is_abstract(indexed_class.node)
-    )
-    return abstract_bases or base_classes
-
-
-@dataclass(frozen=True)
-class CancelableCompositionSignalQuery:
-    """Cached source-index query for cancelable product-composition signals."""
-
-    modules: tuple[ParsedModule, ...]
-
-    @lru_cache(maxsize=None)
-    def signals(self) -> tuple[CancelableCompositionSignal, ...]:
-        if not self.modules:
-            return ()
-        source_index = build_source_index(list(self.modules), ())
-        return detect_cancelable_composition_signals(
-            source_index,
-            {str(module.path): module.source for module in self.modules},
-        )
 
 
 def _cancelable_composition_signals_for_module(
@@ -12942,7 +12875,7 @@ class RelatedWrapperChainsAuthority:
 
 def _templates_related_to_checked_classes(
     templates: tuple[CrossClassSmallMethodTemplateCandidate, ...],
-    checked_classes: tuple[IndexedClass | CompactIndexedClass, ...],
+    checked_classes: tuple[CompactIndexedClass, ...],
 ) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
     checked_names = {indexed_class.simple_name for indexed_class in checked_classes}
     related = []
@@ -12953,82 +12886,6 @@ def _templates_related_to_checked_classes(
     return sorted_tuple(
         related,
         key=lambda item: (item.file_path, item.line, item.method_name),
-    )
-
-
-def _nominal_authority_bypass_candidates(
-    modules: list[ParsedModule],
-) -> tuple[_NominalAuthorityBypassCandidate, ...]:
-    class_index = build_class_family_index(modules)
-    seeds: list[_NominalAuthorityBypassSeed] = []
-    for module in modules:
-        for scatter in _isinstance_family_scatter_candidates(module):
-            checked_classes = _indexed_classes_for_type_names(
-                module, class_index, scatter.type_names
-            )
-            shared_bases = _shared_nominal_base_classes(class_index, checked_classes)
-            if not shared_bases:
-                continue
-            seeds.append(
-                _NominalAuthorityBypassSeed(
-                    module_name=module.module_name,
-                    scatter=scatter,
-                    indexed_classes=checked_classes,
-                    shared_base=shared_bases[0],
-                )
-            )
-    if not seeds:
-        return ()
-
-    templates = tuple(
-        template
-        for module in modules
-        for template in _cross_class_small_method_template_candidates(module)
-    )
-    wrapper_chains = tuple(
-        chain for module in modules for chain in _wrapper_chain_candidates(module)
-    )
-    composition_signals = CancelableCompositionSignalQuery(tuple(modules)).signals()
-
-    candidates: list[_NominalAuthorityBypassCandidate] = []
-    for seed in seeds:
-        base_display_name = CLASS_INDEX_PROJECTION.display_name(
-            seed.shared_base, class_index
-        )
-        related_templates = _templates_related_to_checked_classes(
-            templates, seed.indexed_classes
-        )
-        token_sources = (
-            seed.scatter.qualname,
-            seed.scatter.subject_expression,
-            base_display_name,
-            *(indexed_class.simple_name for indexed_class in seed.indexed_classes),
-            *(template.method_name for template in related_templates),
-        )
-        candidates.append(
-            _NominalAuthorityBypassCandidate(
-                seed=seed,
-                repeated_templates=related_templates,
-                wrapper_chains=RelatedWrapperChainsAuthority.related(
-                    wrapper_chains,
-                    file_path=seed.scatter.file_path,
-                    token_sources=token_sources,
-                ),
-                composition_signals=RelatedCompositionSignalsAuthority.related(
-                    composition_signals,
-                    file_path=seed.scatter.file_path,
-                    token_sources=token_sources,
-                ),
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.seed.scatter.file_path,
-            item.seed.scatter.line,
-            item.seed.scatter.qualname,
-            item.seed.shared_base.symbol,
-        ),
     )
 
 
@@ -13079,12 +12936,8 @@ def _compact_shared_nominal_base_classes(
 
 def _nominal_authority_bypass_candidates_from_compact_projections(
     projections: tuple[CompactNominalBypassModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
+    class_index: CompactClassFamilyIndex,
 ) -> tuple[_NominalAuthorityBypassCandidate, ...]:
-    if class_index is None:
-        class_index = build_compact_class_family_index(class_projections)
     seeds: list[_NominalAuthorityBypassSeed] = []
     for projection in projections:
         for scatter in projection.isinstance_scatters:
@@ -13165,8 +13018,7 @@ def _nominal_authority_bypass_candidates_from_compact_projections(
 
 
 class ABCPolymorphismBypassedByConcreteDispatchDetector(
-    CompactMultiModuleProjectionDetectorMixin,
-    IssueDetector,
+    CompactMultiProjectionCandidateDetector[_NominalAuthorityBypassCandidate],
 ):
     module_projection_families = (
         CompactNominalBypassModuleProjectionFamily,
@@ -13188,34 +13040,29 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
         + _ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _findings_from_compact_projection_groups(
+    def _candidates_from_compact_projection_groups(
         self,
         projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
+    ) -> Sequence[_NominalAuthorityBypassCandidate]:
         projections = cast(
             tuple[CompactNominalBypassModuleProjection, ...],
             projections_by_family[CompactNominalBypassModuleProjectionFamily],
         )
-        class_projections = cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
+        return _nominal_authority_bypass_candidates_from_compact_projections(
+            projections,
+            compact_class_index_from_projection_groups(
+                projections_by_family,
+                config,
+            ),
         )
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _nominal_authority_bypass_candidates_from_compact_projections(
-                projections,
-                class_projections,
-            )
-        ]
 
-    def _findings_from_compact_projection_groups_context(
+    def _candidates_from_compact_projection_groups_context(
         self,
         projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
         context: object | None,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[_NominalAuthorityBypassCandidate]:
         del config
         if not isinstance(context, CompactClassFamilyIndex):
             raise TypeError("shared compact class index is unavailable")
@@ -13223,18 +13070,10 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
             tuple[CompactNominalBypassModuleProjection, ...],
             projections_by_family[CompactNominalBypassModuleProjectionFamily],
         )
-        class_projections = cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
+        return _nominal_authority_bypass_candidates_from_compact_projections(
+            projections,
+            context,
         )
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _nominal_authority_bypass_candidates_from_compact_projections(
-                projections,
-                class_projections,
-                class_index=context,
-            )
-        ]
 
     def _finding_for_candidate(
         self, candidate: _NominalAuthorityBypassCandidate
@@ -13563,56 +13402,6 @@ def _variant_method_family_candidate(
     )
 
 
-def _variant_method_family_candidates(
-    modules: list[ParsedModule],
-) -> tuple[_VariantMethodFamilyCandidate, ...]:
-    grouped: dict[
-        tuple[str, str, str, tuple[str, ...], str],
-        list[_VariantMethodSurface],
-    ] = defaultdict(list)
-    for module in modules:
-        for surface in _variant_method_surfaces(module):
-            grouped[
-                (
-                    surface.file_path,
-                    surface.owner_class_name,
-                    surface.construction_shape,
-                    surface.product_parameter_names,
-                    surface.method_tokens[-1],
-                )
-            ].append(surface)
-    seeds = []
-    for surfaces in grouped.values():
-        ordered = sorted_tuple(surfaces, key=lambda item: (item.line, item.method_name))
-        seed = _variant_method_family_seed(ordered)
-        if seed is not None:
-            seeds.append(seed)
-    if not seeds:
-        return ()
-
-    wrapper_chains = tuple(
-        chain for module in modules for chain in _wrapper_chain_candidates(module)
-    )
-    composition_signals = CancelableCompositionSignalQuery(tuple(modules)).signals()
-    candidates = [
-        _variant_method_family_candidate(
-            seed,
-            wrapper_chains=wrapper_chains,
-            composition_signals=composition_signals,
-        )
-        for seed in seeds
-    ]
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.seed.methods[0].file_path,
-            item.seed.methods[0].owner_line,
-            item.seed.methods[0].owner_class_name,
-            item.seed.methods[0].construction_shape,
-        ),
-    )
-
-
 def _variant_method_family_candidates_from_compact_projections(
     projections: tuple[CompactNominalBypassModuleProjection, ...],
 ) -> tuple[_VariantMethodFamilyCandidate, ...]:
@@ -13668,8 +13457,10 @@ def _variant_method_family_candidates_from_compact_projections(
 
 
 class AlgebraicVariantMethodFamilyDetector(
-    CompactModuleProjectionDetectorMixin[CompactNominalBypassModuleProjection],
-    IssueDetector,
+    CompactProjectionCandidateDetector[
+        CompactNominalBypassModuleProjection,
+        _VariantMethodFamilyCandidate,
+    ],
 ):
     module_projection_family = CompactNominalBypassModuleProjectionFamily
     detector_priority = -15
@@ -13684,18 +13475,13 @@ class AlgebraicVariantMethodFamilyDetector(
         + _ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactNominalBypassModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[_VariantMethodFamilyCandidate]:
         del config
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _variant_method_family_candidates_from_compact_projections(
-                projections
-            )
-        ]
+        return _variant_method_family_candidates_from_compact_projections(projections)
 
     def _finding_for_candidate(
         self, candidate: _VariantMethodFamilyCandidate
