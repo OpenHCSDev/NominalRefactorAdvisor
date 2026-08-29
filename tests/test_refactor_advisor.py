@@ -25156,6 +25156,27 @@ def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
     assert any((row["target_ids"] for row in evidence))
 
 
+def test_abc_optimizer_groups_subclasses_of_unresolved_external_base(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom plugin_api import Exporter\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n',
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+    )
+
+    assert "over `Exporter`" in finding.summary
+    assert "CsvExporter" in finding.summary
+    assert "JsonExporter" in finding.summary
+    assert "XmlExporter" in finding.summary
+
+
 def test_inheritance_optimizer_detects_repeated_class_level_declarations(
     tmp_path: Path,
 ) -> None:

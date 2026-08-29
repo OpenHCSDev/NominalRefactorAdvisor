@@ -6383,7 +6383,7 @@ def _write_compact_abc_optimizer_fixture(package_root: Path) -> None:
     )
 
 
-def test_compact_abc_optimizer_candidates_match_legacy_ast_candidates(
+def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -6393,58 +6393,86 @@ def test_compact_abc_optimizer_candidates_match_legacy_ast_candidates(
     projections = structural_detectors.ClassLevelInheritanceOptimizationDetector.compact_module_projections(
         modules
     )
-    context = structural_detectors._compact_abc_optimizer_context(projections, config)
-    detector_legacy_pairs = (
+    context = structural_detectors.CompactABCOptimizerContext.from_projections(
+        projections
+    )
+    detector_candidate_pairs = (
         (
             structural_detectors.ClassLevelInheritanceOptimizationDetector,
             context.class_level_candidates,
-            structural_detectors._class_level_inheritance_optimization_candidates_from_modules(
-                modules
-            ),
         ),
         (
             structural_detectors.SemanticOverlapAbcOptimizationDetector,
             context.method_candidates,
-            structural_detectors._semantic_overlap_abc_optimization_candidates_from_modules(
-                modules
-            ),
         ),
         (
             structural_detectors.SemanticOverlapAbcFamilyOptimizationDetector,
             context.family_candidates,
-            structural_detectors._semantic_overlap_abc_family_optimization_candidates(
-                modules
-            ),
         ),
         (
             structural_detectors.GlobalInheritanceOptimizationDetector,
             context.global_candidates,
-            structural_detectors._semantic_overlap_global_inheritance_candidates(
-                modules
-            ),
         ),
         (
             structural_detectors.SemanticOverlapAbcResidueAxisCatalogDetector,
             context.residue_axis_candidates,
-            structural_detectors._semantic_overlap_abc_residue_axis_catalog_candidates(
-                modules
-            ),
         ),
     )
 
-    for detector_type, compact_candidates, legacy_candidates in detector_legacy_pairs:
-        assert compact_candidates == legacy_candidates
+    for detector_type, compact_candidates in detector_candidate_pairs:
         detector = detector_type()
+        assert detector._candidate_items(list(modules), config) == compact_candidates
         assert detector._findings_from_compact_context(
             projections, context, config
-        ) == detector._findings_for_candidates(legacy_candidates, config)
-    assert context.class_level_candidates
-    assert context.method_candidates
-    assert context.family_candidates
-    assert context.global_candidates
-    assert context.residue_axis_candidates
-    assert all(
-        candidate.method_name != "poison" for candidate in context.method_candidates
+        ) == detector._findings_for_candidates(compact_candidates, config)
+        assert "candidate_collector" not in detector_type.__dict__
+    assert context.class_level_candidates[0].class_names == (
+        "CsvWorker",
+        "JsonWorker",
+        "XmlWorker",
+    )
+    assert context.class_level_candidates[0].declaration_names == (
+        "FORMAT_VERSION",
+        "SHARED_MODE",
+    )
+    assert tuple(candidate.method_name for candidate in context.method_candidates) == (
+        "emit",
+        "validate",
+        "audit",
+        "cache",
+    )
+    assert context.family_candidates[0].method_names == ("emit", "validate")
+    assert context.global_candidates[0].method_names == (
+        "audit",
+        "cache",
+        "emit",
+        "validate",
+    )
+    assert context.residue_axis_candidates[0].residue_kind_names == (
+        "call",
+        "constant",
+    )
+    for removed_name in (
+        "_class_level_inheritance_optimization_candidates_from_modules",
+        "_semantic_overlap_abc_optimization_candidates",
+        "_semantic_overlap_abc_optimization_candidates_from_modules",
+        "_semantic_overlap_abc_family_optimization_candidates",
+        "_semantic_overlap_global_inheritance_candidates",
+        "_semantic_overlap_abc_residue_axis_catalog_candidates",
+        "_abc_optimizer_specific_method_plans",
+        "_abc_optimizer_candidates_from_family_plans",
+        "_compact_abc_optimizer_context",
+        "ABCOptimizerAuthority",
+        "ABC_OPTIMIZER_AUTHORITY",
+        "_ABCSemanticSkeletonNormalizer",
+        "_ABCOptimizerFamilyCandidateOrder",
+        "_abc_optimizer_statement_skeleton",
+        "_semantic_overlap_coordinates",
+    ):
+        assert not hasattr(helper_detectors, removed_name)
+    assert not hasattr(
+        structural_detectors._CompactABCOptimizerDetectorBase,
+        "compact_candidate_attribute",
     )
 
 
@@ -6462,12 +6490,13 @@ def test_abc_optimizer_detectors_share_one_compact_context(
         structural_detectors.SemanticOverlapAbcResidueAxisCatalogDetector,
     )
     calls = 0
-    original_builder = structural_detectors._compact_abc_optimizer_context
+    original_builder = structural_detectors.CompactABCOptimizerContext.from_projections
 
     def counting_builder(projections, config):
         nonlocal calls
+        del config
         calls += 1
-        return original_builder(projections, config)
+        return original_builder(projections)
 
     for detector_type in detector_types:
         monkeypatch.setattr(
