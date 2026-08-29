@@ -21,6 +21,14 @@ from ..semantic_description_length import (
 from ..ast_tools import SourceModule, fingerprint_function, module_syntax_index
 from ..class_index import CompactNamedProjectionSurface, CompactSortedKeyCall
 from ..native_syntax import NativePythonSyntaxIndex
+from ..registry_normal_form import (
+    CanonicalRegistryIdentityStage,
+    DerivedRegistryProjectionStage,
+    MetaclassRegisteredRegistryStage,
+    ProvenRegistryMaturityStage,
+    SingleRegistryAuthorityStage,
+    UnifiedRegistryAxisFamilyStage,
+)
 
 from ._base import *
 from ._helpers import *
@@ -3591,15 +3599,7 @@ class ParallelKeyedAxisFamilyDetector(
         _target_has_keyed_family_axis_root
     )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
-    registry_normal_form_policy = RegistryNormalFormPolicy(
-        stage_order=50,
-        normal_form="auto_registered_abc",
-        stage_label="merge keyed families",
-        step_template=(
-            "Merge sibling keyed registry families in `{subsystem}` into one "
-            "shared ABC/mixin lattice over the common key axis."
-        ),
-    )
+    registry_normal_form_stage = UnifiedRegistryAxisFamilyStage
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
         "Parallel keyed families should collapse into one axis authority",
@@ -3724,15 +3724,7 @@ declare_candidate_rule_detector(
     ),
     detector_base=CompactParallelKeyedTableAxisCandidateBase,
     candidate_collector=_parallel_keyed_table_axis_candidates,
-    registry_normal_form_policy=RegistryNormalFormPolicy(
-        stage_order=40,
-        normal_form="generated_projection_surface",
-        stage_label="merge keyed projections",
-        step_template=(
-            "Merge parallel keyed tables in `{subsystem}` into one finite axis "
-            "catalog and derive each table surface from that catalog."
-        ),
-    ),
+    registry_normal_form_stage=DerivedRegistryProjectionStage,
 )
 
 
@@ -3745,16 +3737,7 @@ class ParallelKeyedTableAndFamilyDetector(
         _target_has_keyed_table_axis
     )
     compact_shared_context_builder = staticmethod(compact_class_repository_context)
-    registry_normal_form_policy = RegistryNormalFormPolicy(
-        stage_order=30,
-        normal_form="generated_projection_surface",
-        stage_label="choose authority and derive projection",
-        step_template=(
-            "Choose one injective registry authority in `{subsystem}` and derive "
-            "the parallel keyed table as a generated projection, or demote the "
-            "family if behavior is only metadata."
-        ),
-    )
+    registry_normal_form_stage = SingleRegistryAuthorityStage
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Keyed table and keyed family should collapse into one auto-registered axis family",
@@ -5655,17 +5638,7 @@ declare_candidate_rule_detector(
     ),
     detector_base=_CompactNonInjectiveTypeRegistryDetectorBase,
     candidate_collector=_non_injective_type_registry_candidates,
-    registry_normal_form_policy=RegistryNormalFormPolicy(
-        stage_order=10,
-        normal_form="typed_record_table",
-        stage_label="repair injectivity",
-        step_template=(
-            "Repair `{subsystem}` registry injectivity first: give each concrete "
-            "implementation one canonical key and move semantic aliases into an "
-            "explicit alias projection."
-        ),
-        blocks_metaclass=True,
-    ),
+    registry_normal_form_stage=CanonicalRegistryIdentityStage,
 )
 
 
@@ -5702,16 +5675,7 @@ declare_candidate_rule_detector(
     ),
     detector_base=_CompactInjectiveTypeRegistryDetectorBase,
     candidate_collector=_injective_type_registry_candidates,
-    registry_normal_form_policy=RegistryNormalFormPolicy(
-        stage_order=60,
-        normal_form="auto_registered_abc",
-        stage_label="promote mature injective registry",
-        step_template=(
-            "Promote the mature injective registry in `{subsystem}` to "
-            "`AutoRegisterMeta`; implementation classes should retain only "
-            "canonical key attributes and behavior hooks."
-        ),
-    ),
+    registry_normal_form_stage=MetaclassRegisteredRegistryStage,
 )
 
 
@@ -5870,17 +5834,7 @@ declare_candidate_rule_detector(
     metrics=_registry_maturity_fanout_metrics,
     detector_base=_CompactPrematureRegistryInfrastructureDetectorBase,
     candidate_collector=_premature_registry_infrastructure_candidates,
-    registry_normal_form_policy=RegistryNormalFormPolicy(
-        stage_order=20,
-        normal_form="typed_record_table",
-        stage_label="demote premature registry",
-        step_template=(
-            "Demote unstable registry infrastructure in `{subsystem}` to a typed "
-            "table or local strategy map until key cases, lookup lifecycle, and "
-            "consumer fanout are all proven."
-        ),
-        blocks_metaclass=True,
-    ),
+    registry_normal_form_stage=ProvenRegistryMaturityStage,
 )
 
 

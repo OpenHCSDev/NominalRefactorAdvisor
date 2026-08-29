@@ -22,7 +22,7 @@ from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .deadline import scan_deadline_checkpoint
 from .detectors import IssueDetector
 from .factorization import RefactorMove, RefactorPhase, RefactorTrajectorySearch
-from .registry_normal_form import RegistryNormalFormPolicy
+from .registry_normal_form import RegistryNormalFormPath
 from .models import (
     CERTIFIED,
     ImpactDelta,
@@ -134,39 +134,6 @@ class RefactorExecutionPlanLoopProjection(RefactorExecutionPlanReport):
             edge_payload_mode="count_only",
             edge_count=len(report.edges),
         )
-
-
-@dataclass(frozen=True)
-class RegistryNormalFormPolicyCatalog:
-    policies_by_detector_id: dict[str, RegistryNormalFormPolicy]
-
-    @classmethod
-    def from_registered_detectors(cls) -> "RegistryNormalFormPolicyCatalog":
-        return cls(
-            {
-                detector_id: policy
-                for detector_type in IssueDetector.registered_detector_types()
-                for detector_id in (detector_type.effective_detector_id(),)
-                if detector_id is not None
-                and (policy := detector_type.registry_normal_form_policy) is not None
-            }
-        )
-
-    def policies_for_findings(
-        self, findings: tuple[RefactorFinding, ...]
-    ) -> tuple[RegistryNormalFormPolicy, ...]:
-        policies_by_detector_id = self.policies_by_detector_id
-        policies = {
-            policy
-            for finding in findings
-            if (policy := policies_by_detector_id.get(finding.detector_id)) is not None
-        }
-        return sorted_tuple(policies, key=lambda policy: policy.stage_order)
-
-
-_REGISTRY_NORMAL_FORM_POLICY_CATALOG = (
-    RegistryNormalFormPolicyCatalog.from_registered_detectors()
-)
 
 
 _MetricValueT = TypeVar("_MetricValueT")
@@ -1327,14 +1294,18 @@ def _plan_for_cluster(
             (finding.title for finding in cluster.findings)
         )
     )
-    canonical_normal_form = _canonical_normal_form(ordered_patterns, cluster.findings)
+    registry_normal_form_path = _registry_normal_form_path(cluster.findings)
+    canonical_normal_form = _canonical_normal_form(
+        ordered_patterns,
+        registry_normal_form_path,
+    )
     pattern_planning = tuple(
         _pattern_planning(cluster.subsystem, pattern_id, cluster.findings)
         for pattern_id in ordered_patterns
     )
     plan_steps = _build_plan_steps(
         cluster.subsystem,
-        cluster.findings,
+        registry_normal_form_path,
         pattern_planning,
     )
     actions = tuple(
@@ -1557,10 +1528,11 @@ def _current_partial_view(findings: tuple[RefactorFinding, ...]) -> str:
 
 
 def _canonical_normal_form(
-    pattern_ids: Sequence[PatternId], findings: tuple[RefactorFinding, ...]
+    pattern_ids: Sequence[PatternId],
+    registry_normal_form_path: RegistryNormalFormPath,
 ) -> str:
     primary = pattern_ids[0].canonical_shape
-    registry_clause = _registry_normal_form_clause(findings)
+    registry_clause = registry_normal_form_path.canonical_clause
     if len(pattern_ids) == 1:
         return f"{registry_clause}; then {primary}" if registry_clause else primary
     supporting = "; then ".join(
@@ -1570,45 +1542,31 @@ def _canonical_normal_form(
     return f"{registry_clause}; then {normal_form}" if registry_clause else normal_form
 
 
-def _registry_normal_form_clause(findings: tuple[RefactorFinding, ...]) -> str:
-    policies = _REGISTRY_NORMAL_FORM_POLICY_CATALOG.policies_for_findings(findings)
-    if not policies:
-        return ""
-    stage_labels = " -> ".join((policy.stage_label for policy in policies))
-    final_form = policies[-1].normal_form
-    return f"registry normal-form path ({stage_labels}) ending in `{final_form}`"
+def _registry_normal_form_path(
+    findings: tuple[RefactorFinding, ...],
+) -> RegistryNormalFormPath:
+    return RegistryNormalFormPath.from_stages(
+        detector_type.registry_normal_form_stage
+        for finding in findings
+        if (detector_type := IssueDetector.registered_detector_type_for_id(
+            finding.detector_id
+        ))
+        is not None
+        and detector_type.registry_normal_form_stage is not None
+    )
 
 
 def _build_plan_steps(
     subsystem: str,
-    findings: tuple[RefactorFinding, ...],
+    registry_normal_form_path: RegistryNormalFormPath,
     pattern_planning: Sequence[_PatternPlanningProjection],
 ) -> tuple[str, ...]:
-    steps = list(_registry_normal_form_steps(subsystem, findings))
+    steps = list(registry_normal_form_path.plan_steps(subsystem))
     steps.extend(planning.step for planning in pattern_planning)
     steps.append(
         f"Delete superseded partial views in `{subsystem}` and route call sites through the new authorities."
     )
     return tuple(steps)
-
-
-def _registry_normal_form_steps(
-    subsystem: str,
-    findings: tuple[RefactorFinding, ...],
-) -> tuple[str, ...]:
-    policies = _REGISTRY_NORMAL_FORM_POLICY_CATALOG.policies_for_findings(findings)
-    if not policies:
-        return ()
-    steps = tuple(
-        (policy.step_template.format(subsystem=subsystem) for policy in policies)
-    )
-    if any((policy.blocks_metaclass for policy in policies)):
-        return steps + (
-            f"After the blocking registry stages are fixed in `{subsystem}`, rerun NRA before promoting any registry to metaclass registration.",
-        )
-    return steps
-
-
 def _build_escape_trajectories(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[RefactorTrajectorySummary, ...]:
