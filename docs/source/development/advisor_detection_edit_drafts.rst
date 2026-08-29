@@ -276,24 +276,14 @@ Proposed candidate and detector skeleton
            ),
        )
 
-Suggested planner target shape
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Implemented planner shape
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. code-block:: python
-
-   @dataclass(frozen=True)
-   class PatternPlanningSpec:
-       pattern_id: PatternId
-       priority: int
-       step_builder: PatternPlanStepBuilder
-       action_builder: PatternActionBuilder
-       dependencies: tuple[PatternId, ...] = ()
-       synergy_with: tuple[PatternId, ...] = ()
-
-   PATTERN_PLANNING_SPECS = {
-       PatternId.ABC_TEMPLATE_METHOD: PatternPlanningSpec(...),
-       PatternId.AUTHORITATIVE_SCHEMA: PatternPlanningSpec(...),
-   }
+``PatternId`` owns pattern identity and declarative metadata. The single
+``PatternPlanningStrategy`` family derives both the plan step and its actions.
+Registered leaves exist only for patterns whose behavior differs from the generic
+``PatternId``-derived plan, so there is no parallel builder table or authored
+``PatternPlanningSpec`` mapping to keep synchronized.
 
 Draft 3: Finding assembly pipeline detection
 --------------------------------------------

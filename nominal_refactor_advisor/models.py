@@ -26,7 +26,6 @@ from .taxonomy import (
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
     CERTIFIED,
-    SPECULATIVE,
     STRONG_HEURISTIC,
     CapabilityTag,
     CertificationLevel,
@@ -295,7 +294,9 @@ BehaviorFindingMetrics = CompositeClassSpec(
 
 
 class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
-    __registry__: ClassVar[dict["ClassNamesMetricKind", type["ClassNamesPlanMetrics"]]] = {}
+    __registry__: ClassVar[
+        dict["ClassNamesMetricKind", type["ClassNamesPlanMetrics"]]
+    ] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
 
@@ -923,21 +924,89 @@ class HighConfidenceCertifiedFindingSpec(HighConfidenceFindingSpec):
     certification: CertificationLevel = CERTIFIED
 
 
+class RefactorActionKind(StrEnum):
+    """Action identity carrying its derived execution and confidence semantics."""
+
+    def __new__(
+        cls,
+        value: str,
+        confidence: ConfidenceLevel,
+        statement_operation: str | None = None,
+        removes_symbols: bool = False,
+    ) -> "RefactorActionKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.confidence = confidence
+        member.statement_operation = statement_operation
+        member._removes_symbols = removes_symbols
+        return member
+
+    APPLY_PATTERN = "apply_pattern", MEDIUM_CONFIDENCE
+    CREATE_ABC_BASE = "create_abc_base", HIGH_CONFIDENCE
+    EXTRACT_SHARED_FIELDS = "extract_shared_fields", HIGH_CONFIDENCE, "move"
+    LEAVE_SUBCLASS_FIELDS = "leave_subclass_fields", MEDIUM_CONFIDENCE
+    EXTRACT_TEMPLATE_METHOD = "extract_template_method", HIGH_CONFIDENCE, "move"
+    LEAVE_RESIDUAL_HOOKS = "leave_residual_hooks", MEDIUM_CONFIDENCE
+    CREATE_DISPATCH_AUTHORITY = "create_dispatch_authority", HIGH_CONFIDENCE
+    REPLACE_BRANCH_SITES = "replace_branch_sites", HIGH_CONFIDENCE, "replace"
+    CREATE_METACLASS = "create_metaclass", HIGH_CONFIDENCE
+    ADD_DECLARATIVE_HOOKS = "add_declarative_hooks", MEDIUM_CONFIDENCE
+    DELETE_MANUAL_REGISTRATION = (
+        "delete_manual_registration",
+        HIGH_CONFIDENCE,
+        "delete",
+        True,
+    )
+    CREATE_BIDIRECTIONAL_REGISTRY = (
+        "create_bidirectional_registry",
+        HIGH_CONFIDENCE,
+    )
+    DELETE_MIRRORED_UPDATES = (
+        "delete_mirrored_updates",
+        HIGH_CONFIDENCE,
+        "delete",
+        True,
+    )
+    CREATE_AUTHORITATIVE_SCHEMA = "create_authoritative_schema", HIGH_CONFIDENCE
+    REPLACE_MAPPING_SITES = "replace_mapping_sites", HIGH_CONFIDENCE, "replace"
+
+    def remove_symbols_for(self, symbols: tuple[str, ...]) -> tuple[str, ...]:
+        return symbols if self._removes_symbols else ()
+
+    def statement_sites_for(
+        self,
+        evidence: tuple[SourceLocation, ...],
+    ) -> tuple[SourceLocation, ...]:
+        return evidence if self.statement_operation is not None else ()
+
+
 @dataclass(frozen=True)
 class RefactorAction(SemanticRecord):
     """One proposed transformation step inside a subsystem refactor plan."""
 
-    kind: str
+    kind: RefactorActionKind
     description: str
     target: str | None = None
     create_symbol: str | None = None
     replace_with: str | None = None
-    statement_operation: str | None = None
     symbols: tuple[str, ...] = ()
-    remove_symbols: tuple[str, ...] = ()
     evidence: tuple[SourceLocation, ...] = ()
-    statement_sites: tuple[SourceLocation, ...] = ()
-    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
+    statement_operation: str | None = field(init=False)
+    remove_symbols: tuple[str, ...] = field(init=False)
+    statement_sites: tuple[SourceLocation, ...] = field(init=False)
+    confidence: ConfidenceLevel = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "statement_operation", self.kind.statement_operation)
+        object.__setattr__(
+            self, "remove_symbols", self.kind.remove_symbols_for(self.symbols)
+        )
+        object.__setattr__(
+            self,
+            "statement_sites",
+            self.kind.statement_sites_for(self.evidence),
+        )
+        object.__setattr__(self, "confidence", self.kind.confidence)
 
 
 @dataclass(frozen=True)

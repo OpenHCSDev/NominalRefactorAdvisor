@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import nominal_refactor_advisor.patterns as patterns
 from nominal_refactor_advisor.factorization import RefactorPhase
+from nominal_refactor_advisor.models import RefactorAction, RefactorActionKind
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import (
-    PatternActionBuilder,
-    PatternPlanStepBuilder,
-    _plan_step,
+    PatternPlanningStrategy,
+    _pattern_planning,
 )
 
 
@@ -34,15 +34,8 @@ def test_pattern_members_own_complete_metadata_and_phase() -> None:
     )
 
 
-def test_builder_registries_are_keyed_directly_by_pattern_members() -> None:
-    assert set(PatternPlanStepBuilder.__registry__) == {
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        PatternId.ABC_TEMPLATE_METHOD,
-        PatternId.AUTO_REGISTER_META,
-        PatternId.BIDIRECTIONAL_LOOKUP,
-        PatternId.AUTHORITATIVE_SCHEMA,
-    }
-    assert set(PatternActionBuilder.__registry__) == {
+def test_specialized_pattern_planning_has_one_nominal_authority() -> None:
+    assert set(PatternPlanningStrategy.__registry__) == {
         PatternId.CLOSED_FAMILY_DISPATCH,
         PatternId.ABC_TEMPLATE_METHOD,
         PatternId.AUTO_REGISTER_META,
@@ -50,18 +43,56 @@ def test_builder_registries_are_keyed_directly_by_pattern_members() -> None:
         PatternId.AUTHORITATIVE_SCHEMA,
     }
     assert all(
-        PatternPlanStepBuilder.for_pattern(pattern_id).pattern_id is pattern_id
-        for pattern_id in PatternPlanStepBuilder.__registry__
+        PatternPlanningStrategy.for_pattern(pattern_id).pattern_id is pattern_id
+        for pattern_id in PatternPlanningStrategy.__registry__
     )
+
+
+def test_every_pattern_derives_a_complete_planning_projection() -> None:
+    for pattern_id in PatternId:
+        planning = _pattern_planning("sample", pattern_id, ())
+
+        assert planning.step
+        assert planning.actions
+        assert all(action.target == "sample" for action in planning.actions)
+        assert all(
+            isinstance(action.kind, RefactorActionKind) for action in planning.actions
+        )
+
     assert all(
-        PatternActionBuilder.for_pattern(pattern_id).pattern_id is pattern_id
-        for pattern_id in PatternActionBuilder.__registry__
+        RefactorAction.__dataclass_fields__[field_name].init is False
+        for field_name in (
+            "confidence",
+            "statement_operation",
+            "remove_symbols",
+            "statement_sites",
+        )
     )
 
 
-def test_generic_behavior_is_derived_from_missing_specialization() -> None:
-    generic_pattern = PatternId.NOMINAL_BOUNDARY
+def test_generic_and_specialized_pattern_planning_outputs() -> None:
+    generic_planning = _pattern_planning("sample", PatternId.NOMINAL_BOUNDARY, ())
 
-    assert generic_pattern not in PatternPlanStepBuilder.__registry__
-    assert generic_pattern not in PatternActionBuilder.__registry__
-    assert generic_pattern.prescription in _plan_step("sample", generic_pattern, ())
+    assert PatternId.NOMINAL_BOUNDARY not in PatternPlanningStrategy.__registry__
+    assert PatternId.NOMINAL_BOUNDARY.prescription in generic_planning.step
+    assert tuple(action.kind for action in generic_planning.actions) == (
+        RefactorActionKind.APPLY_PATTERN,
+    )
+    assert tuple(
+        action.kind
+        for action in _pattern_planning(
+            "sample", PatternId.CLOSED_FAMILY_DISPATCH, ()
+        ).actions
+    ) == (
+        RefactorActionKind.CREATE_DISPATCH_AUTHORITY,
+        RefactorActionKind.REPLACE_BRANCH_SITES,
+    )
+    assert tuple(
+        action.kind
+        for action in _pattern_planning(
+            "sample", PatternId.BIDIRECTIONAL_LOOKUP, ()
+        ).actions
+    ) == (
+        RefactorActionKind.CREATE_BIDIRECTIONAL_REGISTRY,
+        RefactorActionKind.DELETE_MIRRORED_UPDATES,
+    )

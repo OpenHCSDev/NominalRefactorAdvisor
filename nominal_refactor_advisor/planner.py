@@ -6,7 +6,7 @@ pattern-aware plans suitable for long-running maintenance work.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Iterator
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -29,6 +29,7 @@ from .models import (
     STRONG_HEURISTIC,
     OutcomeEstimate,
     RefactorAction,
+    RefactorActionKind,
     SemanticRecord,
     RefactorFinding,
     RefactorPatternSequence,
@@ -43,9 +44,6 @@ from .semantic_description_length import CompressionCertificate, SemanticCostVec
 from .taxonomy import (
     CapabilityTag,
     CertificationLevel,
-    ConfidenceLevel,
-    HIGH_CONFIDENCE,
-    MEDIUM_CONFIDENCE,
 )
 
 
@@ -169,112 +167,6 @@ class RegistryNormalFormPolicyCatalog:
 _REGISTRY_NORMAL_FORM_POLICY_CATALOG = (
     RegistryNormalFormPolicyCatalog.from_registered_detectors()
 )
-
-
-class PatternPlanStepBuilder(ABC, metaclass=AutoRegisterMeta):
-    __registry__: ClassVar[dict[PatternId, type["PatternPlanStepBuilder"]]] = {}
-    __registry_key__ = "pattern_id"
-    __skip_if_no_key__ = True
-
-    @classmethod
-    def for_pattern(cls, pattern_id: PatternId) -> "PatternPlanStepBuilder":
-        if pattern_id in cls.__registry__:
-            return cls.__registry__[pattern_id]()
-        return GenericPatternPlanStepBuilder()
-
-    @abstractmethod
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> str:
-        raise NotImplementedError
-
-
-class GenericPatternPlanStepBuilder(PatternPlanStepBuilder):
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> str:
-        return (
-            f"Apply Pattern {pattern_id.value} in `{subsystem}`: "
-            f"{pattern_id.prescription}"
-        )
-
-
-class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
-    pattern_id = PatternId.ABC_TEMPLATE_METHOD
-
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> str:
-        field_names = _field_names_from_findings(findings)
-        field_execution_level = _FINDING_PROJECTION.field_execution_level(findings)
-        if field_names and field_execution_level != "unknown_level":
-            return f"Create one ABC field base for `{subsystem}` and lift shared fields {_FINDING_PROJECTION.human_join(list(field_names))} from {_FINDING_PROJECTION.class_list(findings)} at {field_execution_level.replace('_', ' ')}."
-        site_count = sum(finding.metrics.shared_algorithm_sites for finding in findings)
-        return (
-            f"Create one ABC template-method family for `{subsystem}` and move the shared orchestration from "
-            f"{site_count or len(findings)} duplicated method site(s) into the base class."
-        )
-
-
-class AutoRegisterPlanStepBuilder(PatternPlanStepBuilder):
-    pattern_id = PatternId.AUTO_REGISTER_META
-
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> str:
-        site_count = sum((finding.metrics.registration_sites for finding in findings))
-        return f"Introduce `AutoRegisterMeta` for `{subsystem}` and replace {site_count or len(findings)} manual registration site(s) with declarative class hooks."
-
-
-class AuthoritativeMappingPlanStepBuilder(PatternPlanStepBuilder):
-    pattern_id = PatternId.AUTHORITATIVE_SCHEMA
-
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> str:
-        site_count = sum((finding.metrics.mapping_sites for finding in findings))
-        return f"Declare one authoritative builder/schema for `{subsystem}` and route {site_count or len(findings)} repeated mapping site(s) through it."
-
-
-class ClosedFamilyDispatchPlanStepBuilder(PatternPlanStepBuilder):
-    pattern_id = PatternId.CLOSED_FAMILY_DISPATCH
-
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> str:
-        site_count = sum((finding.metrics.dispatch_sites for finding in findings))
-        return f"Replace {site_count or len(findings)} branch or dispatch site(s) in `{subsystem}` with one enum/type-keyed registry or rule table."
-
-
-class BidirectionalRegistryPlanStepBuilder(PatternPlanStepBuilder):
-    pattern_id = PatternId.BIDIRECTIONAL_LOOKUP
-
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> str:
-        site_count = sum((finding.metrics.registration_sites for finding in findings))
-        return f"Centralize forward/reverse lookup for `{subsystem}` in one bidirectional registry and delete {site_count or len(findings)} mirrored update site(s)."
 
 
 _MetricValueT = TypeVar("_MetricValueT")
@@ -422,350 +314,303 @@ class FindingProjection:
 _FINDING_PROJECTION = FindingProjection()
 
 
-class PatternActionBuilder(ABC, metaclass=AutoRegisterMeta):
-    __registry__: ClassVar[dict[PatternId, type["PatternActionBuilder"]]] = {}
+@dataclass(frozen=True)
+class _PatternPlanningContext:
+    subsystem: str
+    pattern_id: PatternId
+    findings: tuple[RefactorFinding, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return _FINDING_PROJECTION.combined_evidence(self.findings)
+
+    @property
+    def symbols(self) -> tuple[str, ...]:
+        return _FINDING_PROJECTION.evidence_symbols(self.findings)
+
+    def action(
+        self,
+        kind: RefactorActionKind,
+        description: str,
+        *,
+        create_symbol: str | None = None,
+        replace_with: str | None = None,
+    ) -> RefactorAction:
+        return RefactorAction(
+            kind=kind,
+            description=description,
+            target=self.subsystem,
+            create_symbol=create_symbol,
+            replace_with=replace_with,
+            symbols=self.symbols,
+            evidence=self.evidence,
+        )
+
+
+@dataclass(frozen=True)
+class _PatternPlanningProjection:
+    step: str
+    actions: tuple[RefactorAction, ...]
+
+
+class PatternPlanningStrategy(ABC, metaclass=AutoRegisterMeta):
+    """Derive one pattern's plan step and actions from the same authority."""
+
+    __registry__: ClassVar[dict[PatternId, type["PatternPlanningStrategy"]]] = {}
     __registry_key__ = "pattern_id"
     __skip_if_no_key__ = True
 
     @classmethod
-    def for_pattern(cls, pattern_id: PatternId) -> "PatternActionBuilder":
-        if pattern_id in cls.__registry__:
-            return cls.__registry__[pattern_id]()
-        return GenericPatternActionBuilder()
+    def for_pattern(cls, pattern_id: PatternId) -> "PatternPlanningStrategy":
+        return cls.__registry__.get(pattern_id, cls)()
 
-    def _build_from_templates(
-        self,
-        subsystem: str,
-        findings: tuple[RefactorFinding, ...],
-        templates: tuple[ActionTemplate, ...],
-    ) -> tuple[RefactorAction, ...]:
-        context = self._build_action_context(subsystem, findings)
-        return tuple(template.to_refactor_action(context) for template in templates)
+    def plan(self, context: _PatternPlanningContext) -> _PatternPlanningProjection:
+        pattern_id = context.pattern_id
+        return _PatternPlanningProjection(
+            step=(
+                f"Apply Pattern {pattern_id.value} in `{context.subsystem}`: "
+                f"{pattern_id.prescription}"
+            ),
+            actions=(
+                context.action(
+                    RefactorActionKind.APPLY_PATTERN,
+                    f"Apply Pattern {pattern_id.value}: {pattern_id.prescription}",
+                ),
+            ),
+        )
 
-    def _build_action_context(
-        self, subsystem: str, findings: tuple[RefactorFinding, ...]
-    ) -> ActionContext:
-        symbols = _FINDING_PROJECTION.evidence_symbols(findings)
+
+class AbcPatternPlanningStrategy(PatternPlanningStrategy):
+    pattern_id = PatternId.ABC_TEMPLATE_METHOD
+
+    def plan(self, context: _PatternPlanningContext) -> _PatternPlanningProjection:
+        findings = context.findings
+        field_names = _field_names_from_findings(findings)
+        field_list = (
+            _FINDING_PROJECTION.human_join(list(field_names))
+            if field_names
+            else "the repeated fields"
+        )
+        field_execution_level = _FINDING_PROJECTION.field_execution_level(findings)
         class_names = _FINDING_PROJECTION.class_names(findings)
+        class_list = _FINDING_PROJECTION.class_list(findings)
+        base_name = _suggest_base_name(class_names)
+        if field_names and field_execution_level != "unknown_level":
+            step = (
+                f"Create one ABC field base for `{context.subsystem}` and lift shared "
+                f"fields {field_list} from {class_list} at "
+                f"{field_execution_level.replace('_', ' ')}."
+            )
+        else:
+            site_count = sum(
+                finding.metrics.shared_algorithm_sites for finding in findings
+            )
+            step = (
+                f"Create one ABC template-method family for `{context.subsystem}` and "
+                "move the shared orchestration from "
+                f"{site_count or len(findings)} duplicated method site(s) into the "
+                "base class."
+            )
+        if field_execution_level != "unknown_level":
+            actions = (
+                context.action(
+                    RefactorActionKind.CREATE_ABC_BASE,
+                    f"Create `{base_name}` in `{context.subsystem}` to own shared "
+                    f"fields {field_list}.",
+                    create_symbol=base_name,
+                ),
+                context.action(
+                    RefactorActionKind.EXTRACT_SHARED_FIELDS,
+                    "Move the shared field declarations/assignments for "
+                    f"{field_list} from {class_list} into `{base_name}` at "
+                    f"{field_execution_level}.",
+                ),
+                context.action(
+                    RefactorActionKind.LEAVE_SUBCLASS_FIELDS,
+                    f"Leave only subclass-specific fields outside `{base_name}`.",
+                ),
+            )
+        else:
+            statement_sequence = _statement_sequence_from_findings(findings)
+            actions = (
+                context.action(
+                    RefactorActionKind.CREATE_ABC_BASE,
+                    f"Create `{base_name}` in `{context.subsystem}` to own the shared "
+                    f"behavior now spread across {class_list}.",
+                    create_symbol=base_name,
+                ),
+                context.action(
+                    RefactorActionKind.EXTRACT_TEMPLATE_METHOD,
+                    f"Move the shared statement sequence `{statement_sequence}` from "
+                    f"the repeated methods into `{base_name}.run`.",
+                    create_symbol=f"{base_name}.run",
+                ),
+                context.action(
+                    RefactorActionKind.LEAVE_RESIDUAL_HOOKS,
+                    "Leave only irreducible per-class residue behind abstract hooks "
+                    f"or mixin-provided concerns on `{base_name}`.",
+                ),
+            )
+        return _PatternPlanningProjection(step=step, actions=actions)
+
+
+class ClosedFamilyDispatchPatternPlanningStrategy(PatternPlanningStrategy):
+    pattern_id = PatternId.CLOSED_FAMILY_DISPATCH
+
+    def plan(self, context: _PatternPlanningContext) -> _PatternPlanningProjection:
+        findings = context.findings
+        site_count = sum(finding.metrics.dispatch_sites for finding in findings)
+        dispatch_symbol = _FINDING_PROJECTION.dispatch_symbol(findings)
+        dispatch_axis = _FINDING_PROJECTION.dispatch_axis(findings)
+        dispatch_cases = _dispatch_cases_from_findings(findings)
+        return _PatternPlanningProjection(
+            step=(
+                f"Replace {site_count or len(findings)} branch or dispatch site(s) in "
+                f"`{context.subsystem}` with one enum/type-keyed registry or rule table."
+            ),
+            actions=(
+                context.action(
+                    RefactorActionKind.CREATE_DISPATCH_AUTHORITY,
+                    f"Create `{dispatch_symbol}` in `{context.subsystem}` for "
+                    f"`{dispatch_axis}` over cases {dispatch_cases}.",
+                    create_symbol=dispatch_symbol,
+                ),
+                context.action(
+                    RefactorActionKind.REPLACE_BRANCH_SITES,
+                    f"Replace the repeated `{dispatch_axis}` branch/lookup sites with "
+                    f"`{dispatch_symbol}` over cases {dispatch_cases}.",
+                    replace_with=dispatch_symbol,
+                ),
+            ),
+        )
+
+
+class AutoRegisterPatternPlanningStrategy(PatternPlanningStrategy):
+    pattern_id = PatternId.AUTO_REGISTER_META
+
+    def plan(self, context: _PatternPlanningContext) -> _PatternPlanningProjection:
+        findings = context.findings
+        site_count = sum(finding.metrics.registration_sites for finding in findings)
+        registry_name = _FINDING_PROJECTION.registry_name(findings)
+        registry_hook_examples = _FINDING_PROJECTION.registry_hook_examples(findings)
+        class_list = _FINDING_PROJECTION.class_list(findings)
+        return _PatternPlanningProjection(
+            step=(
+                f"Introduce `AutoRegisterMeta` for `{context.subsystem}` and replace "
+                f"{site_count or len(findings)} manual registration site(s) with "
+                "declarative class hooks."
+            ),
+            actions=(
+                context.action(
+                    RefactorActionKind.CREATE_METACLASS,
+                    f"Create `AutoRegisterMeta` for `{registry_name}` in "
+                    f"`{context.subsystem}`.",
+                    create_symbol="AutoRegisterMeta",
+                ),
+                context.action(
+                    RefactorActionKind.ADD_DECLARATIVE_HOOKS,
+                    "Add declarative class-level hooks such as `registry_key` to "
+                    f"{registry_hook_examples}.",
+                ),
+                context.action(
+                    RefactorActionKind.DELETE_MANUAL_REGISTRATION,
+                    "Delete the manual registration writes after routing "
+                    f"{class_list} through `AutoRegisterMeta`.",
+                ),
+            ),
+        )
+
+
+class BidirectionalLookupPatternPlanningStrategy(PatternPlanningStrategy):
+    pattern_id = PatternId.BIDIRECTIONAL_LOOKUP
+
+    def plan(self, context: _PatternPlanningContext) -> _PatternPlanningProjection:
+        findings = context.findings
+        site_count = sum(finding.metrics.registration_sites for finding in findings)
+        registry_name = _FINDING_PROJECTION.registry_name(findings)
+        registry_symbol = f"{registry_name}BidirectionalRegistry"
+        return _PatternPlanningProjection(
+            step=(
+                f"Centralize forward/reverse lookup for `{context.subsystem}` in one "
+                "bidirectional registry and delete "
+                f"{site_count or len(findings)} mirrored update site(s)."
+            ),
+            actions=(
+                context.action(
+                    RefactorActionKind.CREATE_BIDIRECTIONAL_REGISTRY,
+                    f"Create `{registry_symbol}` in `{context.subsystem}` as the "
+                    "authoritative forward/reverse registry.",
+                    create_symbol=registry_symbol,
+                ),
+                context.action(
+                    RefactorActionKind.DELETE_MIRRORED_UPDATES,
+                    f"Delete the mirrored update sites once `{registry_symbol}` is in "
+                    "place.",
+                ),
+            ),
+        )
+
+
+class AuthoritativeSchemaPatternPlanningStrategy(PatternPlanningStrategy):
+    pattern_id = PatternId.AUTHORITATIVE_SCHEMA
+
+    def plan(self, context: _PatternPlanningContext) -> _PatternPlanningProjection:
+        findings = context.findings
+        site_count = sum(finding.metrics.mapping_sites for finding in findings)
         field_names = _field_names_from_findings(findings)
         identity_field_names = _identity_field_names_from_findings(findings)
+        source_name = _mapping_source_name_from_findings(findings)
         mapping_symbol = _mapping_symbol_from_findings(
             findings,
             field_names,
             identity_field_names,
-            _mapping_source_name_from_findings(findings),
+            source_name,
         )
-        return ActionContext(
-            subsystem=subsystem,
-            evidence=_FINDING_PROJECTION.combined_evidence(findings),
-            symbols=symbols,
-            base_name=_suggest_base_name(class_names),
-            template_method_name="run",
-            statement_sequence=_statement_sequence_from_findings(findings),
-            registry_name=_FINDING_PROJECTION.registry_name(findings),
-            registry_hook_examples=_FINDING_PROJECTION.registry_hook_examples(findings),
-            class_list=(
-                _FINDING_PROJECTION.human_join(list(class_names))
-                if class_names
-                else "the family"
+        mapping_call = _mapping_call_from_symbol(
+            mapping_symbol,
+            field_names,
+            source_name,
+        )
+        mapping_problem = _mapping_problem_description(
+            field_names,
+            identity_field_names,
+        )
+        return _PatternPlanningProjection(
+            step=(
+                f"Declare one authoritative builder/schema for `{context.subsystem}` "
+                f"and route {site_count or len(findings)} repeated mapping site(s) "
+                "through it."
             ),
-            mapping_symbol=mapping_symbol,
-            mapping_call=_mapping_call_from_symbol(
-                mapping_symbol,
-                field_names,
-                _mapping_source_name_from_findings(findings),
+            actions=(
+                context.action(
+                    RefactorActionKind.CREATE_AUTHORITATIVE_SCHEMA,
+                    f"Create `{mapping_symbol}` in `{context.subsystem}` to collapse "
+                    f"the repeated {mapping_problem}.",
+                    create_symbol=mapping_symbol,
+                ),
+                context.action(
+                    RefactorActionKind.REPLACE_MAPPING_SITES,
+                    "Replace the repeated constructor/export/projection sites with "
+                    f"`{mapping_call}`.",
+                    replace_with=mapping_call,
+                ),
             ),
-            mapping_problem=_mapping_problem_description(
-                field_names, identity_field_names
-            ),
-            field_list=(
-                _FINDING_PROJECTION.human_join(list(field_names))
-                if field_names
-                else "the repeated fields"
-            ),
-            identity_field_list=(
-                _FINDING_PROJECTION.human_join(list(identity_field_names))
-                if identity_field_names
-                else "the directly copied fields"
-            ),
-            field_execution_level=_FINDING_PROJECTION.field_execution_level(findings),
-            dispatch_symbol=_FINDING_PROJECTION.dispatch_symbol(findings),
-            dispatch_axis=_FINDING_PROJECTION.dispatch_axis(findings),
-            dispatch_cases=_dispatch_cases_from_findings(findings),
-            statement_count=_FINDING_PROJECTION.statement_count(findings),
         )
 
-    @abstractmethod
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> tuple[RefactorAction, ...]:
-        raise NotImplementedError
 
-
-@dataclass(frozen=True)
-class ActionTemplate:
-    kind: str
-    description: str
-    confidence: ConfidenceLevel
-    create_symbol: str | None = None
-    replace_with: str | None = None
-    remove_symbols_from_evidence: bool = False
-    statement_operation: str | None = None
-
-    def to_refactor_action(self, context: ActionContext) -> RefactorAction:
-        return RefactorAction(
-            kind=self.kind,
-            description=self.description.format(**context.__dict__),
-            target=context.subsystem,
-            create_symbol=(
-                self.create_symbol.format(**context.__dict__)
-                if self.create_symbol is not None
-                else None
-            ),
-            replace_with=(
-                self.replace_with.format(**context.__dict__)
-                if self.replace_with is not None
-                else None
-            ),
-            symbols=context.symbols,
-            remove_symbols=self.remove_symbols_for(context),
-            evidence=context.evidence,
-            statement_operation=self.statement_operation,
-            statement_sites=self.statement_sites_for(context),
-            confidence=self.confidence,
-        )
-
-    def remove_symbols_for(self, context: ActionContext) -> tuple[str, ...]:
-        if self.remove_symbols_from_evidence:
-            return context.symbols
-        return ()
-
-    def statement_sites_for(self, context: ActionContext) -> tuple[SourceLocation, ...]:
-        if self.statement_operation is None:
-            return ()
-        return context.evidence
-
-
-@dataclass(frozen=True)
-class ActionContext:
-    subsystem: str
-    evidence: tuple[SourceLocation, ...]
-    symbols: tuple[str, ...]
-    base_name: str
-    template_method_name: str
-    statement_sequence: str
-    registry_name: str
-    registry_hook_examples: str
-    class_list: str
-    mapping_symbol: str
-    mapping_call: str
-    mapping_problem: str
-    field_list: str
-    identity_field_list: str
-    field_execution_level: str
-    dispatch_symbol: str
-    dispatch_axis: str
-    dispatch_cases: str
-    statement_count: int
-
-
-_ABC_FIELD_ACTION_TEMPLATES = (
-    ActionTemplate(
-        kind="create_abc_base",
-        description="Create `{base_name}` in `{subsystem}` to own shared fields {field_list}.",
-        confidence=HIGH_CONFIDENCE,
-        create_symbol="{base_name}",
-    ),
-    ActionTemplate(
-        kind="extract_shared_fields",
-        description="Move the shared field declarations/assignments for {field_list} from {class_list} into `{base_name}` at {field_execution_level}.",
-        confidence=HIGH_CONFIDENCE,
-        statement_operation="move",
-    ),
-    ActionTemplate(
-        kind="leave_subclass_fields",
-        description="Leave only subclass-specific fields outside `{base_name}`.",
-        confidence=MEDIUM_CONFIDENCE,
-    ),
-)
-
-
-_ABC_BEHAVIOR_ACTION_TEMPLATES = (
-    ActionTemplate(
-        kind="create_abc_base",
-        description="Create `{base_name}` in `{subsystem}` to own the shared behavior now spread across {class_list}.",
-        confidence=HIGH_CONFIDENCE,
-        create_symbol="{base_name}",
-    ),
-    ActionTemplate(
-        kind="extract_template_method",
-        description="Move the shared statement sequence `{statement_sequence}` from the repeated methods into `{base_name}.{template_method_name}`.",
-        confidence=HIGH_CONFIDENCE,
-        create_symbol="{base_name}.{template_method_name}",
-        statement_operation="move",
-    ),
-    ActionTemplate(
-        kind="leave_residual_hooks",
-        description="Leave only irreducible per-class residue behind abstract hooks or mixin-provided concerns on `{base_name}`.",
-        confidence=MEDIUM_CONFIDENCE,
-    ),
-)
-
-
-class GenericPatternActionBuilder(PatternActionBuilder):
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> tuple[RefactorAction, ...]:
-        template = ActionTemplate(
-            kind="apply_pattern",
-            description=f"Apply Pattern {pattern_id.value}: {pattern_id.prescription}",
-            confidence=MEDIUM_CONFIDENCE,
-        )
-        return self._build_from_templates(subsystem, findings, (template,))
-
-
-class TemplatedPatternActionBuilder(PatternActionBuilder):
-    templates: ClassVar[tuple[ActionTemplate, ...]]
-
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> tuple[RefactorAction, ...]:
-        return self._build_from_templates(subsystem, findings, self.templates)
-
-
-class AbcFamilyActionBuilder(PatternActionBuilder):
-    pattern_id = PatternId.ABC_TEMPLATE_METHOD
-
-    def build(
-        self,
-        subsystem: str,
-        pattern_id: PatternId,
-        findings: tuple[RefactorFinding, ...],
-    ) -> tuple[RefactorAction, ...]:
-        context = self._build_action_context(subsystem, findings)
-        templates = (
-            _ABC_FIELD_ACTION_TEMPLATES
-            if context.field_execution_level != "unknown_level"
-            else _ABC_BEHAVIOR_ACTION_TEMPLATES
-        )
-        return self._build_from_templates(subsystem, findings, templates)
-
-
-class ClosedFamilyDispatchActionBuilder(TemplatedPatternActionBuilder):
-    pattern_id = PatternId.CLOSED_FAMILY_DISPATCH
-    templates = (
-        ActionTemplate(
-            kind="create_dispatch_authority",
-            description="Create `{dispatch_symbol}` in `{subsystem}` for `{dispatch_axis}` over cases {dispatch_cases}.",
-            confidence=HIGH_CONFIDENCE,
-            create_symbol="{dispatch_symbol}",
-        ),
-        ActionTemplate(
-            kind="replace_branch_sites",
-            description="Replace the repeated `{dispatch_axis}` branch/lookup sites with `{dispatch_symbol}` over cases {dispatch_cases}.",
-            confidence=HIGH_CONFIDENCE,
-            replace_with="{dispatch_symbol}",
-            statement_operation="replace",
-        ),
-    )
-
-
-class AutoRegisterActionBuilder(TemplatedPatternActionBuilder):
-    pattern_id = PatternId.AUTO_REGISTER_META
-    templates = (
-        ActionTemplate(
-            kind="create_metaclass",
-            description="Create `AutoRegisterMeta` for `{registry_name}` in `{subsystem}`.",
-            confidence=HIGH_CONFIDENCE,
-            create_symbol="AutoRegisterMeta",
-        ),
-        ActionTemplate(
-            kind="add_declarative_hooks",
-            description="Add declarative class-level hooks such as `registry_key` to {registry_hook_examples}.",
-            confidence=MEDIUM_CONFIDENCE,
-        ),
-        ActionTemplate(
-            kind="delete_manual_registration",
-            description="Delete the manual registration writes after routing {class_list} through `AutoRegisterMeta`.",
-            confidence=HIGH_CONFIDENCE,
-            remove_symbols_from_evidence=True,
-            statement_operation="delete",
-        ),
-    )
-
-
-class BidirectionalLookupActionBuilder(TemplatedPatternActionBuilder):
-    pattern_id = PatternId.BIDIRECTIONAL_LOOKUP
-    templates = (
-        ActionTemplate(
-            kind="create_bidirectional_registry",
-            description="Create `{registry_name}BidirectionalRegistry` in `{subsystem}` as the authoritative forward/reverse registry.",
-            confidence=HIGH_CONFIDENCE,
-            create_symbol="{registry_name}BidirectionalRegistry",
-        ),
-        ActionTemplate(
-            kind="delete_mirrored_updates",
-            description="Delete the mirrored update sites once `{registry_name}BidirectionalRegistry` is in place.",
-            confidence=HIGH_CONFIDENCE,
-            remove_symbols_from_evidence=True,
-            statement_operation="delete",
-        ),
-    )
-
-
-class AuthoritativeSchemaActionBuilder(TemplatedPatternActionBuilder):
-    pattern_id = PatternId.AUTHORITATIVE_SCHEMA
-    templates = (
-        ActionTemplate(
-            kind="create_authoritative_schema",
-            description="Create `{mapping_symbol}` in `{subsystem}` to collapse the repeated {mapping_problem}.",
-            confidence=HIGH_CONFIDENCE,
-            create_symbol="{mapping_symbol}",
-        ),
-        ActionTemplate(
-            kind="replace_mapping_sites",
-            description="Replace the repeated constructor/export/projection sites with `{mapping_call}`.",
-            confidence=HIGH_CONFIDENCE,
-            replace_with="{mapping_call}",
-            statement_operation="replace",
-        ),
-    )
-
-
-def _plan_step(
+def _pattern_planning(
     subsystem: str,
     pattern_id: PatternId,
     findings: tuple[RefactorFinding, ...],
-) -> str:
-    supporting = tuple(
-        finding for finding in findings if finding.pattern_id == pattern_id
-    )
-    builder = PatternPlanStepBuilder.for_pattern(pattern_id)
-    return builder.build(subsystem, pattern_id, supporting)
-
-
-def _plan_actions(
-    subsystem: str,
-    pattern_ids: Sequence[PatternId],
-    findings: tuple[RefactorFinding, ...],
-) -> tuple[RefactorAction, ...]:
-    actions: list[RefactorAction] = []
-    for pattern_id in pattern_ids:
-        supporting = tuple(
+) -> _PatternPlanningProjection:
+    context = _PatternPlanningContext(
+        subsystem=subsystem,
+        pattern_id=pattern_id,
+        findings=tuple(
             finding for finding in findings if finding.pattern_id == pattern_id
-        )
-        builder = PatternActionBuilder.for_pattern(pattern_id)
-        actions.extend(builder.build(subsystem, pattern_id, supporting))
-    return tuple(actions)
+        ),
+    )
+    return PatternPlanningStrategy.for_pattern(pattern_id).plan(context)
 
 
 def build_refactor_plans(
@@ -1483,10 +1328,18 @@ def _plan_for_cluster(
         )
     )
     canonical_normal_form = _canonical_normal_form(ordered_patterns, cluster.findings)
-    plan_steps = _build_plan_steps(
-        cluster.subsystem, ordered_patterns, cluster.findings
+    pattern_planning = tuple(
+        _pattern_planning(cluster.subsystem, pattern_id, cluster.findings)
+        for pattern_id in ordered_patterns
     )
-    actions = _plan_actions(cluster.subsystem, ordered_patterns, cluster.findings)
+    plan_steps = _build_plan_steps(
+        cluster.subsystem,
+        cluster.findings,
+        pattern_planning,
+    )
+    actions = tuple(
+        action for planning in pattern_planning for action in planning.actions
+    )
     trajectories = (
         _build_escape_trajectories(cluster.findings) if include_trajectories else ()
     )
@@ -1728,13 +1581,11 @@ def _registry_normal_form_clause(findings: tuple[RefactorFinding, ...]) -> str:
 
 def _build_plan_steps(
     subsystem: str,
-    pattern_ids: Sequence[PatternId],
     findings: tuple[RefactorFinding, ...],
+    pattern_planning: Sequence[_PatternPlanningProjection],
 ) -> tuple[str, ...]:
     steps = list(_registry_normal_form_steps(subsystem, findings))
-    steps.extend(
-        (_plan_step(subsystem, pattern_id, findings) for pattern_id in pattern_ids)
-    )
+    steps.extend(planning.step for planning in pattern_planning)
     steps.append(
         f"Delete superseded partial views in `{subsystem}` and route call sites through the new authorities."
     )

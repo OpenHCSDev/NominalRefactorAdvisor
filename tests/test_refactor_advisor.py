@@ -246,7 +246,7 @@ from nominal_refactor_advisor.observation_graph import (
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import (
-    _plan_actions,
+    _pattern_planning,
     build_refactor_execution_plan,
     build_refactor_plans,
 )
@@ -6499,7 +6499,11 @@ def test_pattern_action_builder_emits_registered_pattern_actions() -> None:
         (SourceLocation("pkg/mod.py", 10, "ModeRunner"),),
     )
 
-    actions = _plan_actions("pkg", (PatternId.AUTO_REGISTER_META,), (registry_finding,))
+    actions = _pattern_planning(
+        "pkg",
+        PatternId.AUTO_REGISTER_META,
+        (registry_finding,),
+    ).actions
 
     assert [action.kind for action in actions] == [
         "create_metaclass",

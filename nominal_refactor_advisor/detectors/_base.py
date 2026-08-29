@@ -167,7 +167,6 @@ from ..class_index import (
 from ..collection_algebra import sorted_tuple
 from ..models import (
     CERTIFIED,
-    SPECULATIVE,
     STRONG_HEURISTIC,
     BranchCountMetrics,
     CallSiteCountMetric,
@@ -216,6 +215,7 @@ from ..taxonomy import (
     ConfidenceLevel,
     ObservationTag,
     LabeledStrEnum,
+    SPECULATIVE,
 )
 from ._substrate_support import *
 

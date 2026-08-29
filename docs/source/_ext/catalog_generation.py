@@ -6,10 +6,6 @@ from typing import Iterable
 from nominal_refactor_advisor.detectors import IssueDetector
 from nominal_refactor_advisor.models import FindingSpec
 from nominal_refactor_advisor.patterns import PatternId
-from nominal_refactor_advisor.planner import (
-    PatternActionBuilder,
-    PatternPlanStepBuilder,
-)
 
 
 def generate_api_reference_pages(source_dir: Path) -> None:
@@ -62,25 +58,15 @@ def _render_pattern_catalog(patterns: list[PatternId]) -> str:
         "     - Name",
         "     - Priority",
         "     - Dependencies",
-        "     - Plan Builder",
-        "     - Action Builder",
     ]
     for pattern in patterns:
         dependencies = _pattern_id_list(pattern.dependencies) or "None"
-        plan_builder = _registered_builder_name(
-            PatternPlanStepBuilder.__registry__, pattern
-        )
-        action_builder = _registered_builder_name(
-            PatternActionBuilder.__registry__, pattern
-        )
         lines.extend(
             [
                 f"   * - ``{pattern.value}``",
                 f"     - {pattern.display_name}",
                 f"     - ``{pattern.priority}``",
                 f"     - {dependencies}",
-                f"     - {plan_builder}",
-                f"     - {action_builder}",
             ]
         )
     lines.extend(["", "Patterns", "--------", ""])
@@ -97,8 +83,6 @@ def _render_pattern_catalog(patterns: list[PatternId]) -> str:
                 f":Dependencies: {_pattern_id_list(pattern.dependencies) or 'None'}",
                 f":Synergy: {_pattern_id_list(pattern.synergy_with) or 'None'}",
                 f":Witness capabilities: {_capability_list(pattern.witness_capabilities) or 'None'}",
-                f":Plan builder: {_registered_builder_name(PatternPlanStepBuilder.__registry__, pattern)}",
-                f":Action builder: {_registered_builder_name(PatternActionBuilder.__registry__, pattern)}",
                 "",
                 "First moves:",
                 "",
@@ -115,15 +99,6 @@ def _render_pattern_catalog(patterns: list[PatternId]) -> str:
                 lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
-
-
-def _registered_builder_name(
-    registry: dict[PatternId, type],
-    pattern: PatternId,
-) -> str:
-    if pattern not in registry:
-        return "None"
-    return f"``{registry[pattern].__name__}``"
 
 
 def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) -> str:

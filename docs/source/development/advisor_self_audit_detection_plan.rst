@@ -83,14 +83,13 @@ Manual detector roster
 ~~~~~~~~~~~~~~~~~~~~~~
 
 - **Primary pattern**: Pattern 6 ``AutoRegisterMeta / class-level registration normal form``
-- **Current status**: not detected
-- **Should the current tool catch it?** no; no current detector even attempts this exact shape
+- **Current status**: implemented
+- **Should the current tool catch it?** yes; ``ManualFamilyRosterDetector`` consumes the
+  class-index roster observation
 - **Why it is in scope**: the roster is a class-family discovery mechanism detached from class existence,
   which is the same class-level smell already covered conceptually by Pattern 6
-- **Current failure mode**: existing registration detectors only look for manual registry assignments,
-  registration calls, or registration decorators; they never look for tuple/list rosters of sibling
-  subclasses or subclass instances returned from one authority function
-- **New detection required**: ``ManualFamilyRosterDetector``
+- **Implementation**: the class index records tuple/list rosters of sibling subclasses or
+  subclass instances and the detector reports the detached discovery authority
 - **Prescribed collapse**: ``__init_subclass__`` or metaclass-backed detector registration with declarative
   ordering metadata
 - **Primary files**:
@@ -101,15 +100,16 @@ Fragmented ``PatternId`` planning tables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Primary pattern**: Pattern 14 ``authoritative constructor / projection schema``
-- **Current status**: not detected
-- **Should the current tool catch it?** no; no current detector even attempts fragmented multi-table
-  authority over one enum-keyed family
+- **Current status**: implemented; the former planner instance is resolved
+- **Should the current tool catch it?** yes; ``FragmentedFamilyAuthorityDetector``
+  recognizes parallel tables over one key family
 - **Why it is in scope**: several dicts keyed by the same ``PatternId`` family collectively encode one
   semantic planning record, but the authority is split across parallel structures
-- **Current failure mode**: existing mapping detectors see repeated builders and repeated export dicts at
-  one call site, not a distributed family of key-aligned tables across module scope
-- **New detection required**: ``FragmentedFamilyAuthorityDetector``
-- **Prescribed collapse**: one authoritative ``PatternPlanningSpec`` dataclass keyed once by ``PatternId``
+- **Implementation**: the detector recovers distributed key-aligned tables at module
+  scope instead of limiting evidence to one mapping call site
+- **Implemented collapse**: ``PatternId`` owns declarative pattern semantics, while one
+  ``PatternPlanningStrategy`` nominal family derives the step and actions together;
+  exceptional registered leaves replace the former parallel builder families
 - **Primary files**:
   - ``nominal_refactor_advisor/detectors.py``
   - ``nominal_refactor_advisor/planner.py``
