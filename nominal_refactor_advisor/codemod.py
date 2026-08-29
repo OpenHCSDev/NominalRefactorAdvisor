@@ -13239,30 +13239,45 @@ class RefactorRecipe:
         self,
         source_index: SourceIndex,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
+        report = self.authority_claim_preflight_report(source_index)
+        return (report,) if report is not None else ()
+
+    def authority_claim_preflight_report(
+        self,
+        source_index: SourceIndex | None,
+    ) -> CodemodOperationPreflightReport | None:
         claims = self.effective_authority_claims
         if not claims:
-            if self.uses_authority_language:
-                return (
-                    CodemodOperationPreflightReport(
-                        operation=AuthorityClaimPayload.field_name,
-                        status=CodemodPreflightStatus.FAILED,
-                        message=(
-                            "authority-routing text requires a resolved authority "
-                            "claim or an explicit authority declaration operation"
-                        ),
-                        details={
-                            "recipe_id": self.recipe_id,
-                            "authority_text_surfaces": self.authority_text_surfaces,
-                            "findings": (
-                                AuthorityClaimPreflightFinding.unclaimed_authority_text(
-                                    self.recipe_id,
-                                    self.authority_text_surfaces,
-                                ).to_dict(),
-                            ),
-                        },
+            if not self.uses_authority_language:
+                return None
+            return CodemodOperationPreflightReport(
+                operation=AuthorityClaimPayload.field_name,
+                status=CodemodPreflightStatus.FAILED,
+                message=(
+                    "authority-routing text requires a resolved authority claim "
+                    "(AuthorityClaim) or an explicit authority declaration operation"
+                ),
+                details={
+                    "recipe_id": self.recipe_id,
+                    "authority_text_surfaces": self.authority_text_surfaces,
+                    "findings": (
+                        AuthorityClaimPreflightFinding.unclaimed_authority_text(
+                            self.recipe_id,
+                            self.authority_text_surfaces,
+                        ).to_dict(),
                     ),
-                )
-            return ()
+                },
+            )
+        if source_index is None:
+            return CodemodOperationPreflightReport(
+                operation=AuthorityClaimPayload.field_name,
+                status=CodemodPreflightStatus.FAILED,
+                message=(
+                    "generated recipe authority claims require source-index "
+                    "preflight context"
+                ),
+                details={"recipe_id": self.recipe_id},
+            )
         resolver = AuthorityClaimSourceIndexResolver(
             source_index,
             declared_claims=self.declared_authority_claims,
@@ -13271,33 +13286,31 @@ class RefactorRecipe:
         failed_resolutions = tuple(
             resolution for resolution in resolutions if not resolution.is_actionable
         )
-        return (
-            CodemodOperationPreflightReport(
-                operation=AuthorityClaimPayload.field_name,
-                status=(
-                    CodemodPreflightStatus.FAILED
-                    if failed_resolutions
-                    else CodemodPreflightStatus.PASSED
-                ),
-                message=(
-                    "authority claims unresolved or ambiguous"
-                    if failed_resolutions
-                    else "authority claims resolved"
-                ),
-                details={
-                    "recipe_id": self.recipe_id,
-                    "resolutions": tuple(
-                        resolution.to_dict() for resolution in resolutions
-                    ),
-                    "findings": tuple(
-                        AuthorityClaimPreflightFinding.unresolved_resolution(
-                            self.recipe_id,
-                            resolution,
-                        ).to_dict()
-                        for resolution in failed_resolutions
-                    ),
-                },
+        return CodemodOperationPreflightReport(
+            operation=AuthorityClaimPayload.field_name,
+            status=(
+                CodemodPreflightStatus.FAILED
+                if failed_resolutions
+                else CodemodPreflightStatus.PASSED
             ),
+            message=(
+                "authority claims unresolved or ambiguous"
+                if failed_resolutions
+                else "authority claims resolved"
+            ),
+            details={
+                "recipe_id": self.recipe_id,
+                "resolutions": tuple(
+                    resolution.to_dict() for resolution in resolutions
+                ),
+                "findings": tuple(
+                    AuthorityClaimPreflightFinding.unresolved_resolution(
+                        self.recipe_id,
+                        resolution,
+                    ).to_dict()
+                    for resolution in failed_resolutions
+                ),
+            },
         )
 
     @property
@@ -14871,52 +14884,13 @@ class FindingRecipeAuthorityClaimGate:
             rejection_reason=cls.rejection_reason(authority_report),
         )
 
-    @classmethod
+    @staticmethod
     def authority_report_for_recipe(
-        cls,
         recipe: RefactorRecipe,
         context: CodemodSelectorContext | None,
     ) -> CodemodOperationPreflightReport | None:
-        if context is None:
-            return cls.context_free_authority_report(recipe)
-        reports = recipe.authority_claim_preflight_reports(context.source_index)
-        if not reports:
-            return None
-        return reports[0]
-
-    @staticmethod
-    def context_free_authority_report(
-        recipe: RefactorRecipe,
-    ) -> CodemodOperationPreflightReport | None:
-        if recipe.effective_authority_claims:
-            return CodemodOperationPreflightReport(
-                operation=AuthorityClaimPayload.field_name,
-                status=CodemodPreflightStatus.FAILED,
-                message=(
-                    "generated recipe authority claims require source-index "
-                    "preflight context"
-                ),
-                details={"recipe_id": recipe.recipe_id},
-            )
-        if not recipe.uses_authority_language:
-            return None
-        return CodemodOperationPreflightReport(
-            operation=AuthorityClaimPayload.field_name,
-            status=CodemodPreflightStatus.FAILED,
-            message=(
-                "generated recipe uses authority-routing text without an "
-                "AuthorityClaim"
-            ),
-            details={
-                "recipe_id": recipe.recipe_id,
-                "authority_text_surfaces": recipe.authority_text_surfaces,
-                "findings": (
-                    AuthorityClaimPreflightFinding.unclaimed_authority_text(
-                        recipe.recipe_id,
-                        recipe.authority_text_surfaces,
-                    ).to_dict(),
-                ),
-            },
+        return recipe.authority_claim_preflight_report(
+            context.source_index if context is not None else None
         )
 
     @staticmethod
