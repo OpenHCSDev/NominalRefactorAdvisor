@@ -974,7 +974,9 @@ class _CompactABCOptimizerDetectorBase(
     Generic[ABCOptimizerCandidateT],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(compact_class_repository_context)
+    compact_shared_context_builder = staticmethod(
+        CompactClassRepositoryContext.from_projections
+    )
 
     @classmethod
     def _compact_context_from_projections(
@@ -992,7 +994,7 @@ class _CompactABCOptimizerDetectorBase(
     ) -> CompactABCOptimizerContext:
         if isinstance(context, CompactABCOptimizerContext):
             return context
-        repository = require_compact_class_repository_context(context)
+        repository = CompactClassRepositoryContext.require(context)
         return repository.cached(
             CompactABCOptimizerContext,
             lambda: CompactABCOptimizerContext.from_projections(

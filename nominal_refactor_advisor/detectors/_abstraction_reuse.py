@@ -30,10 +30,9 @@ from ._base import (
     RefactorFinding,
     SourceLocation,
     high_confidence_spec,
+    CompactClassRepositoryContext,
     CompactContextCandidateDetector,
     CompactProjectionCandidateDetector,
-    compact_class_repository_context,
-    require_compact_class_repository_context,
 )
 from ._helpers import _semantic_role_names_for_fields
 from ._substrate_support import (
@@ -1702,7 +1701,9 @@ class _CompactCarrierReuseDetectorBase(
     Generic[CarrierReuseCandidateT],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(compact_class_repository_context)
+    compact_shared_context_builder = staticmethod(
+        CompactClassRepositoryContext.from_projections
+    )
 
     @classmethod
     def _compact_context_from_projections(
@@ -1720,7 +1721,7 @@ class _CompactCarrierReuseDetectorBase(
     ) -> CompactCarrierReuseContext:
         if isinstance(context, CompactCarrierReuseContext):
             return context
-        repository = require_compact_class_repository_context(context)
+        repository = CompactClassRepositoryContext.require(context)
         return repository.cached(
             CompactCarrierReuseContext,
             lambda: CompactCarrierReuseContext.from_projections(

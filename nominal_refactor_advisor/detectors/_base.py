@@ -1015,6 +1015,24 @@ class CompactClassRepositoryContext:
         compare=False,
     )
 
+    @classmethod
+    def from_projections(
+        cls,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> "CompactClassRepositoryContext":
+        return cls(
+            projections=projections,
+            config=config,
+            class_index=build_compact_class_family_index(projections),
+        )
+
+    @classmethod
+    def require(cls, context: object | None) -> "CompactClassRepositoryContext":
+        if not isinstance(context, cls):
+            raise TypeError("compact class repository context is unavailable")
+        return context
+
     def cached(
         self,
         key: Hashable,
@@ -1028,27 +1046,6 @@ class CompactClassRepositoryContext:
         """Release single-family indexes after their detector group completes."""
 
         self._derived.clear()
-
-
-def compact_class_repository_context(
-    projections: tuple[CompactModuleClassProjection, ...],
-    config: DetectorConfig,
-) -> CompactClassRepositoryContext:
-    """Build the exact compact class graph once for every participating detector."""
-
-    return CompactClassRepositoryContext(
-        projections=projections,
-        config=config,
-        class_index=build_compact_class_family_index(projections),
-    )
-
-
-def require_compact_class_repository_context(
-    context: object | None,
-) -> CompactClassRepositoryContext:
-    if not isinstance(context, CompactClassRepositoryContext):
-        raise TypeError("compact class repository context is unavailable")
-    return context
 
 
 def compact_class_index_from_projection_groups(
@@ -2025,6 +2022,38 @@ class CompactContextCandidateDetector(
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
+
+
+class CompactClassRepositoryCandidateDetector(
+    CompactContextCandidateDetector[
+        CompactModuleClassProjection,
+        CompactClassRepositoryContext,
+        CandidateItemT,
+    ],
+    Generic[CandidateItemT],
+    ABC,
+):
+    """Candidate detector sharing the canonical compact class repository."""
+
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(
+        CompactClassRepositoryContext.from_projections
+    )
+
+    @classmethod
+    def _compact_context_from_projections(
+        cls,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> CompactClassRepositoryContext:
+        return CompactClassRepositoryContext.from_projections(projections, config)
+
+    @classmethod
+    def _compact_context_from_shared(
+        cls,
+        context: object | None,
+    ) -> CompactClassRepositoryContext:
+        return CompactClassRepositoryContext.require(context)
 
 
 class SortedCandidateItemsMixin(Generic[CandidateItemT]):

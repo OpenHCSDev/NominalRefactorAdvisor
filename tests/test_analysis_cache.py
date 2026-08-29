@@ -5198,6 +5198,10 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
         == ("ConcreteBoundary",)
         for candidate in candidates
     )
+    assert detector._candidate_items(list(modules), DetectorConfig()) == candidates
+    assert "_candidate_items" not in type(detector).__dict__
+    assert "_findings_from_compact_projections" not in type(detector).__dict__
+    assert "_findings_from_compact_context" not in type(detector).__dict__
 
 
 def test_compact_semantic_inheritance_projection_matches_legacy_ast_candidates(
@@ -5245,6 +5249,11 @@ def test_compact_semantic_inheritance_projection_matches_legacy_ast_candidates(
     assert candidate.semantic_method_names == ("emit",)
     assert candidate.key_attr_names == ("format",)
     assert candidate.suggested_key_attr_name == "format"
+    detector = runtime_detectors.SemanticInheritanceFamilySSOTDetector()
+    assert detector._candidate_items(list(modules), config) == candidates
+    assert "_candidate_items" not in type(detector).__dict__
+    assert "_findings_from_compact_projections" not in type(detector).__dict__
+    assert "_findings_from_compact_context" not in type(detector).__dict__
 
 
 def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
@@ -5303,6 +5312,11 @@ def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
     assert candidate.concrete_class_names == ("CsvExporter", "JsonExporter")
     assert candidate.behavior_method_names == ("emit",)
     assert candidate.abstract_method_names == ("emit",)
+    detector = runtime_detectors.AutoRegisterMetaUnderRentedDetector()
+    assert detector._candidate_items(list(modules), config) == candidates
+    assert "_candidate_items" not in type(detector).__dict__
+    assert "_findings_from_compact_projections" not in type(detector).__dict__
+    assert "_findings_from_compact_context" not in type(detector).__dict__
     assert candidate.registry_projection_names == ("for_format",)
     assert candidate.missing_rent_signals == ("stable_key_axis",)
 
@@ -6033,6 +6047,8 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assert not hasattr(base_detectors, "compact_class_repository_context")
+    assert not hasattr(base_detectors, "require_compact_class_repository_context")
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "mod.py").write_text("class Root: pass\n", encoding="utf-8")
@@ -6042,14 +6058,19 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
         runtime_detectors.PredicateSelectedConcreteFamilyDetector,
         runtime_detectors.ParallelMirroredLeafFamilyDetector,
         surface_detectors.ManualFamilyRosterDetector,
+        runtime_detectors.SemanticInheritanceFamilySSOTDetector,
+        runtime_detectors.AutoRegisterMetaUnderRentedDetector,
+        runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
     )
     assert {
         detector_type.compact_shared_context_builder for detector_type in detector_types
-    } == {runtime_detectors.compact_class_repository_context}
+    } == {runtime_detectors.CompactClassRepositoryContext.from_projections}
 
     repository_calls = 0
     concrete_context_calls = 0
-    original_repository_builder = runtime_detectors.compact_class_repository_context
+    original_repository_builder = (
+        runtime_detectors.CompactClassRepositoryContext.from_projections
+    )
     original_concrete_context_builder = (
         runtime_detectors._compact_concrete_family_context
     )
