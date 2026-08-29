@@ -15,8 +15,8 @@ import re
 import tempfile
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field, replace
-from functools import cached_property, lru_cache
+from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 
 from tree_sitter import Node
@@ -9182,7 +9182,6 @@ class EmbeddedStaticPayloadCandidate(QualnameLineWitnessCandidate):
 
 
 _RuntimeFunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
-_RuntimeFunctionSequence: TypeAlias = Sequence[_RuntimeFunctionNode]
 _SurfaceFunctionItems: TypeAlias = tuple[tuple[str, _RuntimeFunctionNode], ...]
 
 
@@ -9321,85 +9320,6 @@ def _static_payload_sink_kinds(
         ):
             sink_kinds.add("return-payload")
     return sorted_tuple(sink_kinds)
-
-
-@dataclass(frozen=True)
-class ReferenceCountIndex:
-    total_counts: Counter[str]
-    function_counts_by_id: dict[int, Counter[str]]
-    projected_function_counts_by_id: dict[int, Counter[str]] = field(
-        default_factory=dict
-    )
-
-    @staticmethod
-    def symbol_counts(
-        root: ast.AST,
-        *,
-        include_node: Callable[[ast.AST], bool] | None = None,
-    ) -> Counter[str]:
-        counts: Counter[str] = Counter()
-        for node in _walk_nodes(root):
-            if include_node is not None and (not include_node(node)):
-                continue
-            if isinstance(node, ast.Name):
-                counts[node.id] += 1
-            elif isinstance(node, ast.Attribute):
-                counts[node.attr] += 1
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                counts[node.value] += 1
-        return counts
-
-    @staticmethod
-    def symbol_count(root: ast.AST, symbol_name: str) -> int:
-        count = 0
-        for node in _walk_nodes(root):
-            if isinstance(node, ast.Name):
-                if node.id == symbol_name:
-                    count += 1
-            elif isinstance(node, ast.Attribute):
-                if node.attr == symbol_name:
-                    count += 1
-            elif isinstance(node, ast.Constant) and node.value == symbol_name:
-                count += 1
-        return count
-
-    @classmethod
-    def from_modules(cls, modules: Sequence[ParsedModule]) -> "ReferenceCountIndex":
-        return cls.from_private_reference_module_indexes(
-            tuple(PrivateReferenceModuleIndex.from_module(module) for module in modules)
-        )
-
-    @classmethod
-    def from_private_reference_module_indexes(
-        cls,
-        module_indexes: Sequence["PrivateReferenceModuleIndex"],
-    ) -> "ReferenceCountIndex":
-        total_counts: Counter[str] = Counter()
-        projected_function_counts_by_id: dict[int, Counter[str]] = {}
-        for module_index in module_indexes:
-            total_counts.update(module_index.total_counts)
-            projected_function_counts_by_id.update(module_index.function_counts_by_id)
-        return cls(
-            total_counts=total_counts,
-            function_counts_by_id={},
-            projected_function_counts_by_id=projected_function_counts_by_id,
-        )
-
-    def reference_count_outside_function(
-        self, function: ast.FunctionDef | ast.AsyncFunctionDef, symbol_name: str
-    ) -> int:
-        function_key = id(function)
-        if function_key not in self.function_counts_by_id:
-            self.function_counts_by_id[function_key] = Counter()
-        function_counts = self.function_counts_by_id[function_key]
-        if symbol_name not in function_counts:
-            projected_counts = self.projected_function_counts_by_id.get(function_key)
-            function_counts[symbol_name] = (
-                projected_counts[symbol_name]
-                if projected_counts is not None
-                else self.symbol_count(function, symbol_name)
-            )
-        return self.total_counts[symbol_name] - function_counts[symbol_name]
 
 
 @dataclass(frozen=True)
@@ -9740,57 +9660,6 @@ def _private_reference_module_index(
     )
 
 
-def _embedded_static_payload_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-    reference_modules: Sequence[ParsedModule] | None = None,
-    reference_index: ReferenceCountIndex | None = None,
-) -> tuple[EmbeddedStaticPayloadCandidate, ...]:
-    candidates: list[EmbeddedStaticPayloadCandidate] = []
-    reference_index = reference_index or ReferenceCountIndex.from_modules(
-        reference_modules or (module,)
-    )
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        if not _is_private_symbol_name(function.name):
-            continue
-        line_count = _function_line_count(function)
-        if line_count < config.min_static_payload_function_lines:
-            continue
-        stats = _static_payload_stats(function)
-        if stats.payload_line_count < config.min_static_payload_literal_lines:
-            continue
-        if not stats.marker_kinds:
-            continue
-        sink_kinds = _static_payload_sink_kinds(function)
-        if not sink_kinds:
-            continue
-        if (
-            reference_index.reference_count_outside_function(function, function.name)
-            > 0
-        ):
-            continue
-        candidates.append(
-            EmbeddedStaticPayloadCandidate(
-                file_path=str(module.path),
-                line=function.lineno,
-                qualname=qualname,
-                function_name=function.name,
-                line_count=line_count,
-                static_payload_stats=stats,
-                sink_kinds=sink_kinds,
-                call_site_count=sum(
-                    (
-                        isinstance(node, ast.Call)
-                        for node in _walk_function_body_nodes(function)
-                    )
-                ),
-            )
-        )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
-    )
-
-
 @dataclass(frozen=True)
 class LineCountedWitnessCandidate(LineWitnessCandidate):
     line_count: int
@@ -9889,7 +9758,6 @@ class PrivateHelperAuthorityRole:
     drop_tokens: tuple[str, ...]
 
 
-_RuntimeFunctionsByQualname: TypeAlias = dict[str, _RuntimeFunctionNode]
 
 
 class _PrivateHelperResidueKind(StrEnum):
@@ -9997,59 +9865,6 @@ def _has_external_protocol_shape(
     return function.name.endswith("_")
 
 
-def _unreferenced_private_function_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-    reference_modules: Sequence[ParsedModule] | None = None,
-    reference_index: ReferenceCountIndex | None = None,
-    derived_candidate_collector_contract_names: frozenset[str] | None = None,
-) -> tuple[UnreferencedPrivateFunctionCandidate, ...]:
-    candidates: list[UnreferencedPrivateFunctionCandidate] = []
-    contract_modules = reference_modules or (module,)
-    reference_index = reference_index or ReferenceCountIndex.from_modules(
-        contract_modules
-    )
-    if derived_candidate_collector_contract_names is None:
-        derived_candidate_collector_contract_names = (
-            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(contract_modules)
-        )
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        if "." in qualname:
-            continue
-        if not _is_private_symbol_name(function.name):
-            continue
-        if _has_external_protocol_shape(function):
-            continue
-        if function.name in derived_candidate_collector_contract_names:
-            continue
-        line_count = _function_line_count(function)
-        if line_count < config.min_unreferenced_private_function_lines:
-            continue
-        if (
-            reference_index.reference_count_outside_function(function, function.name)
-            > 0
-        ):
-            continue
-        candidates.append(
-            UnreferencedPrivateFunctionCandidate(
-                file_path=str(module.path),
-                line=function.lineno,
-                qualname=qualname,
-                function_name=function.name,
-                line_count=line_count,
-                call_site_count=sum(
-                    (
-                        isinstance(node, ast.Call)
-                        for node in _walk_function_body_nodes(function)
-                    )
-                ),
-            )
-        )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
-    )
-
-
 _DETECTOR_OVERRIDE_HOOK_NAMES = frozenset(("_collect_findings", "_findings_for_module"))
 _DETECTOR_BASE_NAME_SUFFIXES = (
     "CandidateDetector",
@@ -10103,55 +9918,6 @@ def _is_detector_override_hook(
     base_names = ClassBaseNameIndex.from_module(module.module).base_names(owner_name)
     return any(
         base_name.endswith(_DETECTOR_BASE_NAME_SUFFIXES) for base_name in base_names
-    )
-
-
-def _dangling_private_method_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-    reference_modules: Sequence[ParsedModule] | None = None,
-    reference_index: ReferenceCountIndex | None = None,
-) -> tuple[DanglingPrivateMethodCandidate, ...]:
-    candidates: list[DanglingPrivateMethodCandidate] = []
-    reference_index = reference_index or ReferenceCountIndex.from_modules(
-        reference_modules or (module,)
-    )
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        if "." not in qualname:
-            continue
-        if not _is_private_symbol_name(function.name):
-            continue
-        owner_name = qualname.rsplit(".", 1)[0]
-        if _is_detector_override_hook(module, owner_name, function.name):
-            continue
-        if _has_external_protocol_shape(function):
-            continue
-        line_count = _function_line_count(function)
-        if line_count < config.min_unreferenced_private_function_lines:
-            continue
-        if (
-            reference_index.reference_count_outside_function(function, function.name)
-            > 0
-        ):
-            continue
-        candidates.append(
-            DanglingPrivateMethodCandidate(
-                file_path=str(module.path),
-                line=function.lineno,
-                qualname=qualname,
-                owner_name=owner_name,
-                method_name=function.name,
-                line_count=line_count,
-                call_site_count=sum(
-                    (
-                        isinstance(node, ast.Call)
-                        for node in _walk_function_body_nodes(function)
-                    )
-                ),
-            )
-        )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.qualname)
     )
 
 
@@ -10413,6 +10179,89 @@ def _compact_private_function_is_unreferenced(
     return total_counts[function.function_name] - function.own_name_reference_count <= 0
 
 
+def _compact_embedded_static_payload_candidates(
+    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+    config: DetectorConfig,
+) -> tuple[EmbeddedStaticPayloadCandidate, ...]:
+    total_counts = _compact_private_reference_total_counts(projections)
+    return tuple(
+        EmbeddedStaticPayloadCandidate(
+            file_path=function.file_path,
+            line=function.line,
+            qualname=function.qualname,
+            function_name=function.function_name,
+            line_count=function.line_count,
+            static_payload_stats=function.static_payload_stats,
+            sink_kinds=function.sink_kinds,
+            call_site_count=function.call_site_count,
+        )
+        for projection in projections
+        for function in projection.functions
+        if function.line_count >= config.min_static_payload_function_lines
+        if (
+            function.static_payload_stats.payload_line_count
+            >= config.min_static_payload_literal_lines
+        )
+        if function.static_payload_stats.marker_kinds
+        if function.sink_kinds
+        if _compact_private_function_is_unreferenced(function, total_counts)
+    )
+
+
+def _compact_unreferenced_private_function_candidates(
+    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+    config: DetectorConfig,
+) -> tuple[UnreferencedPrivateFunctionCandidate, ...]:
+    total_counts = _compact_private_reference_total_counts(projections)
+    contract_names = frozenset(
+        name
+        for projection in projections
+        for name in projection.derived_candidate_collector_contract_names
+    )
+    return tuple(
+        UnreferencedPrivateFunctionCandidate(
+            file_path=function.file_path,
+            line=function.line,
+            qualname=function.qualname,
+            function_name=function.function_name,
+            line_count=function.line_count,
+            call_site_count=function.call_site_count,
+        )
+        for projection in projections
+        for function in projection.functions
+        if function.owner_name is None
+        if not function.has_external_protocol_shape
+        if function.function_name not in contract_names
+        if function.line_count >= config.min_unreferenced_private_function_lines
+        if _compact_private_function_is_unreferenced(function, total_counts)
+    )
+
+
+def _compact_dangling_private_method_candidates(
+    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
+    config: DetectorConfig,
+) -> tuple[DanglingPrivateMethodCandidate, ...]:
+    total_counts = _compact_private_reference_total_counts(projections)
+    return tuple(
+        DanglingPrivateMethodCandidate(
+            file_path=function.file_path,
+            line=function.line,
+            qualname=function.qualname,
+            owner_name=function.owner_name,
+            method_name=function.function_name,
+            line_count=function.line_count,
+            call_site_count=function.call_site_count,
+        )
+        for projection in projections
+        for function in projection.functions
+        if function.owner_name is not None
+        if not function.is_detector_override_hook
+        if not function.has_external_protocol_shape
+        if function.line_count >= config.min_unreferenced_private_function_lines
+        if _compact_private_function_is_unreferenced(function, total_counts)
+    )
+
+
 class FunctionParameterNameProjection:
     def names(
         self, function: ast.FunctionDef | ast.AsyncFunctionDef
@@ -10452,582 +10301,11 @@ def _function_symbol_references(
     )
 
 
-@dataclass(frozen=True)
-class PrivateHelperCallGraph:
-    caller_symbols_by_name: dict[str, tuple[str, ...]]
-    functions_by_qualname: _RuntimeFunctionsByQualname
-
-    @classmethod
-    def from_modules(cls, modules: Sequence[ParsedModule]) -> "PrivateHelperCallGraph":
-        return cls.from_private_reference_module_indexes(
-            tuple(PrivateReferenceModuleIndex.from_module(module) for module in modules)
-        )
-
-    @classmethod
-    def from_private_reference_module_indexes(
-        cls,
-        module_indexes: Sequence[PrivateReferenceModuleIndex],
-    ) -> "PrivateHelperCallGraph":
-        callers_by_symbol: dict[str, set[str]] = {}
-        functions_by_qualname: _RuntimeFunctionsByQualname = {}
-        for module_index in module_indexes:
-            for indexed_function in module_index.functions:
-                functions_by_qualname[indexed_function.qualname] = (
-                    indexed_function.function
-                )
-                for symbol_name in indexed_function.symbol_references:
-                    callers_by_symbol.setdefault(symbol_name, set()).add(
-                        indexed_function.qualname
-                    )
-        return cls(
-            caller_symbols_by_name={
-                symbol_name: sorted_tuple(caller_symbols)
-                for symbol_name, caller_symbols in callers_by_symbol.items()
-            },
-            functions_by_qualname=functions_by_qualname,
-        )
-
-    def caller_symbols(self, *, function_name: str, qualname: str) -> tuple[str, ...]:
-        return tuple(
-            caller_symbol
-            for caller_symbol in self.caller_symbols_by_name.get(function_name, ())
-            if caller_symbol != qualname
-        )
-
-    def caller_functions(
-        self, *, function_name: str, qualname: str
-    ) -> tuple[_RuntimeFunctionNode, ...]:
-        return tuple(
-            (
-                function
-                for caller_symbol in self.caller_symbols(
-                    function_name=function_name, qualname=qualname
-                )
-                if (function := self.functions_by_qualname.get(caller_symbol))
-                is not None
-            )
-        )
-
-
-@dataclass(frozen=True)
-class PrivateReferenceDetectorContext:
-    """Shared repo-wide indexes for private-reference detector families."""
-
-    modules: tuple[ParsedModule, ...]
-
-    @cached_property
-    def module_indexes(self) -> tuple[PrivateReferenceModuleIndex, ...]:
-        return tuple(
-            PrivateReferenceModuleIndex.from_module(module) for module in self.modules
-        )
-
-    @cached_property
-    def reference_index(self) -> ReferenceCountIndex:
-        return ReferenceCountIndex.from_private_reference_module_indexes(
-            self.module_indexes
-        )
-
-    @cached_property
-    def derived_candidate_collector_contract_names(self) -> frozenset[str]:
-        return DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(self.modules)
-
-    @cached_property
-    def private_helper_call_graph(self) -> PrivateHelperCallGraph:
-        return PrivateHelperCallGraph.from_private_reference_module_indexes(
-            self.module_indexes
-        )
-
-    @cached_property
-    def surface_function_signature_rows(
-        self,
-    ) -> tuple["PrivateReferenceFunctionSignatureRow", ...]:
-        return tuple(
-            sorted(
-                (
-                    PrivateReferenceFunctionSignatureRow(
-                        qualified_function_name=(
-                            f"{indexed_function.module_name}."
-                            f"{indexed_function.qualname}"
-                        ),
-                        body_digest=indexed_function.body_digest,
-                    )
-                    for module_index in self.module_indexes
-                    for indexed_function in module_index.functions
-                ),
-                key=lambda row: (
-                    row.qualified_function_name,
-                    row.body_digest,
-                ),
-            )
-        )
-
-    @cached_property
-    def class_index(self) -> ClassFamilyIndex:
-        return build_class_family_index(list(self.modules))
-
-    @cached_property
-    def signature(self) -> "PrivateReferenceDetectorContextSignature":
-        return PrivateReferenceDetectorContextSignature.from_context(self)
-
-    @cached_property
-    def signature_facet_rows_by_type(
-        self,
-    ) -> dict[
-        type["PrivateReferenceContextSignatureFacet"],
-        "PrivateReferenceContextSignatureFacetRow",
-    ]:
-        return {}
-
-    def signature_facet_row(
-        self,
-        facet_type: type["PrivateReferenceContextSignatureFacet"],
-    ) -> "PrivateReferenceContextSignatureFacetRow":
-        rows = self.signature_facet_rows_by_type
-        if facet_type not in rows:
-            rows[facet_type] = facet_type().row(self)
-        return rows[facet_type]
-
-
-@dataclass(frozen=True)
-class PrivateReferenceCountSignatureRow:
-    symbol_digest: str
-    count: int
-
-
-@dataclass(frozen=True)
-class PrivateReferenceCallEdgeSignatureRow:
-    function_name: str
-    caller_symbols: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class PrivateReferenceFunctionSignatureRow:
-    qualified_function_name: str
-    body_digest: str
-
-
-@dataclass(frozen=True)
-class PrivateReferenceClassFamilySignatureRow:
-    symbol: str
-    simple_name: str
-    declared_base_names: tuple[str, ...]
-    resolved_base_symbols: tuple[str, ...]
-    ancestor_symbols: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class PrivateReferenceContextSignatureFacetRow:
-    facet_name: str
-    value_digest: str
-
-
-PrivateReferenceContextSignatureFacetValue: TypeAlias = Hashable
-PrivateReferenceStableDigestValue: TypeAlias = (
-    str | int | tuple["PrivateReferenceStableDigestValue", ...]
-)
-
-
-def _stable_framed_rows_digest(
-    domain: str,
-    rows: Iterable[tuple[PrivateReferenceStableDigestValue, ...]],
-) -> str:
-    """Digest ordered structural rows without materializing their repr."""
-
-    digest = hashlib.blake2s(digest_size=16)
-
-    def update_bytes(marker: bytes, payload: bytes) -> None:
-        digest.update(marker)
-        digest.update(len(payload).to_bytes(8, byteorder="big"))
-        digest.update(payload)
-
-    def update_value(value: PrivateReferenceStableDigestValue) -> None:
-        if isinstance(value, str):
-            update_bytes(b"s", value.encode("utf-8"))
-            return
-        if isinstance(value, int):
-            update_bytes(b"i", str(value).encode("ascii"))
-            return
-        digest.update(b"t")
-        digest.update(len(value).to_bytes(8, byteorder="big"))
-        for item in value:
-            update_value(item)
-
-    update_bytes(b"d", domain.encode("utf-8"))
-    for row in rows:
-        digest.update(b"r")
-        update_value(row)
-    digest.update(b"e")
-    return digest.hexdigest()
-
-
-class PrivateReferenceContextSignatureFacet(ABC, metaclass=AutoRegisterMeta):
-    """Nominal semantic dependency projected into a contextual-cache key."""
-
-    __registry_key__ = "facet_name"
-    __skip_if_no_key__ = True
-
-    facet_name: ClassVar[str | None] = None
-    context_property_names: ClassVar[tuple[str, ...]] = ()
-
-    @classmethod
-    def registered_facet_types(cls) -> "PrivateReferenceContextSignatureFacets":
-        return tuple(
-            facet_type
-            for _, facet_type in sorted(
-                cls.__registry__.items(),
-                key=lambda item: item[0],
-            )
-        )
-
-    @classmethod
-    def registered_facet_types_for_detector(
-        cls,
-        detector_type: type["PrivateReferenceContextualDetector"],
-    ) -> "PrivateReferenceContextSignatureFacets":
-        accessed_names = frozenset(
-            detector_type._candidate_items_for_private_reference_context.__code__.co_names
-        )
-        return tuple(
-            facet_type
-            for facet_type in cls.registered_facet_types()
-            if accessed_names & frozenset(facet_type.context_property_names)
-        )
-
-    def row(
-        self, context: PrivateReferenceDetectorContext
-    ) -> PrivateReferenceContextSignatureFacetRow:
-        facet_name = type(self).facet_name
-        if facet_name is None:
-            raise TypeError(f"{type(self).__name__} has no facet_name")
-        return PrivateReferenceContextSignatureFacetRow(
-            facet_name=facet_name,
-            value_digest=self.value_digest(context),
-        )
-
-    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
-        return _stable_text_digest(repr(self.value(context)))
-
-    @abstractmethod
-    def value(
-        self, context: PrivateReferenceDetectorContext
-    ) -> PrivateReferenceContextSignatureFacetValue:
-        raise NotImplementedError
-
-
-class ReferenceCountPrivateReferenceSignatureFacet(
-    PrivateReferenceContextSignatureFacet
-):
-    facet_name = "reference_counts"
-    context_property_names = ("reference_index",)
-
-    def value(
-        self, context: PrivateReferenceDetectorContext
-    ) -> tuple[PrivateReferenceCountSignatureRow, ...]:
-        return tuple(
-            PrivateReferenceCountSignatureRow(
-                symbol_digest=_stable_text_digest(symbol_name),
-                count=count,
-            )
-            for symbol_name, count in sorted(
-                context.reference_index.total_counts.items()
-            )
-        )
-
-    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
-        if type(self).value is not _REFERENCE_COUNT_PRIVATE_REFERENCE_VALUE:
-            return super().value_digest(context)
-        return _stable_framed_rows_digest(
-            self.facet_name or type(self).__qualname__,
-            (
-                (_stable_text_digest(symbol_name), count)
-                for symbol_name, count in sorted(
-                    context.reference_index.total_counts.items()
-                )
-            ),
-        )
-
-
-_REFERENCE_COUNT_PRIVATE_REFERENCE_VALUE = (
-    ReferenceCountPrivateReferenceSignatureFacet.value
-)
-
-
-class DerivedCollectorContractPrivateReferenceSignatureFacet(
-    PrivateReferenceContextSignatureFacet
-):
-    facet_name = "derived_collector_contracts"
-    context_property_names = ("derived_candidate_collector_contract_names",)
-
-    def value(self, context: PrivateReferenceDetectorContext) -> tuple[str, ...]:
-        return tuple(sorted(context.derived_candidate_collector_contract_names))
-
-
-class PrivateHelperCallEdgePrivateReferenceSignatureFacet(
-    PrivateReferenceContextSignatureFacet
-):
-    facet_name = "private_helper_call_edges"
-    context_property_names = ("private_helper_call_graph",)
-
-    def value(
-        self, context: PrivateReferenceDetectorContext
-    ) -> tuple[PrivateReferenceCallEdgeSignatureRow, ...]:
-        return tuple(
-            PrivateReferenceCallEdgeSignatureRow(
-                function_name=function_name,
-                caller_symbols=caller_symbols,
-            )
-            for function_name, caller_symbols in sorted(
-                context.private_helper_call_graph.caller_symbols_by_name.items()
-            )
-        )
-
-    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
-        if type(self).value is not _PRIVATE_HELPER_CALL_EDGE_PRIVATE_REFERENCE_VALUE:
-            return super().value_digest(context)
-        return _stable_framed_rows_digest(
-            self.facet_name or type(self).__qualname__,
-            (
-                (function_name, caller_symbols)
-                for function_name, caller_symbols in sorted(
-                    context.private_helper_call_graph.caller_symbols_by_name.items()
-                )
-            ),
-        )
-
-
-_PRIVATE_HELPER_CALL_EDGE_PRIVATE_REFERENCE_VALUE = (
-    PrivateHelperCallEdgePrivateReferenceSignatureFacet.value
-)
-
-
-class SurfaceFunctionPrivateReferenceSignatureFacet(
-    PrivateReferenceContextSignatureFacet
-):
-    facet_name = "surface_functions"
-    context_property_names = ("surface_function_signature_rows",)
-
-    def value(
-        self, context: PrivateReferenceDetectorContext
-    ) -> tuple[PrivateReferenceFunctionSignatureRow, ...]:
-        return context.surface_function_signature_rows
-
-    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
-        if type(self).value is not _SURFACE_FUNCTION_PRIVATE_REFERENCE_VALUE:
-            return super().value_digest(context)
-        return _stable_framed_rows_digest(
-            self.facet_name or type(self).__qualname__,
-            (
-                (qualified_function_name, body_digest)
-                for qualified_function_name, body_digest in sorted(
-                    (
-                        (
-                            f"{indexed_function.module_name}."
-                            f"{indexed_function.qualname}",
-                            indexed_function.body_digest,
-                        )
-                        for module_index in context.module_indexes
-                        for indexed_function in module_index.functions
-                    )
-                )
-            ),
-        )
-
-
-_SURFACE_FUNCTION_PRIVATE_REFERENCE_VALUE = (
-    SurfaceFunctionPrivateReferenceSignatureFacet.value
-)
-
-
-class ClassFamilyPrivateReferenceSignatureFacet(PrivateReferenceContextSignatureFacet):
-    facet_name = "class_family"
-    context_property_names = ("class_index",)
-
-    @staticmethod
-    def _structural_rows(
-        context: PrivateReferenceDetectorContext,
-    ) -> Iterable[
-        tuple[
-            str,
-            str,
-            tuple[str, ...],
-            tuple[str, ...],
-            tuple[str, ...],
-        ]
-    ]:
-        caller_owner_names = sorted_tuple(
-            {
-                owner_name
-                for caller_symbols in (
-                    context.private_helper_call_graph.caller_symbols_by_name.values()
-                )
-                for owner_name in _private_helper_caller_owner_names(caller_symbols)
-            }
-        )
-        class_symbols = frozenset(
-            class_symbol
-            for owner_name in caller_owner_names
-            if (
-                class_symbol := _private_helper_unique_class_symbol(
-                    context.class_index, owner_name
-                )
-            )
-            is not None
-        )
-        relevant_symbols = frozenset(
-            (
-                symbol
-                for class_symbol in class_symbols
-                for symbol in (
-                    class_symbol,
-                    *context.class_index.ancestor_symbols(class_symbol),
-                )
-            )
-        )
-        return (
-            (
-                symbol,
-                indexed_class.simple_name,
-                indexed_class.declared_base_names,
-                indexed_class.resolved_base_symbols,
-                context.class_index.ancestor_symbols(symbol),
-            )
-            for symbol, indexed_class in sorted(
-                context.class_index.classes_by_symbol.items()
-            )
-            if symbol in relevant_symbols
-        )
-
-    def value(
-        self, context: PrivateReferenceDetectorContext
-    ) -> tuple[PrivateReferenceClassFamilySignatureRow, ...]:
-        return tuple(
-            PrivateReferenceClassFamilySignatureRow(
-                symbol=symbol,
-                simple_name=simple_name,
-                declared_base_names=declared_base_names,
-                resolved_base_symbols=resolved_base_symbols,
-                ancestor_symbols=ancestor_symbols,
-            )
-            for (
-                symbol,
-                simple_name,
-                declared_base_names,
-                resolved_base_symbols,
-                ancestor_symbols,
-            ) in self._structural_rows(context)
-        )
-
-    def value_digest(self, context: PrivateReferenceDetectorContext) -> str:
-        if type(self).value is not _CLASS_FAMILY_PRIVATE_REFERENCE_VALUE:
-            return super().value_digest(context)
-        return _stable_framed_rows_digest(
-            self.facet_name or type(self).__qualname__,
-            self._structural_rows(context),
-        )
-
-
-_CLASS_FAMILY_PRIVATE_REFERENCE_VALUE = ClassFamilyPrivateReferenceSignatureFacet.value
-
-
-PrivateReferenceContextSignatureFacets: TypeAlias = tuple[
-    type[PrivateReferenceContextSignatureFacet],
-    ...,
-]
-
-
-@dataclass(frozen=True)
-class PrivateReferenceDetectorContextSignature:
-    """Stable semantic-context identity for private-reference detector shards."""
-
-    facet_rows: tuple[PrivateReferenceContextSignatureFacetRow, ...]
-
-    @classmethod
-    def from_context(
-        cls,
-        context: PrivateReferenceDetectorContext,
-        facets: PrivateReferenceContextSignatureFacets = (),
-    ) -> "PrivateReferenceDetectorContextSignature":
-        facet_types = (
-            facets or PrivateReferenceContextSignatureFacet.registered_facet_types()
-        )
-        return cls(
-            tuple(context.signature_facet_row(facet_type) for facet_type in facet_types)
-        )
-
-    @property
-    def token(self) -> str:
-        return _stable_text_digest(repr(self))
-
-
-@lru_cache(maxsize=4)
-def _private_reference_detector_context(
-    modules: tuple[ParsedModule, ...],
-) -> PrivateReferenceDetectorContext:
-    return PrivateReferenceDetectorContext(modules)
-
-
-_PrivateReferenceCandidateT = TypeVar("_PrivateReferenceCandidateT")
-
-
-class PrivateReferenceContextualDetector(
-    RenderedFindingMixin[_PrivateReferenceCandidateT],
-    ContextualModuleIssueDetector,
-    Generic[_PrivateReferenceCandidateT],
-    ABC,
-):
-    """Candidate detector backed by one repo-wide private-reference context."""
-
-    # Every private-reference candidate requires a target private-function fact.
-    # The class-family supplement used by NonNominalPrivateHelperDetector cannot
-    # create that mandatory anchor when the private-reference demand is empty.
-    compact_report_candidate_anchor_families = (
-        CompactPrivateReferenceModuleProjectionFamily,
-    )
-
-    @classmethod
-    def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
-    ) -> str:
-        del config
-        facets = (
-            PrivateReferenceContextSignatureFacet.registered_facet_types_for_detector(
-                cls
-            )
-        )
-        return PrivateReferenceDetectorContextSignature.from_context(
-            _private_reference_detector_context(modules),
-            facets,
-        ).token
-
-    def _findings_for_module_context(
-        self,
-        module: ParsedModule,
-        modules: tuple[ParsedModule, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        private_reference_context = _private_reference_detector_context(modules)
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in self._candidate_items_for_private_reference_context(
-                module,
-                private_reference_context,
-                config,
-            )
-        ]
-
-    @abstractmethod
-    def _candidate_items_for_private_reference_context(
-        self,
-        module: ParsedModule,
-        private_reference_context: PrivateReferenceDetectorContext,
-        config: DetectorConfig,
-    ) -> Sequence[_PrivateReferenceCandidateT]:
-        raise NotImplementedError
-
-
 class DeadEmbeddedStaticPayloadDetector(
-    CompactModuleProjectionDetectorMixin[CompactPrivateReferenceModuleProjection],
-    PrivateReferenceContextualDetector[EmbeddedStaticPayloadCandidate],
+    CompactProjectionCandidateDetector[
+        CompactPrivateReferenceModuleProjection,
+        EmbeddedStaticPayloadCandidate,
+    ],
 ):
     module_projection_family = CompactPrivateReferenceModuleProjectionFamily
     finding_spec = high_confidence_spec(
@@ -11040,47 +10318,15 @@ class DeadEmbeddedStaticPayloadDetector(
         _NORMALIZED_AST_PARTIAL_VIEW_EXPORT_OBSERVATION_TAGS,
     )
 
-    def _candidate_items_for_private_reference_context(
-        self,
-        module: ParsedModule,
-        private_reference_context: PrivateReferenceDetectorContext,
-        config: DetectorConfig,
-    ) -> Sequence[EmbeddedStaticPayloadCandidate]:
-        return _embedded_static_payload_candidates(
-            module,
-            config,
-            reference_index=private_reference_context.reference_index,
-        )
-
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactPrivateReferenceModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        total_counts = _compact_private_reference_total_counts(projections)
-        candidates = tuple(
-            EmbeddedStaticPayloadCandidate(
-                file_path=function.file_path,
-                line=function.line,
-                qualname=function.qualname,
-                function_name=function.function_name,
-                line_count=function.line_count,
-                static_payload_stats=function.static_payload_stats,
-                sink_kinds=function.sink_kinds,
-                call_site_count=function.call_site_count,
-            )
-            for projection in projections
-            for function in projection.functions
-            if function.line_count >= config.min_static_payload_function_lines
-            if (
-                function.static_payload_stats.payload_line_count
-                >= config.min_static_payload_literal_lines
-            )
-            if function.static_payload_stats.marker_kinds
-            if function.sink_kinds
-            if _compact_private_function_is_unreferenced(function, total_counts)
+    ) -> Sequence[EmbeddedStaticPayloadCandidate]:
+        return _compact_embedded_static_payload_candidates(
+            projections,
+            config,
         )
-        return [self._finding_for_candidate(candidate) for candidate in candidates]
 
     def _finding_for_candidate(
         self, payload_candidate: EmbeddedStaticPayloadCandidate
@@ -11172,42 +10418,6 @@ def _private_helper_deepest_common_ancestor_symbol(
     )
 
 
-def _private_helper_call_nodes(
-    function: _RuntimeFunctionNode, helper_name: str
-) -> tuple[ast.Call, ...]:
-    return tuple(
-        (
-            node
-            for node in _walk_function_body_nodes(function)
-            if isinstance(node, ast.Call)
-            and (
-                (isinstance(node.func, ast.Name) and node.func.id == helper_name)
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == helper_name
-                )
-            )
-        )
-    )
-
-
-def _private_helper_call_argument_map(
-    call: ast.Call, parameter_names: tuple[str, ...]
-) -> dict[str, ast.AST]:
-    argument_map: dict[str, ast.AST] = {
-        parameter_name: argument
-        for parameter_name, argument in zip(parameter_names, call.args)
-    }
-    argument_map.update(
-        {
-            keyword.arg: keyword.value
-            for keyword in call.keywords
-            if keyword.arg is not None
-        }
-    )
-    return argument_map
-
-
 def _private_helper_residue_kind(argument: ast.AST) -> _PrivateHelperResidueKind:
     if isinstance(argument, ast.Constant):
         return _PrivateHelperResidueKind.CONSTANT
@@ -11272,30 +10482,6 @@ def _private_helper_residue_name(
     if template.uppercase:
         return residue_name.upper()
     return residue_name
-
-
-def _private_helper_residue_plan(
-    *,
-    function: _RuntimeFunctionNode,
-    parameter_names: tuple[str, ...],
-    caller_functions: tuple[_RuntimeFunctionNode, ...],
-) -> PrivateHelperResiduePlan:
-    call_argument_maps = tuple(
-        {
-            parameter_name: _compact_private_helper_argument_fact(argument)
-            for parameter_name, argument in _private_helper_call_argument_map(
-                call, parameter_names
-            ).items()
-        }
-        for caller_function in caller_functions
-        for call in _private_helper_call_nodes(caller_function, function.name)
-    )
-    return _private_helper_residue_plan_from_argument_facts(
-        function_name=function.name,
-        parameter_names=parameter_names,
-        statement_count=len(_trim_docstring_body(list(function.body))),
-        call_argument_maps=call_argument_maps,
-    )
 
 
 def _private_helper_residue_plan_from_argument_facts(
@@ -11434,14 +10620,6 @@ def _private_helper_pascal_name(tokens: tuple[str, ...], fallback: str) -> str:
     return "".join(token.capitalize() for token in tokens)
 
 
-def _shared_private_helper_stem(
-    functions: _RuntimeFunctionSequence,
-) -> tuple[str, ...]:
-    return _shared_private_helper_stem_from_names(
-        tuple(function.name for function in functions)
-    )
-
-
 def _shared_private_helper_stem_from_names(
     function_names: tuple[str, ...],
 ) -> tuple[str, ...]:
@@ -11476,16 +10654,6 @@ _PRIVATE_HELPER_OWNER_RESIDUE_TOKENS = frozenset(
         "surface",
     )
 )
-
-
-def _dominant_private_helper_role_tokens(
-    functions: _RuntimeFunctionSequence,
-    stem_tokens: tuple[str, ...],
-) -> tuple[str, ...]:
-    return _dominant_private_helper_role_tokens_from_names(
-        tuple(function.name for function in functions),
-        stem_tokens,
-    )
 
 
 def _dominant_private_helper_role_tokens_from_names(
@@ -11543,32 +10711,6 @@ def _private_helper_derived_authority_name(
         )
         return f"{_private_helper_pascal_name(subject_tokens, 'Semantic')}{role.suffix}"
     return f"{_private_helper_pascal_name(tokens, 'Semantic')}{fallback_suffix}"
-
-
-def _private_helper_placement_plan(
-    modules: Sequence[ParsedModule],
-    *,
-    function: _RuntimeFunctionNode,
-    function_name: str,
-    parameter_names: tuple[str, ...],
-    caller_symbols: tuple[str, ...],
-    caller_functions: tuple[_RuntimeFunctionNode, ...],
-    class_index: ClassFamilyIndex | None = None,
-) -> PrivateHelperPlacementPlan:
-    caller_owner_names = _private_helper_caller_owner_names(caller_symbols)
-    residue_plan = _private_helper_residue_plan(
-        function=function,
-        parameter_names=parameter_names,
-        caller_functions=caller_functions,
-    )
-    if len(caller_owner_names) == len(caller_symbols):
-        class_index = class_index or build_class_family_index(list(modules))
-    return _private_helper_placement_plan_from_facts(
-        function_name=function_name,
-        caller_symbols=caller_symbols,
-        residue_plan=residue_plan,
-        class_index=class_index,
-    )
 
 
 def _private_helper_placement_plan_from_facts(
@@ -11675,25 +10817,6 @@ def _private_helper_placement_plan_from_facts(
     )
 
 
-class ProbablyNominalPrivateHelperContractAuthority:
-    def owns(
-        self,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        *,
-        derived_candidate_collector_contract_names: frozenset[str],
-    ) -> bool:
-        if _has_external_protocol_shape(function):
-            return True
-        if function.name in derived_candidate_collector_contract_names:
-            return True
-        return False
-
-
-PROBABLY_NOMINAL_PRIVATE_HELPER_CONTRACT_AUTHORITY = (
-    ProbablyNominalPrivateHelperContractAuthority()
-)
-
-
 def _private_helper_cluster_family(function_name: str) -> tuple[str, str]:
     return PUBLIC_BARE_SUPPORT_FUNCTION_FAMILY_AUTHORITY.family(
         function_name.lstrip("_")
@@ -11705,20 +10828,6 @@ def _private_helper_cluster_key(function_name: str) -> tuple[str, str, str]:
     tokens = _private_helper_name_tokens(function_name)
     role_token = tokens[0] if tokens else function_name.removeprefix("_")
     return semantic_family, recommended_owner, role_token
-
-
-def _private_helper_callee_names(
-    function: _RuntimeFunctionNode,
-) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            call_name
-            for node in _walk_function_body_nodes(function)
-            if isinstance(node, ast.Call)
-            for call_name in (_call_name(node.func),)
-            if call_name is not None and not call_name.startswith("_")
-        }
-    )
 
 
 def _private_helper_return_kind(node: ast.AST | None) -> str:
@@ -11743,47 +10852,6 @@ def _private_helper_return_kind(node: ast.AST | None) -> str:
     if isinstance(node, ast.Attribute):
         return "attribute"
     return type(node).__name__
-
-
-def _private_helper_return_kinds(
-    functions: _RuntimeFunctionSequence,
-) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            _private_helper_return_kind(returned.value)
-            for function in functions
-            for returned in _walk_function_body_nodes(function)
-            if isinstance(returned, ast.Return)
-        }
-    )
-
-
-def _private_helper_constructed_type_names(
-    functions: _RuntimeFunctionSequence,
-) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            call_name
-            for function in functions
-            for node in _walk_function_body_nodes(function)
-            if isinstance(node, ast.Call)
-            for call_name in (_call_name(node.func),)
-            if call_name is not None
-            and call_name.endswith(
-                (
-                    "Candidate",
-                    "Finding",
-                    "Metrics",
-                    "Observation",
-                    "Plan",
-                    "Profile",
-                    "Shape",
-                    "Spec",
-                    "Witness",
-                )
-            )
-        }
-    )
 
 
 def _private_helper_cluster_normal_form(
@@ -11834,19 +10902,6 @@ def _private_helper_owner_suffix(normal_form: str) -> str:
         "traversal_profile": "Profile",
         "typed_decoder": "Decoder",
     }[normal_form]
-
-
-def _private_helper_cluster_classification(
-    functions: _RuntimeFunctionSequence,
-    *,
-    shared_call_names: tuple[str, ...],
-) -> PrivateHelperClusterClassification:
-    return _private_helper_cluster_classification_from_summaries(
-        function_names=tuple(function.name for function in functions),
-        return_kinds=_private_helper_return_kinds(functions),
-        constructed_type_names=_private_helper_constructed_type_names(functions),
-        shared_call_names=shared_call_names,
-    )
 
 
 def _private_helper_cluster_classification_from_summaries(
@@ -11905,99 +10960,6 @@ def _private_helper_cluster_certificate(
             1,
             (len(cluster.shared_parameter_names) + len(cluster.shared_call_names)) // 2,
         ),
-    )
-
-
-def _private_helper_semantic_cluster_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-    reference_modules: Sequence[ParsedModule] | None = None,
-    derived_candidate_collector_contract_names: frozenset[str] | None = None,
-    private_helper_call_graph: PrivateHelperCallGraph | None = None,
-) -> tuple[PrivateHelperSemanticClusterCandidate, ...]:
-    modules = reference_modules or (module,)
-    if derived_candidate_collector_contract_names is None:
-        derived_candidate_collector_contract_names = (
-            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
-        )
-    private_helper_call_graph = (
-        private_helper_call_graph or PrivateHelperCallGraph.from_modules(modules)
-    )
-    grouped: dict[
-        tuple[str, str, str], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]
-    ] = defaultdict(list)
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        if "." in qualname:
-            continue
-        if not _is_private_symbol_name(function.name):
-            continue
-        if PROBABLY_NOMINAL_PRIVATE_HELPER_CONTRACT_AUTHORITY.owns(
-            function,
-            derived_candidate_collector_contract_names=(
-                derived_candidate_collector_contract_names
-            ),
-        ):
-            continue
-        minimum_cluster_line_count = max(
-            3, config.min_unreferenced_private_function_lines // 2
-        )
-        if _function_line_count(function) < minimum_cluster_line_count:
-            continue
-        grouped[_private_helper_cluster_key(function.name)].append((qualname, function))
-
-    candidates: list[PrivateHelperSemanticClusterCandidate] = []
-    for (semantic_family, _, _), helpers in sorted(grouped.items()):
-        if len(helpers) < 4:
-            continue
-        helper_names = sorted_tuple((function.name for _, function in helpers))
-        parameter_sets = tuple(
-            (
-                set(FUNCTION_PARAMETER_NAME_PROJECTION.names(function))
-                for _, function in helpers
-            )
-        )
-        shared_parameter_names = sorted_tuple(set.intersection(*parameter_sets))
-        call_name_sets = tuple(
-            (set(_private_helper_callee_names(function)) for _, function in helpers)
-        )
-        shared_call_names = (
-            sorted_tuple(set.intersection(*call_name_sets)) if call_name_sets else ()
-        )
-        consumer_symbols = sorted_tuple(
-            {
-                caller_symbol
-                for qualname, function in helpers
-                for caller_symbol in private_helper_call_graph.caller_symbols(
-                    function_name=function.name, qualname=qualname
-                )
-            }
-        )
-        if not (shared_parameter_names or shared_call_names):
-            continue
-        functions = tuple((function for _, function in helpers))
-        classification = _private_helper_cluster_classification(
-            functions, shared_call_names=shared_call_names
-        )
-        line_numbers = tuple((function.lineno for _, function in helpers))
-        candidate = PrivateHelperSemanticClusterCandidate(
-            file_path=str(module.path),
-            line=min(line_numbers),
-            helper_names=helper_names,
-            semantic_family=semantic_family,
-            classification=classification,
-            shared_parameter_names=shared_parameter_names,
-            shared_call_names=shared_call_names,
-            consumer_symbols=consumer_symbols,
-            line_numbers=line_numbers,
-            line_count=sum((_function_line_count(function) for _, function in helpers)),
-            cluster_size=len(helpers),
-        )
-        if not _private_helper_cluster_certificate(candidate).pays_rent:
-            continue
-        candidates.append(candidate)
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line, item.semantic_family),
     )
 
 
@@ -12256,84 +11218,11 @@ class PrivateHelperEscapeAuthority:
 PRIVATE_HELPER_ESCAPE_AUTHORITY = PrivateHelperEscapeAuthority()
 
 
-def _non_nominal_private_helper_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-    reference_modules: Sequence[ParsedModule] | None = None,
-    derived_candidate_collector_contract_names: frozenset[str] | None = None,
-    private_helper_call_graph: PrivateHelperCallGraph | None = None,
-    class_index: ClassFamilyIndex | None = None,
-) -> tuple[NonNominalPrivateHelperCandidate, ...]:
-    modules = reference_modules or (module,)
-    if derived_candidate_collector_contract_names is None:
-        derived_candidate_collector_contract_names = (
-            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
-        )
-    private_helper_call_graph = (
-        private_helper_call_graph or PrivateHelperCallGraph.from_modules(modules)
-    )
-    candidates: list[NonNominalPrivateHelperCandidate] = []
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        if "." in qualname:
-            continue
-        if not _is_private_symbol_name(function.name):
-            continue
-        if PROBABLY_NOMINAL_PRIVATE_HELPER_CONTRACT_AUTHORITY.owns(
-            function,
-            derived_candidate_collector_contract_names=(
-                derived_candidate_collector_contract_names
-            ),
-        ):
-            continue
-        caller_symbols = private_helper_call_graph.caller_symbols(
-            function_name=function.name, qualname=qualname
-        )
-        if not PRIVATE_HELPER_ESCAPE_AUTHORITY.escapes_private_scope(caller_symbols):
-            continue
-        line_count = _function_line_count(function)
-        if (
-            not PRIVATE_HELPER_ESCAPE_AUTHORITY.has_single_public_module_caller(
-                caller_symbols
-            )
-            and line_count < config.min_unreferenced_private_function_lines
-        ):
-            continue
-        parameter_names = FUNCTION_PARAMETER_NAME_PROJECTION.names(function)
-        caller_functions = private_helper_call_graph.caller_functions(
-            function_name=function.name, qualname=qualname
-        )
-        call_site_count = sum(
-            (isinstance(node, ast.Call) for node in _walk_function_body_nodes(function))
-        )
-        candidates.append(
-            NonNominalPrivateHelperCandidate(
-                file_path=str(module.path),
-                line=function.lineno,
-                qualname=qualname,
-                function_name=function.name,
-                parameter_names=parameter_names,
-                caller_symbols=caller_symbols,
-                placement_plan=_private_helper_placement_plan(
-                    modules,
-                    function=function,
-                    function_name=function.name,
-                    parameter_names=parameter_names,
-                    caller_symbols=caller_symbols,
-                    caller_functions=caller_functions,
-                    class_index=class_index,
-                ),
-                line_count=line_count,
-                call_site_count=call_site_count,
-            )
-        )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
-    )
-
-
 class UnreferencedPrivateFunctionDetector(
-    CompactModuleProjectionDetectorMixin[CompactPrivateReferenceModuleProjection],
-    PrivateReferenceContextualDetector[UnreferencedPrivateFunctionCandidate],
+    CompactProjectionCandidateDetector[
+        CompactPrivateReferenceModuleProjection,
+        UnreferencedPrivateFunctionCandidate,
+    ],
 ):
     module_projection_family = CompactPrivateReferenceModuleProjectionFamily
     finding_spec = high_confidence_spec(
@@ -12346,51 +11235,15 @@ class UnreferencedPrivateFunctionDetector(
         _NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _candidate_items_for_private_reference_context(
-        self,
-        module: ParsedModule,
-        private_reference_context: PrivateReferenceDetectorContext,
-        config: DetectorConfig,
-    ) -> Sequence[UnreferencedPrivateFunctionCandidate]:
-        return _unreferenced_private_function_candidates(
-            module,
-            config,
-            reference_modules=private_reference_context.modules,
-            reference_index=private_reference_context.reference_index,
-            derived_candidate_collector_contract_names=(
-                private_reference_context.derived_candidate_collector_contract_names
-            ),
-        )
-
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactPrivateReferenceModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        total_counts = _compact_private_reference_total_counts(projections)
-        contract_names = frozenset(
-            name
-            for projection in projections
-            for name in projection.derived_candidate_collector_contract_names
+    ) -> Sequence[UnreferencedPrivateFunctionCandidate]:
+        return _compact_unreferenced_private_function_candidates(
+            projections,
+            config,
         )
-        candidates = tuple(
-            UnreferencedPrivateFunctionCandidate(
-                file_path=function.file_path,
-                line=function.line,
-                qualname=function.qualname,
-                function_name=function.function_name,
-                line_count=function.line_count,
-                call_site_count=function.call_site_count,
-            )
-            for projection in projections
-            for function in projection.functions
-            if function.owner_name is None
-            if not function.has_external_protocol_shape
-            if function.function_name not in contract_names
-            if function.line_count >= config.min_unreferenced_private_function_lines
-            if _compact_private_function_is_unreferenced(function, total_counts)
-        )
-        return [self._finding_for_candidate(candidate) for candidate in candidates]
 
     finding_renderer = CandidateFindingRenderer[UnreferencedPrivateFunctionCandidate](
         summary=lambda function_candidate: f"`{function_candidate.qualname}` spans {function_candidate.line_count} lines and has no in-module references.",
@@ -12408,9 +11261,11 @@ class UnreferencedPrivateFunctionDetector(
 
 
 class NonNominalPrivateHelperDetector(
-    CompactMultiModuleProjectionDetectorMixin,
-    PrivateReferenceContextualDetector[NonNominalPrivateHelperCandidate],
+    CompactMultiProjectionCandidateDetector[NonNominalPrivateHelperCandidate],
 ):
+    compact_report_candidate_anchor_families = (
+        CompactPrivateReferenceModuleProjectionFamily,
+    )
     module_projection_families = (
         CompactPrivateReferenceModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -12428,28 +11283,11 @@ class NonNominalPrivateHelperDetector(
         _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _candidate_items_for_private_reference_context(
-        self,
-        module: ParsedModule,
-        private_reference_context: PrivateReferenceDetectorContext,
-        config: DetectorConfig,
-    ) -> Sequence[NonNominalPrivateHelperCandidate]:
-        return _non_nominal_private_helper_candidates(
-            module,
-            config,
-            reference_modules=private_reference_context.modules,
-            derived_candidate_collector_contract_names=(
-                private_reference_context.derived_candidate_collector_contract_names
-            ),
-            private_helper_call_graph=private_reference_context.private_helper_call_graph,
-            class_index=private_reference_context.class_index,
-        )
-
-    def _findings_from_compact_projection_groups(
+    def _candidates_from_compact_projection_groups(
         self,
         projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[NonNominalPrivateHelperCandidate]:
         private_projections = cast(
             tuple[CompactPrivateReferenceModuleProjection, ...],
             projections_by_family[CompactPrivateReferenceModuleProjectionFamily],
@@ -12458,21 +11296,18 @@ class NonNominalPrivateHelperDetector(
             tuple[CompactModuleClassProjection, ...],
             projections_by_family[CompactModuleClassProjectionFamily],
         )
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _compact_non_nominal_private_helper_candidates(
-                private_projections,
-                class_projections,
-                config,
-            )
-        ]
+        return _compact_non_nominal_private_helper_candidates(
+            private_projections,
+            class_projections,
+            config,
+        )
 
-    def _findings_from_compact_projection_groups_context(
+    def _candidates_from_compact_projection_groups_context(
         self,
         projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
         context: object | None,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[NonNominalPrivateHelperCandidate]:
         if not isinstance(context, CompactClassFamilyIndex):
             raise TypeError("shared compact class index is unavailable")
         private_projections = cast(
@@ -12483,15 +11318,12 @@ class NonNominalPrivateHelperDetector(
             tuple[CompactModuleClassProjection, ...],
             projections_by_family[CompactModuleClassProjectionFamily],
         )
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _compact_non_nominal_private_helper_candidates(
-                private_projections,
-                class_projections,
-                config,
-                class_index=context,
-            )
-        ]
+        return _compact_non_nominal_private_helper_candidates(
+            private_projections,
+            class_projections,
+            config,
+            class_index=context,
+        )
 
     finding_renderer = CandidateFindingRenderer[NonNominalPrivateHelperCandidate](
         summary=lambda helper_candidate: (
@@ -12534,8 +11366,10 @@ class NonNominalPrivateHelperDetector(
 
 
 class PrivateHelperSemanticClusterDetector(
-    CompactModuleProjectionDetectorMixin[CompactPrivateReferenceModuleProjection],
-    PrivateReferenceContextualDetector[PrivateHelperSemanticClusterCandidate],
+    CompactProjectionCandidateDetector[
+        CompactPrivateReferenceModuleProjection,
+        PrivateHelperSemanticClusterCandidate,
+    ],
 ):
     module_projection_family = CompactPrivateReferenceModuleProjectionFamily
     finding_spec = high_confidence_spec(
@@ -12548,34 +11382,15 @@ class PrivateHelperSemanticClusterDetector(
         _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _candidate_items_for_private_reference_context(
-        self,
-        module: ParsedModule,
-        private_reference_context: PrivateReferenceDetectorContext,
-        config: DetectorConfig,
-    ) -> Sequence[PrivateHelperSemanticClusterCandidate]:
-        return _private_helper_semantic_cluster_candidates(
-            module,
-            config,
-            reference_modules=private_reference_context.modules,
-            derived_candidate_collector_contract_names=(
-                private_reference_context.derived_candidate_collector_contract_names
-            ),
-            private_helper_call_graph=private_reference_context.private_helper_call_graph,
-        )
-
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactPrivateReferenceModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _compact_private_helper_semantic_cluster_candidates(
-                projections,
-                config,
-            )
-        ]
+    ) -> Sequence[PrivateHelperSemanticClusterCandidate]:
+        return _compact_private_helper_semantic_cluster_candidates(
+            projections,
+            config,
+        )
 
     finding_renderer = CandidateFindingRenderer[PrivateHelperSemanticClusterCandidate](
         summary=lambda cluster: (
@@ -12620,8 +11435,10 @@ class PrivateHelperSemanticClusterDetector(
 
 
 class DanglingPrivateMethodDetector(
-    CompactModuleProjectionDetectorMixin[CompactPrivateReferenceModuleProjection],
-    PrivateReferenceContextualDetector[DanglingPrivateMethodCandidate],
+    CompactProjectionCandidateDetector[
+        CompactPrivateReferenceModuleProjection,
+        DanglingPrivateMethodCandidate,
+    ],
 ):
     module_projection_family = CompactPrivateReferenceModuleProjectionFamily
     finding_spec = high_confidence_spec(
@@ -12634,44 +11451,15 @@ class DanglingPrivateMethodDetector(
         _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _candidate_items_for_private_reference_context(
-        self,
-        module: ParsedModule,
-        private_reference_context: PrivateReferenceDetectorContext,
-        config: DetectorConfig,
-    ) -> Sequence[DanglingPrivateMethodCandidate]:
-        return _dangling_private_method_candidates(
-            module,
-            config,
-            reference_modules=private_reference_context.modules,
-            reference_index=private_reference_context.reference_index,
-        )
-
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: tuple[CompactPrivateReferenceModuleProjection, ...],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        total_counts = _compact_private_reference_total_counts(projections)
-        candidates = tuple(
-            DanglingPrivateMethodCandidate(
-                file_path=function.file_path,
-                line=function.line,
-                qualname=function.qualname,
-                owner_name=function.owner_name,
-                method_name=function.function_name,
-                line_count=function.line_count,
-                call_site_count=function.call_site_count,
-            )
-            for projection in projections
-            for function in projection.functions
-            if function.owner_name is not None
-            if not function.is_detector_override_hook
-            if not function.has_external_protocol_shape
-            if function.line_count >= config.min_unreferenced_private_function_lines
-            if _compact_private_function_is_unreferenced(function, total_counts)
+    ) -> Sequence[DanglingPrivateMethodCandidate]:
+        return _compact_dangling_private_method_candidates(
+            projections,
+            config,
         )
-        return [self._finding_for_candidate(candidate) for candidate in candidates]
 
     finding_renderer = CandidateFindingRenderer[DanglingPrivateMethodCandidate](
         summary=lambda method_candidate: (

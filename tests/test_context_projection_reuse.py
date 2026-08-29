@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from collections import Counter
 import json
 import signal
 import sys
@@ -148,10 +149,19 @@ class Owner:
     module = tuple(parse_python_modules(tmp_path))[0]
     runtime_detectors._private_reference_module_index.cache_clear()
 
+    def symbol_counts(root: ast.AST) -> Counter[str]:
+        counts: Counter[str] = Counter()
+        for node in runtime_detectors._walk_nodes(root):
+            if isinstance(node, ast.Name):
+                counts[node.id] += 1
+            elif isinstance(node, ast.Attribute):
+                counts[node.attr] += 1
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                counts[node.value] += 1
+        return counts
+
     index = runtime_detectors.PrivateReferenceModuleIndex.from_module(module)
-    assert index.total_counts == runtime_detectors.ReferenceCountIndex.symbol_counts(
-        module.module
-    )
+    assert index.total_counts == symbol_counts(module.module)
 
     indexed_functions = {
         id(indexed_function.function): indexed_function
@@ -161,9 +171,7 @@ class Owner:
         module.module
     ).functions:
         indexed_function = indexed_functions[id(function)]
-        assert index.function_counts_by_id[
-            id(function)
-        ] == runtime_detectors.ReferenceCountIndex.symbol_counts(function)
+        assert index.function_counts_by_id[id(function)] == symbol_counts(function)
         assert (
             indexed_function.symbol_references
             == runtime_detectors._function_symbol_references(function)
@@ -222,9 +230,8 @@ class Owner:
     }
 
 
-def test_private_reference_facets_share_one_module_projection(
+def test_private_reference_compact_families_share_one_module_projection(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_module(
         tmp_path,
@@ -238,56 +245,24 @@ def test_private_reference_facets_share_one_module_projection(
     )
     modules = tuple(parse_python_modules(tmp_path))
     runtime_detectors._private_reference_module_index.cache_clear()
-    original_projection = runtime_detectors._private_reference_module_index
-    projection_calls = 0
-
-    def counted_projection(module, module_name, semantic_hash, file_path):
-        nonlocal projection_calls
-        projection_calls += 1
-        return original_projection(module, module_name, semantic_hash, file_path)
-
-    monkeypatch.setattr(
-        runtime_detectors,
-        "_private_reference_module_index",
-        counted_projection,
+    private_projections = tuple(
+        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily.collect(
+            modules[0]
+        )
     )
-    context = runtime_detectors.PrivateReferenceDetectorContext(modules)
-
-    runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(context)
-    runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(context)
-
-    assert projection_calls == len(modules)
-
-
-def test_role_surfaces_reuse_private_reference_module_projection(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/sample.py",
-        "\nclass Renderer:\n"
-        "    field: str\n"
-        "\n"
-        "    def render(self, value):\n"
-        "        return str(value)\n",
-    )
-    modules = tuple(parse_python_modules(tmp_path))
-    runtime_detectors._private_reference_module_index.cache_clear()
-
+    first_cache_state = runtime_detectors._private_reference_module_index.cache_info()
     role_surfaces = dict(
         runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily.collect(
             modules[0]
         )[0].class_surface_members_by_type_name
     )
-    first_cache_state = runtime_detectors._private_reference_module_index.cache_info()
-    context = runtime_detectors.PrivateReferenceDetectorContext(modules)
-    runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(context)
     second_cache_state = runtime_detectors._private_reference_module_index.cache_info()
 
     assert role_surfaces == {
-        "Renderer": ("field", "render"),
-        "pkg.sample.Renderer": ("field", "render"),
+        "Renderer": ("render",),
+        "pkg.sample.Renderer": ("render",),
     }
+    assert private_projections[0].functions
     assert first_cache_state.misses == len(modules)
     assert second_cache_state.misses == first_cache_state.misses
 
@@ -391,9 +366,15 @@ def test_empty_derived_contract_projection_is_not_recomputed(
         "    return _helper(value)\n",
     )
     modules = tuple(parse_python_modules(tmp_path))
-    context = runtime_detectors.PrivateReferenceDetectorContext(modules)
-    empty_contracts = context.derived_candidate_collector_contract_names
-    assert empty_contracts == frozenset()
+    private_projections = tuple(
+        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily.collect(
+            modules[0]
+        )
+    )
+    class_projections = tuple(
+        runtime_detectors.CompactModuleClassProjectionFamily.collect(modules[0])
+    )
+    assert private_projections[0].derived_candidate_collector_contract_names == ()
 
     monkeypatch.setattr(
         runtime_detectors.DERIVED_CANDIDATE_COLLECTOR_CONTRACTS,
@@ -403,25 +384,16 @@ def test_empty_derived_contract_projection_is_not_recomputed(
         ),
     )
 
-    runtime_detectors._unreferenced_private_function_candidates(
-        modules[0],
+    runtime_detectors._compact_unreferenced_private_function_candidates(
+        private_projections,
         DetectorConfig(),
-        reference_modules=modules,
-        reference_index=context.reference_index,
-        derived_candidate_collector_contract_names=empty_contracts,
     )
-    runtime_detectors._non_nominal_private_helper_candidates(
-        modules[0],
+    runtime_detectors._compact_non_nominal_private_helper_candidates(
+        private_projections,
+        class_projections,
         DetectorConfig(),
-        reference_modules=modules,
-        derived_candidate_collector_contract_names=empty_contracts,
-        private_helper_call_graph=context.private_helper_call_graph,
-        class_index=context.class_index,
     )
-    runtime_detectors._private_helper_semantic_cluster_candidates(
-        modules[0],
+    runtime_detectors._compact_private_helper_semantic_cluster_candidates(
+        private_projections,
         DetectorConfig(),
-        reference_modules=modules,
-        derived_candidate_collector_contract_names=empty_contracts,
-        private_helper_call_graph=context.private_helper_call_graph,
     )

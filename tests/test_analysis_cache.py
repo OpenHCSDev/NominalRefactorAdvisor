@@ -4678,7 +4678,7 @@ def test_compact_hierarchy_projection_matches_full_ast_detection(
         ]
 
 
-def test_compact_private_reference_detectors_match_legacy_ast_candidates(
+def test_compact_private_reference_detectors_preserve_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -4716,7 +4716,6 @@ def test_compact_private_reference_detectors_match_legacy_ast_candidates(
         min_static_payload_literal_lines=4,
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    legacy_context = runtime_detectors.PrivateReferenceDetectorContext(modules)
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
         detector_types,
@@ -4724,20 +4723,39 @@ def test_compact_private_reference_detectors_match_legacy_ast_candidates(
     )
     projected_findings = accumulator.findings_by_detector(config)
 
+    expected_qualnames = {
+        runtime_detectors.DeadEmbeddedStaticPayloadDetector: (
+            "Publisher._write_static_shell",
+        ),
+        runtime_detectors.UnreferencedPrivateFunctionDetector: ("_stale_export",),
+        runtime_detectors.DanglingPrivateMethodDetector: (
+            "Publisher._stale_method",
+            "Publisher._write_static_shell",
+        ),
+    }
     for detector_type in detector_types:
         detector = detector_type()
-        legacy_findings = [
-            detector._finding_for_candidate(candidate)
-            for module in modules
-            for candidate in detector._candidate_items_for_private_reference_context(
-                module,
-                legacy_context,
-                config,
-            )
-        ]
-        assert [finding.to_dict() for finding in projected_findings[detector_type]] == [
-            finding.to_dict() for finding in legacy_findings
-        ]
+        candidates = tuple(detector._candidate_items(list(modules), config))
+        assert tuple(candidate.qualname for candidate in candidates) == (
+            expected_qualnames[detector_type]
+        )
+        assert projected_findings[detector_type] == detector._findings_for_candidates(
+            candidates,
+            config,
+        )
+        assert "_candidate_items_for_private_reference_context" not in (
+            detector_type.__dict__
+        )
+    for removed_name in (
+        "ReferenceCountIndex",
+        "PrivateReferenceDetectorContext",
+        "PrivateReferenceContextualDetector",
+        "_private_reference_detector_context",
+        "_embedded_static_payload_candidates",
+        "_unreferenced_private_function_candidates",
+        "_dangling_private_method_candidates",
+    ):
+        assert not hasattr(runtime_detectors, removed_name)
 
 
 def test_compact_public_support_projection_preserves_semantics_without_ast_shadow(
@@ -7042,7 +7060,7 @@ def test_compact_role_guarded_surface_candidates_preserve_semantics_without_ast_
     ) == [detector._finding_for_candidate(candidate)]
 
 
-def test_compact_non_nominal_private_helper_matches_legacy_multi_family_join(
+def test_compact_non_nominal_private_helper_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -7084,33 +7102,23 @@ def test_compact_non_nominal_private_helper_matches_legacy_multi_family_join(
             config,
         )
     )
-    legacy_context = runtime_detectors.PrivateReferenceDetectorContext(modules)
-    legacy_candidates = tuple(
-        candidate
-        for module in modules
-        for candidate in runtime_detectors._non_nominal_private_helper_candidates(
-            module,
-            config,
-            reference_modules=modules,
-            derived_candidate_collector_contract_names=(
-                legacy_context.derived_candidate_collector_contract_names
-            ),
-            private_helper_call_graph=legacy_context.private_helper_call_graph,
-            class_index=legacy_context.class_index,
-        )
-    )
-
-    assert compact_candidates == legacy_candidates
     assert len(compact_candidates) == 1
     placement = compact_candidates[0].placement_plan
     assert placement.placement_kind == "existing_inheritance_root"
     assert placement.insertion_owner_name == "BaseRunner"
     assert placement.residue_plan.transported_parameter_names == ("value",)
     assert placement.residue_plan.callsite_axis_count == 1
+    assert detector._candidate_items(list(modules), config) == compact_candidates
     assert detector._findings_from_compact_projection_groups(
         projection_groups,
         config,
-    ) == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
+    ) == [
+        detector._finding_for_candidate(candidate) for candidate in compact_candidates
+    ]
+    assert not hasattr(runtime_detectors, "_non_nominal_private_helper_candidates")
+    assert "_candidate_items_for_private_reference_context" not in type(
+        detector
+    ).__dict__
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
         (
@@ -7123,10 +7131,10 @@ def test_compact_non_nominal_private_helper_matches_legacy_multi_family_join(
     assert accumulator.projection_count == 2
     assert accumulator.findings_by_detector(config)[
         runtime_detectors.NonNominalPrivateHelperDetector
-    ] == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
+    ] == [detector._finding_for_candidate(candidate) for candidate in compact_candidates]
 
 
-def test_compact_private_helper_cluster_candidates_match_legacy_ast_candidates(
+def test_compact_private_helper_cluster_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -7141,28 +7149,20 @@ def test_compact_private_helper_cluster_candidates_match_legacy_ast_candidates(
             config,
         )
     )
-    legacy_context = runtime_detectors.PrivateReferenceDetectorContext(modules)
-    legacy_candidates = tuple(
-        candidate
-        for module in modules
-        for candidate in runtime_detectors._private_helper_semantic_cluster_candidates(
-            module,
-            config,
-            reference_modules=modules,
-            derived_candidate_collector_contract_names=(
-                legacy_context.derived_candidate_collector_contract_names
-            ),
-            private_helper_call_graph=legacy_context.private_helper_call_graph,
-        )
-    )
-
-    assert compact_candidates == legacy_candidates
     assert compact_candidates
     assert "inspect_fields" in compact_candidates[0].consumer_symbols
+    assert detector._candidate_items(list(modules), config) == compact_candidates
     assert detector._findings_from_compact_projections(
         projections,
         config,
-    ) == [detector._finding_for_candidate(candidate) for candidate in legacy_candidates]
+    ) == [detector._finding_for_candidate(candidate) for candidate in compact_candidates]
+    assert not hasattr(
+        runtime_detectors,
+        "_private_helper_semantic_cluster_candidates",
+    )
+    assert "_candidate_items_for_private_reference_context" not in type(
+        detector
+    ).__dict__
 
 
 def test_compact_distributed_boundary_graph_matches_legacy_global_join(

@@ -1966,6 +1966,73 @@ class CompactProjectionCandidateDetector(
         raise NotImplementedError
 
 
+class CompactMultiProjectionCandidateDetector(
+    CompactMultiModuleProjectionDetectorMixin,
+    CrossModuleCandidateDetector[CandidateItemT],
+    Generic[CandidateItemT],
+    ABC,
+):
+    """Candidate detector joining multiple compact fact families once."""
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[CandidateItemT]:
+        return self._candidates_from_compact_projection_groups(
+            type(self).compact_module_projection_groups(modules),
+            config,
+        )
+
+    def _findings_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            self._candidates_from_compact_projection_groups(
+                projections_by_family,
+                config,
+            ),
+            config,
+        )
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_candidates(
+            self._candidates_from_compact_projection_groups_context(
+                projections_by_family,
+                context,
+                config,
+            ),
+            config,
+        )
+
+    @abstractmethod
+    def _candidates_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> Sequence[CandidateItemT]:
+        raise NotImplementedError
+
+    def _candidates_from_compact_projection_groups_context(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> Sequence[CandidateItemT]:
+        del context
+        return self._candidates_from_compact_projection_groups(
+            projections_by_family,
+            config,
+        )
+
+
 class CompactContextCandidateDetector(
     CompactProjectionCandidateDetector[CompactProjectionItemT, CandidateItemT],
     Generic[CompactProjectionItemT, CompactCandidateContextT, CandidateItemT],

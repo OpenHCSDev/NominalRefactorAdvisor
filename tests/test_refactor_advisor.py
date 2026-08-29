@@ -8579,7 +8579,9 @@ def test_analysis_process_pool_uses_copy_on_write_on_linux() -> None:
         assert context is None
 
 
-def test_reference_count_index_caches_requested_symbol_only(tmp_path: Path) -> None:
+def test_private_reference_projection_records_outside_function_count(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -8594,16 +8596,18 @@ def caller():
 """,
     )
     module = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)[0]
-    function = module.module.body[0]
-    assert isinstance(function, ast.FunctionDef)
-    reference_index = runtime_detectors.ReferenceCountIndex.from_modules([module])
-
-    outside_count = reference_index.reference_count_outside_function(
-        function, "_helper"
+    projection = (
+        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily.collect(
+            module
+        )[0]
+    )
+    function = next(
+        function
+        for function in projection.functions
+        if function.function_name == "_helper"
     )
 
-    assert outside_count == 1
-    assert dict(reference_index.function_counts_by_id[id(function)]) == {"_helper": 1}
+    assert dict(projection.total_counts)["_helper"] - function.own_name_reference_count == 1
 
 
 def test_parallel_analyze_modules_matches_sequential_stable_ids(
@@ -22178,7 +22182,7 @@ def test_detects_dead_embedded_static_payload_emitter(tmp_path: Path) -> None:
     )
     assert (
         runtime_detectors.DeadEmbeddedStaticPayloadDetector.cache_granularity
-        is base_detectors.DetectorCacheGranularity.CONTEXTUAL_MODULE
+        is base_detectors.DetectorCacheGranularity.CONTEXTUAL_GLOBAL
     )
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "Publisher._write_static_shell" in finding.summary
@@ -22460,7 +22464,7 @@ def test_detects_private_helper_semantic_cluster(tmp_path: Path) -> None:
     assert "Rent proof" in (finding.codemod_patch or "")
 
 
-def test_private_reference_context_signatures_ignore_unconsumed_class_declarations(
+def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarations(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -22506,46 +22510,6 @@ def test_private_reference_context_signatures_ignore_unconsumed_class_declaratio
             runtime_detectors.UnreferencedPrivateFunctionDetector,
         )
     }
-
-
-def test_private_reference_context_computes_each_signature_facet_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _render(value):\n"
-        "    return str(value)\n"
-        "\n"
-        "class Renderer:\n"
-        "    def render(self, value):\n"
-        "        return _render(value)\n",
-    )
-    context = runtime_detectors.PrivateReferenceDetectorContext(
-        tuple(parse_python_modules(tmp_path))
-    )
-    facet_type = runtime_detectors.SurfaceFunctionPrivateReferenceSignatureFacet
-    original_value = facet_type.value
-    value_calls = 0
-
-    def counted_value(self, context):
-        nonlocal value_calls
-        value_calls += 1
-        return original_value(self, context)
-
-    monkeypatch.setattr(facet_type, "value", counted_value)
-    first = runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(
-        context,
-        (facet_type,),
-    )
-    second = runtime_detectors.PrivateReferenceDetectorContextSignature.from_context(
-        context,
-        (facet_type,),
-    )
-
-    assert first == second
-    assert value_calls == 1
 
 
 def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
