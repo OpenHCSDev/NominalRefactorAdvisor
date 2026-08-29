@@ -5047,6 +5047,13 @@ def test_compact_dataclass_cli_projection_matches_legacy_ast_candidates(
 def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
     tmp_path: Path,
 ) -> None:
+    assert not hasattr(runtime_detectors, "ExactTypeGuardPredicate")
+    assert not hasattr(runtime_detectors, "ExactTypeComparisonAuthority")
+    assert not hasattr(runtime_detectors, "EXACT_TYPE_COMPARISON_AUTHORITY")
+    assert not hasattr(runtime_detectors, "ExactTypeGuardBoundaryCollector")
+    assert not hasattr(runtime_detectors, "FailLoudBlockAuthority")
+    assert not hasattr(runtime_detectors, "FAIL_LOUD_BLOCK_AUTHORITY")
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "family.py").write_text(
@@ -5079,21 +5086,28 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     detector = runtime_detectors.ExactTypeGuardInheritanceRetreatDetector()
-    legacy_findings = detector._findings_for_candidates(
-        runtime_detectors.ExactTypeGuardBoundaryCollector.collect(modules),
-        DetectorConfig(),
-    )
     projections = detector.compact_module_projections(modules)
-    compact_findings = detector._findings_for_candidates(
+    candidates = (
         runtime_detectors._exact_type_guard_candidates_from_compact_projections(
             projections
-        ),
-        DetectorConfig(),
+        )
     )
 
-    assert [finding.to_dict() for finding in compact_findings] == [
-        finding.to_dict() for finding in legacy_findings
-    ]
+    assert tuple(candidate.guard.qualname for candidate in candidates) == (
+        "require_boundary",
+        "assert_boundary",
+        "require_nested.nested",
+    )
+    assert all(
+        candidate.base_class.simple_name == "Boundary" for candidate in candidates
+    )
+    assert all(
+        tuple(
+            descendant.simple_name for descendant in candidate.descendant_classes
+        )
+        == ("ConcreteBoundary",)
+        for candidate in candidates
+    )
 
 
 def test_compact_semantic_inheritance_projection_matches_legacy_ast_candidates(

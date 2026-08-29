@@ -884,6 +884,13 @@ class CompactExactTypeGuard:
     matches_exact_type_when_true: bool
     expression: str
 
+    @property
+    def structural_membership_expression(self) -> str:
+        membership = (
+            f"isinstance({self.subject_expression}, {self.type_reference_expression})"
+        )
+        return membership if self.matches_exact_type_when_true else f"not {membership}"
+
 
 @dataclass(frozen=True)
 class CompactClassFamilyIndex:
