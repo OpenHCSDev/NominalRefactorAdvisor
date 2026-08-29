@@ -181,19 +181,28 @@ class CompactModuleClassHeader(CompactModuleIdentity):
 
 
 @dataclass(frozen=True)
-class CompactModuleClassProjection(CompactModuleClassHeader):
-    """One module's class declarations and import aliases, without its AST."""
+class CompactClassSyntaxFacets:
+    """Class-family views derived together from the shared module traversal."""
 
-    sorted_key_calls: tuple["CompactSortedKeyCall", ...] = ()
-    keyed_table_axes: tuple["CompactKeyedTableAxis", ...] = ()
     closed_axis_branch_functions: tuple["CompactClosedAxisBranchFunction", ...] = ()
-    manual_selector_axes: tuple["CompactManualSelectorAxis", ...] = ()
-    top_level_definitions: tuple[tuple[str, int], ...] = ()
     exact_type_guards: tuple["CompactExactTypeGuard", ...] = ()
     autoregister_function_references: tuple[
         "CompactAutoRegisterFunctionReference", ...
     ] = ()
     autoregister_reference_index: "CompactAutoRegisterReferenceIndex | None" = None
+
+
+@dataclass(frozen=True)
+class CompactModuleClassProjection(
+    CompactClassSyntaxFacets,
+    CompactModuleClassHeader,
+):
+    """One module's class declarations and import aliases, without its AST."""
+
+    sorted_key_calls: tuple["CompactSortedKeyCall", ...] = ()
+    keyed_table_axes: tuple["CompactKeyedTableAxis", ...] = ()
+    manual_selector_axes: tuple["CompactManualSelectorAxis", ...] = ()
+    top_level_definitions: tuple[tuple[str, int], ...] = ()
     repeated_keyed_family_roots: tuple["CompactRepeatedKeyedFamilyRoot", ...] = ()
     manual_subclass_roster_roots: tuple["CompactManualSubclassRosterRoot", ...] = ()
     latent_rosters: tuple["LatentRosterObservation", ...] = ()
@@ -1414,14 +1423,12 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> list[CompactModuleClassProjection]:
         del cls
         file_path = str(parsed_module.path)
-        if demand is None or demand.include_autoregister_references:
-            (
-                autoregister_function_references,
-                autoregister_reference_index,
-            ) = _compact_autoregister_function_references(parsed_module)
-        else:
-            autoregister_function_references = ()
-            autoregister_reference_index = None
+        syntax_facets = _compact_class_syntax_facets(
+            parsed_module,
+            collect_autoregister=(
+                demand is None or demand.include_autoregister_references
+            ),
+        )
         indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
         all_class_nodes = tuple(
             node
@@ -1487,9 +1494,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 classes=classes,
                 sorted_key_calls=_compact_sorted_key_calls(parsed_module),
                 keyed_table_axes=_compact_keyed_table_axes(parsed_module),
-                closed_axis_branch_functions=_compact_closed_axis_branch_functions(
-                    parsed_module
-                ),
+                closed_axis_branch_functions=syntax_facets.closed_axis_branch_functions,
                 manual_selector_axes=_compact_manual_selector_axes(parsed_module),
                 top_level_definitions=tuple(
                     (node.name, node.lineno)
@@ -1498,9 +1503,13 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
                     )
                 ),
-                exact_type_guards=_compact_exact_type_guards(parsed_module),
-                autoregister_function_references=autoregister_function_references,
-                autoregister_reference_index=autoregister_reference_index,
+                exact_type_guards=syntax_facets.exact_type_guards,
+                autoregister_function_references=(
+                    syntax_facets.autoregister_function_references
+                ),
+                autoregister_reference_index=(
+                    syntax_facets.autoregister_reference_index
+                ),
                 repeated_keyed_family_roots=_compact_repeated_keyed_family_roots(
                     parsed_module
                 ),
@@ -2869,12 +2878,6 @@ def _compact_keyed_table_axes(
     return tuple(axes)
 
 
-def _compact_closed_axis_branch_functions(
-    parsed_module: ParsedModule,
-) -> tuple[CompactClosedAxisBranchFunction, ...]:
-    return _compact_class_syntax_facets(parsed_module).closed_axis_branch_functions
-
-
 def _compact_manual_selector_axes(
     parsed_module: ParsedModule,
 ) -> tuple[CompactManualSelectorAxis, ...]:
@@ -2957,12 +2960,6 @@ def _compact_manual_selector_axes(
                 )
             )
     return tuple(axes)
-
-
-def _compact_exact_type_guards(
-    parsed_module: ParsedModule,
-) -> tuple[CompactExactTypeGuard, ...]:
-    return _compact_class_syntax_facets(parsed_module).exact_type_guards
 
 
 def _exact_type_predicate(
@@ -3327,16 +3324,6 @@ class _CompactAutoRegisterFunctionReferenceBuilder:
     calls_autoregister_meta: bool = False
 
 
-@dataclass(frozen=True)
-class _CompactClassSyntaxFacets:
-    """Class-family views derived together from the shared module traversal."""
-
-    autoregister_function_references: tuple[CompactAutoRegisterFunctionReference, ...]
-    autoregister_reference_index: CompactAutoRegisterReferenceIndex | None
-    closed_axis_branch_functions: tuple[CompactClosedAxisBranchFunction, ...]
-    exact_type_guards: tuple[CompactExactTypeGuard, ...]
-
-
 def _compact_autoregister_reference_projection(
     builders: tuple[_CompactAutoRegisterFunctionReferenceBuilder, ...],
 ) -> tuple[
@@ -3398,10 +3385,12 @@ def _compact_autoregister_reference_projection(
 @lru_cache(maxsize=None)
 def _compact_class_syntax_facets(
     parsed_module: ParsedModule,
-) -> _CompactClassSyntaxFacets:
+    *,
+    collect_autoregister: bool = True,
+) -> CompactClassSyntaxFacets:
     syntax_index = module_syntax_index(parsed_module.module)
     file_path = str(parsed_module.path)
-    collect_autoregister = not (
+    collect_autoregister = collect_autoregister and not (
         file_path.startswith("tests/") or "/tests/" in file_path
     )
     builders_by_function_id = (
@@ -3614,22 +3603,12 @@ def _compact_class_syntax_facets(
                     axes=axes,
                 )
             )
-    return _CompactClassSyntaxFacets(
+    return CompactClassSyntaxFacets(
         autoregister_function_references=autoregister_references,
         autoregister_reference_index=autoregister_index,
         closed_axis_branch_functions=tuple(closed_axis_functions),
         exact_type_guards=tuple(exact_type_guards),
     )
-
-
-def _compact_autoregister_function_references(
-    parsed_module: ParsedModule,
-) -> tuple[
-    tuple[CompactAutoRegisterFunctionReference, ...],
-    CompactAutoRegisterReferenceIndex | None,
-]:
-    facets = _compact_class_syntax_facets(parsed_module)
-    return facets.autoregister_function_references, facets.autoregister_reference_index
 
 
 def _registration_authority_base_name(base_name: str) -> bool:

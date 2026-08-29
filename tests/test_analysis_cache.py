@@ -2229,6 +2229,16 @@ def test_native_export_policy_projection_matches_ast_family(
 def test_native_support_prelude_projection_matches_ast_family(
     tmp_path: Path,
 ) -> None:
+    assert not hasattr(
+        structural_detectors,
+        "_support_prelude_module_family_candidates",
+    )
+    assert not hasattr(
+        structural_detectors,
+        "_support_prelude_module_family_candidates_from_facts",
+    )
+    assert not hasattr(structural_detectors, "_native_support_prelude_module_facts")
+
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "support.py").write_text(
@@ -3258,19 +3268,31 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
     assert isinstance(demand, class_index_module.CompactClassProjectionDemand)
     assert demand.include_autoregister_references is False
 
-    def unexpected_autoregister_graph(_parsed_module):
-        raise AssertionError("empty report demand must omit the reference graph")
+    collect_autoregister_values: list[bool] = []
+    original_collector = class_index_module._compact_class_syntax_facets
+
+    def recording_syntax_facets(
+        selected_module,
+        *,
+        collect_autoregister: bool = True,
+    ):
+        collect_autoregister_values.append(collect_autoregister)
+        return original_collector(
+            selected_module,
+            collect_autoregister=collect_autoregister,
+        )
 
     monkeypatch.setattr(
         class_index_module,
-        "_compact_autoregister_function_references",
-        unexpected_autoregister_graph,
+        "_compact_class_syntax_facets",
+        recording_syntax_facets,
     )
     demanded = family.collect_demanded(parsed_module, demand)
 
     assert demanded is not None
     assert demanded[0].autoregister_function_references == ()
     assert demanded[0].autoregister_reference_index is None
+    assert collect_autoregister_values == [False]
 
     target_root = class_index_module.CompactIndexedClass(
         symbol="pkg.target.TargetRegistry",
@@ -3409,10 +3431,18 @@ def test_native_class_header_core_matches_cached_minimal_projection(
         class_index_module.CompactClassHeader,
         class_index_module.ClassDeclaration,
     )
-    assert class_index_module.CompactModuleClassProjection.__mro__[:2] == (
+    assert class_index_module.CompactModuleClassProjection.__mro__[:3] == (
         class_index_module.CompactModuleClassProjection,
+        class_index_module.CompactClassSyntaxFacets,
         class_index_module.CompactModuleClassHeader,
     )
+    assert not hasattr(class_index_module, "_CompactClassSyntaxFacets")
+    assert not hasattr(
+        class_index_module,
+        "_compact_autoregister_function_references",
+    )
+    assert not hasattr(class_index_module, "_compact_closed_axis_branch_functions")
+    assert not hasattr(class_index_module, "_compact_exact_type_guards")
     assert not hasattr(class_index_module, "_CLASS_HEADER_CORE_CLASS_DEFAULTS")
     assert not hasattr(class_index_module, "_CLASS_HEADER_CORE_MODULE_DEFAULTS")
 

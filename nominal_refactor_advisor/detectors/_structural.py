@@ -2259,6 +2259,31 @@ class CatalogInstallingMixinFamilyCandidate(ClassLineNumbersGroup):
 class SupportPreludeModuleFamilyCandidate(MultiFileClassLineNumbersGroup):
     support_module_name: str
 
+    @classmethod
+    def from_facts(
+        cls,
+        facts: tuple["SupportPreludeModuleFact", ...],
+    ) -> tuple["SupportPreludeModuleFamilyCandidate", ...]:
+        grouped: dict[tuple[str, str], list[SupportPreludeModuleFact]] = defaultdict(
+            list
+        )
+        for fact in facts:
+            grouped[fact.parent_path, fact.support_module_name].append(fact)
+        candidates: list[SupportPreludeModuleFamilyCandidate] = []
+        for (_, support_import), items in grouped.items():
+            if len(items) < 3:
+                continue
+            ordered = sorted_tuple(items, key=lambda item: item.file_path)
+            candidates.append(
+                cls(
+                    support_module_name=support_import,
+                    file_paths=tuple(item.file_path for item in ordered),
+                    class_names=tuple(item.class_name for item in ordered),
+                    line_numbers=tuple(item.line for item in ordered),
+                )
+            )
+        return tuple(candidates)
+
 
 @dataclass(frozen=True)
 class SupportPreludeModuleFact:
@@ -2267,6 +2292,91 @@ class SupportPreludeModuleFact:
     file_path: str
     class_name: str
     line: int
+
+    @classmethod
+    def from_declaration(
+        cls,
+        module_path: Path,
+        support_module_name: str,
+        class_name: str,
+        line: int,
+    ) -> "SupportPreludeModuleFact | None":
+        module_name = support_module_name.lstrip(".")
+        if not module_name:
+            return None
+        support_path = module_path.parent / f"{module_name.split('.')[-1]}.py"
+        if _module_has_family_catalog(support_path):
+            return None
+        return cls(
+            parent_path=str(module_path.parent),
+            support_module_name=support_module_name,
+            file_path=str(module_path),
+            class_name=class_name,
+            line=line,
+        )
+
+    @classmethod
+    def from_source_module(
+        cls,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list["SupportPreludeModuleFact"] | None:
+        """Project one-class support-prelude modules without a module Python AST."""
+
+        if not syntax_index.is_complete:
+            return None
+        top_level_classes = syntax_index.top_level_declarations("class")
+        if len(top_level_classes) != 1 or syntax_index.top_level_declarations(
+            "function"
+        ):
+            return []
+        try:
+            imports = tuple(
+                syntax_index.statement_for(node)
+                for node in syntax_index.tree.root_node.named_children
+                if node.type == "import_from_statement"
+            )
+            support_import = _support_prelude_import_name(
+                ast.Module(body=list(imports), type_ignores=[])
+            )
+            if support_import is None:
+                return []
+            class_node = top_level_classes[0]
+            fact = cls.from_declaration(
+                source_module.path,
+                support_import,
+                syntax_index.declared_name(class_node),
+                class_node.start_point.row + 1,
+            )
+            return [] if fact is None else [fact]
+        except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+            return None
+
+    @classmethod
+    def from_parsed_module(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> list["SupportPreludeModuleFact"]:
+        module_node = parsed_module.module
+        top_level_classes = [
+            node for node in module_node.body if isinstance(node, ast.ClassDef)
+        ]
+        if len(top_level_classes) != 1 or any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for node in module_node.body
+        ):
+            return []
+        support_import = _support_prelude_import_name(module_node)
+        if support_import is None:
+            return []
+        class_node = top_level_classes[0]
+        fact = cls.from_declaration(
+            parsed_module.path,
+            support_import,
+            class_node.name,
+            class_node.lineno,
+        )
+        return [] if fact is None else [fact]
 
 
 @dataclass(frozen=True)
@@ -2428,148 +2538,11 @@ def _statements_declare_family_catalog(
     return False
 
 
-def _support_module_path(module: ParsedModule, import_name: str) -> Path | None:
-    stripped = import_name.lstrip(".")
-    if not stripped:
-        return None
-    return module.path.parent / f"{stripped.split('.')[-1]}.py"
-
-
-def _support_prelude_module_family_candidates(
-    modules: list[ParsedModule],
-) -> tuple[SupportPreludeModuleFamilyCandidate, ...]:
-    facts: list[SupportPreludeModuleFact] = []
-    for module in modules:
-        top_level_classes = [
-            node for node in module.module.body if isinstance(node, ast.ClassDef)
-        ]
-        top_level_functions = [
-            node
-            for node in module.module.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
-        if len(top_level_classes) != 1 or top_level_functions:
-            continue
-        support_import = _support_prelude_import_name(module.module)
-        if support_import is None:
-            continue
-        support_path = _support_module_path(module, support_import)
-        if support_path is not None and _module_has_family_catalog(support_path):
-            continue
-        class_node = top_level_classes[0]
-        facts.append(
-            SupportPreludeModuleFact(
-                parent_path=str(module.path.parent),
-                support_module_name=support_import,
-                file_path=str(module.path),
-                class_name=class_node.name,
-                line=class_node.lineno,
-            )
-        )
-    return _support_prelude_module_family_candidates_from_facts(tuple(facts))
-
-
-def _support_prelude_module_family_candidates_from_facts(
-    facts: tuple[SupportPreludeModuleFact, ...],
-) -> tuple[SupportPreludeModuleFamilyCandidate, ...]:
-    grouped: dict[tuple[str, str], list[SupportPreludeModuleFact]] = defaultdict(list)
-    for fact in facts:
-        grouped[fact.parent_path, fact.support_module_name].append(fact)
-    candidates: list[SupportPreludeModuleFamilyCandidate] = []
-    for (_, support_import), items in grouped.items():
-        if len(items) < 3:
-            continue
-        ordered = sorted_tuple(items, key=lambda item: item.file_path)
-        candidates.append(
-            SupportPreludeModuleFamilyCandidate(
-                support_module_name=support_import,
-                file_paths=tuple(item.file_path for item in ordered),
-                class_names=tuple(item.class_name for item in ordered),
-                line_numbers=tuple(item.line for item in ordered),
-            )
-        )
-    return tuple(candidates)
-
-
-def _native_support_prelude_module_facts(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[SupportPreludeModuleFact] | None:
-    """Project one-class support-prelude modules without a module Python AST."""
-
-    if not syntax_index.is_complete:
-        return None
-    top_level_classes = syntax_index.top_level_declarations("class")
-    if len(top_level_classes) != 1 or syntax_index.top_level_declarations("function"):
-        return []
-    try:
-        imports = tuple(
-            syntax_index.statement_for(node)
-            for node in syntax_index.tree.root_node.named_children
-            if node.type == "import_from_statement"
-        )
-        support_import = _support_prelude_import_name(
-            ast.Module(body=list(imports), type_ignores=[])
-        )
-        if support_import is None:
-            return []
-        parsed_module = ParsedModule(
-            path=source_module.path,
-            module_name=source_module.module_name,
-            is_package_init=source_module.path.name == "__init__.py",
-            module=ast.Module(body=[], type_ignores=[]),
-            source=source_module.source,
-        )
-        support_path = _support_module_path(parsed_module, support_import)
-        if support_path is not None and _module_has_family_catalog(support_path):
-            return []
-        class_node = top_level_classes[0]
-        return [
-            SupportPreludeModuleFact(
-                parent_path=str(source_module.path.parent),
-                support_module_name=support_import,
-                file_path=str(source_module.path),
-                class_name=syntax_index.declared_name(class_node),
-                line=class_node.start_point.row + 1,
-            )
-        ]
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
 class SupportPreludeModuleFactFamily(CollectedFamily[SupportPreludeModuleFact]):
     item_type = SupportPreludeModuleFact
     report_presence_predicate = staticmethod(lambda items, config: bool(items))
-    source_collector = staticmethod(_native_support_prelude_module_facts)
-
-    @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[SupportPreludeModuleFact]:
-        del cls
-        module_node = parsed_module.module
-        top_level_classes = [
-            node for node in module_node.body if isinstance(node, ast.ClassDef)
-        ]
-        if len(top_level_classes) != 1 or any(
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            for node in module_node.body
-        ):
-            return []
-        support_import = _support_prelude_import_name(module_node)
-        if support_import is None:
-            return []
-        support_path = _support_module_path(parsed_module, support_import)
-        if support_path is not None and _module_has_family_catalog(support_path):
-            return []
-        class_node = top_level_classes[0]
-        return [
-            SupportPreludeModuleFact(
-                parent_path=str(parsed_module.path.parent),
-                support_module_name=support_import,
-                file_path=str(parsed_module.path),
-                class_name=class_node.name,
-                line=class_node.lineno,
-            )
-        ]
+    source_collector = staticmethod(SupportPreludeModuleFact.from_source_module)
+    collect = staticmethod(SupportPreludeModuleFact.from_parsed_module)
 
 
 def _is_module_policy_row_name(name: str) -> bool:
@@ -2811,9 +2784,7 @@ class SupportPreludeModuleFamilyDetector(
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for candidate in _support_prelude_module_family_candidates_from_facts(
-            projections
-        ):
+        for candidate in SupportPreludeModuleFamilyCandidate.from_facts(projections):
             findings.append(
                 self.build_finding(
                     (
