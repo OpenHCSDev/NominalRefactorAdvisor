@@ -1239,7 +1239,21 @@ class LiteralSchemaFieldAccess:
     source_expression: str
     key_name: str
     line: int
-    access_kind: str
+
+    @classmethod
+    def from_mapping_key(
+        cls,
+        node: ast.AST,
+        source_expression: str | None,
+        key_name: str | None,
+    ) -> "LiteralSchemaFieldAccess | None":
+        if source_expression is None or key_name is None:
+            return None
+        return cls(
+            source_expression=source_expression,
+            key_name=key_name,
+            line=node.lineno,
+        )
 
 
 @dataclass(frozen=True)
@@ -1476,13 +1490,10 @@ def _literal_schema_field_access_from_call(
             return None
         key_name = _constant_string(node.args[0])
         source_expression = _literal_schema_mapping_expression(node.func.value)
-        if key_name is None or source_expression is None:
-            return None
-        return LiteralSchemaFieldAccess(
-            source_expression=source_expression,
-            key_name=key_name,
-            line=node.lineno,
-            access_kind=f"mapping_{node.func.attr}",
+        return LiteralSchemaFieldAccess.from_mapping_key(
+            node,
+            source_expression,
+            key_name,
         )
 
     call_name = _call_name(node.func)
@@ -1494,13 +1505,10 @@ def _literal_schema_field_access_from_call(
         return None
     source_expression = _literal_schema_mapping_expression(node.args[0])
     key_name = _constant_string(node.args[1])
-    if source_expression is None or key_name is None:
-        return None
-    return LiteralSchemaFieldAccess(
-        source_expression=source_expression,
-        key_name=key_name,
-        line=node.lineno,
-        access_kind="field_helper",
+    return LiteralSchemaFieldAccess.from_mapping_key(
+        node,
+        source_expression,
+        key_name,
     )
 
 
@@ -1509,13 +1517,10 @@ def _literal_schema_field_access_from_subscript(
 ) -> LiteralSchemaFieldAccess | None:
     key_name = _constant_string(node.slice)
     source_expression = _literal_schema_mapping_expression(node.value)
-    if key_name is None or source_expression is None:
-        return None
-    return LiteralSchemaFieldAccess(
-        source_expression=source_expression,
-        key_name=key_name,
-        line=node.lineno,
-        access_kind="subscript",
+    return LiteralSchemaFieldAccess.from_mapping_key(
+        node,
+        source_expression,
+        key_name,
     )
 
 
@@ -1528,13 +1533,10 @@ def _literal_schema_field_access_from_membership(
         return None
     key_name = _constant_string(node.left)
     source_expression = _literal_schema_mapping_expression(node.comparators[0])
-    if key_name is None or source_expression is None:
-        return None
-    return LiteralSchemaFieldAccess(
-        source_expression=source_expression,
-        key_name=key_name,
-        line=node.lineno,
-        access_kind="membership",
+    return LiteralSchemaFieldAccess.from_mapping_key(
+        node,
+        source_expression,
+        key_name,
     )
 
 

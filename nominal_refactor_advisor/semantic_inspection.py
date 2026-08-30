@@ -198,13 +198,6 @@ class _TargetKey:
 
 
 @dataclass(frozen=True)
-class _Scope:
-    qualname: str
-    target_id: str
-    node_type: str
-
-
-@dataclass(frozen=True)
 class _ModuleInspection:
     imports: tuple[ImportSummary, ...]
     calls: tuple[CallSummary, ...]
@@ -439,7 +432,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         self.targets_by_key = targets_by_key
         self.class_stack: list[str] = []
         self.function_stack: list[str] = []
-        self.scope_stack: list[_Scope] = []
+        self.scope_stack: list[AstTargetDigest] = []
         self.imports: list[ImportSummary] = []
         self.calls: list[CallSummary] = []
         self.assignments: list[AssignmentSummary] = []
@@ -502,11 +495,6 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualname = self._qualname_for(node.name)
         target = self._target_for("class", qualname, node.lineno)
-        class_scope = _Scope(
-            qualname=target.qualname,
-            target_id=target.target_id,
-            node_type=target.node_type,
-        )
         decorators = _decorator_names(node.decorator_list)
         is_dataclass = _is_dataclass_decorator(decorators)
         self.classes.append(
@@ -542,7 +530,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 )
             )
         self.class_stack.append(node.name)
-        self.scope_stack.append(class_scope)
+        self.scope_stack.append(target)
         try:
             self.generic_visit(node)
         finally:
@@ -651,13 +639,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 target.target_id,
             )
         self.function_stack.append(node.name)
-        self.scope_stack.append(
-            _Scope(
-                qualname=target.qualname,
-                target_id=target.target_id,
-                node_type=target.node_type,
-            )
-        )
+        self.scope_stack.append(target)
         try:
             self.generic_visit(node)
         finally:
@@ -724,7 +706,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
     def _qualname_for(self, name: str) -> str:
         return ".".join((*self.class_stack, *self.function_stack, name))
 
-    def _current_scope(self) -> _Scope | None:
+    def _current_scope(self) -> AstTargetDigest | None:
         if not self.scope_stack:
             return None
         return self.scope_stack[-1]
