@@ -6396,41 +6396,6 @@ declare_candidate_rule_detector(
 )
 
 
-declare_candidate_rule_detector(
-    DescriptorDerivedViewCandidate,
-    high_confidence_spec(
-        PatternId.DESCRIPTOR_DERIVED_VIEW,
-        "Derived views stored independently of their source",
-        "Several stored fields are derived from one authoritative source field, but mutators resynchronize them manually and incompletely. That raises the degree of freedom above one and makes view disagreement reachable.",
-        "descriptor- or property-mediated derived views rooted in one authoritative source",
-        "stored derived views must be manually kept coherent with a single source field",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.PROVENANCE,
-        ),
-    ),
-    summary=lambda view_candidate: (
-        f"`{view_candidate.class_name}` stores derived views {view_candidate.derived_field_names} from `{view_candidate.source_attr}`, but `{view_candidate.mutator_name}` only updates {view_candidate.updated_field_names}."
-    ),
-    evidence=lambda view_candidate: (
-        SourceLocation(
-            view_candidate.file_path,
-            view_candidate.init_line,
-            f"{view_candidate.class_name}.__init__",
-        ),
-        SourceLocation(
-            view_candidate.file_path,
-            view_candidate.mutator_line,
-            f"{view_candidate.class_name}.{view_candidate.mutator_name}",
-        ),
-    ),
-    scaffold=lambda view_candidate: _descriptor_derived_view_scaffold(view_candidate),
-    codemod_patch=lambda view_candidate: _descriptor_derived_view_patch(view_candidate),
-    candidate_collector=_descriptor_derived_view_candidates,
-)
-
-
 class DeferredClassRegistrationDetector(
     ModuleCollectorCandidateDetector[ManualRegistryCandidate]
 ):

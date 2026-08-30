@@ -8455,94 +8455,6 @@ def _manual_fiber_tag_candidates(
     return tuple(candidates)
 
 
-def _expr_mentions_self_attr(expr: ast.AST, attr_name: str) -> bool:
-    for subnode in _walk_nodes(expr):
-        if isinstance(subnode, ast.Attribute) and isinstance(subnode.value, ast.Name):
-            if subnode.value.id == "self" and subnode.attr == attr_name:
-                return True
-        if isinstance(subnode, ast.Name) and subnode.id == attr_name:
-            return True
-    return False
-
-
-def _descriptor_derived_view_candidates(
-    module: ParsedModule,
-) -> tuple[DescriptorDerivedViewCandidate, ...]:
-    candidates: list[DescriptorDerivedViewCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        methods = [
-            item
-            for item in node.body
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
-        init_method = next((item for item in methods if item.name == "__init__"), None)
-        if init_method is None:
-            continue
-        source_assignments = SYNTAX_PROJECTION_AUTHORITY.assigned_self_attr_from_param(
-            init_method
-        )
-        for source_attr in source_assignments:
-            derived_field_names = []
-            for subnode in _walk_nodes(init_method):
-                if not isinstance(subnode, ast.Assign) or len(subnode.targets) != 1:
-                    continue
-                target_name = _self_attr_name(subnode.targets[0])
-                if target_name is None or target_name == source_attr:
-                    continue
-                if _expr_mentions_self_attr(subnode.value, source_attr):
-                    derived_field_names.append(target_name)
-            derived_field_names = cast(
-                tuple[str, ...], tuple(dict.fromkeys(derived_field_names))
-            )
-            if len(derived_field_names) < 2:
-                continue
-            for method in methods:
-                if method.name == "__init__":
-                    continue
-                updated_field_names = []
-                rewrites_source = False
-                for subnode in _walk_nodes(method):
-                    if not isinstance(subnode, ast.Assign) or len(subnode.targets) != 1:
-                        continue
-                    target_name = _self_attr_name(subnode.targets[0])
-                    if target_name is None:
-                        continue
-                    if target_name == source_attr:
-                        rewrites_source = True
-                    if target_name in derived_field_names:
-                        updated_field_names.append(target_name)
-                updated_field_names = cast(
-                    tuple[str, ...], tuple(dict.fromkeys(updated_field_names))
-                )
-                if not rewrites_source:
-                    continue
-                if not updated_field_names or set(updated_field_names) >= set(
-                    derived_field_names
-                ):
-                    continue
-                candidate_derived_field_names: tuple[str, ...] = tuple(
-                    derived_field_names
-                )
-                candidate_updated_field_names: tuple[str, ...] = tuple(
-                    updated_field_names
-                )
-                candidates.append(
-                    DescriptorDerivedViewCandidate(
-                        file_path=str(module.path),
-                        line=method.lineno,
-                        subject_name=node.name,
-                        name_family=candidate_derived_field_names,
-                        source_attr=source_attr,
-                        init_line=init_method.lineno,
-                        mutator_name=method.name,
-                        updated_field_names=candidate_updated_field_names,
-                    )
-                )
-    return tuple(candidates)
-
-
 def _module_registry_names(module: ParsedModule) -> tuple[str, ...]:
     names: list[str] = []
     for node in module.module.body:
@@ -8861,18 +8773,6 @@ def _manual_fiber_tag_patch(candidate: ManualFiberTagCandidate) -> str:
         f"# Remove the manual fiber tag `{candidate.tag_name}` from `{candidate.class_name}`\n"
         f"# Split `{candidate.class_name}` into one ABC root plus one subclass per fiber case.\n"
         f"# Keep only case-relevant fields in each subclass constructor."
-    )
-
-
-def _descriptor_derived_view_scaffold(candidate: DescriptorDerivedViewCandidate) -> str:
-    return "class DerivedField:\n    def __init__(self, template):\n        self.template = template\n    def __set_name__(self, owner, name): ...\n    def __get__(self, obj, objtype=None): ..."
-
-
-def _descriptor_derived_view_patch(candidate: DescriptorDerivedViewCandidate) -> str:
-    return (
-        f"# Treat `{candidate.source_attr}` as the sole authoritative source.\n"
-        f"# Replace stored derived fields {candidate.derived_field_names} with descriptor-backed views.\n"
-        f"# Remove partial resynchronization from `{candidate.mutator_name}`."
     )
 
 
@@ -11511,16 +11411,6 @@ class ManualFiberTagCandidate(WitnessCarrierCandidate):
     assigned_field_names: tuple[str, ...]
     method_line = AliasProperty[int]("line")
     case_names = AliasProperty[tuple[str, ...]]("name_family")
-
-
-@dataclass(frozen=True)
-class DescriptorDerivedViewCandidate(WitnessCarrierCandidate):
-    source_attr: str
-    init_line: int
-    mutator_name: str
-    updated_field_names: tuple[str, ...]
-    mutator_line = AliasProperty[int]("line")
-    derived_field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
 @dataclass(frozen=True)

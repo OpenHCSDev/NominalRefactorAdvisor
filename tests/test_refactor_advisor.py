@@ -9545,21 +9545,6 @@ def test_detects_manual_fiber_tag_with_abc_fix(tmp_path: Path) -> None:
     assert "class Notification(ABC)" in finding.scaffold
 
 
-def test_detects_descriptor_derived_view_drift(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Model:\n    def __init__(self, table_name):\n        self.table_name = table_name\n        self.select_query = f"SELECT * FROM {self.table_name}"\n        self.insert_query = f"INSERT INTO {self.table_name}"\n        self.count_query = f"SELECT COUNT(*) FROM {self.table_name}"\n\n    def rename_table(self, new_name):\n        self.table_name = new_name\n        self.select_query = f"SELECT * FROM {self.table_name}"\n        self.insert_query = f"INSERT INTO {self.table_name}"\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (item for item in findings if item.detector_id == "descriptor_derived_view")
-    )
-    assert "count_query" in finding.summary
-    assert finding.scaffold is not None
-    assert "class DerivedField" in finding.scaffold
-
-
 def test_detects_deferred_class_registration(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
