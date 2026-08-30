@@ -7019,35 +7019,6 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    DuplicateVisitorMethodBodyCandidate,
-    high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Duplicate AST visitor hooks should share one hook implementation",
-        "Sibling `visit_*` methods with exactly the same normalized body encode one visitor transition more than once. The shared body should be one hook or an explicit method alias, leaving the node-type distinction in dispatch metadata.",
-        "one visitor hook implementation reused by equivalent node dispatch entries",
-        "same normalized visitor hook body is repeated on sibling visit methods",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS,
-    ),
-    summary=lambda candidate: f"`{candidate.class_name}` repeats the same visitor body across {', '.join(candidate.method_names)}.",
-    scaffold=lambda candidate: f"{candidate.method_names[0]}(...)\n{candidate.method_names[1]} = {candidate.method_names[0]}",
-    codemod_patch=lambda candidate: "# Replace duplicate sibling `visit_*` method bodies with one shared implementation or explicit aliases for equivalent visitor dispatch entries.",
-    metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
-        duplicate_site_count=len(candidate.method_names),
-        statement_count=candidate.statement_count,
-        class_count=1,
-        method_symbols=tuple(
-            (
-                f"{candidate.class_name}.{method_name}"
-                for method_name in candidate.method_names
-            )
-        ),
-    ),
-    candidate_collector=_duplicate_visitor_method_body_candidates,
-)
-
-
-declare_candidate_rule_detector(
     EnumMetadataTableCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,

@@ -12914,12 +12914,6 @@ class NodeVisitorStackBoilerplateCandidate(QualnameLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class DuplicateVisitorMethodBodyCandidate(ClassLineWitnessCandidate):
-    method_names: tuple[str, ...]
-    statement_count: int
-
-
-@dataclass(frozen=True)
 class EnumMetadataTableCandidate(ClassLineWitnessCandidate):
     table_name: str
     property_names: tuple[str, ...]

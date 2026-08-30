@@ -11406,44 +11406,6 @@ def _node_visitor_stack_boilerplate_candidates(
     return tuple(candidates)
 
 
-def _duplicate_visitor_method_body_candidates(
-    module: ParsedModule,
-) -> tuple[DuplicateVisitorMethodBodyCandidate, ...]:
-    candidates: list[DuplicateVisitorMethodBodyCandidate] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            groups: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = (
-                defaultdict(list)
-            )
-            for statement in node.body:
-                if isinstance(
-                    statement, (ast.FunctionDef, ast.AsyncFunctionDef)
-                ) and statement.name.startswith("visit_"):
-                    groups[_method_body_fingerprint(statement)].append(statement)
-            for methods in groups.values():
-                if len(methods) < 2:
-                    continue
-                candidates.append(
-                    DuplicateVisitorMethodBodyCandidate(
-                        file_path=str(module.path),
-                        line=methods[0].lineno,
-                        class_name=".".join(self.class_stack),
-                        method_names=tuple((method.name for method in methods)),
-                        statement_count=len(_trim_docstring_body(methods[0].body)),
-                    )
-                )
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-    Visitor().visit(module.module)
-    return tuple(candidates)
-
-
 def _enum_metadata_table_cases(module: ast.Module) -> dict[str, tuple[str, int]]:
     tables: dict[str, tuple[str, int]] = {}
     for statement in module.body:
