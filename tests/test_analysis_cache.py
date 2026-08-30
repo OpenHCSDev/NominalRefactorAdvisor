@@ -1816,7 +1816,7 @@ def test_generated_boundary_global_projection_reuses_compact_module_cache(
     )
 
     assert second_sites == first_sites
-    assert second_sites[0].file_path == str(package_root / "generated_catalog.py")
+    assert second_sites[0].file_path == (package_root / "generated_catalog.py").as_posix()
 
 
 def test_warm_compact_projection_stream_skips_ast_deserialization(

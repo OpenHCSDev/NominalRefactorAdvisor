@@ -2483,9 +2483,11 @@ class ChangedSourcePathAuthority:
         }
         all_paths = previous_hashes.keys() | current_hashes.keys()
         return frozenset(
-            absolute_checkout_path(
-                path,
-                current_identity.presentation_roots,
+            resolved_source_path_text(
+                absolute_checkout_path(
+                    path,
+                    current_identity.presentation_roots,
+                )
             )
             for path in all_paths
             if previous_hashes.get(path) != current_hashes.get(path)
