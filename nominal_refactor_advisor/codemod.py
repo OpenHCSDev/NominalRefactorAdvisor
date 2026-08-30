@@ -990,7 +990,7 @@ class CodemodStrategy:
 
 
 @dataclass(frozen=True)
-class ArchitectureGuardRule:
+class ArchitectureGuardRule(CodemodPayloadRecord):
     """Caller-supplied invariant for a completed authority-boundary refactor."""
 
     rule_id: str
@@ -1001,21 +1001,26 @@ class ArchitectureGuardRule:
     reason: str = ""
 
     @classmethod
+    def payload_bindings(cls) -> PayloadBindingSet["ArchitectureGuardRule", object]:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            rule_id=RequiredStringPayloadValueCodec(),
+            forbidden_attribute_names=OptionalStringArrayPayloadValueCodec(),
+            forbidden_call_names=OptionalStringArrayPayloadValueCodec(),
+            forbidden_literal_dispatch_subjects=(
+                OptionalStringArrayPayloadValueCodec()
+            ),
+            file_path_suffixes=OptionalStringArrayPayloadValueCodec(),
+            reason=OptionalStringPayloadValueCodec(""),
+        )
+
+    @classmethod
     def from_json_value(cls, value: JsonValue) -> "ArchitectureGuardRule":
         payload = CodemodPayload.from_json_value(
             value,
             role="architecture guard",
         )
-        rule = cls(
-            rule_id=payload.required_string("rule_id"),
-            forbidden_attribute_names=payload.string_tuple("forbidden_attribute_names"),
-            forbidden_call_names=payload.string_tuple("forbidden_call_names"),
-            forbidden_literal_dispatch_subjects=payload.string_tuple(
-                "forbidden_literal_dispatch_subjects"
-            ),
-            file_path_suffixes=payload.string_tuple("file_path_suffixes"),
-            reason=payload.string_or_empty("reason"),
-        )
+        rule = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
         payload.require_supported_fields(rule.to_dict(), role="architecture guard")
         return rule
 
@@ -1025,16 +1030,7 @@ class ArchitectureGuardRule:
         )
 
     def to_dict(self) -> JsonObject:
-        return {
-            "rule_id": self.rule_id,
-            "forbidden_attribute_names": self.forbidden_attribute_names,
-            "forbidden_call_names": self.forbidden_call_names,
-            "forbidden_literal_dispatch_subjects": (
-                self.forbidden_literal_dispatch_subjects
-            ),
-            "file_path_suffixes": self.file_path_suffixes,
-            "reason": self.reason,
-        }
+        return self.payload_bindings().payload(self)
 
 
 @dataclass(frozen=True)
@@ -3088,32 +3084,6 @@ class SelectorArrayPayloadValueCodec(
 
 
 @dataclass(frozen=True)
-class CallReplacementArrayPayloadValueCodec(
-    PayloadValueCodec[tuple["RecipeCallReplacement", ...]]
-):
-    """Required exact call-site replacement array semantics."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> tuple["RecipeCallReplacement", ...]:
-        value = payload.get(field_name)
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"Expected call-replacement array field {field_name!r}")
-        return tuple(RecipeCallReplacement.from_json_value(item) for item in value)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, (list, tuple)) or not all(
-            isinstance(item, RecipeCallReplacement) for item in value
-        ):
-            raise TypeError(
-                "call-replacement payload codec requires RecipeCallReplacement values"
-            )
-        return tuple(item.to_dict() for item in value)
-
-
-@dataclass(frozen=True)
 class SourceRewriteContributorArrayPayloadValueCodec(
     PayloadValueCodec[tuple[SourceRewriteContributor, ...]]
 ):
@@ -4026,7 +3996,7 @@ class CodemodPayload:
 
 
 @dataclass(frozen=True)
-class RecipeCallReplacement(SourceRewriteTargetReference):
+class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
     """One exact call-site replacement inside an authority extraction recipe."""
 
     old_source: str
@@ -7116,7 +7086,9 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
     def payload_bindings(cls) -> OperationPayloadBindings:
         return super().payload_bindings() + (
             PayloadBindingSet.from_field_codecs(
-                call_replacements=CallReplacementArrayPayloadValueCodec(),
+                call_replacements=PayloadRecordArrayValueCodec(
+                    RecipeCallReplacement
+                ),
             )
         )
 

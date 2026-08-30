@@ -8,7 +8,6 @@ from nominal_refactor_advisor import codemod as codemod_module
 from nominal_refactor_advisor.codemod import (
     AuthorityClaimPayloadValueCodec,
     BooleanPayloadValueCodec,
-    CallReplacementArrayPayloadValueCodec,
     CodemodTargetSelector,
     DefaultedStringPayloadValueCodec,
     IntegerPayloadValueCodec,
@@ -18,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     OptionalStringArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadBindingSet,
+    PayloadRecordArrayValueCodec,
     PayloadValueCodec,
     RecipeCallReplacement,
     RefactorRecipeOperation,
@@ -93,7 +93,10 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         (NodeKindArrayPayloadValueCodec(), (AstTargetNodeKind.FUNCTION,)),
         (SelectorObjectPayloadValueCodec(), selector),
         (SelectorArrayPayloadValueCodec(), (selector,)),
-        (CallReplacementArrayPayloadValueCodec(), (call_replacement,)),
+        (
+            PayloadRecordArrayValueCodec(RecipeCallReplacement),
+            (call_replacement,),
+        ),
         (AuthorityClaimPayloadValueCodec(), authority_claim),
         (SelectionCountPayloadValueCodec(), selection_count),
         (ReplacementImportPayloadValueCodec(), replacement_import),

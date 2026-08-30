@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from nominal_refactor_advisor.codemod import (
+    ArchitectureGuardRule,
     CodemodPayloadRecord,
     CodemodPlanDocument,
     CodemodPlanSequence,
@@ -11,6 +12,7 @@ from nominal_refactor_advisor.codemod import (
     PayloadBindingSet,
     RefactorRecipe,
     RefactorRecipeOperation,
+    RecipeCallReplacement,
     RequiredStringPayloadValueCodec,
 )
 
@@ -101,8 +103,23 @@ def test_registered_selector_payload_bindings_are_unique() -> None:
         ) == len(binding_set)
 
 
-def test_plan_records_own_their_wire_schema() -> None:
+def test_payload_records_own_their_wire_schema() -> None:
     expected_binding_names = {
+        ArchitectureGuardRule: (
+            ("rule_id", "rule_id"),
+            ("forbidden_attribute_names", "forbidden_attribute_names"),
+            ("forbidden_call_names", "forbidden_call_names"),
+            (
+                "forbidden_literal_dispatch_subjects",
+                "forbidden_literal_dispatch_subjects",
+            ),
+            ("file_path_suffixes", "file_path_suffixes"),
+            ("reason", "reason"),
+        ),
+        RecipeCallReplacement: (
+            ("old_source", "old_source"),
+            ("new_source", "new_source"),
+        ),
         RefactorRecipe: (
             ("recipe_id", "recipe_id"),
             ("operations", "operations"),
