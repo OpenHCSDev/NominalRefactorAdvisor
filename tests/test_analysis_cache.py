@@ -2571,6 +2571,44 @@ def test_compact_family_projection_batch_rejects_ast_payloads() -> None:
         )
 
 
+def test_uncached_compact_analysis_skips_persistent_content_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "family.py").write_text(
+        "class Handler:\n"
+        "    pass\n"
+        "\n"
+        "class Alpha(Handler):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    def unexpected_content_identity(items: tuple[object, ...]) -> str:
+        del items
+        raise AssertionError("disabled finding cache cannot consume this identity")
+
+    monkeypatch.setattr(
+        analysis_module,
+        "collected_family_items_content_signature",
+        unexpected_content_identity,
+    )
+
+    result = analyze_compact_roots_with_cache(
+        (package_root,),
+        cache_dir=None,
+        analysis_cache_dir=None,
+        use_parse_cache=False,
+        detector_types=(
+            systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
+        ),
+    )
+
+    assert result.cache_status is AnalysisCacheStatus.DISABLED
+
+
 def test_source_local_detector_shard_skips_python_ast_when_exact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

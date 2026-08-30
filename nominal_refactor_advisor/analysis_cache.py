@@ -71,6 +71,12 @@ class AnalysisCacheStatus(StrEnum):
     PARTIAL = "partial"
     MISS = "miss"
 
+    @property
+    def can_reuse_findings(self) -> bool:
+        """Whether projection identities can resolve persistent findings."""
+
+        return self is not AnalysisCacheStatus.DISABLED
+
 
 class AnalysisLatestPointerPolicy(StrEnum):
     """Persistence policy for the latest raw-source cache pointer."""

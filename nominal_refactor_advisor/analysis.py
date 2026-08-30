@@ -1326,13 +1326,13 @@ class BoundedCompactProjectionManifest:
     ) -> None:
         key = batch.family, source.resolved_path_text
         self.runtime_projections[key] = batch.items
-        signature = (
-            batch.content_signature
-            if batch.content_signature is not None
-            else collected_family_items_content_signature(batch.items)
-        )
-        self._source_projection_signatures[key] = signature
-        self._record_content_signature(source, batch.family, signature)
+        if batch.content_signature is not None:
+            self._source_projection_signatures[key] = batch.content_signature
+            self._record_content_signature(
+                source,
+                batch.family,
+                batch.content_signature,
+            )
 
     def _content_signature_index(
         self,
@@ -1417,9 +1417,11 @@ class BoundedCompactProjectionManifest:
             ),
         )
 
-    def projections_for_family(
+    def _projections_for_family(
         self,
         family: type[CollectedFamily],
+        *,
+        derive_content_identity: bool,
     ) -> tuple[object, ...]:
         projections: list[object] = []
         source_signatures: list[str] = []
@@ -1444,16 +1446,17 @@ class BoundedCompactProjectionManifest:
                     tuple(source_projections),
                     demand,
                 )
-            source_signature = self._source_projection_signatures.get(source_key)
-            if source_signature is None:
-                source_signature = self._indexed_content_signature(source, family)
-            if source_signature is None:
-                source_signature = collected_family_items_content_signature(
-                    tuple(source_projections)
-                )
-            self._source_projection_signatures[source_key] = source_signature
-            self._record_content_signature(source, family, source_signature)
-            source_signatures.append(source_signature)
+            if derive_content_identity:
+                source_signature = self._source_projection_signatures.get(source_key)
+                if source_signature is None:
+                    source_signature = self._indexed_content_signature(source, family)
+                if source_signature is None:
+                    source_signature = collected_family_items_content_signature(
+                        tuple(source_projections)
+                    )
+                self._source_projection_signatures[source_key] = source_signature
+                self._record_content_signature(source, family, source_signature)
+                source_signatures.append(source_signature)
             # Persisted family payloads are syntax-free by the cache write
             # contract. Runtime values and repairs are checked at their insertion
             # boundary, so recursively rescanning every warm item here only
@@ -1464,11 +1467,25 @@ class BoundedCompactProjectionManifest:
             family,
             len(family_projections),
         )
-        if family not in self._projection_signatures_by_family:
+        if (
+            derive_content_identity
+            and family not in self._projection_signatures_by_family
+        ):
             self._projection_signatures_by_family[family] = (
                 self._combined_projection_signature(family, tuple(source_signatures))
             )
         return family_projections
+
+    def projections_for_family(
+        self,
+        family: type[CollectedFamily],
+    ) -> tuple[object, ...]:
+        """Materialize one family without deriving an unconsumed cache identity."""
+
+        return self._projections_for_family(
+            family,
+            derive_content_identity=False,
+        )
 
     def projection_signature(self, family: type[CollectedFamily]) -> str:
         return self._projection_signatures_by_family[family]
@@ -1598,6 +1615,16 @@ class BoundedCompactProjectionManifest:
 
         shared_contexts: dict[Hashable, object] = {}
 
+        def materialize_family(
+            family: type[CollectedFamily],
+        ) -> tuple[object, ...]:
+            if detector_type_filter is None:
+                return self.projections_for_family(family)
+            return self._projections_for_family(
+                family,
+                derive_content_identity=True,
+            )
+
         def release_class_derived_contexts() -> None:
             for shared_context in tuple(shared_contexts.values()):
                 if isinstance(shared_context, CompactClassRepositoryContext):
@@ -1643,7 +1670,7 @@ class BoundedCompactProjectionManifest:
             )
 
         if anchor_family is not None:
-            anchor_projections = self.projections_for_family(anchor_family)
+            anchor_projections = materialize_family(anchor_family)
             anchor_single_group = (anchor_family,)
             if anchor_single_group in remaining_groups:
                 analyze_projection_group(
@@ -1659,13 +1686,13 @@ class BoundedCompactProjectionManifest:
                 for family in families:
                     if family is anchor_family:
                         continue
-                    family_projections = self.projections_for_family(family)
-                    projections_by_family[family] = family_projections
+                    projections = materialize_family(family)
+                    projections_by_family[family] = projections
                     single_group = (family,)
                     if single_group in remaining_groups:
                         analyze_projection_group(
                             tuple(detector_types_by_families[single_group]),
-                            {family: family_projections},
+                            {family: projections},
                         )
                         remaining_groups.remove(single_group)
                 analyze_projection_group(
@@ -1674,7 +1701,7 @@ class BoundedCompactProjectionManifest:
                 )
                 remaining_groups.remove(families)
                 del projections_by_family
-                del family_projections
+                del projections
                 release_module_analysis_memory(collect_cycles=False)
             del anchor_projections
             shared_contexts.clear()
@@ -1684,7 +1711,7 @@ class BoundedCompactProjectionManifest:
             if families not in remaining_groups:
                 continue
             projections_by_family = {
-                family: self.projections_for_family(family) for family in families
+                family: materialize_family(family) for family in families
             }
             analyze_projection_group(
                 tuple(detector_types_by_families[families]),
@@ -2238,33 +2265,34 @@ def analyze_compact_roots_with_cache(
             roots,
         )
 
-    fast_missing_global_detector_types: list[type[IssueDetector]] = []
-    for detector_type in missing_global_detector_types:
-        compact_type = cast(
-            type[CompactModuleProjectionDetectorMixin],
-            detector_type,
-        )
-        fast_family_signatures: list[tuple[str, str, str]] = []
-        for family in compact_type.compact_projection_families():
-            signature = projection_manifest.fast_projection_signature(family)
-            if signature is None:
-                break
-            fast_family_signatures.append(
-                (family.__module__, family.__qualname__, signature)
-            )
-        else:
-            identity = projection_cache_identity(
+    if aggregate_lookup.status.can_reuse_findings:
+        fast_missing_global_detector_types: list[type[IssueDetector]] = []
+        for detector_type in missing_global_detector_types:
+            compact_type = cast(
+                type[CompactModuleProjectionDetectorMixin],
                 detector_type,
-                tuple(fast_family_signatures),
             )
-            projection_identity_by_detector[detector_type] = identity
-            lookup = analysis_cache.load(identity)
-            if lookup.status is AnalysisCacheStatus.HIT:
-                global_cache_hit_count += 1
-                extend_report_findings(lookup.findings)
-                continue
-        fast_missing_global_detector_types.append(detector_type)
-    missing_global_detector_types = fast_missing_global_detector_types
+            fast_family_signatures: list[tuple[str, str, str]] = []
+            for family in compact_type.compact_projection_families():
+                signature = projection_manifest.fast_projection_signature(family)
+                if signature is None:
+                    break
+                fast_family_signatures.append(
+                    (family.__module__, family.__qualname__, signature)
+                )
+            else:
+                identity = projection_cache_identity(
+                    detector_type,
+                    tuple(fast_family_signatures),
+                )
+                projection_identity_by_detector[detector_type] = identity
+                lookup = analysis_cache.load(identity)
+                if lookup.status is AnalysisCacheStatus.HIT:
+                    global_cache_hit_count += 1
+                    extend_report_findings(lookup.findings)
+                    continue
+            fast_missing_global_detector_types.append(detector_type)
+        missing_global_detector_types = fast_missing_global_detector_types
     projection_manifest.detector_types = tuple(missing_global_detector_types)
 
     if missing_global_detector_types:
@@ -2334,7 +2362,11 @@ def analyze_compact_roots_with_cache(
         projection_manifest.findings_by_detector(
             config,
             finding_consumer=consume_global_detector_findings,
-            detector_type_filter=filter_projection_cached_detector_types,
+            detector_type_filter=(
+                filter_projection_cached_detector_types
+                if aggregate_lookup.status.can_reuse_findings
+                else None
+            ),
             retain_findings=False,
         )
     findings = (
