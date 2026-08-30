@@ -15,7 +15,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
@@ -1452,52 +1452,60 @@ class CodemodPlanPreflightPayload:
         }
 
 
-class CodemodProjectedFindingReporter(ABC):
-    """Mixin for commands that can rescan simulated source states."""
+@dataclass(frozen=True)
+class CodemodContinuationPlanArtifact:
+    """Optional continuation-plan destination owned by a finding projection."""
 
-    args: argparse.Namespace
-    modules: list[ParsedModule]
-    findings: list[RefactorFinding]
+    path: Path | None = None
+
+    @property
+    def requested(self) -> bool:
+        return self.path is not None
+
+    def write(self, report: CodemodProjectedFindingReport) -> None:
+        write_cli_json_artifact(
+            self.path,
+            report.continuation_report.continuation_sequence.to_dict(),
+        )
+
+
+@dataclass(frozen=True)
+class CodemodFindingProjectionAuthority:
+    """Own the inputs and artifacts for rescanning one simulated source state."""
+
     config: DetectorConfig
-    roots: tuple[Path, ...]
-    report_roots: tuple[Path, ...]
+    scope: AnalysisPathScope
+    analysis_workers: int
     semantic_descent_source: SemanticDescentGraphAnalysisSource
+    include_source_index: bool = False
+    continuation_artifact: CodemodContinuationPlanArtifact = field(
+        default_factory=CodemodContinuationPlanArtifact
+    )
 
-    def optional_projected_finding_report(
+    def project(
         self,
+        workflow_scan: CodemodWorkflowScan,
         simulation: CodemodSimulationReport,
         *,
-        enabled: bool,
         source_sequence: CodemodPlanSequence | None = None,
         expected_removed_finding_ids: tuple[str, ...] = (),
-    ) -> CodemodProjectedFindingReport | None:
-        if not enabled:
-            return None
-        return CodemodSimulationFindingProjection(
-            modules=tuple(self.modules),
-            findings=tuple(self.findings),
+    ) -> CodemodProjectedFindingReport:
+        report = CodemodSimulationFindingProjection(
+            modules=tuple(workflow_scan.modules),
+            findings=tuple(workflow_scan.findings),
             simulation=simulation,
             config=self.config,
-            roots=self.roots,
-            report_roots=self.report_roots,
-            analysis_workers=self.args.analysis_workers,
+            roots=self.scope.analysis_roots,
+            report_roots=self.scope.report_roots,
+            analysis_workers=self.analysis_workers,
             semantic_descent_source=self.semantic_descent_source,
             source_sequence=source_sequence,
             expected_removed_finding_ids=expected_removed_finding_ids,
-            include_source_index=self.args.codemod_project_source_index,
-            include_continuation=self.args.codemod_continuation_plan_out is not None,
+            include_source_index=self.include_source_index,
+            include_continuation=self.continuation_artifact.requested,
         ).report()
-
-    def write_continuation_plan_if_requested(
-        self,
-        report: CodemodProjectedFindingReport,
-    ) -> None:
-        if self.args.codemod_continuation_plan_out is None:
-            return
-        write_cli_json_artifact(
-            self.args.codemod_continuation_plan_out,
-            report.continuation_report.continuation_sequence.to_dict(),
-        )
+        self.continuation_artifact.write(report)
+        return report
 
 
 def format_codemod_refactor_goal_markdown(
@@ -2233,8 +2241,7 @@ class CodemodScanCliCommand(CliCommand, ABC):
     report_roots: tuple[Path, ...]
     parse_cache_dir: Path | None
     semantic_descent_source: SemanticDescentGraphAnalysisSource
-    execution_mode: CodemodExecutionMode
-    input_plan_sequence: CodemodPlanSequence
+    execution_request: "CodemodPlanExecutionRequest"
 
 
 class CodemodValidatePlanCliCommand(
@@ -2468,22 +2475,13 @@ class CodemodExecutionStrategy(ABC):
         return issubclass(command_type, CodemodExecutionModeCliCommand)
 
     @classmethod
-    def json_report_requested(
-        cls,
-        json_flag: bool,
-        *,
-        project_findings: bool,
-    ) -> bool:
-        return json_flag or cls.requires_json_report or project_findings
-
-    @classmethod
     def require_valid(
         cls,
         parser: argparse.ArgumentParser,
         *,
-        project_findings: bool,
+        projection_requested: bool,
     ) -> None:
-        if project_findings and not cls.allows_projected_findings:
+        if projection_requested and not cls.allows_projected_findings:
             parser.error("--codemod-project-findings requires --codemod-simulate")
 
     @classmethod
@@ -2580,7 +2578,6 @@ class ApplyCodemodExecutionStrategy(SimulateCodemodExecutionStrategy):
 @dataclass(frozen=True)
 class CodemodCliExecution(
     CodemodSourceSnapshotRequired,
-    CodemodProjectedFindingReporter,
     CodemodPlanExecutionPresenter,
 ):
     """Run the CLI codemod simulation/apply phase through plan-level DSL APIs."""
@@ -2592,12 +2589,7 @@ class CodemodCliExecution(
     args: argparse.Namespace
     source_snapshot: CodemodSourceSnapshot | None
     execution_request: "CodemodPlanExecutionRequest"
-    modules: list[ParsedModule]
-    findings: list[RefactorFinding]
-    config: DetectorConfig
-    roots: tuple[Path, ...]
-    report_roots: tuple[Path, ...]
-    semantic_descent_source: SemanticDescentGraphAnalysisSource
+    workflow_scan: CodemodWorkflowScan | None = None
 
     def run(self) -> int | None:
         if not self.execution_request.mode.requested:
@@ -2649,10 +2641,7 @@ class CodemodCliExecution(
         self,
         report: CodemodOperationPreflightReport,
     ) -> None:
-        if self.execution_request.mode.json_report_requested(
-            self.args.json,
-            project_findings=self.execution_request.project_findings,
-        ):
+        if self.execution_request.json_report_requested(self.args.json):
             print(
                 json.dumps(
                     CodemodPreflightFailurePayload(report).to_dict(),
@@ -2681,10 +2670,7 @@ class CodemodCliExecution(
     ) -> None:
         if architecture_guard_report is None:
             raise RuntimeError("dirty codemod simulation requires architecture guards")
-        if self.execution_request.mode.json_report_requested(
-            self.args.json,
-            project_findings=self.execution_request.project_findings,
-        ):
+        if self.execution_request.json_report_requested(self.args.json):
             print(
                 json.dumps(
                     CodemodSimulationPayload(
@@ -2707,10 +2693,7 @@ class CodemodCliExecution(
         architecture_guard_report: ArchitectureGuardReport | None,
         plan_sequence_simulation: CodemodPlanSequenceSimulation,
     ) -> None:
-        if self.execution_request.mode.json_report_requested(
-            self.args.json,
-            project_findings=self.execution_request.project_findings,
-        ):
+        if self.execution_request.json_report_requested(self.args.json):
             payload = CodemodSimulationPayload(
                 simulation,
                 applied=applied,
@@ -2718,14 +2701,13 @@ class CodemodCliExecution(
                 unified_diff=self.optional_unified_diff(snapshot, simulation),
             ).to_dict()
             payload["plan_sequence_simulation"] = plan_sequence_simulation.to_dict()
-            projected_findings = self.optional_projected_finding_report(
+            projected_findings = self.execution_request.projected_finding_report(
+                self.workflow_scan,
                 simulation,
-                enabled=self.execution_request.project_findings,
                 source_sequence=plan_sequence_simulation.sequence,
             )
             if projected_findings is not None:
                 payload["projected_findings"] = projected_findings.to_dict()
-                self.write_continuation_plan_if_requested(projected_findings)
             print(
                 json.dumps(
                     payload,
@@ -2807,26 +2789,19 @@ class CodemodExecutionMode(Enum):
     def unified_diff_requested(self) -> bool:
         return self.strategy.unified_diff_requested
 
-    def json_report_requested(
-        self,
-        json_flag: bool,
-        *,
-        project_findings: bool,
-    ) -> bool:
-        return self.strategy.json_report_requested(
-            json_flag,
-            project_findings=project_findings,
-        )
+    @property
+    def requires_json_report(self) -> bool:
+        return self.strategy.requires_json_report
 
     def require_valid(
         self,
         parser: argparse.ArgumentParser,
         *,
-        project_findings: bool,
+        projection_requested: bool,
     ) -> None:
         self.strategy.require_valid(
             parser,
-            project_findings=project_findings,
+            projection_requested=projection_requested,
         )
 
     def execute(
@@ -2844,7 +2819,7 @@ class CodemodPlanExecutionRequest:
 
     sequence: CodemodPlanSequence
     mode: CodemodExecutionMode
-    project_findings: bool
+    finding_projection: CodemodFindingProjectionAuthority | None = None
 
     def execute(
         self,
@@ -2853,11 +2828,43 @@ class CodemodPlanExecutionRequest:
     ) -> int | None:
         return self.mode.execute(self.sequence, snapshot, presenter)
 
+    def for_sequence(
+        self,
+        sequence: CodemodPlanSequence,
+    ) -> "CodemodPlanExecutionRequest":
+        return replace(self, sequence=sequence)
+
+    def json_report_requested(self, json_flag: bool) -> bool:
+        return (
+            json_flag
+            or self.mode.requires_json_report
+            or self.finding_projection is not None
+        )
+
+    def projected_finding_report(
+        self,
+        workflow_scan: CodemodWorkflowScan | None,
+        simulation: CodemodSimulationReport,
+        *,
+        source_sequence: CodemodPlanSequence | None = None,
+        expected_removed_finding_ids: tuple[str, ...] = (),
+    ) -> CodemodProjectedFindingReport | None:
+        if self.finding_projection is None:
+            return None
+        if workflow_scan is None:
+            raise RuntimeError("projected findings require a completed workflow scan")
+        return self.finding_projection.project(
+            workflow_scan,
+            simulation,
+            source_sequence=source_sequence,
+            expected_removed_finding_ids=expected_removed_finding_ids,
+        )
+
     @property
     def exact_recipe_execution(self) -> bool:
         return (
             self.mode.requested
-            and not self.project_findings
+            and self.finding_projection is None
             and self.sequence.has_recipes
             and not self.sequence.has_architecture_guards
         )
@@ -2959,7 +2966,6 @@ class CodemodRecipePlanFastSourceSnapshot:
 class CodemodScanQueryCliCommand(
     CodemodScanCliCommand,
     CodemodSourceSnapshotRequired,
-    CodemodProjectedFindingReporter,
     ABC,
 ):
     """Registered command that emits one scan-backed codemod DSL query."""
@@ -3010,13 +3016,18 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> "FindingRecipePlanSynthesisExecution":
+        plan = snapshot.plan_from_findings(
+            self.findings,
+            detector_ids=tuple(self.args.codemod_goal_detectors),
+        )
         return FindingRecipePlanSynthesisExecution(
-            command=self,
             snapshot=snapshot,
-            plan=snapshot.plan_from_findings(
-                self.findings,
-                detector_ids=tuple(self.args.codemod_goal_detectors),
+            execution_request=self.execution_request.for_sequence(
+                CodemodPlanSequence.from_document(plan.document)
             ),
+            plan_out=self.args.codemod_plan_out,
+            workflow_scan=CodemodWorkflowScan(self.modules, self.findings),
+            plan=plan,
         )
 
 
@@ -3033,15 +3044,20 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> "FindingRecipeClassPlanSynthesisExecution":
+        report = codemod_class_plan_from_findings(
+            self.findings,
+            root=self.roots[0],
+            selector_context=snapshot,
+            detector_ids=tuple(self.args.codemod_goal_detectors),
+        )
         return FindingRecipeClassPlanSynthesisExecution(
-            command=self,
             snapshot=snapshot,
-            report=codemod_class_plan_from_findings(
-                self.findings,
-                root=self.roots[0],
-                selector_context=snapshot,
-                detector_ids=tuple(self.args.codemod_goal_detectors),
+            execution_request=self.execution_request.for_sequence(
+                CodemodPlanSequence.from_document(report.finding_plan.document)
             ),
+            plan_out=self.args.codemod_plan_out,
+            workflow_scan=CodemodWorkflowScan(self.modules, self.findings),
+            report=report,
         )
 
 
@@ -3052,8 +3068,10 @@ class CodemodSynthesisExecution(
 ):
     """Execute and present one synthesized plan through its nominal envelope."""
 
-    command: CodemodSynthesisExecutionCliCommand
     snapshot: CodemodSourceSnapshot
+    execution_request: CodemodPlanExecutionRequest
+    plan_out: Path | None
+    workflow_scan: CodemodWorkflowScan
 
     @property
     @abstractmethod
@@ -3111,18 +3129,13 @@ class CodemodSynthesisExecution(
 
     def run(self) -> int:
         write_cli_json_artifact(
-            self.command.args.codemod_plan_out,
+            self.plan_out,
             self.finding_plan.document.to_dict(),
         )
-        if not self.command.execution_mode.requested:
+        if not self.execution_request.mode.requested:
             print(json.dumps(self.unexecuted_payload(), indent=2))
             return 0
-        execution_request = CodemodPlanExecutionRequest(
-            sequence=CodemodPlanSequence.from_document(self.finding_plan.document),
-            mode=self.command.execution_mode,
-            project_findings=self.command.args.codemod_project_findings,
-        )
-        exit_code = execution_request.execute(self.snapshot, self)
+        exit_code = self.execution_request.execute(self.snapshot, self)
         if exit_code is None:
             raise RuntimeError("requested synthesized execution returned no exit code")
         return exit_code
@@ -3144,9 +3157,9 @@ class CodemodSynthesisExecution(
             sequence_simulation,
         )
         payload = self.simulation_payload(simulation, applied=applied)
-        projected_findings = self.command.optional_projected_finding_report(
+        projected_findings = self.execution_request.projected_finding_report(
+            self.workflow_scan,
             simulation.simulation,
-            enabled=self.command.args.codemod_project_findings,
             source_sequence=sequence_simulation.sequence,
             expected_removed_finding_ids=(
                 self.finding_plan.expected_removed_finding_ids
@@ -3154,7 +3167,6 @@ class CodemodSynthesisExecution(
         )
         if projected_findings is not None:
             payload = self.with_projected_findings(payload, projected_findings)
-            self.command.write_continuation_plan_if_requested(projected_findings)
         print(json.dumps(payload, indent=2))
 
     def present_operation_preflight_failure(
@@ -3353,7 +3365,7 @@ class CodemodRefactorGoalCliCommand(
         return True
 
     def run(self) -> int:
-        if self.input_plan_sequence.has_recipes:
+        if self.execution_request.sequence.has_recipes:
             self.parser.error(
                 "--codemod-refactor-goal accepts guard-only --codemod-plan input"
             )
@@ -3368,8 +3380,8 @@ class CodemodRefactorGoalCliCommand(
             report_roots=self.report_roots,
             config=self.config,
             parse_workers=self.args.parse_workers,
-            guard_suite=self.input_plan_sequence.guard_suite,
-            dry_run=not self.execution_mode.applies_changes,
+            guard_suite=self.execution_request.sequence.guard_suite,
+            dry_run=not self.execution_request.mode.applies_changes,
             initial_scan=CodemodWorkflowScan(
                 modules=self.modules,
                 findings=self.findings,
@@ -3407,7 +3419,7 @@ def _main_without_deadline() -> int:
     codemod_execution_mode = CodemodExecutionMode.from_namespace(args, parser)
     codemod_execution_mode.require_valid(
         parser,
-        project_findings=args.codemod_project_findings,
+        projection_requested=args.codemod_project_findings,
     )
     if selected_command_type is not None:
         selected_command_type.require_execution_mode(
@@ -3457,11 +3469,6 @@ def _main_without_deadline() -> int:
         load_codemod_plan_sequence(args.codemod_plan)
         if args.codemod_plan is not None
         else CodemodPlanSequence()
-    )
-    codemod_execution_request = CodemodPlanExecutionRequest(
-        sequence=codemod_plan_sequence,
-        mode=codemod_execution_mode,
-        project_findings=args.codemod_project_findings,
     )
     if (
         codemod_execution_mode.requested
@@ -3523,6 +3530,25 @@ def _main_without_deadline() -> int:
     )
     semantic_descent_analysis_source = SemanticDescentGraphAnalysisSource(
         cache_context=semantic_descent_cache_context,
+    )
+    finding_projection = (
+        CodemodFindingProjectionAuthority(
+            config=config,
+            scope=path_scope,
+            analysis_workers=args.analysis_workers,
+            semantic_descent_source=semantic_descent_analysis_source,
+            include_source_index=args.codemod_project_source_index,
+            continuation_artifact=CodemodContinuationPlanArtifact(
+                args.codemod_continuation_plan_out
+            ),
+        )
+        if args.codemod_project_findings
+        else None
+    )
+    codemod_execution_request = CodemodPlanExecutionRequest(
+        sequence=codemod_plan_sequence,
+        mode=codemod_execution_mode,
+        finding_projection=finding_projection,
     )
     if args.predict_scan:
         SingleRootModeAuthority(
@@ -3605,12 +3631,6 @@ def _main_without_deadline() -> int:
             args=args,
             source_snapshot=fast_codemod_source_snapshot,
             execution_request=codemod_execution_request,
-            modules=[],
-            findings=[],
-            config=config,
-            roots=roots,
-            report_roots=path_scope.report_roots,
-            semantic_descent_source=semantic_descent_analysis_source,
         ).run()
         if fast_codemod_execution_result is not None:
             return fast_codemod_execution_result
@@ -4020,8 +4040,7 @@ def _main_without_deadline() -> int:
             path_scope.report_roots,
             parse_cache_dir,
             semantic_descent_analysis_source,
-            codemod_execution_mode,
-            codemod_plan_sequence,
+            codemod_execution_request,
         ).run()
 
     if args.include_impact_ranking:
@@ -4060,12 +4079,7 @@ def _main_without_deadline() -> int:
         args=args,
         source_snapshot=source_snapshot,
         execution_request=codemod_execution_request,
-        modules=modules,
-        findings=findings,
-        config=config,
-        roots=roots,
-        report_roots=path_scope.report_roots,
-        semantic_descent_source=semantic_descent_analysis_source,
+        workflow_scan=CodemodWorkflowScan(modules, findings),
     ).run()
     if codemod_execution_result is not None:
         return codemod_execution_result

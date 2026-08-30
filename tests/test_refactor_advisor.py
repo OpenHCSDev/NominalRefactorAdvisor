@@ -10044,7 +10044,7 @@ def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:
     with pytest.raises(SystemExit):
         CodemodExecutionMode.APPLY.require_valid(
             parser,
-            project_findings=True,
+            projection_requested=True,
         )
 
 
@@ -10075,14 +10075,13 @@ def test_codemod_execution_modes_share_one_typed_plan_authority(
     preflight_exit_code = CodemodPlanExecutionRequest(
         sequence,
         CodemodExecutionMode.PREFLIGHT,
-        project_findings=False,
     ).execute(snapshot, preflight_presenter)
     simulation_presenter = Mock(spec=CodemodPlanExecutionPresenter)
-    simulation_exit_code = CodemodPlanExecutionRequest(
+    simulation_request = CodemodPlanExecutionRequest(
         sequence,
         CodemodExecutionMode.SIMULATE,
-        project_findings=False,
-    ).execute(snapshot, simulation_presenter)
+    )
+    simulation_exit_code = simulation_request.execute(snapshot, simulation_presenter)
 
     preflight_report = preflight_presenter.present_preflight.call_args.args[0]
     sequence_simulation = simulation_presenter.present_simulation.call_args.args[0]
@@ -10093,13 +10092,14 @@ def test_codemod_execution_modes_share_one_typed_plan_authority(
     assert simulation_presenter.present_simulation.call_args.kwargs == {
         "applied": False
     }
+    assert simulation_request.finding_projection is None
+    assert not hasattr(simulation_request, "project_findings")
     assert module_path.read_text() == original_source
 
     apply_presenter = Mock(spec=CodemodPlanExecutionPresenter)
     apply_exit_code = CodemodPlanExecutionRequest(
         sequence,
         CodemodExecutionMode.APPLY,
-        project_findings=False,
     ).execute(snapshot, apply_presenter)
 
     applied_simulation = apply_presenter.present_simulation.call_args.args[0]
@@ -10142,7 +10142,6 @@ def test_codemod_apply_execution_blocks_dirty_guard_without_mutation(
     exit_code = CodemodPlanExecutionRequest(
         CodemodPlanSequence.from_document(document),
         CodemodExecutionMode.APPLY,
-        project_findings=False,
     ).execute(snapshot, presenter)
 
     sequence_simulation = presenter.present_simulation.call_args.args[0]
@@ -10182,7 +10181,6 @@ def test_codemod_simulation_presents_operation_preflight_failure_report(
     exit_code = CodemodPlanExecutionRequest(
         sequence,
         CodemodExecutionMode.SIMULATE,
-        project_findings=False,
     ).execute(snapshot, presenter)
 
     report = presenter.present_operation_preflight_failure.call_args.args[0]
