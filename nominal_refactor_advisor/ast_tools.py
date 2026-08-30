@@ -871,10 +871,6 @@ class BuiltinCallName(StrEnum):
         return frozenset((cls.LEN, cls.MAX, cls.MIN, cls.SUM))
 
     @classmethod
-    def structural_alias_root_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset((cls.DICT, cls.FROZENSET, cls.LIST, cls.SET, cls.TUPLE))
-
-    @classmethod
     def structural_alias_leaf_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset(
             (

@@ -11729,44 +11729,6 @@ def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
     assert "ClassFunctionStackNodeVisitor" in (findings[0].scaffold or "")
 
 
-def test_detects_repeated_structural_type_annotation_alias_need(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom collections.abc import Callable\n\n\nShape = tuple[str, tuple[str, ...]]\n\n\ndef build_cache(values: dict[tuple[str, int], tuple[str, tuple[int, ...]]]) -> dict[tuple[str, int], tuple[str, tuple[int, ...]]]:\n    return values\n\n\ndef project_cache(projector: Callable[[dict[tuple[str, int], tuple[str, tuple[int, ...]]]], None]) -> None:\n    projector({})\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "semantic_type_alias"
-    ]
-    assert len(findings) == 1
-    assert "name the domain shape once" in findings[0].summary
-    assert "Introduce a module-level semantic type alias" in (
-        findings[0].codemod_patch or ""
-    )
-
-
-def test_semantic_type_alias_derives_domain_alias_names(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom collections.abc import Callable\n\n\nclass ConstructorArg: ...\n\n\nclass Document:\n    def lines(self, sort_key: Callable[[str], tuple[str, int, str]]) -> list[str]: ...\n    def mobile(self, sort_key: Callable[[str], tuple[str, int, str]]) -> None: ...\n\n\nclass ConstructorVariantSpec:\n    kwargs: tuple[tuple[str, ConstructorArg], ...]\n    defaults: tuple[tuple[str, ConstructorArg], ...]\n",
-    )
-
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "semantic_type_alias"
-    ]
-
-    scaffolds = "\n".join((finding.scaffold or "" for finding in findings))
-    assert "SortKey = Callable[[str], tuple[str, int, str]]" in scaffolds
-    assert "_ConstructorArgShape = tuple[tuple[str, ConstructorArg], ...]" in scaffolds
-
-
 def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

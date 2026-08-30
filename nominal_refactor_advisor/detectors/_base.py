@@ -581,14 +581,6 @@ class DetectorConfig:
         8,
         "Minimum AST matcher/effect-stage score before surfacing an EffectStep amortization finding.",
     )
-    min_branch_cluster_function_lines: int = detector_config_option(
-        80,
-        "Minimum function length before surfacing a branch-cluster under-abstraction finding.",
-    )
-    min_branch_cluster_branches: int = detector_config_option(
-        8,
-        "Minimum branch count before surfacing a branch-cluster under-abstraction finding.",
-    )
     min_generic_role_case_table_owners: int = detector_config_option(
         2,
         "Minimum independent owners sharing a generic role-case table before surfacing it.",
@@ -12958,14 +12950,6 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
             kw_only=cls._dataclass_keyword_bool(node, "kw_only"),
             line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
         )
-
-
-@dataclass(frozen=True)
-class SemanticTypeAliasCandidate(EvidenceLocationsWitnessCandidate):
-    annotation_text: str
-    occurrence_count: int
-    owner_symbols: tuple[str, ...]
-    suggested_alias_name: str
 
 
 @dataclass(frozen=True)
