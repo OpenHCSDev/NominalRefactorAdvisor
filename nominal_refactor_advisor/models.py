@@ -9,14 +9,13 @@ from __future__ import annotations
 
 
 from abc import ABC, abstractmethod
-from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
+from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
 from functools import cache, cached_property
 import hashlib
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from .class_composition import CompositeClassSpec
-from .collection_algebra import sorted_tuple
 from .descriptor_algebra import AliasProperty, ConstantProperty
 from .patterns import PatternId
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
@@ -184,11 +183,6 @@ class ImpactDelta(SemanticRecord):
             repeated_mappings_centralized=removable,
         )
 
-    @classmethod
-    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
-        return (frozenset((field.name for field in fields(cls) if field.init)),)
-
-
 @dataclass(frozen=True)
 class OutcomeEstimate(ImpactDelta):
     pass
@@ -199,27 +193,6 @@ class FindingMetrics(SemanticRecord, ABC):
 
     derived_count_constructor_name: ClassVar[str | None] = None
     derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = ()
-
-    @classmethod
-    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
-        if not is_dataclass(cls):
-            return ()
-        key_names = [
-            item.name
-            for item in fields(cls)
-            if item.init and item.default is MISSING and item.default_factory is MISSING
-        ]
-        if not key_names:
-            return ()
-        return (frozenset(key_names),)
-
-    @classmethod
-    def semantic_bag_base_name(cls) -> str:
-        for base in cls.__mro__[1:]:
-            if issubclass(base, FindingMetrics) and base is not FindingMetrics:
-                if not is_dataclass(base):
-                    return base.__name__
-        return FindingMetrics.__name__
 
     @classmethod
     def derived_count_shape(cls) -> "DerivedCountMetricShape | None":
@@ -329,9 +302,7 @@ DispatchFindingMetrics = CompositeClassSpec(
 
 @dataclass(frozen=True)
 class EmptyFindingMetrics(FindingMetrics):
-    @classmethod
-    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
-        return ()
+    pass
 
 
 @dataclass(frozen=True)
@@ -588,14 +559,6 @@ class RegistrationMetrics(RegistrationFindingMetrics):
         "class_key_pairs"
     )
 
-    @classmethod
-    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
-        return (
-            frozenset({"registration_site_count"}),
-            frozenset({"registration_site_count", "class_count"}),
-        )
-
-
 @dataclass(frozen=True)
 class SentinelSimulationMetrics(FindingMetrics):
     class_count: int
@@ -609,10 +572,6 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC, metaclass=AutoRegister
     __skip_if_no_key__ = True
 
     count_field_name: ClassVar[str]
-
-    @classmethod
-    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
-        return (frozenset({cls.count_field_name}),)
 
     @property
     @abstractmethod
@@ -1075,49 +1034,3 @@ class AnalysisReport(SemanticRecord):
 
     findings: tuple[RefactorFinding, ...] = ()
     plans: tuple[RefactorPlan, ...] = ()
-
-
-@dataclass(frozen=True)
-class SemanticBagDescriptor(SemanticRecord):
-    """Schema descriptor for metric bags accepted by semantic dict-bag detection."""
-
-    class_name: str
-    base_class_name: str
-    accepted_key_sets: tuple[frozenset[str], ...]
-
-
-def metric_semantic_bag_descriptors() -> tuple[SemanticBagDescriptor, ...]:
-    """Return descriptors for all concrete finding-metric types."""
-    return tuple(
-        (
-            SemanticBagDescriptor(
-                class_name=metric_type.__name__,
-                base_class_name=metric_type.semantic_bag_base_name(),
-                accepted_key_sets=metric_type.semantic_bag_key_sets(),
-            )
-            for metric_type in _concrete_metric_types()
-            if metric_type.semantic_bag_key_sets()
-        )
-    )
-
-
-def impact_delta_semantic_bag_descriptor() -> SemanticBagDescriptor:
-    """Return the semantic bag descriptor for :class:`ImpactDelta`."""
-    return SemanticBagDescriptor(
-        class_name=ImpactDelta.__name__,
-        base_class_name=ImpactDelta.__name__,
-        accepted_key_sets=ImpactDelta.semantic_bag_key_sets(),
-    )
-
-
-def _concrete_metric_types() -> tuple[type[FindingMetrics], ...]:
-    from .ast_tools import REGISTERED_TYPE_LINEAGE
-
-    discovered = tuple(
-        (
-            cast(type[FindingMetrics], metric_type)
-            for metric_type in REGISTERED_TYPE_LINEAGE.descendant_types(FindingMetrics)
-            if is_dataclass(metric_type)
-        )
-    )
-    return sorted_tuple(discovered, key=lambda metric_type: metric_type.__name__)

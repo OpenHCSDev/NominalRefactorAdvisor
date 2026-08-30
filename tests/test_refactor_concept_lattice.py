@@ -63,9 +63,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder: (
         codemod.DataclassPayloadProjectionConcept
     ),
-    codemod.SemanticDictBagReturnRecordMappingRecipeBuilder: (
-        codemod.TupleDictReturnRecordConcept
-    ),
     codemod.DataclassConstructorProjectionMappingRecipeBuilder: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
@@ -93,18 +90,7 @@ EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
     }
 )
 
-EXPECTED_DECLARED_MAPPING_BRIDGES = {
-    codemod.SemanticDictBagFindingRecipeSynthesizer: (
-        codemod.SemanticDictBagReturnRecordMappingRecipeBuilder
-    ),
-}
-
-EXPECTED_MAPPING_DECLARATIONS = frozenset(
-    {
-        *EXPECTED_INFERRED_MAPPING_DECLARATIONS,
-        *EXPECTED_DECLARED_MAPPING_BRIDGES.values(),
-    }
-)
+EXPECTED_MAPPING_DECLARATIONS = EXPECTED_INFERRED_MAPPING_DECLARATIONS
 
 
 def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
@@ -187,14 +173,10 @@ def test_unrelated_concepts_do_not_match() -> None:
     )
 
 
-def test_mapping_builder_identity_is_nominal_or_bridge_owned() -> None:
+def test_mapping_builder_identity_is_nominally_owned() -> None:
     assert frozenset(
         codemod.InferredSemanticMirrorMappingRecipeBuilder.builder_types()
     ) == EXPECTED_INFERRED_MAPPING_DECLARATIONS
-    assert {
-        synthesizer_type: synthesizer_type.builder_type
-        for synthesizer_type in EXPECTED_DECLARED_MAPPING_BRIDGES
-    } == EXPECTED_DECLARED_MAPPING_BRIDGES
     assert "__registry__" not in codemod.MappingSemanticMirrorRecipeBuilder.__dict__
     assert all(
         not hasattr(builder_type, "mapping_name")

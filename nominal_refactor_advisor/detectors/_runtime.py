@@ -10999,56 +10999,6 @@ class NominalPolicySurfaceDetector(
         )
 
 
-class SemanticDictBagDetector(PerModuleIssueDetector):
-    finding_spec = finding_spec_template(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Semantic dict bag should become a nominal dataclass",
-        "The docs treat semantic field bags as coherence failures: once a dict carries named semantic fields rather than serialization payload, the data should move into a nominal dataclass family with one authoritative schema and explicit inheritance.",
-        "single authoritative nominal schema for semantic field bags",
-        "same semantic field family is carried through an ad hoc dict bag instead of a nominal record",
-        _UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS,
-        _SEMANTIC_DICT_BAG_PARTIAL_VIEW_OBSERVATION_TAGS,
-    )
-
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        for candidate in _semantic_dict_bag_candidates(module):
-            recommendation = candidate.recommendation
-            key_list = ", ".join(candidate.key_names)
-            summary = f"Semantic dict bag with keys {candidate.key_names} appears at {module.path}:{candidate.line}."
-            if recommendation.matched_schema_name is not None:
-                summary = f"Semantic dict bag with keys {candidate.key_names} should use `{recommendation.class_name}` instead of an untyped dict at {module.path}:{candidate.line}."
-            findings.append(
-                self.build_finding(
-                    summary,
-                    (
-                        SourceLocation(
-                            str(module.path), candidate.line, candidate.symbol
-                        ),
-                    ),
-                    confidence=(
-                        HIGH_CONFIDENCE
-                        if recommendation.certification == CERTIFIED
-                        else MEDIUM_CONFIDENCE
-                    ),
-                    relation_context=f"same semantic field family is carried through a {candidate.context_kind.replace('_', ' ')} instead of a nominal record",
-                    scaffold=f"{recommendation.rationale}\nBase: {recommendation.base_class_name}\nFields: {key_list}\n\n{recommendation.scaffold}",
-                    certification=recommendation.certification,
-                    metrics=MappingMetrics.from_field_names(
-                        mapping_site_count=1,
-                        field_names=candidate.key_names,
-                        mapping_name=f"semantic_dict_bag_{candidate.context_kind}",
-                        source_name=recommendation.class_name,
-                    ),
-                )
-            )
-        return findings
-
-
-
-
 @dataclass(frozen=True)
 class BidirectionalRegistryCandidate:
     file_path: str

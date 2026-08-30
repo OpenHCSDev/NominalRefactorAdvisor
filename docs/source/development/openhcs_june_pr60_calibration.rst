@@ -346,9 +346,10 @@ Confirmed or likely noise
   conditional numerical defaults.  Its deleted-surface concentration is below
   baseline in the first cleanup, and current examples include routine CLI and
   dataclass defaults.
-- ``semantic_dict_bag`` flags display glyph tables, AST icon tables, process
-  environment mappings, and launcher template substitutions.  A dictionary is
-  not a nominal record merely because its literal keys are stable.
+- The removed ``semantic_dict_bag`` detector flagged display glyph tables, AST
+  icon tables, process environment mappings, and launcher template
+  substitutions. A dictionary is not a nominal record merely because its
+  literal keys are stable.
 - ``typing_protocol_contract`` assumes every ``Protocol`` should be an ABC.
   Structural protocols can be the correct typed dependency boundary; nominal
   replacement requires identity, lifecycle, or shared implementation evidence.

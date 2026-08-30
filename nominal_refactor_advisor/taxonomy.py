@@ -213,7 +213,6 @@ class ObservationTag(LabeledStrEnum):
     RUNTIME_TYPE_GENERATION = ("runtime_type_generation", "runtime type generation")
     SCOPE_HIERARCHY = ("scope_hierarchy", "scope hierarchy walks")
     SCOPED_SHAPE_WRAPPER = ("scoped_shape_wrapper", "scoped shape wrapper families")
-    SEMANTIC_DICT_BAG = ("semantic_dict_bag", "semantic dict bags")
     SEMANTIC_STRING_LITERAL = (
         "semantic_string_literal",
         "repeated semantic string literals",

@@ -467,7 +467,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=10,
             ),
             _impact_ranking_finding(
-                detector_id="semantic_dict_bag",
+                detector_id="parallel_mapping_projection",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=20,
@@ -517,7 +517,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=10,
             ),
             _impact_ranking_finding(
-                detector_id="semantic_dict_bag",
+                detector_id="parallel_mapping_projection",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=20,
@@ -5542,7 +5542,7 @@ def test_refactor_trajectory_search_proves_local_minimum_escape() -> None:
         unlocks=("nominal_record_axis",),
         phase=RefactorPhase.NORMALIZE,
         debt_justification="names the nominal record axis needed by later moves",
-        predicts_removed=("semantic_dict_bag",),
+        predicts_removed=("anonymous_record_projection",),
         predicts_emergent=("constructor_variant",),
     )
     derive_constructor_algebra = _trajectory_move(
@@ -5581,7 +5581,7 @@ def test_refactor_trajectory_search_proves_local_minimum_escape() -> None:
     assert proof.best_trajectory.debt_justifications == (
         "names the nominal record axis needed by later moves",
     )
-    assert "semantic_dict_bag" in proof.best_trajectory.predicted_removed
+    assert "anonymous_record_projection" in proof.best_trajectory.predicted_removed
     assert "constructor_variant" in proof.best_trajectory.predicted_emergent
     assert proof.best_trajectory.final_state is not None
     assert (
@@ -17066,7 +17066,7 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
     )
     return_record = finding(
         "semantic_mirror_without_descent",
-        mapping_name="semantic_dict_bag",
+        mapping_name="unknown_return_record_projection",
         symbol="TupleReturn",
     )
     payload_projection = finding(
@@ -22063,206 +22063,6 @@ def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
     assert finding.metrics.dispatch_axis == "pattern_id"
 
 
-def test_detects_semantic_metrics_dict_bag_and_recommends_nominal_class(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass RefactorFinding:\n    metrics: object\n\n\ndef build():\n    return RefactorFinding(metrics={"dispatch_site_count": len([1, 2, 3])})\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (finding for finding in findings if finding.detector_id == "semantic_dict_bag")
-    )
-    assert "DispatchCountMetrics" in (finding.scaffold or "")
-    assert "CountedDispatchMetrics" in (finding.scaffold or "")
-
-
-def test_detects_local_impact_dict_bag_and_recommends_impact_delta(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef estimate():\n    impact = {\n        "lower_bound_removable_loc": 0,\n        "upper_bound_removable_loc": 0,\n        "loci_of_change_before": 0,\n        "loci_of_change_after": 0,\n        "repeated_mappings_centralized": 0,\n        "dispatch_sites_eliminated": 0,\n        "registration_sites_removed": 0,\n        "shared_algorithm_sites_centralized": 0,\n    }\n    impact["dispatch_sites_eliminated"] = 2\n    return impact\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (finding for finding in findings if finding.detector_id == "semantic_dict_bag")
-    )
-    assert "ImpactDelta" in (finding.scaffold or "")
-
-
-def test_detects_return_dict_record_that_mirrors_arguments(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef build_result(name, score, reason):\n    return {\n        "name": name,\n        "score": score,\n        "reason": reason,\n    }\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "semantic_dict_bag"
-        )
-    )
-    assert "fixed-key anonymous record" in (finding.scaffold or "")
-    assert "name" in finding.summary
-    assert "score" in finding.summary
-    assert "Result" in (finding.scaffold or "")
-
-
-def test_return_dict_record_scaffold_uses_local_annotations(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom pathlib import Path\nfrom typing import List\n\n\ndef scaffold_paper():\n    created_dirs: List[Path] = []\n    created_files: List[Path] = []\n    skipped_files: List[Path] = []\n    return {\n        'created_dirs': created_dirs,\n        'created_files': created_files,\n        'skipped_files': skipped_files,\n    }\n",
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "semantic_dict_bag"
-        )
-    )
-
-    assert "ScaffoldPaperResult" in (finding.scaffold or "")
-    assert "created_dirs: List[Path]" in (finding.scaffold or "")
-    assert "created_files: List[Path]" in (finding.scaffold or "")
-    assert "skipped_files: List[Path]" in (finding.scaffold or "")
-
-
-def test_semantic_dict_bag_return_record_synthesizes_nominal_record(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom pathlib import Path\nfrom typing import List\n\n\n"
-        "def scaffold_paper():\n"
-        "    created_dirs: List[Path] = []\n"
-        "    created_files: List[Path] = []\n"
-        "    skipped_files: List[Path] = []\n"
-        "    return {\n"
-        "        'created_dirs': created_dirs,\n"
-        "        'created_files': created_files,\n"
-        "        'skipped_files': skipped_files,\n"
-        "    }\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "semantic_dict_bag"
-    )
-    finding = findings[0]
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("semantic_dict_bag",),
-        selector_context=snapshot,
-    )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-    carrier_name = finding.metrics.plan_source_name
-
-    assert plan.records[0].status.value == "planned"
-    assert plan.records[0].executable_declaration_name == (
-        "SemanticDictBagReturnRecordMappingRecipeBuilder"
-    )
-    assert plan.records[0].refactor_concept == "tuple_dict_return_record"
-    assert carrier_name is not None
-    assert f"class {carrier_name}:" in rewritten
-    assert "created_dirs: List[Path]" in rewritten
-    assert (
-        f"return {carrier_name}(created_dirs=created_dirs, "
-        "created_files=created_files, skipped_files=skipped_files)"
-    ) in rewritten
-    assert simulation.is_clean is True
-    module_path.write_text(rewritten, encoding="utf-8")
-    assert not any(
-        finding.detector_id == "semantic_dict_bag"
-        for finding in analyze_modules(parse_python_modules(tmp_path))
-    )
-
-
-
-
-def test_detects_parameter_string_key_payload_contract(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef render_layer(payload):\n    layer_name = payload["layer_name"]\n    image_data = payload.get("image_data")\n    display = payload.get("display_type")\n    return (layer_name, image_data, display)\n',
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "semantic_dict_bag"
-        )
-    )
-
-    assert "parameter string key contract" in finding.relation_context
-    assert "display_type" in finding.summary
-    assert "image_data" in finding.summary
-    assert "layer_name" in finding.summary
-    assert "Payload" in (finding.scaffold or "")
-
-
-def test_detects_large_serialized_string_key_payload(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nimport json\n\n\ndef export_runtime_metadata(path, request):\n    metadata = {\n        'artifact_version': 1,\n        'artifact_kind': 'runtime_replay',\n        'exact_chemistry_mode': request.mode,\n        'certified_scoring_family': request.family,\n        'effective_scoring_engine': request.engine,\n        'charge_method': request.charge_method,\n        'target_rmsd': request.target_rmsd,\n        'target_error': request.target_error,\n        'sampled_pose_count': request.pose_count,\n    }\n    path.write_text(json.dumps(metadata))\n",
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "semantic_dict_bag"
-        )
-    )
-
-    assert "large serialized string key payload" in finding.relation_context
-    assert "artifact_version" in finding.summary
-    assert "target_error" in finding.summary
-
-
-def test_parameter_string_key_payload_requires_multiple_fields(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef read_optional(payload):\n    return payload.get("layer_name")\n',
-    )
-
-    assert not any(
-        (
-            finding.detector_id == "semantic_dict_bag"
-            for finding in analyze_path(tmp_path)
-        )
-    )
-
-
-def test_ignores_to_dict_return_dict_serialization_boundary(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Result:\n    def __init__(self, name, score):\n        self.name = name\n        self.score = score\n\n    def to_dict(self):\n        return {"name": self.name, "score": self.score}\n',
-    )
-    assert not any(
-        (
-            finding.detector_id == "semantic_dict_bag"
-            for finding in analyze_path(tmp_path)
-        )
-    )
 
 
 def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ Result Records
 --------------
 
 .. automodule:: nominal_refactor_advisor.models
-   :members: AnalysisReport, RefactorPlan, RefactorActionKind, RefactorAction, RefactorFinding, FindingSpec, SourceLocation, ImpactDelta, OutcomeEstimate, SemanticBagDescriptor, metric_semantic_bag_descriptors, impact_delta_semantic_bag_descriptor
+   :members: AnalysisReport, RefactorPlan, RefactorActionKind, RefactorAction, RefactorFinding, FindingSpec, SourceLocation, ImpactDelta, OutcomeEstimate
 
 
 Pattern Metadata

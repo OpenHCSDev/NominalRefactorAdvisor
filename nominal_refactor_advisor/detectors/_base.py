@@ -187,14 +187,11 @@ from ..models import (
     RegistrationMetrics,
     RepeatedMethodMetrics,
     ResolutionAxisMetrics,
-    SemanticBagDescriptor,
     SentinelSimulationMetrics,
     SourceLineReference,
     SourceLocation,
     SourceLocationZipDescriptorShape,
     WitnessCarrierMetrics,
-    impact_delta_semantic_bag_descriptor,
-    metric_semantic_bag_descriptors,
 )
 from ..observation_graph import (
     ObservationGraph,
@@ -10124,53 +10121,6 @@ class SupportProjectionAuthority:
 
 
 SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()
-
-
-@dataclass(frozen=True)
-class SemanticDataclassRecommendation:
-    class_name: str
-    base_class_name: str
-    matched_schema_name: str | None
-    rationale: str
-    scaffold: str
-    certification: CertificationLevel
-
-    existing_schema, proposed_schema = ConstructorVariantCatalog(
-        (
-            ConstructorVariantSpec(
-                "existing_schema",
-                ("class_name", "base_class_name", "rationale", "scaffold"),
-                constants=(ConstructorConstant("certification", CERTIFIED),),
-                derived_fields=(
-                    ConstructorDerivedField(
-                        "matched_schema_name", lambda bound: bound["class_name"]
-                    ),
-                ),
-            ),
-            ConstructorVariantSpec(
-                "proposed_schema",
-                (
-                    "class_name",
-                    "base_class_name",
-                    "matched_schema_name",
-                    "rationale",
-                    "scaffold",
-                ),
-                constants=(ConstructorConstant("certification", STRONG_HEURISTIC),),
-            ),
-        )
-    ).derived_methods()
-
-
-@dataclass(frozen=True)
-class SemanticDictBagCandidate:
-    line: int
-    symbol: str
-    key_names: tuple[str, ...]
-    context_kind: str
-    recommendation: SemanticDataclassRecommendation
-
-
 
 
 class FieldFamilyRelationLevel(StrEnum):
