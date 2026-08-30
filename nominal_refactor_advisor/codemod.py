@@ -366,23 +366,6 @@ class FindingRecipeSynthesisStatus(StrEnum):
     def unsupported(self) -> bool:
         return self._disposition is FindingRecipeSynthesisDisposition.UNSUPPORTED
 
-    def result(
-        self,
-        *,
-        action_keys: tuple["FindingRecipeActionKey", ...] = (),
-        evaluation: "FindingRecipeEvaluation | None" = None,
-        reason: str,
-    ) -> "FindingRecipeSynthesisResult":
-        return FindingRecipeSynthesisResult(
-            status=self,
-            evaluation=(
-                evaluation if evaluation is not None else FindingRecipeEvaluation()
-            ),
-            action_keys=action_keys,
-            reason=reason,
-        )
-
-
 class CancelableCompositionKind(StrEnum):
     """Kinds of product-carrier compositions that can be factored away."""
 
@@ -3789,22 +3772,8 @@ class CodemodTargetSourceReport(CodemodJsonReport):
 
 
 @dataclass(frozen=True)
-class CodemodPlanScaffoldReport(CodemodJsonReport, ABC):
-    """Shared report state for selector-backed CodemodPlanDocument scaffolds."""
-
-    selector_resolution: CodemodSelectorResolutionReport
-    document: "CodemodPlanDocument"
-
-    @property
-    def selected_count(self) -> int:
-        return self.selector_resolution.selected_count
-
-
-@dataclass(frozen=True)
-class CodemodReplacementPlanScaffoldReport(CodemodPlanScaffoldReport):
+class CodemodReplacementPlanScaffoldReport(CodemodTargetSourceReport):
     """Editable CodemodPlanDocument seeded with exact selected target source."""
-
-    records: tuple[CodemodTargetSourceRecord, ...]
 
     @classmethod
     def from_selector_context(
@@ -3818,9 +3787,12 @@ class CodemodReplacementPlanScaffoldReport(CodemodPlanScaffoldReport):
         )
         return cls(
             selector_resolution=source_report.selector_resolution,
-            document=cls.document_for_records(source_report.records),
             records=source_report.records,
         )
+
+    @cached_property
+    def document(self) -> "CodemodPlanDocument":
+        return self.document_for_records(self.records)
 
     @classmethod
     def document_for_records(
@@ -3849,16 +3821,7 @@ class CodemodReplacementPlanScaffoldReport(CodemodPlanScaffoldReport):
         )
 
     def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "selector": self.selector_resolution.selector.to_dict(),
-                "selected_count": self.selected_count,
-                "selected_target_ids": self.selector_resolution.selected_target_ids,
-                "missing_target_ids": self.selector_resolution.missing_target_ids,
-                "targets": tuple(record.to_dict() for record in self.records),
-                "document": self.document.to_dict(),
-            }
-        )
+        return JsonObject({**super().to_dict(), "document": self.document.to_dict()})
 
 
 class _CallSiteSelectorVisitor(ast.NodeVisitor):
@@ -13651,17 +13614,10 @@ class SemanticDescentRepairPlan:
 class FindingRecipeSynthesisRecord:
     """Recipe-synthesis outcome for one finding."""
 
-    finding_id: str
-    detector_id: str
-    title: str
+    finding: RefactorFinding
     status: FindingRecipeSynthesisStatus
-    scaffold: str
-    codemod_patch: str
-    summary: str
-    capability_gap: str
     evaluation: "FindingRecipeEvaluation"
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
-    reason: str = ""
 
     @classmethod
     def for_finding(
@@ -13671,24 +13627,48 @@ class FindingRecipeSynthesisRecord:
         *,
         action_keys: tuple[FindingRecipeActionKey, ...] = (),
         evaluation: "FindingRecipeEvaluation | None" = None,
-        reason: str = "",
     ) -> "FindingRecipeSynthesisRecord":
         evaluated_recipe = (
             evaluation if evaluation is not None else FindingRecipeEvaluation()
         )
         return cls(
-            finding_id=finding.stable_id,
-            detector_id=finding.detector_id,
-            title=finding.title,
+            finding=finding,
             status=status,
-            scaffold=finding.scaffold or "",
-            codemod_patch=finding.codemod_patch or "",
-            summary=finding.summary,
-            capability_gap=finding.capability_gap,
             evaluation=evaluated_recipe,
             action_keys=action_keys,
-            reason=reason,
         )
+
+    @property
+    def finding_id(self) -> str:
+        return self.finding.stable_id
+
+    @property
+    def detector_id(self) -> str:
+        return self.finding.detector_id
+
+    @property
+    def title(self) -> str:
+        return self.finding.title
+
+    @property
+    def summary(self) -> str:
+        return self.finding.summary
+
+    @property
+    def capability_gap(self) -> str:
+        return self.finding.capability_gap
+
+    @property
+    def scaffold(self) -> str:
+        return self.finding.scaffold or ""
+
+    @property
+    def codemod_patch(self) -> str:
+        return self.finding.codemod_patch or ""
+
+    @property
+    def reason(self) -> str:
+        return self.evaluation.rejection_reason or self.status.default_reason
 
     @property
     def evidence_selector(self) -> FindingEvidenceTargetSelector:
@@ -13756,6 +13736,8 @@ class FindingRecipeSynthesisRecord:
 class FindingRecipeSynthesisReport(CodemodJsonReport):
     """Coverage report for finding-backed DSL recipe synthesis."""
 
+    payload_key: ClassVar[str] = "synthesis_report"
+    class_plan_payload_key: ClassVar[str] = "class_plan_report"
     records: tuple[FindingRecipeSynthesisRecord, ...] = ()
 
     @property
@@ -13786,31 +13768,24 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
             },
         }
 
-
-@dataclass(frozen=True, kw_only=True)
-class FindingRecipeClassPlanBoundary(CodemodJsonReport):
-    """Optional clustered class-plan payload owned by recipe synthesis views."""
-
-    class_plan_payload_key: ClassVar[str] = "class_plan_report"
-
-    class_plan_report: "FindingRecipeClassPlanReport | None" = None
-
-    def class_plan_payload(self) -> JsonObject:
-        if self.class_plan_report is None:
-            return {}
-        return {
-            self.class_plan_payload_key: self.class_plan_report.to_dict(),
-        }
+    def projection_payload(
+        self,
+        class_plan_report: "FindingRecipeClassPlanReport | None" = None,
+    ) -> JsonObject:
+        payload = {self.payload_key: self.to_dict()}
+        if class_plan_report is not None:
+            payload[self.class_plan_payload_key] = class_plan_report.to_dict()
+        return payload
 
 
 @dataclass(frozen=True, kw_only=True)
-class FindingRecipeSynthesisBoundary(FindingRecipeClassPlanBoundary):
+class FindingRecipeSynthesisBoundary(CodemodJsonReport):
     """Single payload boundary for finding-backed synthesis projections."""
 
-    payload_key: ClassVar[str] = "synthesis_report"
     report: FindingRecipeSynthesisReport = field(
         default_factory=FindingRecipeSynthesisReport
     )
+    class_plan_report: "FindingRecipeClassPlanReport | None" = None
 
     @property
     def records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
@@ -13829,43 +13804,10 @@ class FindingRecipeSynthesisBoundary(FindingRecipeClassPlanBoundary):
         return self.report.unsupported_count
 
     def synthesis_payload(self) -> JsonObject:
-        return {
-            self.payload_key: self.report.to_dict(),
-            **self.class_plan_payload(),
-        }
+        return self.report.projection_payload(self.class_plan_report)
 
     def to_dict(self) -> JsonObject:
         return self.synthesis_payload()
-
-
-@dataclass(frozen=True, kw_only=True)
-class FindingRecipeSynthesisResult:
-    """Outcome of evaluating one finding against executable DSL bridges."""
-
-    status: FindingRecipeSynthesisStatus
-    evaluation: "FindingRecipeEvaluation"
-    action_keys: tuple[FindingRecipeActionKey, ...] = ()
-    reason: str = ""
-
-    @property
-    def planned_result(self) -> bool:
-        return self.status.planned
-
-    @property
-    def recipe(self) -> RefactorRecipe | None:
-        return self.evaluation.recipe
-
-    def record_for(
-        self,
-        attempt: "FindingRecipeSynthesisAttempt",
-    ) -> FindingRecipeSynthesisRecord:
-        return FindingRecipeSynthesisRecord.for_finding(
-            attempt.finding,
-            self.status,
-            action_keys=self.action_keys,
-            evaluation=self.evaluation,
-            reason=self.reason,
-        )
 
 
 @dataclass(frozen=True)
@@ -14040,12 +13982,11 @@ class FindingRecipeSynthesisAttempt:
     selector_context: CodemodSelectorContext | None
     seen_action_keys: frozenset[FindingRecipeActionKey]
 
-    def evaluate(self) -> FindingRecipeSynthesisResult:
+    def evaluate(self) -> FindingRecipeSynthesisRecord:
         synthesizer = FindingRecipeSynthesizer.for_finding(self.finding)
         result_status = FindingRecipeSynthesisStatus.NO_SYNTHESIZER
         result_action_keys: tuple[FindingRecipeActionKey, ...] = ()
         result_evaluation = FindingRecipeEvaluation()
-        result_reason = result_status.default_reason
         if synthesizer is not None:
             raw_action_keys = synthesizer.action_keys_for_finding(self.finding)
             action_keys = tuple(
@@ -14057,11 +13998,9 @@ class FindingRecipeSynthesisAttempt:
             )
             if not raw_action_keys:
                 result_status = FindingRecipeSynthesisStatus.NO_ACTION_KEYS
-                result_reason = result_status.default_reason
             elif len(action_keys) != len(raw_action_keys):
                 result_status = FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS
                 result_action_keys = raw_action_keys
-                result_reason = result_status.default_reason
             else:
                 evaluation = synthesizer.declared_evaluation_for_finding(
                     self.finding,
@@ -14078,21 +14017,19 @@ class FindingRecipeSynthesisAttempt:
                     result_status = (
                         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
                     )
-                    result_reason = evaluation.rejection_reason
                 elif not evaluation.recipe.has_effective_rewrites(
                     self.selector_context
                 ):
                     result_status = FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
                     result_evaluation = evaluation
-                    result_reason = result_status.default_reason
                 else:
                     result_status = FindingRecipeSynthesisStatus.PLANNED
                     result_evaluation = evaluation
-                    result_reason = result_status.default_reason
-        return result_status.result(
+        return FindingRecipeSynthesisRecord.for_finding(
+            self.finding,
+            result_status,
             action_keys=result_action_keys,
             evaluation=result_evaluation,
-            reason=result_reason,
         )
 
 
@@ -14101,7 +14038,10 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     """Codemod plan synthesized from executable advisor findings."""
 
     document: CodemodPlanDocument
-    expected_removed_finding_ids: tuple[str, ...] = ()
+
+    @property
+    def expected_removed_finding_ids(self) -> tuple[str, ...]:
+        return tuple(record.finding_id for record in self.records if record.status.planned)
 
     @property
     def expected_removed_finding_count(self) -> int:
@@ -14200,10 +14140,11 @@ class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
         }
 
 
-@dataclass(frozen=True, kw_only=True)
-class FindingRecipeClassSitePlan(FindingRecipeSynthesisRecord):
+@dataclass(frozen=True)
+class FindingRecipeClassSitePlan(CodemodJsonReport):
     """One finding site inside a graph-clustered smell class."""
 
+    synthesis_record: FindingRecipeSynthesisRecord
     replacement_scaffold: CodemodReplacementPlanScaffoldReport
 
     @classmethod
@@ -14213,41 +14154,17 @@ class FindingRecipeClassSitePlan(FindingRecipeSynthesisRecord):
         context: CodemodSourceSnapshot,
     ) -> "FindingRecipeClassSitePlan":
         return cls(
-            finding_id=synthesis_record.finding_id,
-            detector_id=synthesis_record.detector_id,
-            title=synthesis_record.title,
-            status=synthesis_record.status,
-            scaffold=synthesis_record.scaffold,
-            codemod_patch=synthesis_record.codemod_patch,
-            summary=synthesis_record.summary,
-            capability_gap=synthesis_record.capability_gap,
-            evaluation=synthesis_record.evaluation,
-            action_keys=synthesis_record.action_keys,
-            reason=synthesis_record.reason,
+            synthesis_record=synthesis_record,
             replacement_scaffold=context.replacement_plan_scaffold_report(
                 synthesis_record.evidence_selector
             ),
         )
 
-    @property
-    def selector(self) -> FindingEvidenceTargetSelector:
-        return self.evidence_selector
-
-    @property
-    def selector_resolution(self) -> CodemodSelectorResolutionReport:
-        return self.replacement_scaffold.selector_resolution
-
     def to_dict(self) -> JsonObject:
         return JsonObject(
             {
-                "finding_id": self.finding_id,
-                "detector_id": self.detector_id,
-                "title": self.title,
-                "status": self.status.value,
-                "selector": self.selector.to_dict(),
-                "selector_resolution": self.selector_resolution.to_dict(),
                 "replacement_scaffold": self.replacement_scaffold.to_dict(),
-                "synthesis_record": super().to_dict(),
+                "synthesis_record": self.synthesis_record.to_dict(),
             }
         )
 
@@ -14257,10 +14174,16 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     """One graph-clustered smell class with executable DSL planning context."""
 
     execution_class: RefactorExecutionClass
-    selector: FindingEvidenceTargetSelector
     replacement_scaffold: CodemodReplacementPlanScaffoldReport
     site_plans: tuple[FindingRecipeClassSitePlan, ...]
-    document: CodemodPlanDocument
+
+    @property
+    def selector(self) -> FindingEvidenceTargetSelector:
+        return FindingEvidenceTargetSelector(self.execution_class.finding_ids)
+
+    @property
+    def document(self) -> CodemodPlanDocument:
+        return self.document_from_records(self.synthesis_records)
 
     @property
     def finding_ids(self) -> tuple[str, ...]:
@@ -14272,7 +14195,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
 
     @property
     def synthesis_records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
-        return self.site_plans
+        return tuple(site_plan.synthesis_record for site_plan in self.site_plans)
 
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
@@ -14290,7 +14213,6 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     def finding_plan(self) -> FindingRecipePlan:
         return FindingRecipePlan(
             document=self.document,
-            expected_removed_finding_ids=self.expected_removed_finding_ids,
             report=FindingRecipeSynthesisReport(self.synthesis_records),
         )
 
@@ -14338,13 +14260,11 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         selector = FindingEvidenceTargetSelector(execution_class.finding_ids)
         return cls(
             execution_class=execution_class,
-            selector=selector,
             replacement_scaffold=context.replacement_plan_scaffold_report(selector),
             site_plans=tuple(
                 FindingRecipeClassSitePlan.from_synthesis_record(record, context)
                 for record in class_records
             ),
-            document=cls.document_from_records(class_records),
         )
 
     @staticmethod
@@ -14417,11 +14337,7 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
 
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
-        return tuple(
-            finding_id
-            for class_plan in self.classes
-            for finding_id in class_plan.expected_removed_finding_ids
-        )
+        return self.finding_plan.expected_removed_finding_ids
 
     @property
     def expected_removed_finding_count(self) -> int:
@@ -23602,7 +23518,6 @@ class FindingRecipePlanBuilder:
         selector_context: CodemodSelectorContext | None = None,
     ) -> FindingRecipePlan:
         recipes = []
-        expected_removed_finding_ids = []
         synthesis_records: list[FindingRecipeSynthesisRecord] = []
         seen_action_keys: set[FindingRecipeActionKey] = set()
         claimed_rewrites: list[PlannedSourceRewrite] = []
@@ -23613,13 +23528,14 @@ class FindingRecipePlanBuilder:
                 seen_action_keys=frozenset(seen_action_keys),
             )
             result = attempt.evaluate()
-            if not result.planned_result:
-                synthesis_records.append(result.record_for(attempt))
+            if not result.status.planned:
+                synthesis_records.append(result)
                 continue
-            if result.recipe is None:
+            recipe = result.evaluation.recipe
+            if recipe is None:
                 raise RuntimeError("planned synthesis result must include a recipe")
             overlap_reason = self.overlap_rejection_reason(
-                result.recipe,
+                recipe,
                 recipes,
                 claimed_rewrites,
                 selector_context,
@@ -23635,22 +23551,19 @@ class FindingRecipePlanBuilder:
                         ).declared_by(
                             result.evaluation.required_executable_declaration_type
                         ),
-                        reason=overlap_reason,
                     )
                 )
                 continue
-            synthesis_records.append(result.record_for(attempt))
-            recipes.append(result.recipe)
-            expected_removed_finding_ids.append(finding.stable_id)
+            synthesis_records.append(result)
+            recipes.append(recipe)
             seen_action_keys.update(result.action_keys)
             claimed_rewrites.extend(
-                self.planned_rewrites_for_recipe(result.recipe, selector_context)
+                self.planned_rewrites_for_recipe(recipe, selector_context)
             )
         return FindingRecipePlan(
             document=CodemodPlanDocument(
                 recipes=self.merged_recipes(recipes, selector_context),
             ),
-            expected_removed_finding_ids=tuple(expected_removed_finding_ids),
             report=FindingRecipeSynthesisReport(tuple(synthesis_records)),
         )
 

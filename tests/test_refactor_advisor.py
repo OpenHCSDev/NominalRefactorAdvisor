@@ -14799,9 +14799,10 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert class_payload["refactor_concepts"] == ("auto_register_class_registry",)
     assert class_payload["sequence"]["stages"][0] == class_payload["document"]
     assert class_payload["site_count"] == 1
-    assert site_plan["finding_id"] == class_payload["finding_ids"][0]
-    assert site_plan["selector"]["selector"] == "finding_evidence_target"
-    assert site_plan["selector_resolution"]["selected_count"] >= 1
+    assert site_plan["synthesis_record"]["finding_id"] == class_payload["finding_ids"][0]
+    assert site_plan["replacement_scaffold"]["selector"]["selector"] == (
+        "finding_evidence_target"
+    )
     assert site_plan["replacement_scaffold"]["selected_count"] >= 1
     assert site_plan["synthesis_record"]["status"] == "planned"
     assert site_plan["synthesis_record"]["recipe"]["operations"][0]["operation"] == (
@@ -14826,15 +14827,20 @@ def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
         qualname="HandlerAuthority",
         authority_id="handler-authority",
     )
-    record = FindingRecipeSynthesisRecord(
-        finding_id="finding-id",
-        detector_id="manual_class_registration",
-        title="Manual registry mirrors a class family",
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Manual registry mirrors a class family",
+        "Registry membership is declared twice.",
+        "derive the registry from HandlerAuthority",
+        "REGISTRY repeats the class family",
+    ).build(
+        "manual_class_registration",
+        "REGISTRY duplicates HandlerAuthority membership.",
+        (),
+    )
+    record = FindingRecipeSynthesisRecord.for_finding(
+        finding,
         status=FindingRecipeSynthesisStatus.PLANNED,
-        scaffold="",
-        codemod_patch="",
-        summary="REGISTRY duplicates HandlerAuthority membership.",
-        capability_gap="derive the registry from HandlerAuthority",
         evaluation=FindingRecipeEvaluation(
             recipe=RefactorRecipe(
                 recipe_id="manual-registry-repair",
@@ -14890,9 +14896,9 @@ def test_module_cli_synthesizes_class_plan_with_scaffolds(
     assert class_payload["selector"]["selector"] == "finding_evidence_target"
     assert class_payload["replacement_scaffold"]["selected_count"] >= 1
     assert len(class_payload["site_plans"]) == 1
-    assert class_payload["site_plans"][0]["selector"]["selector"] == (
-        "finding_evidence_target"
-    )
+    assert class_payload["site_plans"][0]["replacement_scaffold"]["selector"][
+        "selector"
+    ] == "finding_evidence_target"
     assert class_payload["site_plans"][0]["replacement_scaffold"]["selected_count"] >= 1
     assert (
         class_payload["document"]["recipes"][0]["operations"][0]["operation"]
@@ -14959,7 +14965,9 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert site_delta["finding_id"] == payload["classes"][0]["finding_ids"][0]
     assert site_delta["status_counts"]["eliminated"] >= 1
     assert site_delta["fulfilled_expected_removal"] is True
-    assert site_delta["site_plan"]["selector"]["selector"] == "finding_evidence_target"
+    assert site_delta["site_plan"]["replacement_scaffold"]["selector"][
+        "selector"
+    ] == "finding_evidence_target"
     assert (
         site_delta["site_plan"]["synthesis_record"]["recipe"]["operations"][0][
             "operation"
