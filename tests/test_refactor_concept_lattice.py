@@ -17,12 +17,14 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.NominalBoundaryConcept,
         codemod.SemanticCarrierConcept,
         codemod.PrefixBundleCarrierConcept,
+        codemod.CallMappingAuthorityConcept,
         codemod.ConstructorKwargCollapseConcept,
         codemod.ConstructorKwargCarrierProjectionConcept,
         codemod.TupleDictReturnNominalizationConcept,
         codemod.DataclassPayloadProjectionConcept,
         codemod.TupleDictReturnRecordConcept,
         codemod.DeadCompatibilityErasureConcept,
+        codemod.DerivedProjectionConcept,
         codemod.ClassFamilyAuthorityConcept,
         codemod.AutoRegisterConcept,
         codemod.AutoRegisterClassRegistryConcept,
@@ -44,10 +46,17 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
+    codemod.RepeatedBuilderAuthorityMethod: (codemod.ConstructorKwargCollapseConcept),
+    codemod.RepeatedMethodCallAuthorityRecipeParts: (
+        codemod.CallMappingAuthorityConcept
+    ),
     codemod.ManualClassRegistrationFindingRecipeSynthesizer: (
         codemod.AutoRegisterClassRegistryConcept
     ),
     codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
+        codemod.ClassFamilyAuthorityConcept
+    ),
+    codemod.RepeatedMethodPromotionFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
     codemod.DataclassPayloadProjectionMappingRecipeBuilder: (
@@ -62,6 +71,13 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.LocalRoleCaseLogicMappingRecipeBuilder: (codemod.RoleCaseAuthorityConcept),
     codemod.NumericLiteralDispatchFindingRecipeSynthesizer: (
         codemod.AutoRegisterStrategyFamilyConcept
+    ),
+    codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer: (
+        codemod.AutoRegisterConcept
+    ),
+    codemod.EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
+    codemod.AutoregisterInstanceViewRecipeBuilder: (
+        codemod.AutoRegisterClassRegistryConcept
     ),
 }
 
@@ -111,11 +127,15 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
             frozenset(
                 {
                     codemod.PrefixBundleCarrierConcept,
+                    codemod.CallMappingAuthorityConcept,
+                    codemod.ConstructorKwargCollapseConcept,
                     codemod.ConstructorKwargCarrierProjectionConcept,
                     codemod.DataclassPayloadProjectionConcept,
                     codemod.TupleDictReturnRecordConcept,
                     codemod.DeadCompatibilityErasureConcept,
+                    codemod.DerivedProjectionConcept,
                     codemod.ClassFamilyAuthorityConcept,
+                    codemod.AutoRegisterConcept,
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,
                     codemod.RoleCaseAuthorityConcept,
@@ -124,7 +144,22 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
         ),
         (
             codemod.ConstructorKwargCollapseConcept,
-            frozenset({codemod.ConstructorKwargCarrierProjectionConcept}),
+            frozenset(
+                {
+                    codemod.ConstructorKwargCollapseConcept,
+                    codemod.ConstructorKwargCarrierProjectionConcept,
+                }
+            ),
+        ),
+        (
+            codemod.CallMappingAuthorityConcept,
+            frozenset(
+                {
+                    codemod.CallMappingAuthorityConcept,
+                    codemod.ConstructorKwargCollapseConcept,
+                    codemod.ConstructorKwargCarrierProjectionConcept,
+                }
+            ),
         ),
         (
             codemod.TupleDictReturnNominalizationConcept,
@@ -140,6 +175,7 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
             frozenset(
                 {
                     codemod.ClassFamilyAuthorityConcept,
+                    codemod.AutoRegisterConcept,
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,
                 }
@@ -149,10 +185,15 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
             codemod.AutoRegisterConcept,
             frozenset(
                 {
+                    codemod.AutoRegisterConcept,
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,
                 }
             ),
+        ),
+        (
+            codemod.DerivedProjectionConcept,
+            frozenset({codemod.DerivedProjectionConcept}),
         ),
     ),
 )
@@ -182,6 +223,21 @@ def test_unrelated_concepts_do_not_match() -> None:
         codemod.DataclassPayloadProjectionMappingRecipeBuilder,
         codemod.RoleCaseAuthorityConcept,
     )
+
+
+def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
+    finding = advisor.RefactorFinding(
+        detector_id="repeated_export_dicts",
+        pattern_id=advisor.PatternId.AUTHORITATIVE_SCHEMA,
+        title="Repeated export dictionaries",
+        summary="An SSOT detector without an executable declaration.",
+        why="Detector roles do not prove executable migration ownership.",
+        capability_gap="A proof-backed executable declaration.",
+        relation_context="An unsupported SSOT detector must not enter the lattice.",
+    )
+    snapshot = codemod.CodemodSourceSnapshot.from_modules((), (finding,))
+
+    assert not codemod.NominalBoundaryConcept.matches_finding(finding, snapshot)
 
 
 def test_mapping_builder_identity_is_nominally_owned() -> None:
@@ -244,10 +300,10 @@ def test_semantic_match_families_publish_no_registry_or_numeric_precedence() -> 
     assert not hasattr(semantic_match.AstPredicateRule, "rule_order")
 
 
-def _repeated_builder_declaration_for_source(
+def _repeated_builder_evaluation_for_source(
     tmp_path: Path,
     source: str,
-) -> tuple[type[object], ...]:
+) -> codemod.FindingRecipeEvaluation:
     module_path = tmp_path / "pkg" / "mod.py"
     module_path.parent.mkdir(parents=True)
     module_path.write_text(source, encoding="utf-8")
@@ -261,14 +317,13 @@ def _repeated_builder_declaration_for_source(
     snapshot = codemod.CodemodSourceSnapshot.from_modules(modules, findings)
     synthesizer = codemod.FindingRecipeSynthesizer.for_finding(findings[0])
     assert synthesizer is not None
-    evaluation = synthesizer.evaluate_recipe_for_finding(findings[0], snapshot)
-    return (evaluation.required_executable_declaration_type,)
+    return synthesizer.evaluate_recipe_for_finding(findings[0], snapshot)
 
 
 def test_repeated_builder_dynamic_rule_preserves_the_exact_concept_leaf(
     tmp_path: Path,
 ) -> None:
-    declarations = _repeated_builder_declaration_for_source(
+    evaluation = _repeated_builder_evaluation_for_source(
         tmp_path,
         "from dataclasses import dataclass\n\n\n"
         "@dataclass(frozen=True)\n"
@@ -290,9 +345,10 @@ def test_repeated_builder_dynamic_rule_preserves_the_exact_concept_leaf(
         "    )\n",
     )
 
-    assert declarations == (codemod.RepeatedBuilderSourceProjectionAuthorityMethod,)
+    declaration = evaluation.required_executable_declaration_type
+    assert declaration is codemod.RepeatedBuilderSourceProjectionAuthorityMethod
     assert (
-        codemod.RefactorConcept.leaf_concept_for_declaration(declarations[0])
+        codemod.RefactorConcept.leaf_concept_for_declaration(declaration)
         is codemod.ConstructorKwargCarrierProjectionConcept
     )
 
@@ -300,7 +356,7 @@ def test_repeated_builder_dynamic_rule_preserves_the_exact_concept_leaf(
 def test_repeated_builder_nonconcept_rule_does_not_inherit_a_carrier_leaf(
     tmp_path: Path,
 ) -> None:
-    declarations = _repeated_builder_declaration_for_source(
+    evaluation = _repeated_builder_evaluation_for_source(
         tmp_path,
         "class Builder:\n"
         "    def main(self):\n"
@@ -311,8 +367,33 @@ def test_repeated_builder_nonconcept_rule_does_not_inherit_a_carrier_leaf(
         "        return self\n",
     )
 
-    assert declarations == (codemod.RepeatedBuilderCallFindingRecipeSynthesizer,)
-    assert not issubclass(declarations[0], codemod.RefactorConcept)
+    declaration = evaluation.required_executable_declaration_type
+    assert declaration is codemod.RepeatedBuilderCallFindingRecipeSynthesizer
+    assert not issubclass(declaration, codemod.RefactorConcept)
+
+
+def test_repeated_owner_method_calls_publish_call_mapping_authority(
+    tmp_path: Path,
+) -> None:
+    evaluation = _repeated_builder_evaluation_for_source(
+        tmp_path,
+        "class Renderer:\n"
+        "    def emit(\n"
+        "        self, name: str, enabled: bool = False, style: str = 'plain'\n"
+        "    ) -> str:\n"
+        "        return name if enabled else f'{style}:{name.lower()}'\n\n"
+        "    def build(self):\n"
+        "        first = self.emit(name='alpha')\n"
+        "        second = self.emit(name='beta', enabled=True)\n"
+        "        third = self.emit(name='gamma', style='compact')\n"
+        "        fourth = self.emit(name='delta', enabled=True, style='wide')\n"
+        "        return first, second, third, fourth\n",
+    )
+
+    declaration = evaluation.required_executable_declaration_type
+    assert evaluation.status.planned
+    assert declaration is codemod.RepeatedMethodCallAuthorityRecipeParts
+    assert evaluation.refactor_concept_type is codemod.CallMappingAuthorityConcept
 
 
 def test_target_shape_and_selector_mirror_authorities_are_absent() -> None:

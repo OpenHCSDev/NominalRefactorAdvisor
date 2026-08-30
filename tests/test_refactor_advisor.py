@@ -2630,6 +2630,7 @@ def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(
     diff = simulation.document_simulation.unified_diff(source_by_path)
 
     assert plan.expected_removed_finding_count == 1
+    assert plan.records[0].refactor_concept == "class_family_authority"
     operation = plan.document.recipes[0].operations[0].to_dict()
     assert operation["operation"] == "promote_class_methods"
     assert operation["method_names"] == ("observation_line",)

@@ -1178,6 +1178,7 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
         plan.records[0].executable_declaration_name
         == "InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer"
     )
+    assert plan.records[0].refactor_concept == "auto_register"
     assert {operation["attribute_name"] for operation in operations} == {
         "__key_extractor__",
         "__registry_key__",
@@ -1379,6 +1380,7 @@ def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
     assert (
         plan.records[0].executable_declaration_name == "RepeatedBuilderAuthorityMethod"
     )
+    assert plan.records[0].refactor_concept == "constructor_kwarg_collapse"
     assert [operation["operation"] for operation in recipe["operations"]] == [
         "replace_target",
         "replace_target",
@@ -1700,6 +1702,7 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
     assert plan.records[0].status.value == "planned"
+    assert plan.records[0].refactor_concept == "auto_register_class_registry"
     assert operation["operation"] == "derive_autoregister_instance_view"
     assert operation["assignment_name"] == "STEP_TABLE"
     assert "__registry__ = {}" in rewritten
@@ -2352,6 +2355,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     operations = recipe_payload["operations"]
 
     assert plan.records[0].status.value == "planned"
+    assert plan.records[0].refactor_concept == "derived_projection"
     assert simulation.is_clean is True
     assert (
         "def actionable_confidence_levels(cls) -> frozenset[str]"

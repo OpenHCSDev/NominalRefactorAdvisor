@@ -512,7 +512,14 @@ class PrefixBundleCarrierConcept(SemanticCarrierConcept):
     """Move repeated prefixed primitive fields into one carrier."""
 
 
-class ConstructorKwargCollapseConcept(SemanticCarrierConcept):
+class CallMappingAuthorityConcept(NominalBoundaryConcept):
+    """Move repeated call argument mapping behind its nominal owner."""
+
+
+class ConstructorKwargCollapseConcept(
+    SemanticCarrierConcept,
+    CallMappingAuthorityConcept,
+):
     """Collapse repeated constructor keyword projections behind an authority."""
 
 
@@ -536,8 +543,12 @@ class DeadCompatibilityErasureConcept(SemanticCarrierConcept):
     """Erase compatibility projections after their authority is established."""
 
 
+class DerivedProjectionConcept(NominalBoundaryConcept):
+    """Derive a repeated projection from its existing nominal authority."""
+
+
 class ClassFamilyAuthorityConcept(NominalBoundaryConcept):
-    """Establish a class-family authority and derive its collection views."""
+    """Establish a class-family authority for shared behavior or collection views."""
 
 
 class AutoRegisterConcept(ClassFamilyAuthorityConcept):
@@ -14632,56 +14643,6 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
         )
 
 
-class MappingBuilderFindingRecipeSynthesizer(
-    FindingRecipeSynthesizer,
-    ABC,
-):
-    """Finding bridge whose declaration owns its exact recipe builder."""
-
-    builder_type: ClassVar[type["MappingSemanticMirrorRecipeBuilder"]]
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        builder = self.builder_type.from_context(
-            finding,
-            context,
-        )
-        if builder is None:
-            return RejectedRecipeEvaluation(
-                reason="mapping recipe construction requires source context",
-                executable_declaration_type=type(self),
-            )
-        recipe = builder.recipe()
-        if recipe is not None:
-            return ExecutableRecipeEvaluation(
-                executable_recipe=recipe,
-                executable_declaration_type=type(builder),
-            )
-        return RejectedRecipeEvaluation(
-            reason=builder.rejection_reason(),
-            executable_declaration_type=type(builder),
-        )
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None or not isinstance(finding.metrics, MappingMetrics):
-            return ()
-        mapping_name = finding.metrics.plan_mapping_name
-        source_name = finding.metrics.plan_source_name
-        if mapping_name is None or source_name is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            ((evidence.file_path, f"{mapping_name}->{source_name}"),),
-        )
-
-
 class PrefixedRoleBundleRecipeRejection(FindingRecipeRequirementRejection):
     """Typed rejection while resolving a prefixed-role bundle recipe."""
 
@@ -16076,7 +16037,8 @@ class RepeatedAuthorityMethodSpec(
 
 @dataclass(frozen=True)
 class RepeatedBuilderAuthorityMethod(
-    RepeatedAuthorityMethodSpec[RepeatedBuilderAuthorityParameter]
+    RepeatedAuthorityMethodSpec[RepeatedBuilderAuthorityParameter],
+    ConstructorKwargCollapseConcept,
 ):
     """Generated builder-authority method signature and constructor mapping."""
 
@@ -16163,11 +16125,21 @@ class RepeatedMethodCallAuthorityParameter(RepeatedCallAuthorityParameter):
 
 
 @dataclass(frozen=True)
-class RepeatedMethodCallAuthorityRecipeParts(RepeatedAuthorityRecipeParts):
+class RepeatedMethodCallAuthorityRecipeParts(
+    RepeatedAuthorityRecipeParts,
+    CallMappingAuthorityConcept,
+):
     """Executable facts for one single-owner repeated method-call extraction."""
 
     recipe_id_suffix = "extract-method-call-authority"
     recipe_reason = "Move repeated method-call field mapping behind an owner authority."
+
+    def executable_declaration_type(
+        self,
+        synthesizer_type: type[object],
+    ) -> type[object]:
+        del synthesizer_type
+        return type(self)
 
 
 @dataclass(frozen=True)
@@ -17642,6 +17614,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
 class RepeatedMethodPromotionFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
     FindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
     ABC,
 ):
     """Build method-promotion recipes for exact repeated method findings."""
@@ -18072,7 +18045,8 @@ class DerivableCandidateCollectorFindingRecipeSynthesizer(
 
 
 class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
-    ClassAssignmentDeletionFindingRecipeSynthesizer
+    ClassAssignmentDeletionFindingRecipeSynthesizer,
+    AutoRegisterConcept,
 ):
     """Delete AutoRegister protocol fields repeated from inherited bases."""
 
@@ -19193,7 +19167,10 @@ class EnumSubsetSemanticMirrorRecipeParts:
 
 
 @dataclass(frozen=True, kw_only=True)
-class EnumSubsetSemanticMirrorRecipeBuilder(CodemodSelectorContext):
+class EnumSubsetSemanticMirrorRecipeBuilder(
+    CodemodSelectorContext,
+    DerivedProjectionConcept,
+):
     """Build enum subset recipe parts from a semantic mirror finding."""
 
     finding: RefactorFinding
@@ -22492,7 +22469,10 @@ class AutoregisterInstanceViewRecipeSeed(AutoregisterInstanceViewRecipeSeedDraft
 
 
 @dataclass(frozen=True, kw_only=True)
-class AutoregisterInstanceViewRecipeBuilder(ContextualSemanticMirrorRecipeBuilder):
+class AutoregisterInstanceViewRecipeBuilder(
+    ContextualSemanticMirrorRecipeBuilder,
+    AutoRegisterClassRegistryConcept,
+):
     """Build recipes for constructor-valued views over AutoRegisterMeta families."""
 
     missing_context_rejection = (
