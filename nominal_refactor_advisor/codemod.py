@@ -18876,15 +18876,6 @@ class SemanticOverlapAbcOptimizationFindingRecipeSynthesizer(
     detector_id = "semantic_overlap_abc_optimization"
 
 
-class HelperBackedObservationSpecFindingRecipeSynthesizer(
-    RepeatedMethodPromotionFindingRecipeSynthesizer
-):
-    """Promote helper-backed wrapper entrypoints when they are exact duplicates."""
-
-    detector_id = "helper_backed_observation_spec"
-
-
-
 class SharedRecipeIdSuffixRecipeReasonBase(ABC):
     @property
     @abstractmethod

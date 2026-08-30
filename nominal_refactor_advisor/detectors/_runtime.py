@@ -74,10 +74,7 @@ from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import *
 from ._base import high_confidence_certified_spec
 from ._helpers import *
-from ._helpers import (
-    _accessor_wrapper_groups,
-    _projection_helper_groups,
-)
+from ._helpers import _projection_helper_groups
 
 
 class _ReplacementShapeRole:
@@ -9088,67 +9085,6 @@ class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
                 )
             )
         return findings
-
-
-class AccessorWrapperDetector(
-    ModuleCollectorCandidateDetector[tuple[AccessorWrapperCandidate, ...]]
-):
-    candidate_collector = _accessor_wrapper_groups
-    finding_spec = high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Trivial structural accessor wrapper should collapse to attribute/property access",
-        "The docs treat one-step observation wrappers as redundant structure: if a method only transports an already-owned attribute or a one-step computed view of it, the authority should remain the attribute itself, with `@property` reserved for genuine computed access.",
-        "direct authoritative attribute/property access instead of transport wrappers",
-        "same class exposes owned facts through one-step transport wrappers",
-        _UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS,
-        _ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
-
-    def _finding_for_candidate(
-        self, ordered: tuple[AccessorWrapperCandidate, ...]
-    ) -> RefactorFinding:
-        class_name = ordered[0].class_name
-        evidence = tuple(
-            (
-                SourceLocation(
-                    ordered_item.file_path, ordered_item.lineno, ordered_item.symbol
-                )
-                for ordered_item in ordered[:6]
-            )
-        )
-        replacement_examples = "\n".join(
-            (
-                _accessor_replacement_example(ordered_item)
-                for ordered_item in ordered[:3]
-            )
-        )
-        observed_attrs = ", ".join(
-            sorted({ordered_item.observed_attribute for ordered_item in ordered})
-        )
-        wrapper_shapes = ", ".join(
-            sorted(
-                {
-                    ordered_item.wrapper_shape.replace("_", " ")
-                    for ordered_item in ordered
-                }
-            )
-        )
-        return self.build_finding(
-            f"Class {class_name} exposes {len(ordered)} structural accessor wrapper(s) over {observed_attrs}.",
-            evidence,
-            relation_context=f"same class repeats {wrapper_shapes} around owned attributes instead of exposing one authoritative access path",
-            scaffold=f"Collapse these transport wrappers to direct dot access when they only expose owned state. If a one-step computed view must remain public, express it as an `@property`.\n\nExample replacements:\n{replacement_examples}",
-            metrics=MappingMetrics(
-                mapping_site_count=len(ordered),
-                field_count=len(
-                    {ordered_item.observed_attribute for ordered_item in ordered}
-                ),
-                mapping_name=f"{class_name} property",
-                field_names=sorted_tuple(
-                    {ordered_item.observed_attribute for ordered_item in ordered}
-                ),
-            ),
-        )
 
 
 @dataclass(frozen=True)

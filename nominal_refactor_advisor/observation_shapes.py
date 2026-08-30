@@ -331,31 +331,6 @@ class ProjectionHelperShape(
 
 
 @dataclass(frozen=True)
-class AccessorWrapperCandidate(
-    FunctionBodyLinenoSymbolObservationMixin,
-    ClassNameNominalWitnessMixin,
-    ObservedAttributeObservedNameMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.ACCESSOR_WRAPPER
-    class_name: str
-    method_name: str
-    lineno: int
-    target_expression: str
-    observed_attribute: str
-    accessor_kind: str
-    wrapper_shape: str
-
-    @property
-    def symbol(self) -> str:
-        return f"{self.class_name}.{self.method_name}"
-
-    @property
-    def fiber_key(self) -> str:
-        return f"{self.accessor_kind}:{self.wrapper_shape}:{self.observed_attribute}"
-
-
-@dataclass(frozen=True)
 class ScopedShapeWrapperFunction(
     ModuleBodyExecutionMixin,
     LinenoObservationMixin,

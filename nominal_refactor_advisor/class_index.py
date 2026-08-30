@@ -210,8 +210,6 @@ class CompactModuleClassProjection(
     manual_family_rosters: tuple["CompactManualFamilyRosterObservation", ...] = ()
     nominal_class_first_line_overrides: tuple[tuple[str, int], ...] = ()
     extra_nominal_class_bases: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    nominal_authority_shapes: tuple["CompactNominalAuthorityShape", ...] = ()
-    nominal_surface_facts: tuple["CompactNominalSurfaceFact", ...] = ()
     nominal_wrapper_authorities: tuple["CompactNominalWrapperAuthority", ...] = ()
     pass_through_nominal_wrappers: tuple["CompactPassThroughNominalWrapper", ...] = ()
     abc_optimizer_methods: tuple["CompactABCOptimizerMethod", ...] = ()
@@ -259,30 +257,6 @@ class CompactModuleClassProjection(
                     "has no default"
                 )
         return values
-
-
-@dataclass(frozen=True)
-class CompactNominalAuthorityShape:
-    file_path: str
-    class_name: str
-    line: int
-    declared_base_names: tuple[str, ...]
-    field_type_map: tuple[tuple[str, str], ...]
-    method_names: tuple[str, ...]
-    is_abstract: bool
-    is_dataclass: bool
-
-
-@dataclass(frozen=True)
-class CompactNominalSurfaceFact:
-    """Sparse method-flow facts for a typed nominal surface."""
-
-    file_path: str
-    class_name: str
-    line: int
-    public_method_names: tuple[str, ...]
-    method_flow_field_names: tuple[tuple[str, tuple[str, ...]], ...]
-    constructed_delegate_candidate_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -1407,8 +1381,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         (
             nominal_class_first_line_overrides,
             extra_nominal_class_bases,
-            nominal_authority_shapes,
-            nominal_surface_facts,
             nominal_wrapper_authorities,
             pass_through_nominal_wrappers,
         ) = _compact_nominal_class_scope_facts(
@@ -1461,8 +1433,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 manual_family_rosters=_compact_manual_family_rosters(parsed_module),
                 nominal_class_first_line_overrides=nominal_class_first_line_overrides,
                 extra_nominal_class_bases=extra_nominal_class_bases,
-                nominal_authority_shapes=nominal_authority_shapes,
-                nominal_surface_facts=nominal_surface_facts,
                 nominal_wrapper_authorities=nominal_wrapper_authorities,
                 pass_through_nominal_wrappers=pass_through_nominal_wrappers,
                 abc_optimizer_methods=abc_optimizer_methods,
@@ -2167,8 +2137,6 @@ def _compact_nominal_class_scope_facts(
 ) -> tuple[
     tuple[tuple[str, int], ...],
     tuple[tuple[str, tuple[str, ...]], ...],
-    tuple[CompactNominalAuthorityShape, ...],
-    tuple[CompactNominalSurfaceFact, ...],
     tuple[CompactNominalWrapperAuthority, ...],
     tuple[CompactPassThroughNominalWrapper, ...],
 ]:
@@ -2178,8 +2146,6 @@ def _compact_nominal_class_scope_facts(
         indexed_first_nodes.setdefault(node.name, node)
     first_nodes: dict[str, ast.ClassDef] = {}
     extra_bases: dict[str, set[str]] = {}
-    nominal_shapes: list[CompactNominalAuthorityShape] = []
-    nominal_surface_facts: list[CompactNominalSurfaceFact] = []
     nominal_wrapper_authorities: list[CompactNominalWrapperAuthority] = []
     pass_through_nominal_wrappers: list[CompactPassThroughNominalWrapper] = []
     for node in class_nodes:
@@ -2207,32 +2173,6 @@ def _compact_nominal_class_scope_facts(
         )
         if wrapper is not None:
             pass_through_nominal_wrappers.append(wrapper)
-        if len(field_type_map) >= 2:
-            nominal_shapes.append(
-                CompactNominalAuthorityShape(
-                    file_path=str(parsed_module.path),
-                    class_name=node.name,
-                    line=node.lineno,
-                    declared_base_names=sorted_tuple(
-                        terminal_name
-                        for base in node.bases
-                        if (terminal_name := _terminal_reference_name(base)) is not None
-                    ),
-                    field_type_map=field_type_map,
-                    method_names=sorted_tuple(
-                        statement.name
-                        for statement in node.body
-                        if isinstance(
-                            statement, (ast.FunctionDef, ast.AsyncFunctionDef)
-                        )
-                    ),
-                    is_abstract=_is_abstract_class(node),
-                    is_dataclass=_is_dataclass_class(node),
-                )
-            )
-            surface_fact = _compact_nominal_surface_fact(parsed_module, node)
-            if surface_fact is not None:
-                nominal_surface_facts.append(surface_fact)
         if id(node) in indexed_node_ids:
             continue
         extra_bases.setdefault(node.name, set()).update(
@@ -2250,84 +2190,8 @@ def _compact_nominal_class_scope_facts(
             (class_name, sorted_tuple(base_names))
             for class_name, base_names in extra_bases.items()
         ),
-        tuple(nominal_shapes),
-        tuple(nominal_surface_facts),
         tuple(nominal_wrapper_authorities),
         tuple(pass_through_nominal_wrappers),
-    )
-
-
-def _compact_self_attribute_names(node: ast.AST) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            current.attr
-            for current in ast.walk(node)
-            if isinstance(current, ast.Attribute)
-            and isinstance(current.value, ast.Name)
-            and current.value.id == "self"
-        }
-    )
-
-
-def _compact_call_self_attribute_names(call: ast.Call) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            current.attr
-            for argument in (
-                *call.args,
-                *(keyword.value for keyword in call.keywords),
-            )
-            for current in ast.walk(argument)
-            if isinstance(current, ast.Attribute)
-            and isinstance(current.value, ast.Name)
-            and current.value.id == "self"
-        }
-    )
-
-
-def _compact_constructed_delegate_candidate_names(
-    methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...],
-) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            call.func.id
-            for method in methods
-            for call in ast.walk(method)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and len(_compact_call_self_attribute_names(call)) >= 2
-        }
-    )
-
-
-def _compact_nominal_surface_fact(
-    parsed_module: ParsedModule,
-    node: ast.ClassDef,
-) -> CompactNominalSurfaceFact | None:
-    public_methods = tuple(
-        statement
-        for statement in node.body
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not statement.name.startswith("_")
-    )
-    if not public_methods:
-        return None
-    method_flow_field_names = sorted_tuple(
-        (method.name, field_names)
-        for method in public_methods
-        if (field_names := _compact_self_attribute_names(method))
-    )
-    if not method_flow_field_names:
-        return None
-    return CompactNominalSurfaceFact(
-        file_path=str(parsed_module.path),
-        class_name=node.name,
-        line=node.lineno,
-        public_method_names=sorted_tuple(method.name for method in public_methods),
-        method_flow_field_names=method_flow_field_names,
-        constructed_delegate_candidate_names=_compact_constructed_delegate_candidate_names(
-            public_methods
-        ),
     )
 
 

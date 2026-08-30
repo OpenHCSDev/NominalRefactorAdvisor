@@ -49,7 +49,6 @@ from .observation_graph import (
     collect_structural_observations,
 )
 from .observation_shapes import (
-    AccessorWrapperCandidate,
     BuilderCallShape,
     ClassMarkerObservation,
     ConfigDispatchObservation,
@@ -825,22 +824,6 @@ class BuiltinCallName(StrEnum):
     @classmethod
     def return_collection_kind_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset((cls.TUPLE, cls.LIST, cls.DICT))
-
-    @classmethod
-    def self_attribute_wrapper_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset(
-            (
-                cls.BOOL,
-                cls.FROZENSET,
-                cls.INT,
-                cls.LEN,
-                cls.LIST,
-                cls.SET,
-                cls.SORTED,
-                cls.STR,
-                cls.TUPLE,
-            )
-        )
 
     @classmethod
     def non_helper_call_names(cls) -> frozenset["BuiltinCallName"]:
@@ -3512,47 +3495,6 @@ def _projection_helper_shape_from_function(
     )
 
 
-def _accessor_wrapper_candidate_from_function(
-    parsed_module: ParsedModule,
-    class_name: str,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> AccessorWrapperCandidate | None:
-    if _is_dunder_method(function.name):
-        return None
-    if _has_property_like_decorator(function):
-        return None
-    body = _trim_docstring_body(function.body)
-    if not body:
-        return None
-    getter_candidate = _getter_wrapper_candidate(function, body)
-    if getter_candidate is not None:
-        target_expression, observed_attribute, wrapper_shape = getter_candidate
-        return AccessorWrapperCandidate(
-            file_path=str(parsed_module.path),
-            class_name=class_name,
-            method_name=function.name,
-            lineno=function.lineno,
-            target_expression=target_expression,
-            observed_attribute=observed_attribute,
-            accessor_kind="getter",
-            wrapper_shape=wrapper_shape,
-        )
-    setter_candidate = _setter_wrapper_candidate(function, body)
-    if setter_candidate is not None:
-        target_expression, observed_attribute = setter_candidate
-        return AccessorWrapperCandidate(
-            file_path=str(parsed_module.path),
-            class_name=class_name,
-            method_name=function.name,
-            lineno=function.lineno,
-            target_expression=target_expression,
-            observed_attribute=observed_attribute,
-            accessor_kind="setter",
-            wrapper_shape="write_through",
-        )
-    return None
-
-
 def _scoped_shape_wrapper_node_types(
     function: ast.FunctionDef,
     body: list[ast.stmt],
@@ -3653,117 +3595,6 @@ def _scoped_shape_wrapper_spec_from_assign(
         )
         .unwrap_or_none()
     )
-
-
-def _getter_wrapper_candidate(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-    body: list[ast.stmt],
-) -> tuple[str, str, str] | None:
-    if len(function.args.args) != 1:
-        return None
-    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
-        return None
-    expr = body[0].value
-    if _is_self_attribute_expression(expr):
-        observed_attribute = _self_attribute_name(expr)
-        if observed_attribute is None:
-            return None
-        return ast.unparse(expr), observed_attribute, "read_through"
-    wrapped = _wrapped_self_attribute_expression(expr)
-    if wrapped is not None:
-        wrapper_name, observed_attribute = wrapped
-        return ast.unparse(expr), observed_attribute, f"computed_{wrapper_name}"
-    return None
-
-
-def _setter_wrapper_candidate(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-    body: list[ast.stmt],
-) -> tuple[str, str] | None:
-    return (
-        Maybe.of(body[0] if len(function.args.args) == 2 and len(body) == 1 else None)
-        .project(
-            lambda statement: _self_attribute_assignment(
-                statement,
-                function.args.args[1].arg,
-            )
-        )
-        .combine(
-            _self_attribute_name,
-            lambda target, observed_attribute: (
-                ast.unparse(target),
-                observed_attribute,
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _self_attribute_assignment(
-    statement: ast.stmt, value_arg: str
-) -> ast.Attribute | None:
-    assignment = as_ast(statement, ast.Assign)
-    if assignment is None:
-        return None
-    target = single_assign_target(assignment)
-    if not _is_self_attribute_expression(target):
-        return None
-    if not (
-        isinstance(assignment.value, ast.Name) and assignment.value.id == value_arg
-    ):
-        return None
-    assert isinstance(target, ast.Attribute)
-    return target
-
-
-def _is_self_attribute_expression(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and (node.value.id == "self")
-    )
-
-
-def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
-    wrapper_names = BuiltinCallName.self_attribute_wrapper_names()
-    return (
-        Maybe.of(as_ast(node, ast.Call))
-        .filter(
-            lambda call: (
-                isinstance(call.func, ast.Name) and call.func.id in wrapper_names
-            )
-        )
-        .combine(
-            lambda call: _self_attribute_name(single_call_arg(call)),
-            lambda call, observed_attribute: (
-                cast(ast.Name, call.func).id,
-                observed_attribute,
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _self_attribute_name(node: ast.AST) -> str | None:
-    if not _is_self_attribute_expression(node):
-        return None
-    assert isinstance(node, ast.Attribute)
-    return node.attr.lstrip("_") or node.attr
-
-
-def _is_dunder_method(name: str) -> bool:
-    return name.startswith("__") and name.endswith("__")
-
-
-def _has_property_like_decorator(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    for decorator in function.decorator_list:
-        if isinstance(decorator, ast.Name) and decorator.id == "property":
-            return True
-        if isinstance(decorator, ast.Attribute) and decorator.attr == "setter":
-            return True
-    return False
 
 
 class TypeGuardProjection:
@@ -4378,8 +4209,6 @@ def _class_name_from_expr(
 
 
 from .observation_families import (
-    AccessorWrapperObservationFamily,
-    AccessorWrapperObservationSpec,
     AssignmentRegistrationShapeSpec,
     BuilderCallShapeFamily,
     BuilderCallShapeSpec,
@@ -4428,7 +4257,6 @@ from .observation_families import (
     SentinelTypeObservationSpec,
     SentinelTypeUsageObservationSpec,
     ShapeFamily,
-    StandardAccessorWrapperObservationSpec,
     StandardClassMarkerObservationSpec,
     StandardConfigDispatchObservationSpec,
     StandardDualAxisResolutionObservationSpec,

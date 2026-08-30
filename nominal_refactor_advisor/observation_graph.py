@@ -26,7 +26,6 @@ if TYPE_CHECKING:
 class ObservationKind(StrEnum):
     """Canonical observation kinds emitted by the collection substrate."""
 
-    ACCESSOR_WRAPPER = "accessor_wrapper"
     BUILDER_CALL = "builder_call"
     CLASS_MARKER = "class_marker"
     CONFIG_DISPATCH = "config_dispatch"

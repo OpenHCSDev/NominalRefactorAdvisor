@@ -1800,29 +1800,6 @@ class SiblingRoleHelperSymmetryDetector(
         )
 
 
-declare_candidate_rule_detector(
-    EnumStrategyDispatchCandidate,
-    high_confidence_spec(
-        PatternId.NOMINAL_STRATEGY_FAMILY,
-        "Enum strategy ladder wants nominal family",
-        "A closed enum/member dispatch ladder is choosing among behavior implementations inline. That wants an ABC-backed strategy family so each implementation guarantees one common method and the caller stops branching.",
-        "nominal strategy family with one guaranteed call surface",
-        "one owner branches over a closed enum/member family instead of delegating to implementation classes",
-        _CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
-    ),
-    summary=lambda dispatch_candidate: f"`{dispatch_candidate.qualname}` branches on `{dispatch_candidate.dispatch_axis}` across closed cases {', '.join(dispatch_candidate.case_names)} and should delegate to a nominal strategy family.",
-    scaffold=lambda dispatch_candidate: _nominal_strategy_scaffold(dispatch_candidate),
-    codemod_patch=lambda dispatch_candidate: _nominal_strategy_patch(
-        dispatch_candidate
-    ),
-    metrics=lambda dispatch_candidate: DispatchCountMetrics.from_literal_family(
-        dispatch_axis=dispatch_candidate.dispatch_axis,
-        literal_cases=dispatch_candidate.case_names,
-    ),
-    candidate_collector=ENUM_DISPATCH_EXTRACTOR.strategy_candidates,
-)
-
-
 class ResidualClosedAxisIndirectionDetector(
     ModuleCollectorCandidateDetector[ResidualClosedAxisIndirectionCandidate]
 ):
@@ -1860,39 +1837,6 @@ class ResidualClosedAxisIndirectionDetector(
             metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=axis_candidate.enum_name,
                 literal_cases=axis_candidate.table_case_names,
-            ),
-        )
-
-
-class RepeatedEnumStrategyDispatchDetector(
-    ModuleCollectorCandidateDetector[RepeatedEnumStrategyDispatchCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.NOMINAL_STRATEGY_FAMILY,
-        "Repeated closed-strategy dispatch should centralize in one nominal strategy family",
-        "Several owners re-dispatch the same closed enum family inline. The docs treat that as duplicated strategy orchestration: dispatch should happen once through one authoritative nominal strategy family or one shared strategy substrate.",
-        "single authoritative nominal strategy family for a repeated closed dispatch axis",
-        "same closed enum family is re-dispatched across sibling functions or methods",
-        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-    )
-
-    def _finding_for_candidate(
-        self, dispatch_candidate: RepeatedEnumStrategyDispatchCandidate
-    ) -> RefactorFinding:
-        evidence = tuple((item.evidence for item in dispatch_candidate.functions[:6]))
-        representative = dispatch_candidate.functions[0]
-        function_names = ", ".join(
-            (item.qualname for item in dispatch_candidate.functions[:4])
-        )
-        return self.build_finding(
-            f"Functions {function_names} each re-dispatch `{dispatch_candidate.enum_family}` cases {', '.join(dispatch_candidate.shared_case_names)} inline.",
-            evidence,
-            scaffold=_nominal_strategy_scaffold(representative),
-            codemod_patch=_nominal_strategy_patch(representative),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(dispatch_candidate.functions),
-                dispatch_axis=dispatch_candidate.enum_family,
-                literal_cases=dispatch_candidate.shared_case_names,
             ),
         )
 

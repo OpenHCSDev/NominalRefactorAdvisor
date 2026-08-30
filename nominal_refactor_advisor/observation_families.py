@@ -20,7 +20,6 @@ from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_regist
 from .native_syntax import NativePythonSyntaxIndex
 
 from .observation_shapes import (
-    AccessorWrapperCandidate,
     BuilderCallShape,
     ClassMarkerObservation,
     ConfigDispatchObservation,
@@ -63,7 +62,6 @@ from .ast_tools import (
     SourceModule,
     _REGISTRATION_CALL_FAMILY,
     _REGISTRATION_DECORATOR_FAMILY,
-    _accessor_wrapper_candidate_from_function,
     _builder_call_shape,
     _class_body_field_observation,
     _class_marker_observations,
@@ -1290,20 +1288,10 @@ _materialize_class_declarations(
             "FunctionObservationSpec ABC",
             item_type=ProjectionHelperShape,
         ),
-        _obs_root(
-            "AccessorWrapper",
-            "FunctionObservationSpec ABC",
-            item_type=AccessorWrapperCandidate,
-        ),
         _std_obs(
             "ProjectionHelper",
             GeneratedShapeHelper(_projection_helper_shape_from_function),
             _MODULE_SCOPED_FUNCTION_HELPER,
-        ),
-        _std_obs(
-            "AccessorWrapper",
-            GeneratedShapeHelper(_accessor_wrapper_candidate_from_function),
-            "ClassNamedFunctionHelperObservationSpec",
         ),
         _multi_obs_root(
             "ScopedShapeWrapperObservationSpec",

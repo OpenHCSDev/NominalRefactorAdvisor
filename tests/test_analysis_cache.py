@@ -82,9 +82,6 @@ from nominal_refactor_advisor.detectors import _environment as environment_detec
 from nominal_refactor_advisor.detectors import _reflection as reflection_detectors
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
-from nominal_refactor_advisor.detectors import (
-    _nominal_authority_surface as nominal_surface_detectors,
-)
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import (
     _semantic_descent as semantic_descent_detectors,
@@ -104,7 +101,6 @@ from nominal_refactor_advisor.semantic_descent import (
     build_semantic_descent_graph,
     build_compact_semantic_descent_graph,
 )
-from nominal_refactor_advisor.semantic_algebra import FiniteAxisSystem
 
 
 def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGraph:
@@ -5367,119 +5363,6 @@ def test_compact_pass_through_nominal_wrapper_preserves_semantics(
     ]
 
 
-def test_compact_duplicate_nominal_surface_preserves_semantics(
-    tmp_path: Path,
-) -> None:
-    for deleted_shadow in (
-        "_public_surface_methods",
-        "_self_attribute_names",
-        "_method_flow_roles",
-        "_call_self_attribute_names",
-        "_constructed_delegate_names",
-        "_nominal_authority_surface_nodes",
-        "_duplicate_nominal_authority_surface_candidates",
-    ):
-        assert not hasattr(nominal_surface_detectors, deleted_shadow)
-
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "authority.py").write_text(
-        "class JobAuthority:\n"
-        "    job_name: str\n"
-        "    job_path: str\n"
-        "    def run(self):\n"
-        "        return self.job_name, self.job_path\n",
-        encoding="utf-8",
-    )
-    (package_root / "shell.py").write_text(
-        "from .authority import JobAuthority\n"
-        "class JobShell:\n"
-        "    job_name: str\n"
-        "    job_path: str\n"
-        "    def run(self):\n"
-        "        return self.job_name, self.job_path\n"
-        "    def build(self):\n"
-        "        return JobAuthority(self.job_name, self.job_path)\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    detector = surface_detectors.DuplicateNominalAuthoritySurfaceDetector()
-    projections = detector.compact_module_projections(modules)
-    compact_candidates = (
-        surface_detectors._compact_duplicate_nominal_authority_surface_candidates(
-            projections
-        )
-    )
-    assert len(compact_candidates) == 1
-    candidate = compact_candidates[0]
-    assert candidate.subject_name == "JobShell"
-    assert candidate.authority_name == "JobAuthority"
-    assert candidate.duplicate_class_names == ("JobShell",)
-    assert candidate.name_family == ("name_payload", "source_path")
-    assert candidate.shared_method_names == ("run",)
-    assert candidate.detection_kind == "delegate_construction"
-    assert detector._findings_from_compact_projections(
-        projections, config
-    ) == detector._findings_for_candidates(compact_candidates, config)
-
-
-def test_nominal_surface_indexed_components_match_axis_graph() -> None:
-    def surface_node(
-        class_name: str,
-        public_method_names: tuple[str, ...],
-        method_flow_roles: tuple[tuple[str, tuple[str, ...]], ...],
-    ):
-        return nominal_surface_detectors._NominalAuthoritySurfaceNode(
-            shape=surface_detectors.NominalAuthorityShape(
-                file_path="fixture.py",
-                class_name=class_name,
-                line=len(class_name),
-                declared_base_names=(),
-                ancestor_names=(),
-                field_names=("job_name", "job_path"),
-                field_type_map=(("job_name", "str"), ("job_path", "str")),
-                method_names=public_method_names,
-                is_abstract=False,
-                is_dataclass_family=False,
-            ),
-            field_roles=("job",),
-            public_method_names=public_method_names,
-            method_flow_roles=method_flow_roles,
-            constructed_delegate_names=(),
-        )
-
-    nodes = (
-        surface_node("Alpha", ("extra", "run"), (("run", ("name",)),)),
-        surface_node("Beta", ("extra", "run"), (("run", ("path",)),)),
-        surface_node("Gamma", ("other", "run"), (("run", ("path",)),)),
-    )
-    axis_system = FiniteAxisSystem.from_rows(
-        (
-            (
-                node,
-                {
-                    "field_roles": node.field_roles,
-                    "method_names": node.public_method_names,
-                    "method_flow_roles": node.method_flow_roles,
-                },
-            )
-            for node in nodes
-        )
-    )
-    expected = axis_system.confusability_graph(
-        (
-            ("field_roles", "method_names"),
-            ("field_roles", "method_flow_roles"),
-        )
-    ).connected_components
-
-    assert expected == (nodes,)
-    assert (
-        nominal_surface_detectors._surface_confusability_components(nodes) == expected
-    )
-
-
 def _write_compact_abc_optimizer_fixture(package_root: Path) -> None:
     package_root.mkdir()
     (package_root / "workers.py").write_text(
@@ -6410,9 +6293,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert surface_detectors.ManualFamilyRosterDetector in (
         partition.compact_global_detector_types
     )
-    assert surface_detectors.DuplicateNominalAuthoritySurfaceDetector in (
-        partition.compact_global_detector_types
-    )
     assert surface_detectors.PassThroughNominalWrapperDetector in (
         partition.compact_global_detector_types
     )
@@ -6461,7 +6341,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 51
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

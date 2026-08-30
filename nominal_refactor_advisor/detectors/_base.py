@@ -91,8 +91,6 @@ if TYPE_CHECKING:
     from ..semantic_descent import SemanticDescentGraph
 
 from ..ast_tools import (
-    AccessorWrapperCandidate,
-    AccessorWrapperObservationFamily,
     BuilderCallShape,
     BuilderCallShapeFamily,
     BuiltinCallName,
@@ -3735,145 +3733,6 @@ class DispatchAlgebraAuthority:
 DISPATCH_ALGEBRA_AUTHORITY = DispatchAlgebraAuthority()
 
 
-class EnumDispatchExtractor:
-    def from_if(self, node: ast.If) -> tuple[str, tuple[str, ...]] | None:
-        axis_name: str | None = None
-        cases: list[str] = []
-        current: ast.If | None = node
-        while current is not None:
-            dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case(
-                current.test
-            )
-            if dispatch_case is None:
-                return None
-            current_axis, case_name = dispatch_case
-            if axis_name is None:
-                axis_name = current_axis
-            elif current_axis != axis_name:
-                return None
-            cases.append(case_name)
-            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
-                current = current.orelse[0]
-                continue
-            current = None
-        if axis_name is None or len(cases) < 2:
-            return None
-        return (axis_name, tuple(cases))
-
-    def from_body(
-        self, function: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> tuple[str, tuple[str, ...]] | None:
-        body = _trim_docstring_body(function.body)
-        if len(body) < 2:
-            return None
-        best_family: tuple[str, tuple[str, ...]] | None = None
-        for start in range(len(body)):
-            if not isinstance(body[start], ast.If):
-                continue
-            axis_name: str | None = None
-            cases: list[str] = []
-            for statement in body[start:]:
-                if not isinstance(statement, ast.If) or statement.orelse:
-                    break
-                dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case(
-                    statement.test
-                )
-                if dispatch_case is None:
-                    break
-                current_axis, case_name = dispatch_case
-                if axis_name is None:
-                    axis_name = current_axis
-                elif current_axis != axis_name:
-                    break
-                cases.append(case_name)
-            if axis_name is None or len(cases) < 2:
-                continue
-            current_family = (axis_name, tuple(cases))
-            if best_family is None or len(current_family[1]) > len(best_family[1]):
-                best_family = current_family
-        return best_family
-
-    def from_match(self, node: ast.Match) -> tuple[str, tuple[str, ...]] | None:
-        cases = []
-        for case in node.cases:
-            if isinstance(case.pattern, ast.MatchAs) and case.pattern.name is None:
-                continue
-            if not isinstance(case.pattern, ast.MatchValue):
-                return None
-            cases.append(ast.unparse(case.pattern.value))
-        if len(cases) < 2:
-            return None
-        return (ast.unparse(node.subject), tuple(cases))
-
-    def dispatch_family(self, node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
-        if isinstance(node, ast.If):
-            return self.from_if(node)
-        if isinstance(node, ast.Match):
-            return self.from_match(node)
-        return None
-
-    def strategy_candidates(
-        self, module: ParsedModule
-    ) -> tuple["EnumStrategyDispatchCandidate", ...]:
-        candidate_map: dict[tuple[str, str], EnumStrategyDispatchCandidate] = {}
-        for qualname, function in _iter_named_functions(module):
-            top_level_dispatch = self.from_body(function)
-            if top_level_dispatch is not None:
-                axis_name, case_names = top_level_dispatch
-                self._record_candidate(
-                    candidate_map,
-                    module=module,
-                    qualname=qualname,
-                    lineno=function.lineno,
-                    axis_name=axis_name,
-                    case_names=case_names,
-                )
-            for subnode in _walk_nodes(function):
-                dispatch_family = self.dispatch_family(subnode)
-                if dispatch_family is None:
-                    continue
-                axis_name, case_names = dispatch_family
-                self._record_candidate(
-                    candidate_map,
-                    module=module,
-                    qualname=qualname,
-                    lineno=subnode.lineno,
-                    axis_name=axis_name,
-                    case_names=case_names,
-                )
-        return sorted_tuple(
-            candidate_map.values(),
-            key=lambda item: (item.file_path, item.lineno, item.qualname),
-        )
-
-    def _record_candidate(
-        self,
-        candidate_map: dict[tuple[str, str], "EnumStrategyDispatchCandidate"],
-        *,
-        module: ParsedModule,
-        qualname: str,
-        lineno: int,
-        axis_name: str,
-        case_names: tuple[str, ...],
-    ) -> None:
-        if not any("." in case_name for case_name in case_names):
-            return
-        candidate = EnumStrategyDispatchCandidate(
-            file_path=str(module.path),
-            qualname=qualname,
-            lineno=lineno,
-            dispatch_axis=axis_name,
-            case_names=case_names,
-        )
-        key = (qualname, axis_name)
-        existing = candidate_map.get(key)
-        if existing is None or len(candidate.case_names) > len(existing.case_names):
-            candidate_map[key] = candidate
-
-
-ENUM_DISPATCH_EXTRACTOR = EnumDispatchExtractor()
-
-
 def _enum_subset_guard_from_compare(
     node: ast.Compare,
 ) -> tuple[str, str, tuple[str, ...], str] | None:
@@ -3962,58 +3821,6 @@ def _enum_family_name(case_names: tuple[str, ...]) -> str | None:
     if len(family_names) != 1:
         return None
     return next(iter(family_names))
-
-
-def _repeated_enum_strategy_dispatch_candidates(
-    module: ParsedModule,
-) -> tuple["RepeatedEnumStrategyDispatchCandidate", ...]:
-    candidates = ENUM_DISPATCH_EXTRACTOR.strategy_candidates(module)
-    grouped: dict[
-        tuple[str, tuple[str, ...]], tuple[EnumStrategyDispatchCandidate, ...]
-    ] = {}
-    for left, right in combinations(candidates, 2):
-        if left.qualname == right.qualname:
-            continue
-        left_family = _enum_family_name(left.case_names)
-        right_family = _enum_family_name(right.case_names)
-        if left_family is None or left_family != right_family:
-            continue
-        shared_cases = sorted_tuple(set(left.case_names) & set(right.case_names))
-        if len(shared_cases) < 2:
-            continue
-        functions = tuple(
-            (
-                candidate
-                for candidate in candidates
-                if _enum_family_name(candidate.case_names) == left_family
-                and set(shared_cases) <= set(candidate.case_names)
-            )
-        )
-        if len(functions) < 2:
-            continue
-        key = (left_family, shared_cases)
-        existing = grouped.get(key)
-        if existing is None or len(functions) > len(existing):
-            grouped[key] = functions
-    repeated = [
-        RepeatedEnumStrategyDispatchCandidate(
-            file_path=str(module.path),
-            enum_family=enum_family,
-            shared_case_names=shared_cases,
-            functions=sorted_tuple(
-                items, key=lambda item: (item.file_path, item.lineno, item.qualname)
-            ),
-        )
-        for (enum_family, shared_cases), items in grouped.items()
-    ]
-    return sorted_tuple(
-        repeated,
-        key=lambda item: (
-            -len(item.shared_case_names),
-            -len(item.functions),
-            item.functions[0].qualname,
-        ),
-    )
 
 
 @dataclass(frozen=True)
@@ -8741,60 +8548,6 @@ def _repeated_validate_shape_guard_candidates_for_modules(
     return _group_repeated_validate_shape_guard_candidates(method_candidates, config)
 
 
-def _nominal_strategy_scaffold(candidate: EnumStrategyDispatchCandidate) -> str:
-    axis_tail = (
-        candidate.dispatch_axis.split(".")[-1]
-        .replace("_", " ")
-        .title()
-        .replace(" ", "")
-    )
-    axis_attr_name = candidate.dispatch_axis.split(".")[-1]
-    root_name = f"{axis_tail}Runner"
-    lines = [
-        "from metaclass_registry import AutoRegisterMeta",
-        "",
-        f"class {root_name}(ABC, metaclass=AutoRegisterMeta):",
-        f'    __registry_key__ = "{axis_attr_name}"',
-        "    __skip_if_no_key__ = True",
-        f"    {axis_attr_name} = None",
-        "",
-        "    @classmethod",
-        f"    def for_{axis_attr_name}(cls, key):",
-        "        return cls.__registry__[key]()",
-        "",
-        "    @abstractmethod",
-        "    def run(self, ctx): ...",
-        "",
-    ]
-    for case_name in candidate.case_names:
-        case_tail = case_name.split(".")[-1].replace("_", " ").title().replace(" ", "")
-        lines.extend(
-            (
-                f"class {case_tail}{root_name}({root_name}):",
-                f"    {axis_attr_name} = {case_name}",
-                "    ...",
-                "",
-            )
-        )
-    return "\n".join(lines)
-
-
-def _nominal_strategy_patch(candidate: EnumStrategyDispatchCandidate) -> str:
-    axis_tail = (
-        candidate.dispatch_axis.split(".")[-1]
-        .replace("_", " ")
-        .title()
-        .replace(" ", "")
-    )
-    axis_attr_name = candidate.dispatch_axis.split(".")[-1]
-    root_name = f"{axis_tail}Runner"
-    return (
-        f"# Replace `{candidate.dispatch_axis}` branching with a metaclass-registry-backed nominal runner family\n"
-        f"runner = {root_name}.for_{axis_attr_name}({candidate.dispatch_axis})\n"
-        f"return runner.run(ctx)"
-    )
-
-
 def _self_attr_name(target: ast.AST) -> str | None:
     if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
         if target.value.id == "self":
@@ -9567,12 +9320,6 @@ def _as_projection_helper_shape(shape: object) -> ProjectionHelperShape:
     return shape
 
 
-def _as_accessor_wrapper_candidate(shape: object) -> AccessorWrapperCandidate:
-    if not isinstance(shape, AccessorWrapperCandidate):
-        raise TypeError(f"Expected AccessorWrapperCandidate, got {type(shape)!r}")
-    return shape
-
-
 def _carrier_identity(carrier: object) -> tuple[str, int, str]:
     if not isinstance(carrier, StructuralObservationCarrier):
         raise TypeError(f"Unsupported structural carrier: {type(carrier)!r}")
@@ -10104,17 +9851,6 @@ class SubjectNameFunctionNameMixin(ABC):
 
 
 @dataclass(frozen=True)
-class DuplicateNominalAuthoritySurfaceCandidate(WitnessCarrierCandidate):
-    authority_file_path: str
-    authority_name: str
-    authority_line: int
-    duplicate_class_names: tuple[str, ...]
-    duplicate_line_numbers: tuple[int, ...]
-    shared_method_names: tuple[str, ...]
-    detection_kind: str
-
-
-@dataclass(frozen=True)
 class PassThroughNominalWrapperCandidate(WitnessCarrierCandidate):
     delegate_field_name: str
     delegate_authority_file_path: str
@@ -10263,23 +9999,6 @@ class ConstantPropertyDefaultBundleCandidate(ClassLineWitnessCandidate):
     property_names: tuple[str, ...]
     return_expressions: tuple[str, ...]
     line_count: int
-
-
-@dataclass(frozen=True)
-class HelperBackedObservationSpecCandidate(WitnessCarrierCandidate):
-    base_names: tuple[str, ...]
-    method_name: str
-    helper_name: str
-    wrapper_kind: str
-    parameter_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class HelperBackedObservationSpecGroup(ClassLineNumbersGroup):
-    base_names: tuple[str, ...]
-    method_names: tuple[str, ...]
-    helper_names: tuple[str, ...]
-    wrapper_kinds: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -10566,25 +10285,6 @@ class ResidualClosedAxisIndirectionCandidate(
             SourceLocation(self.file_path, self.line, self.qualname),
         )
 
-
-
-@dataclass(frozen=True)
-class EnumStrategyDispatchCandidate:
-    file_path: str
-    qualname: str
-    lineno: int
-    dispatch_axis: str
-    case_names: tuple[str, ...]
-
-    evidence = _LINENO_QUALNAME_EVIDENCE
-
-
-@dataclass(frozen=True)
-class RepeatedEnumStrategyDispatchCandidate:
-    file_path: str
-    enum_family: str
-    shared_case_names: tuple[str, ...]
-    functions: tuple[EnumStrategyDispatchCandidate, ...]
 
 
 @dataclass(frozen=True)

@@ -36,7 +36,6 @@ from nominal_refactor_advisor.analysis import (
     default_detector_types_for_analysis,
 )
 from nominal_refactor_advisor.ast_tools import (
-    AccessorWrapperObservationFamily,
     BuiltinCallName,
     ClassMarkerObservationFamily,
     ConfigDispatchObservationFamily,
@@ -478,7 +477,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=30,
             ),
             _impact_ranking_finding(
-                detector_id="accessor_wrapper",
+                detector_id="classvar_only_sibling_leaf",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=40,
@@ -528,7 +527,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=30,
             ),
             _impact_ranking_finding(
-                detector_id="accessor_wrapper",
+                detector_id="classvar_only_sibling_leaf",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=40,
@@ -4629,7 +4628,6 @@ def test_detects_generic_cancelable_product_composition_signal(
     assert signal.load_bearing_score > signal.field_count
 
 
-ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
 DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID = "detector_backend_payoff_guard"
 EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
@@ -7981,56 +7979,6 @@ def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
     assert "OperationContext" in (finding.scaffold or "")
 
 
-def test_detects_enum_strategy_dispatch_with_abc_guidance(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom enum import Enum\n\n\nclass Mode(Enum):\n    OBSERVED = "observed"\n    CERTIFIED = "certified"\n\n\ndef run_mode(mode, inputs, steps):\n    if mode == Mode.OBSERVED:\n        return run_observed(inputs, steps)\n    elif mode == Mode.CERTIFIED:\n        return run_certified(inputs, steps)\n    else:\n        raise ValueError(mode)\n',
-    )
-    findings = analyze_path(tmp_path)
-    strategy_finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
-        )
-    )
-    assert "Mode.OBSERVED" in strategy_finding.summary
-    assert strategy_finding.scaffold is not None
-    assert (
-        "from metaclass_registry import AutoRegisterMeta" in strategy_finding.scaffold
-    )
-    assert (
-        "class ModeRunner(ABC, metaclass=AutoRegisterMeta):"
-        in strategy_finding.scaffold
-    )
-    assert strategy_finding.codemod_patch is not None
-    assert "runner = ModeRunner.for_mode(mode)" in strategy_finding.codemod_patch
-
-
-def test_detects_enum_strategy_dispatch_inside_enum_method(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom enum import Enum\n\n\nclass Scope(Enum):\n    CX5 = "EDDU_CX5"\n    METAXPRESS = "EDDU_metaxpress"\n\n    def read_results(self, workbook):\n        if self is Scope.CX5:\n            return read_cx5(workbook)\n        if self is Scope.METAXPRESS:\n            return read_metaxpress(workbook)\n        raise AssertionError(self)\n\n    def features(self, raw_df):\n        if self is Scope.CX5:\n            return cx5_features(raw_df)\n        if self is Scope.METAXPRESS:\n            return metaxpress_features(raw_df)\n        raise AssertionError(self)\n',
-    )
-
-    findings = analyze_path(tmp_path)
-    enum_dispatch_summaries = [
-        finding.summary
-        for finding in findings
-        if finding.detector_id == "enum_strategy_dispatch"
-    ]
-    assert any("Scope.read_results" in summary for summary in enum_dispatch_summaries)
-    assert any("Scope.features" in summary for summary in enum_dispatch_summaries)
-    assert any(
-        finding.detector_id == "repeated_enum_strategy_dispatch"
-        and "Scope.read_results" in finding.summary
-        and "Scope.features" in finding.summary
-        for finding in findings
-    )
-
-
 def test_detects_literal_match_dispatch_with_autoregistermeta_guidance(
     tmp_path: Path,
 ) -> None:
@@ -8200,25 +8148,6 @@ def test_variant_method_detector_requires_a_variant_seed(tmp_path: Path) -> None
     )
 
     assert findings == []
-
-
-def test_detects_repeated_enum_strategy_dispatch_across_owners(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom enum import Enum\n\n\nclass SamplingStrategy(Enum):\n    RANDOM = "random"\n    GUIDED = "guided"\n    HYBRID = "hybrid"\n\n\ndef run_sampling(strategy, sampler, request, guided_fn):\n    if strategy == SamplingStrategy.GUIDED:\n        return guided_fn(request)\n    if strategy == SamplingStrategy.HYBRID:\n        guided, random = sampler.hybrid(request, guided_fn)\n        return guided + random\n    return sampler.random(request)\n\n\nclass Sampler:\n    def sample(self, strategy, request, guided_fn):\n        match strategy:\n            case SamplingStrategy.RANDOM:\n                return self.random(request)\n            case SamplingStrategy.GUIDED:\n                return guided_fn(request)\n            case SamplingStrategy.HYBRID:\n                guided, random = self.hybrid(request, guided_fn)\n                return guided + random\n            case _:\n                raise ValueError(strategy)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "repeated_enum_strategy_dispatch"
-        )
-    )
-    assert "SamplingStrategy" in finding.summary
-    assert "run_sampling" in finding.summary
-    assert "Sampler.sample" in finding.summary
 
 
 def test_detects_split_dispatch_authority(tmp_path: Path) -> None:
@@ -18132,17 +18061,6 @@ def test_projection_helper_shape_has_no_registered_execution_roster() -> None:
     assert all(not hasattr(ast_tools_module, name) for name in removed_step_types)
 
 
-def test_collects_accessor_wrapper_candidates_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Sample:\n    def current(self):\n        return self._current\n\n    def update(self, current):\n        self._current = current\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-    candidates = collect_family_items(module, AccessorWrapperObservationFamily)
-    assert {candidate.accessor_kind for candidate in candidates} == {"getter", "setter"}
-
-
 def test_collects_field_observation_fibers_for_dataclass_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -20845,63 +20763,6 @@ def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
     assert "_render_projection" in (finding.scaffold or "")
 
 
-def test_detects_accessor_wrapper_smell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Sample:\n    def get_status(self):\n        return self.status\n\n    def set_status(self, status):\n        self.status = status\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
-        )
-    )
-    assert "structural accessor wrapper" in finding.title
-    assert "replace `Sample.get_status()` with `status`" in (finding.scaffold or "")
-
-
-def test_detects_structural_accessor_wrappers_without_naming_convention(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Sample:\n    def status(self):\n        return self._status\n\n    def store(self, status):\n        self._status = status\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
-        )
-    )
-    assert "structural accessor wrapper" in finding.summary
-    assert "read through" in finding.relation_context
-    assert "replace `Sample.status()` with `status`" in (finding.scaffold or "")
-
-
-def test_detects_single_structural_computed_property_candidate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Sample:\n    def labels(self):\n        return tuple(self._labels)\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
-        )
-    )
-    assert "computed tuple" in finding.relation_context
-    assert "an `@property` exposing `tuple(self._labels)`" in (finding.scaffold or "")
-
-
 def test_detects_flattened_projection_property_local_minimum(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -21119,49 +20980,6 @@ def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
     assert "_PATTERN_DEPENDENCIES" in finding.summary
     assert "PatternId" in finding.summary
     assert "class PatternIdSpec" in (finding.scaffold or "")
-
-
-def test_detects_duplicate_nominal_authority_delegate_surface(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PayloadContext:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        if self.mask is not None:\n            return (self.data, self.mask, self.metadata)\n        return self.data\n\n\n@dataclass(frozen=True)\nclass PayloadContextRequest:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        return PayloadContext(self.data, self.mask, self.metadata).payload()\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "duplicate_nominal_authority_surface"
-        )
-    )
-    assert "PayloadContextRequest" in finding.summary
-    assert "PayloadContext" in finding.summary
-    assert "delegate_construction" in finding.summary
-
-
-def test_detects_duplicate_nominal_authority_field_flow_component(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass RuntimePayloadContext:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        if self.mask is not None:\n            return (self.data, self.mask, self.metadata)\n        return self.data\n\n\n@dataclass(frozen=True)\nclass AdapterPayloadContext:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        if self.mask is not None:\n            return (self.data, self.mask, self.metadata)\n        return self.data\n\n\n@dataclass(frozen=True)\nclass StepPayloadContext:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        if self.mask is not None:\n            return (self.data, self.mask, self.metadata)\n        return self.data\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "duplicate_nominal_authority_surface"
-            and "field_flow_confusability_component" in finding.summary
-        )
-    )
-    assert "RuntimePayloadContext" in finding.summary
-    assert "AdapterPayloadContext" in finding.summary
-    assert "StepPayloadContext" in finding.summary
 
 
 def test_detects_pass_through_nominal_wrapper(tmp_path: Path) -> None:
@@ -21707,66 +21525,6 @@ def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
     assert "file_path" in (finding.scaffold or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
-
-
-def test_detects_helper_backed_observation_spec_wrappers(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\n\n\nclass TaskAdapter(ABC):\n    pass\n\n\nclass HelperBackedTaskAdapter(TaskAdapter, ABC):\n    pass\n\n\nclass ClassTaskAdapter(HelperBackedTaskAdapter):\n    def build(self, parsed_module, function, observation):\n        return tuple(class_marker_events(parsed_module, function))\n\n\nclass InterfaceTaskAdapter(HelperBackedTaskAdapter):\n    def build(self, parsed_module, function, observation):\n        return interface_event(parsed_module, function)\n\n\nclass DynamicTaskAdapter(HelperBackedTaskAdapter):\n    def build(self, parsed_module, function, observation):\n        return tuple(dynamic_events(parsed_module, function))\n\n\nclass ProjectionTaskAdapter(HelperBackedTaskAdapter):\n    def build(self, parsed_module, function, observation):\n        return projection_event(parsed_module, function)\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "helper_backed_observation_spec"
-        )
-    )
-    assert "ClassTaskAdapter" in finding.summary
-    assert "HelperBackedTaskAdapter" in finding.summary
-    assert "HelperBackedTemplate" in (finding.scaffold or "")
-    assert "Forbidden shape" in (finding.scaffold or "")
-    assert "if self.helper" in (finding.scaffold or "")
-    assert "base-class sentinel dispatch" in (finding.codemod_patch or "")
-
-
-def test_helper_backed_observation_spec_requires_shared_entrypoint(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass AlgebraCarrier:\n    pass\n\n\nclass FiberGeometry(AlgebraCarrier):\n    def worst_case_bits(self):\n        return ceil_log2_cardinality(self.max_fiber_size)\n\n\nclass AxisPoint(AlgebraCarrier):\n    def from_mapping(self):\n        return build_axis_point(self.axis_values)\n\n\nclass ConfusabilityGraph(AlgebraCarrier):\n    def component_tag_bits(self):\n        return ceil_log2_cardinality(self.component_count)\n",
-    )
-
-    findings = analyze_path(tmp_path)
-
-    assert not any(
-        (
-            finding.detector_id == "helper_backed_observation_spec"
-            for finding in findings
-        )
-    )
-
-
-def test_helper_backed_observation_spec_preserves_strategy_domain_methods(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\n\n\nclass ShapeStrategy(ABC):\n    pass\n\n\nclass RectangleStrategy(ShapeStrategy):\n    def labels(self, request):\n        return request.grid.filled_labels()\n\n\nclass ForcedCircleStrategy(ShapeStrategy):\n    def labels(self, request):\n        return request.grid.forced_circle_labels(request.radius)\n\n\nclass NaturalCircleStrategy(ShapeStrategy):\n    def labels(self, request):\n        return request.grid.labels_from_filtered_guides(request.guides)\n",
-    )
-
-    findings = analyze_path(tmp_path)
-
-    assert not any(
-        (
-            finding.detector_id == "helper_backed_observation_spec"
-            for finding in findings
-        )
-    )
 
 
 def test_detects_abc_base_dispatch_over_child_helper_sentinel(

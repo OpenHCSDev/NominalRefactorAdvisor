@@ -569,19 +569,6 @@ def _function_parameter_annotation_map(
     return annotations
 
 
-def _semantic_role_names_for_fields(field_names: tuple[str, ...]) -> tuple[str, ...]:
-    role_names: set[str] = set()
-    for field_name in field_names:
-        normalized_roles = SUPPORT_PROJECTION_AUTHORITY.normalize_semantic_field_roles(
-            field_name
-        )
-        if normalized_roles:
-            role_names.update(normalized_roles)
-            continue
-        role_names.add(field_name)
-    return sorted_tuple(role_names)
-
-
 def _shared_ordered_suffix(
     left_tokens: tuple[str, ...],
     right_tokens: tuple[str, ...],
@@ -1633,36 +1620,6 @@ def _projection_helper_groups(
     return tuple(groups)
 
 
-def _accessor_wrapper_groups(
-    module: ParsedModule,
-) -> tuple[tuple[AccessorWrapperCandidate, ...], ...]:
-    candidates: tuple[AccessorWrapperCandidate, ...] = (
-        CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-            module, AccessorWrapperObservationFamily, AccessorWrapperCandidate
-        )
-    )
-    graph = ObservationGraph(
-        tuple((candidate.structural_observation for candidate in candidates))
-    )
-    lookup = _carrier_lookup(tuple(candidates))
-    groups: list[tuple[AccessorWrapperCandidate, ...]] = []
-    for witness_group in graph.witness_groups_for(
-        ObservationKind.ACCESSOR_WRAPPER, StructuralExecutionLevel.FUNCTION_BODY
-    ):
-        ordered = tuple(
-            (
-                _as_accessor_wrapper_candidate(item)
-                for item in SUPPORT_PROJECTION_AUTHORITY.materialize_observations(
-                    witness_group.observations, lookup
-                )
-            )
-        )
-        if not _supports_accessor_wrapper_finding(list(ordered)):
-            continue
-        groups.append(ordered)
-    return tuple(groups)
-
-
 def _mirrored_registry_candidates(
     module: ParsedModule,
 ) -> tuple[tuple[str, str, tuple[tuple[int, str], ...]], ...]:
@@ -1950,204 +1907,6 @@ def _reflective_self_attribute_candidates(
         module.module,
         ast.ClassDef,
         _reflective_self_attribute_candidates_for_class,
-    )
-
-
-_HELPER_BACKED_METHOD_NAMES = frozenset(
-    {
-        "build_from_function",
-        "build_scoped_function",
-        "build_from_assign",
-        "build_scoped_assign",
-        "build_from_context",
-    }
-)
-
-_NON_HELPER_CALL_NAMES = BuiltinCallName.non_helper_call_names()
-
-
-class HelperBackedWrapperShapeAuthority:
-    """Classify thin helper wrappers without mistaking strategy methods for boilerplate."""
-
-    def helper_call_from_returned_value(self, node: ast.AST) -> tuple[str, bool] | None:
-        tuple_wrapped_call = single_named_call_argument(
-            node, call_name=BuiltinCallName.TUPLE, argument_type=ast.Call
-        )
-        helper_call = tuple_wrapped_call or as_ast(node, ast.Call)
-        helper_name = (
-            _call_display_name(helper_call) if helper_call is not None else None
-        )
-        if helper_name is None or not self.helper_call_name(helper_name):
-            return None
-        return (helper_name, tuple_wrapped_call is not None)
-
-    def helper_call_name(self, helper_name: str) -> bool:
-        terminal = helper_name.rsplit(".", 1)[-1]
-        return bool(
-            terminal
-            and terminal[0].islower()
-            and (terminal not in _NON_HELPER_CALL_NAMES)
-        )
-
-    def returned_call(self, node: ast.AST) -> ast.Call | None:
-        tuple_wrapped_call = single_named_call_argument(
-            node, call_name=BuiltinCallName.TUPLE, argument_type=ast.Call
-        )
-        return tuple_wrapped_call or as_ast(node, ast.Call)
-
-    def wrapper_kind(self, returned_value: ast.AST) -> str | None:
-        helper_call = returned_value
-        tuple_wrapped = False
-        if (
-            isinstance(returned_value, ast.Call)
-            and isinstance(returned_value.func, ast.Name)
-            and returned_value.func.id == "tuple"
-            and len(returned_value.args) == 1
-            and isinstance(returned_value.args[0], ast.Call)
-        ):
-            helper_call = returned_value.args[0]
-            tuple_wrapped = True
-        if not isinstance(helper_call, ast.Call):
-            return None
-        arguments = [ast.unparse(arg) for arg in helper_call.args]
-        arguments.extend(
-            (
-                f"{keyword.arg}={ast.unparse(keyword.value)}"
-                for keyword in helper_call.keywords
-                if keyword.arg is not None
-            )
-        )
-        wrapper_prefix = "tuple_wrapped" if tuple_wrapped else "direct"
-        if not arguments:
-            return wrapper_prefix
-        return f"{wrapper_prefix}({', '.join(arguments)})"
-
-    def accepts_prelude(self, statement: ast.stmt) -> bool:
-        if isinstance(statement, ast.Assert):
-            return True
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            return bool(
-                isinstance(target, ast.Name)
-                and isinstance(statement.value, ast.Attribute)
-                and isinstance(statement.value.value, ast.Name)
-                and (statement.value.value.id == "observation")
-            )
-        if isinstance(statement, ast.If):
-            return HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(statement)
-        return False
-
-    def is_domain_method_strategy_return(
-        self, returned_value: ast.AST, method: ast.FunctionDef
-    ) -> bool:
-        helper_call = self.returned_call(returned_value)
-        if helper_call is None or not isinstance(helper_call.func, ast.Attribute):
-            return False
-        root_name = self.attribute_root_name(helper_call.func.value)
-        if root_name is None:
-            return False
-        parameter_names = set(SUPPORT_PROJECTION_AUTHORITY.parameter_names(method))
-        parameter_names.difference_update(("self", "cls"))
-        return root_name in parameter_names
-
-    def attribute_root_name(self, node: ast.AST) -> str | None:
-        current = node
-        while isinstance(current, ast.Attribute):
-            current = current.value
-        if isinstance(current, ast.Name):
-            return current.id
-        return None
-
-
-HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY = HelperBackedWrapperShapeAuthority()
-
-
-def _helper_backed_observation_spec_candidates_for_class(
-    module: ParsedModule, node: ast.ClassDef
-) -> Iterable[HelperBackedObservationSpecCandidate]:
-    base_names = SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(node)
-    if not base_names:
-        return
-    for method in node.body:
-        if not isinstance(method, ast.FunctionDef):
-            continue
-        if method.name.startswith("_"):
-            continue
-        body = _trim_docstring_body(method.body)
-        if not body or len(body) > 4:
-            continue
-        if not all(
-            (
-                HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY.accepts_prelude(statement)
-                for statement in body[:-1]
-            )
-        ):
-            continue
-        tail = body[-1]
-        if not isinstance(tail, ast.Return) or tail.value is None:
-            continue
-        if HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY.is_domain_method_strategy_return(
-            tail.value, method
-        ):
-            continue
-        helper_result = (
-            HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY.helper_call_from_returned_value(
-                tail.value
-            )
-        )
-        if helper_result is None:
-            continue
-        helper_name, _ = helper_result
-        wrapper_kind = HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY.wrapper_kind(tail.value)
-        if wrapper_kind is None:
-            continue
-        yield HelperBackedObservationSpecCandidate(
-            file_path=str(module.path),
-            line=method.lineno,
-            subject_name=node.name,
-            name_family=(method.name, helper_name, wrapper_kind),
-            base_names=base_names,
-            method_name=method.name,
-            helper_name=helper_name,
-            wrapper_kind=wrapper_kind,
-            parameter_names=SUPPORT_PROJECTION_AUTHORITY.parameter_names(method),
-        )
-
-
-def _helper_backed_observation_spec_candidates(
-    module: ParsedModule,
-) -> tuple[HelperBackedObservationSpecCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        module.module,
-        ast.ClassDef,
-        _helper_backed_observation_spec_candidates_for_class,
-    )
-
-
-def _helper_backed_observation_spec_group(
-    module: ParsedModule,
-) -> HelperBackedObservationSpecGroup | None:
-    candidates = _helper_backed_observation_spec_candidates(module)
-    grouped: dict[
-        tuple[tuple[str, ...], str], list[HelperBackedObservationSpecCandidate]
-    ] = defaultdict(list)
-    for candidate in candidates:
-        grouped[(candidate.base_names, candidate.method_name)].append(candidate)
-    items = max(
-        (items for items in grouped.values() if len(items) >= 3), key=len, default=None
-    )
-    if items is None:
-        return None
-    ordered = sorted_tuple(items, key=lambda item: (item.line, item.class_name))
-    return HelperBackedObservationSpecGroup(
-        file_path=str(module.path),
-        base_names=ordered[0].base_names,
-        class_names=tuple((item.class_name for item in ordered)),
-        line_numbers=tuple((item.line for item in ordered)),
-        method_names=tuple((item.method_name for item in ordered)),
-        helper_names=tuple((item.helper_name for item in ordered)),
-        wrapper_kinds=tuple((item.wrapper_kind for item in ordered)),
     )
 
 
@@ -5701,20 +5460,6 @@ def _projection_helper_scaffold(shapes: Sequence[ProjectionHelperShape]) -> str:
     return f"def _render_projection(items, projector):\n    return tuple(_dedupe_preserve_order(projector(item) for item in items))\n\n# Replace {function_names} with `_render_projection(..., lambda item: item.<field>)`.\n# Projected fields: {attributes}"
 
 
-def _supports_accessor_wrapper_finding(
-    candidates: Sequence[AccessorWrapperCandidate],
-) -> bool:
-    if not candidates:
-        return False
-    if any(
-        (candidate.wrapper_shape.startswith("computed_") for candidate in candidates)
-    ):
-        return True
-    if len(candidates) >= 2:
-        return True
-    return False
-
-
 def _is_framework_adapter_symbol(symbol: str) -> bool:
     return symbol.startswith(("build_from_", "build_scoped_", "accepts_"))
 
@@ -5727,14 +5472,6 @@ def _is_framework_lineage_symbol(symbol: str) -> bool:
     }
 
 
-
-
-def _accessor_replacement_example(candidate: AccessorWrapperCandidate) -> str:
-    if candidate.accessor_kind == "setter":
-        return f"- replace `{candidate.symbol}(value)` with `{candidate.observed_attribute} = value`"
-    if candidate.wrapper_shape == "read_through":
-        return f"- replace `{candidate.symbol}()` with `{candidate.observed_attribute}`"
-    return f"- replace `{candidate.symbol}()` with an `@property` exposing `{candidate.target_expression}`"
 
 
 @dataclass(frozen=True)
