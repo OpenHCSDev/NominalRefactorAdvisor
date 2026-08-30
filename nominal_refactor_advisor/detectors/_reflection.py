@@ -7,21 +7,6 @@ import ast
 from ..ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY, BuiltinCallName
 from ._base import *
 
-_DIRECT_REFLECTION_BUILTINS = frozenset(
-    (
-        "delattr",
-        "getattr",
-        "hasattr",
-        "setattr",
-    )
-)
-_DIRECT_REFLECTION_DUNDER_METHODS = frozenset(
-    (
-        "__delattr__",
-        "__getattribute__",
-        "__setattr__",
-    )
-)
 _DIRECT_REFLECTION_ATTRIBUTE_HOOKS = frozenset(
     (
         "__delattr__",
@@ -47,38 +32,6 @@ _NATIVE_BARE_OR_ATTRIBUTE_CALL_QUERY = """
 (call function: (identifier) @callee) @call
 (call function: (attribute attribute: (identifier) @attribute)) @call
 """
-
-
-def _direct_reflection_call_name(node: ast.Call) -> str | None:
-    if isinstance(node.func, ast.Name) and node.func.id in _DIRECT_REFLECTION_BUILTINS:
-        return node.func.id
-    if (
-        isinstance(node.func, ast.Attribute)
-        and node.func.attr in _DIRECT_REFLECTION_DUNDER_METHODS
-    ):
-        return ast.unparse(node.func)
-    return None
-
-
-def _is_static_self_attribute_write(node: ast.Call) -> bool:
-    """Return whether ``object.__setattr__`` writes one statically named self field.
-
-    Frozen dataclasses use this exact form to validate or normalize a field in
-    ``__post_init__``.  The receiver and attribute are both statically named,
-    so this is not runtime recovery from a partial structural view.
-    """
-
-    return bool(
-        isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "object"
-        and node.func.attr == "__setattr__"
-        and len(node.args) >= 2
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == "self"
-        and isinstance(node.args[1], ast.Constant)
-        and isinstance(node.args[1].value, str)
-    )
 
 
 def _direct_reflection_owner(
