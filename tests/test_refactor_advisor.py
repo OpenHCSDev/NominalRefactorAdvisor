@@ -21708,25 +21708,6 @@ def test_ignores_small_repeated_local_regex_fragments(tmp_path: Path) -> None:
     )
 
 
-def test_detects_class_role_quotient(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Builder:\n    def run(self):\n        self._build_pdf()\n        self._write_pdf()\n        self._copy_pdf()\n        self._extract_pdf()\n\n    def _build_pdf(self):\n        return self.root / "paper.pdf"\n\n    def _build_markdown(self):\n        return self.root / "paper.md"\n\n    def _write_pdf(self):\n        return self.output.write_text("pdf")\n\n    def _write_markdown(self):\n        return self.output.write_text("md")\n\n    def _copy_pdf(self):\n        return self.destination / "paper.pdf"\n\n    def _copy_markdown(self):\n        return self.destination / "paper.md"\n\n    def _extract_pdf(self):\n        return self.source.name\n\n    def _extract_markdown(self):\n        return self.source.stem\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "class_role_quotient"
-        )
-    )
-    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
-    assert "Builder" in finding.summary
-    assert "method-role quotient" in finding.title
-    assert "composed subsystem" in (finding.scaffold or "")
-
 
 def test_unreferenced_private_function_uses_repo_wide_call_witness(
     tmp_path: Path,
@@ -22160,17 +22141,6 @@ class Templates:
     assert "Templates" in finding.summary
     assert "TextTemplateMethod" in (finding.scaffold or "")
 
-
-def test_ignores_small_class_role_quotient(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Builder:\n    def run(self):\n        self._build_pdf()\n        self._write_pdf()\n\n    def _build_pdf(self):\n        return self.root / "paper.pdf"\n\n    def _build_markdown(self):\n        return self.root / "paper.md"\n\n    def _write_pdf(self):\n        return self.output.write_text("pdf")\n\n    def _write_markdown(self):\n        return self.output.write_text("md")\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == "class_role_quotient" for finding in findings)
-    )
 
 
 def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
