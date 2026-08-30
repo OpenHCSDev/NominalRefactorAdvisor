@@ -118,8 +118,6 @@ from ..ast_tools import (
     ExportDictShape,
     LineageMappingObservation,
     LineageMappingObservationFamily,
-    MethodShape,
-    MethodShapeFamily,
     ParsedModule,
     SourceModule,
     ProjectionHelperShape,
@@ -10200,10 +10198,6 @@ def _authoritative_context_patch(
     )
 
 
-def _as_method_shape(shape: object) -> MethodShape:
-    if not isinstance(shape, MethodShape):
-        raise TypeError(f"Expected MethodShape, got {type(shape)!r}")
-    return shape
 
 
 def _as_builder_shape(shape: object) -> BuilderCallShape:
@@ -13119,14 +13113,6 @@ class LatentNominalFunctionFamilyCandidate(
 ):
     shared_call_names: tuple[str, ...]
     consumer_symbols: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class BareFunctionMethodFamilyCandidate(
-    OwnerFunctionFamilyCompressionSurface, LineWitnessCandidate
-):
-    shared_axis_name: str
-    shared_axis_value: str
 
 
 @dataclass(frozen=True)

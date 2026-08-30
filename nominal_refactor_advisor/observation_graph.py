@@ -38,7 +38,6 @@ class ObservationKind(StrEnum):
     INTERFACE_GENERATION = "interface_generation"
     LINEAGE_MAPPING = "lineage_mapping"
     LITERAL_DISPATCH = "literal_dispatch"
-    METHOD_SHAPE = "method_shape"
     PROJECTION_HELPER = "projection_helper"
     RUNTIME_TYPE_GENERATION = "runtime_type_generation"
     SCOPED_SHAPE_WRAPPER = "scoped_shape_wrapper"

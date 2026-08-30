@@ -2665,7 +2665,6 @@ def test_source_local_detector_shard_skips_python_ast_when_exact(
             missing_families=(),
             config=DetectorConfig(),
             local_detector_types=(
-                reflection_detectors.DirectReflectiveBuiltinCallDetector,
                 reflection_detectors.BuiltinLocalsCallDetector,
                 reflection_detectors.DirectReflectiveAttributeHookDetector,
             ),
@@ -2673,7 +2672,6 @@ def test_source_local_detector_shard_skips_python_ast_when_exact(
     )
 
     assert [finding.detector_id for finding in result.local_findings] == [
-        "direct_reflective_builtin_call",
         "direct_reflective_attribute_hook",
     ]
 
@@ -3337,78 +3335,6 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     assert not hasattr(class_index_module, "_CLASS_HEADER_CORE_MODULE_DEFAULTS")
 
 
-def test_native_inheritance_method_demand_matches_cached_fibers(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    target_path = package_root / "target.py"
-    context_path = package_root / "context.py"
-    target_path.write_text(
-        "class Target:\n"
-        "    def project(self, value):\n"
-        "        normalized = value + 1\n"
-        "        return normalized\n"
-        "\n"
-        "    @classmethod\n"
-        "    async def choose(cls, value):\n"
-        "        if value:\n"
-        "            return value\n"
-        "        return None\n",
-        encoding="utf-8",
-    )
-    context_source = (
-        "class Context:\n"
-        "    def normalize(self, item):\n"
-        "        result = item + 1\n"
-        "        return result\n"
-        "\n"
-        "    @classmethod\n"
-        "    async def select(cls, item):\n"
-        "        if item:\n"
-        "            return item\n"
-        "        return None\n"
-        "\n"
-        "    def unrelated(self, item):\n"
-        "        for value in item:\n"
-        "            print(value)\n"
-    )
-    context_path.write_text(context_source, encoding="utf-8")
-    modules = {
-        module.path.name: module
-        for module in parse_python_modules(package_root, use_parse_cache=False)
-    }
-    family = systemic_detectors.InheritanceMethodShapeFamily
-    target_items = tuple(family.collect(modules["target.py"]))
-    context_items = tuple(family.collect(modules["context.py"]))
-    demand = family.report_demand(target_items, DetectorConfig())
-
-    expected = family.project_cached_demand(context_items, demand)
-    actual = family.collect_demanded_source(
-        SourceModule(context_path, "context", context_source),
-        NativePythonSyntaxIndex.from_source(context_source),
-        demand,
-    )
-
-    assert actual is not None
-    assert tuple(actual) == expected
-    assert [item.method_name for item in actual] == ["normalize", "select"]
-    assert "coarse_signatures" in demand.__dict__
-
-    def unexpected_signature_rebuild(
-        _fiber_keys: frozenset[object],
-    ) -> dict[object, object]:
-        raise AssertionError("worker demand must retain its derived signature view")
-
-    monkeypatch.setattr(
-        systemic_detectors,
-        "_inheritance_method_coarse_signatures",
-        unexpected_signature_rebuild,
-    )
-    assert tuple(family.collect_demanded(modules["context.py"], demand) or ()) == (
-        expected
-    )
 
 
 def test_native_remaining_systemic_demand_matches_selected_references(
@@ -3624,14 +3550,6 @@ def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
             runtime_detectors.RepeatedBuilderCallDetector(),
         ),
         (ExportDictShapeFamily, runtime_detectors.RepeatedExportDictDetector()),
-        (
-            systemic_detectors.InheritanceMethodShapeFamily,
-            systemic_detectors.RepeatedPrivateMethodDetector(),
-        ),
-        (
-            systemic_detectors.InheritanceMethodShapeFamily,
-            systemic_detectors.InheritanceHierarchyCandidateDetector(),
-        ),
     )
     for family, detector in family_detector_pairs:
         full_items = tuple(
@@ -4467,57 +4385,6 @@ def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate
     )
 
 
-def test_compact_hierarchy_projection_matches_full_ast_detection(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "alpha.py").write_text(
-        "class Alpha:\n"
-        "    def prepare(self, value):\n"
-        "        ready = self.normalize(value)\n"
-        "        return self.finish(ready)\n"
-        "\n"
-        "    def score(self, value):\n"
-        "        scored = self.compute(value)\n"
-        "        return self.finish(scored)\n",
-        encoding="utf-8",
-    )
-    (package_root / "beta.py").write_text(
-        "class Beta:\n"
-        "    def build(self, value):\n"
-        "        ready = self.normalize(value)\n"
-        "        return self.finish(ready)\n"
-        "\n"
-        "    def evaluate(self, value):\n"
-        "        scored = self.compute(value)\n"
-        "        return self.finish(scored)\n",
-        encoding="utf-8",
-    )
-    (package_root / "gamma.py").write_text(
-        "class Gamma:\n"
-        "    def assemble(self, value):\n"
-        "        ready = self.normalize(value)\n"
-        "        return self.finish(ready)\n",
-        encoding="utf-8",
-    )
-    detector_types = (
-        systemic_detectors.InheritanceHierarchyCandidateDetector,
-        systemic_detectors.RepeatedPrivateMethodDetector,
-    )
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (package_root,),
-        detector_types,
-        use_parse_cache=False,
-    )
-    projected_findings = accumulator.findings_by_detector(DetectorConfig())
-    modules = parse_python_modules(package_root, use_parse_cache=False)
-
-    for detector_type in detector_types:
-        full_ast_findings = detector_type().detect(modules, DetectorConfig())
-        assert [finding.to_dict() for finding in projected_findings[detector_type]] == [
-            finding.to_dict() for finding in full_ast_findings
-        ]
 
 
 def test_compact_private_reference_detectors_preserve_semantics_without_ast_shadow(
@@ -7432,10 +7299,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
         in partition.compact_global_detector_types
     )
-    assert (
-        systemic_detectors.InheritanceHierarchyCandidateDetector
-        in partition.compact_global_detector_types
-    )
     assert runtime_detectors.RepeatedBuilderCallDetector in (
         partition.compact_global_detector_types
     )
@@ -7446,9 +7309,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert runtime_detectors.ManualClassRegistrationDetector in (
-        partition.compact_global_detector_types
-    )
-    assert systemic_detectors.RepeatedPrivateMethodDetector in (
         partition.compact_global_detector_types
     )
     assert systemic_detectors.InheritedAutoRegisterConfigBoilerplateDetector in (
@@ -7616,7 +7476,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 64
+    assert len(partition.compact_global_detector_types) == 62
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

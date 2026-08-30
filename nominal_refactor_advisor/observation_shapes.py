@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from .class_composition import CompositeClassSpec
@@ -42,15 +41,6 @@ class LiteralKind(StrEnum):
 
     STRING = "string"
     NUMERIC = "numeric"
-
-
-@lru_cache(maxsize=None)
-def _method_statement_texts(
-    function_node: ast.FunctionDef | ast.AsyncFunctionDef | None,
-) -> tuple[str, ...]:
-    if function_node is None:
-        return ()
-    return tuple(ast.unparse(statement) for statement in function_node.body)
 
 
 class FieldOriginKind(StrEnum):
@@ -539,57 +529,6 @@ class DualAxisResolutionObservation(
 
     fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("observed_name")
 
-
-@dataclass(frozen=True)
-class MethodShape(
-    FunctionBodyLinenoSymbolObservationMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.METHOD_SHAPE
-    class_name: str | None
-    method_name: str
-    lineno: int
-    statement_count: int
-    is_private: bool
-    param_count: int
-    decorators: tuple[str, ...]
-    fingerprint_value: str | None = None
-    statement_texts_value: tuple[str, ...] | None = None
-    function_node: ast.FunctionDef | ast.AsyncFunctionDef | None = field(
-        default=None, compare=False, repr=False
-    )
-
-    @property
-    def symbol(self) -> str:
-        if self.class_name:
-            return f"{self.class_name}.{self.method_name}"
-        return self.method_name
-
-    @property
-    def nominal_witness(self) -> str:
-        return self.class_name or self.symbol
-
-    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("method_name")
-
-    @property
-    def fiber_key(self) -> str:
-        return f"{self.is_private}:{self.param_count}:{self.fingerprint}"
-
-    @property
-    def fingerprint(self) -> str:
-        if self.fingerprint_value is not None:
-            return self.fingerprint_value
-        if self.function_node is None:
-            return ""
-        from .ast_tools import fingerprint_function
-
-        return fingerprint_function(self.function_node)
-
-    @property
-    def statement_texts(self) -> tuple[str, ...]:
-        if self.statement_texts_value is not None:
-            return self.statement_texts_value
-        return _method_statement_texts(self.function_node)
 
 
 @dataclass(frozen=True)

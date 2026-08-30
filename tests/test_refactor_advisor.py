@@ -48,7 +48,6 @@ from nominal_refactor_advisor.ast_tools import (
     InlineStringLiteralDispatchObservationFamily,
     InterfaceGenerationObservationFamily,
     LineageMappingObservationFamily,
-    MethodShapeFamily,
     ProjectionHelperObservationFamily,
     RegistrationShapeSpec,
     RegistrationShapeFamily,
@@ -7248,81 +7247,6 @@ def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:
     assert violations == []
 
 
-def test_detects_direct_reflective_builtin_calls(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_contract.py",
-        """
-class RuntimeAdapter:
-    def value_for(self, source, field_name):
-        source_scope = locals()
-        if hasattr(source, field_name):
-            return getattr(source, field_name), source_scope
-        raise ValueError("missing declared field")
-""",
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "direct_reflective_builtin_call"
-        )
-    )
-    assert finding.pattern_id == PatternId.NOMINAL_BOUNDARY
-    assert "getattr" in finding.summary
-    assert "typed/nominal authority" in (finding.codemod_patch or "")
-
-    assert any(
-        finding.detector_id == "builtin_locals_call"
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_direct_reflection_ignores_declared_frozen_dataclass_field_writes(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_contract.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class RuntimeContract:
-    value: int
-
-    def __post_init__(self):
-        object.__setattr__(self, "value", int(self.value))
-
-    def write_dynamic_field(self, field_name, value):
-        object.__setattr__(self, field_name, value)
-
-
-def rewrite_foreign_contract(contract, value):
-    object.__setattr__(contract, "value", value)
-""",
-    )
-
-    reflection_findings = tuple(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "direct_reflective_builtin_call"
-    )
-
-    assert not any(
-        "RuntimeContract.__post_init__" in item.summary for item in reflection_findings
-    )
-    assert any(
-        "RuntimeContract.write_dynamic_field" in item.summary
-        for item in reflection_findings
-    )
-    assert any(
-        "rewrite_foreign_contract" in item.summary for item in reflection_findings
-    )
-
-
 def test_detects_builtin_locals_calls(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -7424,39 +7348,6 @@ def projection_fields(raw_spec, owner):
     assert "scope" in finding.summary
     assert "coordinate" in finding.summary
     assert "nominal schema authority" in (finding.codemod_patch or "")
-
-
-def test_ignores_cross_domain_public_methods_with_same_shape(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "domain_shapes.py",
-        """
-class CropShapeMaskStrategy:
-    def for_shape(self, request):
-        normalized = self.normalize(request)
-        mask = self.build(normalized)
-        result = self.package(mask)
-        return result
-
-
-class PerObjectAssignmentStrategy:
-    def for_assignment(self, request):
-        normalized = self.normalize(request)
-        mask = self.build(normalized)
-        result = self.package(mask)
-        return result
-""",
-    )
-
-    findings = analyze_modules(parse_python_modules(tmp_path))
-
-    assert not any(
-        finding.detector_id == "repeated_private_methods"
-        and "normalized AST shape" in finding.summary
-        for finding in findings
-    )
 
 
 _REPEATED_BUILDER_SOURCE = """
@@ -8759,22 +8650,6 @@ def test_parse_python_modules_canonicalizes_equal_large_line_numbers(
     assert line_numbers[0] is line_numbers[1]
 
 
-def test_analyze_paths_combines_cross_file_detector_evidence(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "left.py",
-        "\nclass Alpha:\n    def _build(self, item):\n        prepared = self.normalize(item)\n        checked = self.validate(prepared)\n        return self.finish(checked)\n",
-    )
-    _write_module(
-        tmp_path,
-        "right.py",
-        "\nclass Beta:\n    def _assemble(self, value):\n        prepared = self.normalize(value)\n        checked = self.validate(prepared)\n        return self.finish(checked)\n",
-    )
-
-    findings = analyze_paths((tmp_path / "left.py", tmp_path / "right.py"))
-
-    assert any((finding.pattern_id == 5 for finding in findings))
-
 
 def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass ProjectSource:\n    pass\n")
@@ -8787,21 +8662,6 @@ def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> 
     assert [module.module_name for module in modules] == ["pkg.mod"]
 
 
-def test_detects_repeated_private_method_shape(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def _build(self, item):\n        prepared = self.normalize(item)\n        checked = self.validate(prepared)\n        return self.finish(checked)\n\n\nclass Beta:\n    def _assemble(self, value):\n        prepared = self.normalize(value)\n        checked = self.validate(prepared)\n        return self.finish(checked)\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 5 for finding in findings))
-    assert any((finding.pattern_id == 5 and finding.scaffold for finding in findings))
-    assert any(
-        (finding.pattern_id == 5 and finding.codemod_patch for finding in findings)
-    )
-    finding = next((finding for finding in findings if finding.pattern_id == 5))
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
 
 
 def test_detects_sibling_role_helper_symmetry(tmp_path: Path) -> None:
@@ -8929,39 +8789,6 @@ def test_detects_private_cohort_should_be_module(tmp_path: Path) -> None:
     assert "returned, pose" in finding.summary
     assert "_returned_pose_proof_plan" in finding.summary
     assert "pipeline_returned_pose" in (finding.codemod_patch or "")
-
-
-def test_detects_bare_function_method_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/widgets.py",
-        "\ndef render_widget(widget, context):\n    header = widget.header\n    body = widget.body\n    footer = context.footer\n    return header, body, footer\n\n\ndef validate_widget(widget, context):\n    errors = []\n    if not widget.header:\n        errors.append('header')\n    if context.strict and not widget.body:\n        errors.append('body')\n    return tuple(errors)\n\n\ndef export_widget(widget, context):\n    payload = {'header': widget.header}\n    payload['body'] = widget.body\n    payload['footer'] = context.footer\n    return payload\n",
-    )
-
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (item for item in findings if item.detector_id == "bare_function_method_family")
-    )
-
-    assert "render_widget" in finding.summary
-    assert "validate_widget" in finding.summary
-    assert "export_widget" in finding.summary
-    assert "first parameter `widget`" in finding.summary
-    assert "ABC" in (finding.scaffold or "")
-
-
-def test_bare_function_method_family_ignores_pairs(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/widgets.py",
-        "\ndef render_widget(widget):\n    return widget.header\n\n\ndef export_widget(widget):\n    return {'header': widget.header}\n",
-    )
-
-    findings = analyze_path(tmp_path)
-
-    assert not any(
-        (item.detector_id == "bare_function_method_family" for item in findings)
-    )
 
 
 def test_detects_public_bare_support_functions_in_private_modules(
@@ -12346,55 +12173,49 @@ def test_markdown_output_includes_prescription_details(tmp_path: Path) -> None:
     assert "Example skeleton:" in output
 
 
+_COMPOSED_SUBSYSTEM_SOURCE = """
+REGISTRY = {}
+
+
+class RuntimePlan:
+    def __init__(self, pose_id, score, label):
+        self.pose_id = pose_id
+        self.score = score
+        self.label = label
+
+
+class Alpha:
+    def build(self, candidate):
+        return RuntimePlan(
+            pose_id=candidate.pose_id,
+            score=candidate.score,
+            label=candidate.label,
+        )
+
+
+class Beta:
+    def build(self, entry):
+        return RuntimePlan(
+            pose_id=entry.pose_id,
+            score=entry.score,
+            label=entry.label,
+        )
+
+
+REGISTRY["alpha"] = Alpha
+REGISTRY["beta"] = Beta
+"""
+
+
 def test_markdown_output_handles_multiple_example_skeletons(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n",
-    )
+    _write_module(tmp_path, "pkg/mod.py", _COMPOSED_SUBSYSTEM_SOURCE)
     findings = analyze_path(tmp_path)
-    output = MARKDOWN_RENDERER.report(findings)
+    output = MARKDOWN_RENDERER.report(findings, raw_findings=True)
     assert output.count("Example skeleton:") >= 2
     assert "Suggested scaffold:" in output
     assert "Suggested patch:" in output
 
 
-def test_clusters_redundant_methods_into_abc_candidate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def _score(self, item):\n        scored = self.compute(item)\n        bounded = self.bound(scored)\n        packaged = self.package(bounded)\n        return self.finish(packaged)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def _evaluate(self, value):\n        scored = self.compute(value)\n        bounded = self.bound(scored)\n        packaged = self.package(bounded)\n        return self.finish(packaged)\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        (
-            finding.detector_id == "inheritance_hierarchy_candidate"
-            for finding in findings
-        )
-    )
-
-
-def test_observation_graph_recovers_method_coherence_cohort(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def _score(self, item):\n        scored = self.compute(item)\n        bounded = self.bound(scored)\n        packaged = self.package(bounded)\n        return self.finish(packaged)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def _evaluate(self, value):\n        scored = self.compute(value)\n        bounded = self.bound(scored)\n        packaged = self.package(bounded)\n        return self.finish(packaged)\n\n\nclass Gamma:\n    def _render(self, payload):\n        ready = self.normalize(payload)\n        checked = self.validate(ready)\n        return self.finish(checked)\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-    observations = collect_family_items(module, MethodShapeFamily)
-    graph = ObservationGraph(
-        tuple((item.structural_observation for item in observations))
-    )
-    cohorts = graph.coherence_cohorts_for(
-        ObservationKind.METHOD_SHAPE,
-        StructuralExecutionLevel.FUNCTION_BODY,
-        minimum_witnesses=2,
-        minimum_fibers=2,
-    )
-    cohort = next(
-        (item for item in cohorts if item.nominal_witnesses == ("Alpha", "Beta"))
-    )
-    assert len(cohort.fibers) == 2
 
 
 def test_observation_graph_caches_derived_groupings() -> None:
@@ -22969,30 +22790,18 @@ def test_ignores_to_dict_return_dict_serialization_boundary(tmp_path: Path) -> N
 
 
 def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nREGISTRY = {}\n\n\nclass RuntimePlan:\n    def __init__(self, pose_id, score, label):\n        self.pose_id = pose_id\n        self.score = score\n        self.label = label\n\n\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def build(self, candidate):\n        return RuntimePlan(\n            pose_id=candidate.pose_id,\n            score=candidate.score,\n            label=candidate.label,\n        )\n\n\nclass Beta:\n    def _assemble(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def build(self, entry):\n        return RuntimePlan(\n            pose_id=entry.pose_id,\n            score=entry.score,\n            label=entry.label,\n        )\n\n\nREGISTRY["alpha"] = Alpha\nREGISTRY["beta"] = Beta\n',
-    )
+    _write_module(tmp_path, "pkg/mod.py", _COMPOSED_SUBSYSTEM_SOURCE)
     findings = analyze_path(tmp_path)
     plans = build_refactor_plans(findings, tmp_path)
     assert plans
     plan = plans[0]
     assert plan.pattern_sequence.primary_pattern_id is PatternId.NOMINAL_BOUNDARY
-    assert PatternId.ABC_TEMPLATE_METHOD in plan.pattern_sequence.secondary_pattern_ids
     assert PatternId.AUTO_REGISTER_META in plan.pattern_sequence.secondary_pattern_ids
     assert PatternId.AUTHORITATIVE_SCHEMA in plan.pattern_sequence.secondary_pattern_ids
     assert plan.outcome.loci_of_change_before > plan.outcome.loci_of_change_after
     assert plan.outcome.registration_sites_removed == 3
     assert plan.outcome.repeated_mappings_centralized >= 3
-    assert any((action.kind == "create_abc_base" for action in plan.actions))
     assert any((action.kind == "create_metaclass" for action in plan.actions))
-    extract_action = next(
-        (action for action in plan.actions if action.kind == "extract_template_method")
-    )
-    assert extract_action.statement_operation == "move"
-    assert extract_action.statement_sites
-    assert "self.normalize" in extract_action.description
     mapping_action = next(
         (
             action
@@ -23010,11 +22819,7 @@ def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:
 
 
 def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n",
-    )
+    _write_module(tmp_path, "pkg/mod.py", _COMPOSED_SUBSYSTEM_SOURCE)
     findings = analyze_path(tmp_path)
     plans = build_refactor_plans(findings, tmp_path)
     output = MARKDOWN_RENDERER.report(findings, plans)

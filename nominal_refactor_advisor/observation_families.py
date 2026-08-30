@@ -33,7 +33,6 @@ from .observation_shapes import (
     LineageMappingObservation,
     LiteralDispatchObservation,
     LiteralKind,
-    MethodShape,
     ProjectionHelperShape,
     RegistrationShape,
     RuntimeTypeGenerationObservation,
@@ -478,29 +477,6 @@ def _probe_spec(
     )
 
 
-class MethodShapeSpec(FamilyGeneratingSpec, FunctionObservationSpec):
-    family_specs = (GeneratedFamilySpec(MethodShape, ShapeFamily),)
-
-    def build_from_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> MethodShape | None:
-        return MethodShape(
-            file_path=str(parsed_module.path),
-            class_name=observation.class_name,
-            method_name=function.name,
-            lineno=function.lineno,
-            statement_count=len(function.body),
-            is_private=function.name.startswith("_")
-            and (not function.name.startswith("__")),
-            param_count=len(function.args.args),
-            decorators=tuple(
-                (_node_display_name(dec) for dec in function.decorator_list)
-            ),
-            function_node=function,
-        )
 
 
 def _native_export_dict_shapes(
@@ -617,7 +593,6 @@ _materialize_class_declarations(
 BuilderCallShapeSpec.shape_helper = _builder_call_shape
 ExportDictShapeSpec.shape_helper = _export_dict_shape
 
-_METHOD_SHAPE_SPEC = MethodShapeSpec()
 _BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
 _EXPORT_DICT_SHAPE_SPEC = ExportDictShapeSpec()
 

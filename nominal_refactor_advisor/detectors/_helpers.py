@@ -5199,39 +5199,6 @@ def _collect_mirrored_assignments(node: ast.ClassDef) -> list[tuple[int, str]]:
     return mirrored
 
 
-def _collect_repeated_method_shapes(
-    modules: list[ParsedModule], config: DetectorConfig
-) -> tuple[MethodShape, ...]:
-    groups = _group_repeated_methods(modules, config)
-    return tuple((method for group in groups for method in group))
-
-
-def _group_repeated_methods(
-    modules: list[ParsedModule], config: DetectorConfig
-) -> list[tuple[MethodShape, ...]]:
-    methods = tuple(
-        (
-            method
-            for module in modules
-            for method in CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-                module, MethodShapeFamily, MethodShape
-            )
-            if method.class_name
-            and method.statement_count >= config.min_duplicate_statements
-        )
-    )
-    groups = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
-        modules,
-        tuple(methods),
-        ObservationKind.METHOD_SHAPE,
-        StructuralExecutionLevel.FUNCTION_BODY,
-    )
-    return [
-        tuple((_as_method_shape(method) for method in group))
-        for group in groups
-        if len(group) >= 2
-        and len({_as_method_shape(method).class_name for method in group}) >= 2
-    ]
 
 
 _ABC_OPTIMIZER_IGNORED_BASE_NAMES = frozenset({"ABC", "Generic", "Protocol", "object"})
@@ -6599,33 +6566,6 @@ def _abc_optimizer_family_method_plans(
     )
 
 
-def _abc_patch_for_methods(methods: tuple[MethodShape, ...]) -> str:
-    target_file = methods[0].file_path
-    base_name = (
-        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(
-            sorted(
-                {
-                    method.class_name
-                    for method in methods
-                    if method.class_name is not None
-                }
-            )
-        )
-        or "ExtractedBase"
-    )
-    hook_name = methods[0].method_name
-    return f"*** Begin Patch\n*** Update File: {target_file}\n@@\n+class {base_name}(ABC):\n+    def run(self, request):\n+        normalized = self._normalize(request)\n+        return self.{hook_name}(normalized)\n+\n+    @abstractmethod\n+    def {hook_name}(self, normalized): ...\n*** End Patch"
-
-
-def _abc_family_patch(
-    class_names: frozenset[str], groups: list[tuple[MethodShape, ...]]
-) -> str:
-    ordered = sorted(class_names)
-    target_file = groups[0][0].file_path
-    base_name = (
-        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(ordered) or "FamilyBase"
-    )
-    return f"*** Begin Patch\n*** Update File: {target_file}\n@@\n+class {base_name}(ABC):\n+    def run(self, request): ...\n+\n+    @abstractmethod\n+    def hook(self, request): ...\n*** End Patch"
 
 
 def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:
@@ -6698,44 +6638,6 @@ def _autoregister_patch(
     )
 
 
-def _abc_scaffold_for_methods(methods: tuple[MethodShape, ...]) -> str:
-    class_names = sorted(
-        {method.class_name for method in methods if method.class_name is not None}
-    )
-    hook_names = sorted({method.method_name for method in methods})
-    base_name = (
-        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(class_names)
-        or "ExtractedBase"
-    )
-    hook_name = hook_names[0] if hook_names else "hook"
-    return f"class {base_name}(ABC):\n    def run(self, request):\n        normalized = self._normalize(request)\n        return self.{hook_name}(normalized)\n\n    @abstractmethod\n    def {hook_name}(self, normalized): ..."
-
-
-def _abc_family_scaffold(
-    class_names: frozenset[str], groups: list[tuple[MethodShape, ...]]
-) -> str:
-    ordered = sorted(class_names)
-    base_name = (
-        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(ordered) or "FamilyBase"
-    )
-    hook_methods = sorted(
-        {
-            method.method_name
-            for group in groups
-            for method in group
-            if method.class_name in class_names
-        }
-    )
-    hook_block = "\n".join(
-        (
-            f"    @abstractmethod\n    def {name}(self, request): ..."
-            for name in hook_methods[:3]
-        )
-    )
-    subclass_block = "\n".join(
-        (f"class {name}({base_name}):\n    ..." for name in ordered[:3])
-    )
-    return f"class {base_name}(ABC):\n    def run(self, request): ...\n{hook_block}\n\n{subclass_block}"
 
 
 def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
@@ -13295,127 +13197,6 @@ def _optional_parameter_branch_candidates(
     )
 
 
-def _bare_function_name_tokens(function_name: str) -> tuple[str, ...]:
-    return tuple(
-        token
-        for token in function_name.strip("_").split("_")
-        if token and token not in {"get", "set", "make", "build", "collect"}
-    )
-
-
-def _bare_function_method_family_certificate(
-    *, function_count: int, line_count: int, semantic_axes: tuple[str, ...]
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=max(
-            line_count, function_count * max(len(semantic_axes), 1)
-        ),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("method_family_authority", "template_method_base"),
-            per_axis_objects=("method_hook",),
-        ),
-        semantic_axes=semantic_axes,
-        residual_object_count=function_count,
-    )
-
-
-def _bare_function_method_family_candidates(
-    module: ParsedModule,
-) -> tuple[BareFunctionMethodFamilyCandidate, ...]:
-    grouped: dict[tuple[str, str, str], list[NamedFunctionNode]] = defaultdict(list)
-    for qualname, function in _iter_named_functions(module):
-        owner_parameter_name = (
-            HELPER_SUPPORT_PROJECTION_AUTHORITY.module_level_subject_parameter_name(
-                qualname, function
-            )
-        )
-        if owner_parameter_name is None:
-            continue
-        tokens = _bare_function_name_tokens(function.name)
-        if len(tokens) < 2:
-            continue
-        for shared_axis_name, shared_axis_value in (
-            ("prefix", tokens[0]),
-            ("suffix", tokens[-1]),
-        ):
-            grouped[(owner_parameter_name, shared_axis_name, shared_axis_value)].append(
-                function
-            )
-
-    candidates: list[BareFunctionMethodFamilyCandidate] = []
-    seen_function_sets: set[tuple[str, ...]] = set()
-    for (
-        owner_parameter_name,
-        shared_axis_name,
-        shared_axis_value,
-    ), functions in grouped.items():
-        if len(functions) < 3:
-            continue
-        ordered = sorted_tuple(functions, key=lambda item: (item.lineno, item.name))
-        common_attribute_names = sorted_tuple(
-            set.intersection(
-                *(
-                    set(
-                        HELPER_SYNTAX_PROJECTION_AUTHORITY.parameter_receiver_attribute_names(
-                            function, owner_parameter_name
-                        )
-                    )
-                    for function in ordered
-                )
-            )
-            - _WEAK_BARE_FUNCTION_OWNER_ATTRIBUTE_NAMES
-        )
-        if not common_attribute_names:
-            continue
-        function_names = tuple((function.name for function in ordered))
-        if function_names in seen_function_sets:
-            continue
-        seen_function_sets.add(function_names)
-        line_count = sum(
-            (
-                max(
-                    1,
-                    (function.end_lineno or function.lineno) - function.lineno + 1,
-                )
-                for function in ordered
-            )
-        )
-        semantic_axes = (
-            f"owner:{owner_parameter_name}",
-            f"{shared_axis_name}:{shared_axis_value}",
-            *(f"attribute:{name}" for name in common_attribute_names),
-        )
-        certificate = _bare_function_method_family_certificate(
-            function_count=len(ordered),
-            line_count=line_count,
-            semantic_axes=semantic_axes,
-        )
-        if not certificate.pays_rent:
-            continue
-        candidates.append(
-            BareFunctionMethodFamilyCandidate(
-                file_path=str(module.path),
-                line=ordered[0].lineno,
-                owner_parameter_name=owner_parameter_name,
-                owner_attribute_names=common_attribute_names,
-                shared_axis_name=shared_axis_name,
-                shared_axis_value=shared_axis_value,
-                function_names=function_names,
-                line_numbers=tuple((function.lineno for function in ordered)),
-                line_count=line_count,
-                compression_certificate=certificate,
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.file_path,
-            item.owner_parameter_name,
-            item.shared_axis_name,
-            item.shared_axis_value,
-            item.function_names,
-        ),
-    )
 
 
 def _latent_function_shared_call_names(
@@ -13466,11 +13247,19 @@ def _function_group_line_count(functions: tuple[NamedFunctionNode, ...]) -> int:
     )
 
 
+def _function_name_tokens(function_name: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in function_name.strip("_").split("_")
+        if token and token not in {"get", "set", "make", "build", "collect"}
+    )
+
+
 def _function_name_axis_is_already_explicit(
     functions: tuple[NamedFunctionNode, ...],
 ) -> bool:
     token_lists = tuple(
-        (_bare_function_name_tokens(function.name) for function in functions)
+        (_function_name_tokens(function.name) for function in functions)
     )
     if any((len(tokens) < 2 for tokens in token_lists)):
         return False
