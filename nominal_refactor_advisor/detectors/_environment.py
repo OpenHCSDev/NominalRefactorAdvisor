@@ -1304,15 +1304,11 @@ def _native_environment_module_projection(
             syntax_index.statement_for(node)
             for node in syntax_index.top_level_assignment_statements()
         ]
-        parsed_module = ParsedModule(
-            path=source_module.path,
-            module_name=source_module.module_name,
-            is_package_init=source_module.path.name == "__init__.py",
-            module=ast.Module(
+        parsed_module = source_module.parsed_module(
+            ast.Module(
                 body=[*imports, *module_assignments],
                 type_ignores=[],
             ),
-            source=source_module.source,
         )
         captures = syntax_index.common_captures()
         functions = tuple(

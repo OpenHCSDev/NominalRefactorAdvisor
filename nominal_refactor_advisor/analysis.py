@@ -967,6 +967,15 @@ class CompactProjectionCacheSource(CollectedFamilyCacheContext):
     use_parse_cache: bool
     source_policy: PythonSourcePathPolicy
 
+    def parser(self) -> PythonModuleRootParser:
+        return PythonModuleRootParser.for_root(
+            self.scan_root,
+            cache_dir=self.cache_dir,
+            use_parse_cache=self.use_parse_cache,
+            parse_workers=1,
+            source_policy=self.source_policy,
+        )
+
 
 @dataclass(frozen=True)
 class CompactProjectionBuildRequest:
@@ -1001,13 +1010,7 @@ def build_compact_projection_shard(
 
     started = perf_counter()
     source = request.source
-    parser = PythonModuleRootParser.for_root(
-        source.scan_root,
-        cache_dir=source.cache_dir,
-        use_parse_cache=source.use_parse_cache,
-        parse_workers=1,
-        source_policy=source.source_policy,
-    )
+    parser = source.parser()
     runtime_projections: list[tuple[type[CollectedFamily], tuple[object, ...]]] = []
     runtime_projection_signatures: list[tuple[type[CollectedFamily], str]] = []
 
@@ -1529,13 +1532,7 @@ class BoundedCompactProjectionManifest:
         source: CompactProjectionCacheSource,
         family: type[CollectedFamily],
     ) -> tuple[object, ...]:
-        parser = PythonModuleRootParser.for_root(
-            source.scan_root,
-            cache_dir=source.cache_dir,
-            use_parse_cache=source.use_parse_cache,
-            parse_workers=1,
-            source_policy=source.source_policy,
-        )
+        parser = source.parser()
         repaired: tuple[object, ...] = ()
         for module in parser.parsed_source_paths((source.path,)):
             repaired = tuple(collect_family_items(module, family))

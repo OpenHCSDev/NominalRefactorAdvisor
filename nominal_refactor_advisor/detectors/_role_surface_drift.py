@@ -1357,13 +1357,8 @@ def _native_role_surface_direct_class(
 def _native_role_surface_module(
     source_module: SourceModule,
 ) -> ParsedModule:
-    return ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=[], type_ignores=[]),
-        source=source_module.source,
-        family_cache_dir=source_module.family_cache_dir,
+    return source_module.parsed_module(
+        ast.Module(body=[], type_ignores=[]),
     )
 
 

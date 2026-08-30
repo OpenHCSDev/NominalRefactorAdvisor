@@ -1133,12 +1133,8 @@ def _native_available_abstraction_imported_names(
         for node in syntax_index.tree.root_node.named_children
         if node.type in {"import_statement", "import_from_statement"}
     ]
-    module = ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=statements, type_ignores=[]),
-        source=source_module.source,
+    module = source_module.parsed_module(
+        ast.Module(body=statements, type_ignores=[]),
     )
     return frozenset(_imported_local_names(module))
 
@@ -1156,12 +1152,8 @@ def _collect_available_abstraction_reuse_source_demand(
         source_module,
         syntax_index,
     )
-    module_stub = ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=[], type_ignores=[]),
-        source=source_module.source,
+    module_stub = source_module.parsed_module(
+        ast.Module(body=[], type_ignores=[]),
     )
     shared_path_authority = _is_shared_authority_location(module_stub)
     package_name = source_module.module_name.split(".", 1)[0]

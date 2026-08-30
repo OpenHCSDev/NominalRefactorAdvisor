@@ -5086,12 +5086,8 @@ def _native_subclass_traversal_sites(
 
     if not syntax_index.is_complete:
         return None
-    parsed_module = ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=[], type_ignores=[]),
-        source=source_module.source,
+    parsed_module = source_module.parsed_module(
+        ast.Module(body=[], type_ignores=[]),
     )
     sites: list[SubclassTraversalSite] = []
     try:

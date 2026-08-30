@@ -751,12 +751,8 @@ def _native_spec_axis_projections(
             syntax_index.statement_for(node)
             for node in syntax_index.top_level_assignment_statements()
         )
-        parsed_module = ParsedModule(
-            path=source_module.path,
-            module_name=source_module.module_name,
-            is_package_init=source_module.path.name == "__init__.py",
-            module=ast.Module(body=list(statements), type_ignores=[]),
-            source=source_module.source,
+        parsed_module = source_module.parsed_module(
+            ast.Module(body=list(statements), type_ignores=[]),
         )
         return [CompactSpecAxisModuleProjection(_spec_axis_families(parsed_module))]
     except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
@@ -808,12 +804,8 @@ def _native_validate_shape_projections(
 
     if not syntax_index.is_complete:
         return None
-    parsed_module = ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=[], type_ignores=[]),
-        source=source_module.source,
+    parsed_module = source_module.parsed_module(
+        ast.Module(body=[], type_ignores=[]),
     )
     methods: list[ValidateShapeGuardMethodCandidate] = []
     try:
@@ -981,12 +973,8 @@ def _native_dataclass_namespace_cli_projections(
             for node in syntax_index.top_level_assignment_statements()
             if b"ArgumentSpec" in syntax_index.source_for(node)
         )
-        cli_module = ParsedModule(
-            path=source_module.path,
-            module_name=source_module.module_name,
-            is_package_init=source_module.path.name == "__init__.py",
-            module=ast.Module(body=list(cli_statements), type_ignores=[]),
-            source=source_module.source,
+        cli_module = source_module.parsed_module(
+            ast.Module(body=list(cli_statements), type_ignores=[]),
         )
         cli_specs = tuple(
             _CliArgumentSpecProjection(

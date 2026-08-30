@@ -729,6 +729,18 @@ class SourceModule:
     source: str
     family_cache_dir: Path | None = None
 
+    def parsed_module(self, module: ast.Module) -> ParsedModule:
+        """Attach an exact AST projection without rebuilding source identity."""
+
+        return ParsedModule(
+            path=self.path,
+            module_name=self.module_name,
+            is_package_init=self.path.name == "__init__.py",
+            module=module,
+            source=self.source,
+            family_cache_dir=self.family_cache_dir,
+        )
+
 
 def retains_python_ast(
     value: object,

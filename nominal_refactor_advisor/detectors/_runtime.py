@@ -5544,12 +5544,8 @@ def _native_repeated_builder_call_shapes(
                 continue
             calls_by_function[function].append(call)
 
-        parsed_module = ParsedModule(
-            path=source_module.path,
-            module_name=source_module.module_name,
-            is_package_init=source_module.path.name == "__init__.py",
-            module=ast.Module(body=[], type_ignores=[]),
-            source=source_module.source,
+        parsed_module = source_module.parsed_module(
+            ast.Module(body=[], type_ignores=[]),
         )
         shapes: list[BuilderCallShape] = []
         for function in functions:
@@ -5957,12 +5953,8 @@ def _native_declared_field_extraction_sites(
 
     if not syntax_index.is_complete:
         return None
-    parsed_module = ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=[], type_ignores=[]),
-        source=source_module.source,
+    parsed_module = source_module.parsed_module(
+        ast.Module(body=[], type_ignores=[]),
     )
     sites: list[DeclaredFieldExtractionSite] = []
     try:
@@ -11976,12 +11968,8 @@ def _native_function_stub(
 def _native_nominal_bypass_module_identity(
     source_module: SourceModule,
 ) -> ParsedModule:
-    return ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=[], type_ignores=[]),
-        source=source_module.source,
+    return source_module.parsed_module(
+        ast.Module(body=[], type_ignores=[]),
     )
 
 
@@ -14703,12 +14691,8 @@ def _native_import_aliases_for_delegate_demand(
         for node in syntax_index.tree.root_node.named_children
         if node.type in {"import_statement", "import_from_statement"}
     )
-    import_module = ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=list(import_statements), type_ignores=[]),
-        source=source_module.source,
+    import_module = source_module.parsed_module(
+        ast.Module(body=list(import_statements), type_ignores=[]),
     )
     from ..class_index import _module_import_aliases
 

@@ -1955,15 +1955,11 @@ def _native_export_policy_predicate_candidates(
             for node in syntax_index.top_level_declarations("function")
             if syntax_index.declared_name(node) == predicate_name
         )
-        parsed_module = ParsedModule(
-            path=source_module.path,
-            module_name=source_module.module_name,
-            is_package_init=source_module.path.name == "__init__.py",
-            module=ast.Module(
+        parsed_module = source_module.parsed_module(
+            ast.Module(
                 body=[*export_assignments, *functions],
                 type_ignores=[],
             ),
-            source=source_module.source,
         )
         candidate = _module_export_policy_predicate_candidate(parsed_module)
         return [] if candidate is None else [candidate]

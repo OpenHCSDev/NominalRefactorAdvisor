@@ -1232,13 +1232,8 @@ def _native_class_header_module(
             "import_from_statement",
         }:
             body.append(copy.deepcopy(syntax_index.statement_for(child)))
-    return ParsedModule(
-        path=source_module.path,
-        module_name=source_module.module_name,
-        is_package_init=source_module.path.name == "__init__.py",
-        module=ast.Module(body=body, type_ignores=[]),
-        source=source_module.source,
-        family_cache_dir=source_module.family_cache_dir,
+    return source_module.parsed_module(
+        ast.Module(body=body, type_ignores=[]),
     )
 
 
