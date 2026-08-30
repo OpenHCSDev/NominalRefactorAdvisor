@@ -437,7 +437,7 @@ def test_sorted_findings_authority_uses_detector_declared_priority() -> None:
         "semantic owner",
         "raw support surface",
     ).build(
-        "fail_soft_fallback",
+        "repeated_hardcoded_strings",
         "alphabetically first raw finding",
         (SourceLocation("module.py", 10, "raw"),),
     )
@@ -4906,8 +4906,6 @@ EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID = "available_abstraction_reuse"
 AVAILABLE_CARRIER_REUSE_DETECTOR_ID = "available_carrier_reuse"
 PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID = "parallel_primitive_carrier"
-FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
-FAIL_SOFT_FALLBACK_DETECTOR_ID = "fail_soft_fallback"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
@@ -10889,26 +10887,6 @@ def test_detects_repeated_result_assembly_pipeline(tmp_path: Path) -> None:
     assert "sample_biased_rotations" in finding.summary
 
 
-def test_detects_fail_soft_effect_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build_route(node):\n    head = extract_head(node)\n    if head is None:\n        return None\n    route = parse_route(head)\n    if route is None:\n        return None\n    owner = route_owner(route)\n    if owner is None:\n        return None\n    policy = policy_for(owner)\n    if policy is None:\n        return None\n    payload = build_payload(route, policy)\n    if payload is None:\n        return None\n    return RouteWitness(owner=owner, payload=payload)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-        )
-    )
-    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
-    assert "5 fail-soft guard stages" in finding.summary
-    assert "typed_effect_carrier" in finding.summary
-    assert "Maybe" in (finding.scaffold or "")
-    assert "EffectStep" in (finding.scaffold or "")
-    assert "nominal `EffectStep` subclasses" in (finding.codemod_patch or "")
-
 
 def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     _write_module(
@@ -10963,89 +10941,6 @@ def test_detects_smelly_type_aliases_without_flagging_precise_aliases(
     assert "ExplicitStringMap" not in summaries
     assert "Protocol" not in scaffolds
 
-
-def test_detects_short_fail_soft_effect_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build(node):\n    head = parse_head(node)\n    if head is None:\n        return None\n    route = parse_route(head)\n    if route is None:\n        return None\n    return Route(route)\n",
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-        )
-    )
-
-    assert "2 fail-soft guard stages" in finding.summary
-    assert "Maybe" in (finding.scaffold or "")
-
-
-def test_fail_soft_effect_pipeline_requires_none_binding_guards(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build(node):\n    args = tuple(node.args)\n    if len(args) != 2:\n        return None\n    if not getattr(node, 'ready', False):\n        return None\n    return Route(args)\n",
-    )
-
-    findings = analyze_path(tmp_path)
-
-    assert not any(
-        (
-            finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-            for finding in findings
-        )
-    )
-
-
-def test_fail_soft_effect_pipeline_classifies_inheritance_optimizer_proof_builder(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _abc_optimizer_method_group_profile(methods):\n    shared_statement_count = _abc_optimizer_shared_statement_count(methods)\n    if shared_statement_count is None:\n        return None\n    residue_profile = _abc_optimizer_residue_profile(methods)\n    if residue_profile is None:\n        return None\n    certificate = _abc_optimizer_paid_certificate(shared_statement_count, residue_profile)\n    if certificate is None:\n        return None\n    return MethodGroupProfile(shared_statement_count, residue_profile, certificate)\n",
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-        )
-    )
-
-    assert "inheritance_optimizer_proof_builder" in finding.summary
-    assert "ABC optimizer proof/result carrier" in finding.summary
-    assert "derive the optimizer proof/result carrier once" in (
-        finding.codemod_patch or ""
-    )
-
-
-def test_fail_soft_effect_pipeline_classifies_statement_sequence_matcher(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _transport_shell_template_shape(function):\n    body = list(function.body)\n    assignment_shape = _transport_shell_assignment_shape(body)\n    if assignment_shape is None:\n        return None\n    tail_shape = _transport_shell_tail_shape(body)\n    if tail_shape is None:\n        return None\n    return assignment_shape, tail_shape\n",
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-        )
-    )
-
-    assert "statement_sequence_matcher" in finding.summary
-    assert "statement-sequence matcher authority" in finding.summary
-    assert "factor the statement role sequence" in (finding.codemod_patch or "")
 
 
 def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
@@ -11869,39 +11764,6 @@ def test_ignores_abstract_effect_step_template_base(tmp_path: Path) -> None:
             for finding in analyze_path(tmp_path)
         )
     )
-
-
-def test_detects_short_fail_soft_helper(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build_route(node):\n    head = extract_head(node)\n    if head is None:\n        return None\n    route = parse_route(head)\n    if route is None:\n        return None\n    return RouteWitness(route)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-        )
-    )
-    assert "2 fail-soft guard stages" in finding.summary
-
-
-def test_classifies_fail_soft_call_chain_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _call_chain_from_outer_call(node):\n    return node\n\n\ndef _call_chain_transport_values(node):\n    return node\n\n\ndef build_route(node):\n    chain = _call_chain_from_outer_call(node)\n    if chain is None:\n        return None\n    values = _call_chain_transport_values(chain)\n    if values is None:\n        return None\n    root = values[0]\n    if root is None:\n        return None\n    owner = values[1]\n    if owner is None:\n        return None\n    payload = values[2]\n    if payload is None:\n        return None\n    return RouteWitness(root, owner, payload)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-        )
-    )
-    assert "transport_call_chain_matcher" in finding.summary
-    assert "match_transport_chain" in (finding.scaffold or "")
 
 
 def test_detects_nested_builder_shell(tmp_path: Path) -> None:
@@ -12739,49 +12601,6 @@ def test_string_dispatch_ignores_literal_fallback_tables(tmp_path: Path) -> None
         finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings
     )
 
-
-def test_detects_fail_soft_exception_fallback(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef bind(adapter, name, current_image):\n    try:\n        return adapter.get_image(name, current_image=current_image)\n    except TypeError:\n        return adapter.get_image(name)\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == FAIL_SOFT_FALLBACK_DETECTOR_ID
-    )
-    assert "exception-handler fallback" in finding.summary
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT
-
-
-def test_detects_guarded_scoped_return_fallback(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef resolve(records, current_image):\n    scoped_records = select(records, current_image)\n    if scoped_records:\n        return scoped_records\n    return records\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == FAIL_SOFT_FALLBACK_DETECTOR_ID
-        and "scoped_records -> records" in finding.summary
-        for finding in findings
-    )
-
-
-def test_detects_or_expression_fallback(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef resolve(candidates, query):\n    return candidates[0] or fallback_tables(query)\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == FAIL_SOFT_FALLBACK_DETECTOR_ID
-        and "or-expression fallback" in finding.summary
-        for finding in findings
-    )
 
 
 def test_string_dispatch_detects_behavioral_string_key_tables(tmp_path: Path) -> None:

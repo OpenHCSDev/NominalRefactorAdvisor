@@ -574,9 +574,6 @@ class DetectorConfig:
         3,
         "Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",
     )
-    min_effect_guard_stages: int = detector_config_option(
-        2, "Minimum fail-soft guard stages before surfacing an effect-pipeline finding."
-    )
     min_effect_step_payoff_score: int = detector_config_option(
         8,
         "Minimum AST matcher/effect-stage score before surfacing an EffectStep amortization finding.",
@@ -12271,19 +12268,6 @@ class RepeatedResultAssemblyPipelineCandidate:
     shared_tail: tuple[PipelineAssemblyStage, ...]
     functions: tuple[ResultAssemblyPipelineFunction, ...]
 
-
-@dataclass(frozen=True)
-class FailSoftEffectPipelineCandidate(FunctionLineWitnessCandidate):
-    line_count: int
-    guard_count: int
-    normal_form: str
-    guarded_binding_names: tuple[str, ...]
-    stage_kinds: tuple[str, ...]
-    success_return_kind: str
-    helper_call_names: tuple[str, ...]
-    pipeline_family: str
-    recommended_owner: str
-    refactor_action: str
 
 
 @dataclass(frozen=True)
