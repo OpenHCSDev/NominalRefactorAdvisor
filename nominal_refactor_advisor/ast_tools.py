@@ -914,25 +914,6 @@ class BuiltinCallName(StrEnum):
         return frozenset((cls.DICT, cls.LIST, cls.SET, cls.TUPLE))
 
     @classmethod
-    def role_surface_iteration_call_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset(
-            (
-                cls.ALL,
-                cls.ANY,
-                cls.DICT,
-                cls.ENUMERATE,
-                cls.LEN,
-                cls.LIST,
-                cls.MAX,
-                cls.MIN,
-                cls.SET,
-                cls.SUM,
-                cls.TUPLE,
-                cls.ZIP,
-            )
-        )
-
-    @classmethod
     def non_lifecycle_stage_call_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset(
             (

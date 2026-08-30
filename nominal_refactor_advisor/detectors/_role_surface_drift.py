@@ -8,19 +8,12 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
 from types import EllipsisType
-from typing import Iterable, Sequence, cast
+from typing import Iterable, Sequence
 
 from ..ast_tools import (
-    BuiltinCallName,
     CollectedFamily,
     ParsedModule,
     SourceModule,
-    active_path_descends_through,
-    module_syntax_index,
-)
-from ..class_index import (
-    CompactClassFamilyIndex,
-    CompactModuleClassProjectionFamily,
 )
 from ..export_tools import PublicExportPolicy, derive_public_exports
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
@@ -115,144 +108,10 @@ _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS = frozenset(
         "with",
     }
 )
-_ROLE_SURFACE_DRIFT_ITERATION_CALLS = (
-    BuiltinCallName.role_surface_iteration_call_names()
-)
-_ROLE_SURFACE_OPERATION_ASSIGNED_FROM = "assigned_from"
-_ROLE_SURFACE_OPERATION_COUNTED = "counted"
-_ROLE_SURFACE_OPERATION_INDEXED = "indexed"
-_ROLE_SURFACE_OPERATION_ITERATED = "iterated"
-_ROLE_SURFACE_OPERATION_KEYWORD_FORWARDED = "keyword_forwarded"
-_ROLE_SURFACE_DRIFT_STRUCTURAL_OPERATIONS = frozenset(
-    {
-        _ROLE_SURFACE_OPERATION_ASSIGNED_FROM,
-        _ROLE_SURFACE_OPERATION_COUNTED,
-        _ROLE_SURFACE_OPERATION_INDEXED,
-        _ROLE_SURFACE_OPERATION_ITERATED,
-        _ROLE_SURFACE_OPERATION_KEYWORD_FORWARDED,
-    }
-)
-_ROLE_SURFACE_BROAD_CARRIER_TOKENS = frozenset(
-    {
-        "context",
-        "model",
-        "payload",
-        "semantic",
-        "semantics",
-    }
-)
-_ROLE_SURFACE_PRESENTATION_CONTEXT_TOKENS = frozenset(
-    (
-        *CandidateFindingRenderer.presentation_context_tokens(),
-        "finding",
-        "metric",
-        "renderer",
-    )
-)
 _GENERIC_ROLE_CASE_LITERAL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _GENERIC_ROLE_CASE_CONTEXT_MAP_KEY = "mapping_key"
 _GENERIC_ROLE_CASE_CONTEXT_COMPARE = "compare_case"
 _GENERIC_ROLE_CASE_SENTINEL_TOKENS = frozenset({"false", "none", "null", "true"})
-
-
-@dataclass(frozen=True)
-class RoleSurfaceFieldWitness(LineWitnessCandidate):
-    field_name: str
-
-
-@dataclass(frozen=True)
-class RoleSurfaceDeclaration(RoleSurfaceFieldWitness):
-    class_name: str
-    surface_tokens: tuple[str, ...]
-    role_tokens: tuple[str, ...]
-
-    @property
-    def symbol(self) -> str:
-        return f"{self.class_name}.{self.field_name}"
-
-
-@dataclass(frozen=True)
-class RoleSurfaceUseSite(RoleSurfaceFieldWitness):
-    symbol: str
-    operation_kind: str
-    context_tokens: tuple[str, ...]
-
-    @property
-    def evidence(self) -> SourceLocation:
-        token_summary = ",".join(self.context_tokens[:4])
-        if not token_summary:
-            token_summary = "structural-use"
-        return SourceLocation(
-            self.file_path,
-            self.line,
-            f"{self.symbol}:{self.field_name}:{self.operation_kind}:{token_summary}",
-        )
-
-
-@dataclass(frozen=True)
-class RoleSurfaceDriftCandidate(RoleSurfaceFieldWitness):
-    class_names: tuple[str, ...]
-    declared_role_tokens: tuple[str, ...]
-    observed_role_tokens: tuple[str, ...]
-    operation_kinds: tuple[str, ...]
-    declarations: tuple[RoleSurfaceDeclaration, ...]
-    use_sites: tuple[RoleSurfaceUseSite, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        declaration_evidence = tuple(
-            SourceLocation(declaration.file_path, declaration.line, declaration.symbol)
-            for declaration in self.declarations[:3]
-        )
-        use_evidence = tuple(use_site.evidence for use_site in self.use_sites[:7])
-        return (*declaration_evidence, *use_evidence)
-
-    @property
-    def compression_certificate(self) -> CompressionCertificate:
-        semantic_axes = (
-            *(f"declared:{token}" for token in self.declared_role_tokens),
-            *(f"observed:{token}" for token in self.observed_role_tokens),
-        )
-        return CompressionCertificate.from_object_family(
-            manual_object_count=max(
-                len(self.use_sites) * (1 + len(self.observed_role_tokens))
-                + len(self.declared_role_tokens),
-                len(self.use_sites) + len(semantic_axes),
-            ),
-            replacement_shape=ObjectFamilyShape(
-                shared_objects=("role_neutral_surface", "role_projection_authority"),
-                per_axis_objects=("role_axis_case",),
-            ),
-            semantic_axes=semantic_axes,
-            independent_source_count=max(len(self.class_names), 1),
-        )
-
-    @property
-    def scaffold(self) -> str:
-        name_tokens = self.observed_role_tokens[:2]
-        if not name_tokens:
-            name_tokens = ("role",)
-        surface_name = _camel_case("_".join(name_tokens))
-        return (
-            f"@dataclass(frozen=True)\n"
-            f"class {surface_name}SourceProvenance:\n"
-            f"    values: tuple[object, ...]\n\n"
-            f"    def for_role_index(self, index: int) -> object:\n"
-            f"        return self.values[index]\n\n"
-            f"# Rename `{self.field_name}` behind a role-neutral carrier and keep the\n"
-            f"# concrete role axis explicit at the call boundary."
-        )
-
-    @property
-    def codemod_patch(self) -> str:
-        observed = ", ".join(self.observed_role_tokens)
-        declared = ", ".join(self.declared_role_tokens)
-        return (
-            f"# `{self.field_name}` declares role token(s) {declared}, but broad "
-            f"use sites repeatedly introduce observed role token(s) {observed}.\n"
-            "# Introduce one role-neutral provenance/surface carrier, move the concrete "
-            "axis name to the consuming policy, and keep per-role projection explicit."
-        )
 
 
 @dataclass(frozen=True)
@@ -378,10 +237,8 @@ class GenericRoleCaseTableCandidate(
 
 @dataclass(frozen=True, slots=True)
 class CompactRoleSurfaceModuleProjection:
-    """AST-free role declarations, possible uses, and local case tables."""
+    """AST-free local role-case tables for one module."""
 
-    declarations: tuple[RoleSurfaceDeclaration, ...]
-    possible_use_sites: tuple[RoleSurfaceUseSite, ...]
     generic_role_case_table_sites: tuple[GenericRoleCaseTableSite, ...]
 
 
@@ -1060,300 +917,6 @@ def _local_role_case_logic_candidates(
     )
 
 
-def _role_surface_class_field_declarations(
-    module: ParsedModule,
-) -> tuple[RoleSurfaceDeclaration, ...]:
-    declarations: list[RoleSurfaceDeclaration] = []
-    seen: set[tuple[str, str]] = set()
-
-    def add_field(
-        class_name: str,
-        field_name: str,
-        line: int,
-    ) -> None:
-        key = (class_name, field_name)
-        if key in seen:
-            return
-        seen.add(key)
-        surface_tokens = ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(field_name)
-        role_tokens = ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(field_name)
-        if field_name.startswith("_") or len(surface_tokens) < 2 or not role_tokens:
-            return
-        declarations.append(
-            RoleSurfaceDeclaration(
-                file_path=str(module.path),
-                class_name=class_name,
-                field_name=field_name,
-                line=line,
-                surface_tokens=surface_tokens,
-                role_tokens=role_tokens,
-            )
-        )
-
-    for node in _walk_nodes(module.module):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for statement in node.body:
-            if isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target, ast.Name
-            ):
-                add_field(node.name, statement.target.id, statement.lineno)
-            elif isinstance(statement, ast.Assign):
-                for target in statement.targets:
-                    if isinstance(target, ast.Name):
-                        add_field(node.name, target.id, statement.lineno)
-            elif (
-                isinstance(statement, ast.FunctionDef) and statement.name == "__init__"
-            ):
-                for child in _walk_nodes(statement):
-                    if isinstance(child, ast.Assign):
-                        for target in child.targets:
-                            if (
-                                isinstance(target, ast.Attribute)
-                                and isinstance(target.value, ast.Name)
-                                and target.value.id == "self"
-                            ):
-                                add_field(node.name, target.attr, child.lineno)
-                    elif (
-                        isinstance(child, ast.AnnAssign)
-                        and isinstance(child.target, ast.Attribute)
-                        and isinstance(child.target.value, ast.Name)
-                        and child.target.value.id == "self"
-                    ):
-                        add_field(node.name, child.target.attr, child.lineno)
-    return tuple(declarations)
-
-
-def _role_surface_call_name(call: ast.Call | None) -> str | None:
-    if call is None:
-        return None
-    return _call_name(call.func)
-
-
-def _role_surface_assignment_target_tokens(
-    parents: Sequence[ast.AST],
-    node: ast.AST,
-) -> tuple[str, ...]:
-    for parent_index in range(len(parents) - 1, -1, -1):
-        parent = parents[parent_index]
-        if isinstance(parent, ast.Assign) and active_path_descends_through(
-            parents, parent_index, parent.value, node
-        ):
-            return ROLE_SURFACE_TOKEN_PROJECTION.target_tokens(parent.targets)
-        if (
-            isinstance(parent, ast.AnnAssign)
-            and parent.value is not None
-            and active_path_descends_through(parents, parent_index, parent.value, node)
-        ):
-            return ROLE_SURFACE_TOKEN_PROJECTION.target_tokens((parent.target,))
-    return ()
-
-
-class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
-    def __init__(
-        self,
-        file_path: str,
-        field_names: frozenset[str] | None,
-    ) -> None:
-        super().__init__()
-        self.file_path = file_path
-        self.field_names = field_names
-        self.node_stack: list[ast.AST] = []
-        self.use_sites: list[RoleSurfaceUseSite] = []
-        self._seen: set[tuple[str, int, str, str, tuple[str, ...]]] = set()
-
-    def _includes_field_name(self, field_name: str) -> bool:
-        if self.field_names is not None:
-            return field_name in self.field_names
-        surface_tokens = ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(field_name)
-        return (
-            not field_name.startswith("_")
-            and len(surface_tokens) >= 2
-            and bool(ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(field_name))
-        )
-
-    def visit(self, node: ast.AST) -> None:
-        self.node_stack.append(node)
-        try:
-            super().visit(node)
-        finally:
-            self.node_stack.pop()
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        if self._includes_field_name(node.attr):
-            use_site = self._use_site_for_attribute(node)
-            if use_site is not None:
-                key = (
-                    use_site.field_name,
-                    use_site.line,
-                    use_site.symbol,
-                    use_site.operation_kind,
-                    use_site.context_tokens,
-                )
-                if key not in self._seen:
-                    self._seen.add(key)
-                    self.use_sites.append(use_site)
-        self.generic_visit(node)
-
-    def _use_site_for_attribute(self, node: ast.Attribute) -> RoleSurfaceUseSite | None:
-        return _role_surface_use_site_for_attribute(
-            node,
-            parents=self.node_stack[:-1],
-            file_path=self.file_path,
-            symbol=self.qualname,
-            field_names=self.field_names,
-        )
-
-
-def _role_surface_use_site_for_attribute(
-    node: ast.Attribute,
-    *,
-    parents: Sequence[ast.AST],
-    file_path: str,
-    symbol: str,
-    field_names: frozenset[str] | None,
-) -> RoleSurfaceUseSite | None:
-    if field_names is not None:
-        if node.attr not in field_names:
-            return None
-    else:
-        surface_tokens = ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(node.attr)
-        if (
-            node.attr.startswith("_")
-            or len(surface_tokens) < 2
-            or not ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(node.attr)
-        ):
-            return None
-    context_tokens: set[str] = set()
-    operation_kind: str | None = None
-
-    for parent_index in range(len(parents) - 1, -1, -1):
-        parent = parents[parent_index]
-        if isinstance(parent, ast.Subscript) and active_path_descends_through(
-            parents, parent_index, parent.value, node
-        ):
-            operation_kind = _ROLE_SURFACE_OPERATION_INDEXED
-            context_tokens.update(
-                ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.slice)
-            )
-            break
-        if isinstance(parent, ast.For) and active_path_descends_through(
-            parents, parent_index, parent.iter, node
-        ):
-            operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
-            context_tokens.update(
-                ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
-            )
-            break
-        if isinstance(parent, ast.comprehension) and active_path_descends_through(
-            parents, parent_index, parent.iter, node
-        ):
-            operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
-            context_tokens.update(
-                ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(parent.target)
-            )
-            break
-        if isinstance(parent, ast.keyword) and active_path_descends_through(
-            parents, parent_index, parent.value, node
-        ):
-            operation_kind = _ROLE_SURFACE_OPERATION_KEYWORD_FORWARDED
-            if parent.arg is not None:
-                context_tokens.update(
-                    ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(parent.arg)
-                )
-            break
-        if isinstance(parent, ast.Call):
-            call_name = _role_surface_call_name(parent)
-            if call_name in _ROLE_SURFACE_DRIFT_ITERATION_CALLS:
-                if call_name == "len":
-                    operation_kind = _ROLE_SURFACE_OPERATION_COUNTED
-                else:
-                    operation_kind = _ROLE_SURFACE_OPERATION_ITERATED
-                break
-
-    assigned_tokens = _role_surface_assignment_target_tokens(parents, node)
-    if assigned_tokens and operation_kind is None:
-        context_tokens.update(assigned_tokens)
-        operation_kind = _ROLE_SURFACE_OPERATION_ASSIGNED_FROM
-
-    if operation_kind not in _ROLE_SURFACE_DRIFT_STRUCTURAL_OPERATIONS:
-        return None
-
-    context_tokens = {
-        token
-        for token in context_tokens
-        if token not in _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS
-        and token not in _ROLE_SURFACE_PRESENTATION_CONTEXT_TOKENS
-    }
-    if not context_tokens:
-        return None
-    return RoleSurfaceUseSite(
-        file_path=file_path,
-        line=node.lineno,
-        symbol=symbol,
-        field_name=node.attr,
-        operation_kind=operation_kind,
-        context_tokens=tuple(sorted(context_tokens)),
-    )
-
-
-def _role_surface_use_sites(
-    module: ParsedModule,
-    field_names: frozenset[str] | None,
-) -> tuple[RoleSurfaceUseSite, ...]:
-    syntax_index = module_syntax_index(module.module)
-    use_sites: list[RoleSurfaceUseSite] = []
-    seen: set[tuple[str, int, str, str, tuple[str, ...]]] = set()
-    for node_index in syntax_index.node_indices_by_type.get(ast.Attribute, ()):
-        node = syntax_index.depth_first_nodes[node_index]
-        if not isinstance(node, ast.Attribute):
-            continue
-        scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
-        use_site = _role_surface_use_site_for_attribute(
-            node,
-            parents=syntax_index.ancestor_nodes(node_index),
-            file_path=str(module.path),
-            symbol=".".join((*scope.class_names, *scope.function_names)) or "<module>",
-            field_names=field_names,
-        )
-        if use_site is None:
-            continue
-        key = (
-            use_site.field_name,
-            use_site.line,
-            use_site.symbol,
-            use_site.operation_kind,
-            use_site.context_tokens,
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        use_sites.append(use_site)
-    return tuple(use_sites)
-
-
-_NATIVE_ROLE_SURFACE_ATTRIBUTE_QUERY = """
-(attribute attribute: (identifier) @field) @attribute
-"""
-_NATIVE_ROLE_SURFACE_STATEMENT_QUERY = """
-(expression_statement) @statement
-"""
-
-
-def _native_role_surface_direct_class(
-    node: object,
-) -> object | None:
-    """Return the native class directly owning one statement/function."""
-
-    parent = getattr(node, "parent", None)
-    if parent is not None and parent.type == "decorated_definition":
-        parent = parent.parent
-    if parent is None or parent.type != "block":
-        return None
-    owner = parent.parent
-    return owner if owner is not None and owner.type == "class_definition" else None
-
-
 def _native_role_surface_module(
     source_module: SourceModule,
 ) -> ParsedModule:
@@ -1362,174 +925,10 @@ def _native_role_surface_module(
     )
 
 
-def _native_role_surface_declarations(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-    field_names: frozenset[str],
-) -> tuple[RoleSurfaceDeclaration, ...]:
-    """Collect only declarations that can join a report-target field."""
-
-    declarations: list[RoleSurfaceDeclaration] = []
-    seen: set[tuple[str, str]] = set()
-
-    def add_field(class_name: str, field_name: str, line: int) -> None:
-        key = (class_name, field_name)
-        if key in seen or field_name not in field_names:
-            return
-        seen.add(key)
-        surface_tokens = ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(field_name)
-        role_tokens = ROLE_SURFACE_TOKEN_PROJECTION.semantic_tokens(field_name)
-        if field_name.startswith("_") or len(surface_tokens) < 2 or not role_tokens:
-            return
-        declarations.append(
-            RoleSurfaceDeclaration(
-                file_path=str(source_module.path),
-                class_name=class_name,
-                field_name=field_name,
-                line=line,
-                surface_tokens=surface_tokens,
-                role_tokens=role_tokens,
-            )
-        )
-
-    for statement_node in syntax_index.captures(
-        _NATIVE_ROLE_SURFACE_STATEMENT_QUERY
-    ).get("statement", ()):
-        class_node = _native_role_surface_direct_class(statement_node)
-        if class_node is None:
-            continue
-        statement_source = syntax_index.source_for(statement_node).decode("utf-8")
-        if not any(field_name in statement_source for field_name in field_names):
-            continue
-        statement = syntax_index.statement_for(statement_node)
-        if isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            add_field(
-                syntax_index.declared_name(class_node),
-                statement.target.id,
-                statement.lineno,
-            )
-        elif isinstance(statement, ast.Assign):
-            for target in statement.targets:
-                if isinstance(target, ast.Name):
-                    add_field(
-                        syntax_index.declared_name(class_node),
-                        target.id,
-                        statement.lineno,
-                    )
-
-    for function_node in syntax_index.common_captures().get("function", ()):
-        class_node = syntax_index.direct_enclosing_class(function_node)
-        if (
-            class_node is None
-            or syntax_index.declared_name(function_node) != "__init__"
-        ):
-            continue
-        function_source = syntax_index.source_for(function_node).decode("utf-8")
-        if not any(field_name in function_source for field_name in field_names):
-            continue
-        function = syntax_index.function_for(function_node)
-        for child in _walk_nodes(function):
-            if isinstance(child, ast.Assign):
-                targets = child.targets
-            elif isinstance(child, ast.AnnAssign):
-                targets = (child.target,)
-            else:
-                continue
-            for target in targets:
-                if (
-                    isinstance(target, ast.Attribute)
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "self"
-                ):
-                    add_field(
-                        syntax_index.declared_name(class_node),
-                        target.attr,
-                        child.lineno,
-                    )
-    return tuple(declarations)
-
-
-def _native_role_surface_use_sites(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-    field_names: frozenset[str],
-) -> tuple[RoleSurfaceUseSite, ...]:
-    """Replay only enclosing roots that contain a demanded attribute."""
-
-    root_functions: set[object] = set()
-    root_statements: set[object] = set()
-    for attribute in syntax_index.captures(_NATIVE_ROLE_SURFACE_ATTRIBUTE_QUERY).get(
-        "attribute", ()
-    ):
-        field_node = attribute.child_by_field_name("attribute")
-        if (
-            field_node is None
-            or syntax_index.source_for(field_node).decode("utf-8") not in field_names
-        ):
-            continue
-        scopes = syntax_index.named_scope_nodes(attribute)
-        root_function = next(
-            (scope for scope in scopes if scope.type == "function_definition"),
-            None,
-        )
-        if root_function is not None:
-            root_functions.add(root_function)
-            continue
-        current = attribute
-        while current.parent is not None:
-            parent = current.parent
-            if parent == syntax_index.tree.root_node:
-                break
-            if (
-                parent.type == "block"
-                and parent.parent is not None
-                and parent.parent.type == "class_definition"
-            ):
-                break
-            current = parent
-        root_statements.add(current)
-
-    use_sites: list[RoleSurfaceUseSite] = []
-    for function_node in sorted(
-        root_functions,
-        key=lambda node: (node.start_byte, -node.end_byte),
-    ):
-        visitor = _RoleSurfaceUseVisitor(str(source_module.path), field_names)
-        scopes = syntax_index.named_scope_nodes(function_node)
-        visitor.class_stack.extend(
-            syntax_index.declared_name(scope)
-            for scope in scopes
-            if scope.type == "class_definition"
-        )
-        visitor.function_stack.extend(
-            syntax_index.declared_name(scope)
-            for scope in scopes
-            if scope.type == "function_definition"
-        )
-        visitor.visit(syntax_index.function_for(function_node))
-        use_sites.extend(visitor.use_sites)
-    for statement_node in sorted(
-        root_statements,
-        key=lambda node: (node.start_byte, -node.end_byte),
-    ):
-        visitor = _RoleSurfaceUseVisitor(str(source_module.path), field_names)
-        visitor.class_stack.extend(
-            syntax_index.declared_name(scope)
-            for scope in syntax_index.named_scope_nodes(statement_node)
-            if scope.type == "class_definition"
-        )
-        visitor.visit(syntax_index.statement_for(statement_node))
-        use_sites.extend(visitor.use_sites)
-    return tuple(use_sites)
-
-
 @dataclass(frozen=True)
 class CompactRoleSurfaceProjectionDemand:
-    """Report-target keys that can participate in either global role join."""
+    """Report-target keys that can participate in the global role-case join."""
 
-    field_names: frozenset[str]
     generic_axis_tokens: frozenset[str]
     generic_case_tokens: frozenset[str]
     minimum_generic_case_count: int
@@ -1547,11 +946,6 @@ def _role_surface_report_demand(
         if isinstance(item, CompactRoleSurfaceModuleProjection)
     )
     return CompactRoleSurfaceProjectionDemand(
-        field_names=frozenset(
-            fact.field_name
-            for projection in projections
-            for fact in (*projection.declarations, *projection.possible_use_sites)
-        ),
         generic_axis_tokens=frozenset(
             token
             for projection in projections
@@ -1576,16 +970,6 @@ def _cached_role_surface_demand_projection(
         raise TypeError("role-surface projection demand has the wrong authority type")
     return tuple(
         CompactRoleSurfaceModuleProjection(
-            declarations=tuple(
-                fact
-                for fact in item.declarations
-                if fact.field_name in demand.field_names
-            ),
-            possible_use_sites=tuple(
-                fact
-                for fact in item.possible_use_sites
-                if fact.field_name in demand.field_names
-            ),
             generic_role_case_table_sites=tuple(
                 site
                 for site in item.generic_role_case_table_sites
@@ -1604,7 +988,6 @@ def _native_demanded_role_surface_projection(
     source_module: SourceModule,
     syntax_index: NativePythonSyntaxIndex,
     *,
-    field_names: frozenset[str],
     generic_axis_tokens: frozenset[str],
     generic_case_tokens: frozenset[str] = frozenset(),
     minimum_generic_case_count: int = 2,
@@ -1614,10 +997,6 @@ def _native_demanded_role_surface_projection(
     if not syntax_index.is_complete:
         return None
     source_text = source_module.source
-    local_field_names = frozenset(
-        field_name for field_name in field_names if field_name in source_text
-    )
-    has_field_demand = bool(local_field_names)
     module_axis_source = " ".join(source_module.path.with_suffix("").parts).casefold()
     folded_source = source_text.casefold()
     has_generic_demand = bool(generic_axis_tokens) and any(
@@ -1687,24 +1066,6 @@ def _native_demanded_role_surface_projection(
             ):
                 generic_sites.append(site)
     return CompactRoleSurfaceModuleProjection(
-        declarations=(
-            _native_role_surface_declarations(
-                source_module,
-                syntax_index,
-                local_field_names,
-            )
-            if has_field_demand
-            else ()
-        ),
-        possible_use_sites=(
-            _native_role_surface_use_sites(
-                source_module,
-                syntax_index,
-                local_field_names,
-            )
-            if has_field_demand
-            else ()
-        ),
         generic_role_case_table_sites=tuple(
             sorted(generic_sites, key=lambda item: (item.file_path, item.line))
         ),
@@ -1721,7 +1082,6 @@ def _native_demanded_role_surface_projection_items(
     projection = _native_demanded_role_surface_projection(
         source_module,
         syntax_index,
-        field_names=demand.field_names,
         generic_axis_tokens=demand.generic_axis_tokens,
         generic_case_tokens=demand.generic_case_tokens,
         minimum_generic_case_count=demand.minimum_generic_case_count,
@@ -1735,11 +1095,6 @@ def _ast_demanded_role_surface_projection_items(
 ) -> list[CompactRoleSurfaceModuleProjection]:
     if not isinstance(demand, CompactRoleSurfaceProjectionDemand):
         raise TypeError("role-surface projection demand has the wrong authority type")
-    local_field_names = frozenset(
-        field_name
-        for field_name in demand.field_names
-        if field_name in parsed_module.source
-    )
     module_axis_source = " ".join(
         parsed_module.path.with_suffix("").parts
     ).casefold()
@@ -1755,22 +1110,6 @@ def _ast_demanded_role_surface_projection_items(
         )
     return [
         CompactRoleSurfaceModuleProjection(
-            declarations=(
-                tuple(
-                    declaration
-                    for declaration in _role_surface_class_field_declarations(
-                        parsed_module
-                    )
-                    if declaration.field_name in local_field_names
-                )
-                if local_field_names
-                else ()
-            ),
-            possible_use_sites=(
-                _role_surface_use_sites(parsed_module, local_field_names)
-                if local_field_names
-                else ()
-            ),
             generic_role_case_table_sites=(
                 tuple(
                     site
@@ -1813,286 +1152,11 @@ class CompactRoleSurfaceModuleProjectionFamily(
         del cls
         return [
             CompactRoleSurfaceModuleProjection(
-                declarations=_role_surface_class_field_declarations(parsed_module),
-                possible_use_sites=_role_surface_use_sites(parsed_module, None),
                 generic_role_case_table_sites=(
                     _generic_role_case_table_sites_with_minimum(parsed_module, 1)
                 ),
             )
         ]
-
-
-def _role_surface_use_descends_from_declaration(
-    use_site: RoleSurfaceUseSite,
-    declaration_symbols: frozenset[str],
-    class_index: CompactClassFamilyIndex,
-    class_symbols_by_file_and_qualname: dict[tuple[str, str], str],
-) -> bool:
-    """Recognize inherited-field uses as descent through the declaring class.
-
-    A dataclass field is owned by the class that declares it, but Python exposes
-    that field on every subclass.  Treating a subclass's forwarding use as a new
-    surface loses the inheritance edge and creates a false mirror signal.
-    """
-    owner_qualname = use_site.symbol.split(":", 1)[0]
-    owner_symbol = None
-    while owner_qualname:
-        owner_symbol = class_symbols_by_file_and_qualname.get(
-            (use_site.file_path, owner_qualname)
-        )
-        if owner_symbol is not None or "." not in owner_qualname:
-            break
-        owner_qualname = owner_qualname.rsplit(".", 1)[0]
-    if owner_symbol is None:
-        return False
-    return bool(
-        declaration_symbols & frozenset(class_index.ancestor_symbols(owner_symbol))
-    )
-
-
-def _role_surface_declaration_symbols(
-    declarations: Sequence[RoleSurfaceDeclaration],
-    class_symbols_by_file_and_simple_name: dict[tuple[str, str], frozenset[str]],
-) -> frozenset[str]:
-    """Resolve each field owner once instead of rescanning all classes per use."""
-
-    return frozenset(
-        symbol
-        for declaration in declarations
-        for symbol in class_symbols_by_file_and_simple_name.get(
-            (declaration.file_path, declaration.class_name),
-            (),
-        )
-    )
-
-
-def _role_surface_class_symbols_by_file_and_simple_name(
-    class_index: CompactClassFamilyIndex,
-) -> dict[tuple[str, str], frozenset[str]]:
-    grouped: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for symbol, indexed_class in class_index.classes_by_symbol.items():
-        grouped[(indexed_class.file_path, indexed_class.simple_name)].add(symbol)
-    return {key: frozenset(symbols) for key, symbols in grouped.items()}
-
-
-def _role_surface_drift_candidates_from_facts(
-    declarations: Iterable[RoleSurfaceDeclaration],
-    use_sites: Iterable[RoleSurfaceUseSite],
-    *,
-    class_index: CompactClassFamilyIndex,
-    class_symbols_by_file_and_qualname: dict[tuple[str, str], str],
-    class_symbols_by_file_and_simple_name: dict[tuple[str, str], frozenset[str]],
-    config: DetectorConfig,
-) -> tuple[RoleSurfaceDriftCandidate, ...]:
-    declarations_by_field: dict[str, list[RoleSurfaceDeclaration]] = defaultdict(list)
-    for declaration in declarations:
-        declarations_by_field[declaration.field_name].append(declaration)
-    if not declarations_by_field:
-        return ()
-
-    field_names = frozenset(declarations_by_field)
-    uses_by_field: dict[str, list[RoleSurfaceUseSite]] = defaultdict(list)
-    for use_site in use_sites:
-        if use_site.field_name in field_names:
-            uses_by_field[use_site.field_name].append(use_site)
-
-    candidates: list[RoleSurfaceDriftCandidate] = []
-    for field_name, declarations in sorted(declarations_by_field.items()):
-        declaration_symbols = _role_surface_declaration_symbols(
-            declarations,
-            class_symbols_by_file_and_simple_name,
-        )
-        if field_name in uses_by_field:
-            field_use_sites = tuple(
-                use_site
-                for use_site in uses_by_field[field_name]
-                if not _role_surface_use_descends_from_declaration(
-                    use_site,
-                    declaration_symbols,
-                    class_index,
-                    class_symbols_by_file_and_qualname,
-                )
-            )
-        else:
-            field_use_sites = ()
-        use_sites = tuple(
-            sorted(
-                field_use_sites,
-                key=lambda item: (
-                    item.file_path,
-                    item.line,
-                    item.symbol,
-                    item.operation_kind,
-                ),
-            )
-        )
-        if len(use_sites) < config.min_role_drift_use_sites:
-            continue
-        surface_tokens = frozenset(
-            token
-            for declaration in declarations
-            for token in declaration.surface_tokens
-        )
-        declared_role_tokens = tuple(
-            sorted(
-                {
-                    token
-                    for declaration in declarations
-                    for token in declaration.role_tokens
-                }
-            )
-        )
-        if not declared_role_tokens:
-            continue
-        if set(declared_role_tokens) & _ROLE_SURFACE_BROAD_CARRIER_TOKENS:
-            continue
-        context_token_counts = Counter(
-            token
-            for use_site in use_sites
-            for token in use_site.context_tokens
-            if token not in surface_tokens
-        )
-        observed_role_tokens = tuple(
-            token
-            for token, count in sorted(
-                context_token_counts.items(), key=lambda item: (-item[1], item[0])
-            )
-            if count >= config.min_role_drift_token_support
-        )
-        if not observed_role_tokens:
-            continue
-        operation_kinds = tuple(
-            sorted({use_site.operation_kind for use_site in use_sites})
-        )
-        if operation_kinds == (_ROLE_SURFACE_OPERATION_ASSIGNED_FROM,):
-            continue
-        class_names = tuple(
-            sorted({declaration.class_name for declaration in declarations})
-        )
-        candidate = RoleSurfaceDriftCandidate(
-            file_path=declarations[0].file_path,
-            line=min(declaration.line for declaration in declarations),
-            class_names=class_names,
-            field_name=field_name,
-            declared_role_tokens=declared_role_tokens,
-            observed_role_tokens=observed_role_tokens,
-            operation_kinds=operation_kinds,
-            declarations=tuple(declarations),
-            use_sites=use_sites,
-        )
-        if candidate.compression_certificate.pays_rent:
-            candidates.append(candidate)
-    return tuple(
-        sorted(
-            candidates, key=lambda item: (item.file_path, item.line, item.field_name)
-        )
-    )
-
-
-class RoleSurfaceDriftDetector(
-    CompactMultiProjectionCandidateDetector[RoleSurfaceDriftCandidate],
-):
-    module_projection_families = (
-        CompactRoleSurfaceModuleProjectionFamily,
-        CompactModuleClassProjectionFamily,
-    )
-    compact_shared_group_context_builder = staticmethod(
-        compact_class_index_from_projection_groups
-    )
-    compact_report_class_header_core_safe = True
-    ssot_authority_boundary = True
-    finding_spec = high_confidence_certified_spec(
-        PatternId.NOMINAL_WITNESS_CARRIER,
-        "Role-specific surface is carrying broader latent role semantics",
-        "A field or API surface whose name declares one concrete role is used by several structural operations under a broader observed role family. That lets the carrier drift into a generic abstraction without a neutral boundary, so later consumers can confuse axes and provenance.",
-        "role-neutral carrier or nominal witness for the broader observed role family",
-        "same role-specific field is indexed, iterated, counted, or forwarded under broader role contexts",
-        _NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-    )
-    @staticmethod
-    def _candidates_with_class_index(
-        role_projections: tuple[CompactRoleSurfaceModuleProjection, ...],
-        class_index: CompactClassFamilyIndex,
-        config: DetectorConfig,
-    ) -> tuple[RoleSurfaceDriftCandidate, ...]:
-        return _role_surface_drift_candidates_from_facts(
-            (
-                declaration
-                for projection in role_projections
-                for declaration in projection.declarations
-            ),
-            (
-                use_site
-                for projection in role_projections
-                for use_site in projection.possible_use_sites
-            ),
-            class_index=class_index,
-            class_symbols_by_file_and_qualname={
-                (indexed_class.file_path, indexed_class.qualname): symbol
-                for symbol, indexed_class in class_index.classes_by_symbol.items()
-            },
-            class_symbols_by_file_and_simple_name=(
-                _role_surface_class_symbols_by_file_and_simple_name(class_index)
-            ),
-            config=config,
-        )
-
-    def _candidates_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> Sequence[RoleSurfaceDriftCandidate]:
-        role_projections = cast(
-            tuple[CompactRoleSurfaceModuleProjection, ...],
-            projections_by_family[CompactRoleSurfaceModuleProjectionFamily],
-        )
-        return self._candidates_with_class_index(
-            role_projections,
-            compact_class_index_from_projection_groups(projections_by_family, config),
-            config,
-        )
-
-    def _candidates_from_compact_projection_groups_context(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> Sequence[RoleSurfaceDriftCandidate]:
-        if not isinstance(context, CompactClassFamilyIndex):
-            raise TypeError("shared compact class index is unavailable")
-        role_projections = cast(
-            tuple[CompactRoleSurfaceModuleProjection, ...],
-            projections_by_family[CompactRoleSurfaceModuleProjectionFamily],
-        )
-        return self._candidates_with_class_index(role_projections, context, config)
-
-    def _finding_for_candidate(
-        self, candidate: RoleSurfaceDriftCandidate
-    ) -> RefactorFinding:
-        declared = ", ".join(candidate.declared_role_tokens)
-        observed = ", ".join(candidate.observed_role_tokens)
-        operations = ", ".join(candidate.operation_kinds)
-        classes = ", ".join(candidate.class_names)
-        return self.build_finding(
-            (
-                f"`{candidate.field_name}` on {classes} declares role token(s) "
-                f"{declared}, but structural uses ({operations}) repeatedly "
-                f"introduce broader role token(s) {observed}."
-            ),
-            candidate.evidence,
-            scaffold=candidate.scaffold,
-            codemod_patch=candidate.codemod_patch,
-            compression_certificate=candidate.compression_certificate,
-            metrics=FieldFamilyMetrics(
-                class_count=len(candidate.class_names),
-                field_count=1,
-                class_names=candidate.class_names,
-                field_names=(candidate.field_name,),
-                execution_level=FieldFamilyRelationLevel.ROLE_SURFACE_USE_GRAPH.value,
-                dataclass_count=0,
-            ),
-        )
 
 
 class GenericRoleCaseTableDetector(

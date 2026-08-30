@@ -589,14 +589,6 @@ class DetectorConfig:
         8,
         "Minimum branch count before surfacing a branch-cluster under-abstraction finding.",
     )
-    min_role_drift_use_sites: int = detector_config_option(
-        2,
-        "Minimum structurally broad use sites before surfacing role-surface drift.",
-    )
-    min_role_drift_token_support: int = detector_config_option(
-        2,
-        "Minimum repeated observed role-token support before surfacing role-surface drift.",
-    )
     min_generic_role_case_table_owners: int = detector_config_option(
         2,
         "Minimum independent owners sharing a generic role-case table before surfacing it.",
@@ -10596,7 +10588,6 @@ class FieldFamilyRelationLevel(StrEnum):
 
     EXISTING_NOMINAL_AUTHORITY = "existing_nominal_authority"
     IMPLEMENTATION_NEUTRAL_NOMINAL_ROOT = "implementation_neutral_nominal_root"
-    ROLE_SURFACE_USE_GRAPH = "role_surface_use_graph"
 
 
 @dataclass(frozen=True)

@@ -470,7 +470,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=10,
             ),
             _impact_ranking_finding(
-                detector_id="role_surface_drift",
+                detector_id="generic_role_case_table",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=20,
@@ -520,7 +520,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=10,
             ),
             _impact_ranking_finding(
-                detector_id="role_surface_drift",
+                detector_id="generic_role_case_table",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=20,
@@ -10351,51 +10351,6 @@ def test_prefixed_role_field_bundle_synthesizes_role_carriers(
     )
 
 
-def test_detects_role_surface_drift_from_plane_indexed_channel_surface(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/provenance.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass SourceProvenance:\n    channel_source_component_metadata: tuple[dict[str, str], ...]\n\n\ndef stream_plane(provenance, plane_index):\n    plane_metadata = provenance.channel_source_component_metadata[plane_index]\n    return plane_metadata\n\n\ndef materialize_plane(provenance, plane_index):\n    return RoiTarget(\n        plane_metadata=provenance.channel_source_component_metadata[plane_index]\n    )\n\n\ndef display_axis(provenance, axis_index):\n    axis_metadata = provenance.channel_source_component_metadata[axis_index]\n    return axis_metadata\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "role_surface_drift"
-        )
-    )
-    assert finding.pattern_id == PatternId.NOMINAL_WITNESS_CARRIER
-    assert "channel_source_component_metadata" in finding.summary
-    assert "channel" in finding.summary
-    assert "plane" in finding.summary
-    assert "indexed" in finding.summary
-    assert "role-neutral" in (finding.codemod_patch or "")
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
-def test_detects_role_surface_drift_without_project_specific_tokens(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/archive.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ExportArchive:\n    csv_destination_records: tuple[object, ...]\n\n\ndef format_payload(archive, format_index):\n    format_record = archive.csv_destination_records[format_index]\n    return format_record\n\n\ndef route_format(archive, format_index):\n    return Writer(format_record=archive.csv_destination_records[format_index])\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "role_surface_drift"
-        )
-    )
-    assert "csv_destination_records" in finding.summary
-    assert "format" in finding.summary
-    assert "csv" in finding.summary
-
-
 def test_boundary_local_wrapper_collapse_detects_renamed_scope_fanout(
     tmp_path: Path,
 ) -> None:
@@ -10433,18 +10388,6 @@ def test_boundary_local_wrapper_collapse_ignores_completed_scope_collapse(
     )
 
 
-def test_role_surface_drift_ignores_role_specific_channel_usage(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/provenance.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass SourceProvenance:\n    channel_source_component_metadata: tuple[dict[str, str], ...]\n\n\ndef stream_channel(provenance, channel_index):\n    channel_metadata = provenance.channel_source_component_metadata[channel_index]\n    return channel_metadata\n\n\ndef materialize_channel(provenance, channel_index):\n    return ChannelTarget(\n        channel_metadata=provenance.channel_source_component_metadata[channel_index]\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
-
-
 def test_inherited_dataclass_field_forwarding_is_semantic_descent(
     tmp_path: Path,
 ) -> None:
@@ -10466,11 +10409,7 @@ def test_inherited_dataclass_field_forwarding_is_semantic_descent(
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id
-        in {
-            "role_surface_drift",
-            "semantic_mirror_without_descent",
-        }
+        finding.detector_id == "semantic_mirror_without_descent"
         and "package_source_root" in finding.summary
         for finding in findings
     )
@@ -10493,38 +10432,10 @@ def test_nested_inherited_dataclass_field_forwarding_is_semantic_descent(
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id
-        in {
-            "role_surface_drift",
-            "semantic_mirror_without_descent",
-        }
+        finding.detector_id == "semantic_mirror_without_descent"
         and "package_source_root" in finding.summary
         for finding in findings
     )
-
-
-def test_role_surface_drift_ignores_explicit_semantics_carrier(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/viewer.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ViewerRequest:\n    component_axis_semantics: object\n\n\ndef project_layout(request):\n    layout = request.component_axis_semantics.layout\n    return layout\n\n\ndef color_policy(request):\n    return Target(\n        color_role=request.component_axis_semantics.role_policy,\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
-
-
-def test_role_surface_drift_ignores_candidate_renderer_presentation_sink(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/detector.py",
-        "\nclass CandidateFindingRenderer:\n    def __init__(self, **kwargs):\n        self.kwargs = kwargs\n\n\nclass OrchestrationMetrics:\n    def __init__(self, **kwargs):\n        self.kwargs = kwargs\n\n\nclass NonNominalCandidate:\n    line_count: int\n    call_site_count: int\n    placement_plan: object\n\n\nfinding_renderer = CandidateFindingRenderer(\n    summary=lambda candidate: f'{candidate.line_count} {candidate.call_site_count}',\n    scaffold=lambda candidate: f'{candidate.placement_plan}',\n    codemod_patch=lambda candidate: f'{candidate.placement_plan}',\n    metrics=lambda candidate: OrchestrationMetrics(\n        function_line_count=candidate.line_count,\n        call_site_count=candidate.call_site_count,\n    ),\n)\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
 
 
 def test_detects_generic_role_case_table_under_shared_axis(tmp_path: Path) -> None:
@@ -21366,7 +21277,7 @@ def test_semantic_gate_promotes_ssot_findings_over_wrapper_cleanup_without_candi
         "same fact family has multiple writable surfaces",
     )
     critical = spec.build(
-        "role_surface_drift",
+        "generic_role_case_table",
         "`payload` declares one role but is used as another authority surface.",
         (SourceLocation("module.py", 10, "Scope.payload"),),
     )
