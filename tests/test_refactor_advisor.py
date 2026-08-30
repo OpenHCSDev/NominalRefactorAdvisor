@@ -8705,38 +8705,6 @@ def test_detects_typing_protocol_contracts(tmp_path: Path) -> None:
     assert "ContractName.register" in (finding.scaffold or "")
 
 
-def test_detects_role_guarded_surface_access_for_role_owned_semantics(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/roles.py",
-        "\nclass AvoidWidgetsWindow:\n    def position_avoid_widgets(self):\n        raise NotImplementedError\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer.py",
-        "\nfrom pkg.roles import AvoidWidgetsWindow\n\n\ndef place_window(window):\n    if isinstance(window, AvoidWidgetsWindow):\n        return tuple(window.position_avoid_widgets())\n    return ()\n\n\ndef inspect_window(window):\n    if isinstance(window, AvoidWidgetsWindow):\n        return window.windowTitle()\n    return None\n",
-    )
-
-    findings = analyze_path(tmp_path)
-
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "role_guarded_surface_access"
-        )
-    )
-    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
-    assert "place_window" in finding.summary
-    assert "position_avoid_widgets" in finding.summary
-    assert "inspect_window" not in finding.summary
-    assert "Inheritance is appropriate" in finding.why
-    assert "role-owned semantics" in finding.title
-    assert "role-typed" in (finding.codemod_patch or "")
-    assert "pass that value/request explicitly" in (finding.codemod_patch or "")
-
 
 def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
     branch_body = "\n".join(

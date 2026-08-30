@@ -2816,563 +2816,11 @@ class IsinstanceFamilyScatterDetector(PerModuleIssueDetector):
         return findings
 
 
-@dataclass(frozen=True, slots=True)
-class RoleGuardedSurfaceAccessCandidate(RuntimeSubjectFunctionCandidate):
-    role_type_name: str
-    guard_expression: str
-    accessed_members: tuple[str, ...]
-    declared_members: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class CompactRoleGuardedAccessFact(RuntimeSubjectFunctionCandidate):
-    role_type_name: str
-    guard_expression: str
-    accessed_members: tuple[str, ...]
-
-
-def _declared_class_surface_members(node: ast.ClassDef) -> tuple[str, ...]:
-    members: set[str] = set()
-    for statement in node.body:
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not statement.name.startswith("__"):
-                members.add(statement.name)
-            continue
-        if isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            members.add(statement.target.id)
-            continue
-        if isinstance(statement, ast.Assign):
-            for target in statement.targets:
-                if isinstance(target, ast.Name):
-                    members.add(target.id)
-    return tuple(sorted(members))
-
 
 def _stable_text_digest(value: str) -> str:
     return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
 
-def _isinstance_guard_bindings(
-    test: ast.AST,
-) -> tuple[tuple[str, str, str], ...]:
-    bindings: list[tuple[str, str, str]] = []
-    for node in ast.walk(test):
-        if not (
-            isinstance(node, ast.Call)
-            and len(node.args) == 2
-            and not node.keywords
-            and _ast_terminal_name(node.func) == "isinstance"
-        ):
-            continue
-        type_names = _isinstance_scatter_type_names(node.args[1])
-        if len(type_names) == 0:
-            continue
-        subject_expression = ast.unparse(node.args[0])
-        guard_expression = ast.unparse(node)
-        bindings.extend(
-            (subject_expression, type_name, guard_expression)
-            for type_name in type_names
-        )
-    return tuple(bindings)
-
-
-def _accessed_members_by_subject_expression(
-    statements: Sequence[ast.stmt],
-    subject_expressions: frozenset[str],
-) -> dict[str, tuple[str, ...]]:
-    accessed_by_subject: dict[str, set[str]] = defaultdict(set)
-
-    class Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            del node
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            del node
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            del node
-
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            subject_expression = ast.unparse(node.value)
-            if subject_expression in subject_expressions:
-                accessed_by_subject[subject_expression].add(node.attr)
-            self.generic_visit(node)
-
-    visitor = Visitor()
-    for statement in statements:
-        visitor.visit(statement)
-    return {
-        subject_expression: sorted_tuple(accessed_members)
-        for subject_expression, accessed_members in accessed_by_subject.items()
-    }
-
-
-
-
-@dataclass(frozen=True, slots=True)
-class CompactRoleGuardedSurfaceModuleProjection:
-    class_surface_members_by_type_name: tuple[tuple[str, tuple[str, ...]], ...]
-    role_guarded_accesses: tuple[CompactRoleGuardedAccessFact, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class CompactRoleGuardedSurfaceProjectionDemand:
-    """Role declarations needed to resolve report-local guarded accesses."""
-
-    role_type_names: frozenset[str]
-
-
-def _role_guarded_surface_report_demand(
-    target_items: tuple[object, ...],
-    config: object,
-) -> CompactRoleGuardedSurfaceProjectionDemand:
-    del config
-    return CompactRoleGuardedSurfaceProjectionDemand(
-        role_type_names=frozenset(
-            access.role_type_name
-            for item in target_items
-            if isinstance(item, CompactRoleGuardedSurfaceModuleProjection)
-            for access in item.role_guarded_accesses
-        )
-    )
-
-
-def _role_guarded_surface_demand_includes_context(demand: object) -> bool:
-    return isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand) and bool(
-        demand.role_type_names
-    )
-
-
-def _cached_role_guarded_surface_demand_projection(
-    items: tuple[object, ...],
-    demand: object,
-) -> tuple[object, ...]:
-    if not isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand):
-        raise TypeError("role-guarded demand has the wrong authority type")
-    return tuple(
-        CompactRoleGuardedSurfaceModuleProjection(
-            class_surface_members_by_type_name=tuple(
-                (name, members)
-                for name, members in item.class_surface_members_by_type_name
-                if name in demand.role_type_names
-            ),
-            role_guarded_accesses=(),
-        )
-        for item in items
-        if isinstance(item, CompactRoleGuardedSurfaceModuleProjection)
-    )
-
-
-_NATIVE_ROLE_GUARDED_AST_LIKE_NODE_TYPES = frozenset(
-    {
-        "function_definition",
-        "class_definition",
-        "if_statement",
-        "elif_clause",
-        "for_statement",
-        "while_statement",
-        "try_statement",
-        "with_statement",
-        "match_statement",
-        "return_statement",
-        "expression_statement",
-        "assignment",
-        "augmented_assignment",
-        "assert_statement",
-        "raise_statement",
-        "delete_statement",
-    }
-)
-
-
-def _native_role_guarded_surface_projection(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[CompactRoleGuardedSurfaceModuleProjection] | None:
-    """Project role guards from native syntax, with exact AST fallback."""
-
-    if not syntax_index.is_complete:
-        return None
-    captures = syntax_index.common_captures()
-    try:
-        surfaces: dict[str, set[str]] = defaultdict(set)
-        for syntax_node in captures.get("class", ()):
-            statement = syntax_index.statement_for(syntax_node)
-            if not isinstance(statement, ast.ClassDef):
-                return None
-            members = _declared_class_surface_members(statement)
-            if not members:
-                continue
-            surfaces[statement.name].update(members)
-            surfaces[f"{source_module.module_name}.{statement.name}"].update(members)
-
-        function_order: list[tuple[int, int, str]] = []
-        for function in sorted(
-            captures.get("function", ()),
-            key=lambda node: node.start_byte,
-        ):
-            class_names = tuple(
-                syntax_index.declared_name(scope)
-                for scope in syntax_index.named_scope_nodes(function)
-                if scope.type == "class_definition"
-            )
-            qualname = ".".join((*class_names, syntax_index.declared_name(function)))
-            function_order.append((function.start_byte, function.end_byte, qualname))
-
-        observations_by_function: dict[
-            tuple[int, int],
-            list[
-                tuple[
-                    int,
-                    int,
-                    int,
-                    tuple[tuple[str, str, str], ...],
-                    dict[str, tuple[str, ...]],
-                ]
-            ],
-        ] = defaultdict(list)
-        conditional_nodes = (
-            *captures.get("if", ()),
-            *captures.get("elif", ()),
-        )
-        for ordinal, syntax_node in enumerate(
-            sorted(conditional_nodes, key=lambda node: node.start_byte),
-            start=1,
-        ):
-            if b"isinstance" not in syntax_index.source_for(syntax_node):
-                continue
-            statement = syntax_index.statement_for(syntax_node, elif_as_if=True)
-            if not isinstance(statement, ast.If):
-                return None
-            bindings = _isinstance_guard_bindings(statement.test)
-            if not bindings:
-                continue
-            accessed_by_subject = _accessed_members_by_subject_expression(
-                statement.body,
-                frozenset(subject for subject, _, _ in bindings),
-            )
-            active_functions = tuple(
-                scope
-                for scope in syntax_index.named_scope_nodes(syntax_node)
-                if scope.type == "function_definition"
-            )
-            current = syntax_node.parent
-            relative_depth = 0
-            depth_by_function: dict[tuple[int, int], int] = {}
-            while current is not None:
-                if current.type in _NATIVE_ROLE_GUARDED_AST_LIKE_NODE_TYPES:
-                    relative_depth += 1
-                if current.type == "function_definition":
-                    depth_by_function[current.start_byte, current.end_byte] = (
-                        relative_depth
-                    )
-                current = current.parent
-            for function in active_functions:
-                function_key = (function.start_byte, function.end_byte)
-                observations_by_function[function_key].append(
-                    (
-                        depth_by_function[function_key],
-                        ordinal,
-                        statement.lineno,
-                        bindings,
-                        accessed_by_subject,
-                    )
-                )
-
-        facts = tuple(
-            CompactRoleGuardedAccessFact(
-                file_path=str(source_module.path),
-                line=line,
-                qualname=qualname,
-                subject_expression=subject_expression,
-                role_type_name=type_name,
-                guard_expression=guard_expression,
-                accessed_members=accessed_by_subject.get(subject_expression, ()),
-            )
-            for start_byte, end_byte, qualname in function_order
-            for _, _, line, bindings, accessed_by_subject in sorted(
-                observations_by_function.get((start_byte, end_byte), ()),
-                key=lambda item: (item[0], item[1]),
-            )
-            for subject_expression, type_name, guard_expression in bindings
-        )
-        return [
-            CompactRoleGuardedSurfaceModuleProjection(
-                class_surface_members_by_type_name=tuple(
-                    sorted(
-                        (name, tuple(sorted(members)))
-                        for name, members in surfaces.items()
-                    )
-                ),
-                role_guarded_accesses=facts,
-            )
-        ]
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
-def _native_demanded_role_guarded_surface_projection(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-    demand: object,
-) -> list[CompactRoleGuardedSurfaceModuleProjection] | None:
-    """Retain only context declarations that can resolve report-local guards."""
-
-    if not isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand):
-        raise TypeError("role-guarded demand has the wrong authority type")
-    if not syntax_index.is_complete:
-        return None
-    if not demand.role_type_names:
-        return [CompactRoleGuardedSurfaceModuleProjection((), ())]
-    try:
-        surfaces: dict[str, set[str]] = defaultdict(set)
-        for syntax_node in syntax_index.common_captures().get("class", ()):
-            simple_name = syntax_index.declared_name(syntax_node)
-            names = (simple_name, f"{source_module.module_name}.{simple_name}")
-            if not demand.role_type_names.intersection(names):
-                continue
-            statement = syntax_index.statement_for(syntax_node)
-            if not isinstance(statement, ast.ClassDef):
-                return None
-            members = _declared_class_surface_members(statement)
-            for name in names:
-                if name in demand.role_type_names and members:
-                    surfaces[name].update(members)
-        return [
-            CompactRoleGuardedSurfaceModuleProjection(
-                class_surface_members_by_type_name=tuple(
-                    sorted(
-                        (name, tuple(sorted(members)))
-                        for name, members in surfaces.items()
-                    )
-                ),
-                role_guarded_accesses=(),
-            )
-        ]
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
-def _ast_demanded_role_guarded_surface_projection(
-    parsed_module: ParsedModule,
-    demand: object,
-) -> list[CompactRoleGuardedSurfaceModuleProjection]:
-    if not isinstance(demand, CompactRoleGuardedSurfaceProjectionDemand):
-        raise TypeError("role-guarded demand has the wrong authority type")
-    surfaces: dict[str, set[str]] = defaultdict(set)
-    demanded_simple_names = frozenset(
-        name.rsplit(".", 1)[-1] for name in demand.role_type_names
-    )
-    if demand.role_type_names and any(
-        name in parsed_module.source for name in demanded_simple_names
-    ):
-        for node in ast.walk(parsed_module.module):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            names = (node.name, f"{parsed_module.module_name}.{node.name}")
-            if not demand.role_type_names.intersection(names):
-                continue
-            members = _declared_class_surface_members(node)
-            for name in names:
-                if name in demand.role_type_names and members:
-                    surfaces[name].update(members)
-    return [
-        CompactRoleGuardedSurfaceModuleProjection(
-            class_surface_members_by_type_name=tuple(
-                sorted(
-                    (name, tuple(sorted(members))) for name, members in surfaces.items()
-                )
-            ),
-            role_guarded_accesses=(),
-        )
-    ]
-
-
-class CompactRoleGuardedSurfaceModuleProjectionFamily(
-    CollectedFamily[CompactRoleGuardedSurfaceModuleProjection]
-):
-    item_type = CompactRoleGuardedSurfaceModuleProjection
-    source_collector = staticmethod(_native_role_guarded_surface_projection)
-    source_demand_collector = staticmethod(
-        _native_demanded_role_guarded_surface_projection
-    )
-    ast_demand_collector = staticmethod(_ast_demanded_role_guarded_surface_projection)
-    report_demand_builder = staticmethod(_role_guarded_surface_report_demand)
-    report_demand_context_predicate = staticmethod(
-        _role_guarded_surface_demand_includes_context
-    )
-    cached_demand_projector = staticmethod(
-        _cached_role_guarded_surface_demand_projection
-    )
-
-    @classmethod
-    def collect(
-        cls,
-        parsed_module: ParsedModule,
-    ) -> list[CompactRoleGuardedSurfaceModuleProjection]:
-        del cls
-        module_index = PrivateReferenceModuleIndex.from_module(parsed_module)
-        return [
-            CompactRoleGuardedSurfaceModuleProjection(
-                class_surface_members_by_type_name=tuple(
-                    sorted(module_index.class_surface_members_by_type_name.items())
-                ),
-                role_guarded_accesses=module_index.role_guarded_accesses,
-            )
-        ]
-
-
-def _compact_role_surface_members_by_type_name(
-    projections: tuple[CompactRoleGuardedSurfaceModuleProjection, ...],
-) -> dict[str, tuple[str, ...]]:
-    surfaces: dict[str, set[str]] = defaultdict(set)
-    for projection in projections:
-        for type_name, members in projection.class_surface_members_by_type_name:
-            surfaces[type_name].update(members)
-    return {
-        type_name: sorted_tuple(members)
-        for type_name, members in sorted(surfaces.items())
-    }
-
-
-def _compact_role_guarded_surface_access_candidates(
-    projections: tuple[CompactRoleGuardedSurfaceModuleProjection, ...],
-) -> tuple[RoleGuardedSurfaceAccessCandidate, ...]:
-    role_surfaces = _compact_role_surface_members_by_type_name(projections)
-    candidates: list[RoleGuardedSurfaceAccessCandidate] = []
-    for projection in projections:
-        for fact in projection.role_guarded_accesses:
-            declared_members = role_surfaces.get(fact.role_type_name)
-            if declared_members is None:
-                continue
-            accessed_members = sorted_tuple(
-                set(fact.accessed_members) & set(declared_members)
-            )
-            if not accessed_members:
-                continue
-            candidates.append(
-                RoleGuardedSurfaceAccessCandidate(
-                    file_path=fact.file_path,
-                    line=fact.line,
-                    qualname=fact.qualname,
-                    subject_expression=fact.subject_expression,
-                    role_type_name=fact.role_type_name,
-                    guard_expression=fact.guard_expression,
-                    accessed_members=accessed_members,
-                    declared_members=declared_members,
-                )
-            )
-    return tuple(candidates)
-
-
-def _role_guarded_surface_access_summary(
-    candidate: RoleGuardedSurfaceAccessCandidate,
-) -> str:
-    accessed_summary = ", ".join(candidate.accessed_members)
-    return (
-        f"`{candidate.qualname}` checks `{candidate.guard_expression}` "
-        f"and then accesses role-owned member(s) {accessed_summary} "
-        f"on `{candidate.subject_expression}`."
-    )
-
-
-def _role_guarded_surface_access_evidence(
-    candidate: RoleGuardedSurfaceAccessCandidate,
-) -> tuple[SourceLocation, ...]:
-    return (
-        SourceLocation(
-            candidate.file_path,
-            candidate.line,
-            (
-                f"{candidate.qualname}:"
-                f"{candidate.subject_expression}:"
-                f"{candidate.role_type_name}"
-            ),
-        ),
-    )
-
-
-def _role_guarded_surface_access_scaffold(
-    candidate: RoleGuardedSurfaceAccessCandidate,
-) -> str:
-    return (
-        "@dataclass(frozen=True)\n"
-        "class SemanticOperationRequest:\n"
-        "    target: object\n"
-        "    role_owned_value: object\n\n"
-        "# Build this request at the owner/call boundary, or type the callee "
-        f"parameter as `{candidate.role_type_name}` if the role itself is required. "
-        "Keep inheritance when it is the contract; do not use it as a hidden "
-        "capability channel for a generic helper."
-    )
-
-
-def _role_guarded_surface_access_patch(
-    candidate: RoleGuardedSurfaceAccessCandidate,
-) -> str:
-    return (
-        f"# Replace the `{candidate.guard_expression}` block in "
-        f"`{candidate.qualname}` with one explicit semantic input.\n"
-        "# If the operation semantically requires the role, make the callee "
-        "role-typed and fail before calling. If it only needs the value currently "
-        "pulled from the role, pass that value/request explicitly from the owner."
-    )
-
-
-class RoleGuardedSurfaceAccessDetector(
-    CompactModuleProjectionDetectorMixin[CompactRoleGuardedSurfaceModuleProjection],
-    IssueDetector,
-):
-    module_projection_family = CompactRoleGuardedSurfaceModuleProjectionFamily
-    detector_priority = -25
-    finding_spec = high_confidence_spec(
-        PatternId.NOMINAL_INTERFACE_WITNESS,
-        "Runtime role guard leaks role-owned semantics into the caller",
-        "An `isinstance` guard proves a nominal role and the guarded block immediately consumes members declared on that same role. Inheritance is appropriate when that role is the declared contract; the smell is using inheritance as an optional side channel that lets a general caller discover and interpret role semantics it should have received explicitly.",
-        "role-typed contract when the role is required, or explicit request/value boundary when only the role-owned value is required",
-        "caller-side optional role probe followed by role-surface member access",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.RUNTIME_MEMBERSHIP,
-            ObservationTag.BRANCH_DISPATCH,
-            ObservationTag.PARTIAL_VIEW,
-        ),
-    )
-
-    def _findings_from_compact_projections(
-        self,
-        projections: tuple[CompactRoleGuardedSurfaceModuleProjection, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _compact_role_guarded_surface_access_candidates(
-                projections
-            )
-        ]
-
-    def _finding_for_candidate(
-        self,
-        candidate: RoleGuardedSurfaceAccessCandidate,
-    ) -> RefactorFinding:
-        return self.build_finding(
-            _role_guarded_surface_access_summary(candidate),
-            _role_guarded_surface_access_evidence(candidate),
-            scaffold=_role_guarded_surface_access_scaffold(candidate),
-            codemod_patch=_role_guarded_surface_access_patch(candidate),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=1,
-                dispatch_axis=candidate.subject_expression,
-                literal_cases=(candidate.role_type_name,),
-            ),
-        )
 
 
 declare_candidate_rule_detector(
@@ -7484,8 +6932,6 @@ class PrivateReferenceModuleIndex:
     function_counts_by_id: dict[int, Counter[str]]
     functions: tuple[PrivateReferenceIndexedFunction, ...]
     named_functions: tuple[PrivateReferenceNamedFunction, ...]
-    class_surface_members_by_type_name: dict[str, tuple[str, ...]]
-    role_guarded_accesses: tuple[CompactRoleGuardedAccessFact, ...]
     reference_summaries_by_symbol: tuple[tuple[str, int, tuple[str, ...]], ...]
     public_declaration_reference_names_by_name: dict[str, tuple[str, ...]]
 
@@ -7495,7 +6941,6 @@ class PrivateReferenceModuleIndex:
             module.module,
             module.module_name,
             module.semantic_hash,
-            str(module.path),
         )
 
 
@@ -7546,7 +6991,6 @@ def _private_reference_module_index(
     module_node: ast.Module,
     module_name: str,
     semantic_hash: str | None,
-    file_path: str,
 ) -> PrivateReferenceModuleIndex:
     surface_functions = SurfaceFunctionIndex.from_module(module_node).functions
     surface_qualnames_by_id = {
@@ -7559,7 +7003,6 @@ def _private_reference_module_index(
     symbol_references_by_function_id = {
         id(function): set() for _, function in surface_functions
     }
-    class_surface_members_by_type_name: dict[str, set[str]] = defaultdict(set)
     public_declaration_names = frozenset(
         node.name
         for node in module_node.body
@@ -7568,20 +7011,8 @@ def _private_reference_module_index(
     )
     reference_sites_by_symbol: dict[str, set[tuple[int, str]]] = defaultdict(set)
     public_declaration_reference_names: dict[str, set[str]] = defaultdict(set)
-    named_role_functions: list[tuple[int, str]] = []
+    named_functions: list[tuple[int, str]] = []
     named_function_nodes_by_id: dict[int, _RuntimeFunctionNode] = {}
-    role_observations_by_function_id: dict[
-        int,
-        list[
-            tuple[
-                int,
-                int,
-                int,
-                tuple[tuple[str, str, str], ...],
-                dict[str, tuple[str, ...]],
-            ]
-        ],
-    ] = defaultdict(list)
     isinstance_calls_by_function_id: dict[
         int,
         list[tuple[int, int, ast.Call]],
@@ -7597,7 +7028,7 @@ def _private_reference_module_index(
         return None
 
     syntax_index = module_syntax_index(module_node)
-    named_role_functions.extend(
+    named_functions.extend(
         (id(function), qualname) for qualname, function in syntax_index.named_functions
     )
     named_function_nodes_by_id.update(
@@ -7618,7 +7049,7 @@ def _private_reference_module_index(
         )
         for function_ids in scope_function_ids
     )
-    active_role_functions_by_scope = tuple(
+    active_named_functions_by_scope = tuple(
         tuple(
             (function_id, syntax_index.depths[function_index])
             for function_id, function_index in zip(
@@ -7688,46 +7119,20 @@ def _private_reference_module_index(
                     reference_name
                 )
 
-        active_role_functions = active_role_functions_by_scope[scope_id]
-        if isinstance(node, ast.If) and active_role_functions:
-            bindings = _isinstance_guard_bindings(node.test)
-            if bindings:
-                accessed_by_subject = _accessed_members_by_subject_expression(
-                    node.body,
-                    frozenset(subject for subject, _, _ in bindings),
-                )
-                for function_id, function_depth in active_role_functions:
-                    role_observations_by_function_id[function_id].append(
-                        (
-                            syntax_index.depths[node_index] - function_depth,
-                            node_ordinal,
-                            node.lineno,
-                            bindings,
-                            accessed_by_subject,
-                        )
-                    )
-
+        active_named_functions = active_named_functions_by_scope[scope_id]
         if (
             isinstance(node, ast.Call)
             and len(node.args) == 2
             and not node.keywords
             and _ast_terminal_name(node.func) == "isinstance"
         ):
-            for function_id, function_depth in active_role_functions:
+            for function_id, function_depth in active_named_functions:
                 isinstance_calls_by_function_id[function_id].append(
                     (
                         syntax_index.depths[node_index] - function_depth,
                         node_ordinal,
                         node,
                     )
-                )
-
-        if isinstance(node, ast.ClassDef):
-            declared_members = _declared_class_surface_members(node)
-            if declared_members:
-                class_surface_members_by_type_name[node.name].update(declared_members)
-                class_surface_members_by_type_name[f"{module_name}.{node.name}"].update(
-                    declared_members
                 )
     module_semantic_digest = semantic_hash or _stable_text_digest(
         ast.dump(module_node, include_attributes=False)
@@ -7761,28 +7166,7 @@ def _private_reference_module_index(
                     )
                 ),
             )
-            for function_id, qualname in named_role_functions
-        ),
-        class_surface_members_by_type_name={
-            type_name: tuple(sorted(members))
-            for type_name, members in class_surface_members_by_type_name.items()
-        },
-        role_guarded_accesses=tuple(
-            CompactRoleGuardedAccessFact(
-                file_path=file_path,
-                line=binding_line,
-                qualname=qualname,
-                subject_expression=subject_expression,
-                role_type_name=type_name,
-                guard_expression=guard_expression,
-                accessed_members=accessed_by_subject.get(subject_expression, ()),
-            )
-            for function_id, qualname in named_role_functions
-            for _, _, binding_line, bindings, accessed_by_subject in sorted(
-                role_observations_by_function_id.get(function_id, ()),
-                key=lambda item: (item[0], item[1]),
-            )
-            for subject_expression, type_name, guard_expression in bindings
+            for function_id, qualname in named_functions
         ),
         reference_summaries_by_symbol=_reference_summaries_from_sites(
             reference_sites_by_symbol

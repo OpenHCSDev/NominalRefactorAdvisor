@@ -176,12 +176,6 @@ class Owner:
             f"{module.semantic_hash}\0{indexed_function.qualname}"
         )
 
-    assert index.class_surface_members_by_type_name == {
-        "Nested": ("field",),
-        "Owner": ("_method",),
-        "pkg.sample.Nested": ("field",),
-        "pkg.sample.Owner": ("_method",),
-    }
     legacy_named_functions = systemic_detectors._iter_named_functions(module)
     assert len(index.named_functions) == len(legacy_named_functions)
     for indexed_function, (qualname, function) in zip(
@@ -244,18 +238,15 @@ def test_private_reference_compact_families_share_one_module_projection(
         )
     )
     first_cache_state = runtime_detectors._private_reference_module_index.cache_info()
-    role_surfaces = dict(
-        runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily.collect(
+    systemic_projections = tuple(
+        systemic_detectors.CompactRemainingSystemicModuleProjectionFamily.collect(
             modules[0]
-        )[0].class_surface_members_by_type_name
+        )
     )
     second_cache_state = runtime_detectors._private_reference_module_index.cache_info()
 
-    assert role_surfaces == {
-        "Renderer": ("render",),
-        "pkg.sample.Renderer": ("render",),
-    }
     assert private_projections[0].functions
+    assert systemic_projections
     assert first_cache_state.misses == len(modules)
     assert second_cache_state.misses == first_cache_state.misses
 

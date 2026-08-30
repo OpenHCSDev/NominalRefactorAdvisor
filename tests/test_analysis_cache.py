@@ -2069,45 +2069,6 @@ def test_native_builder_projection_matches_canonical_ast_family(
     )
 
 
-def test_native_role_guarded_projection_matches_shared_ast_index(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    module_path = package_root / "roles.py"
-    module_path.write_text(
-        "class Role:\n"
-        "    label: str\n"
-        "    def run(self): return self.label\n"
-        "\n"
-        "def consume(value):\n"
-        "    if value is None:\n"
-        "        return None\n"
-        "    elif isinstance(value, Role):\n"
-        "        return value.run()\n"
-        "\n"
-        "def outer(value):\n"
-        "    def nested(candidate):\n"
-        "        if isinstance(candidate, Role):\n"
-        "            return candidate.label\n"
-        "    return nested(value)\n",
-        encoding="utf-8",
-    )
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    source_module = SourceModule(
-        path=parsed_module.path,
-        module_name=parsed_module.module_name,
-        source=parsed_module.source,
-    )
-    family = runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily
-
-    native = family.collect_source(
-        source_module,
-        NativePythonSyntaxIndex.from_source(source_module.source),
-    )
-
-    assert native == collect_family_items(parsed_module, family)
-
 
 @pytest.mark.parametrize(
     "family, source",
@@ -2431,50 +2392,6 @@ def test_native_report_demand_boundary_facts_match_ast_family(
         if item.field_name == "projected_axis_offsets"
     )
 
-
-def test_native_report_demand_role_guarded_surface_matches_ast_view(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    module_path = package_root / "roles.py"
-    module_path.write_text(
-        "class SelectedRole:\n"
-        "    selected_value: int\n"
-        "    def selected(self): return self.selected_value\n"
-        "class IgnoredRole:\n"
-        "    ignored_value: int\n"
-        "def inspect(value):\n"
-        "    if isinstance(value, SelectedRole):\n"
-        "        return value.selected_value\n"
-        "    if isinstance(value, IgnoredRole):\n"
-        "        return value.ignored_value\n",
-        encoding="utf-8",
-    )
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    source_module = SourceModule(
-        path=parsed_module.path,
-        module_name=parsed_module.module_name,
-        source=parsed_module.source,
-    )
-    family = runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily
-    demand = runtime_detectors.CompactRoleGuardedSurfaceProjectionDemand(
-        frozenset({"SelectedRole"})
-    )
-
-    native = family.collect_demanded_source(
-        source_module,
-        NativePythonSyntaxIndex.from_source(source_module.source),
-        demand,
-    )
-    ast_view = family.collect_demanded(parsed_module, demand)
-
-    assert native == ast_view
-    assert native is not None
-    assert native[0].role_guarded_accesses == ()
-    assert dict(native[0].class_surface_members_by_type_name) == {
-        "SelectedRole": ("selected", "selected_value")
-    }
 
 
 def test_native_grouped_report_demands_match_ast_views(tmp_path: Path) -> None:
@@ -3096,11 +3013,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
 
 def test_custom_empty_report_demands_reject_context_promotion() -> None:
     config = DetectorConfig()
-    role_family = runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily
-    role_projection = runtime_detectors.CompactRoleGuardedSurfaceModuleProjection(
-        class_surface_members_by_type_name=(),
-        role_guarded_accesses=(),
-    )
     support_family = systemic_detectors.PublicBareSupportModuleProjectionFamily
     support_projection = systemic_detectors.PublicBareSupportModuleProjection(
         file_path="target.py",
@@ -3109,18 +3021,9 @@ def test_custom_empty_report_demands_reject_context_promotion() -> None:
         reference_counts=(),
     )
 
-    assert not runtime_detectors.RoleGuardedSurfaceAccessDetector.compact_report_context_can_promote(
-        {role_family: (role_projection,)},
-        config,
-    )
     assert not systemic_detectors.PublicBareSupportFunctionDetector.compact_report_context_can_promote(
         {support_family: (support_projection,)},
         config,
-    )
-    assert role_family.report_demand_includes_context(
-        runtime_detectors.CompactRoleGuardedSurfaceProjectionDemand(
-            role_type_names=frozenset({"Role"})
-        )
     )
     assert support_family.report_demand_includes_context(
         systemic_detectors.PublicBareSupportProjectionDemand(
@@ -3745,153 +3648,6 @@ def test_cold_focused_semantic_scan_omits_only_context_presentations(
     }
 
 
-def test_cold_focused_role_guarded_scan_demands_only_context_role_surface(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "__init__.py").write_text("", encoding="utf-8")
-    context_path = package_root / "roles.py"
-    target_path = package_root / "target.py"
-    context_path.write_text(
-        "class SelectedRole:\n"
-        "    selected_value: int\n"
-        "class IgnoredRole:\n"
-        "    ignored_value: int\n",
-        encoding="utf-8",
-    )
-    target_path.write_text(
-        "from .roles import SelectedRole\n"
-        "def inspect(value):\n"
-        "    if isinstance(value, SelectedRole):\n"
-        "        return value.selected_value\n"
-        "    return None\n",
-        encoding="utf-8",
-    )
-    report_scope = AnalysisPathScope(
-        analysis_roots=(package_root,),
-        report_roots=(target_path,),
-    )
-    detector_types = (runtime_detectors.RoleGuardedSurfaceAccessDetector,)
-    eager = analyze_compact_roots_with_cache(
-        (package_root,),
-        cache_dir=tmp_path / "eager-parse-cache",
-        analysis_cache_dir=tmp_path / "eager-analysis-cache",
-        use_parse_cache=True,
-        parse_workers=1,
-        report_scope=report_scope,
-        detector_types=detector_types,
-    )
-    family = runtime_detectors.CompactRoleGuardedSurfaceModuleProjectionFamily
-    original_collector = family.source_demand_collector
-    demanded_paths: list[Path] = []
-
-    def observed_demand_collector(source_module, syntax_index, demand):
-        demanded_paths.append(source_module.path.resolve())
-        assert demand.role_type_names == frozenset({"SelectedRole"})
-        assert original_collector is not None
-        items = original_collector(source_module, syntax_index, demand)
-        assert items is not None
-        assert all(not item.role_guarded_accesses for item in items)
-        return items
-
-    monkeypatch.setattr(
-        family,
-        "source_demand_collector",
-        staticmethod(observed_demand_collector),
-    )
-    demanded = analyze_compact_roots_with_cache(
-        (package_root,),
-        cache_dir=None,
-        analysis_cache_dir=None,
-        use_parse_cache=False,
-        parse_workers=1,
-        report_scope=report_scope,
-        detector_types=detector_types,
-    )
-
-    assert [finding.to_dict() for finding in demanded.findings] == [
-        finding.to_dict() for finding in eager.findings
-    ]
-    assert {finding.detector_id for finding in demanded.findings} == {
-        "role_guarded_surface_access"
-    }
-    assert demanded_paths == [context_path.resolve()]
-
-
-def test_projection_semantic_cache_reuses_detector_after_irrelevant_source_change(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "__init__.py").write_text("", encoding="utf-8")
-    (package_root / "roles.py").write_text(
-        "class SelectedRole:\n    selected_value: int\n",
-        encoding="utf-8",
-    )
-    target_path = package_root / "target.py"
-    target_path.write_text(
-        "from .roles import SelectedRole\n"
-        "def inspect(value):\n"
-        "    if isinstance(value, SelectedRole):\n"
-        "        return value.selected_value\n"
-        "    return None\n",
-        encoding="utf-8",
-    )
-    unrelated_path = package_root / "unrelated.py"
-    unrelated_path.write_text("VALUE = 1\n", encoding="utf-8")
-    report_scope = AnalysisPathScope(
-        analysis_roots=(package_root,),
-        report_roots=(target_path,),
-    )
-    detector_types = (runtime_detectors.RoleGuardedSurfaceAccessDetector,)
-    first = analyze_compact_roots_with_cache(
-        (package_root,),
-        cache_dir=tmp_path / "parse-cache",
-        analysis_cache_dir=tmp_path / "analysis-cache",
-        use_parse_cache=True,
-        parse_workers=1,
-        report_scope=report_scope,
-        detector_types=detector_types,
-    )
-    unrelated_path.write_text("# unrelated edit\nVALUE = 1\n", encoding="utf-8")
-    original_read_text = Path.read_text
-    source_text_reads: list[Path] = []
-
-    def tracked_read_text(path: Path, *args, **kwargs):
-        source_text_reads.append(path.resolve())
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", tracked_read_text)
-
-    def unexpected_detection(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError(
-            "semantic projection cache should reuse the detector shard"
-        )
-
-    monkeypatch.setattr(
-        runtime_detectors.RoleGuardedSurfaceAccessDetector,
-        "_findings_from_compact_projections",
-        unexpected_detection,
-    )
-    second = analyze_compact_roots_with_cache(
-        (package_root,),
-        cache_dir=tmp_path / "parse-cache",
-        analysis_cache_dir=tmp_path / "analysis-cache",
-        use_parse_cache=True,
-        parse_workers=1,
-        report_scope=report_scope,
-        detector_types=detector_types,
-    )
-
-    assert second.cache_status is AnalysisCacheStatus.PARTIAL
-    assert [finding.to_dict() for finding in second.findings] == [
-        finding.to_dict() for finding in first.findings
-    ]
-    assert (package_root / "roles.py").resolve() not in source_text_reads
 
 
 def test_mixed_projection_shard_uses_only_python_ast(
@@ -6695,52 +6451,6 @@ def _write_compact_private_helper_cluster_fixture(package_root: Path) -> None:
     )
 
 
-def test_compact_role_guarded_surface_candidates_preserve_semantics_without_ast_shadow(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "roles.py").write_text(
-        "class AvoidWidgetsWindow:\n"
-        "    def position_avoid_widgets(self):\n"
-        "        raise NotImplementedError\n",
-        encoding="utf-8",
-    )
-    (package_root / "consumer.py").write_text(
-        "def place_window(window):\n"
-        "    if isinstance(window, AvoidWidgetsWindow):\n"
-        "        return tuple(window.position_avoid_widgets())\n"
-        "    return ()\n\n"
-        "def inspect_window(window):\n"
-        "    if isinstance(window, AvoidWidgetsWindow):\n"
-        "        return window.windowTitle()\n"
-        "    return None\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    detector = runtime_detectors.RoleGuardedSurfaceAccessDetector()
-    projections = type(detector).compact_module_projections(modules)
-    compact_candidates = (
-        runtime_detectors._compact_role_guarded_surface_access_candidates(projections)
-    )
-    assert len(compact_candidates) == 1
-    candidate = compact_candidates[0]
-    assert candidate.qualname == "place_window"
-    assert candidate.role_type_name == "AvoidWidgetsWindow"
-    assert candidate.accessed_members == ("position_avoid_widgets",)
-    assert candidate.declared_members == ("position_avoid_widgets",)
-    for removed_name in (
-        "_role_surface_members_by_type_name",
-        "_role_surface_context_signature",
-        "_role_guarded_surface_access_candidates",
-        "_role_guarded_surface_access_candidates_for_module",
-    ):
-        assert not hasattr(runtime_detectors, removed_name)
-    assert detector._findings_from_compact_projections(
-        projections,
-        DetectorConfig(),
-    ) == [detector._finding_for_candidate(candidate)]
-
 
 def test_compact_private_helper_cluster_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
@@ -7434,9 +7144,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.PrivateHelperSemanticClusterDetector in (
         partition.compact_global_detector_types
     )
-    assert runtime_detectors.RoleGuardedSurfaceAccessDetector in (
-        partition.compact_global_detector_types
-    )
     assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
         partition.compact_global_detector_types
     )
@@ -7476,7 +7183,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 62
+    assert len(partition.compact_global_detector_types) == 61
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id
@@ -7893,59 +7600,6 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
         for finding in exact_findings
     )
 
-
-def test_contextual_module_cache_invalidates_when_repo_context_changes(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "roles.py").write_text(
-        "class AvoidWidgetsWindow:\n    pass\n",
-        encoding="utf-8",
-    )
-    (package_root / "consumer.py").write_text(
-        "from pkg.roles import AvoidWidgetsWindow\n"
-        "\n"
-        "\n"
-        "def place_window(window):\n"
-        "    if isinstance(window, AvoidWidgetsWindow):\n"
-        "        return tuple(window.position_avoid_widgets())\n"
-        "    return ()\n",
-        encoding="utf-8",
-    )
-    cache_dir = tmp_path / ".nra-cache" / "ast"
-
-    initial_findings = analyze_path(
-        package_root,
-        cache_dir=cache_dir,
-        parse_workers=0,
-        analysis_workers=0,
-    )
-
-    assert not any(
-        finding.detector_id == "role_guarded_surface_access"
-        for finding in initial_findings
-    )
-
-    (package_root / "roles.py").write_text(
-        "class AvoidWidgetsWindow:\n"
-        "    def position_avoid_widgets(self):\n"
-        "        raise NotImplementedError\n",
-        encoding="utf-8",
-    )
-
-    updated_findings = analyze_path(
-        package_root,
-        cache_dir=cache_dir,
-        parse_workers=0,
-        analysis_workers=0,
-    )
-
-    assert any(
-        finding.detector_id == "role_guarded_surface_access"
-        and "position_avoid_widgets" in finding.summary
-        for finding in updated_findings
-    )
 
 
 def test_private_reference_contextual_cache_invalidates_when_reference_edge_changes(
