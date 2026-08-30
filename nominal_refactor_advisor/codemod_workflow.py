@@ -73,11 +73,60 @@ class CodemodFindingClassStatus(StrEnum):
 
 
 @dataclass(frozen=True)
-class CodemodFindingDelta:
-    """Before/after finding ids for one simulated-and-applied codemod batch."""
+class CodemodFindingIdTransition:
+    """Before/after id transition shared by finding and finding-class deltas."""
 
-    before_finding_ids: tuple[str, ...]
-    after_finding_ids: tuple[str, ...]
+    before_ids: tuple[str, ...]
+    after_ids: tuple[str, ...]
+
+    @property
+    def removed_ids(self) -> tuple[str, ...]:
+        after_ids = frozenset(self.after_ids)
+        return tuple(
+            finding_id for finding_id in self.before_ids if finding_id not in after_ids
+        )
+
+    @property
+    def added_ids(self) -> tuple[str, ...]:
+        before_ids = frozenset(self.before_ids)
+        return tuple(
+            finding_id for finding_id in self.after_ids if finding_id not in before_ids
+        )
+
+    @property
+    def before_count(self) -> int:
+        return len(self.before_ids)
+
+    @property
+    def after_count(self) -> int:
+        return len(self.after_ids)
+
+    @property
+    def removed_count(self) -> int:
+        return len(self.removed_ids)
+
+    @property
+    def added_count(self) -> int:
+        return len(self.added_ids)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "before_finding_ids": self.before_ids,
+            "after_finding_ids": self.after_ids,
+            "removed_finding_ids": self.removed_ids,
+            "added_finding_ids": self.added_ids,
+            "before_finding_count": self.before_count,
+            "after_finding_count": self.after_count,
+            "removed_finding_count": self.removed_count,
+            "added_finding_count": self.added_count,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodFindingDelta:
+    """Before/after finding transition for one codemod batch."""
+
+    finding_ids: CodemodFindingIdTransition
 
     @classmethod
     def from_findings(
@@ -86,24 +135,37 @@ class CodemodFindingDelta:
         after_findings: tuple[RefactorFinding, ...],
     ) -> "CodemodFindingDelta":
         return cls(
-            before_finding_ids=tuple(finding.stable_id for finding in before_findings),
-            after_finding_ids=tuple(finding.stable_id for finding in after_findings),
+            finding_ids=CodemodFindingIdTransition(
+                before_ids=tuple(
+                    finding.stable_id for finding in before_findings
+                ),
+                after_ids=tuple(finding.stable_id for finding in after_findings),
+            ),
         )
 
     @property
-    def transition(self) -> "CodemodFindingIdTransition":
-        return CodemodFindingIdTransition(
-            before_ids=self.before_finding_ids,
-            after_ids=self.after_finding_ids,
-        )
+    def before_finding_ids(self) -> tuple[str, ...]:
+        return self.finding_ids.before_ids
+
+    @property
+    def after_finding_ids(self) -> tuple[str, ...]:
+        return self.finding_ids.after_ids
 
     @property
     def removed_finding_ids(self) -> tuple[str, ...]:
-        return self.transition.removed_ids
+        return self.finding_ids.removed_ids
 
     @property
     def added_finding_ids(self) -> tuple[str, ...]:
-        return self.transition.added_ids
+        return self.finding_ids.added_ids
+
+    @property
+    def before_finding_count(self) -> int:
+        return self.finding_ids.before_count
+
+    @property
+    def after_finding_count(self) -> int:
+        return self.finding_ids.after_count
 
     def confirmed_expected_removed_finding_ids(
         self,
@@ -164,38 +226,33 @@ class CodemodFindingDelta:
         self,
         expected_removed_finding_ids: tuple[str, ...] = (),
     ) -> JsonObject:
-        return {
-            "before_finding_ids": self.before_finding_ids,
-            "after_finding_ids": self.after_finding_ids,
-            "expected_removed_finding_ids": expected_removed_finding_ids,
-            "removed_finding_ids": self.removed_finding_ids,
-            "added_finding_ids": self.added_finding_ids,
-            "confirmed_expected_removed_finding_ids": (
+        return JsonObject(
+            **self.finding_ids.to_dict(),
+            expected_removed_finding_ids=expected_removed_finding_ids,
+            confirmed_expected_removed_finding_ids=(
                 self.confirmed_expected_removed_finding_ids(
                     expected_removed_finding_ids
                 )
             ),
-            "surviving_expected_removed_finding_ids": (
+            surviving_expected_removed_finding_ids=(
                 self.surviving_expected_removed_finding_ids(
                     expected_removed_finding_ids
                 )
             ),
-            "removed_finding_count": self.removed_finding_count,
-            "added_finding_count": self.added_finding_count,
-            "confirmed_expected_removed_finding_count": (
+            confirmed_expected_removed_finding_count=(
                 self.confirmed_expected_removed_finding_count(
                     expected_removed_finding_ids
                 )
             ),
-            "surviving_expected_removed_finding_count": (
+            surviving_expected_removed_finding_count=(
                 self.surviving_expected_removed_finding_count(
                     expected_removed_finding_ids
                 )
             ),
-            "fulfilled_expected_removals": self.fulfilled_expected_removals(
+            fulfilled_expected_removals=self.fulfilled_expected_removals(
                 expected_removed_finding_ids
             ),
-        }
+        )
 
 
 @dataclass(frozen=True)
@@ -242,66 +299,11 @@ class CodemodFindingClassSignature:
 
 
 @dataclass(frozen=True)
-class CodemodFindingIdTransition:
-    """Before/after id transition shared by finding and finding-class deltas."""
-
-    before_ids: tuple[str, ...]
-    after_ids: tuple[str, ...]
-
-    @property
-    def removed_ids(self) -> tuple[str, ...]:
-        after_ids = frozenset(self.after_ids)
-        return tuple(
-            finding_id for finding_id in self.before_ids if finding_id not in after_ids
-        )
-
-    @property
-    def added_ids(self) -> tuple[str, ...]:
-        before_ids = frozenset(self.before_ids)
-        return tuple(
-            finding_id for finding_id in self.after_ids if finding_id not in before_ids
-        )
-
-    @property
-    def before_count(self) -> int:
-        return len(self.before_ids)
-
-    @property
-    def after_count(self) -> int:
-        return len(self.after_ids)
-
-    @property
-    def removed_count(self) -> int:
-        return len(self.removed_ids)
-
-    @property
-    def added_count(self) -> int:
-        return len(self.added_ids)
-
-
-@dataclass(frozen=True)
-class CodemodFindingClassChange:
+class CodemodFindingClassChange(CodemodFindingDelta):
     """Before/after membership for one semantic finding class."""
 
     signature: CodemodFindingClassSignature
-    finding_ids: CodemodFindingIdTransition
     expected_removed_finding_ids: tuple[str, ...] = ()
-
-    @property
-    def before_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.before_ids
-
-    @property
-    def after_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.after_ids
-
-    @property
-    def removed_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.removed_ids
-
-    @property
-    def added_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.added_ids
 
     @property
     def status(self) -> CodemodFindingClassStatus:
@@ -318,40 +320,17 @@ class CodemodFindingClassChange:
         return CodemodFindingClassStatus.UNCHANGED
 
     @property
-    def before_finding_count(self) -> int:
-        return self.finding_ids.before_count
-
-    @property
-    def after_finding_count(self) -> int:
-        return self.finding_ids.after_count
-
-    @property
     def expected_removed_finding_count(self) -> int:
         return len(self.expected_removed_finding_ids)
 
-    @property
-    def removed_finding_count(self) -> int:
-        return self.finding_ids.removed_count
-
-    @property
-    def added_finding_count(self) -> int:
-        return self.finding_ids.added_count
-
     def to_dict(self) -> JsonObject:
-        return {
-            "signature": self.signature.to_dict(),
-            "status": self.status.value,
-            "before_finding_ids": self.before_finding_ids,
-            "after_finding_ids": self.after_finding_ids,
-            "expected_removed_finding_ids": self.expected_removed_finding_ids,
-            "removed_finding_ids": self.removed_finding_ids,
-            "added_finding_ids": self.added_finding_ids,
-            "before_finding_count": self.before_finding_count,
-            "after_finding_count": self.after_finding_count,
-            "expected_removed_finding_count": self.expected_removed_finding_count,
-            "removed_finding_count": self.removed_finding_count,
-            "added_finding_count": self.added_finding_count,
-        }
+        return JsonObject(
+            **self.finding_ids.to_dict(),
+            signature=self.signature.to_dict(),
+            status=self.status.value,
+            expected_removed_finding_ids=self.expected_removed_finding_ids,
+            expected_removed_finding_count=self.expected_removed_finding_count,
+        )
 
 
 @dataclass(frozen=True)

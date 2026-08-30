@@ -89,6 +89,7 @@ from .codemod_workflow import (
     CodemodFindingClassSignature,
     CodemodFindingClassStatus,
     CodemodFindingDelta,
+    CodemodFindingIdTransition,
     CodemodFixpointIteration,
     CodemodFixpointReport,
     CodemodFixpointReplayPlan,

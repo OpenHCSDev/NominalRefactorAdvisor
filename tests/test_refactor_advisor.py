@@ -16265,6 +16265,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingClassSignature
     from nominal_refactor_advisor import CodemodFindingClassStatus
     from nominal_refactor_advisor import CodemodFindingDelta
+    from nominal_refactor_advisor import CodemodFindingIdTransition
     from nominal_refactor_advisor import CodemodFixpointReplayPlan
     from nominal_refactor_advisor import CodemodFixpointRunner
     from nominal_refactor_advisor import CodemodPlanJsonParser
@@ -16293,8 +16294,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
 
     assert CodemodPlanJsonParser().recipes({}) == ()
     delta = CodemodFindingDelta(
-        before_finding_ids=("a", "b"),
-        after_finding_ids=("b", "c"),
+        finding_ids=CodemodFindingIdTransition(
+            before_ids=("a", "b"),
+            after_ids=("b", "c"),
+        ),
     )
     finding_change = CodemodFindingChangeProjection(
         expected_removed_finding_ids=("a",),
@@ -16303,6 +16306,8 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
 
     assert CodemodFindingChangeCarrier.__name__ == "CodemodFindingChangeCarrier"
     assert CodemodFindingClassChange.__name__ == "CodemodFindingClassChange"
+    assert issubclass(CodemodFindingClassChange, CodemodFindingDelta)
+    assert CodemodFindingIdTransition.__name__ == "CodemodFindingIdTransition"
     assert CodemodFindingClassDelta.__name__ == "CodemodFindingClassDelta"
     assert CodemodFindingClassSignature.__name__ == "CodemodFindingClassSignature"
     assert CodemodFindingClassStatus.MOVED.value == "moved"
