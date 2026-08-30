@@ -37,7 +37,6 @@ def test_semantic_mirror_detector_role_is_inherited_by_mirror_families() -> None
     assert {
         "formal_boundary_external_string_registry_mirror",
         "runtime_authority_branch_semantics",
-        "runtime_semantic_branch_chain",
         "semantic_mirror_without_descent",
     } <= role_ids
     assert authority_evidence_indices["semantic_mirror_without_descent"] == 1

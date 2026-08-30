@@ -85,9 +85,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.InlineLiteralDispatchFindingRecipeSynthesizer: (
         codemod.AutoRegisterStrategyFamilyConcept
     ),
-    codemod.RuntimeSemanticBranchChainFindingRecipeSynthesizer: (
-        codemod.AutoRegisterStrategyFamilyConcept
-    ),
 }
 
 EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
