@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
 from fnmatch import fnmatchcase
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from pathlib import Path
 from types import EllipsisType
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
@@ -169,7 +169,7 @@ class CollectedFamilyCacheSchema:
 class CollectedFamilyContentSignatureIndexSchema:
     """Schema for the derived, consolidated family-signature lookup."""
 
-    version: int = 1
+    version: int = 2
 
 
 @dataclass(frozen=True)
@@ -198,31 +198,40 @@ class CollectedFamilySchemaIdentity:
 
 
 @dataclass(frozen=True)
+class CollectedFamilyProjectionIdentity:
+    """One family schema and its optional focused-demand projection."""
+
+    family_schema: CollectedFamilySchemaIdentity
+    demand_signature: str
+
+    @classmethod
+    def from_identity(
+        cls,
+        identity: "CollectedFamilyCacheIdentity",
+    ) -> "CollectedFamilyProjectionIdentity":
+        return cls(
+            family_schema=identity.family_schema,
+            demand_signature=identity.projection_signature,
+        )
+
+
+@dataclass(frozen=True)
 class CollectedFamilyContentSignatureIndexKey:
     """Stable lookup key for one source-family content signature."""
 
     path_text: str
     module_name: str
-    family_schema: CollectedFamilySchemaIdentity
-    demand_signature: str
-
-
-@dataclass(frozen=True)
-class CollectedFamilyCacheBundleEntry:
-    """One family schema and its optional focused-demand projection."""
-
-    family_schema: CollectedFamilySchemaIdentity
-    demand_signature: str = ""
+    projection: CollectedFamilyProjectionIdentity
 
     @classmethod
-    def from_family(
+    def from_identity(
         cls,
-        family: type["CollectedFamily[object]"],
-        demand_signature: str = "",
-    ) -> "CollectedFamilyCacheBundleEntry":
+        identity: "CollectedFamilyCacheIdentity",
+    ) -> "CollectedFamilyContentSignatureIndexKey":
         return cls(
-            family_schema=CollectedFamilySchemaIdentity.from_family(family),
-            demand_signature=demand_signature,
+            path_text=identity.path,
+            module_name=identity.module_name,
+            projection=CollectedFamilyProjectionIdentity.from_identity(identity),
         )
 
 
@@ -255,12 +264,20 @@ class CollectedFamilyCacheIdentity:
         payload = repr(self).encode("utf-8")
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
+    @property
+    def projection_signature(self) -> str:
+        return ""
+
 
 @dataclass(frozen=True)
 class CollectedFamilyDemandCacheIdentity(CollectedFamilyCacheIdentity):
     """A non-authoritative focused view keyed by its exact report demand."""
 
     demand_signature: str
+
+    @property
+    def projection_signature(self) -> str:
+        return self.demand_signature
 
 
 collected_family_cache_schema = CollectedFamilyCacheSchema()
@@ -316,59 +333,24 @@ class CollectedFamilyContentSignatureIndex:
                     entries[key] = (source_signature, content_signature)
         return cls(cache_dir, entries)
 
-    @staticmethod
-    def _key(
-        *,
-        path_text: str,
-        module_name: str,
-        family: type["CollectedFamily[object]"],
-        demand_signature: str | None,
-    ) -> CollectedFamilyContentSignatureIndexKey:
-        return CollectedFamilyContentSignatureIndexKey(
-            path_text=path_text,
-            module_name=module_name,
-            family_schema=CollectedFamilySchemaIdentity.from_family(family),
-            demand_signature=demand_signature or "",
-        )
-
     def lookup(
         self,
-        *,
-        path_text: str,
-        module_name: str,
-        source_signature: str,
-        family: type["CollectedFamily[object]"],
-        demand_signature: str | None = None,
+        identity: CollectedFamilyCacheIdentity,
     ) -> str | None:
         entry = self._entries.get(
-            self._key(
-                path_text=path_text,
-                module_name=module_name,
-                family=family,
-                demand_signature=demand_signature,
-            )
+            CollectedFamilyContentSignatureIndexKey.from_identity(identity)
         )
-        if entry is None or entry[0] != source_signature:
+        if entry is None or entry[0] != identity.source_signature:
             return None
         return entry[1]
 
     def record(
         self,
-        *,
-        path_text: str,
-        module_name: str,
-        source_signature: str,
-        family: type["CollectedFamily[object]"],
+        identity: CollectedFamilyCacheIdentity,
         content_signature: str,
-        demand_signature: str | None = None,
     ) -> None:
-        key = self._key(
-            path_text=path_text,
-            module_name=module_name,
-            family=family,
-            demand_signature=demand_signature,
-        )
-        entry = source_signature, content_signature
+        key = CollectedFamilyContentSignatureIndexKey.from_identity(identity)
+        entry = identity.source_signature, content_signature
         if self._entries.get(key) == entry:
             return
         self._entries[key] = entry
@@ -727,6 +709,15 @@ class ParsedModule:
     source: str
     semantic_hash: str | None = None
     family_cache_dir: Path | None = None
+
+    @cached_property
+    def collected_family_cache(self) -> "CollectedFamilyCacheContext":
+        return CollectedFamilyCacheContext.from_source(
+            path=self.path,
+            module_name=self.module_name,
+            source=self.source,
+            family_cache_dir=self.family_cache_dir,
+        )
 
 
 @dataclass(frozen=True)
@@ -1624,20 +1615,6 @@ class CollectedFamily(
         raise NotImplementedError
 
 
-def _collected_family_cache_identity(
-    parsed_module: ParsedModule,
-    family: type[CollectedFamily[ShapeItemT]],
-) -> CollectedFamilyCacheIdentity:
-    return CollectedFamilyCacheIdentity(
-        path=str(parsed_module.path.resolve()),
-        module_name=parsed_module.module_name,
-        source_signature=_source_signature(parsed_module.source),
-        family_schema=CollectedFamilySchemaIdentity.from_family(family),
-        python_version=(sys.version_info.major, sys.version_info.minor),
-        schema=collected_family_cache_schema,
-    )
-
-
 def _collected_family_cache_path(
     cache_dir: Path,
     identity: CollectedFamilyCacheIdentity,
@@ -1719,133 +1696,6 @@ def _store_collected_family_content_signature(
         return None
 
 
-def _load_cached_collected_family_items(
-    parsed_module: ParsedModule,
-    family: type[CollectedFamily[ShapeItemT]],
-) -> tuple[ShapeItemT, ...] | None:
-    cache_dir = parsed_module.family_cache_dir
-    if cache_dir is None:
-        return None
-    identity = _collected_family_cache_identity(parsed_module, family)
-    return _load_collected_family_cache_payload(cache_dir, identity, family)
-
-
-def _load_collected_family_cache_payload(
-    cache_dir: Path,
-    identity: CollectedFamilyCacheIdentity,
-    family: type[CollectedFamily[ShapeItemT]],
-) -> tuple[ShapeItemT, ...] | None:
-    try:
-        with _collected_family_cache_path(cache_dir, identity).open("rb") as handle:
-            payload = pickle.load(handle)
-    except (
-        FileNotFoundError,
-        OSError,
-        pickle.PickleError,
-        EOFError,
-        TypeError,
-        ValueError,
-        AttributeError,
-        ImportError,
-    ):
-        return None
-    if not isinstance(payload, CollectedFamilyCachePayload):
-        return None
-    if payload.identity != identity:
-        return None
-    if not all(isinstance(item, family.item_type) for item in payload.items):
-        return None
-    signature_path = _collected_family_content_signature_path(cache_dir, identity)
-    if not signature_path.is_file():
-        _store_collected_family_content_signature(cache_dir, identity, payload.items)
-    if getattr(payload, "ast_free", False) is not True:
-        if retains_python_ast(payload.items):
-            return None
-        certified_payload = CollectedFamilyCachePayload(
-            identity=payload.identity,
-            items=payload.items,
-            ast_free=True,
-        )
-        try:
-            certified_bytes = pickle.dumps(
-                certified_payload,
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )
-            _collected_family_cache_path(cache_dir, identity).write_bytes(
-                certified_bytes
-            )
-        except (OSError, pickle.PickleError, TypeError, AttributeError):
-            pass
-    return cast(tuple[ShapeItemT, ...], payload.items)
-
-
-def load_cached_collected_family_items_for_source(
-    *,
-    path: Path,
-    module_name: str,
-    source: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-) -> tuple[ShapeItemT, ...] | None:
-    """Load source-validated compact facts without deserializing its AST."""
-
-    if family_cache_dir is None:
-        return None
-    return load_cached_collected_family_items_for_source_signature(
-        path=path,
-        module_name=module_name,
-        source_signature=_source_signature(source),
-        family_cache_dir=family_cache_dir,
-        family=family,
-    )
-
-
-def _collected_family_cache_identity_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family: type[CollectedFamily[ShapeItemT]],
-) -> CollectedFamilyCacheIdentity:
-    return CollectedFamilyCacheIdentity(
-        path=str(path.resolve()),
-        module_name=module_name,
-        source_signature=source_signature,
-        family_schema=CollectedFamilySchemaIdentity.from_family(family),
-        python_version=(sys.version_info.major, sys.version_info.minor),
-        schema=collected_family_cache_schema,
-    )
-
-
-def _collected_family_demand_cache_identity_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family: type[CollectedFamily[ShapeItemT]],
-    demand: object,
-    demand_signature: str | None = None,
-) -> CollectedFamilyDemandCacheIdentity:
-    base = _collected_family_cache_identity_for_source_signature(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family=family,
-    )
-    resolved_demand_signature = (
-        demand_signature or collected_family_demand_cache_signature(demand)
-    )
-    return CollectedFamilyDemandCacheIdentity(
-        path=base.path,
-        module_name=base.module_name,
-        source_signature=base.source_signature,
-        family_schema=base.family_schema,
-        python_version=base.python_version,
-        schema=base.schema,
-        demand_signature=resolved_demand_signature,
-    )
-
-
 def collected_family_demand_cache_signature(demand: object) -> str:
     """Hash one immutable demand once for reuse across every source shard."""
 
@@ -1862,413 +1712,276 @@ def collected_family_demand_cache_signature(demand: object) -> str:
     ).hexdigest()
 
 
-def collected_family_cache_entry_exists_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-) -> bool:
-    """Check a compact-family cache path without materializing its payload."""
+@dataclass(frozen=True)
+class CollectedFamilyCacheContext:
+    """One source-owned authority for collected-family cache operations."""
 
-    if family_cache_dir is None:
-        return False
-    identity = _collected_family_cache_identity_for_source_signature(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family=family,
-    )
-    cache_path = _collected_family_cache_path(family_cache_dir, identity)
-    try:
-        # Opening a cache path for ``wb`` creates it before serialization or
-        # storage can fail.  A zero-byte remnant is therefore a failed write,
-        # not a valid family entry.
-        return cache_path.is_file() and cache_path.stat().st_size > 0
-    except OSError:
-        return False
+    path: Path
+    module_name: str
+    source_signature: str
+    family_cache_dir: Path | None
 
-
-def demanded_collected_family_cache_entry_exists_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-    demand: object,
-    demand_signature: str | None = None,
-) -> bool:
-    if family_cache_dir is None:
-        return False
-    identity = _collected_family_demand_cache_identity_for_source_signature(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family=family,
-        demand=demand,
-        demand_signature=demand_signature,
-    )
-    cache_path = _collected_family_cache_path(family_cache_dir, identity)
-    try:
-        return cache_path.is_file() and cache_path.stat().st_size > 0
-    except OSError:
-        return False
-
-
-def collected_family_cache_bundle_is_complete_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    families: tuple[type[CollectedFamily], ...],
-) -> bool:
-    """Use one marker for a complete module/family cache bundle."""
-
-    if family_cache_dir is None:
-        return False
-    family_entries = tuple(
-        CollectedFamilyCacheBundleEntry.from_family(family) for family in families
-    )
-    marker_path = _collected_family_cache_bundle_marker_path(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family_cache_dir=family_cache_dir,
-        family_entries=family_entries,
-    )
-    if _collected_family_cache_bundle_marker_is_complete(marker_path):
-        return True
-    if not all(
-        collected_family_cache_entry_exists_for_source_signature(
+    @classmethod
+    def from_source(
+        cls,
+        *,
+        path: Path,
+        module_name: str,
+        source: str,
+        family_cache_dir: Path | None,
+    ) -> "CollectedFamilyCacheContext":
+        return cls(
             path=path,
             module_name=module_name,
-            source_signature=source_signature,
+            source_signature=_source_signature(source),
             family_cache_dir=family_cache_dir,
-            family=family,
         )
-        for family in families
-    ):
-        return False
-    _store_collected_family_cache_bundle_marker(marker_path)
-    return True
 
+    @cached_property
+    def resolved_path_text(self) -> str:
+        return str(self.path.resolve())
 
-def collected_family_demand_cache_bundle_is_complete_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    families: tuple[type[CollectedFamily], ...],
-    family_demands: tuple[tuple[type[CollectedFamily], object, str], ...],
-) -> bool:
-    """Use one marker for a complete mixture of full and demanded families."""
-
-    if family_cache_dir is None:
-        return False
-    demands_by_family = {
-        family: (demand, demand_signature)
-        for family, demand, demand_signature in family_demands
-    }
-    family_entries = tuple(
-        CollectedFamilyCacheBundleEntry.from_family(
-            family,
-            demands_by_family.get(family, (None, ""))[1],
+    def identity(
+        self,
+        family: type[CollectedFamily[ShapeItemT]],
+        demand_signature: str = "",
+    ) -> CollectedFamilyCacheIdentity:
+        identity = CollectedFamilyCacheIdentity(
+            path=self.resolved_path_text,
+            module_name=self.module_name,
+            source_signature=self.source_signature,
+            family_schema=CollectedFamilySchemaIdentity.from_family(family),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            schema=collected_family_cache_schema,
         )
-        for family in families
-    )
-    marker_path = _collected_family_cache_bundle_marker_path(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family_cache_dir=family_cache_dir,
-        family_entries=family_entries,
-    )
-    if _collected_family_cache_bundle_marker_is_complete(marker_path):
-        return True
-    for family in families:
-        demanded = demands_by_family.get(family)
-        if demanded is None:
-            exists = collected_family_cache_entry_exists_for_source_signature(
-                path=path,
-                module_name=module_name,
-                source_signature=source_signature,
-                family_cache_dir=family_cache_dir,
-                family=family,
-            )
-        else:
-            demand, demand_signature = demanded
-            exists = demanded_collected_family_cache_entry_exists_for_source_signature(
-                path=path,
-                module_name=module_name,
-                source_signature=source_signature,
-                family_cache_dir=family_cache_dir,
-                family=family,
-                demand=demand,
-                demand_signature=demand_signature,
-            )
-        if not exists:
-            return False
-    _store_collected_family_cache_bundle_marker(marker_path)
-    return True
-
-
-def _collected_family_cache_bundle_marker_path(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path,
-    family_entries: tuple[CollectedFamilyCacheBundleEntry, ...],
-) -> Path:
-    bundle_payload = repr(
-        (
-            "collected-family-bundle-v3",
-            str(path.resolve()),
-            module_name,
-            source_signature,
-            (sys.version_info.major, sys.version_info.minor),
-            collected_family_cache_schema,
-            family_entries,
-        )
-    ).encode("utf-8")
-    marker_token = hashlib.blake2s(bundle_payload, digest_size=16).hexdigest()
-    return family_cache_dir / f"bundle-{marker_token}.complete"
-
-
-def _collected_family_cache_bundle_marker_is_complete(marker_path: Path) -> bool:
-    try:
-        return marker_path.read_bytes() == b"complete-v3\n"
-    except OSError:
-        return False
-
-
-def _store_collected_family_cache_bundle_marker(marker_path: Path) -> None:
-    try:
-        marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.write_bytes(b"complete-v3\n")
-    except OSError:
-        pass
-
-
-def load_cached_collected_family_items_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-) -> tuple[ShapeItemT, ...] | None:
-    """Load compact facts from a precomputed raw-source cache token."""
-
-    if family_cache_dir is None:
-        return None
-    identity = _collected_family_cache_identity_for_source_signature(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family=family,
-    )
-    return _load_collected_family_cache_payload(
-        family_cache_dir,
-        identity,
-        family,
-    )
-
-
-def load_cached_collected_family_content_signature_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-) -> str | None:
-    """Read a lightweight semantic signature without opening the family payload."""
-
-    if family_cache_dir is None:
-        return None
-    identity = _collected_family_cache_identity_for_source_signature(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family=family,
-    )
-    try:
-        signature = _collected_family_content_signature_path(
-            family_cache_dir,
-            identity,
-        ).read_text(encoding="ascii")
-    except OSError:
-        return None
-    return signature if len(signature) == 32 else None
-
-
-def load_cached_demanded_collected_family_items_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-    demand: object,
-    demand_signature: str | None = None,
-) -> tuple[ShapeItemT, ...] | None:
-    if family_cache_dir is None:
-        return None
-    identity = _collected_family_demand_cache_identity_for_source_signature(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family=family,
-        demand=demand,
-        demand_signature=demand_signature,
-    )
-    return _load_collected_family_cache_payload(
-        family_cache_dir,
-        identity,
-        family,
-    )
-
-
-def load_cached_demanded_collected_family_content_signature_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-    demand: object,
-    demand_signature: str | None = None,
-) -> str | None:
-    if family_cache_dir is None:
-        return None
-    identity = _collected_family_demand_cache_identity_for_source_signature(
-        path=path,
-        module_name=module_name,
-        source_signature=source_signature,
-        family=family,
-        demand=demand,
-        demand_signature=demand_signature,
-    )
-    try:
-        signature = _collected_family_content_signature_path(
-            family_cache_dir,
-            identity,
-        ).read_text(encoding="ascii")
-    except OSError:
-        return None
-    return signature if len(signature) == 32 else None
-
-
-def _store_cached_collected_family_items(
-    parsed_module: ParsedModule,
-    family: type[CollectedFamily[ShapeItemT]],
-    items: tuple[ShapeItemT, ...],
-) -> None:
-    _store_cached_collected_family_items_for_identity(
-        cache_dir=parsed_module.family_cache_dir,
-        identity=_collected_family_cache_identity(parsed_module, family),
-        family=family,
-        items=items,
-    )
-
-
-def store_cached_collected_family_items_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-    items: tuple[ShapeItemT, ...],
-) -> str | None:
-    """Publish source-native compact facts under the existing cache identity."""
-
-    if family_cache_dir is None:
-        return None
-    return _store_cached_collected_family_items_for_identity(
-        cache_dir=family_cache_dir,
-        identity=_collected_family_cache_identity_for_source_signature(
-            path=path,
-            module_name=module_name,
-            source_signature=source_signature,
-            family=family,
-        ),
-        family=family,
-        items=items,
-    )
-
-
-def store_cached_demanded_collected_family_items_for_source_signature(
-    *,
-    path: Path,
-    module_name: str,
-    source_signature: str,
-    family_cache_dir: Path | None,
-    family: type[CollectedFamily[ShapeItemT]],
-    demand: object,
-    items: tuple[ShapeItemT, ...],
-    demand_signature: str | None = None,
-) -> str | None:
-    """Persist a focused view without publishing it as the complete family."""
-
-    if family_cache_dir is None:
-        return None
-    return _store_cached_collected_family_items_for_identity(
-        cache_dir=family_cache_dir,
-        identity=_collected_family_demand_cache_identity_for_source_signature(
-            path=path,
-            module_name=module_name,
-            source_signature=source_signature,
-            family=family,
-            demand=demand,
+        if not demand_signature:
+            return identity
+        return CollectedFamilyDemandCacheIdentity(
+            path=identity.path,
+            module_name=identity.module_name,
+            source_signature=identity.source_signature,
+            family_schema=identity.family_schema,
+            python_version=identity.python_version,
+            schema=identity.schema,
             demand_signature=demand_signature,
-        ),
-        family=family,
-        items=items,
-    )
-
-
-def _store_cached_collected_family_items_for_identity(
-    *,
-    cache_dir: Path | None,
-    identity: CollectedFamilyCacheIdentity,
-    family: type[CollectedFamily[ShapeItemT]],
-    items: tuple[ShapeItemT, ...],
-) -> str | None:
-    if cache_dir is None or retains_python_ast(items):
-        return None
-    payload = CollectedFamilyCachePayload(
-        identity=identity,
-        items=items,
-        ast_free=True,
-    )
-    try:
-        payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-        payload_max_bytes = (
-            family.cache_payload_max_bytes
-            if family.cache_payload_max_bytes is not None
-            else identity.schema.max_payload_bytes
         )
-        if len(payload_bytes) > payload_max_bytes:
+
+    def entry_exists(
+        self,
+        family: type[CollectedFamily[ShapeItemT]],
+        demand_signature: str = "",
+    ) -> bool:
+        """Check one cache path without materializing its payload."""
+
+        return self._entry_exists_for_identity(
+            self.identity(family, demand_signature)
+        )
+
+    def _entry_exists_for_identity(
+        self,
+        identity: CollectedFamilyCacheIdentity,
+    ) -> bool:
+        if self.family_cache_dir is None:
+            return False
+        cache_path = _collected_family_cache_path(
+            self.family_cache_dir,
+            identity,
+        )
+        try:
+            # Opening a cache path for ``wb`` creates it before serialization or
+            # storage can fail. A zero-byte remnant is a failed write.
+            return cache_path.is_file() and cache_path.stat().st_size > 0
+        except OSError:
+            return False
+
+    def load_items(
+        self,
+        family: type[CollectedFamily[ShapeItemT]],
+        demand_signature: str = "",
+    ) -> tuple[ShapeItemT, ...] | None:
+        if self.family_cache_dir is None:
             return None
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with _collected_family_cache_path(cache_dir, identity).open("wb") as handle:
-            handle.write(payload_bytes)
-        return _store_collected_family_content_signature(cache_dir, identity, items)
-    except (OSError, pickle.PickleError, TypeError, AttributeError):
-        return None
+        identity = self.identity(family, demand_signature)
+        try:
+            with _collected_family_cache_path(
+                self.family_cache_dir,
+                identity,
+            ).open("rb") as handle:
+                payload = pickle.load(handle)
+        except (
+            FileNotFoundError,
+            OSError,
+            pickle.PickleError,
+            EOFError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            ImportError,
+        ):
+            return None
+        if not isinstance(payload, CollectedFamilyCachePayload):
+            return None
+        if payload.identity != identity:
+            return None
+        if not all(isinstance(item, family.item_type) for item in payload.items):
+            return None
+        signature_path = _collected_family_content_signature_path(
+            self.family_cache_dir,
+            identity,
+        )
+        if not signature_path.is_file():
+            _store_collected_family_content_signature(
+                self.family_cache_dir,
+                identity,
+                payload.items,
+            )
+        if getattr(payload, "ast_free", False) is not True:
+            if retains_python_ast(payload.items):
+                return None
+            certified_payload = CollectedFamilyCachePayload(
+                identity=payload.identity,
+                items=payload.items,
+                ast_free=True,
+            )
+            try:
+                certified_bytes = pickle.dumps(
+                    certified_payload,
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+                _collected_family_cache_path(
+                    self.family_cache_dir,
+                    identity,
+                ).write_bytes(certified_bytes)
+            except (OSError, pickle.PickleError, TypeError, AttributeError):
+                pass
+        return cast(tuple[ShapeItemT, ...], payload.items)
+
+    def load_content_signature(
+        self,
+        family: type[CollectedFamily[ShapeItemT]],
+        demand_signature: str = "",
+    ) -> str | None:
+        if self.family_cache_dir is None:
+            return None
+        try:
+            signature = _collected_family_content_signature_path(
+                self.family_cache_dir,
+                self.identity(family, demand_signature),
+            ).read_text(encoding="ascii")
+        except OSError:
+            return None
+        return signature if len(signature) == 32 else None
+
+    def store_items(
+        self,
+        family: type[CollectedFamily[ShapeItemT]],
+        items: tuple[ShapeItemT, ...],
+        demand_signature: str = "",
+    ) -> str | None:
+        if self.family_cache_dir is None or retains_python_ast(items):
+            return None
+        identity = self.identity(family, demand_signature)
+        payload = CollectedFamilyCachePayload(
+            identity=identity,
+            items=items,
+            ast_free=True,
+        )
+        try:
+            payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+            payload_max_bytes = (
+                family.cache_payload_max_bytes
+                if family.cache_payload_max_bytes is not None
+                else identity.schema.max_payload_bytes
+            )
+            if len(payload_bytes) > payload_max_bytes:
+                return None
+            self.family_cache_dir.mkdir(parents=True, exist_ok=True)
+            with _collected_family_cache_path(
+                self.family_cache_dir,
+                identity,
+            ).open("wb") as handle:
+                handle.write(payload_bytes)
+            return _store_collected_family_content_signature(
+                self.family_cache_dir,
+                identity,
+                items,
+            )
+        except (OSError, pickle.PickleError, TypeError, AttributeError):
+            return None
+
+    def bundle_is_complete(
+        self,
+        families: tuple[type[CollectedFamily], ...],
+        demand_signatures: tuple[tuple[type[CollectedFamily], str], ...] = (),
+    ) -> bool:
+        """Validate and mark one mixture of complete and focused families."""
+
+        if self.family_cache_dir is None:
+            return False
+        demand_signature_by_family = dict(demand_signatures)
+        family_identities = tuple(
+            self.identity(
+                family,
+                demand_signature_by_family.get(family, ""),
+            )
+            for family in families
+        )
+        family_entries = tuple(
+            CollectedFamilyProjectionIdentity.from_identity(identity)
+            for identity in family_identities
+        )
+        marker_path = self._bundle_marker_path(family_entries)
+        if self._bundle_marker_is_complete(marker_path):
+            return True
+        if not all(
+            self._entry_exists_for_identity(identity)
+            for identity in family_identities
+        ):
+            return False
+        self._store_bundle_marker(marker_path)
+        return True
+
+    def _bundle_marker_path(
+        self,
+        family_entries: tuple[CollectedFamilyProjectionIdentity, ...],
+    ) -> Path:
+        if self.family_cache_dir is None:
+            raise ValueError("A cache bundle requires a collected-family cache directory")
+        bundle_payload = repr(
+            (
+                "collected-family-bundle-v4",
+                self.resolved_path_text,
+                self.module_name,
+                self.source_signature,
+                (sys.version_info.major, sys.version_info.minor),
+                collected_family_cache_schema,
+                family_entries,
+            )
+        ).encode("utf-8")
+        marker_token = hashlib.blake2s(bundle_payload, digest_size=16).hexdigest()
+        return self.family_cache_dir / f"bundle-{marker_token}.complete"
+
+    @staticmethod
+    def _bundle_marker_is_complete(marker_path: Path) -> bool:
+        try:
+            return marker_path.read_bytes() == b"complete-v4\n"
+        except OSError:
+            return False
+
+    @staticmethod
+    def _store_bundle_marker(marker_path: Path) -> None:
+        try:
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_bytes(b"complete-v4\n")
+        except OSError:
+            pass
 
 
 @lru_cache(maxsize=None)
 def _collect_family_items_cached(
     parsed_module: ParsedModule, family: type[CollectedFamily[ShapeItemT]]
 ) -> tuple[ShapeItemT, ...]:
-    cached_items = _load_cached_collected_family_items(parsed_module, family)
+    cached_items = parsed_module.collected_family_cache.load_items(family)
     if cached_items is not None:
         return cached_items
     items = tuple(
@@ -2278,7 +1991,7 @@ def _collect_family_items_cached(
             if isinstance(item, family.item_type)
         )
     )
-    _store_cached_collected_family_items(parsed_module, family, items)
+    parsed_module.collected_family_cache.store_items(family, items)
     return items
 
 

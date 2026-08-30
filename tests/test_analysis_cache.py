@@ -2905,13 +2905,7 @@ def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
     assert family_cache_dir.exists()
     assert list(family_cache_dir.glob("*.pickle"))
     for family in (role_family, boundary_family):
-        assert not ast_tools_module.collected_family_cache_entry_exists_for_source_signature(
-            path=module_path,
-            module_name="demanded",
-            source_signature=projection_source.source_signature,
-            family_cache_dir=family_cache_dir,
-            family=family,
-        )
+        assert not projection_source.entry_exists(family)
 
 
 def test_report_presence_demand_skips_context_only_single_family_facts(
@@ -4156,12 +4150,8 @@ def test_mixed_projection_shard_uses_only_python_ast(
         for family, projections in result.runtime_projections
     }
     assert (
-        ast_tools_module.load_cached_collected_family_content_signature_for_source_signature(
-            path=module_path,
-            module_name="mixed",
-            source_signature=projection_source.source_signature,
-            family_cache_dir=family_cache_dir,
-            family=runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+        projection_source.load_content_signature(
+            runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
         )
         is not None
     )
@@ -4250,15 +4240,15 @@ def test_compact_incremental_analysis_reuses_consolidated_family_signatures(
         encoding="utf-8",
     )
 
-    def unexpected_individual_signature_load(**kwargs):
-        del kwargs
+    def unexpected_individual_signature_load(self, family, demand_signature=""):
+        del self, family, demand_signature
         raise AssertionError(
             "consolidated index should cover unchanged source families"
         )
 
     monkeypatch.setattr(
-        analysis_module,
-        "load_cached_collected_family_content_signature_for_source_signature",
+        ast_tools_module.CollectedFamilyCacheContext,
+        "load_content_signature",
         unexpected_individual_signature_load,
     )
     incremental = analyze_compact_roots_with_cache(
@@ -4276,25 +4266,29 @@ def test_collected_family_content_signature_index_rejects_stale_source(
 ) -> None:
     cache_dir = tmp_path / "collected-family"
     index = ast_tools_module.CollectedFamilyContentSignatureIndex.load(cache_dir)
-    index.record(
-        path_text="/checkout/pkg/mod.py",
+    source_v1 = ast_tools_module.CollectedFamilyCacheContext(
+        path=Path("/checkout/pkg/mod.py"),
         module_name="pkg.mod",
         source_signature="source-v1",
-        family=RegistrationShapeFamily,
+        family_cache_dir=cache_dir,
+    )
+    index.record(
+        source_v1.identity(RegistrationShapeFamily),
         content_signature="content-v1",
     )
     index.store_if_dirty()
 
     reloaded = ast_tools_module.CollectedFamilyContentSignatureIndex.load(cache_dir)
-    lookup_kwargs = {
-        "path_text": "/checkout/pkg/mod.py",
-        "module_name": "pkg.mod",
-        "family": RegistrationShapeFamily,
-    }
     assert (
-        reloaded.lookup(source_signature="source-v1", **lookup_kwargs) == "content-v1"
+        reloaded.lookup(source_v1.identity(RegistrationShapeFamily)) == "content-v1"
     )
-    assert reloaded.lookup(source_signature="source-v2", **lookup_kwargs) is None
+    source_v2 = ast_tools_module.CollectedFamilyCacheContext(
+        path=source_v1.path,
+        module_name=source_v1.module_name,
+        source_signature="source-v2",
+        family_cache_dir=source_v1.family_cache_dir,
+    )
+    assert reloaded.lookup(source_v2.identity(RegistrationShapeFamily)) is None
 
 
 def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
@@ -4330,43 +4324,30 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
         module_path,
         parser.analysis_root,
     )
-    bundle_kwargs = {
-        "path": module_path,
-        "module_name": module_identity.import_name,
-        "source_signature": ast_tools_module.python_source_cache_signature(source),
-        "family_cache_dir": parser.collected_family_cache_dir,
-        "families": families,
-    }
-    assert (
-        ast_tools_module.collected_family_cache_bundle_is_complete_for_source_signature(
-            **bundle_kwargs
-        )
+    family_cache = ast_tools_module.CollectedFamilyCacheContext(
+        path=module_path,
+        module_name=module_identity.import_name,
+        source_signature=ast_tools_module.python_source_cache_signature(source),
+        family_cache_dir=parser.collected_family_cache_dir,
     )
+    assert family_cache.bundle_is_complete(families)
     family_cache_dir = parser.collected_family_cache_dir
     assert family_cache_dir is not None
     marker_path = next(family_cache_dir.glob("bundle-*.complete"))
     marker_path.write_bytes(b"complete\n")
-    assert (
-        ast_tools_module.collected_family_cache_bundle_is_complete_for_source_signature(
-            **bundle_kwargs
-        )
-    )
-    assert marker_path.read_bytes() == b"complete-v3\n"
+    assert family_cache.bundle_is_complete(families)
+    assert marker_path.read_bytes() == b"complete-v4\n"
 
-    def unexpected_family_stat(**kwargs):
-        del kwargs
+    def unexpected_family_stat(self, family, demand_signature=""):
+        del self, family, demand_signature
         raise AssertionError("complete bundle marker should bypass family stat fan-out")
 
     monkeypatch.setattr(
-        ast_tools_module,
-        "collected_family_cache_entry_exists_for_source_signature",
+        ast_tools_module.CollectedFamilyCacheContext,
+        "entry_exists",
         unexpected_family_stat,
     )
-    assert (
-        ast_tools_module.collected_family_cache_bundle_is_complete_for_source_signature(
-            **bundle_kwargs
-        )
-    )
+    assert family_cache.bundle_is_complete(families)
 
 
 def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
@@ -4386,38 +4367,30 @@ def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
     )
     demand_signature = ast_tools_module.collected_family_demand_cache_signature(demand)
     source_signature = ast_tools_module.python_source_cache_signature(source)
-    ast_tools_module.store_cached_demanded_collected_family_items_for_source_signature(
+    family_cache = ast_tools_module.CollectedFamilyCacheContext(
         path=source_path,
         module_name="context",
         source_signature=source_signature,
         family_cache_dir=family_cache_dir,
-        family=family,
-        demand=demand,
-        items=(),
     )
-    bundle_kwargs = {
-        "path": source_path,
-        "module_name": "context",
-        "source_signature": source_signature,
-        "family_cache_dir": family_cache_dir,
-        "families": (family,),
-        "family_demands": ((family, demand, demand_signature),),
-    }
-    assert ast_tools_module.collected_family_demand_cache_bundle_is_complete_for_source_signature(
-        **bundle_kwargs
+    family_cache.store_items(family, (), demand_signature)
+    assert family_cache.bundle_is_complete(
+        (family,),
+        ((family, demand_signature),),
     )
 
-    def unexpected_family_stat(**kwargs):
-        del kwargs
+    def unexpected_family_stat(self, family, demand_signature=""):
+        del self, family, demand_signature
         raise AssertionError("complete demand bundle should bypass family stat fan-out")
 
     monkeypatch.setattr(
-        ast_tools_module,
-        "demanded_collected_family_cache_entry_exists_for_source_signature",
+        ast_tools_module.CollectedFamilyCacheContext,
+        "entry_exists",
         unexpected_family_stat,
     )
-    assert ast_tools_module.collected_family_demand_cache_bundle_is_complete_for_source_signature(
-        **bundle_kwargs
+    assert family_cache.bundle_is_complete(
+        (family,),
+        ((family, demand_signature),),
     )
 
 
@@ -4428,25 +4401,18 @@ def test_compact_family_cache_rejects_zero_byte_failed_write(tmp_path: Path) -> 
     family_cache_dir = tmp_path / "collected-family"
     family_cache_dir.mkdir()
     family = ExportDictShapeFamily
-    identity = ast_tools_module._collected_family_cache_identity_for_source_signature(
+    family_cache = ast_tools_module.CollectedFamilyCacheContext(
         path=source_path,
         module_name="mod",
         source_signature=ast_tools_module.python_source_cache_signature(source),
-        family=family,
+        family_cache_dir=family_cache_dir,
     )
+    identity = family_cache.identity(family)
     ast_tools_module._collected_family_cache_path(
         family_cache_dir, identity
     ).write_bytes(b"")
 
-    assert (
-        not ast_tools_module.collected_family_cache_entry_exists_for_source_signature(
-            path=source_path,
-            module_name="mod",
-            source_signature=ast_tools_module.python_source_cache_signature(source),
-            family_cache_dir=family_cache_dir,
-            family=family,
-        )
-    )
+    assert not family_cache.entry_exists(family)
 
 
 def test_compact_family_cache_identity_derives_item_schema(
@@ -4464,27 +4430,19 @@ def test_compact_family_cache_identity_derives_item_schema(
     StringItem.__module__ = IntegerItem.__module__ = "fixture"
     StringItem.__qualname__ = IntegerItem.__qualname__ = "SchemaItem"
     source_path = tmp_path / "mod.py"
-    identity_kwargs = {
-        "path": source_path,
-        "module_name": "mod",
-        "source_signature": "source",
-        "family": ExportDictShapeFamily,
-    }
+    family_cache = ast_tools_module.CollectedFamilyCacheContext(
+        path=source_path,
+        module_name="mod",
+        source_signature="source",
+        family_cache_dir=None,
+    )
 
     monkeypatch.setattr(ExportDictShapeFamily, "item_type", StringItem)
     ExportDictShapeFamily.item_schema_signature.cache_clear()
-    string_identity = (
-        ast_tools_module._collected_family_cache_identity_for_source_signature(
-            **identity_kwargs
-        )
-    )
+    string_identity = family_cache.identity(ExportDictShapeFamily)
     monkeypatch.setattr(ExportDictShapeFamily, "item_type", IntegerItem)
     ExportDictShapeFamily.item_schema_signature.cache_clear()
-    integer_identity = (
-        ast_tools_module._collected_family_cache_identity_for_source_signature(
-            **identity_kwargs
-        )
-    )
+    integer_identity = family_cache.identity(ExportDictShapeFamily)
 
     assert (
         string_identity.family_schema.item_type_module

@@ -35,6 +35,7 @@ from .analysis_cache import (
 )
 from .ast_tools import (
     CollectedFamily,
+    CollectedFamilyCacheContext,
     CollectedFamilyContentSignatureIndex,
     CollectedFamilyPresenceDemand,
     ParsedModule,
@@ -43,25 +44,14 @@ from .ast_tools import (
     PythonSourcePathDiscovery,
     PythonSourcePathPolicy,
     SourceModule,
-    collected_family_cache_bundle_is_complete_for_source_signature,
-    collected_family_demand_cache_bundle_is_complete_for_source_signature,
-    collected_family_cache_entry_exists_for_source_signature,
     collected_family_demand_cache_signature,
     collected_family_items_content_signature,
     collect_family_items,
-    demanded_collected_family_cache_entry_exists_for_source_signature,
-    load_cached_collected_family_items_for_source,
-    load_cached_collected_family_content_signature_for_source_signature,
-    load_cached_demanded_collected_family_content_signature_for_source_signature,
-    load_cached_demanded_collected_family_items_for_source_signature,
-    load_cached_collected_family_items_for_source_signature,
     parse_python_module_roots,
     parse_python_modules,
     python_source_cache_signature,
     retains_python_ast,
     semantic_python_source_hash,
-    store_cached_collected_family_items_for_source_signature,
-    store_cached_demanded_collected_family_items_for_source_signature,
 )
 from .cache_paths import (
     ParseCacheDirectory,
@@ -938,15 +928,15 @@ def accumulate_compact_global_projections_for_roots(
                         path,
                         parser.analysis_root,
                     )
+                    family_cache = CollectedFamilyCacheContext.from_source(
+                        path=path,
+                        module_name=module_identity.import_name,
+                        source=source,
+                        family_cache_dir=family_cache_dir,
+                    )
                     missing_families = []
                     for family in accumulator.projection_families:
-                        projections = load_cached_collected_family_items_for_source(
-                            path=path,
-                            module_name=module_identity.import_name,
-                            source=source,
-                            family_cache_dir=family_cache_dir,
-                            family=family,
-                        )
+                        projections = family_cache.load_items(family)
                         if projections is None:
                             missing_families.append(family)
                             continue
@@ -969,21 +959,13 @@ def accumulate_compact_global_projections_for_roots(
 
 
 @dataclass(frozen=True)
-class CompactProjectionCacheSource:
+class CompactProjectionCacheSource(CollectedFamilyCacheContext):
     """One source identity from which a compact family can be loaded or repaired."""
 
-    path: Path
-    module_name: str
-    source_signature: str
-    family_cache_dir: Path | None
     scan_root: Path
     cache_dir: Path | None
     use_parse_cache: bool
     source_policy: PythonSourcePathPolicy
-
-    @cached_property
-    def resolved_path_text(self) -> str:
-        return str(self.path.resolve())
 
 
 @dataclass(frozen=True)
@@ -1048,28 +1030,18 @@ def build_compact_projection_shard(
         demand = demand_by_family.get(family)
         if demand is None:
             continue
-        projections = load_cached_demanded_collected_family_items_for_source_signature(
-            path=source.path,
-            module_name=source.module_name,
-            source_signature=source.source_signature,
-            family_cache_dir=source.family_cache_dir,
-            family=family,
-            demand=demand,
-            demand_signature=demand_signature_by_family.get(family),
+        projections = source.load_items(
+            family,
+            demand_signature_by_family[family],
         )
         if projections is None:
             continue
         add_runtime_projection(
             family,
             tuple(projections),
-            load_cached_demanded_collected_family_content_signature_for_source_signature(
-                path=source.path,
-                module_name=source.module_name,
-                source_signature=source.source_signature,
-                family_cache_dir=source.family_cache_dir,
-                family=family,
-                demand=demand,
-                demand_signature=demand_signature_by_family.get(family),
+            source.load_content_signature(
+                family,
+                demand_signature_by_family[family],
             ),
         )
         ast_families.remove(family)
@@ -1160,25 +1132,13 @@ def build_compact_projection_shard(
                         )
                     if family not in demand_by_family:
                         projection_signature = (
-                            store_cached_collected_family_items_for_source_signature(
-                                path=source.path,
-                                module_name=source.module_name,
-                                source_signature=source.source_signature,
-                                family_cache_dir=source.family_cache_dir,
-                                family=family,
-                                items=projections,
-                            )
+                            source.store_items(family, projections)
                         )
                     else:
-                        projection_signature = store_cached_demanded_collected_family_items_for_source_signature(
-                            path=source.path,
-                            module_name=source.module_name,
-                            source_signature=source.source_signature,
-                            family_cache_dir=source.family_cache_dir,
-                            family=family,
-                            demand=demand,
-                            items=projections,
-                            demand_signature=demand_signature_by_family.get(family),
+                        projection_signature = source.store_items(
+                            family,
+                            projections,
+                            demand_signature_by_family[family],
                         )
                     add_runtime_projection(family, projections, projection_signature)
                     ast_families.remove(family)
@@ -1227,27 +1187,15 @@ def build_compact_projection_shard(
             # the parent does not immediately reopen every newly written file.
             if family in demand_by_family:
                 projection_signature = (
-                    store_cached_demanded_collected_family_items_for_source_signature(
-                        path=source.path,
-                        module_name=source.module_name,
-                        source_signature=source.source_signature,
-                        family_cache_dir=source.family_cache_dir,
-                        family=family,
-                        demand=demand,
-                        items=projections,
-                        demand_signature=demand_signature_by_family.get(family),
+                    source.store_items(
+                        family,
+                        projections,
+                        demand_signature_by_family[family],
                     )
                 )
             else:
                 projection_signature = (
-                    store_cached_collected_family_items_for_source_signature(
-                        path=source.path,
-                        module_name=source.module_name,
-                        source_signature=source.source_signature,
-                        family_cache_dir=source.family_cache_dir,
-                        family=family,
-                        items=projections,
-                    )
+                    source.store_items(family, projections)
                 )
             add_runtime_projection(family, projections, projection_signature)
         del module
@@ -1261,13 +1209,7 @@ def build_compact_projection_shard(
     cache_bundle_complete = bool(
         request.bundle_families
         and not request.family_demands
-        and collected_family_cache_bundle_is_complete_for_source_signature(
-            path=source.path,
-            module_name=source.module_name,
-            source_signature=source.source_signature,
-            family_cache_dir=source.family_cache_dir,
-            families=request.bundle_families,
-        )
+        and source.bundle_is_complete(request.bundle_families)
     )
     release_module_analysis_memory(collect_cycles=False)
     return CompactProjectionBuildResult(
@@ -1411,11 +1353,10 @@ class BoundedCompactProjectionManifest:
         if index is None:
             return None
         return index.lookup(
-            path_text=source.resolved_path_text,
-            module_name=source.module_name,
-            source_signature=source.source_signature,
-            family=family,
-            demand_signature=self._content_signature_demand(source, family),
+            source.identity(
+                family,
+                self._content_signature_demand(source, family) or "",
+            )
         )
 
     def _record_content_signature(
@@ -1428,12 +1369,11 @@ class BoundedCompactProjectionManifest:
         if index is None:
             return
         index.record(
-            path_text=source.resolved_path_text,
-            module_name=source.module_name,
-            source_signature=source.source_signature,
-            family=family,
+            source.identity(
+                family,
+                self._content_signature_demand(source, family) or "",
+            ),
             content_signature=signature,
-            demand_signature=self._content_signature_demand(source, family),
         )
 
     def store_content_signature_indexes(self) -> None:
@@ -1445,50 +1385,23 @@ class BoundedCompactProjectionManifest:
         source: CompactProjectionCacheSource,
         family: type[CollectedFamily],
     ) -> bool:
-        demand = self.family_demands.get(family)
-        if self._is_context_demand_source(source, demand):
-            return demanded_collected_family_cache_entry_exists_for_source_signature(
-                path=source.path,
-                module_name=source.module_name,
-                source_signature=source.source_signature,
-                family_cache_dir=source.family_cache_dir,
-                family=family,
-                demand=demand,
-                demand_signature=self._demand_signature(family),
-            )
-        return collected_family_cache_entry_exists_for_source_signature(
-            path=source.path,
-            module_name=source.module_name,
-            source_signature=source.source_signature,
-            family_cache_dir=source.family_cache_dir,
-            family=family,
+        return source.entry_exists(
+            family,
+            self._content_signature_demand(source, family) or "",
         )
 
     def cache_bundle_is_complete(
         self,
         source: CompactProjectionCacheSource,
     ) -> bool:
-        if self.family_demands:
-            source_demands = tuple(
-                (family, demand, self._demand_signature(family))
-                for family, demand in self.family_demands.items()
-                if self._is_context_demand_source(source, demand)
-            )
-            if source_demands:
-                return collected_family_demand_cache_bundle_is_complete_for_source_signature(
-                    path=source.path,
-                    module_name=source.module_name,
-                    source_signature=source.source_signature,
-                    family_cache_dir=source.family_cache_dir,
-                    families=self.projection_families,
-                    family_demands=source_demands,
-                )
-        return collected_family_cache_bundle_is_complete_for_source_signature(
-            path=source.path,
-            module_name=source.module_name,
-            source_signature=source.source_signature,
-            family_cache_dir=source.family_cache_dir,
-            families=self.projection_families,
+        return source.bundle_is_complete(
+            self.projection_families,
+            tuple(
+                (family, demand_signature)
+                for family in self.projection_families
+                if (demand_signature := self._content_signature_demand(source, family))
+                is not None
+            ),
         )
 
     def projections_for_family(
@@ -1504,28 +1417,13 @@ class BoundedCompactProjectionManifest:
             source_projections = self.runtime_projections.get(source_key)
             demanded_cache_hit = False
             if source_projections is None and is_context_demand:
-                source_projections = (
-                    load_cached_demanded_collected_family_items_for_source_signature(
-                        path=source.path,
-                        module_name=source.module_name,
-                        source_signature=source.source_signature,
-                        family_cache_dir=source.family_cache_dir,
-                        family=family,
-                        demand=demand,
-                        demand_signature=self._demand_signature(family),
-                    )
+                source_projections = source.load_items(
+                    family,
+                    self._demand_signature(family),
                 )
                 demanded_cache_hit = source_projections is not None
             if source_projections is None:
-                source_projections = (
-                    load_cached_collected_family_items_for_source_signature(
-                        path=source.path,
-                        module_name=source.module_name,
-                        source_signature=source.source_signature,
-                        family_cache_dir=source.family_cache_dir,
-                        family=family,
-                    )
-                )
+                source_projections = source.load_items(family)
             if source_projections is None:
                 source_projections = self._repair_source_family(source, family)
             if is_context_demand and not demanded_cache_hit:
@@ -1608,24 +1506,11 @@ class BoundedCompactProjectionManifest:
                     and demand.include_context
                 )
             ):
-                signature = (
-                    load_cached_collected_family_content_signature_for_source_signature(
-                        path=source.path,
-                        module_name=source.module_name,
-                        source_signature=source.source_signature,
-                        family_cache_dir=source.family_cache_dir,
-                        family=family,
-                    )
-                )
+                signature = source.load_content_signature(family)
             if signature is None and is_context_demand:
-                signature = load_cached_demanded_collected_family_content_signature_for_source_signature(
-                    path=source.path,
-                    module_name=source.module_name,
-                    source_signature=source.source_signature,
-                    family_cache_dir=source.family_cache_dir,
-                    family=family,
-                    demand=demand,
-                    demand_signature=self._demand_signature(family),
+                signature = source.load_content_signature(
+                    family,
+                    self._demand_signature(family),
                 )
             if signature is None:
                 return None
