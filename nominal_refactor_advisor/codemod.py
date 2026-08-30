@@ -5359,30 +5359,6 @@ class BaseNamePayloadOperation(RefactorRecipeOperation, ABC):
     base_name: str
 
 
-class AssignmentNamePayloadMixin(ABC):
-    """Operation mixin whose payload exposes a module assignment name."""
-
-    assignment_name: str
-
-
-class ClassKeyPairsPayloadMixin(ABC):
-    """Operation mixin whose payload exposes class/key source pairs."""
-
-    class_key_pairs: tuple[str, ...]
-
-
-class MethodNamePayloadMixin(ABC):
-    """Operation mixin whose payload exposes a method name."""
-
-    method_name: str
-
-
-class FieldDeclarationSourcesPayloadMixin(ABC):
-    """Operation mixin whose payload exposes generated field declarations."""
-
-    field_declaration_sources: tuple[str, ...]
-
-
 @dataclass(frozen=True, kw_only=True)
 class ReplaceTextOperation(RefactorRecipeOperation):
     """Replace one exact text fragment inside a source-index target."""
@@ -5561,9 +5537,7 @@ class DeleteModuleAssignmentsOperation(AssignmentNamesPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceModuleAssignmentOperation(
-    StringPayloadOperation, AssignmentNamePayloadMixin
-):
+class ReplaceModuleAssignmentOperation(StringPayloadOperation):
     """Replace one named module-level assignment statement."""
 
     payload_field_name = SOURCE_PAYLOAD_FIELD
@@ -6310,7 +6284,6 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
 @dataclass(frozen=True, kw_only=True)
 class ExtractMethodsToClassOperation(
     TargetNodeRecipeOperationMixin,
-    FieldDeclarationSourcesPayloadMixin,
     RefactorRecipeOperation,
 ):
     """Extract selected methods from one class into a generated peer authority class."""
@@ -9029,9 +9002,6 @@ class SharedAssignmentValueMixin:
 class DeriveAutoregisterInstanceViewOperation(
     SharedAssignmentValueMixin,
     BaseNamePayloadOperation,
-    AssignmentNamePayloadMixin,
-    ClassKeyPairsPayloadMixin,
-    MethodNamePayloadMixin,
 ):
     """Derive an instance-valued module view from an AutoRegisterMeta family."""
 
@@ -9387,7 +9357,6 @@ class DeriveAutoregisterInstanceViewOperation(
 class ConvertManualRegistryToAutoregisterOperation(
     BaseNamePayloadOperation,
     ManualRegistryConversionCarrier,
-    ClassKeyPairsPayloadMixin,
     AuthorityDeclaringRecipeOperation,
 ):
     """Convert manual class registry writes into an AutoRegisterMeta base."""
@@ -10256,7 +10225,6 @@ class DispatchPolymorphismSource(DispatchPolymorphismFamilySpec):
 class DispatchToPolymorphismOperation(
     TargetNodeRecipeOperationMixin,
     BaseNamePayloadOperation,
-    MethodNamePayloadMixin,
     DispatchPolymorphismFamilySpec,
     DispatchPolymorphismCaseSet,
 ):
@@ -15272,6 +15240,7 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
 class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
     """Metric-specific recipe strategy for semantic mirror findings."""
 
+    metric_type: ClassVar[type[FindingMetrics]]
     __registry__: ClassVar[
         dict[type[FindingMetrics], type["SemanticMirrorFindingRecipeStrategy"]]
     ] = {}
@@ -15313,14 +15282,6 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         raise NotImplementedError
-
-
-class TypedMetricSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy, ABC):
-    """Semantic mirror strategy selected by finding metric carrier type."""
-
-    metric_type: ClassVar[
-        type[BranchCountMetrics] | type[MappingMetrics] | type[RegistrationMetrics]
-    ]
 
 
 @dataclass(frozen=True)
@@ -18438,7 +18399,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
         )
 
 
-class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrategy):
+class RegistrationSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
     """Route class-family semantic mirrors through AutoRegisterMeta recipes."""
 
     metric_type = RegistrationMetrics
@@ -18672,15 +18633,14 @@ class ContextualSemanticMirrorRecipeBuilder(
             for builder_type in cls.builder_types()
         )
 
-    @classmethod
+    @staticmethod
     def builder_registry_key(
-        cls,
         builder_type: type["ContextualSemanticMirrorRecipeBuilder"],
     ) -> str:
-        for registry_key, registered_type in cls.__registry__.items():
-            if registered_type is builder_type:
-                return registry_key
-        return builder_type.__name__
+        return _suffix_trimmed_class_name_registry_key(
+            builder_type.__name__,
+            builder_type,
+        )
 
     @classmethod
     def from_context(
@@ -19116,7 +19076,7 @@ class AutoregisterInstanceViewRecipeBuilder(
         return len(matched_pairs) == len(parsed_pairs)
 
 
-class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrategy):
+class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
     """Represent mapping/schema semantic mirrors as first-class DSL targets."""
 
     metric_type = MappingMetrics
@@ -19291,7 +19251,7 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
 
 class BranchSemanticMirrorRecipeStrategy(
     SharedActionKeysForFindingMixin,
-    TypedMetricSemanticMirrorRecipeStrategy,
+    SemanticMirrorFindingRecipeStrategy,
 ):
     """Route branch-chain semantic mirrors through executable policy extraction."""
 

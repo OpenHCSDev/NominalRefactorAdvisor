@@ -235,6 +235,12 @@ def test_mapping_builder_identity_is_nominally_owned() -> None:
         is EXPECTED_EXECUTABLE_CONCEPTS[builder_type]
         for builder_type in EXPECTED_MAPPING_DECLARATIONS
     )
+    assert (
+        codemod.ContextualSemanticMirrorRecipeBuilder.builder_registry_key(
+            codemod.ContextualSemanticMirrorRecipeBuilder
+        )
+        == "contextual_semantic_mirror"
+    )
 
 
 def test_semantic_mirror_strategy_identity_is_metric_type_derived() -> None:
@@ -243,10 +249,7 @@ def test_semantic_mirror_strategy_identity_is_metric_type_derived() -> None:
         codemod.MappingMetrics: codemod.MappingSemanticMirrorRecipeStrategy,
         codemod.BranchCountMetrics: codemod.BranchSemanticMirrorRecipeStrategy,
     }
-    assert not hasattr(
-        codemod.TypedMetricSemanticMirrorRecipeStrategy,
-        "matches",
-    )
+    assert not hasattr(codemod.SemanticMirrorFindingRecipeStrategy, "matches")
 
 
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:
