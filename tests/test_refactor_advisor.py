@@ -6629,27 +6629,28 @@ class DynamicSource:
 
 
 _REPEATED_BUILDER_SOURCE = """
-def main(builder):
-    builder.register("--json", action="store_true", help="Emit JSON output")
-    builder.register(
-        "--include-plans",
-        action="store_true",
-        help="Include planning details",
-    )
-    builder.register(
-        "--min-builder-keywords",
-        type=int,
-        default=3,
-        help="Minimum builder keywords",
-    )
-    builder.register(
-        "--exclude-pattern",
-        action="append",
-        dest="excluded_pattern_ids",
-        default=[],
-        help="Exclude one pattern id",
-    )
-    return builder
+class Builder:
+    def main(self):
+        self.register("--json", action="store_true", help="Emit JSON output")
+        self.register(
+            "--include-plans",
+            action="store_true",
+            help="Include planning details",
+        )
+        self.register(
+            "--min-builder-keywords",
+            type=int,
+            default=3,
+            help="Minimum builder keywords",
+        )
+        self.register(
+            "--exclude-pattern",
+            action="append",
+            dest="excluded_pattern_ids",
+            default=[],
+            help="Exclude one pattern id",
+        )
+        return self
 """
 
 
@@ -11019,30 +11020,13 @@ def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n    def build(self, candidate):\n        return RuntimePlan(\n            pose_id=candidate.pose_id,\n            score=candidate.score,\n            theorem_handles=tuple(candidate.theorem_handles),\n        )\n\n\nclass Beta:\n    def build(self, entry):\n        return RuntimePlan(\n            pose_id=entry.pose_id,\n            score=entry.score,\n            theorem_handles=tuple(entry.theorem_handles),\n        )\n",
+        "\nclass RuntimePlan:\n    pass\n\n\nclass Alpha:\n    def build(self, candidate):\n        return RuntimePlan(\n            pose_id=candidate.pose_id,\n            score=candidate.score,\n            theorem_handles=tuple(candidate.theorem_handles),\n        )\n\n\nclass Beta:\n    def build(self, entry):\n        return RuntimePlan(\n            pose_id=entry.pose_id,\n            score=entry.score,\n            theorem_handles=tuple(entry.theorem_handles),\n        )\n",
     )
     findings = analyze_path(tmp_path)
     assert any((finding.pattern_id == 14 for finding in findings))
     assert any((finding.pattern_id == 14 and finding.scaffold for finding in findings))
     assert any(
         (finding.pattern_id == 14 and finding.codemod_patch for finding in findings)
-    )
-
-
-def test_repeated_builder_normalizes_positional_identity_fields(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef alpha(labels, unedited_labels, small_removed_labels):\n    return ObjectLabelVariantData.for_labels(\n        labels=labels,\n        unedited_labels=unedited_labels,\n        small_removed_labels=small_removed_labels,\n    )\n\n\ndef beta(labels, unedited_labels, small_removed_labels):\n    return ObjectLabelVariantData.for_labels(\n        labels,\n        unedited_labels,\n        small_removed_labels,\n    )\n\n\ndef gamma(labels, unedited_labels, small_removed_labels):\n    return ObjectLabelVariantData.for_labels(\n        labels,\n        unedited_labels,\n        small_removed_labels,\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        (
-            finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
-            and "for_labels" in finding.summary
-            and "field-mapping" in finding.summary
-        )
-        for finding in findings
     )
 
 

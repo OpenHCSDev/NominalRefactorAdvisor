@@ -16533,13 +16533,15 @@ class AstStreamCollectorExtraction(CollectorExtraction):
         return [ast.Return(value=call)]
 
 
-class NamedFunctionCollectorBoilerplateFindingRecipeSynthesizer(
+class CollectorBoilerplateFindingRecipeSynthesizer(
     SharedActionKeysForFindingMixin,
     EvaluatedFindingRecipeSynthesizer,
+    ABC,
 ):
-    """Build recipes that extract manual named-function collectors."""
+    """Shared recipe selection for accumulator-backed collector extraction."""
 
-    detector_id = "named_function_collector_boilerplate"
+    collector_label: ClassVar[str]
+    extraction_requirement: ClassVar[str]
 
     def evaluate_recipe_for_finding(
         self,
@@ -16548,80 +16550,19 @@ class NamedFunctionCollectorBoilerplateFindingRecipeSynthesizer(
     ) -> FindingRecipeEvaluation:
         if context is None:
             return FindingRecipeEvaluation(
-                rejection_reason="named-function collector extraction requires source context"
+                rejection_reason=f"{self.collector_label} extraction requires source context"
             )
         extraction = self.extraction_for_finding(finding, context)
         if extraction is None:
             return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "named-function collector extraction requires one list "
-                    "accumulator, one _iter_named_functions(module) loop, and "
-                    "one tuple/sorted_tuple return of that accumulator"
-                )
+                rejection_reason=self.extraction_requirement
             )
         recipe = extraction.recipe_for(finding)
         if recipe is None:
             return FindingRecipeEvaluation(
                 rejection_reason=(
-                    "named-function collector extraction could not rewrite the "
+                    f"{self.collector_label} extraction could not rewrite the "
                     "collector residue safely"
-                )
-            )
-        return FindingRecipeEvaluation(recipe=recipe)
-
-    def extraction_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext,
-    ) -> NamedFunctionCollectorExtraction | None:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return None
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=evidence.file_path,
-            qualname=EvidenceSymbol(evidence.symbol).subject,
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id[target.target_id]
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return None
-        return NamedFunctionCollectorExtraction.from_target(target, node)
-
-
-class AstStreamCollectorBoilerplateFindingRecipeSynthesizer(
-    SharedActionKeysForFindingMixin,
-    EvaluatedFindingRecipeSynthesizer,
-):
-    """Build recipes that extract manual AST stream collectors."""
-
-    detector_id = "ast_stream_collector_boilerplate"
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        if context is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="AST stream collector extraction requires source context"
-            )
-        extraction = self.extraction_for_finding(finding, context)
-        if extraction is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "AST stream collector extraction requires either a named-function "
-                    "collector loop or one top-level ast.walk/_walk_nodes loop over "
-                    "a returned list accumulator"
-                )
-            )
-        recipe = extraction.recipe_for(finding)
-        if recipe is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "AST stream collector extraction could not rewrite the collector "
-                    "residue safely"
                 )
             )
         return FindingRecipeEvaluation(recipe=recipe)
@@ -16644,6 +16585,59 @@ class AstStreamCollectorBoilerplateFindingRecipeSynthesizer(
         node = context.ast_target_nodes_by_id[target.target_id]
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             return None
+        return self.extraction_from_target(target, node)
+
+    @classmethod
+    @abstractmethod
+    def extraction_from_target(
+        cls,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> CollectorExtraction | None:
+        """Return the exact extraction admitted by this detector leaf."""
+        raise NotImplementedError
+
+
+class NamedFunctionCollectorBoilerplateFindingRecipeSynthesizer(
+    CollectorBoilerplateFindingRecipeSynthesizer,
+):
+    """Build recipes that extract manual named-function collectors."""
+
+    detector_id = "named_function_collector_boilerplate"
+    collector_label = "named-function collector"
+    extraction_requirement = (
+        "named-function collector extraction requires one list accumulator, one "
+        "_iter_named_functions(module) loop, and one tuple/sorted_tuple return of "
+        "that accumulator"
+    )
+
+    @classmethod
+    def extraction_from_target(
+        cls,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> CollectorExtraction | None:
+        return NamedFunctionCollectorExtraction.from_target(target, node)
+
+
+class AstStreamCollectorBoilerplateFindingRecipeSynthesizer(
+    CollectorBoilerplateFindingRecipeSynthesizer,
+):
+    """Build recipes that extract manual AST stream collectors."""
+
+    detector_id = "ast_stream_collector_boilerplate"
+    collector_label = "AST stream collector"
+    extraction_requirement = (
+        "AST stream collector extraction requires either a named-function collector "
+        "loop or one top-level ast.walk/_walk_nodes loop over a returned list accumulator"
+    )
+
+    @classmethod
+    def extraction_from_target(
+        cls,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> CollectorExtraction | None:
         return CollectorExtraction.from_registered_target(target, node)
 
 

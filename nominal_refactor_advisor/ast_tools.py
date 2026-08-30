@@ -4007,6 +4007,18 @@ def _builder_call_shape(
     call_node = as_ast(node, ast.Call)
     if call_node is not None and owned_builder_authority_call(call_node):
         return None
+    if call_node is not None:
+        is_local_constructor = (
+            isinstance(call_node.func, ast.Name)
+            and call_node.func.id in module_class_names
+        )
+        is_owner_method = (
+            isinstance(call_node.func, ast.Attribute)
+            and isinstance(call_node.func.value, ast.Name)
+            and call_node.func.value.id in {"self", "cls"}
+        )
+        if not (is_local_constructor or is_owner_method):
+            return None
 
     context = (
         Maybe.of(as_ast(node, ast.Call))

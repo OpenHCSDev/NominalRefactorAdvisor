@@ -274,12 +274,13 @@ def test_repeated_builder_nonconcept_rule_does_not_inherit_a_carrier_leaf(
 ) -> None:
     declarations = _repeated_builder_declaration_for_source(
         tmp_path,
-        "def main(builder):\n"
-        '    builder.register("--json", action="store_true", help="JSON")\n'
-        '    builder.register("--plans", action="store_true", help="Plans")\n'
-        '    builder.register("--workers", type=int, default=3, help="Workers")\n'
-        '    builder.register("--exclude", action="append", default=[], help="Exclude")\n'
-        "    return builder\n",
+        "class Builder:\n"
+        "    def main(self):\n"
+        '        self.register("--json", action="store_true", help="JSON")\n'
+        '        self.register("--plans", action="store_true", help="Plans")\n'
+        '        self.register("--workers", type=int, default=3, help="Workers")\n'
+        '        self.register("--exclude", action="append", default=[], help="Exclude")\n'
+        "        return self\n",
     )
 
     assert declarations == (codemod.RepeatedBuilderCallFindingRecipeSynthesizer,)

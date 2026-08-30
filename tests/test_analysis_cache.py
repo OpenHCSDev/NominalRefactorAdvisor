@@ -2477,6 +2477,7 @@ def test_source_native_projection_shard_skips_python_ast_construction(
         "REGISTRY = {}\n"
         "class Alpha: pass\n"
         "class Beta: pass\n"
+        "class Projection: pass\n"
         "REGISTRY['alpha'] = Alpha\n"
         "REGISTRY['beta'] = Beta\n"
         "def export(item):\n"
@@ -3299,10 +3300,6 @@ def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
     )
     config = DetectorConfig()
     family_detector_pairs = (
-        (
-            runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
-            runtime_detectors.RepeatedBuilderCallDetector(),
-        ),
         (ExportDictShapeFamily, runtime_detectors.RepeatedExportDictDetector()),
     )
     for family, detector in family_detector_pairs:

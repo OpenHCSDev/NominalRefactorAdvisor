@@ -2684,8 +2684,10 @@ def _builder_call_projection_sort_key(
 class RepeatedBuilderCallProjectionDemand:
     """Group keys capable of producing a finding with report-target evidence."""
 
-    exact_mapping_keys: frozenset[tuple[str, tuple[str, ...], tuple[str, ...]]]
-    owner_family_keys: frozenset[tuple[str, str]]
+    exact_mapping_keys: frozenset[
+        tuple[str, str, tuple[str, ...], tuple[str, ...]]
+    ]
+    owner_family_keys: frozenset[tuple[str, str, str]]
 
 
 def _repeated_builder_call_projection_demand(
@@ -2698,11 +2700,17 @@ def _repeated_builder_call_projection_demand(
     )
     return RepeatedBuilderCallProjectionDemand(
         exact_mapping_keys=frozenset(
-            (builder.callee_name, builder.field_names, builder.value_fingerprint)
+            (
+                builder.file_path,
+                builder.callee_name,
+                builder.field_names,
+                builder.value_fingerprint,
+            )
             for builder in target_builders
         ),
         owner_family_keys=frozenset(
-            (builder.owner_prefix, builder.callee_name) for builder in target_builders
+            (builder.file_path, builder.owner_prefix, builder.callee_name)
+            for builder in target_builders
         ),
     )
 
@@ -2713,12 +2721,14 @@ def _repeated_builder_call_is_demanded(
 ) -> bool:
     return bool(
         (
+            builder.file_path,
             builder.callee_name,
             builder.field_names,
             builder.value_fingerprint,
         )
         in demand.exact_mapping_keys
-        or (builder.owner_prefix, builder.callee_name) in demand.owner_family_keys
+        or (builder.file_path, builder.owner_prefix, builder.callee_name)
+        in demand.owner_family_keys
     )
 
 
@@ -2743,8 +2753,12 @@ def _collect_repeated_builder_call_ast_demand(
     if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
         raise TypeError("repeated-builder demand has the wrong authority type")
     callee_names = frozenset(
-        callee_name for callee_name, *_remainder in demand.exact_mapping_keys
-    ) | frozenset(callee_name for _owner_name, callee_name in demand.owner_family_keys)
+        callee_name
+        for _file_path, callee_name, *_remainder in demand.exact_mapping_keys
+    ) | frozenset(
+        callee_name
+        for _file_path, _owner_name, callee_name in demand.owner_family_keys
+    )
     return list(
         _project_repeated_builder_call_demand(
             tuple(_module_builder_call_shapes(module, callee_names)),
@@ -2833,15 +2847,19 @@ class RepeatedBuilderCallDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         grouped: dict[
-            (tuple[str, tuple[str, ...], tuple[str, ...]], list[BuilderCallShape])
+            (
+                tuple[str, str, tuple[str, ...], tuple[str, ...]],
+                list[BuilderCallShape],
+            )
         ] = defaultdict(list)
         for builder in builders:
-            if _is_external_declarative_builder_call(builder):
-                continue
             if len(builder.field_names) < config.min_builder_keywords:
                 continue
             grouped[
-                builder.callee_name, builder.field_names, builder.value_fingerprint
+                builder.file_path,
+                builder.callee_name,
+                builder.field_names,
+                builder.value_fingerprint,
             ].append(builder)
         findings: list[RefactorFinding] = []
         for group in grouped.values():
@@ -2886,13 +2904,13 @@ class RepeatedBuilderCallDetector(
         builders: tuple[BuilderCallShape, ...],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        grouped: dict[tuple[str, str], list[BuilderCallShape]] = defaultdict(list)
+        grouped: dict[tuple[str, str, str], list[BuilderCallShape]] = defaultdict(list)
         for builder in builders:
-            if _is_external_declarative_builder_call(builder):
-                continue
             if not builder.field_names:
                 continue
-            grouped[(builder.owner_prefix, builder.callee_name)].append(builder)
+            grouped[
+                (builder.file_path, builder.owner_prefix, builder.callee_name)
+            ].append(builder)
         findings: list[RefactorFinding] = []
         minimum_sites = max(config.min_builder_keywords, 4)
         for owner_key, group in grouped.items():
@@ -2911,7 +2929,7 @@ class RepeatedBuilderCallDetector(
             owner_symbols = {builder.symbol for builder in ordered}
             if len(owner_symbols) != 1:
                 continue
-            owner_symbol, callee_name = owner_key
+            _file_path, owner_symbol, callee_name = owner_key
             evidence = tuple(
                 (
                     SourceLocation(builder.file_path, builder.lineno, builder.symbol)
@@ -3300,18 +3318,6 @@ def _declared_field_extraction_patch(
         "# Delete call-site **declared-field extraction once construction routes "
         "through the authority."
     )
-
-
-_EXTERNAL_DECLARATIVE_BUILDER_CALLS = frozenset(
-    {
-        "add_argument",
-    }
-)
-
-
-def _is_external_declarative_builder_call(builder: BuilderCallShape) -> bool:
-    """Return whether the call is already owned by an external declaration DSL."""
-    return builder.callee_name in _EXTERNAL_DECLARATIVE_BUILDER_CALLS
 
 
 class RepeatedExportDictDetector(
