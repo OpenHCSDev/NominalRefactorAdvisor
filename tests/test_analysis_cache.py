@@ -600,6 +600,35 @@ def test_semantic_graph_latest_cache_is_lightweight_identity_pointer(
     assert latest_path.stat().st_size < exact_path.stat().st_size
 
 
+def test_semantic_graph_cache_publishes_when_directory_sync_is_unsupported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = SemanticDescentGraphCache(tmp_path)
+    identity = SemanticDescentGraphCacheIdentity.from_roots((tmp_path,))
+    graph = _empty_semantic_descent_graph("Published")
+    original_open = semantic_descent_module.os.open
+
+    def open_without_directory_support(path, flags, *args, **kwargs):
+        if Path(path) == tmp_path:
+            raise PermissionError("directory handles are unsupported")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        semantic_descent_module.os, "open", open_without_directory_support
+    )
+
+    cache.store(identity, graph)
+    family_identity = (
+        semantic_descent_module.SemanticDescentGraphCacheFamilyIdentity.from_identity(
+            identity
+        )
+    )
+
+    assert cache.load(identity).graph == graph
+    assert cache.load_latest(family_identity).graph == graph
+
+
 def test_semantic_graph_cache_retains_only_recent_exact_generations(
     tmp_path: Path,
 ) -> None:
@@ -715,7 +744,7 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
     assert str(checkout_a) not in repr(analysis_identity_a)
     relocated_graph = graph_cache.load(graph_identity_b).graph
     assert relocated_graph is not None
-    assert relocated_graph.authorities[0].location.file_path == str(source_b)
+    assert relocated_graph.authorities[0].location.file_path == source_b.as_posix()
 
     detector_calls = 0
     finding_spec = FindingSpec(
@@ -772,7 +801,7 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
     assert first.cache_status is AnalysisCacheStatus.MISS
     assert second.cache_status is AnalysisCacheStatus.HIT
     assert detector_calls == 1
-    assert second.findings[0].evidence[0].file_path == str(source_b)
+    assert second.findings[0].evidence[0].file_path == source_b.as_posix()
 
     source_b.write_text("VALUE = 'foreign content'\n", encoding="utf-8")
     foreign_identity = SemanticDescentGraphCacheIdentity.from_roots((checkout_b,))
@@ -2843,7 +2872,7 @@ def test_report_context_witness_retains_context_promotion_for_target_projection(
         "generated_boundary_semantic_constant_mirror"
     }
     assert any(
-        evidence.file_path == str(target_path)
+        evidence.file_path == target_path.as_posix()
         for finding in result.findings
         for evidence in finding.evidence
     )
@@ -3742,7 +3771,13 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
     assert family_cache.bundle_is_complete(families)
     family_cache_dir = parser.collected_family_cache_dir
     assert family_cache_dir is not None
-    marker_path = next(family_cache_dir.glob("bundle-*.complete"))
+    family_entries = tuple(
+        ast_tools_module.CollectedFamilyProjectionIdentity.from_identity(
+            family_cache.identity(family)
+        )
+        for family in families
+    )
+    marker_path = family_cache._bundle_marker_path(family_entries)
     marker_path.write_bytes(b"complete\n")
     assert family_cache.bundle_is_complete(families)
     assert marker_path.read_bytes() == b"complete-v4\n"
@@ -6500,7 +6535,8 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
         finding.detector_id == "semantic_mirror_without_descent"
         and "`STEP_TABLE` mirrors `Step`" in finding.title
         and any(
-            evidence.file_path == str(members_path) for evidence in finding.evidence
+            evidence.file_path == members_path.as_posix()
+            for evidence in finding.evidence
         )
         for finding in exact_findings
     )
@@ -6646,7 +6682,8 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
         finding.detector_id == "semantic_mirror_without_descent"
         and "`STEP_TABLE` mirrors `Step`" in finding.title
         and any(
-            evidence.file_path == str(registry_path) for evidence in finding.evidence
+            evidence.file_path == registry_path.as_posix()
+            for evidence in finding.evidence
         )
         for finding in exact_findings
     )
@@ -6687,7 +6724,7 @@ def test_private_reference_contextual_cache_invalidates_when_reference_edge_chan
 
     assert any(
         finding.detector_id == "unreferenced_private_function"
-        and finding.evidence[0].file_path == str(helpers_path)
+        and finding.evidence[0].file_path == helpers_path.as_posix()
         and "`_build_plan`" in finding.summary
         for finding in initial_findings
     )
@@ -6710,7 +6747,7 @@ def test_private_reference_contextual_cache_invalidates_when_reference_edge_chan
 
     assert not any(
         finding.detector_id == "unreferenced_private_function"
-        and finding.evidence[0].file_path == str(helpers_path)
+        and finding.evidence[0].file_path == helpers_path.as_posix()
         and "`_build_plan`" in finding.summary
         for finding in updated_findings
     )

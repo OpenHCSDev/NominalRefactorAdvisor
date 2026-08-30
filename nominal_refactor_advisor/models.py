@@ -59,6 +59,9 @@ class SourceLineReference:
     file_path: str
     line: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "file_path", self.file_path.replace("\\", "/"))
+
 
 @dataclass(frozen=True)
 class EvidenceSymbol(SemanticRecord):

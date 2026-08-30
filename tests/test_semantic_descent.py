@@ -1866,7 +1866,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
-    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "planned"
@@ -1932,7 +1932,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
-    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert record.status.value == "planned"
     assert plan.expected_removed_finding_count == 1
@@ -2167,7 +2167,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
-    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "planned"

@@ -403,6 +403,12 @@ def _impact_ranking_finding(
     )
 
 
+def test_source_location_owns_portable_path_identity() -> None:
+    location = SourceLocation(r"C:\repo\pkg\module.py", 7, "Alpha.run")
+
+    assert location.file_path == "C:/repo/pkg/module.py"
+
+
 def test_sorted_findings_authority_uses_detector_declared_priority() -> None:
     raw_finding = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -11216,7 +11222,7 @@ def test_module_cli_simulates_stdin_plan_with_relative_file_paths(
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 1
     assert payload["parse_validation"]["parse_valid"] is True
-    assert f"+++ b{module_path.as_posix()}" in payload["unified_diff"]
+    assert f"+++ b/{module_path.as_posix().lstrip('/')}" in payload["unified_diff"]
     assert "+from pkg.modern import modern" in payload["unified_diff"]
     assert "+        return value + 1" in payload["unified_diff"]
     assert "return value + 1" not in module_path.read_text()
@@ -11277,8 +11283,11 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 2
     assert payload["parse_validation"]["parse_valid"] is True
-    assert f"+++ b{source_path.as_posix()}" in payload["unified_diff"]
-    assert f"+++ b{destination_path.as_posix()}" in payload["unified_diff"]
+    assert f"+++ b/{source_path.as_posix().lstrip('/')}" in payload["unified_diff"]
+    assert (
+        f"+++ b/{destination_path.as_posix().lstrip('/')}"
+        in payload["unified_diff"]
+    )
     assert "+from dataclasses import dataclass" in payload["unified_diff"]
     assert "+class Helper(LocalBase):" in payload["unified_diff"]
     assert "class Helper" in source_path.read_text()
@@ -11432,7 +11441,10 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
     assert simulation_payload["applied"] is False
     assert simulation_payload["applied_rewrite_count"] == 2
     assert simulation_payload["parse_validation"]["parse_valid"] is True
-    assert f"+++ b{destination_path.as_posix()}" in simulation_payload["unified_diff"]
+    assert (
+        f"+++ b/{destination_path.as_posix().lstrip('/')}"
+        in simulation_payload["unified_diff"]
+    )
     assert "+class Helper(LocalBase):" in simulation_payload["unified_diff"]
     assert destination_path.exists() is False
 

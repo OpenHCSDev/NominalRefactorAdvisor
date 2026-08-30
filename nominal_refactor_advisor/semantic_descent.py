@@ -3315,11 +3315,7 @@ class SemanticDescentGraphCache:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary_path, cache_path)
-            directory_descriptor = os.open(cache_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
+            SemanticDescentGraphCache._sync_directory_if_supported(cache_path.parent)
         except BaseException:
             try:
                 os.close(file_descriptor)
@@ -3330,6 +3326,24 @@ class SemanticDescentGraphCache:
             except FileNotFoundError:
                 pass
             raise
+
+    @staticmethod
+    def _sync_directory_if_supported(directory_path: Path) -> None:
+        """Durably sync a cache directory where the host filesystem permits it."""
+
+        try:
+            directory_descriptor = os.open(directory_path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(directory_descriptor)
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(directory_descriptor)
+            except OSError:
+                pass
 
     def store(
         self,
