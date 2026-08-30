@@ -25,9 +25,6 @@ from nominal_refactor_advisor.detectors import (
     RepeatedFieldFamilyDetector,
     SemanticMirrorWithoutDescentDetector,
 )
-from nominal_refactor_advisor.detectors._runtime import (
-    RuntimeAuthorityBranchSemanticsDetector,
-)
 from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
@@ -1178,105 +1175,6 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
     )
 
 
-def test_runtime_authority_branch_chain_synthesizes_authority_recipe(
-    tmp_path: Path,
-) -> None:
-    module_path = _write_module(
-        tmp_path,
-        "class RuntimePolicyAuthority:\n"
-        "    def select_runtime_kind(self, mode):\n"
-        "        if mode == 'html':\n"
-        "            return 'text'\n"
-        "        if mode == 'json':\n"
-        "            return 'data'\n"
-        "        return 'other'\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = next(
-        item
-        for item in RuntimeAuthorityBranchSemanticsDetector().detect(
-            modules, DetectorConfig()
-        )
-        if item.detector_id == "runtime_authority_branch_semantics"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
-    rendered_plan = plan.document.to_dict()
-    operation_kinds = tuple(
-        operation["operation"]
-        for recipe in rendered_plan["recipes"]
-        for operation in recipe["operations"]
-    )
-    inserted_source = rendered_plan["recipes"][0]["operations"][0]["source"]
-    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
-
-    assert record.detector_id == "runtime_authority_branch_semantics"
-    assert record.status.value == "planned"
-    assert operation_kinds == ("insert_before_target", "replace_function_body")
-    assert "SelectRuntimeKindRoleCaseAuthority" in inserted_source
-    assert "axis_values" not in inserted_source
-    assert "def select_runtime_kind(cls, mode):" in inserted_source
-    assert simulation.is_clean is True
-
-    namespace: dict[str, object] = {}
-    exec(rewritten_source, namespace)
-    authority = namespace["RuntimePolicyAuthority"]()
-    assert authority.select_runtime_kind("json") == "data"
-
-
-def test_runtime_authority_guard_returns_synthesize_authority_recipe(
-    tmp_path: Path,
-) -> None:
-    module_path = _write_module(
-        tmp_path,
-        "class RuntimePolicyAuthority:\n"
-        "    def select_runtime_payload(self, values, limit):\n"
-        "        selected = tuple(values)\n"
-        "        if not selected:\n"
-        "            return None\n"
-        "        if len(selected) > limit:\n"
-        "            return None\n"
-        "        payload = ','.join(selected)\n"
-        "        return payload\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = next(
-        item
-        for item in RuntimeAuthorityBranchSemanticsDetector().detect(
-            modules, DetectorConfig()
-        )
-        if item.detector_id == "runtime_authority_branch_semantics"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
-    rendered_plan = plan.document.to_dict()
-    operation_kinds = tuple(
-        operation["operation"]
-        for recipe in rendered_plan["recipes"]
-        for operation in recipe["operations"]
-    )
-    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
-
-    assert record.detector_id == "runtime_authority_branch_semantics"
-    assert record.status.value == "planned"
-    assert operation_kinds == ("insert_before_target", "replace_function_body")
-    assert "SelectRuntimePayloadRoleCaseAuthority" in rewritten_source
-    assert plan.expected_removed_finding_count == 1
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-
-    namespace: dict[str, object] = {}
-    exec(rewritten_source, namespace)
-    authority = namespace["RuntimePolicyAuthority"]()
-    assert authority.select_runtime_payload((), 10) is None
-    assert authority.select_runtime_payload(("a", "b"), 1) is None
-    assert authority.select_runtime_payload(("a", "b"), 3) == "a,b"
 
 
 

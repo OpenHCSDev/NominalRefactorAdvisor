@@ -20127,19 +20127,19 @@ def test_semantic_gate_ranks_larger_boundary_groups_before_label_order() -> None
         "same fact family has multiple writable surfaces",
     )
     small = spec.build(
-        "runtime_authority_branch_semantics",
+        "semantic_mirror_without_descent",
         "small authority branch",
         (SourceLocation("module.py", 10, "SmallAuthority.guard"),),
         title="A small authority branch",
     )
     large_one = spec.build(
-        "runtime_authority_branch_semantics",
+        "semantic_mirror_without_descent",
         "large boundary group one",
         (SourceLocation("module.py", 20, "LargeBoundary.alpha"),),
         title="Z large boundary group",
     )
     large_two = spec.build(
-        "runtime_authority_branch_semantics",
+        "semantic_mirror_without_descent",
         "large boundary group two",
         (SourceLocation("module.py", 30, "LargeBoundary.beta"),),
         title="Z large boundary group",
@@ -20302,7 +20302,7 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
         opportunity_kind="authority_boundary",
         authority_claim=AuthorityClaim(claimed_symbol="ComponentAxisAuthority"),
         priority_tier="ssot_authority_boundary",
-        detector_ids=("runtime_authority_branch_semantics",),
+        detector_ids=("semantic_mirror_without_descent",),
         actionability="semantic_agent_refactor",
         removal_prediction=FindingRemovalPrediction(target_count=1, removed_count=1),
         strategy_id="semantic_agent_required",
@@ -21071,24 +21071,6 @@ def test_detects_dataclass_field_projection_boilerplate(tmp_path: Path) -> None:
 
 
 
-def test_detects_runtime_authority_branch_semantics(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_policy.py",
-        "\nclass CompositeRigidLocalCoverSourceIndicesAuthority:\n    @staticmethod\n    def indices(output_indices, coords):\n        if output_indices is not None:\n            return tuple(output_indices)\n        if coords is None:\n            return None\n        return range(len(coords))\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(
-                tmp_path, DetectorConfig(min_builder_keywords=3)
-            )
-            if finding.detector_id == "runtime_authority_branch_semantics"
-        )
-    )
-    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
-    assert "CompositeRigidLocalCoverSourceIndicesAuthority.indices" in finding.summary
-    assert "formal policy/profile authority" in (finding.codemod_patch or "")
 
 
 def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:

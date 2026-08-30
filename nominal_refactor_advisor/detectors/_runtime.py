@@ -91,9 +91,6 @@ class _ReplacementShapeRole:
 SemanticBranchObservation: TypeAlias = tuple[int, str, str]
 SemanticBranchChain: TypeAlias = tuple[SemanticBranchObservation, ...]
 SemanticBranchChains: TypeAlias = tuple[SemanticBranchChain, ...]
-ReturnGuardBranchObservation: TypeAlias = tuple[int, str, str, bool]
-ReturnGuardBranchChain: TypeAlias = tuple[ReturnGuardBranchObservation, ...]
-ReturnGuardBranchChains: TypeAlias = tuple[ReturnGuardBranchChain, ...]
 BranchObservationT = TypeVar("BranchObservationT")
 BranchChainPredicate: TypeAlias = Callable[[tuple[BranchObservationT, ...]], bool]
 BranchLineNumber: TypeAlias = Callable[[BranchObservationT], int]
@@ -153,12 +150,6 @@ def branch_observation_first_line(observation: Sequence[object]) -> int:
 
 def all_branch_chains_active(chain: tuple[BranchObservationT, ...]) -> bool:
     return True
-
-
-def return_guard_chain_has_literal_default(chain: ReturnGuardBranchChain) -> bool:
-    return any(
-        (is_literal_default for _line, _test, _result, is_literal_default in chain)
-    )
 
 
 def collect_nested_branch_chains_from_body(
@@ -2713,180 +2704,6 @@ def _direct_terminal_return(
     if not isinstance(statement, ast.Return):
         return None
     return statement
-
-
-def _return_expression_is_literal_default(statement: ast.Return) -> bool:
-    return (
-        statement.value is not None
-        and _literal_default_kind(statement.value) is not None
-    )
-
-
-def _runtime_authority_return_guard_chain_from_elif(
-    statement: ast.stmt,
-) -> ReturnGuardBranchChain:
-    if not isinstance(statement, ast.If):
-        return ()
-    chain: list[ReturnGuardBranchObservation] = []
-    current: ast.If | None = statement
-    while current is not None:
-        branch_return = _direct_terminal_return(current.body)
-        if branch_return is None:
-            return ()
-        chain.append(
-            (
-                current.lineno,
-                ast.unparse(current.test),
-                (
-                    ast.unparse(branch_return.value)
-                    if branch_return.value is not None
-                    else "None"
-                ),
-                _return_expression_is_literal_default(branch_return),
-            )
-        )
-        if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
-            current = current.orelse[0]
-            continue
-        current = None
-    return tuple(chain) if len(chain) >= 2 else ()
-
-
-def _runtime_authority_return_guard_chain_from_sequence(
-    body: Sequence[ast.stmt],
-    start: int,
-) -> ReturnGuardBranchChain:
-    chain: list[ReturnGuardBranchObservation] = []
-    index = start
-    while index < len(body):
-        statement = body[index]
-        if not isinstance(statement, ast.If) or statement.orelse:
-            break
-        branch_return = _direct_terminal_return(statement.body)
-        if branch_return is None:
-            break
-        chain.append(
-            (
-                statement.lineno,
-                ast.unparse(statement.test),
-                (
-                    ast.unparse(branch_return.value)
-                    if branch_return.value is not None
-                    else "None"
-                ),
-                _return_expression_is_literal_default(branch_return),
-            )
-        )
-        index += 1
-    return tuple(chain) if len(chain) >= 2 else ()
-
-
-RUNTIME_AUTHORITY_RETURN_GUARD_COLLECTION_SPEC = BranchChainCollectionSpec(
-    _runtime_authority_return_guard_chain_from_elif,
-    _runtime_authority_return_guard_chain_from_sequence,
-    branch_observation_first_line,
-    return_guard_chain_has_literal_default,
-)
-
-
-def _runtime_authority_return_guard_chains_from_body(
-    body: Sequence[ast.stmt],
-) -> ReturnGuardBranchChains:
-    return collect_nested_branch_chains_from_body(
-        body,
-        RUNTIME_AUTHORITY_RETURN_GUARD_COLLECTION_SPEC,
-    )
-
-
-def _runtime_authority_name_is_interesting(text: str) -> bool:
-    if _runtime_semantic_axis_is_interesting(text):
-        return True
-    normalized = text.lower()
-    return any((token in normalized for token in _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS))
-
-
-class RuntimeAuthorityBranchSemanticsDetector(PerModuleSemanticMirrorIssueDetector):
-    finding_spec = high_confidence_spec(
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        "Runtime authority return guards should move behind a formal policy authority",
-        "An Authority method that chooses between runtime values and missing/default returns is still encoding operational semantics in Python. The formal boundary should own the branch cases and expose one declared policy/profile result.",
-        "runtime authority return-guard choices are declared by the formal policy boundary",
-        "an Authority method contains return guards with local missing/default semantics",
-        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
-        _STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
-    )
-
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        for qualname, function in _iter_named_functions(module):
-            if "." not in qualname:
-                continue
-            owner_name = qualname.rsplit(".", 1)[0]
-            if "Authority" not in owner_name:
-                continue
-            if not _runtime_authority_name_is_interesting(
-                f"{owner_name}.{function.name}"
-            ):
-                continue
-            for chain in _runtime_authority_return_guard_chains_from_body(
-                function.body
-            ):
-                test_summary = ", ".join(
-                    (
-                        test_expression
-                        for _line, test_expression, _result, _default in chain[:3]
-                    )
-                )
-                result_summary = ", ".join(
-                    (
-                        result_expression
-                        for _line, _test, result_expression, _default in chain[:3]
-                    )
-                )
-                evidence = tuple(
-                    SourceLocation(
-                        str(module.path),
-                        line,
-                        f"{qualname}:{test_expression}->{result_expression}",
-                    )
-                    for line, test_expression, result_expression, _default in chain[:6]
-                )
-                findings.append(
-                    self.build_finding(
-                        (
-                            f"`{qualname}` keeps {len(chain)} runtime authority "
-                            f"return guards ({test_summary}) selecting "
-                            f"{result_summary}."
-                        ),
-                        evidence,
-                        scaffold=(
-                            "class RuntimeAuthorityPolicy(ABC):\n"
-                            "    @abstractmethod\n"
-                            "    def select(self, source): ...\n\n"
-                            "# Generate or load the concrete selector from the formal runtime profile;\n"
-                            "# Python should consume the selected value, not branch on missing/default cases."
-                        ),
-                        codemod_patch=(
-                            f"# Replace return guards in `{qualname}` with one formal "
-                            "policy/profile authority.\n"
-                            "# Move case precedence and missing/default behavior into the formal "
-                            "runtime profile and make this authority a thin adapter over that result."
-                        ),
-                        metrics=BranchCountMetrics(
-                            branch_site_count=len(chain),
-                            literal_cases=tuple(
-                                result_expression
-                                for _line, _test, result_expression, _default in chain
-                            ),
-                        ),
-                        capability_gap=(
-                            "Authority method missing/default branch semantics are formal-boundary owned"
-                        ),
-                    )
-                )
-        return findings
 
 
 _RELATION_COMPARISON_AXIS_TOKENS = frozenset(
