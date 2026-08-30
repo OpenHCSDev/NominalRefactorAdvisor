@@ -4913,7 +4913,6 @@ IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_she
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
 SMELLY_TYPE_ALIAS_DETECTOR_ID = "smelly_type_alias"
-NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID = "non_nominal_private_helper"
 UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID = "under_amortized_infrastructure"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
@@ -22008,74 +22007,7 @@ def test_keeps_referenced_private_function(tmp_path: Path) -> None:
     )
 
 
-def test_detects_reused_non_nominal_private_helper(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\ndef emit_csv(rows):\n    return ','.join(_normalize_rows(rows, trim=True))\n\n\ndef emit_json(rows):\n    return list(_normalize_rows(rows, trim=True))\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
-        )
-    )
-    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
-    assert "_normalize_rows" in finding.summary
-    assert "emit_csv" in finding.summary
-    assert "emit_json" in finding.summary
-    assert "module_nominal_authority" in finding.summary
-    assert finding.codemod_patch is not None
-    assert "Insertion owner" in finding.codemod_patch
-
-
-def test_non_nominal_private_helper_detects_public_module_private_helper(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _build_runner(config):\n    normalized = []\n    for key, value in sorted(config.items()):\n        normalized.append((str(key), str(value)))\n    return tuple(normalized)\n\n\ndef runner(config):\n    return _build_runner(config)\n\n\n__all__ = tuple(name for name in globals() if not name.startswith('_'))\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
-            and "_build_runner" in finding.summary
-        )
-    )
-    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
-    assert "runner" in finding.summary
-    assert "_build_runner" in finding.summary
-    assert "called from 1 surfaces" in finding.summary
-    assert finding.codemod_patch is not None
-    assert "Move `_build_runner` into a nominal owner" in finding.codemod_patch
-
-
-def test_non_nominal_private_helper_has_no_public_helper_sibling_detector(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\ndef emit_csv(rows):\n    return ','.join(_normalize_rows(rows, trim=True))\n\n\ndef emit_json(rows):\n    return list(_normalize_rows(rows, trim=True))\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
-        and "_normalize_rows" in finding.summary
-        for finding in findings
-    )
-    assert not any(
-        finding.detector_id == "public_module_private_helper"
-        and "_normalize_rows" in finding.summary
-        for finding in findings
-    )
-
-
-def test_non_nominal_private_helper_does_not_duplicate_public_api_delegate_shell(
+def test_detects_public_api_private_delegate_shell(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -22099,71 +22031,6 @@ def test_non_nominal_private_helper_does_not_duplicate_public_api_delegate_shell
         and "route_scoring" in finding.summary
         for finding in findings
     )
-    assert not any(
-        finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
-        and "route_scoring" in finding.summary
-        for finding in findings
-    )
-
-
-def test_places_reused_private_helper_on_existing_inheritance_root(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\nclass BaseEmitter:\n    pass\n\n\nclass CsvEmitter(BaseEmitter):\n    def emit(self, rows):\n        return ','.join(_normalize_rows(rows, trim=True))\n\n\nclass JsonEmitter(BaseEmitter):\n    def emit(self, rows):\n        return list(_normalize_rows(rows, trim=True))\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
-        )
-    )
-    assert "existing_inheritance_root" in finding.summary
-    assert "`BaseEmitter`" in finding.summary
-    assert "concrete/template method on `BaseEmitter`" in (finding.codemod_patch or "")
-    assert "Transported inputs: ('rows',)" in (finding.codemod_patch or "")
-    assert "Classvars: ('NORMALIZE_ROWS_TRIM',)" in (finding.codemod_patch or "")
-
-
-def test_derives_private_helper_residue_from_callsite_axes(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _render(rows, *, formatter, suffix):\n    normalized = []\n    for row in rows:\n        value = formatter(row)\n        if value:\n            normalized.append(value + suffix)\n    if not normalized:\n        return ()\n    return tuple(normalized)\n\n\nclass BaseEmitter:\n    pass\n\n\nclass CsvEmitter(BaseEmitter):\n    def emit(self, rows):\n        return _render(rows, formatter=self.format_row, suffix=',')\n\n\nclass JsonEmitter(BaseEmitter):\n    def emit(self, rows):\n        return _render(rows, formatter=self.format_value, suffix=';')\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
-        )
-    )
-    patch = finding.codemod_patch or ""
-    assert "existing_inheritance_root" in finding.summary
-    assert "Transported inputs: ('rows',)" in patch
-    assert "Classvars: ('RENDER_SUFFIX',)" in patch
-    assert "Property hooks: ('formatter',)" in patch
-    assert "HELPER_TEMPLATE(_render)" in patch
-
-
-def test_detects_publicly_escaped_private_helper(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\ndef emit_csv(rows):\n    return ','.join(_normalize_rows(rows, trim=True))\n",
-    )
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
-    )
-    assert "Escaped private helper" in finding.title
-    assert "_normalize_rows" in finding.summary
-
-
 def test_detects_private_helper_semantic_cluster(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -22207,7 +22074,6 @@ def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarat
         for detector_type in (
             runtime_detectors.DanglingPrivateMethodDetector,
             runtime_detectors.DeadEmbeddedStaticPayloadDetector,
-            runtime_detectors.NonNominalPrivateHelperDetector,
             runtime_detectors.PrivateHelperSemanticClusterDetector,
             runtime_detectors.UnreferencedPrivateFunctionDetector,
         )
@@ -22227,7 +22093,6 @@ def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarat
         for detector_type in (
             runtime_detectors.DanglingPrivateMethodDetector,
             runtime_detectors.DeadEmbeddedStaticPayloadDetector,
-            runtime_detectors.NonNominalPrivateHelperDetector,
             runtime_detectors.PrivateHelperSemanticClusterDetector,
             runtime_detectors.UnreferencedPrivateFunctionDetector,
         )

@@ -3040,47 +3040,6 @@ def test_private_reference_report_demand_skips_context_without_target_candidate(
     assert context_items[0].functions
 
 
-def test_private_reference_witness_skips_companion_class_context(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    target_path = package_root / "target.py"
-    context_path = package_root / "context.py"
-    target_path.write_text("def public():\n    return 1\n", encoding="utf-8")
-    context_path.write_text(
-        "class ContextOwner:\n"
-        "    pass\n\n"
-        "def _context_helper(value):\n"
-        "    return value + 1\n",
-        encoding="utf-8",
-    )
-    family = class_index_module.CompactModuleClassProjectionFamily
-    original_collect = family.collect.__func__
-    collected_paths: list[Path] = []
-
-    def observed_collect(cls, parsed_module):
-        collected_paths.append(parsed_module.path.resolve())
-        return original_collect(cls, parsed_module)
-
-    monkeypatch.setattr(family, "collect", classmethod(observed_collect))
-    result = analyze_compact_roots_with_cache(
-        (package_root,),
-        use_parse_cache=False,
-        analysis_cache_dir=None,
-        parse_workers=1,
-        report_scope=AnalysisPathScope(
-            analysis_roots=(package_root,),
-            report_roots=(target_path,),
-        ),
-        detector_types=(runtime_detectors.NonNominalPrivateHelperDetector,),
-    )
-
-    assert result.findings == []
-    assert collected_paths == [target_path.resolve()]
-
-
 def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> None:
     family = class_index_module.CompactModuleClassProjectionFamily
     empty_projection = class_index_module.CompactModuleClassProjection(
@@ -5637,7 +5596,6 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
         semantic_descent_detectors.SemanticMirrorWithoutDescentDetector,
         runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector,
         role_surface_detectors.RoleSurfaceDriftDetector,
-        runtime_detectors.NonNominalPrivateHelperDetector,
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     manifest = analysis_module.BoundedCompactProjectionManifest(detector_types)
@@ -6994,80 +6952,6 @@ def test_compact_role_guarded_surface_candidates_preserve_semantics_without_ast_
     ) == [detector._finding_for_candidate(candidate)]
 
 
-def test_compact_non_nominal_private_helper_preserves_semantics_without_ast_shadow(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "helpers.py").write_text(
-        "def _build_plan(value, mode):\n"
-        "    first = normalize(value)\n"
-        "    second = prepare(first, mode)\n"
-        "    third = validate(second)\n"
-        "    fourth = transform(third)\n"
-        "    fifth = finalize(fourth)\n"
-        "    sixth = audit(fifth)\n"
-        "    seventh = publish(sixth)\n"
-        "    return seventh\n\n"
-        "class BaseRunner:\n"
-        "    pass\n\n"
-        "class AlphaRunner(BaseRunner):\n"
-        "    def run(self, value):\n"
-        "        return _build_plan(value, 'alpha')\n\n"
-        "class BetaRunner(BaseRunner):\n"
-        "    def run(self, value):\n"
-        "        return _build_plan(value, self.mode)\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    detector = runtime_detectors.NonNominalPrivateHelperDetector()
-    projection_groups = type(detector).compact_module_projection_groups(modules)
-    private_projections = projection_groups[
-        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily
-    ]
-    class_projections = projection_groups[
-        runtime_detectors.CompactModuleClassProjectionFamily
-    ]
-    config = DetectorConfig()
-    compact_candidates = (
-        runtime_detectors._compact_non_nominal_private_helper_candidates(
-            private_projections,
-            class_projections,
-            config,
-        )
-    )
-    assert len(compact_candidates) == 1
-    placement = compact_candidates[0].placement_plan
-    assert placement.placement_kind == "existing_inheritance_root"
-    assert placement.insertion_owner_name == "BaseRunner"
-    assert placement.residue_plan.transported_parameter_names == ("value",)
-    assert placement.residue_plan.callsite_axis_count == 1
-    assert detector._candidate_items(list(modules), config) == compact_candidates
-    assert detector._findings_from_compact_projection_groups(
-        projection_groups,
-        config,
-    ) == [
-        detector._finding_for_candidate(candidate) for candidate in compact_candidates
-    ]
-    assert not hasattr(runtime_detectors, "_non_nominal_private_helper_candidates")
-    assert "_candidate_items_for_private_reference_context" not in type(
-        detector
-    ).__dict__
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (package_root,),
-        (
-            runtime_detectors.NonNominalPrivateHelperDetector,
-            runtime_detectors.PrivateHelperSemanticClusterDetector,
-            runtime_detectors.ManualConcreteSubclassRosterDetector,
-        ),
-        use_parse_cache=False,
-    )
-    assert accumulator.projection_count == 2
-    assert accumulator.findings_by_detector(config)[
-        runtime_detectors.NonNominalPrivateHelperDetector
-    ] == [detector._finding_for_candidate(candidate) for candidate in compact_candidates]
-
-
 def test_compact_private_helper_cluster_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
@@ -7957,9 +7841,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.RoleGuardedSurfaceAccessDetector in (
         partition.compact_global_detector_types
     )
-    assert runtime_detectors.NonNominalPrivateHelperDetector in (
-        partition.compact_global_detector_types
-    )
     assert surface_detectors.DistributedBoundaryFanoutDetector in (
         partition.compact_global_detector_types
     )
@@ -8008,7 +7889,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 68
+    assert len(partition.compact_global_detector_types) == 67
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

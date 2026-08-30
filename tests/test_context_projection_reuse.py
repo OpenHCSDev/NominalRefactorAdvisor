@@ -371,9 +371,6 @@ def test_empty_derived_contract_projection_is_not_recomputed(
             modules[0]
         )
     )
-    class_projections = tuple(
-        runtime_detectors.CompactModuleClassProjectionFamily.collect(modules[0])
-    )
     assert private_projections[0].derived_candidate_collector_contract_names == ()
 
     monkeypatch.setattr(
@@ -386,11 +383,6 @@ def test_empty_derived_contract_projection_is_not_recomputed(
 
     runtime_detectors._compact_unreferenced_private_function_candidates(
         private_projections,
-        DetectorConfig(),
-    )
-    runtime_detectors._compact_non_nominal_private_helper_candidates(
-        private_projections,
-        class_projections,
         DetectorConfig(),
     )
     runtime_detectors._compact_private_helper_semantic_cluster_candidates(
