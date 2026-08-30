@@ -4907,7 +4907,6 @@ PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID = "parallel_primitive_carrier"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
-UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID = "under_amortized_infrastructure"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 REPEATED_BUILDER_CALLS_DETECTOR_ID = "repeated_builder_calls"
 REPEATED_EXPORT_DICTS_DETECTOR_ID = "repeated_export_dicts"
@@ -10475,34 +10474,6 @@ def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
     assert "__mro__" in (finding.scaffold or "")
     assert "AutoRegisterMeta" not in (finding.scaffold or "")
     assert "bind_all" in (finding.codemod_patch or "")
-
-
-def test_detects_under_amortized_effect_infrastructure(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/effects.py",
-        "\nclass EffectStep:\n    pass\n\n\nclass SingleUseCarrier:\n    pass\n\n\ndef single_use_matcher(node):\n    return SingleUseCarrier()\n\n\ndef shared_matcher(node):\n    return node\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer_a.py",
-        "\nfrom pkg.effects import shared_matcher, single_use_matcher\n\n\ndef consume_one(node):\n    return single_use_matcher(node)\n\n\ndef consume_shared(node):\n    return shared_matcher(node)\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer_b.py",
-        "\nfrom pkg.effects import shared_matcher\n\n\ndef consume_again(node):\n    return shared_matcher(node)\n",
-    )
-    finding = next(
-        (
-            item
-            for item in analyze_path(tmp_path)
-            if item.detector_id == UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID
-        )
-    )
-    assert "single_use_matcher" in finding.summary
-    assert "SingleUseCarrier" in finding.summary
-    assert "shared_matcher" not in finding.summary
 
 
 def test_flags_abstraction_detector_without_backend_loc_payoff_guard(
@@ -23841,58 +23812,6 @@ def test_detects_option_record_quotient_family(tmp_path: Path) -> None:
     }
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
-
-
-def test_detects_under_amortized_service_infrastructure(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/services.py",
-        "\nclass SingleUseService:\n    pass\n\n\ndef single_use_service(value):\n    return SingleUseService()\n\n\ndef shared_service(value):\n    return value\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer_a.py",
-        "\nfrom pkg.services import shared_service, single_use_service\n\n\ndef consume_one(value):\n    return single_use_service(value)\n\n\ndef consume_shared(value):\n    return shared_service(value)\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer_b.py",
-        "\nfrom pkg.services import shared_service\n\n\ndef consume_again(value):\n    return shared_service(value)\n",
-    )
-    finding = next(
-        (
-            item
-            for item in analyze_path(tmp_path)
-            if item.detector_id == UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID
-        )
-    )
-    assert "single_use_service" in finding.summary
-    assert "SingleUseService" in finding.summary
-    assert "shared_service" not in finding.summary
-
-
-def test_under_amortized_infrastructure_ignores_data_carriers_and_ids(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/models.py",
-        "\nfrom enum import Enum\n\n\nclass ActionBuilderId(Enum):\n    ALPHA = 'alpha'\n\n\nclass AlphaStrategyCandidate:\n    pass\n\n\nclass SharedService:\n    pass\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer.py",
-        "\nfrom pkg.models import ActionBuilderId, AlphaStrategyCandidate, SharedService\n\n\ndef consume():\n    return ActionBuilderId.ALPHA, AlphaStrategyCandidate(), SharedService()\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID
-    ]
-    assert len(findings) == 1
-    assert "SharedService" in findings[0].summary
-    assert "ActionBuilderId" not in findings[0].summary
-    assert "AlphaStrategyCandidate" not in findings[0].summary
 
 
 def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(

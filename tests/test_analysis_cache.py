@@ -3198,52 +3198,6 @@ def test_native_class_header_core_matches_cached_minimal_projection(
 
 
 
-def test_native_remaining_systemic_demand_matches_selected_references(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    target_path = package_root / "target.py"
-    context_path = package_root / "context.py"
-    target_path.write_text(
-        "class PipelineService:\n"
-        "    pass\n"
-        "\n"
-        "def build_registry():\n"
-        "    return PipelineService()\n",
-        encoding="utf-8",
-    )
-    context_source = (
-        "PipelineService = object()\n"
-        "\n"
-        "class Consumer:\n"
-        "    def run(self):\n"
-        "        return owner.PipelineService\n"
-    )
-    context_path.write_text(context_source, encoding="utf-8")
-    modules = {
-        module.path.name: module
-        for module in parse_python_modules(package_root, use_parse_cache=False)
-    }
-    family = systemic_detectors.CompactRemainingSystemicModuleProjectionFamily
-    target_items = tuple(family.collect(modules["target.py"]))
-    context_items = tuple(family.collect(modules["context.py"]))
-    demand = family.report_demand(target_items, DetectorConfig())
-
-    expected = family.project_cached_demand(context_items, demand)
-    actual = family.collect_demanded_source(
-        SourceModule(context_path, "context", context_source),
-        NativePythonSyntaxIndex.from_source(context_source),
-        demand,
-    )
-
-    assert actual is not None
-    assert tuple(actual) == expected
-    assert actual[0].reference_summaries_by_symbol == (
-        ("PipelineService", 2, ("<module>", "Consumer.run")),
-    )
-
-
 def test_native_public_delegate_demand_matches_imported_callsites(
     tmp_path: Path,
 ) -> None:
@@ -4937,7 +4891,6 @@ def test_multi_family_systemic_detectors_share_one_compact_class_graph(
     detector_types = (
         systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
         systemic_detectors.ImplicitSelfContractMixinDetector,
-        systemic_detectors.UnderAmortizedInfrastructureDetector,
     )
     calls = 0
     original_builder = systemic_detectors.compact_class_index_from_projection_groups
@@ -6947,13 +6900,10 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.ImplicitSelfContractMixinDetector in (
         partition.compact_global_detector_types
     )
-    assert systemic_detectors.UnderAmortizedInfrastructureDetector in (
-        partition.compact_global_detector_types
-    )
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 58
+    assert len(partition.compact_global_detector_types) == 57
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

@@ -11810,19 +11810,6 @@ class EffectStepImplementationLeakCandidate(ClassMethodLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class UnderAmortizedInfrastructureCandidate(LineWitnessCandidate):
-    declaration_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
-    support_names: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return ", ".join(self.declaration_names[:4])
-
-
-
-
-@dataclass(frozen=True)
 class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
     collector_name: str
     scope_kind: str

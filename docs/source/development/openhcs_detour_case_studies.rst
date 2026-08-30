@@ -265,9 +265,9 @@ Bounded NRA scans were run on closed PR heads where GitHub still exposed the
      - WIP registry branch retained unresolved config/UI smells.
    * - #57
      - ``config_framework`` had ``25`` findings; widget services had ``42``
-       findings including ``under_amortized_infrastructure``
-     - Resolved-value service pressure was real, but service extraction was not
-       yet rent-proven.
+       findings
+     - Resolved-value service pressure was real, but consumer count alone did
+       not prove incorrect ownership.
    * - #50
      - ``custom_functions`` had ``7`` findings
      - Additive infrastructure was smaller and more contained, but still needed

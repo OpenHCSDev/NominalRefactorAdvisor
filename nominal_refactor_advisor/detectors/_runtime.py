@@ -6134,8 +6134,6 @@ class PrivateReferenceModuleIndex:
     function_counts_by_id: dict[int, Counter[str]]
     functions: tuple[PrivateReferenceIndexedFunction, ...]
     named_functions: tuple[PrivateReferenceNamedFunction, ...]
-    reference_summaries_by_symbol: tuple[tuple[str, int, tuple[str, ...]], ...]
-    public_declaration_reference_names_by_name: dict[str, tuple[str, ...]]
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> "PrivateReferenceModuleIndex":
@@ -6144,48 +6142,6 @@ class PrivateReferenceModuleIndex:
             module.module_name,
             module.semantic_hash,
         )
-
-
-def _reference_summary_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _reference_summaries_from_sites(
-    reference_sites_by_symbol: dict[str, set[tuple[int, str]]],
-) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
-    return tuple(
-        (
-            symbol,
-            len(sites),
-            sorted_tuple({scope_symbol for _, scope_symbol in sites}),
-        )
-        for symbol, sites in sorted(reference_sites_by_symbol.items())
-    )
-
-
-def _selected_reference_summaries(
-    module_node: ast.Module,
-    symbol_names: frozenset[str],
-) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
-    """Project exact lexical reference summaries for selected symbol names."""
-
-    syntax_index = module_syntax_index(module_node)
-    scope_symbols = tuple(
-        ".".join(scope.names) if scope.names else "<module>"
-        for scope in syntax_index.scopes
-    )
-    reference_sites_by_symbol: dict[str, set[tuple[int, str]]] = defaultdict(set)
-    for node_index, node in enumerate(syntax_index.depth_first_nodes):
-        reference_name = _reference_summary_name(node)
-        if reference_name in symbol_names:
-            reference_sites_by_symbol[reference_name].add(
-                (node.lineno, scope_symbols[syntax_index.scope_ids[node_index]])
-            )
-    return _reference_summaries_from_sites(reference_sites_by_symbol)
 
 
 @lru_cache(maxsize=None)
@@ -6205,14 +6161,6 @@ def _private_reference_module_index(
     symbol_references_by_function_id = {
         id(function): set() for _, function in surface_functions
     }
-    public_declaration_names = frozenset(
-        node.name
-        for node in module_node.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        and not node.name.startswith("_")
-    )
-    reference_sites_by_symbol: dict[str, set[tuple[int, str]]] = defaultdict(set)
-    public_declaration_reference_names: dict[str, set[str]] = defaultdict(set)
     named_functions: list[tuple[int, str]] = []
     named_function_nodes_by_id: dict[int, _RuntimeFunctionNode] = {}
     isinstance_calls_by_function_id: dict[
@@ -6266,18 +6214,6 @@ def _private_reference_module_index(
             strict=True,
         )
     )
-    scope_symbols = tuple(
-        ".".join(scope.names) if scope.names else "<module>"
-        for scope in syntax_index.scopes
-    )
-    public_declaration_names_by_scope = tuple(
-        (
-            scope.names[0]
-            if scope.names and scope.names[0] in public_declaration_names
-            else None
-        )
-        for scope in syntax_index.scopes
-    )
     surface_function_ids_by_index = {
         function_index: function_id
         for function_index, function_id in (
@@ -6293,7 +6229,6 @@ def _private_reference_module_index(
         if node_ordinal % 2048 == 0:
             scan_deadline_checkpoint("contextual_private_reference_index")
         scope_id = syntax_index.scope_ids[node_index]
-        scope = syntax_index.scopes[scope_id]
         counted_function_ids = counted_function_ids_by_scope[scope_id]
         executable_function_index = syntax_index.executable_function_indices[node_index]
         reference_function_id = surface_function_ids_by_index.get(
@@ -6306,21 +6241,6 @@ def _private_reference_module_index(
                 function_counts_by_id[function_id][name] += 1
             if reference_function_id is not None:
                 symbol_references_by_function_id[reference_function_id].add(name)
-        reference_name = _reference_summary_name(node)
-        if reference_name is not None:
-            reference_sites_by_symbol[reference_name].add(
-                (node.lineno, scope_symbols[scope_id])
-            )
-            public_declaration_name = public_declaration_names_by_scope[scope_id]
-            if (
-                public_declaration_name is not None
-                and reference_name in public_declaration_names
-                and reference_name != public_declaration_name
-            ):
-                public_declaration_reference_names[public_declaration_name].add(
-                    reference_name
-                )
-
         active_named_functions = active_named_functions_by_scope[scope_id]
         if (
             isinstance(node, ast.Call)
@@ -6370,13 +6290,6 @@ def _private_reference_module_index(
             )
             for function_id, qualname in named_functions
         ),
-        reference_summaries_by_symbol=_reference_summaries_from_sites(
-            reference_sites_by_symbol
-        ),
-        public_declaration_reference_names_by_name={
-            name: sorted_tuple(public_declaration_reference_names.get(name, ()))
-            for name in sorted(public_declaration_names)
-        },
     )
 
 

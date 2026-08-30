@@ -63,19 +63,9 @@ class CompactImplicitSelfMixinFact:
 
 
 @dataclass(frozen=True)
-class CompactInfrastructureDeclarationFact:
-    name: str
-    line: int
-    referenced_public_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class CompactRemainingSystemicModuleProjection(CompactModuleIdentity):
     concrete_type_functions: tuple[CompactConcreteTypeCaseFunctionFact, ...]
     implicit_self_mixins: tuple[CompactImplicitSelfMixinFact, ...]
-    infrastructure_declarations: tuple[CompactInfrastructureDeclarationFact, ...]
-    declares_effect_infrastructure: bool
-    reference_summaries_by_symbol: tuple[tuple[str, int, tuple[str, ...]], ...]
 
 
 def _compact_concrete_type_case_function_facts(
@@ -184,34 +174,6 @@ def _compact_implicit_self_mixin_facts(
     return tuple(facts)
 
 
-def _compact_infrastructure_facts(
-    module: ParsedModule,
-) -> tuple[
-    tuple[CompactInfrastructureDeclarationFact, ...],
-    bool,
-    tuple[tuple[str, int, tuple[str, ...]], ...],
-]:
-    from ._runtime import PrivateReferenceModuleIndex
-
-    declarations = _public_top_level_declarations(module)
-    module_index = PrivateReferenceModuleIndex.from_module(module)
-    declaration_facts = tuple(
-        CompactInfrastructureDeclarationFact(
-            name=name,
-            line=node.lineno,
-            referenced_public_names=(
-                module_index.public_declaration_reference_names_by_name.get(name, ())
-            ),
-        )
-        for name, node in declarations.items()
-    )
-    return (
-        declaration_facts,
-        _declares_effect_infrastructure(declarations),
-        module_index.reference_summaries_by_symbol,
-    )
-
-
 class CompactRemainingSystemicModuleProjectionFamily(
     CollectedFamily[CompactRemainingSystemicModuleProjection]
 ):
@@ -223,9 +185,6 @@ class CompactRemainingSystemicModuleProjectionFamily(
         cls, parsed_module: ParsedModule
     ) -> list[CompactRemainingSystemicModuleProjection]:
         del cls
-        declarations, declares_effect, reference_sites = _compact_infrastructure_facts(
-            parsed_module
-        )
         return [
             CompactRemainingSystemicModuleProjection(
                 file_path=str(parsed_module.path),
@@ -234,130 +193,8 @@ class CompactRemainingSystemicModuleProjectionFamily(
                     parsed_module
                 ),
                 implicit_self_mixins=_compact_implicit_self_mixin_facts(parsed_module),
-                infrastructure_declarations=declarations,
-                declares_effect_infrastructure=declares_effect,
-                reference_summaries_by_symbol=reference_sites,
             )
         ]
-
-
-@dataclass(frozen=True)
-class CompactRemainingSystemicProjectionDemand:
-    """External reference summaries needed for target-owned infrastructure."""
-
-    infrastructure_names: frozenset[str]
-
-
-def _remaining_systemic_projection_demand(
-    target_items: tuple[object, ...],
-    config: object,
-) -> CompactRemainingSystemicProjectionDemand:
-    del config
-    return CompactRemainingSystemicProjectionDemand(
-        infrastructure_names=frozenset(
-            declaration.name
-            for item in target_items
-            if isinstance(item, CompactRemainingSystemicModuleProjection)
-            and item.declares_effect_infrastructure
-            for declaration in item.infrastructure_declarations
-        )
-    )
-
-
-def _project_remaining_systemic_demand(
-    items: tuple[object, ...],
-    demand: object,
-) -> tuple[object, ...]:
-    if not isinstance(demand, CompactRemainingSystemicProjectionDemand):
-        return items
-    projected: list[CompactRemainingSystemicModuleProjection] = []
-    for item in items:
-        if not isinstance(item, CompactRemainingSystemicModuleProjection):
-            continue
-        reference_summaries = tuple(
-            summary
-            for summary in item.reference_summaries_by_symbol
-            if summary[0] in demand.infrastructure_names
-        )
-        if reference_summaries:
-            projected.append(
-                CompactRemainingSystemicModuleProjection(
-                    file_path=item.file_path,
-                    module_name=item.module_name,
-                    concrete_type_functions=(),
-                    implicit_self_mixins=(),
-                    infrastructure_declarations=(),
-                    declares_effect_infrastructure=False,
-                    reference_summaries_by_symbol=reference_summaries,
-                )
-            )
-    return tuple(projected)
-
-
-def _collect_remaining_systemic_ast_demand(
-    parsed_module: ParsedModule,
-    demand: object,
-) -> list[object]:
-    if (
-        isinstance(demand, CompactRemainingSystemicProjectionDemand)
-        and not any(name in parsed_module.source for name in demand.infrastructure_names)
-    ):
-        return []
-    return list(
-        _project_remaining_systemic_demand(
-            tuple(
-                CompactRemainingSystemicModuleProjectionFamily.collect(parsed_module)
-            ),
-            demand,
-        )
-    )
-
-
-def _collect_remaining_systemic_source_demand(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-    demand: object,
-) -> list[object] | None:
-    if not isinstance(demand, CompactRemainingSystemicProjectionDemand):
-        raise TypeError("remaining-systemic demand has the wrong authority type")
-    if not syntax_index.is_complete:
-        return None
-    names = demand.infrastructure_names
-    if not names or not any(name in source_module.source for name in names):
-        return []
-    from ._runtime import _selected_reference_summaries
-
-    reference_summaries = _selected_reference_summaries(
-        ast.parse(source_module.source, filename=str(source_module.path)),
-        names,
-    )
-    if not reference_summaries:
-        return []
-    return [
-        CompactRemainingSystemicModuleProjection(
-            file_path=str(source_module.path),
-            module_name=source_module.module_name,
-            concrete_type_functions=(),
-            implicit_self_mixins=(),
-            infrastructure_declarations=(),
-            declares_effect_infrastructure=False,
-            reference_summaries_by_symbol=reference_summaries,
-        )
-    ]
-
-
-CompactRemainingSystemicModuleProjectionFamily.report_demand_builder = staticmethod(
-    _remaining_systemic_projection_demand
-)
-CompactRemainingSystemicModuleProjectionFamily.ast_demand_collector = staticmethod(
-    _collect_remaining_systemic_ast_demand
-)
-CompactRemainingSystemicModuleProjectionFamily.source_demand_collector = staticmethod(
-    _collect_remaining_systemic_source_demand
-)
-CompactRemainingSystemicModuleProjectionFamily.cached_demand_projector = staticmethod(
-    _project_remaining_systemic_demand
-)
 
 
 def _compact_class_for_detector_name(
@@ -593,115 +430,6 @@ def _compact_implicit_self_contract_mixin_candidates(
             )
         )
     return tuple(candidates)
-
-
-def _compact_under_amortized_infrastructure_candidates(
-    projections: tuple[CompactRemainingSystemicModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
-) -> tuple[UnderAmortizedInfrastructureCandidate, ...]:
-    if class_index is None:
-        class_index = build_compact_class_family_index(class_projections)
-    reference_summaries: dict[str, list[tuple[str, int, tuple[str, ...]]]] = (
-        defaultdict(list)
-    )
-    for projection in projections:
-        for (
-            symbol,
-            site_count,
-            owner_symbols,
-        ) in projection.reference_summaries_by_symbol:
-            reference_summaries[symbol].append(
-                (projection.file_path, site_count, owner_symbols)
-            )
-    candidates: list[UnderAmortizedInfrastructureCandidate] = []
-    for projection in projections:
-        declarations = {
-            item.name: item for item in projection.infrastructure_declarations
-        }
-        if not declarations or not projection.declares_effect_infrastructure:
-            continue
-        public_names = frozenset(declarations)
-        external_consumer_site_counts = {
-            name: sum(
-                site_count
-                for file_path, site_count, _owner_symbols in reference_summaries.get(
-                    name, ()
-                )
-                if file_path != projection.file_path
-            )
-            for name in public_names
-        }
-        external_consumers = {
-            name: frozenset(
-                owner_symbol
-                for file_path, _site_count, owner_symbols in reference_summaries.get(
-                    name, ()
-                )
-                if file_path != projection.file_path
-                for owner_symbol in owner_symbols
-            )
-            for name in public_names
-        }
-        declaration_refs = {
-            name: frozenset(item.referenced_public_names)
-            for name, item in declarations.items()
-        }
-        amortized_support_names = frozenset(
-            support_name
-            for name, refs in declaration_refs.items()
-            if external_consumer_site_counts[name] > 1
-            for support_name in refs
-        )
-
-        def descendant_fanout(name: str) -> int:
-            symbol = class_index.symbol_for(
-                file_path=projection.file_path, qualname=name
-            )
-            if symbol is None:
-                return 0
-            return sum(
-                1
-                for descendant_symbol in class_index.descendant_symbols(symbol)
-                if (descendant := class_index.class_for(descendant_symbol)) is not None
-                and not descendant.is_abstract
-            )
-
-        names = sorted_tuple(
-            name
-            for name in public_names
-            if external_consumer_site_counts[name] == 1
-            and _looks_like_infrastructure_declaration_name(name)
-            and name not in amortized_support_names
-            and descendant_fanout(name) < 2
-        )
-        if not names:
-            continue
-        internal_consumers: dict[str, set[str]] = defaultdict(set)
-        for name, refs in declaration_refs.items():
-            for ref_name in refs:
-                internal_consumers[ref_name].add(name)
-        support_names = sorted_tuple(
-            ref_name
-            for name in names
-            for ref_name in declaration_refs[name]
-            if external_consumer_site_counts[ref_name] == 0
-            and internal_consumers[ref_name] <= {name}
-        )
-        consumers = sorted_tuple(
-            consumer for name in names for consumer in external_consumers[name]
-        )
-        candidates.append(
-            UnderAmortizedInfrastructureCandidate(
-                file_path=projection.file_path,
-                line=min(declarations[name].line for name in names),
-                declaration_names=names,
-                consumer_symbols=sorted_tuple(set(consumers)),
-                support_names=support_names,
-            )
-        )
-    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line))
 
 
 @dataclass(frozen=True)
@@ -5300,97 +5028,6 @@ declare_candidate_rule_detector(
     ),
     detector_base=SourceModuleCollectorCandidateDetector,
 )
-
-
-class UnderAmortizedInfrastructureDetector(
-    CompactMultiModuleProjectionDetectorMixin,
-    CrossModuleCollectorCandidateDetector[UnderAmortizedInfrastructureCandidate],
-):
-    module_projection_families = (
-        CompactRemainingSystemicModuleProjectionFamily,
-        CompactModuleClassProjectionFamily,
-    )
-    compact_shared_group_context_builder = staticmethod(
-        compact_class_index_from_projection_groups
-    )
-    finding_spec = finding_spec_template(
-        PatternId.STAGED_ORCHESTRATION,
-        "Matcher infrastructure should pay rent through fanout",
-        "A shared matcher/effect infrastructure module should earn its declarations through repeated external use. When a public helper or carrier has only one external consumer and is not support for a broadly reused declaration, the abstraction is expanding the surface area faster than it compresses manual code.",
-        "public matcher infrastructure whose declaration cost is amortized by multiple consumers",
-        "effect/matcher module public surface has single-consumer declarations",
-        _SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
-
-    def _findings_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        candidates = _compact_under_amortized_infrastructure_candidates(
-            cast(
-                tuple[CompactRemainingSystemicModuleProjection, ...],
-                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
-            ),
-            cast(
-                tuple[CompactModuleClassProjection, ...],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
-        )
-        return self._findings_for_candidates(candidates, config)
-
-    def _findings_from_compact_projection_groups_context(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        candidates = _compact_under_amortized_infrastructure_candidates(
-            cast(
-                tuple[CompactRemainingSystemicModuleProjection, ...],
-                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
-            ),
-            cast(
-                tuple[CompactModuleClassProjection, ...],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
-            class_index=_shared_compact_class_index(context),
-        )
-        return self._findings_for_candidates(candidates, config)
-
-    def _finding_for_candidate(
-        self, under_amortized: UnderAmortizedInfrastructureCandidate
-    ) -> RefactorFinding:
-        declaration_preview = ", ".join(under_amortized.declaration_names[:8])
-        consumer_preview = ", ".join(under_amortized.consumer_symbols[:4])
-        support_suffix = (
-            f" Single-consumer support declarations: {', '.join(under_amortized.support_names[:8])}."
-            if under_amortized.support_names
-            else ""
-        )
-        return self.build_finding(
-            (
-                f"{under_amortized.file_path} exposes single-consumer matcher infrastructure "
-                f"{declaration_preview}; consumers: {consumer_preview}.{support_suffix}"
-            ),
-            (under_amortized.evidence,),
-            scaffold=(
-                "# Either inline the single-consumer declaration into its only consumer, or merge it into an already-amortized primitive.\n# Keep new public matcher infrastructure only when fanout shows more than one external consumer."
-            ),
-            codemod_patch=(
-                "# Collapse the single-consumer public surface before adding more matcher machinery.\n# If the declaration represents real reusable semantics, route at least two consumers through it."
-            ),
-            metrics=OrchestrationMetrics(
-                function_line_count=0,
-                branch_site_count=len(under_amortized.declaration_names),
-                call_site_count=len(under_amortized.consumer_symbols),
-                parameter_count=len(under_amortized.support_names),
-                callee_family_count=1,
-            ),
-        )
-
-
 
 
 declare_candidate_rule_detector(

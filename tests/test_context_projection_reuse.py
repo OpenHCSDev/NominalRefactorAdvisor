@@ -193,30 +193,6 @@ class Owner:
             and not node.keywords
             and systemic_detectors._ast_terminal_name(node.func) == "isinstance"
         )
-    legacy_reference_sites = systemic_detectors._local_symbol_reference_sites((module,))
-    assert index.reference_summaries_by_symbol == tuple(
-        (
-            symbol,
-            len(sites),
-            tuple(sorted({site.symbol for site in sites})),
-        )
-        for symbol, sites in legacy_reference_sites.items()
-    )
-    declarations = systemic_detectors._public_top_level_declarations(module)
-    public_names = frozenset(declarations)
-    assert index.public_declaration_reference_names_by_name == {
-        name: tuple(
-            sorted(
-                systemic_detectors._public_declaration_reference_names(
-                    node,
-                    public_names,
-                )
-            )
-        )
-        for name, node in sorted(declarations.items())
-    }
-
-
 def test_private_reference_compact_families_share_one_module_projection(
     tmp_path: Path,
 ) -> None:
