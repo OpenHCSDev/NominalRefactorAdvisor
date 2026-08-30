@@ -658,15 +658,8 @@ class NominalAuthorityIndex:
 
     def _build_derived_indexes(self) -> None:
         self._shapes_by_name: dict[str, list[NominalAuthorityShape]] = defaultdict(list)
-        self._reusable_shapes_by_first_field: dict[
-            tuple[str, str], list[NominalAuthorityShape]
-        ] = defaultdict(list)
         for shape in self._shapes:
             self._shapes_by_name[shape.class_name].append(shape)
-            if len(shape.field_type_map) >= 2 and _is_reusable_nominal_authority(shape):
-                self._reusable_shapes_by_first_field[shape.field_type_map[0]].append(
-                    shape
-                )
 
     @classmethod
     def from_shapes(
@@ -699,47 +692,6 @@ class NominalAuthorityIndex:
 
     def shapes_named(self, class_name: str) -> tuple[NominalAuthorityShape, ...]:
         return tuple(self._shapes_by_name.get(class_name, ()))
-
-    def compatible_authorities_for(
-        self, shape: NominalAuthorityShape
-    ) -> tuple[NominalAuthorityShape, ...]:
-        compatible: list[NominalAuthorityShape] = []
-        for authority in (
-            authority
-            for field in shape.field_type_map
-            for authority in self._reusable_shapes_by_first_field.get(field, ())
-        ):
-            if authority.class_name == shape.class_name:
-                continue
-            if authority.class_name in set(shape.ancestor_names):
-                continue
-            shared_field_names = (
-                HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
-                    shape, authority
-                )
-            )
-            if len(shared_field_names) < 2:
-                continue
-            if set(shared_field_names) != set(authority.field_names):
-                continue
-            compatible.append(authority)
-        return sorted_tuple(
-            compatible,
-            key=lambda authority: (
-                -len(authority.field_names),
-                not authority.is_abstract,
-                authority.class_name,
-            ),
-        )
-
-
-def _is_reusable_nominal_authority(shape: NominalAuthorityShape) -> bool:
-    if shape.class_name.endswith("Detector"):
-        return False
-    return bool(
-        shape.is_abstract or shape.class_name.endswith(("Base", "Mixin", "Carrier"))
-    )
-
 
 def _enum_key_family(node: ast.AST) -> tuple[str, str] | None:
     if not isinstance(node, ast.Attribute):
@@ -1548,126 +1500,6 @@ def _structural_observation_property_candidates(
         module.module,
         ast.ClassDef,
         _structural_observation_property_candidates_for_class,
-    )
-
-
-def _reuse_kind_for_authority(shape: NominalAuthorityShape) -> str:
-    return "compose_mixin" if shape.class_name.endswith("Mixin") else "inherit_base"
-
-
-def _existing_nominal_authority_reuse_candidates_from_index(
-    index: NominalAuthorityIndex,
-) -> tuple[ExistingNominalAuthorityReuseCandidate, ...]:
-    candidates: list[ExistingNominalAuthorityReuseCandidate] = []
-    for shape in index.all_shapes():
-        if shape.is_abstract or len(shape.field_type_map) < 2:
-            continue
-        compatible = index.compatible_authorities_for(shape)
-        if not compatible:
-            continue
-        matching_authorities = tuple(
-            item
-            for item in compatible
-            if CLASS_NAME_ALGEBRA.token_set(item.class_name)
-            & CLASS_NAME_ALGEBRA.token_set(shape.class_name)
-        )
-        if not matching_authorities:
-            continue
-        authority = matching_authorities[0]
-        shared_nominal_ancestors = (
-            set(shape.ancestor_names) & set(authority.ancestor_names)
-        ) - _IGNORED_ANCESTOR_NAMES
-        if shared_nominal_ancestors:
-            continue
-        shared_field_names = (
-            HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
-                shape, authority
-            )
-        )
-        if len(shared_field_names) < 2:
-            continue
-        candidates.append(
-            ExistingNominalAuthorityReuseCandidate(
-                file_path=shape.file_path,
-                line=shape.line,
-                subject_name=shape.class_name,
-                name_family=shared_field_names,
-                compatible_authority_file_path=authority.file_path,
-                compatible_authority_name=authority.class_name,
-                compatible_authority_line=authority.line,
-                reuse_kind=_reuse_kind_for_authority(authority),
-                shared_role_names=_semantic_role_names_for_fields(shared_field_names),
-            )
-        )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.file_path,
-                item.line,
-                item.class_name,
-                item.compatible_authority_name,
-            ),
-        )
-    )
-
-
-def _nominal_authority_implementation_retreat_candidates_from_index(
-    index: NominalAuthorityIndex,
-) -> tuple[NominalAuthorityImplementationRetreatCandidate, ...]:
-    candidates: list[NominalAuthorityImplementationRetreatCandidate] = []
-    for shape in index.all_shapes():
-        if shape.is_abstract or not shape.is_dataclass_family:
-            continue
-        if len(shape.field_type_map) < 2:
-            continue
-        for authority in index.compatible_authorities_for(shape):
-            if not authority.is_dataclass_family:
-                continue
-            shared_nominal_ancestors = (
-                set(shape.ancestor_names) & set(authority.ancestor_names)
-            ) - _IGNORED_ANCESTOR_NAMES
-            if shared_nominal_ancestors:
-                continue
-            shared_field_names = (
-                HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
-                    shape,
-                    authority,
-                )
-            )
-            if len(shared_field_names) < 2:
-                continue
-            if set(shared_field_names) != set(authority.field_names):
-                continue
-            candidates.append(
-                NominalAuthorityImplementationRetreatCandidate(
-                    retreat_authority_sites=(
-                        NominalAuthorityImplementationRetreatSite(
-                            path=shape.file_path,
-                            line=shape.line,
-                            class_name=shape.class_name,
-                        ),
-                        NominalAuthorityImplementationRetreatSite(
-                            path=authority.file_path,
-                            line=authority.line,
-                            class_name=authority.class_name,
-                        ),
-                    ),
-                    shared_field_names=shared_field_names,
-                    shared_role_names=_semantic_role_names_for_fields(
-                        shared_field_names
-                    ),
-                )
-            )
-            break
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: tuple(
-                (site.path, site.line, site.class_name)
-                for site in item.retreat_authority_sites
-            ),
-        )
     )
 
 

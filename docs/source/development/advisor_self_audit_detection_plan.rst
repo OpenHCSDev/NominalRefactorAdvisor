@@ -182,32 +182,17 @@ Repeated ``StructuralObservation(...)`` projection builders
   - ``nominal_refactor_advisor/observation_shapes.py``
   - ``tests/test_refactor_advisor.py``
 
-Existing compatible ``ABC`` or base is not reused
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Retired proposal: inferred existing-authority reuse
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Primary pattern**: Pattern 5 ``ABC template-method migration`` with an existing-authority reuse check
-- **Current status**: not detected as a first-class rule
-- **Should the current tool catch it?** partially, but it currently does not
-- **Existing detector families that should help**:
-  - ``RepeatedFieldFamilyDetector``
-  - ``SemanticWitnessFamilyDetector``
-  - ``MixinEnforcementDetector``
-- **Current failure mode**:
-  - repeated-family detectors reason over sibling duplication cohorts, not over the space of already declared authorities
-  - the tool can say that several classes should share a base, but it does not ask whether a compatible base already exists and should simply be inherited
-  - there is no project-wide nominal authority index for comparing concrete classes against existing abstract bases, reusable dataclass carriers, or mixins
-  - prescriptions therefore over-synthesize new bases and under-reuse existing nominal structure
-- **Detection change required**: add an existing-authority reuse detector, or widen field-family and
-  witness-family analysis so they first search for compatible declared authorities before proposing a new
-  one
-- **Proposed detector name**: ``ExistingNominalAuthorityReuseDetector``
-- **Prescribed collapse**: inherit the existing ``ABC`` or base directly when semantics match; if only one
-  orthogonal semantic slice matches, reuse or extract a mixin and compose through multiple inheritance
-- **Primary files**:
-  - ``nominal_refactor_advisor/detectors.py``
-  - ``nominal_refactor_advisor/observation_families.py``
-  - ``nominal_refactor_advisor/observation_shapes.py``
-  - ``tests/test_refactor_advisor.py``
+The original audit proposed treating compatible fields, class-name affinity,
+and ``Base``/``Mixin``/``Carrier`` suffixes as evidence that one class should
+inherit another.  The implemented detector was later retired because those
+signals prove structural coincidence, not nominal ownership or a safe
+substitutability relation.  Existing-authority reuse should be recommended
+only when a declaration-owned relation or a certified semantic-descent path
+identifies the authority.
+
 
 Priority Order
 --------------
@@ -217,24 +202,21 @@ Phase 0: generic semantic substrate
 
 1. add a project-wide nominal authority index
 2. add reusable semantic-role normalization helpers for fields, projections, and detector pipelines
-3. add an existing-authority preference rule so prescriptions reuse compatible bases or mixins before
-   synthesizing new ones
 
 Phase 1: add missing detector families
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-4. ``ManualFamilyRosterDetector``
-5. ``FragmentedFamilyAuthorityDetector``
-6. ``ExistingNominalAuthorityReuseDetector``
+3. ``ManualFamilyRosterDetector``
+4. ``FragmentedFamilyAuthorityDetector``
 
 These have the clearest gap: the current system is not even trying to detect them.
 
 Phase 2: sharpen existing pattern families
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-7. ``FindingAssemblyPipelineDetector`` or equivalent Pattern 5 widening
-8. ``GuardedDelegatorSpecDetector`` or equivalent Pattern 5 widening
-9. ``StructuralObservationProjectionDetector`` or equivalent Pattern 14 widening
+5. ``FindingAssemblyPipelineDetector`` or equivalent Pattern 5 widening
+6. ``GuardedDelegatorSpecDetector`` or equivalent Pattern 5 widening
+7. ``StructuralObservationProjectionDetector`` or equivalent Pattern 14 widening
 
 These are structurally in scope already, but the current normalization is too lexical.
 

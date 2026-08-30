@@ -5305,12 +5305,10 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     assert concrete_context_calls == 1
 
 
-def test_compact_nominal_authority_candidates_preserve_semantics(
+def test_compact_pass_through_nominal_wrapper_preserves_semantics(
     tmp_path: Path,
 ) -> None:
     for deleted_shadow in (
-        "_existing_nominal_authority_reuse_candidates",
-        "_nominal_authority_implementation_retreat_candidates",
         "_normalized_authority_name",
         "_is_self_delegate_attribute",
         "_forwarded_delegate_property_name",
@@ -5350,49 +5348,9 @@ def test_compact_nominal_authority_candidates_preserve_semantics(
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
-    detector = surface_detectors.ExistingNominalAuthorityReuseDetector()
-    projections = detector.compact_module_projections(modules)
-    compact_index = surface_detectors._compact_nominal_authority_index(
-        projections, config
+    projections = surface_detectors.PassThroughNominalWrapperDetector.compact_module_projections(
+        modules
     )
-    reuse_candidates = (
-        surface_detectors._existing_nominal_authority_reuse_candidates_from_index(
-            compact_index
-        )
-    )
-    assert len(reuse_candidates) == 1
-    reuse_candidate = reuse_candidates[0]
-    assert reuse_candidate.class_name == "JobSpecCopy"
-    assert reuse_candidate.compatible_authority_name == "JobSpecBase"
-    assert reuse_candidate.shared_field_names == ("name", "priority")
-    assert reuse_candidate.shared_role_names == ("name_payload", "priority")
-    assert reuse_candidate.reuse_kind == "inherit_base"
-
-    retreat_candidates = (
-        surface_detectors._nominal_authority_implementation_retreat_candidates_from_index(
-            compact_index
-        )
-    )
-    assert len(retreat_candidates) == 1
-    retreat_candidate = retreat_candidates[0]
-    assert tuple(
-        site.class_name for site in retreat_candidate.retreat_authority_sites
-    ) == ("JobSpecCopy", "JobSpecBase")
-    assert retreat_candidate.shared_field_names == ("name", "priority")
-    assert retreat_candidate.shared_role_names == ("name_payload", "priority")
-
-    for detector_type, expected_candidates in (
-        (surface_detectors.ExistingNominalAuthorityReuseDetector, reuse_candidates),
-        (
-            surface_detectors.NominalAuthorityImplementationRetreatDetector,
-            retreat_candidates,
-        ),
-    ):
-        instance = detector_type()
-        assert instance._candidate_items(list(modules), config) == expected_candidates
-        assert instance._findings_from_compact_context(
-            projections, compact_index, config
-        ) == instance._findings_for_candidates(expected_candidates, config)
     compact_wrapper_candidates = (
         surface_detectors._compact_pass_through_nominal_wrapper_candidates(projections)
     )
@@ -5520,40 +5478,6 @@ def test_nominal_surface_indexed_components_match_axis_graph() -> None:
     assert (
         nominal_surface_detectors._surface_confusability_components(nodes) == expected
     )
-
-
-def test_nominal_authority_detectors_share_one_compact_context(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "mod.py").write_text("class Root: pass\n", encoding="utf-8")
-    detector_types = (
-        surface_detectors.ExistingNominalAuthorityReuseDetector,
-        surface_detectors.NominalAuthorityImplementationRetreatDetector,
-    )
-    calls = 0
-    original_builder = surface_detectors._compact_nominal_authority_index
-
-    def counting_builder(projections, config):
-        nonlocal calls
-        calls += 1
-        return original_builder(projections, config)
-
-    for detector_type in detector_types:
-        monkeypatch.setattr(
-            detector_type,
-            "compact_shared_context_builder",
-            staticmethod(counting_builder),
-        )
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (package_root,), detector_types, use_parse_cache=False
-    )
-
-    accumulator.findings_by_detector(DetectorConfig())
-
-    assert calls == 1
 
 
 def _write_compact_abc_optimizer_fixture(package_root: Path) -> None:
@@ -6491,12 +6415,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert surface_detectors.ManualFamilyRosterDetector in (
         partition.compact_global_detector_types
     )
-    assert surface_detectors.ExistingNominalAuthorityReuseDetector in (
-        partition.compact_global_detector_types
-    )
-    assert surface_detectors.NominalAuthorityImplementationRetreatDetector in (
-        partition.compact_global_detector_types
-    )
     assert surface_detectors.DuplicateNominalAuthoritySurfaceDetector in (
         partition.compact_global_detector_types
     )
@@ -6548,7 +6466,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 53
+    assert len(partition.compact_global_detector_types) == 51
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

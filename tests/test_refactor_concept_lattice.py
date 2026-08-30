@@ -42,9 +42,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.RepeatedFieldFamilyFindingRecipeSynthesizer: (
         codemod.DataclassInheritanceLiftConcept
     ),
-    codemod.ExistingNominalAuthorityReuseFindingRecipeSynthesizer: (
-        codemod.DataclassInheritanceLiftConcept
-    ),
     codemod.PrefixedRoleBundleFindingRecipeSynthesizer: (
         codemod.PrefixBundleCarrierConcept
     ),

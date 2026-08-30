@@ -10101,13 +10101,6 @@ class SupportProjectionAuthority:
 SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()
 
 
-class FieldFamilyRelationLevel(StrEnum):
-    """Non-structural field-family relation levels reported in metrics."""
-
-    EXISTING_NOMINAL_AUTHORITY = "existing_nominal_authority"
-    IMPLEMENTATION_NEUTRAL_NOMINAL_ROOT = "implementation_neutral_nominal_root"
-
-
 @dataclass(frozen=True)
 class FieldFamilyCandidate:
     class_names: tuple[str, ...]
@@ -10366,33 +10359,6 @@ class NameFamilyClassNamesMixin(ABC):
 class SubjectNameFunctionNameMixin(ABC):
     subject_name: str
     function_name = AliasProperty[str]("subject_name")
-
-
-@dataclass(frozen=True)
-class ExistingNominalAuthorityReuseCandidate(WitnessCarrierCandidate):
-    compatible_authority_file_path: str
-    compatible_authority_name: str
-    compatible_authority_line: int
-    reuse_kind: str
-    shared_role_names: tuple[str, ...]
-    shared_field_names = AliasProperty[tuple[str, ...]]("name_family")
-
-
-@dataclass(frozen=True)
-class NominalAuthorityImplementationRetreatSite:
-    path: str
-    line: int
-    class_name: str
-
-
-@dataclass(frozen=True)
-class NominalAuthorityImplementationRetreatCandidate:
-    retreat_authority_sites: tuple[
-        NominalAuthorityImplementationRetreatSite,
-        NominalAuthorityImplementationRetreatSite,
-    ]
-    shared_field_names: tuple[str, ...]
-    shared_role_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)

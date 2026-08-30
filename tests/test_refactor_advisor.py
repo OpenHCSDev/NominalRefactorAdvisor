@@ -8626,53 +8626,6 @@ def test_companion_dataclass_surface_requires_matching_defaults(tmp_path: Path) 
     )
 
 
-def test_detects_nominal_authority_implementation_retreat(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass TorsionProjectionCompiledBasisCarrier:\n    projection_specs: object\n    compiled_projection_specs: object\n\n    def projection_basis_arrays(self):\n        return self.compiled_projection_specs(self.projection_specs)\n\n\n@dataclass\nclass ExactContactFeasibilityConstraintSystemProvider:\n    projection_specs: object\n    compiled_projection_specs: object\n    ready: bool = False\n\n    def __call__(self):\n        return self.compiled_projection_specs(self.projection_specs)\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "nominal_authority_implementation_retreat"
-        )
-    )
-    assert "ExactContactFeasibilityConstraintSystemProvider" in finding.summary
-    assert "TorsionProjectionCompiledBasisCarrier" in finding.summary
-    assert "implementation-neutral nominal root" in (finding.codemod_patch or "")
-    assert "ABC" in (finding.scaffold or "")
-    assert finding.metrics.field_names == (
-        "compiled_projection_specs",
-        "projection_specs",
-    )
-
-
-def test_existing_nominal_authority_reuse_accepts_shared_root(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\nclass TorsionProjectionCompiledBasisRoot(ABC):\n    pass\n\n\n@dataclass(frozen=True)\nclass TorsionProjectionCompiledBasisCarrier(TorsionProjectionCompiledBasisRoot):\n    projection_specs: object\n    compiled_projection_specs: object\n\n\n@dataclass\nclass ExactContactFeasibilityConstraintSystemProvider(TorsionProjectionCompiledBasisRoot):\n    projection_specs: object\n    compiled_projection_specs: object\n",
-    )
-    findings = analyze_path(tmp_path)
-    summaries = [
-        finding.summary
-        for finding in findings
-        if finding.detector_id
-        in {
-            "existing_nominal_authority_reuse",
-            "nominal_authority_implementation_retreat",
-        }
-    ]
-    assert summaries == []
-
-
 def test_ignores_explicit_public_measurement_companion_dataclass(
     tmp_path: Path,
 ) -> None:
@@ -21503,78 +21456,6 @@ def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
     assert "_PATTERN_DEPENDENCIES" in finding.summary
     assert "PatternId" in finding.summary
     assert "class PatternIdSpec" in (finding.scaffold or "")
-
-
-def test_detects_existing_nominal_authority_reuse(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass EventCarrierBase(ABC):\n    file_path: str\n    line: int\n    subject_name: str\n    payload: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass DetachedEventCarrier:\n    file_path: str\n    line: int\n    subject_name: str\n    payload: tuple[str, ...]\n    status: str\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "existing_nominal_authority_reuse"
-        )
-    )
-    assert "DetachedEventCarrier" in finding.summary
-    assert "EventCarrierBase" in finding.summary
-    assert "EventCarrierBase" in (finding.scaffold or "")
-
-
-def test_existing_nominal_authority_reuse_synthesizes_inheritance_lift(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\n"
-        "@dataclass(frozen=True)\nclass EventCarrierBase(ABC):\n"
-        "    file_path: str\n"
-        "    line: int\n"
-        "    subject_name: str\n"
-        "    payload: tuple[str, ...]\n\n\n"
-        "@dataclass(frozen=True)\nclass DetachedEventCarrier:\n"
-        "    file_path: str\n"
-        "    line: int\n"
-        "    subject_name: str\n"
-        "    payload: tuple[str, ...]\n"
-        "    status: str\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "existing_nominal_authority_reuse"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("existing_nominal_authority_reuse",),
-        selector_context=snapshot,
-    )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-
-    assert plan.records[0].status.value == "planned"
-    assert (
-        plan.records[0].executable_declaration_name
-        == "ExistingNominalAuthorityReuseFindingRecipeSynthesizer"
-    )
-    assert plan.records[0].refactor_concept == "dataclass_inheritance_lift"
-    assert "class DetachedEventCarrier(EventCarrierBase):" in rewritten
-    assert rewritten.count("file_path: str") == 1
-    assert rewritten.count("payload: tuple[str, ...]") == 1
-    assert "    status: str" in rewritten
-    module_path.write_text(rewritten, encoding="utf-8")
-    assert not any(
-        finding.detector_id == "existing_nominal_authority_reuse"
-        for finding in analyze_modules(parse_python_modules(tmp_path))
-    )
 
 
 def test_detects_duplicate_nominal_authority_delegate_surface(

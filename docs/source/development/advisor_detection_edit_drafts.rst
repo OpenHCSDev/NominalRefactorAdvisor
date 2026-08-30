@@ -150,82 +150,16 @@ Suggested scaffold draft
            if not inspect.isabstract(cls):
                DETECTOR_REGISTRY.register(cls, priority=cls.detector_priority)
 
-Draft 2A: Existing nominal authority reuse detection
-----------------------------------------------------
+Retired draft: inferred existing nominal authority reuse
+---------------------------------------------------------
 
-Target files
-~~~~~~~~~~~~
+This draft was implemented and then removed.  Typed-field overlap, lexical
+class-name affinity, and authority-like suffixes did not establish that one
+class owned another class's semantics or that inheritance was safe.  A future
+reuse transformation must start from a declaration-owned nominal relation or
+a certified semantic-descent path rather than reconstructing authority from
+shape coincidence.
 
-- ``nominal_refactor_advisor/detectors.py``
-- ``nominal_refactor_advisor/ast_tools.py``
-- ``nominal_refactor_advisor/observation_shapes.py``
-
-Proposed candidate and detector skeleton
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: python
-
-   @dataclass(frozen=True)
-   class ExistingNominalAuthorityReuseCandidate:
-       file_path: str
-       class_name: str
-       line: int
-       compatible_authority_name: str
-       compatible_authority_line: int
-       reuse_kind: str
-       shared_role_names: tuple[str, ...]
-       shared_field_names: tuple[str, ...]
-
-   def _existing_nominal_authority_reuse_candidates(
-       modules: tuple[ParsedModule, ...],
-   ) -> tuple[ExistingNominalAuthorityReuseCandidate, ...]:
-       # Build a project-wide authority index.
-       # Compare concrete classes against existing abstract bases, reusable carriers,
-       # and mixin-like authorities.
-       # Emit only when semantic overlap is strong and the class does not already
-       # inherit or compose the authority.
-       ...
-
-   class ExistingNominalAuthorityReuseDetector(IssueDetector):
-       detector_id = "existing_nominal_authority_reuse"
-       finding_spec = FindingSpec(
-           pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-           title="Existing nominal authority should be reused",
-           why=(
-               "A compatible nominal authority already exists, but the class repeats the same semantic field family outside that hierarchy."
-           ),
-           capability_gap="reuse of an existing authoritative base or mixin instead of duplicating the family",
-           relation_context="a concrete class repeats a semantic family already declared by an existing nominal authority",
-           confidence=HIGH_CONFIDENCE,
-           certification=STRONG_HEURISTIC,
-           capability_tags=(
-               CapabilityTag.NOMINAL_IDENTITY,
-               CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-               CapabilityTag.MRO_ORDERING,
-           ),
-       )
-
-Detection notes
-~~~~~~~~~~~~~~~
-
-- prefer semantic-role and annotation compatibility over raw name coincidence alone
-- require that inheritance or mixin composition is semantically safe, not just structurally possible
-- prefer direct base reuse when the authority owns the full family
-- prefer mixin reuse when only one orthogonal slice overlaps
-
-Suggested scaffold draft
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: python
-
-   @dataclass(frozen=True)
-   class ExistingAuthorityBase(ABC):
-       file_path: str
-       line: int
-
-   @dataclass(frozen=True)
-   class ConcreteCarrier(ExistingAuthorityBase):
-       specific_payload: tuple[str, ...]
 
 Draft 2: Fragmented family authority detection
 ----------------------------------------------
@@ -566,7 +500,6 @@ Suggested test names
 .. code-block:: python
 
    def test_detects_manual_family_roster_for_detector_registry(tmp_path: Path) -> None: ...
-   def test_detects_existing_nominal_authority_reuse(tmp_path: Path) -> None: ...
    def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None: ...
    def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None: ...
    def test_detects_guarded_delegator_spec_family(tmp_path: Path) -> None: ...
