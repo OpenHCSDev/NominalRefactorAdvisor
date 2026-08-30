@@ -191,36 +191,6 @@ class OutcomeEstimate(ImpactDelta):
 class FindingMetrics(SemanticRecord, ABC):
     """Base class for typed metric bags attached to findings."""
 
-    derived_count_constructor_name: ClassVar[str | None] = None
-    derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = ()
-
-    @classmethod
-    def derived_count_shape(cls) -> "DerivedCountMetricShape | None":
-        if (
-            cls.derived_count_constructor_name is None
-            or not cls.derived_count_field_pairs
-        ):
-            return None
-        return DerivedCountMetricShape(
-            metric_class_name=cls.__name__,
-            constructor_name=cls.derived_count_constructor_name,
-            field_pairs=cls.derived_count_field_pairs,
-        )
-
-    @classmethod
-    def derived_count_metric_shapes(cls) -> tuple["DerivedCountMetricShape", ...]:
-        return tuple(
-            sorted(
-                (
-                    shape
-                    for metric_type in _metric_subclasses(cls)
-                    for shape in (metric_type.derived_count_shape(),)
-                    if shape is not None
-                ),
-                key=lambda shape: shape.metric_class_name,
-            )
-        )
-
     shared_algorithm_sites = ConstantProperty[int](0)
     registration_sites = ConstantProperty[int](0)
     mapping_sites = ConstantProperty[int](0)
@@ -242,23 +212,6 @@ class FindingMetrics(SemanticRecord, ABC):
     plan_dispatch_axis = ConstantProperty[str | None](None)
     plan_literal_cases = ConstantProperty[tuple[str, ...]](())
     plan_field_execution_level = ConstantProperty[str | None](None)
-
-
-@dataclass(frozen=True)
-class DerivedCountMetricShape(SemanticRecord):
-    metric_class_name: str
-    constructor_name: str
-    field_pairs: tuple[tuple[str, str], ...]
-
-
-def _metric_subclasses(
-    metric_type: type[FindingMetrics],
-) -> tuple[type[FindingMetrics], ...]:
-    children = tuple(metric_type.__subclasses__())
-    return (
-        *children,
-        *(descendant for child in children for descendant in _metric_subclasses(child)),
-    )
 
 
 BehaviorFindingMetrics = CompositeClassSpec(
@@ -434,10 +387,6 @@ class WitnessCarrierMetrics(ClassNamesPlanMetrics):
 class MappingMetrics(MappingFindingMetrics):
     """Metrics for repeated projection or mapping surfaces."""
 
-    derived_count_constructor_name: ClassVar[str | None] = "from_field_names"
-    derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("field_count", "field_names"),
-    )
     mapping_site_count: int
     field_count: int
     mapping_name: str | None = None
@@ -498,10 +447,6 @@ class MappingMetrics(MappingFindingMetrics):
 class RegistrationMetrics(RegistrationFindingMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 
-    derived_count_constructor_name: ClassVar[str | None] = "from_class_names"
-    derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("class_count", "class_names"),
-    )
     registration_site_count: int
     class_count: int | None = None
     registry_name: str | None = None
@@ -616,10 +561,6 @@ class ProbeCountMetrics(CountedDispatchMetrics):
 
 @dataclass(frozen=True)
 class DispatchCountMetrics(CountedDispatchMetrics):
-    derived_count_constructor_name: ClassVar[str | None] = "from_literal_family"
-    derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("dispatch_site_count", "literal_cases"),
-    )
     count_field_name: ClassVar[str] = "dispatch_site_count"
     dispatch_site_count: int
     dispatch_axis: str | None = None

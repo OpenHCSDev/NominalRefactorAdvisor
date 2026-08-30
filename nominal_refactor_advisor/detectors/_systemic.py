@@ -6473,61 +6473,6 @@ declare_candidate_rule_detector(
 )
 
 
-class DerivedMetricCountBoilerplateDetector(
-    ModuleCollectorCandidateDetector[DerivedMetricCountBoilerplateCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Metric counts should be derived from metric collections",
-        "A metrics object that receives both `*_count=len(values)` and `values=values` is carrying the same fact twice. The count is a deterministic projection of the collection and should be derived by the typed metrics constructor.",
-        "typed metrics constructors that derive count fields from authoritative collections",
-        "metrics call passes a count keyword computed from the collection keyword in the same call",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, metric_candidate: DerivedMetricCountBoilerplateCandidate
-    ) -> RefactorFinding:
-        derived_summary = ", ".join(
-            (
-                f"{count_name}=len({collection_name})"
-                for count_name, collection_name in zip(
-                    metric_candidate.count_keyword_names,
-                    metric_candidate.collection_keyword_names,
-                    strict=True,
-                )
-            )
-        )
-        return self.build_finding(
-            (
-                f"`{metric_candidate.metric_class_name}` repeats derived count fields "
-                f"{derived_summary}; use `{metric_candidate.recommended_constructor_name}`."
-            ),
-            (metric_candidate.evidence,),
-            scaffold=(
-                f"{metric_candidate.metric_class_name}.{metric_candidate.recommended_constructor_name}(\n    ...\n)"
-            ),
-            codemod_patch=(
-                f"# Replace `{metric_candidate.metric_class_name}(...)` with "
-                f"`{metric_candidate.metric_class_name}.{metric_candidate.recommended_constructor_name}(...)`.\n"
-                f"# Delete derived count keywords: {', '.join(metric_candidate.count_keyword_names)}."
-            ),
-            metrics=MappingMetrics.from_field_names(
-                mapping_site_count=len(metric_candidate.count_keyword_names),
-                mapping_name=metric_candidate.metric_class_name,
-                field_names=metric_candidate.collection_keyword_names,
-            ),
-        )
-
-
 class CompactDataclassNamespaceCliMirrorCandidateBase(
     CompactProjectionCandidateDetector[
         _DataclassNamespaceCliModuleProjection,

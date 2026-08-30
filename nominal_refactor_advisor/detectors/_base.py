@@ -166,7 +166,6 @@ from ..models import (
     BranchCountMetrics,
     CallSiteCountMetric,
     CertifiedFindingSpec,
-    DerivedCountMetricShape,
     DispatchCountMetrics,
     FindingMetrics,
     FindingSemantics,
@@ -11575,15 +11574,6 @@ class SemanticOverlapABCResidueAxisCatalogCandidate(
 ):
     residue_kind_names: tuple[str, ...]
     residue_site_count: int
-
-
-@dataclass(frozen=True)
-class DerivedMetricCountBoilerplateCandidate(LineWitnessCandidate):
-    metric_class_name: str
-    recommended_constructor_name: str
-    count_keyword_names: tuple[str, ...]
-    collection_keyword_names: tuple[str, ...]
-    witness_name = AliasProperty[str]("metric_class_name")
 
 
 @dataclass(frozen=True)

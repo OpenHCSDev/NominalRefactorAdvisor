@@ -10029,22 +10029,6 @@ def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
     assert "ClassFunctionStackNodeVisitor" in (findings[0].scaffold or "")
 
 
-def test_detects_derived_metric_count_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef build_metrics(field_names):\n    return MappingMetrics(\n        mapping_site_count=3,\n        field_count=len(field_names),\n        mapping_name="example",\n        field_names=field_names,\n    )\n',
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "derived_metric_count_boilerplate"
-    ]
-    assert len(findings) == 1
-    assert "field_count=len(field_names)" in findings[0].summary
-    assert "from_field_names" in findings[0].summary
-
-
 def test_detects_effect_step_implementation_leak(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
