@@ -5358,6 +5358,13 @@ class BaseNamePayloadOperation(RefactorRecipeOperation, ABC):
 
     base_name: str
 
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            base_name=RequiredStringPayloadValueCodec(),
+        )
+
 
 @dataclass(frozen=True, kw_only=True)
 class ReplaceTextOperation(RefactorRecipeOperation):
@@ -8581,11 +8588,9 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
 @dataclass(frozen=True, kw_only=True)
 class AddClassBaseOperation(
     TargetNodeRecipeOperationMixin,
-    StringPayloadOperation,
+    BaseNamePayloadOperation,
 ):
     """Add one base class to a class declaration."""
-
-    payload_field_name = BASE_NAME_PAYLOAD_FIELD
 
     def source_edits_for_target_node(
         self,
@@ -8599,7 +8604,7 @@ class AddClassBaseOperation(
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a class definition"
             )
-        if self.payload_value in _class_base_source_names(node):
+        if self.base_name in _class_base_source_names(node):
             return ()
         header_authority = ClassHeaderSpanSourceAuthority(
             node=node,
@@ -8610,9 +8615,9 @@ class AddClassBaseOperation(
                 file_path=target_digest.file_path,
                 start_line=header_authority.start_line,
                 end_line=header_authority.end_line,
-                replacement_lines=header_authority.with_added_base(self.payload_value),
+                replacement_lines=header_authority.with_added_base(self.base_name),
                 rationale=self.rationale
-                or f"Add base {self.payload_value!r} to {target_digest.qualname!r}.",
+                or f"Add base {self.base_name!r} to {target_digest.qualname!r}.",
             ),
         )
 
@@ -8620,11 +8625,9 @@ class AddClassBaseOperation(
 @dataclass(frozen=True, kw_only=True)
 class RemoveClassBaseOperation(
     TargetNodeRecipeOperationMixin,
-    StringPayloadOperation,
+    BaseNamePayloadOperation,
 ):
     """Remove one base class from a class declaration."""
-
-    payload_field_name = BASE_NAME_PAYLOAD_FIELD
 
     def source_edits_for_target_node(
         self,
@@ -8638,7 +8641,7 @@ class RemoveClassBaseOperation(
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a class definition"
             )
-        if self.payload_value not in _class_base_source_names(node):
+        if self.base_name not in _class_base_source_names(node):
             return ()
         header_authority = ClassHeaderSpanSourceAuthority(
             node=node,
@@ -8649,9 +8652,9 @@ class RemoveClassBaseOperation(
                 file_path=target_digest.file_path,
                 start_line=header_authority.start_line,
                 end_line=header_authority.end_line,
-                replacement_lines=header_authority.without_base(self.payload_value),
+                replacement_lines=header_authority.without_base(self.base_name),
                 rationale=self.rationale
-                or f"Remove base {self.payload_value!r} from {target_digest.qualname!r}.",
+                or f"Remove base {self.base_name!r} from {target_digest.qualname!r}.",
             ),
         )
 
@@ -9018,9 +9021,7 @@ class DeriveAutoregisterInstanceViewOperation(
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            base_name=RequiredStringPayloadValueCodec(),
+        return super().payload_bindings() + PayloadBindingSet.from_field_codecs(
             assignment_name=RequiredStringPayloadValueCodec(),
             class_key_pairs=StringArrayPayloadValueCodec(),
             method_name=RequiredStringPayloadValueCodec(),
@@ -9383,9 +9384,7 @@ class ConvertManualRegistryToAutoregisterOperation(
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            base_name=RequiredStringPayloadValueCodec(),
+        return super().payload_bindings() + PayloadBindingSet.from_field_codecs(
             registry_name=RequiredStringPayloadValueCodec(),
             registry_key_attribute=RequiredStringPayloadValueCodec(),
             class_key_pairs=StringArrayPayloadValueCodec(),
@@ -10239,10 +10238,8 @@ class DispatchToPolymorphismOperation(
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
+        return super().payload_bindings() + PayloadBindingSet.from_field_codecs(
             dispatch_axis_expression=RequiredStringPayloadValueCodec(),
-            base_name=RequiredStringPayloadValueCodec(),
             case_key_attribute=RequiredStringPayloadValueCodec(),
             method_name=RequiredStringPayloadValueCodec(),
             literal_cases=StringArrayPayloadValueCodec(),

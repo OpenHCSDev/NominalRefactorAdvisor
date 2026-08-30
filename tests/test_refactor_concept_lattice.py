@@ -264,6 +264,18 @@ def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
     assert not hasattr(codemod, "SharedRecipeIdSuffixRecipeReasonBase")
 
 
+def test_class_base_operations_own_the_base_name_payload() -> None:
+    for operation_type in (
+        codemod.AddClassBaseOperation,
+        codemod.RemoveClassBaseOperation,
+    ):
+        assert issubclass(operation_type, codemod.BaseNamePayloadOperation)
+        assert not issubclass(operation_type, codemod.StringPayloadOperation)
+        assert tuple(
+            binding.field_name for binding in operation_type.payload_bindings()
+        ) == ("base_name",)
+
+
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:
     mapping_declarations = (
         codemod.MappingSemanticMirrorRecipeBuilder,

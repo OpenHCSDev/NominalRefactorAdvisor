@@ -1755,7 +1755,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
                     qualname="Parser",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="ParseContext",
+                base_name="ParseContext",
             )
         )
         .with_operation(
@@ -1791,7 +1791,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
                     qualname="LegacyWorker",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="LegacyBase",
+                base_name="LegacyBase",
             )
         )
     )
@@ -1857,7 +1857,7 @@ def test_refactor_recipe_rewrites_multiline_class_base_headers(
                     qualname="WorkerAdd",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="AddedBase",
+                base_name="AddedBase",
             )
         )
         .with_operation(
@@ -1866,7 +1866,7 @@ def test_refactor_recipe_rewrites_multiline_class_base_headers(
                     qualname="WorkerRemove",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="RemovedBase",
+                base_name="RemovedBase",
             )
         )
     )
