@@ -698,13 +698,20 @@ class AuthorityClaim(SemanticRecord):
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, object]) -> "AuthorityClaim":
-        return cls(
+        claim = cls(
             claimed_symbol=cls.required_string(payload, "claimed_symbol"),
             authority_kind=cls.optional_string(payload, "authority_kind"),
             file_path=cls.optional_string(payload, "file_path"),
             qualname=cls.optional_string(payload, "qualname"),
             authority_id=cls.optional_string(payload, "authority_id"),
         )
+        unsupported_fields = tuple(sorted(set(payload) - set(claim.to_dict())))
+        if unsupported_fields:
+            raise ValueError(
+                "Unsupported authority claim field(s): "
+                + ", ".join(repr(field) for field in unsupported_fields)
+            )
+        return claim
 
     @classmethod
     def from_authority(cls, authority: SemanticAuthority) -> "AuthorityClaim":

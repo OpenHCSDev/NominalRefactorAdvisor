@@ -272,7 +272,7 @@ def test_compiler_unions_imports_and_carrier_projection_stays_granular(
     assert "stats: Stats" in rewritten
 
 
-def test_plan_parser_rejects_obsolete_parallel_rewrite_surface() -> None:
+def test_plan_declarations_reject_obsolete_or_unknown_fields() -> None:
     with pytest.raises(
         ValueError,
         match=r"Unsupported refactor recipe field\(s\): 'rewrites'",
@@ -286,6 +286,26 @@ def test_plan_parser_rejects_obsolete_parallel_rewrite_surface() -> None:
                             {
                                 "target_qualname": "Alpha.run",
                                 "replacement_source": "def run(self): pass\n",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported authority claim field\(s\): 'legacy_authority'",
+    ):
+        CodemodPlanDocument.from_json_value(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "unknown-authority-claim-field",
+                        "authority_claims": [
+                            {
+                                "claimed_symbol": "AlphaAuthority",
+                                "legacy_authority": "AlphaAuthority",
                             }
                         ],
                     }

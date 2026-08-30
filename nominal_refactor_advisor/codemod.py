@@ -1022,6 +1022,27 @@ class ArchitectureGuardRule:
     file_path_suffixes: tuple[str, ...] = ()
     reason: str = ""
 
+    @classmethod
+    def from_json_value(cls, value: JsonValue) -> "ArchitectureGuardRule":
+        payload = CodemodPayload.from_json_value(
+            value,
+            role="architecture guard",
+        )
+        rule = cls(
+            rule_id=payload.required_string("rule_id"),
+            forbidden_attribute_names=payload.string_tuple(
+                "forbidden_attribute_names"
+            ),
+            forbidden_call_names=payload.string_tuple("forbidden_call_names"),
+            forbidden_literal_dispatch_subjects=payload.string_tuple(
+                "forbidden_literal_dispatch_subjects"
+            ),
+            file_path_suffixes=payload.string_tuple("file_path_suffixes"),
+            reason=payload.string_or_empty("reason"),
+        )
+        payload.require_supported_fields(rule.to_dict(), role="architecture guard")
+        return rule
+
     def applies_to_file(self, file_path: str) -> bool:
         return not self.file_path_suffixes or any(
             file_path.endswith(suffix) for suffix in self.file_path_suffixes
@@ -1090,6 +1111,14 @@ class ArchitectureGuardSuite:
     """Nominal carrier for post-refactor architecture guard rules."""
 
     rules: tuple[ArchitectureGuardRule, ...] = ()
+
+    @classmethod
+    def from_json_value(cls, value: JsonValue | None) -> "ArchitectureGuardSuite":
+        if value is None:
+            return cls()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("architecture_guards must be an array")
+        return cls(tuple(ArchitectureGuardRule.from_json_value(row) for row in value))
 
     @property
     def is_empty(self) -> bool:
@@ -3900,6 +3929,12 @@ class CodemodPayload:
 
     fields: Mapping[str, JsonValue]
 
+    @classmethod
+    def from_json_value(cls, value: JsonValue, *, role: str) -> "CodemodPayload":
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{role} must be an object")
+        return cls(cast(Mapping[str, JsonValue], value))
+
     def require_supported_fields(
         self,
         canonical_payload: Mapping[str, JsonValue],
@@ -3934,6 +3969,20 @@ class CodemodPayload:
         if value is None:
             return ""
         return value
+
+    def array(self, field_name: str) -> tuple[JsonValue, ...]:
+        value = self.fields.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected array field {field_name!r}")
+        return tuple(value)
+
+    def string_tuple(self, field_name: str) -> tuple[str, ...]:
+        values = self.array(field_name)
+        if not all(isinstance(item, str) for item in values):
+            raise ValueError(f"Expected string array field {field_name!r}")
+        return cast(tuple[str, ...], values)
 
     def source_target(self) -> SourceRewriteTarget:
         return SourceRewriteTarget(
@@ -4990,6 +5039,15 @@ class RefactorRecipeOperation(
     @classmethod
     def operation_key(cls) -> str:
         return cls.operation_key_value
+
+    @classmethod
+    def from_json_value(cls, value: JsonValue) -> "RefactorRecipeOperation":
+        return cls.from_dict(
+            CodemodPayload.from_json_value(
+                value,
+                role="refactor recipe operation",
+            ).fields
+        )
 
     @classmethod
     def from_dict(
@@ -12360,6 +12418,32 @@ class RefactorRecipe:
     authority_claims: tuple[AuthorityClaim, ...] = ()
 
     @classmethod
+    def from_json_value(cls, value: JsonValue) -> "RefactorRecipe":
+        payload = CodemodPayload.from_json_value(value, role="refactor recipe")
+        recipe = cls(
+            recipe_id=payload.required_string("recipe_id"),
+            operations=tuple(
+                RefactorRecipeOperation.from_json_value(row)
+                for row in payload.array("operations")
+            ),
+            guard_suite=ArchitectureGuardSuite.from_json_value(
+                payload.fields.get(ARCHITECTURE_GUARDS_PAYLOAD_FIELD)
+            ),
+            reason=payload.string_or_empty("reason"),
+            authority_claims=tuple(
+                AuthorityClaim.from_mapping(
+                    CodemodPayload.from_json_value(
+                        row,
+                        role="authority claim",
+                    ).fields
+                )
+                for row in payload.array(AuthorityClaimPayload.field_name)
+            ),
+        )
+        payload.require_supported_fields(recipe.to_dict(), role="refactor recipe")
+        return recipe
+
+    @classmethod
     def compose(
         cls,
         recipes: Iterable["RefactorRecipe"],
@@ -12743,10 +12827,20 @@ class CodemodPlanDocument:
     @classmethod
     def from_json_value(
         cls,
-        payload: JsonObject,
+        value: JsonValue,
     ) -> "CodemodPlanDocument":
-        del cls
-        return CodemodPlanJsonParser().parse_document(payload)
+        payload = CodemodPayload.from_json_value(value, role="plan document")
+        document = cls(
+            recipes=tuple(
+                RefactorRecipe.from_json_value(row)
+                for row in payload.array(RECIPES_PAYLOAD_FIELD)
+            ),
+            guard_suite=ArchitectureGuardSuite.from_json_value(
+                payload.fields.get(ARCHITECTURE_GUARDS_PAYLOAD_FIELD)
+            ),
+        )
+        payload.require_supported_fields(document.to_dict(), role="plan document")
+        return document
 
     @property
     def has_recipes(self) -> bool:
@@ -12865,6 +12959,24 @@ class CodemodPlanSequence:
     """Ordered codemod documents resolved against each prior simulated stage."""
 
     documents: tuple[CodemodPlanDocument, ...] = ()
+
+    @staticmethod
+    def is_sequence_payload(value: JsonValue) -> bool:
+        return isinstance(value, Mapping) and STAGES_PAYLOAD_FIELD in value
+
+    @classmethod
+    def from_json_value(cls, value: JsonValue) -> "CodemodPlanSequence":
+        if not cls.is_sequence_payload(value):
+            return cls.from_document(CodemodPlanDocument.from_json_value(value))
+        payload = CodemodPayload.from_json_value(value, role="plan sequence")
+        sequence = cls(
+            documents=tuple(
+                CodemodPlanDocument.from_json_value(row)
+                for row in payload.array(STAGES_PAYLOAD_FIELD)
+            )
+        )
+        payload.require_supported_fields(sequence.to_dict(), role="plan sequence")
+        return sequence
 
     @classmethod
     def compose(
@@ -12998,169 +13110,6 @@ class CodemodPlanSequence:
                 document.to_dict() for document in self.documents
             ),
         }
-
-
-class CodemodPlanJsonParser:
-    """Decode codemod-plan JSON into nominal codemod DSL records."""
-
-    @staticmethod
-    def is_sequence_payload(payload: JsonObject) -> bool:
-        return STAGES_PAYLOAD_FIELD in payload
-
-    def parse_sequence(self, payload: JsonObject) -> CodemodPlanSequence:
-        if self.is_sequence_payload(payload):
-            sequence = CodemodPlanSequence(
-                documents=tuple(
-                    self.parse_document(row)
-                    for row in self.array_field(payload, STAGES_PAYLOAD_FIELD)
-                )
-            )
-            CodemodPayload(payload).require_supported_fields(
-                sequence.to_dict(),
-                role="plan sequence",
-            )
-            return sequence
-        return CodemodPlanSequence.from_document(self.parse_document(payload))
-
-    def parse_document(self, payload: JsonObject) -> CodemodPlanDocument:
-        document = CodemodPlanDocument(
-            recipes=self.recipes(payload),
-            guard_suite=self.architecture_guard_suite(payload),
-        )
-        CodemodPayload(payload).require_supported_fields(
-            document.to_dict(),
-            role="plan document",
-        )
-        return document
-
-    def recipes(
-        self,
-        payload: JsonObject,
-    ) -> tuple[RefactorRecipe, ...]:
-        return tuple(
-            self.refactor_recipe(row)
-            for row in self.array_field(payload, RECIPES_PAYLOAD_FIELD)
-        )
-
-    def architecture_guard_suite(
-        self,
-        payload: JsonObject,
-    ) -> ArchitectureGuardSuite:
-        return ArchitectureGuardSuite(
-            tuple(
-                self.architecture_guard_rule(row)
-                for row in self.array_field(payload, ARCHITECTURE_GUARDS_PAYLOAD_FIELD)
-            )
-        )
-
-    def refactor_recipe(self, row: JsonValue) -> RefactorRecipe:
-        payload = self.object_row(row, "refactor recipe rows")
-        recipe = RefactorRecipe(
-            recipe_id=self.required_string_field(payload, "recipe_id"),
-            operations=tuple(
-                self.refactor_recipe_operation(item)
-                for item in self.array_field(payload, "operations")
-            ),
-            guard_suite=self.architecture_guard_suite(payload),
-            reason=self.optional_string_field(payload, "reason"),
-            authority_claims=self.authority_claims(payload),
-        )
-        CodemodPayload(payload).require_supported_fields(
-            recipe.to_dict(),
-            role="refactor recipe",
-        )
-        return recipe
-
-    def authority_claims(self, payload: JsonObject) -> tuple[AuthorityClaim, ...]:
-        return tuple(
-            self.authority_claim(item)
-            for item in self.array_field(payload, AuthorityClaimPayload.field_name)
-        )
-
-    def authority_claim(self, row: JsonValue) -> AuthorityClaim:
-        payload = self.object_row(row, "authority claim rows")
-        claim = AuthorityClaim.from_mapping(payload)
-        CodemodPayload(payload).require_supported_fields(
-            claim.to_dict(),
-            role="authority claim",
-        )
-        return claim
-
-    def refactor_recipe_operation(self, row: JsonValue) -> RefactorRecipeOperation:
-        payload = self.object_row(row, "refactor recipe operations")
-        return RefactorRecipeOperation.from_dict(payload)
-
-    def architecture_guard_rule(self, row: JsonValue) -> ArchitectureGuardRule:
-        payload = self.object_row(row, "architecture guard rules")
-        rule = ArchitectureGuardRule(
-            rule_id=self.required_string_field(payload, "rule_id"),
-            forbidden_attribute_names=self.string_tuple_field(
-                payload,
-                "forbidden_attribute_names",
-            ),
-            forbidden_call_names=self.string_tuple_field(
-                payload,
-                "forbidden_call_names",
-            ),
-            forbidden_literal_dispatch_subjects=self.string_tuple_field(
-                payload,
-                "forbidden_literal_dispatch_subjects",
-            ),
-            file_path_suffixes=self.string_tuple_field(payload, "file_path_suffixes"),
-            reason=self.optional_string_field(payload, "reason"),
-        )
-        CodemodPayload(payload).require_supported_fields(
-            rule.to_dict(),
-            role="architecture guard",
-        )
-        return rule
-
-    def object_row(self, value: JsonValue, row_role: str) -> JsonObject:
-        if not isinstance(value, dict):
-            raise ValueError(f"{row_role} must be objects")
-        return JsonObject(value)
-
-    def array_field(self, row: JsonObject, field_name: str) -> tuple[JsonValue, ...]:
-        if field_name not in row or row[field_name] is None:
-            return ()
-        value = row[field_name]
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"{field_name} must be a list")
-        return tuple(value)
-
-    def string_tuple_field(
-        self,
-        row: JsonObject,
-        field_name: str,
-    ) -> tuple[str, ...]:
-        values = self.array_field(row, field_name)
-        if not all(isinstance(item, str) for item in values):
-            raise ValueError(f"{field_name} must be a list of strings")
-        return tuple(values)
-
-    def optional_string_field(self, row: JsonObject, field_name: str) -> str:
-        if field_name not in row or row[field_name] is None:
-            return ""
-        value = row[field_name]
-        if not isinstance(value, str):
-            raise ValueError(f"{field_name} must be a string")
-        return value
-
-    def optional_string_or_none_field(
-        self,
-        row: JsonObject,
-        field_name: str,
-    ) -> str | None:
-        value = self.optional_string_field(row, field_name)
-        if value:
-            return value
-        return None
-
-    def required_string_field(self, row: JsonObject, field_name: str) -> str:
-        value = self.optional_string_field(row, field_name)
-        if not value:
-            raise ValueError(f"{field_name} is required")
-        return value
 
 
 @dataclass(frozen=True)

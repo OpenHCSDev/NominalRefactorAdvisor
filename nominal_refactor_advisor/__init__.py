@@ -29,7 +29,6 @@ from .codemod import (
     CodemodBackend,
     CodemodCandidate,
     CodemodPlanDocument,
-    CodemodPlanJsonParser,
     CodemodPlanSequence,
     CodemodPlanSequenceContinuationReport,
     CodemodPlanSequenceStageReport,

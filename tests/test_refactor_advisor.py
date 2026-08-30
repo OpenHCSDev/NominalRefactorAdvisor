@@ -15090,7 +15090,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingIdTransition
     from nominal_refactor_advisor import CodemodFixpointReplayPlan
     from nominal_refactor_advisor import CodemodFixpointRunner
-    from nominal_refactor_advisor import CodemodPlanJsonParser
     from nominal_refactor_advisor import CodemodPlanSequence
     from nominal_refactor_advisor import CodemodPlanSequenceContinuationReport
     from nominal_refactor_advisor import CodemodPlanSequenceStageReport
@@ -15114,7 +15113,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import ReplaceTargetOperation
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
 
-    assert CodemodPlanJsonParser().recipes({}) == ()
     delta = CodemodFindingDelta(
         finding_ids=CodemodFindingIdTransition(
             before_ids=("a", "b"),
@@ -15133,6 +15131,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodFindingClassDelta.__name__ == "CodemodFindingClassDelta"
     assert CodemodFindingClassSignature.__name__ == "CodemodFindingClassSignature"
     assert CodemodFindingClassStatus.MOVED.value == "moved"
+    assert not hasattr(nra, "CodemodPlanJsonParser")
     assert not hasattr(nra, "RefactorRecipeTargetShape")
     assert finding_change.expected_removed_finding_count == 1
     assert finding_change.to_dict()["finding_delta"]["removed_finding_ids"] == ("a",)
