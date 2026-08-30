@@ -15,6 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.detectors._structural as structural_detectors
@@ -138,7 +139,7 @@ from nominal_refactor_advisor.codemod import (
     SemanticDescentRecipeEvaluation,
     UnevaluatedRecipeEvaluation,
     DeclareAuthorityOperation,
-    DeleteClassAssignmentOperation,
+    DeleteClassAssignmentsOperation,
     DeleteTargetOperation,
     DispatchToPolymorphismOperation,
     EnsureImportOperation,
@@ -157,6 +158,7 @@ from nominal_refactor_advisor.codemod import (
     PlannedSourceRewrite,
     RefactorConcept,
     RefactorRecipe,
+    RefactorRecipeOperation,
     RemoveClassBaseOperation,
     RemoveImportNamesOperation,
     ReplaceFieldsWithCarrierOperation,
@@ -1265,12 +1267,12 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
     recipe = (
         RefactorRecipe(recipe_id="mechanical-dsl")
         .with_operation(
-            DeleteClassAssignmentOperation(
+            DeleteClassAssignmentsOperation(
                 target=SourceRewriteTarget(
                     qualname="Detector",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="detector_id",
+                assignment_names=("detector_id", "finding_spec"),
             )
         )
         .with_operation(
@@ -1298,16 +1300,61 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
         for contributor in simulation.simulation.rewrites[0].contributors
     }
     assert contributor_declarations == {
-        "DeleteClassAssignmentOperation",
+        "DeleteClassAssignmentsOperation",
         "ReplaceFunctionBodyOperation",
     }
     assert simulation.simulation.to_dict()["rewrites"][0]["contributors"]
     assert "-    detector_id = 'manual_detector'" in diff
+    assert "-    finding_spec = object()" in diff
     assert "+        return value + 1" in diff
     simulation.apply()
     rewritten = module_path.read_text()
     assert "detector_id" not in rewritten
+    assert "finding_spec" not in rewritten
     assert "return value + 1" in rewritten
+
+
+def test_delete_class_assignments_rejects_missing_name_without_applying(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Detector:\n    detector_id = 'manual_detector'\n",
+    )
+    original_source = module_path.read_text()
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    recipe = RefactorRecipe(recipe_id="fail-closed-assignment-deletion").with_operation(
+        DeleteClassAssignmentsOperation(
+            target=SourceRewriteTarget(
+                qualname="Detector",
+                file_path=module_path.as_posix(),
+            ),
+            assignment_names=("detector_id", "missing_assignment"),
+        )
+    )
+
+    with pytest.raises(ValueError, match="missing_assignment"):
+        recipe.simulate(
+            source_index,
+            {module_path.as_posix(): original_source},
+            backend=CodemodBackend.AST_SPAN,
+        )
+
+    assert module_path.read_text() == original_source
+
+
+def test_delete_class_assignments_is_the_only_class_assignment_deletion_dsl() -> None:
+    assert DeleteClassAssignmentsOperation.operation_key() == (
+        "delete_class_assignments"
+    )
+    assert "delete_class_assignment" not in RefactorRecipeOperation.__registry__
+    assert not hasattr(
+        nominal_refactor_advisor_package,
+        "DeleteClassAssignmentOperation",
+    )
 
 
 def test_recipe_operation_target_nodes_reuse_snapshot_cache(
@@ -12003,10 +12050,10 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                                 "base_name": "AlphaAuthorityBase",
                             },
                             {
-                                "operation": "delete_class_assignment",
+                                "operation": "delete_class_assignments",
                                 "target_qualname": "Alpha",
                                 "file_path": "pkg/mod.py",
-                                "attribute_name": "detector_id",
+                                "assignment_names": ["detector_id", "finding_spec"],
                             },
                             {
                                 "operation": "ensure_import",
@@ -12074,7 +12121,11 @@ def test_load_codemod_plan_document_includes_architecture_guards(
         "add_class_base"
     )
     assert document.recipes[0].operations[2].to_dict()["operation"] == (
-        "delete_class_assignment"
+        "delete_class_assignments"
+    )
+    assert document.recipes[0].operations[2].to_dict()["assignment_names"] == (
+        "detector_id",
+        "finding_spec",
     )
     assert document.recipes[0].operations[3].to_dict()["operation"] == "ensure_import"
     assert document.recipes[0].operations[4].to_dict()["operation"] == "replace_text"

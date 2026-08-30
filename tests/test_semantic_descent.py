@@ -1179,14 +1179,13 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
         == "InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer"
     )
     assert plan.records[0].refactor_concept == "auto_register"
-    assert {operation["attribute_name"] for operation in operations} == {
+    assert len(operations) == 1
+    assert operations[0]["assignment_names"] == (
         "__key_extractor__",
         "__registry_key__",
         "__skip_if_no_key__",
-    }
-    assert all(
-        operation["operation"] == "delete_class_assignment" for operation in operations
     )
+    assert operations[0]["operation"] == "delete_class_assignments"
     assert rewritten.count("    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE") == 1
     assert rewritten.count("    __key_extractor__ = class_name_registry_key") == 1
     assert rewritten.count("    __skip_if_no_key__ = True") == 1

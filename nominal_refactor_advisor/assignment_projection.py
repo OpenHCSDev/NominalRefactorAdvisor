@@ -32,8 +32,8 @@ class AssignmentTargetNameProjection:
 
 
 @dataclass(frozen=True)
-class ModuleAssignmentNameProjection:
-    """Projection of assignment target names from one module statement."""
+class AssignmentStatementNameProjection:
+    """Projection of assignment target names from one statement."""
 
     statement: ast.stmt
 

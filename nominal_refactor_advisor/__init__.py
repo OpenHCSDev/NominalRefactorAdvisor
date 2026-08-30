@@ -37,7 +37,7 @@ from .codemod import (
     CodemodSimulationStatus,
     CodemodSourceSnapshot,
     CodemodStrategy,
-    DeleteClassAssignmentOperation,
+    DeleteClassAssignmentsOperation,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeSynthesisRecord,

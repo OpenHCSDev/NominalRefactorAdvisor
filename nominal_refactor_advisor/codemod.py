@@ -38,7 +38,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from .assignment_projection import ModuleAssignmentNameProjection
+from .assignment_projection import AssignmentStatementNameProjection
 from .ast_tools import (
     ROOT_NAME_PROJECTION,
     BuiltinCallName,
@@ -2084,7 +2084,7 @@ class CodemodSelectorContext:
         matching_statements = tuple(
             statement
             for statement in module.body
-            if assignment_name in ModuleAssignmentNameProjection(statement).names
+            if assignment_name in AssignmentStatementNameProjection(statement).names
         )
         if len(matching_statements) != 1:
             return None
@@ -5328,6 +5328,29 @@ class StringPayloadOperation(RefactorRecipeOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
+class AssignmentNamesPayloadOperation(RefactorRecipeOperation, ABC):
+    """Operation whose declaration owns a non-empty assignment-name set."""
+
+    assignment_names: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        operation_key = self.operation_key()
+        if not self.assignment_names:
+            raise ValueError(f"{operation_key} requires assignment_names")
+        if any(not name or not name.isidentifier() for name in self.assignment_names):
+            raise ValueError(f"{operation_key} requires Python identifier names")
+        if len(set(self.assignment_names)) != len(self.assignment_names):
+            raise ValueError(f"{operation_key} requires unique assignment_names")
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            assignment_names=StringArrayPayloadValueCodec(),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class BaseNamePayloadOperation(RefactorRecipeOperation, ABC):
     """Recipe operation whose JSON payload declares a generated base class."""
 
@@ -5443,13 +5466,11 @@ class CreateFileOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteClassAssignmentOperation(
+class DeleteClassAssignmentsOperation(
     TargetNodeRecipeOperationMixin,
-    StringPayloadOperation,
+    AssignmentNamesPayloadOperation,
 ):
-    """Delete one class-level assignment by attribute name."""
-
-    payload_field_name = "attribute_name"
+    """Delete a proven set of class-level assignment statements."""
 
     def source_edits_for_target_node(
         self,
@@ -5463,13 +5484,26 @@ class DeleteClassAssignmentOperation(
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a class definition"
             )
-        assignments = tuple(
-            statement for statement in node.body if self._matches_assignment(statement)
-        )
-        if not assignments:
+        requested_names = set(self.assignment_names)
+        pending_names = set(requested_names)
+        assignments: list[ast.stmt] = []
+        for statement in node.body:
+            statement_names = set(AssignmentStatementNameProjection(statement).names)
+            matched_names = pending_names & statement_names
+            if not matched_names:
+                continue
+            unselected_names = statement_names - requested_names
+            if unselected_names:
+                raise ValueError(
+                    f"Class {target_digest.qualname!r} assignment also declares "
+                    f"unselected names {tuple(sorted(unselected_names))!r}"
+                )
+            pending_names -= matched_names
+            assignments.append(statement)
+        if pending_names:
             raise ValueError(
-                f"Class {target_digest.qualname!r} has no assignment "
-                f"for {self.payload_value!r}"
+                f"Class {target_digest.qualname!r} has no assignments for "
+                f"{tuple(sorted(pending_names))!r}"
             )
         return tuple(
             SourceSpanReplacement(
@@ -5477,36 +5511,15 @@ class DeleteClassAssignmentOperation(
                 start_line=assignment.lineno,
                 end_line=assignment.end_lineno or assignment.lineno,
                 rationale=self.rationale
-                or f"Delete class assignment {self.payload_value!r}.",
+                or f"Delete class assignments {self.assignment_names!r}.",
             )
             for assignment in assignments
         )
 
-    def _matches_assignment(self, statement: ast.stmt) -> bool:
-        if isinstance(statement, ast.Assign):
-            return any(
-                isinstance(target, ast.Name) and target.id == self.payload_value
-                for target in statement.targets
-            )
-        return (
-            isinstance(statement, ast.AnnAssign)
-            and isinstance(statement.target, ast.Name)
-            and statement.target.id == self.payload_value
-        )
-
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
+class DeleteModuleAssignmentsOperation(AssignmentNamesPayloadOperation):
     """Delete named module-level assignment statements."""
-
-    assignment_names: tuple[str, ...]
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            assignment_names=StringArrayPayloadValueCodec(),
-        )
 
     def source_edits(
         self,
@@ -5522,7 +5535,7 @@ class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
         replacements = []
         for statement in module.body:
             matched_names = pending_names & set(
-                ModuleAssignmentNameProjection(statement).names
+                AssignmentStatementNameProjection(statement).names
             )
             if not matched_names:
                 continue
@@ -5580,7 +5593,8 @@ class ReplaceModuleAssignmentOperation(
         matching_statements = tuple(
             statement
             for statement in module.body
-            if self.assignment_name in ModuleAssignmentNameProjection(statement).names
+            if self.assignment_name
+            in AssignmentStatementNameProjection(statement).names
         )
         if len(matching_statements) != 1:
             raise ValueError(
@@ -9113,7 +9127,8 @@ class DeriveAutoregisterInstanceViewOperation(
         matching_statements = tuple(
             statement
             for statement in module.body
-            if self.assignment_name in ModuleAssignmentNameProjection(statement).names
+            if self.assignment_name
+            in AssignmentStatementNameProjection(statement).names
         )
         if len(matching_statements) != 1:
             raise ValueError(
@@ -14913,30 +14928,29 @@ class ClassAssignmentDeletionRecipePlan:
         node = context.ast_target_nodes_by_id[target_ids[0]]
         if not isinstance(node, ast.ClassDef):
             return False
-        return set(self.assignment_names) <= set(
-            ClassAssignmentDeletionFindingRecipeSynthesizer.assigned_names(node)
-        )
+        return set(self.assignment_names) <= {
+            assignment_name
+            for statement in node.body
+            for assignment_name in AssignmentStatementNameProjection(statement).names
+        }
 
     def to_recipe(
         self,
         finding: RefactorFinding,
         metadata: RecipeMetadataAuthority,
     ) -> RefactorRecipe:
-        recipe = RefactorRecipe(
+        return RefactorRecipe(
             recipe_id=f"{finding.stable_id}-{metadata.recipe_id_suffix}",
             reason=metadata.recipe_reason,
-        )
-        for assignment_name in self.assignment_names:
-            recipe = recipe.with_operation(
-                DeleteClassAssignmentOperation(
-                    target=SourceRewriteTarget(
-                        qualname=self.class_subject, file_path=self.source_path
-                    ),
-                    payload_value=assignment_name,
-                    rationale="",
-                )
+        ).with_operation(
+            DeleteClassAssignmentsOperation(
+                target=SourceRewriteTarget(
+                    qualname=self.class_subject, file_path=self.source_path
+                ),
+                assignment_names=self.assignment_names,
+                rationale="",
             )
-        return recipe
+        )
 
 
 class ClassAssignmentDeletionFindingRecipeSynthesizer(
@@ -15007,23 +15021,6 @@ class ClassAssignmentDeletionFindingRecipeSynthesizer(
     def class_subject_for_finding(finding: RefactorFinding) -> str | None:
         evidence = FindingPrimaryEvidence(finding).source_location
         return None if evidence is None else evidence.symbol
-
-    @staticmethod
-    def assigned_names(node: ast.ClassDef) -> tuple[str, ...]:
-        names: list[str] = []
-        for statement in node.body:
-            if isinstance(statement, ast.Assign):
-                names.extend(
-                    target.id
-                    for target in statement.targets
-                    if isinstance(target, ast.Name)
-                )
-            if isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target,
-                ast.Name,
-            ):
-                names.append(statement.target.id)
-        return tuple(names)
 
 
 class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
