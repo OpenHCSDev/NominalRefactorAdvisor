@@ -165,20 +165,6 @@ CodemodSelectorReportFactory: TypeAlias = Callable[
 
 
 @dataclass(frozen=True)
-class CodemodSelectorPayloadBuilder:
-    """Build JSON payloads from one declared selector-report authority."""
-
-    report_factory: CodemodSelectorReportFactory
-
-    def __call__(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        selector: CodemodTargetSelector,
-    ) -> JsonObject:
-        return self.report_factory(snapshot, selector).to_dict()
-
-
-@dataclass(frozen=True)
 class CliArgumentSpec:
     flags: tuple[str, ...]
     help: str
@@ -484,14 +470,6 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
-            flags=("--codemod-synthesize-document-only",),
-            action="store_true",
-            help=(
-                "With --codemod-synthesize-plan, emit only the reusable "
-                "CodemodPlanDocument JSON."
-            ),
-        ),
-        CliArgumentSpec(
             flags=("--codemod-plan-out",),
             value_type=Path,
             help=(
@@ -500,7 +478,7 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
-            flags=("--codemod-source-index", "--codemod-target-index"),
+            flags=("--codemod-source-index",),
             action="store_true",
             dest="codemod_source_index",
             help=(
@@ -600,28 +578,10 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
-            flags=("--codemod-goal-finding-id",),
-            action="append",
-            dest="codemod_goal_finding_ids",
-            default=[],
-            help=(
-                "Restrict one-shot plan synthesis to one stable finding id "
-                "(can be repeated)."
-            ),
-        ),
-        CliArgumentSpec(
             flags=("--codemod-goal-max-stages",),
             value_type=int,
             default=8,
             help="Maximum staged recipe simulations for --codemod-refactor-goal.",
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-goal-plan-out",),
-            value_type=Path,
-            help=(
-                "With --codemod-refactor-goal, write the replayable staged "
-                "CodemodPlanSequence JSON synthesized by the goal runner."
-            ),
         ),
     )
     + _config_argument_specs()
@@ -1076,7 +1036,6 @@ class SourceSnapshotSeedFindingSelection:
     findings: list[RefactorFinding]
     codemod_synthesize_plan: bool
     detector_ids: tuple[str, ...] = ()
-    finding_ids: tuple[str, ...] = ()
 
     def selected(self) -> list[RefactorFinding]:
         if not self.codemod_synthesize_plan:
@@ -1088,13 +1047,6 @@ class SourceSnapshotSeedFindingSelection:
                 finding
                 for finding in selected_findings
                 if finding.detector_id in detector_id_set
-            ]
-        if self.finding_ids:
-            finding_id_set = frozenset(self.finding_ids)
-            selected_findings = [
-                finding
-                for finding in selected_findings
-                if finding.stable_id in finding_id_set
             ]
         return selected_findings
 
@@ -3030,7 +2982,6 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
         return self.args.codemod_synthesize_plan
 
     def run(self) -> int:
-        self.require_valid_document_only_mode()
         detector_ids = tuple(self.args.codemod_goal_detectors)
         snapshot = self.source_snapshot
         if snapshot is None:
@@ -3077,22 +3028,8 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 self.write_continuation_plan_if_requested(projected_findings)
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
-        if self.args.codemod_synthesize_document_only:
-            payload = finding_recipe_plan.document.to_dict()
-        else:
-            payload = finding_recipe_plan.to_dict()
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(finding_recipe_plan.to_dict(), indent=2))
         return 0
-
-    def require_valid_document_only_mode(self) -> None:
-        if not self.args.codemod_synthesize_document_only:
-            return
-        if self.execution_mode.requested:
-            self.parser.error(
-                "--codemod-synthesize-document-only cannot be combined with "
-                "--codemod-preflight, --codemod-diff, --codemod-simulate, "
-                "or --codemod-apply"
-            )
 
 
 class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
@@ -3181,7 +3118,7 @@ class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
 class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
     """Scan-backed command that loads one selector and emits a JSON payload."""
 
-    payload_builder: ClassVar[CodemodSelectorPayloadBuilder | None] = None
+    report_factory: ClassVar[CodemodSelectorReportFactory | None] = None
 
     def run(self) -> int:
         snapshot = self.required_source_snapshot()
@@ -3208,21 +3145,19 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
         snapshot: CodemodSourceSnapshot,
         selector: CodemodTargetSelector,
     ) -> JsonObject:
-        if self.payload_builder is None:
+        if self.report_factory is None:
             raise NotImplementedError(
-                f"{type(self).__name__} must declare a payload builder or override "
+                f"{type(self).__name__} must declare a report factory or override "
                 "payload_for_selector"
             )
-        return self.payload_builder(snapshot, selector)
+        return self.report_factory(snapshot, selector).to_dict()
 
 
 class CodemodResolveSelectorCliCommand(CodemodSelectorQueryCliCommand):
     """Resolve one registry-backed target selector against scanned source."""
 
     command_id = "codemod_resolve_selector"
-    payload_builder = CodemodSelectorPayloadBuilder(
-        CodemodSourceSnapshot.resolve_selector
-    )
+    report_factory = staticmethod(CodemodSourceSnapshot.resolve_selector)
 
     @property
     def requested(self) -> bool:
@@ -3237,9 +3172,7 @@ class CodemodTargetSourceCliCommand(CodemodSelectorQueryCliCommand):
     """Emit exact source spans for one resolved target selector."""
 
     command_id = "codemod_target_source"
-    payload_builder = CodemodSelectorPayloadBuilder(
-        CodemodSourceSnapshot.target_source_report
-    )
+    report_factory = staticmethod(CodemodSourceSnapshot.target_source_report)
 
     @property
     def requested(self) -> bool:
@@ -3311,8 +3244,6 @@ def _main_without_deadline() -> int:
         parser.error(
             "--codemod-project-source-index requires --codemod-project-findings"
         )
-    if args.codemod_goal_plan_out is not None and args.codemod_refactor_goal is None:
-        parser.error("--codemod-goal-plan-out requires --codemod-refactor-goal")
     codemod_plan_sequence = (
         load_codemod_plan_sequence(args.codemod_plan)
         if args.codemod_plan is not None
@@ -3894,7 +3825,6 @@ def _main_without_deadline() -> int:
             max_stages=args.codemod_goal_max_stages,
         ).run()
         replay_plan_payload = report.replay_sequence.to_dict()
-        write_cli_json_artifact(args.codemod_goal_plan_out, replay_plan_payload)
         write_cli_json_artifact(args.codemod_plan_out, replay_plan_payload)
         if args.json:
             print(json.dumps(report.to_dict(), indent=2))
@@ -3914,7 +3844,6 @@ def _main_without_deadline() -> int:
             findings=findings,
             codemod_synthesize_plan=codemod_scan_query_mode.synthesize_plan,
             detector_ids=tuple(args.codemod_goal_detectors),
-            finding_ids=tuple(args.codemod_goal_finding_ids),
         ).selected()
         if (
             cached_source_context is not None

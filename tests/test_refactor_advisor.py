@@ -12638,7 +12638,6 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
             tmp_path.as_posix(),
             "--no-impact-ranking",
             "--codemod-synthesize-plan",
-            "--codemod-synthesize-document-only",
             "--codemod-plan-out",
             plan_path.as_posix(),
         ],
@@ -12668,7 +12667,7 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
 
     assert plan_result.returncode == 0, plan_result.stderr
     assert validation_result.returncode == 0, validation_result.stderr
-    assert emitted_plan_payload == plan_payload
+    assert emitted_plan_payload == plan_payload["document"]
     assert any(
         operation["operation"] == "delete_module_assignments"
         and operation["assignment_names"] == ["field_names", "method_names"]
@@ -14504,7 +14503,7 @@ def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
             "--no-cache",
             "--codemod-refactor-goal",
             "tuple_dict_return_record",
-            "--codemod-goal-plan-out",
+            "--codemod-plan-out",
             plan_path.as_posix(),
             "--json",
         ],
