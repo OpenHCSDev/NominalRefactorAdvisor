@@ -250,7 +250,7 @@ def test_native_syntax_index_shares_frozen_captures_between_families() -> None:
     assert len(first["call"]) == 1
 
 
-def test_environment_and_runtime_share_bounded_function_body_projection(
+def test_function_body_consumers_share_bounded_projection_authority(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -266,10 +266,10 @@ def test_environment_and_runtime_share_bounded_function_body_projection(
     scope = environment_detectors._function_scopes(module)[0]
 
     environment_nodes = scope.nodes()
-    runtime_nodes = runtime_detectors._walk_function_body_nodes(scope.node)
+    authority_nodes = ast_tools_module.walk_function_body_nodes(scope.node)
 
     assert environment_nodes is scope.nodes()
-    assert environment_nodes is runtime_nodes
+    assert environment_nodes is authority_nodes
     assert isinstance(environment_nodes[0], ast.Assign)
     assert not any(
         isinstance(node, ast.Constant)

@@ -5560,12 +5560,6 @@ class SurfaceFunctionIndex:
         return cls(tuple(functions))
 
 
-def _walk_function_body_nodes(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[ast.AST, ...]:
-    return walk_function_body_nodes(function)
-
-
 def _payload_literal_line_count(value: str) -> int:
     return max(1, len(value.splitlines()))
 
@@ -5597,7 +5591,7 @@ def _static_payload_stats(
     literal_values = tuple(
         (
             node.value
-            for node in _walk_function_body_nodes(function)
+            for node in walk_function_body_nodes(function)
             if isinstance(node, ast.Constant) and isinstance(node.value, str)
         )
     )
@@ -5637,7 +5631,7 @@ def _static_payload_sink_kinds(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, ...]:
     sink_kinds: set[str] = set()
-    for node in _walk_function_body_nodes(function):
+    for node in walk_function_body_nodes(function):
         if isinstance(node, ast.Call):
             if (
                 isinstance(node.func, ast.Attribute)
@@ -6025,7 +6019,7 @@ class CompactPrivateReferenceModuleProjectionFamily(
         functions: list[CompactPrivateFunctionFact] = []
         for indexed_function in module_index.functions:
             function = indexed_function.function
-            body_nodes = _walk_function_body_nodes(function)
+            body_nodes = walk_function_body_nodes(function)
             if not _is_private_symbol_name(function.name):
                 continue
             owner_name = (
@@ -7692,7 +7686,7 @@ def _constant_backed_dispatch_axis_candidates(
         defaultdict(list)
     )
     for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        for node in _walk_function_body_nodes(function):
+        for node in walk_function_body_nodes(function):
             if not isinstance(node, ast.If):
                 continue
             for (
@@ -7796,7 +7790,7 @@ def _assigned_process_step_tables(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> dict[str, tuple[int, int]]:
     tables: dict[str, tuple[int, int]] = {}
-    for node in _walk_function_body_nodes(function):
+    for node in walk_function_body_nodes(function):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
         target = node.targets[0]
@@ -7856,7 +7850,7 @@ def _manual_process_step_ladder_candidates(
         tables = _assigned_process_step_tables(function)
         if not tables:
             continue
-        for node in _walk_function_body_nodes(function):
+        for node in walk_function_body_nodes(function):
             if not isinstance(node, ast.For):
                 continue
             table_name = _loop_iter_name(node.iter)
@@ -7985,7 +7979,7 @@ def _mirrored_file_rewrite_loop_candidates(
         loops = tuple(
             (
                 node
-                for node in _walk_function_body_nodes(function)
+                for node in walk_function_body_nodes(function)
                 if isinstance(node, ast.For) and _loop_has_text_rewrite_signature(node)
             )
         )
@@ -8096,7 +8090,7 @@ def _local_regex_literals_by_function(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> dict[str, int]:
     literals: dict[str, int] = {}
-    for node in _walk_function_body_nodes(function):
+    for node in walk_function_body_nodes(function):
         if not isinstance(node, ast.Call):
             continue
         literal = _regex_literal_from_call(node)

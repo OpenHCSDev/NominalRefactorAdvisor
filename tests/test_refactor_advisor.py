@@ -19491,3 +19491,22 @@ def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(
     )
     assert "pair[0][1]" in finding.summary
     assert "@dataclass(frozen=True)" in (finding.scaffold or "")
+
+
+def test_tuple_index_semantic_opacity_keeps_nested_function_evidence_bounded(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/pipeline.py",
+        "\nclass Maybe:\n    @classmethod\n    def of(cls, value): ...\n\n\ndef outer():\n    def inner(source):\n        return Maybe.of(source).map(lambda pair: pair[0][1])\n\n    return inner\n",
+    )
+
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "tuple_index_semantic_opacity"
+    )
+
+    assert len(findings) == 1
+    assert "`inner`" in findings[0].summary

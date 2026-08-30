@@ -16,7 +16,7 @@ from ..factorization import (
     factorization_axis_catalog_certificate,
 )
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
-from ..ast_tools import SourceModule
+from ..ast_tools import SourceModule, walk_function_body_nodes
 from ..native_syntax import NativePythonSyntaxIndex
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import (
@@ -7447,12 +7447,11 @@ def _tuple_index_semantic_opacity_candidate_for_function(
     qualname: str,
     function: NamedFunctionNode,
 ) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
-    body = _trim_docstring_body(function.body)
-    body_module = ast.Module(body=body, type_ignores=[])
+    body_nodes = walk_function_body_nodes(function)
     carrier_call_names = sorted_tuple(
         {
             call_name
-            for node in _walk_nodes(body_module)
+            for node in body_nodes
             if isinstance(node, ast.Call)
             for call_name in (_call_name(node.func),)
             if call_name in _TUPLE_INDEX_OPACITY_CARRIER_CALLS
@@ -7461,7 +7460,7 @@ def _tuple_index_semantic_opacity_candidate_for_function(
     index_paths = sorted_tuple(
         {
             f"{root}[{']['.join(str(index) for index in indexes)}]"
-            for node in _walk_nodes(body_module)
+            for node in body_nodes
             if isinstance(node, ast.Subscript)
             for path in (_numeric_subscript_path(node),)
             if path is not None
