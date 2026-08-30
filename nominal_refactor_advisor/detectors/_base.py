@@ -153,7 +153,7 @@ from ..class_index import (
     build_class_family_index,
     build_compact_class_family_index,
 )
-from ..collection_algebra import sorted_tuple
+from ..collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from ..models import (
     CERTIFIED,
     STRONG_HEURISTIC,
@@ -1562,10 +1562,25 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
         )
 
     @classmethod
+    def collector_base_types_by_shape(
+        cls,
+    ) -> dict[
+        CandidateCollectorBaseShape,
+        type["DerivedCandidateCollectorMixin"],
+    ]:
+        return UniqueIdentityIndexAuthority.declarations_by_handle(
+            cls.registered_collector_base_types(),
+            lambda collector_base: cast(
+                CandidateCollectorBaseShape,
+                collector_base.collector_base_shape(),
+            ),
+        )
+
+    @classmethod
     def collector_base_names(cls) -> frozenset[str]:
         return frozenset(
             collector_base.__name__
-            for collector_base in cls.registered_collector_base_types()
+            for collector_base in cls.collector_base_types_by_shape().values()
         )
 
     @classmethod
@@ -1573,10 +1588,7 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
         cls,
         shape: CandidateCollectorBaseShape,
     ) -> str:
-        for collector_base in cls.registered_collector_base_types():
-            if collector_base.collector_base_shape() == shape:
-                return collector_base.__name__
-        raise KeyError(shape)
+        return cls.collector_base_types_by_shape()[shape].__name__
 
 
 class ModuleCollectorCandidateDetector(

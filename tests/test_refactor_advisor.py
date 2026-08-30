@@ -2817,6 +2817,56 @@ def test_expose_global_candidate_cache_context_scope_round_trips() -> None:
     assert decoded == operation
 
 
+@pytest.mark.parametrize(
+    ("scope", "uses_config", "expected_base_name"),
+    (
+        (
+            base_detectors.CandidateCollectorScope.MODULE,
+            False,
+            "ModuleCollectorCandidateDetector",
+        ),
+        (
+            base_detectors.CandidateCollectorScope.MODULE,
+            True,
+            "ConfiguredModuleCollectorCandidateDetector",
+        ),
+        (
+            base_detectors.CandidateCollectorScope.FLATTENED_MODULE,
+            False,
+            "FlattenedModuleCollectorCandidateDetector",
+        ),
+        (
+            base_detectors.CandidateCollectorScope.FLATTENED_MODULE,
+            True,
+            "ConfiguredFlattenedModuleCollectorCandidateDetector",
+        ),
+        (
+            base_detectors.CandidateCollectorScope.CROSS_MODULE,
+            False,
+            "CrossModuleCollectorCandidateDetector",
+        ),
+        (
+            base_detectors.CandidateCollectorScope.CROSS_MODULE,
+            True,
+            "ConfiguredCrossModuleCollectorCandidateDetector",
+        ),
+    ),
+)
+def test_candidate_collector_base_name_is_derived_from_unique_shape_declaration(
+    scope: base_detectors.CandidateCollectorScope,
+    uses_config: bool,
+    expected_base_name: str,
+) -> None:
+    shape = base_detectors.CandidateCollectorBaseShape(scope, uses_config)
+
+    assert (
+        base_detectors.DerivedCandidateCollectorMixin.collector_base_name_for_shape(
+            shape
+        )
+        == expected_base_name
+    )
+
+
 def test_source_text_geometry_coalesces_identical_offset_replacements() -> None:
     geometry = SourceTextGeometry("alpha beta gamma")
     replacement = SourceTextSpanReplacement.from_offsets(
