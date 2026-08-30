@@ -131,6 +131,7 @@ JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
 JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
 PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadValueT = TypeVar("PayloadValueT")
+StrEnumT = TypeVar("StrEnumT", bound=StrEnum)
 DataclassRecordT = TypeVar("DataclassRecordT")
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",
@@ -2908,6 +2909,36 @@ class OptionalStringPayloadValueCodec(DefaultedStringPayloadValueCodec):
         field_name: str | None,
     ) -> None:
         del value, field_name
+
+
+@dataclass(frozen=True)
+class StrEnumPayloadValueCodec(PayloadValueCodec[StrEnumT], Generic[StrEnumT]):
+    """Typed string-enum payload semantics with a declared default."""
+
+    enum_type: type[StrEnumT]
+    declared_default: StrEnumT
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> StrEnumT:
+        value = payload.get(field_name, self.declared_default.value)
+        if not isinstance(value, str):
+            raise ValueError(f"Expected string enum field {field_name!r}")
+        try:
+            return self.enum_type(value)
+        except ValueError as error:
+            raise ValueError(
+                f"Unsupported {field_name!r} value: {value!r}"
+            ) from error
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, self.enum_type):
+            raise TypeError(
+                f"string-enum payload codec requires {self.enum_type.__name__}"
+            )
+        return value.value
 
 
 @dataclass(frozen=True)
@@ -9081,7 +9112,6 @@ class CandidateCollectorMethodSpec:
     """Source facts for a generated detector candidate-cache method."""
 
     collector_name: str
-    collector_uses_config: bool
     item_sort_attributes: tuple[str, ...]
 
     @property
@@ -9093,107 +9123,21 @@ class CandidateCollectorMethodSpec:
             return f"{sort_key_items},"
         return sort_key_items
 
-
-@dataclass(frozen=True)
-class CandidateCollectorBaseNameSet:
-    """Base class names for one candidate collector scope."""
-
-    unconfigured: str
-    configured: str
-
-    @classmethod
-    def from_scope(
-        cls, scope: CandidateCollectorScope
-    ) -> "CandidateCollectorBaseNameSet":
-        return cls(
-            unconfigured=DerivedCandidateCollectorMixin.collector_base_name_for_shape(
-                CandidateCollectorBaseShape(scope=scope, uses_config=False)
-            ),
-            configured=DerivedCandidateCollectorMixin.collector_base_name_for_shape(
-                CandidateCollectorBaseShape(scope=scope, uses_config=True)
-            ),
-        )
-
-    def for_config_usage(self, uses_config: bool) -> str:
-        if uses_config:
-            return self.configured
-        return self.unconfigured
-
-    def as_tuple(self) -> tuple[str, str]:
-        return (self.unconfigured, self.configured)
-
-
-class CandidateCollectorScopeSource(ABC, metaclass=AutoRegisterMeta):
-    """Registered source authority for candidate collector traversal shape."""
-
-    __registry__: ClassVar[dict[str, type["CandidateCollectorScopeSource"]]] = {}
-    __registry_key__ = "scope_key"
-    __skip_if_no_key__ = True
-
-    scope_key: ClassVar[str | None] = None
-    collector_base_names: ClassVar[CandidateCollectorBaseNameSet]
-
-    @classmethod
-    def require(cls, scope_key: str) -> type["CandidateCollectorScopeSource"]:
-        scope_source = cls.__registry__.get(scope_key)
-        if scope_source is None:
-            raise ValueError(f"Unsupported candidate collector scope: {scope_key!r}")
-        return scope_source
-
-    @classmethod
-    def import_source(cls, spec: CandidateCollectorMethodSpec) -> str:
-        base_name = cls.collector_base_names.for_config_usage(
-            spec.collector_uses_config
-        )
-        return f"from ._base import {base_name}"
-
-    @classmethod
     def class_declaration_source(
-        cls,
-        spec: CandidateCollectorMethodSpec,
+        self,
         class_indentation: str,
     ) -> str:
         indent = f"{class_indentation}    "
         declarations = (
-            f"{indent}candidate_collector = staticmethod({spec.collector_name})\n"
+            f"{indent}candidate_collector = staticmethod({self.collector_name})\n"
         )
-        if spec.item_sort_attributes:
+        if self.item_sort_attributes:
             declarations += (
                 f"{indent}candidate_sort_key = staticmethod(\n"
-                f"{indent}    lambda item: ({spec.sort_key_source})\n"
+                f"{indent}    lambda item: ({self.sort_key_source})\n"
                 f"{indent})\n"
             )
         return f"{declarations}\n"
-
-    @classmethod
-    def registered_base_names(cls) -> frozenset[str]:
-        return frozenset(
-            base_name
-            for scope_source in cls.__registry__.values()
-            for base_name in scope_source.possible_base_names()
-        )
-
-    @classmethod
-    def possible_base_names(cls) -> tuple[str, str]:
-        return cls.collector_base_names.as_tuple()
-
-
-class WholeModuleCandidateCollectorScopeSource(CandidateCollectorScopeSource):
-    """Generate a candidate method from a whole-module-list collector."""
-
-    scope_key = "modules"
-    collector_base_names = CandidateCollectorBaseNameSet.from_scope(
-        CandidateCollectorScope.CROSS_MODULE
-    )
-
-
-class PerModuleItemCandidateCollectorScopeSource(CandidateCollectorScopeSource):
-    """Generate a candidate method by flattening one-module item collectors."""
-
-    scope_key = "module_items"
-    collector_base_names = CandidateCollectorBaseNameSet.from_scope(
-        CandidateCollectorScope.FLATTENED_MODULE
-    )
 
 
 class CandidateCacheDetectorProtocolSource:
@@ -9270,7 +9214,7 @@ class CandidateCacheDetectorProtocolSource:
         base_name = base_source.split("[", 1)[0]
         return base_name in (
             cls.contextual_candidate_base_names
-            | CandidateCollectorScopeSource.registered_base_names()
+            | DerivedCandidateCollectorMixin.collector_base_names()
         )
 
 
@@ -9283,7 +9227,9 @@ class ExposeGlobalCandidateCacheContextOperation(
 
     candidate_type_name: str
     candidate_collector_name: str
-    candidate_collector_scope: str = "modules"
+    candidate_collector_scope: CandidateCollectorScope = (
+        CandidateCollectorScope.CROSS_MODULE
+    )
     candidate_collector_uses_config: bool = False
     candidate_item_sort_attributes: tuple[str, ...] = ()
     replaced_base_name: str = "IssueDetector"
@@ -9296,8 +9242,9 @@ class ExposeGlobalCandidateCacheContextOperation(
             PayloadBindingSet.from_field_codecs(
                 candidate_type_name=RequiredStringPayloadValueCodec(),
                 candidate_collector_name=RequiredStringPayloadValueCodec(),
-                candidate_collector_scope=OptionalStringPayloadValueCodec(
-                    WholeModuleCandidateCollectorScopeSource.scope_key,
+                candidate_collector_scope=StrEnumPayloadValueCodec(
+                    CandidateCollectorScope,
+                    CandidateCollectorScope.CROSS_MODULE,
                 ),
                 candidate_collector_uses_config=BooleanPayloadValueCodec(),
                 candidate_item_sort_attributes=OptionalStringArrayPayloadValueCodec(),
@@ -9318,26 +9265,27 @@ class ExposeGlobalCandidateCacheContextOperation(
     def candidate_method_spec(self) -> CandidateCollectorMethodSpec:
         return CandidateCollectorMethodSpec(
             collector_name=self.candidate_collector_name,
-            collector_uses_config=self.candidate_collector_uses_config,
             item_sort_attributes=self.candidate_item_sort_attributes,
         )
 
     @property
-    def scope_source(self) -> type[CandidateCollectorScopeSource]:
-        return CandidateCollectorScopeSource.require(self.candidate_collector_scope)
+    def candidate_collector_base_name(self) -> str:
+        return DerivedCandidateCollectorMixin.collector_base_name_for_shape(
+            CandidateCollectorBaseShape(
+                scope=self.candidate_collector_scope,
+                uses_config=self.candidate_collector_uses_config,
+            )
+        )
 
     @property
     def contextual_base_source(self) -> str:
-        base_name = self.scope_source.collector_base_names.for_config_usage(
-            self.candidate_method_spec.collector_uses_config
-        )
-        return f"{base_name}[{self.candidate_type_name}]"
+        return f"{self.candidate_collector_base_name}[{self.candidate_type_name}]"
 
     @property
     def required_import_source(self) -> str:
         if self.import_source:
             return self.import_source
-        return self.scope_source.import_source(self.candidate_method_spec)
+        return f"from ._base import {self.candidate_collector_base_name}"
 
     def source_edits_for_target_node(
         self,
@@ -9435,8 +9383,7 @@ class ExposeGlobalCandidateCacheContextOperation(
                 file_path=source_path,
                 insertion_line=insertion_line,
                 inserted_lines=SourceTargetEditor.source_lines(
-                    self.scope_source.class_declaration_source(
-                        self.candidate_method_spec,
+                    self.candidate_method_spec.class_declaration_source(
                         header_authority.indentation,
                     )
                 ),

@@ -3124,6 +3124,23 @@ def test_expose_global_candidate_cache_context_operation(
     assert "def _candidate_items(" not in rewritten
 
 
+def test_expose_global_candidate_cache_context_scope_round_trips() -> None:
+    operation = ExposeGlobalCandidateCacheContextOperation(
+        target=SourceRewriteTarget(qualname="AlphaDetector", file_path="detectors.py"),
+        candidate_type_name="Candidate",
+        candidate_collector_name="_candidates",
+        candidate_collector_scope=(
+            base_detectors.CandidateCollectorScope.FLATTENED_MODULE
+        ),
+    )
+
+    payload = operation.to_dict()
+    decoded = ExposeGlobalCandidateCacheContextOperation.from_dict(payload)
+
+    assert payload["candidate_collector_scope"] == "flattened_module"
+    assert decoded == operation
+
+
 def test_source_text_geometry_coalesces_identical_offset_replacements() -> None:
     geometry = SourceTextGeometry("alpha beta gamma")
     replacement = SourceTextSpanReplacement.from_offsets(
@@ -3263,7 +3280,9 @@ def test_operation_compiler_coalesces_identical_line_replacements(
                 ),
                 candidate_type_name="Candidate",
                 candidate_collector_name="_alpha_candidates",
-                candidate_collector_scope="module_items",
+                candidate_collector_scope=(
+                    base_detectors.CandidateCollectorScope.FLATTENED_MODULE
+                ),
                 candidate_item_sort_attributes=("name",),
             )
         )
@@ -3275,7 +3294,9 @@ def test_operation_compiler_coalesces_identical_line_replacements(
                 ),
                 candidate_type_name="Candidate",
                 candidate_collector_name="_beta_candidates",
-                candidate_collector_scope="module_items",
+                candidate_collector_scope=(
+                    base_detectors.CandidateCollectorScope.FLATTENED_MODULE
+                ),
                 candidate_item_sort_attributes=("name",),
             )
         )
