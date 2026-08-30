@@ -581,7 +581,6 @@ BASE_NAME_PAYLOAD_FIELD = "base_name"
 METHOD_NAMES_PAYLOAD_FIELD = "method_names"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
-AUTHORITY_BOUNDARIES_PAYLOAD_FIELD = "authority_boundaries"
 RECIPES_PAYLOAD_FIELD = "recipes"
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
 STAGES_PAYLOAD_FIELD = "stages"
@@ -2627,18 +2626,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self.sources_by_file_path,
         )
 
-    def candidates_with_supplied_authority_boundaries(
-        self,
-        candidates: Iterable["CodemodCandidate"],
-        boundaries: Iterable["AuthorityBoundaryPlan"],
-    ) -> tuple["CodemodCandidate", ...]:
-        return _codemod_candidates_with_rewrite_builders(
-            candidates,
-            self.source_index,
-            self.sources_by_file_path,
-            (SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
-        )
-
     def simulate_candidates(
         self,
         candidates: Iterable["CodemodCandidate"],
@@ -4021,42 +4008,6 @@ class SourceRewritePlanItem(SourceRewriteTargetReference):
         if self.rationale:
             return self.rationale
         return default
-
-
-@dataclass(frozen=True)
-class AuthorityBoundaryPlan:
-    """Semantic boundary declaration that enables explicit semantic rewrites."""
-
-    boundary_id: str
-    operations: tuple["ReplaceTargetOperation", ...]
-    detector_ids: tuple[str, ...] = ()
-    opportunity_kinds: tuple[str, ...] = ()
-    opportunity_labels: tuple[str, ...] = ()
-    reason: str = ""
-
-    def matches(self, candidate: "CodemodCandidate") -> bool:
-        if self.detector_ids and not (
-            set(self.detector_ids) & set(candidate.opportunity.detector_ids)
-        ):
-            return False
-        if (
-            self.opportunity_kinds
-            and candidate.opportunity_key.kind not in self.opportunity_kinds
-        ):
-            return False
-        return not self.opportunity_labels or (
-            candidate.opportunity_key.label in self.opportunity_labels
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "boundary_id": self.boundary_id,
-            "operations": tuple(operation.to_dict() for operation in self.operations),
-            "detector_ids": self.detector_ids,
-            "opportunity_kinds": self.opportunity_kinds,
-            "opportunity_labels": self.opportunity_labels,
-            "reason": self.reason,
-        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -12725,7 +12676,6 @@ class RefactorRecipe:
 class CodemodPlanDocument:
     """Caller-supplied codemod plan plus post-refactor guard invariants."""
 
-    authority_boundaries: tuple[AuthorityBoundaryPlan, ...] = ()
     recipes: tuple[RefactorRecipe, ...] = ()
     guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
 
@@ -12738,11 +12688,6 @@ class CodemodPlanDocument:
 
         document_tuple = tuple(documents)
         return cls(
-            authority_boundaries=tuple(
-                boundary
-                for document in document_tuple
-                for boundary in document.authority_boundaries
-            ),
             recipes=tuple(
                 recipe for document in document_tuple for recipe in document.recipes
             ),
@@ -12802,10 +12747,6 @@ class CodemodPlanDocument:
     ) -> "CodemodPlanDocument":
         del cls
         return CodemodPlanJsonParser().parse_document(payload)
-
-    @property
-    def has_authority_boundaries(self) -> bool:
-        return bool(self.authority_boundaries)
 
     @property
     def has_recipes(self) -> bool:
@@ -12914,9 +12855,6 @@ class CodemodPlanDocument:
 
     def to_dict(self) -> JsonObject:
         return {
-            AUTHORITY_BOUNDARIES_PAYLOAD_FIELD: tuple(
-                boundary.to_dict() for boundary in self.authority_boundaries
-            ),
             RECIPES_PAYLOAD_FIELD: tuple(recipe.to_dict() for recipe in self.recipes),
             ARCHITECTURE_GUARDS_PAYLOAD_FIELD: self.guard_suite.to_dict(),
         }
@@ -12949,22 +12887,10 @@ class CodemodPlanSequence:
         return cls(documents=(document,))
 
     @property
-    def authority_boundaries(self) -> tuple[AuthorityBoundaryPlan, ...]:
-        return tuple(
-            boundary
-            for document in self.documents
-            for boundary in document.authority_boundaries
-        )
-
-    @property
     def guard_suite(self) -> ArchitectureGuardSuite:
         return ArchitectureGuardSuite().merge(
             *(document.combined_guard_suite for document in self.documents)
         )
-
-    @property
-    def has_authority_boundaries(self) -> bool:
-        return bool(self.authority_boundaries)
 
     @property
     def has_recipes(self) -> bool:
@@ -13098,7 +13024,6 @@ class CodemodPlanJsonParser:
 
     def parse_document(self, payload: JsonObject) -> CodemodPlanDocument:
         document = CodemodPlanDocument(
-            authority_boundaries=self.authority_boundaries(payload),
             recipes=self.recipes(payload),
             guard_suite=self.architecture_guard_suite(payload),
         )
@@ -13107,15 +13032,6 @@ class CodemodPlanJsonParser:
             role="plan document",
         )
         return document
-
-    def authority_boundaries(
-        self,
-        payload: JsonObject,
-    ) -> tuple[AuthorityBoundaryPlan, ...]:
-        return tuple(
-            self.authority_boundary_plan(row)
-            for row in self.array_field(payload, AUTHORITY_BOUNDARIES_PAYLOAD_FIELD)
-        )
 
     def recipes(
         self,
@@ -13135,31 +13051,6 @@ class CodemodPlanJsonParser:
                 self.architecture_guard_rule(row)
                 for row in self.array_field(payload, ARCHITECTURE_GUARDS_PAYLOAD_FIELD)
             )
-        )
-
-    def authority_boundary_plan(self, row: JsonValue) -> AuthorityBoundaryPlan:
-        payload = self.object_row(row, "authority boundary plan rows")
-        boundary_id = self.required_string_field(payload, "boundary_id")
-        plan = AuthorityBoundaryPlan(
-            boundary_id=boundary_id,
-            operations=tuple(
-                self.authority_boundary_operation(item)
-                for item in self.array_field(payload, "operations")
-            ),
-            detector_ids=self.string_tuple_field(payload, "detector_ids"),
-            opportunity_kinds=self.string_tuple_field(payload, "opportunity_kinds"),
-            opportunity_labels=self.string_tuple_field(payload, "opportunity_labels"),
-            reason=self.optional_string_field(payload, "reason"),
-        )
-        CodemodPayload(payload).require_supported_fields(
-            plan.to_dict(),
-            role="authority boundary",
-        )
-        return plan
-
-    def authority_boundary_operation(self, row: JsonValue) -> ReplaceTargetOperation:
-        return ReplaceTargetOperation.from_dict(
-            self.object_row(row, "authority boundary replace_target operations")
         )
 
     def refactor_recipe(self, row: JsonValue) -> RefactorRecipe:
@@ -24953,56 +24844,6 @@ class DerivableDetectorDeclarationsCodemodBuilder(
         )
 
 
-class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
-    """Attach caller-supplied rewrites once the authority boundary is declared."""
-
-    strategy_id = "supplied-authority-boundary-rewrite"
-    automation_level = CodemodAutomationLevel.SIMULATABLE_REWRITE
-    strategy_reason = (
-        "The caller supplied the semantic authority boundary, so the advisor can "
-        "resolve and simulate explicit source rewrites without claiming the boundary "
-        "choice was mechanically derived."
-    )
-
-    def __init__(self, plans: Iterable[AuthorityBoundaryPlan]) -> None:
-        self._plans = tuple(plans)
-
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        rewrites: list[PlannedSourceRewrite] = []
-        for plan in self._plans:
-            if not plan.matches(candidate):
-                continue
-            operations: list[ReplaceTargetOperation] = []
-            for operation in plan.operations:
-                target_id = operation.target.required_target_id(
-                    source_index,
-                    eligible_target_ids=candidate.target_ids,
-                )
-                operations.append(
-                    replace(
-                        operation,
-                        target=SourceRewriteTarget(target_id=target_id),
-                        rationale=(
-                            operation.rationale
-                            or plan.reason
-                            or f"Apply supplied authority boundary {plan.boundary_id}."
-                        ),
-                    )
-                )
-            rewrites.extend(
-                RefactorRecipeOperationCompiler(
-                    source_index=source_index,
-                    sources_by_file_path=source_by_path,
-                ).planned_rewrites(plan.boundary_id, operations)
-            )
-        return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
-
-
 def codemod_candidates_with_automated_rewrites(
     candidates: Iterable[CodemodCandidate],
     source_index: SourceIndex,
@@ -25066,22 +24907,6 @@ def _codemod_candidates_with_rewrite_builders(
             item.opportunity_key.value,
             item.target_ids,
         ),
-    )
-
-
-def codemod_candidates_with_supplied_authority_boundaries(
-    candidates: Iterable[CodemodCandidate],
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-    boundaries: Iterable[AuthorityBoundaryPlan],
-) -> tuple[CodemodCandidate, ...]:
-    """Attach explicit rewrites enabled by caller-declared authority boundaries."""
-
-    return _codemod_candidates_with_rewrite_builders(
-        candidates,
-        source_index,
-        source_by_path,
-        (SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
     )
 
 

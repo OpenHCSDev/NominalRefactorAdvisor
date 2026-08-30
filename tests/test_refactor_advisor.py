@@ -93,7 +93,6 @@ from nominal_refactor_advisor.cli import ProofExitCodeAuthority
 from nominal_refactor_advisor.cli import SingleRootModeAuthority
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
-from nominal_refactor_advisor.cli import load_authority_boundary_plans
 from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
 from nominal_refactor_advisor.codemod import (
@@ -103,7 +102,6 @@ from nominal_refactor_advisor.codemod import (
     AstTargetNodeIndex,
     AstTargetNodeIndexCache,
     AddClassBaseOperation,
-    AuthorityBoundaryPlan,
     CodemodActionability,
     CodemodAutomationLevel,
     CodemodOperationPreflightError,
@@ -178,16 +176,12 @@ from nominal_refactor_advisor.codemod import (
     SourceTextGeometry,
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
-    apply_codemod_simulation,
     codemod_class_plan_from_findings,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
-    codemod_candidates_with_supplied_authority_boundaries,
     codemod_plan_from_findings,
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
-    format_codemod_unified_diff,
-    simulate_codemod_candidates,
     simulate_planned_rewrites,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
@@ -652,116 +646,6 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     assert simulation.to_dict()["parse_valid"] is True
     assert simulation.parse_validation.to_dict()["backend"] == "ast_span"
     assert "return value + 1" in simulation.rewritten_sources[module_path.as_posix()]
-
-
-def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Collapse repeated class family",
-        "Repeated behavior has one grammar.",
-        "certified grammar compression",
-        "same orbit under renaming",
-    ).build(
-        "orbit_detector",
-        "manual family compresses through one supplied authority",
-        (SourceLocation(str(module_path), 3, "Alpha.run"),),
-    )
-    source_index = build_source_index(modules, (finding,))
-    impact_ranking = build_refactor_impact_ranking(
-        (finding,),
-        source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=5,
-            minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
-        ),
-    )
-    candidates = codemod_candidates_from_impact_ranking(impact_ranking, source_index)
-    boundary_candidates = codemod_candidates_with_supplied_authority_boundaries(
-        candidates,
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-        (
-            AuthorityBoundaryPlan(
-                boundary_id="alpha-run-authority",
-                detector_ids=("orbit_detector",),
-                operations=(
-                    ReplaceTargetOperation(
-                        replacement_source=(
-                            "    def run(self, value):\n"
-                            "        return AlphaRunAuthority.run(value)\n"
-                        ),
-                        target=SourceRewriteTarget(
-                            file_path=module_path.as_posix(),
-                            qualname="Alpha.run",
-                        ),
-                    ),
-                ),
-                reason="Route Alpha.run through the supplied authority boundary.",
-            ),
-        ),
-    )
-    with pytest.raises(ValueError, match="eligible source-index target"):
-        codemod_candidates_with_supplied_authority_boundaries(
-            candidates,
-            source_index,
-            {module_path.as_posix(): module_path.read_text()},
-            (
-                AuthorityBoundaryPlan(
-                    boundary_id="unresolved-alpha-boundary",
-                    detector_ids=("orbit_detector",),
-                    operations=(
-                        ReplaceTargetOperation(
-                            replacement_source="class Alpha:\n    pass\n",
-                            target=SourceRewriteTarget(
-                                file_path=module_path.as_posix(),
-                                qualname="Alpha",
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        )
-
-    candidate = boundary_candidates[0]
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    simulation = simulate_codemod_candidates(
-        (candidate,),
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = format_codemod_unified_diff(simulation, source_by_path)
-    rewritten = simulation.rewritten_sources[module_path.as_posix()]
-
-    assert (
-        candidate.applicability.strategy.automation_level
-        == CodemodAutomationLevel.SIMULATABLE_REWRITE
-    )
-    assert (
-        candidate.applicability.simulation_status
-        == CodemodSimulationStatus.READY_TO_SIMULATE
-    )
-    assert candidate.applicability.strategy.safe_to_apply is False
-    assert (
-        candidate.applicability.actionability
-        is CodemodActionability.SIMULATABLE_REWRITE
-    )
-    assert candidate.applicability.planned_rewrite_count == 1
-    assert "+        return AlphaRunAuthority.run(value)" in diff
-    assert "return AlphaRunAuthority.run(value)" in rewritten
-    assert apply_codemod_simulation(simulation) == (module_path.as_posix(),)
-    assert "return AlphaRunAuthority.run(value)" in module_path.read_text()
 
 
 def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overlap(
@@ -4053,7 +3937,6 @@ def test_default_codemod_rewrite_builders_derive_from_registry() -> None:
     assert all(
         isinstance(builder, DefaultCodemodRewriteBuilder) for builder in builders
     )
-    assert "SuppliedAuthorityBoundaryCodemodBuilder" not in builder_names
 
 
 def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
@@ -11262,61 +11145,9 @@ def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:
         )
 
 
-def test_load_authority_boundary_plans_from_json(tmp_path: Path) -> None:
-    plan_path = tmp_path / "codemod-plan.json"
-    plan_path.write_text(
-        json.dumps(
-            {
-                "authority_boundaries": [
-                    {
-                        "boundary_id": "alpha-run",
-                        "detector_ids": ["orbit_detector"],
-                        "opportunity_kinds": ["ast-target"],
-                        "operations": [
-                            {
-                                "operation": "replace_target",
-                                "file_path": "pkg/mod.py",
-                                "target_qualname": "Alpha.run",
-                                "replacement_source": (
-                                    "    def run(self, value):\n"
-                                    "        return AlphaRunAuthority.run(value)\n"
-                                ),
-                            }
-                        ],
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    plans = load_authority_boundary_plans(plan_path)
-
-    assert len(plans) == 1
-    assert plans[0].boundary_id == "alpha-run"
-    assert plans[0].detector_ids == ("orbit_detector",)
-    assert plans[0].opportunity_kinds == ("ast-target",)
-    assert plans[0].operations[0].target.qualname == "Alpha.run"
-
-
 def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     document = CodemodPlanDocument.from_json_value(
         {
-            "authority_boundaries": [
-                {
-                    "boundary_id": "alpha-run",
-                    "operations": [
-                        {
-                            "operation": "replace_target",
-                            "target_qualname": "Alpha.run",
-                            "replacement_source": (
-                                "    def run(self, value):\n"
-                                "        return AlphaRunAuthority.run(value)\n"
-                            ),
-                        }
-                    ],
-                }
-            ],
             "architecture_guards": [
                 {
                     "rule_id": "alpha-boundary",
@@ -11357,10 +11188,8 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
         }
     )
 
-    assert document.has_authority_boundaries is True
     assert document.has_recipes is True
     assert document.has_architecture_guards is True
-    assert document.authority_boundaries[0].boundary_id == "alpha-run"
     assert document.guard_suite.rules[0].rule_id == "alpha-boundary"
     assert document.guard_suite.rules[0].forbidden_attribute_names == (
         "legacy_alpha_value",
@@ -11378,6 +11207,11 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     assert document.recipes[0].operations[0].target.file_path == "pkg/mod.py"
 
 
+def test_codemod_plan_document_rejects_parallel_authority_boundary_lane() -> None:
+    with pytest.raises(ValueError, match="Unsupported plan document field"):
+        CodemodPlanDocument.from_json_value({"authority_boundaries": []})
+
+
 def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     first_plan_path = tmp_path / "first-plan.json"
@@ -11385,22 +11219,6 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
     first_plan_path.write_text(
         json.dumps(
             {
-                "authority_boundaries": [
-                    {
-                        "boundary_id": "alpha-run",
-                        "operations": [
-                            {
-                                "operation": "replace_target",
-                                "target_qualname": "Alpha.run",
-                                "file_path": "pkg/mod.py",
-                                "replacement_source": (
-                                    "    def run(self, value):\n"
-                                    "        return modern(value)\n"
-                                ),
-                            }
-                        ],
-                    }
-                ],
                 "recipes": [
                     {
                         "recipe_id": "replace-alpha",
@@ -11488,7 +11306,6 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
     assert compose_result.returncode == 0, compose_result.stderr
     assert validation_result.returncode == 0, validation_result.stderr
     assert emitted_composed_payload == composed_payload
-    assert validation_payload["authority_boundaries"][0]["boundary_id"] == "alpha-run"
     assert [recipe["recipe_id"] for recipe in validation_payload["recipes"]] == [
         "replace-alpha",
         "ensure-modern-import",
@@ -13268,21 +13085,6 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     plan_path.write_text(
         json.dumps(
             {
-                "authority_boundaries": [
-                    {
-                        "boundary_id": "alpha-run",
-                        "operations": [
-                            {
-                                "operation": "replace_target",
-                                "target_qualname": "Alpha.run",
-                                "replacement_source": (
-                                    "    def run(self, value):\n"
-                                    "        return AlphaRunAuthority.run(value)\n"
-                                ),
-                            }
-                        ],
-                    }
-                ],
                 "architecture_guards": [
                     {
                         "rule_id": "cellprofiler-declaration-boundary",
@@ -13381,10 +13183,8 @@ def test_load_codemod_plan_document_includes_architecture_guards(
 
     document = load_codemod_plan_document(plan_path)
 
-    assert document.has_authority_boundaries is True
     assert document.has_recipes is True
     assert document.has_architecture_guards is True
-    assert document.authority_boundaries[0].boundary_id == "alpha-run"
     assert document.recipes[0].recipe_id == "alpha-recipe"
     assert document.recipes[0].operations[0].target.qualname == "Alpha.run"
     assert document.recipes[0].operations[1].to_dict()["operation"] == (

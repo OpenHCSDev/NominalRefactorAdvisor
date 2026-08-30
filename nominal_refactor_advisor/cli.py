@@ -64,7 +64,6 @@ from .calibration import (
 from .codemod import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
-    AuthorityBoundaryPlan,
     CodemodCandidate,
     CodemodAutomationLevel,
     CodemodJsonReport,
@@ -1500,12 +1499,6 @@ class JsonDocumentInputSet:
         )
 
 
-def load_authority_boundary_plans(path: Path) -> tuple[AuthorityBoundaryPlan, ...]:
-    """Load caller-supplied authority boundary plans from JSON."""
-
-    return load_codemod_plan_sequence(path).authority_boundaries
-
-
 def load_codemod_plan_document(path: Path) -> CodemodPlanDocument:
     """Load caller-supplied codemod rewrites and guard invariants from JSON."""
 
@@ -2862,7 +2855,6 @@ class CodemodPlanExecutionRequest:
             self.mode.requested
             and not self.project_findings
             and self.sequence.has_recipes
-            and not self.sequence.has_authority_boundaries
             and not self.sequence.has_architecture_guards
         )
 
@@ -3455,12 +3447,6 @@ def _main_without_deadline() -> int:
         and not codemod_plan_sequence.has_recipes
     ):
         parser.error("--codemod-* options require impact ranking or recipe rewrites")
-    if (
-        codemod_requested
-        and not args.include_impact_ranking
-        and codemod_plan_sequence.has_authority_boundaries
-    ):
-        parser.error("authority-boundary codemod plans require impact ranking")
     if codemod_requested and args.import_lean_export is not None:
         parser.error("--codemod-* options require parsed Python source paths")
 
@@ -3992,7 +3978,6 @@ def _main_without_deadline() -> int:
         if args.include_change_budget
         else None
     )
-    authority_boundary_plans = codemod_plan_sequence.authority_boundaries
     architecture_guard_rules = codemod_plan_sequence.guard_suite.to_tuple()
     architecture_guard_evaluator = ArchitectureGuardSourceEvaluator(
         modules,
@@ -4117,13 +4102,6 @@ def _main_without_deadline() -> int:
         codemod_candidates = source_snapshot.candidates_with_automated_rewrites(
             codemod_candidates,
         )
-        if authority_boundary_plans:
-            codemod_candidates = (
-                source_snapshot.candidates_with_supplied_authority_boundaries(
-                    codemod_candidates,
-                    authority_boundary_plans,
-                )
-            )
         architecture_guard_report = architecture_guard_evaluator.report_for_snapshot(
             source_snapshot
         )
