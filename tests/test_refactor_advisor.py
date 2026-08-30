@@ -469,7 +469,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=10,
             ),
             _impact_ranking_finding(
-                detector_id="generic_role_case_table",
+                detector_id="semantic_tuple_return_record",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=20,
@@ -519,7 +519,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=10,
             ),
             _impact_ranking_finding(
-                detector_id="generic_role_case_table",
+                detector_id="semantic_tuple_return_record",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=20,
@@ -2529,7 +2529,7 @@ def test_class_family_index_resolves_subscripted_generic_base(
     assert class_index.ancestor_symbols(child_symbol) == ("pkg.mod.Base",)
 
 
-def test_finding_evidence_selector_resolves_role_case_owner_subject(
+def test_finding_evidence_selector_resolves_qualified_owner_subject(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -2540,7 +2540,7 @@ def test_finding_evidence_selector_resolves_role_case_owner_subject(
     )
     modules = parse_python_modules(tmp_path)
     finding = RefactorFinding(
-        detector_id="generic_role_case_table",
+        detector_id="projection_surface_test",
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Concrete role-case tables should move behind one generic axis authority",
         summary="ProjectionSurfaceAuthority repeats concrete role-case literals.",
@@ -17993,195 +17993,6 @@ def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
     document = FindingRecipeClassPlan.document_from_records((record,))
 
     assert document.recipes[0].authority_claims == (claim,)
-
-
-def test_generic_role_case_table_synthesis_derives_authority_constants(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        (
-            "class FirstAxisConsumer:\n"
-            "    role_cases = {'applied': 1, 'diff': 2}\n\n\n"
-            "class SecondAxisConsumer:\n"
-            "    role_cases = {'applied': 3, 'diff': 4}\n"
-        ),
-    )
-    finding = RefactorFinding(
-        detector_id="generic_role_case_table",
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Concrete role-case tables should move behind one generic axis authority",
-        summary="consumers mirror role-case literals",
-        why="case literals repeat a semantic fact family",
-        capability_gap="one generic case-table authority owned by the semantic axis",
-        relation_context="case-table literals are confusable under one axis owner",
-        evidence=(
-            SourceLocation(
-                module_path.as_posix(),
-                1,
-                "FirstAxisConsumer:role_cases:applied,diff",
-            ),
-            SourceLocation(
-                module_path.as_posix(),
-                5,
-                "SecondAxisConsumer:role_cases:applied,diff",
-            ),
-        ),
-        metrics=MappingMetrics.from_field_names(
-            mapping_site_count=2,
-            mapping_name="generic_role_case_table",
-            source_name="AxisRoleCase",
-            field_names=("applied", "diff"),
-        ),
-    )
-    modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = snapshot.plan_from_findings(
-        (finding,),
-        detector_ids=("generic_role_case_table",),
-    )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    diff = snapshot.unified_diff(simulation.simulation)
-
-    assert plan.rejected_count == 0
-    assert plan.records[0].status.value == "planned"
-    assert simulation.is_clean is True
-    assert "+class AxisRoleCaseAuthority:" in diff
-    assert "+    APPLIED = 'applied'" in diff
-    assert "+    DIFF = 'diff'" in diff
-    assert "AxisRoleCaseAuthority.APPLIED" in diff
-    assert "AxisRoleCaseAuthority.DIFF" in diff
-    assert "-    role_cases = {'applied': 1, 'diff': 2}" in diff
-    assert "-    role_cases = {'applied': 3, 'diff': 4}" in diff
-
-
-def test_finding_recipe_plan_merges_overlapping_role_case_module_rewrites(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        (
-            "class FirstAxisConsumer:\n"
-            "    role_cases = {'applied': 1, 'diff': 2}\n\n\n"
-            "class SecondAxisConsumer:\n"
-            "    role_cases = {'applied': 3, 'diff': 4}\n\n\n"
-            "class ThirdAxisConsumer:\n"
-            "    role_cases = {'raw': 5, 'clean': 6}\n\n\n"
-            "class FourthAxisConsumer:\n"
-            "    role_cases = {'raw': 7, 'clean': 8}\n"
-        ),
-    )
-    first = RefactorFinding(
-        detector_id="generic_role_case_table",
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Concrete role-case tables should move behind one generic axis authority",
-        summary="first pair mirrors role-case literals",
-        why="case literals repeat a semantic fact family",
-        capability_gap="one generic case-table authority owned by the semantic axis",
-        relation_context="case-table literals are confusable under one axis owner",
-        evidence=(
-            SourceLocation(
-                module_path.as_posix(),
-                1,
-                "FirstAxisConsumer:role_cases:applied,diff",
-            ),
-            SourceLocation(
-                module_path.as_posix(),
-                5,
-                "SecondAxisConsumer:role_cases:applied,diff",
-            ),
-        ),
-        metrics=MappingMetrics.from_field_names(
-            mapping_site_count=2,
-            mapping_name="generic_role_case_table",
-            source_name="AxisRoleCase",
-            field_names=("applied", "diff"),
-        ),
-    )
-    second = RefactorFinding(
-        detector_id=first.detector_id,
-        pattern_id=first.pattern_id,
-        title=first.title,
-        summary="second pair mirrors role-case literals",
-        why=first.why,
-        capability_gap=first.capability_gap,
-        relation_context=first.relation_context,
-        evidence=(
-            SourceLocation(
-                module_path.as_posix(),
-                9,
-                "ThirdAxisConsumer:role_cases:raw,clean",
-            ),
-            SourceLocation(
-                module_path.as_posix(),
-                13,
-                "FourthAxisConsumer:role_cases:raw,clean",
-            ),
-        ),
-        metrics=MappingMetrics.from_field_names(
-            mapping_site_count=2,
-            mapping_name="generic_role_case_table",
-            source_name="ImageRoleCase",
-            field_names=("raw", "clean"),
-        ),
-    )
-    modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (first, second))
-
-    plan = snapshot.plan_from_findings(
-        (first, second),
-        detector_ids=("generic_role_case_table",),
-    )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    diff = snapshot.unified_diff(simulation.simulation)
-
-    assert plan.expected_removed_finding_count == 2
-    assert plan.report.to_dict()["status_counts"] == {"planned": 2}
-    assert plan.document.recipes[0].recipe_id == "finding-backed-merged-codemod-plan"
-    assert {record.executable_declaration_name for record in plan.records} == {
-        "GenericRoleCaseTableMappingRecipeBuilder"
-    }
-    assert {record.refactor_concept for record in plan.records} == {
-        "role_case_authority"
-    }
-    assert len(simulation.simulation.rewrites) == 1
-    projected_rewrite = simulation.simulation.rewrites[0]
-    assert len(projected_rewrite.contributors) >= 2
-    assert (
-        len({contributor.recipe_id for contributor in projected_rewrite.contributors})
-        >= 2
-    )
-    assert simulation.is_clean is True
-    assert "+class AxisRoleCaseAuthority:" in diff
-    assert "+class ImageRoleCaseAuthority:" in diff
-    assert "AxisRoleCaseAuthority.APPLIED" in diff
-    assert "ImageRoleCaseAuthority.CLEAN" in diff
-
-    serialized_document = plan.document.to_dict()
-    module_path.write_text(
-        module_path.read_text().replace(
-            "class FourthAxisConsumer:\n",
-            "class FourthAxisConsumer :\n",
-        )
-    )
-    changed_snapshot = CodemodSourceSnapshot.from_modules(
-        parse_python_modules(tmp_path),
-        (first, second),
-    )
-
-    with pytest.raises(
-        CodemodSourceRevisionError,
-        match="Compiled source rewrite contributor no longer matches",
-    ):
-        CodemodPlanDocument.from_json_value(serialized_document).simulate_snapshot(
-            changed_snapshot,
-            backend=CodemodBackend.AST_SPAN,
-        )
 
 
 def test_module_cli_synthesizes_class_plan_with_scaffolds(

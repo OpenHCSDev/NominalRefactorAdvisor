@@ -777,7 +777,7 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
 
 def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
     finding = RefactorFinding(
-        detector_id="local_role_case_logic",
+        detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="Role cases should descend to an authority",
         summary="local case table mirrors an axis authority",
@@ -787,7 +787,7 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
         evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=3,
-            mapping_name="local_role_case_logic",
+            mapping_name="authority_projection_test",
             source_name="AxisRoleAuthority",
             field_names=("alpha", "beta"),
             identity_field_names=("role",),
@@ -812,7 +812,7 @@ def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_au
     None
 ):
     finding = RefactorFinding(
-        detector_id="local_role_case_logic",
+        detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="Role cases should descend to an authority",
         summary="local case table mirrors an axis authority",
@@ -822,7 +822,7 @@ def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_au
         evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=3,
-            mapping_name="local_role_case_logic",
+            mapping_name="authority_projection_test",
             source_name="authority,authority",
             field_names=("alpha", "beta"),
             identity_field_names=("role",),
@@ -842,7 +842,7 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
     None
 ):
     first = RefactorFinding(
-        detector_id="generic_role_case_table",
+        detector_id="cross_module_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="Concrete role-case tables should move behind one generic axis authority",
         summary="codemod plan command cases mirror a shared authority",
@@ -858,13 +858,13 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
         ),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
-            mapping_name="generic_role_case_table",
+            mapping_name="cross_module_projection_test",
             source_name="codemod,command,plan",
             field_names=("applied", "diff"),
         ),
     )
     second = RefactorFinding(
-        detector_id="generic_role_case_table",
+        detector_id="cross_module_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
         title=first.title,
         summary="codemod class plan command cases mirror a shared authority",
@@ -880,7 +880,7 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
         ),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
-            mapping_name="generic_role_case_table",
+            mapping_name="cross_module_projection_test",
             source_name="codemod,command,plan",
             field_names=("applied", "diff"),
         ),
@@ -900,7 +900,7 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
 
 def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
     finding = RefactorFinding(
-        detector_id="local_role_case_logic",
+        detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="Role cases should descend to an authority",
         summary="local case table mirrors an axis authority",
@@ -910,7 +910,7 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
         evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=3,
-            mapping_name="local_role_case_logic",
+            mapping_name="authority_projection_test",
             source_name="AxisRoleAuthority",
             field_names=("alpha", "beta"),
             identity_field_names=("role",),
