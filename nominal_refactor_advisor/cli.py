@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
-from typing import ClassVar, Self, TypeAlias, cast
+from typing import ClassVar, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -71,12 +71,10 @@ from .codemod import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
     CodemodPlanDocument,
-    CodemodPlanDocumentSimulation,
     CodemodPlanJsonParser,
     CodemodPlanPreflightReport,
     CodemodPlanSequence,
     CodemodPlanSequenceSimulation,
-    CodemodSelectedOperationPlanScaffoldReport,
     CodemodTargetSelector,
     CodemodSimulationReport,
     CodemodSimulationStatus,
@@ -86,16 +84,10 @@ from .codemod import (
     FindingRecipeSynthesizer,
     JsonObject,
     JsonValue,
-    NEW_SOURCE_PAYLOAD_FIELD,
-    OLD_SOURCE_PAYLOAD_FIELD,
     PlannedSourceRewrite,
     RefactorConcept,
-    RefactorRecipeOperationPlanTemplate,
-    RefactorRecipeOperationTemplate,
-    ReplaceTextOperation,
     SourcePathCandidateAuthority,
     SourcePathCandidateSet,
-    SourceIndexTargetSelector,
     apply_codemod_simulation,
     codemod_class_plan_from_findings,
     codemod_plan_from_findings,
@@ -548,87 +540,6 @@ _CLI_ARGUMENT_SPECS = (
                 "against scanned paths, emit an editable replacement-source "
                 "CodemodPlanDocument scaffold, and exit. Use '-' to read "
                 "the selector from stdin."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-selected-operation-plan",),
-            value_type=Path,
-            help=(
-                "Load one codemod target selector JSON object and, with "
-                "--codemod-operation-template, emit an editable "
-                "apply-selected-targets CodemodPlanDocument scaffold. Use '-' "
-                "to read the selector from stdin."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-selected-node-kind",),
-            action="append",
-            value_type=str,
-            help=(
-                "Add a source-index node kind to an inline selected-operation "
-                "target selector."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-selected-file",),
-            action="append",
-            value_type=str,
-            help=(
-                "Add a file path to an inline selected-operation source-index "
-                "target selector."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-selected-qualname",),
-            action="append",
-            value_type=str,
-            help=(
-                "Add an exact qualname to an inline selected-operation "
-                "source-index target selector."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-selected-file-pattern",),
-            action="append",
-            value_type=str,
-            help=(
-                "Add a file path regex to an inline selected-operation "
-                "source-index target selector."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-selected-name-pattern",),
-            action="append",
-            value_type=str,
-            help=(
-                "Add a target-name regex to an inline selected-operation "
-                "source-index target selector."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-selected-qualname-pattern",),
-            action="append",
-            value_type=str,
-            help=(
-                "Add a qualname regex to an inline selected-operation "
-                "source-index target selector."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-operation-template",),
-            value_type=Path,
-            help=(
-                "JSON object or array of target-local operation templates used "
-                "by --codemod-selected-operation-plan. Use '-' to read "
-                "templates from stdin."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-selected-replace-text",),
-            nargs=2,
-            help=(
-                "Build a selected-target replace_text template from OLD_SOURCE "
-                "and NEW_SOURCE without a separate operation-template JSON file."
             ),
         ),
         CliArgumentSpec(
@@ -1628,281 +1539,6 @@ def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
     return CodemodTargetSelector.from_dict(cast(Mapping[str, JsonValue], payload))
 
 
-def cli_string_tuple(
-    value: str | list[str] | tuple[str, ...] | None,
-) -> tuple[str, ...]:
-    """Normalize an optional argparse string/list value into a tuple."""
-
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return (value,)
-    if isinstance(value, list):
-        return tuple(cast(list[str], value))
-    if isinstance(value, tuple):
-        return value
-    raise TypeError(
-        f"Expected CLI string value or sequence, got {type(value).__name__}"
-    )
-
-
-class SelectedOperationCliSource(ABC):
-    """Shared contract for selected-operation CLI source registries."""
-
-    source_id: ClassVar[str]
-    source_family_label: ClassVar[str]
-    source_label: ClassVar[str]
-
-    @classmethod
-    def selected_sources(
-        cls,
-        args: argparse.Namespace,
-    ) -> tuple["SelectedOperationCliSource", ...]:
-        sources = tuple(source_type() for source_type in cls.__registry__.values())
-        return tuple(
-            source
-            for source in sorted(sources, key=lambda item: item.source_label)
-            if source.is_supplied(args)
-        )
-
-    @classmethod
-    def selected_source_labels(cls, args: argparse.Namespace) -> tuple[str, ...]:
-        return tuple(source.source_label for source in cls.selected_sources(args))
-
-    @classmethod
-    def required_source(
-        cls,
-        args: argparse.Namespace,
-        parser: argparse.ArgumentParser,
-    ) -> Self:
-        sources = cls.selected_sources(args)
-        if len(sources) == 1:
-            return cast(Self, sources[0])
-        if not sources:
-            parser.error(f"{cls.source_family_label} requires one source")
-        parser.error(
-            f"{cls.source_family_label} sources are mutually exclusive: "
-            + ", ".join(source.source_label for source in sources)
-        )
-
-    @abstractmethod
-    def is_supplied(self, args: argparse.Namespace) -> bool:
-        raise NotImplementedError
-
-
-class SelectedOperationTargetSelectorSource(
-    SelectedOperationCliSource,
-    ABC,
-    metaclass=AutoRegisterMeta,
-):
-    """Registered CLI source for selected-operation target selectors."""
-
-    __registry__: ClassVar[dict[str, type["SelectedOperationTargetSelectorSource"]]] = (
-        {}
-    )
-    __registry_key__ = "source_id"
-    __skip_if_no_key__ = True
-    source_family_label = "selected-operation target selector"
-
-    @abstractmethod
-    def target_selector(
-        self,
-        args: argparse.Namespace,
-        parser: argparse.ArgumentParser,
-    ) -> CodemodTargetSelector:
-        raise NotImplementedError
-
-
-class JsonSelectedOperationTargetSelectorSource(SelectedOperationTargetSelectorSource):
-    """Load a selected-operation target selector from JSON."""
-
-    source_id = "json_target_selector"
-    source_label = "--codemod-selected-operation-plan"
-
-    def is_supplied(self, args: argparse.Namespace) -> bool:
-        return args.codemod_selected_operation_plan is not None
-
-    def target_selector(
-        self,
-        args: argparse.Namespace,
-        parser: argparse.ArgumentParser,
-    ) -> CodemodTargetSelector:
-        try:
-            return load_codemod_target_selector(args.codemod_selected_operation_plan)
-        except (OSError, json.JSONDecodeError, ValueError) as error:
-            parser.error(str(error))
-
-
-SelectedOperationSelectorValueReader: TypeAlias = Callable[
-    [argparse.Namespace],
-    tuple[str, ...],
-]
-
-
-@dataclass(frozen=True)
-class InlineSourceIndexSelectorCliField:
-    """Projection from one CLI flag to one source_index_target payload field."""
-
-    option_name: str
-    payload_field_name: str
-    value_reader: SelectedOperationSelectorValueReader
-
-    def payload_item(self, args: argparse.Namespace) -> tuple[str, tuple[str, ...]]:
-        return self.payload_field_name, self.value_reader(args)
-
-
-@dataclass(frozen=True)
-class CliOptionStringTupleValueReader:
-    option_name: str
-
-    @property
-    def argparse_dest_name(self) -> str:
-        return self.option_name.removeprefix("--").replace("-", "_")
-
-    def __call__(self, args: argparse.Namespace) -> tuple[str, ...]:
-        return cli_string_tuple(vars(args)[self.argparse_dest_name])
-
-
-class InlineSourceIndexSelectedOperationTargetSelectorSource(
-    SelectedOperationTargetSelectorSource
-):
-    """Build a source_index_target selector from repeatable CLI operands."""
-
-    source_id = "inline_source_index_target"
-    source_label = "inline source_index_target selector"
-    cli_option_names: ClassVar[tuple[str, ...]] = (
-        "--codemod-selected-node-kind",
-        "--codemod-selected-file",
-        "--codemod-selected-qualname",
-        "--codemod-selected-file-pattern",
-        "--codemod-selected-name-pattern",
-        "--codemod-selected-qualname-pattern",
-    )
-
-    @classmethod
-    def cli_fields(cls) -> tuple[InlineSourceIndexSelectorCliField, ...]:
-        return tuple(
-            InlineSourceIndexSelectorCliField(
-                option_name=option_name,
-                payload_field_name=selector_binding.field_name,
-                value_reader=CliOptionStringTupleValueReader(option_name),
-            )
-            for option_name, selector_binding in zip(
-                cls.cli_option_names,
-                SourceIndexTargetSelector.payload_bindings,
-                strict=True,
-            )
-        )
-
-    def is_supplied(self, args: argparse.Namespace) -> bool:
-        return any(values for _, values in self.payload_items(args))
-
-    def target_selector(
-        self,
-        args: argparse.Namespace,
-        parser: argparse.ArgumentParser,
-    ) -> CodemodTargetSelector:
-        del parser
-        payload_fields = {
-            field_name: values
-            for field_name, values in self.payload_items(args)
-            if values
-        }
-        payload = {
-            "selector": SourceIndexTargetSelector().to_dict()["selector"],
-            **payload_fields,
-        }
-        return CodemodTargetSelector.from_dict(payload)
-
-    def payload_items(
-        self,
-        args: argparse.Namespace,
-    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
-        return tuple(field.payload_item(args) for field in self.cli_fields())
-
-
-def load_codemod_operation_plan_template(
-    path: Path,
-) -> RefactorRecipeOperationPlanTemplate:
-    """Load a selected-target operation plan template from JSON."""
-
-    payload = JsonDocumentSource(path).load()
-    return RefactorRecipeOperationPlanTemplate.from_json_value(payload)
-
-
-class SelectedOperationTemplateSource(
-    SelectedOperationCliSource,
-    ABC,
-    metaclass=AutoRegisterMeta,
-):
-    """Registered CLI source for selected-target operation templates."""
-
-    __registry__: ClassVar[dict[str, type["SelectedOperationTemplateSource"]]] = {}
-    __registry_key__ = "source_id"
-    __skip_if_no_key__ = True
-    source_family_label = "selected-operation template"
-
-    @abstractmethod
-    def operation_plan_template(
-        self,
-        args: argparse.Namespace,
-        parser: argparse.ArgumentParser,
-    ) -> RefactorRecipeOperationPlanTemplate:
-        raise NotImplementedError
-
-
-class JsonSelectedOperationTemplateSource(SelectedOperationTemplateSource):
-    """Load selected-target operation templates from JSON."""
-
-    source_id = "json_operation_template"
-    source_label = "--codemod-operation-template"
-
-    def is_supplied(self, args: argparse.Namespace) -> bool:
-        return args.codemod_operation_template is not None
-
-    def operation_plan_template(
-        self,
-        args: argparse.Namespace,
-        parser: argparse.ArgumentParser,
-    ) -> RefactorRecipeOperationPlanTemplate:
-        try:
-            return load_codemod_operation_plan_template(args.codemod_operation_template)
-        except (OSError, json.JSONDecodeError, ValueError) as error:
-            parser.error(str(error))
-
-
-class ReplaceTextSelectedOperationTemplateSource(SelectedOperationTemplateSource):
-    """Build one replace_text template directly from CLI operands."""
-
-    source_id = "replace_text_operands"
-    source_label = "--codemod-selected-replace-text"
-
-    def is_supplied(self, args: argparse.Namespace) -> bool:
-        return args.codemod_selected_replace_text is not None
-
-    def operation_plan_template(
-        self,
-        args: argparse.Namespace,
-        parser: argparse.ArgumentParser,
-    ) -> RefactorRecipeOperationPlanTemplate:
-        del parser
-        old_source, new_source = cast(
-            tuple[str, str],
-            tuple(args.codemod_selected_replace_text),
-        )
-        return RefactorRecipeOperationPlanTemplate.from_operation_templates(
-            (
-                RefactorRecipeOperationTemplate.from_payload(
-                    {
-                        "operation": ReplaceTextOperation.operation_key(),
-                        OLD_SOURCE_PAYLOAD_FIELD: old_source,
-                        NEW_SOURCE_PAYLOAD_FIELD: new_source,
-                    }
-                ),
-            )
-        )
-
-
 def write_cli_json_artifact(path: Path | None, payload: JsonObject) -> None:
     """Write a machine-readable CLI artifact when the caller requested one."""
 
@@ -1923,7 +1559,6 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             args.codemod_synthesize_plan,
             args.codemod_synthesize_class_plan,
             args.codemod_replacement_plan is not None,
-            bool(SelectedOperationTargetSelectorSource.selected_sources(args)),
             args.codemod_fixpoint,
             args.codemod_refactor_goal is not None,
         )
@@ -3135,110 +2770,14 @@ class CodemodCliExecution(
         return snapshot.unified_diff(simulation)
 
 
-def _run_selected_operation_scaffold(
-    command: "CodemodSelectedOperationPlanCliCommand",
-    snapshot: CodemodSourceSnapshot,
-    scaffold: CodemodSelectedOperationPlanScaffoldReport,
-) -> int:
-    del snapshot
-    return command.emit_scaffold(scaffold)
-
-
-def _run_selected_operation_preflight(
-    command: "CodemodSelectedOperationPlanCliCommand",
-    snapshot: CodemodSourceSnapshot,
-    scaffold: CodemodSelectedOperationPlanScaffoldReport,
-) -> int:
-    return command.emit_preflight_report(snapshot, scaffold)
-
-
-def _run_selected_operation_diff(
-    command: "CodemodSelectedOperationPlanCliCommand",
-    snapshot: CodemodSourceSnapshot,
-    scaffold: CodemodSelectedOperationPlanScaffoldReport,
-) -> int:
-    simulation = command.simulation_for_scaffold(snapshot, scaffold)
-    unified_diff = snapshot.unified_diff(simulation.simulation)
-    if command.args.json:
-        return command.emit_simulation_report(
-            scaffold,
-            simulation,
-            applied=False,
-            unified_diff=unified_diff,
-        )
-    command.write_scaffold_plan_if_requested(scaffold)
-    print(unified_diff, end="")
-    return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
-
-
-def _run_selected_operation_simulation(
-    command: "CodemodSelectedOperationPlanCliCommand",
-    snapshot: CodemodSourceSnapshot,
-    scaffold: CodemodSelectedOperationPlanScaffoldReport,
-) -> int:
-    simulation = command.simulation_for_scaffold(snapshot, scaffold)
-    return command.emit_simulation_report(
-        scaffold,
-        simulation,
-        applied=False,
-        unified_diff=snapshot.unified_diff(simulation.simulation),
-    )
-
-
-def _run_selected_operation_apply(
-    command: "CodemodSelectedOperationPlanCliCommand",
-    snapshot: CodemodSourceSnapshot,
-    scaffold: CodemodSelectedOperationPlanScaffoldReport,
-) -> int:
-    simulation = command.simulation_for_scaffold(snapshot, scaffold)
-    simulation.apply()
-    return command.emit_simulation_report(
-        scaffold,
-        simulation,
-        applied=True,
-        unified_diff=None,
-    )
-
-
 class CodemodExecutionMode(Enum):
     """Single authority for codemod execution semantics."""
 
-    NONE = ("none", _run_selected_operation_scaffold)
-    PREFLIGHT = ("preflight", _run_selected_operation_preflight)
-    DIFF = ("diff", _run_selected_operation_diff)
-    SIMULATE = ("simulate", _run_selected_operation_simulation)
-    APPLY = ("apply", _run_selected_operation_apply)
-
-    def __new__(
-        cls,
-        value: str,
-        selected_operation_runner: Callable[
-            [
-                "CodemodSelectedOperationPlanCliCommand",
-                CodemodSourceSnapshot,
-                CodemodSelectedOperationPlanScaffoldReport,
-            ],
-            int,
-        ],
-    ) -> "CodemodExecutionMode":
-        member = object.__new__(cls)
-        member._value_ = value
-        return member
-
-    def __init__(
-        self,
-        value: str,
-        selected_operation_runner: Callable[
-            [
-                "CodemodSelectedOperationPlanCliCommand",
-                CodemodSourceSnapshot,
-                CodemodSelectedOperationPlanScaffoldReport,
-            ],
-            int,
-        ],
-    ) -> None:
-        del value
-        self._selected_operation_runner = selected_operation_runner
+    NONE = "none"
+    PREFLIGHT = "preflight"
+    DIFF = "diff"
+    SIMULATE = "simulate"
+    APPLY = "apply"
 
     @classmethod
     def from_namespace(
@@ -3309,15 +2848,6 @@ class CodemodExecutionMode(Enum):
                 "--codemod-fixpoint can only be combined with --codemod-apply"
             )
 
-    def run_selected_operation(
-        self,
-        command: "CodemodSelectedOperationPlanCliCommand",
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        return self._selected_operation_runner(command, snapshot, scaffold)
-
-
 @dataclass(frozen=True)
 class CodemodPlanExecutionRequest:
     """Codemod plan plus execution mode consumed by execution authorities."""
@@ -3338,62 +2868,6 @@ class CodemodPlanExecutionRequest:
 
 
 @dataclass(frozen=True)
-class SelectedOperationTemplateSourceSelection:
-    """Validated pairing between selected-operation selector and template source."""
-
-    selector_source_label: str
-    selector_source_supplied: bool
-    template_source_labels: tuple[str, ...]
-
-    @property
-    def template_source_count(self) -> int:
-        return len(self.template_source_labels)
-
-    def validation_error(self) -> str | None:
-        if self.template_source_count > 1:
-            return (
-                "selected-operation template sources are mutually exclusive: "
-                + ", ".join(self.template_source_labels)
-            )
-        error_by_state = {
-            (False, 1): (
-                ", ".join(self.template_source_labels)
-                + f" requires {self.selector_source_label}"
-            ),
-            (True, 0): (
-                f"{self.selector_source_label} requires one selected-operation "
-                "template source"
-            ),
-        }
-        return error_by_state.get(
-            (self.selector_source_supplied, self.template_source_count)
-        )
-
-
-@dataclass(frozen=True)
-class SelectedOperationTargetSelectorSourceSelection:
-    """Validated target selector source choice for selected-operation commands."""
-
-    source_labels: tuple[str, ...]
-
-    @property
-    def supplied(self) -> bool:
-        return bool(self.source_labels)
-
-    @property
-    def source_count(self) -> int:
-        return len(self.source_labels)
-
-    def validation_error(self) -> str | None:
-        if self.source_count <= 1:
-            return None
-        return (
-            "selected-operation target selector sources are mutually exclusive: "
-            + ", ".join(self.source_labels)
-        )
-
-
-@dataclass(frozen=True)
 class CodemodScanQueryMode:
     """Validated family of scan-backed codemod DSL query modes."""
 
@@ -3403,8 +2877,6 @@ class CodemodScanQueryMode:
     selector_path: Path | None
     target_source_selector_path: Path | None
     replacement_plan_selector_path: Path | None
-    selected_operation_target_selector_source_labels: tuple[str, ...]
-    selected_operation_template_source_labels: tuple[str, ...]
     synthesis_has_registered_detector: bool
     synthesis_execution_mode: CodemodExecutionMode
 
@@ -3421,12 +2893,6 @@ class CodemodScanQueryMode:
             selector_path=args.codemod_resolve_selector,
             target_source_selector_path=args.codemod_target_source,
             replacement_plan_selector_path=args.codemod_replacement_plan,
-            selected_operation_target_selector_source_labels=(
-                SelectedOperationTargetSelectorSource.selected_source_labels(args)
-            ),
-            selected_operation_template_source_labels=(
-                SelectedOperationTemplateSource.selected_source_labels(args)
-            ),
             synthesis_has_registered_detector=(
                 FindingRecipeSynthesizer.has_registered_detector(
                     args.codemod_goal_detectors
@@ -3464,30 +2930,17 @@ class CodemodScanQueryMode:
                 self.selector_path is not None,
                 self.target_source_selector_path is not None,
                 self.replacement_plan_selector_path is not None,
-                bool(self.selected_operation_target_selector_source_labels),
             )
         )
 
     def require_valid(self, parser: argparse.ArgumentParser) -> None:
-        target_selector_selection = SelectedOperationTargetSelectorSourceSelection(
-            self.selected_operation_target_selector_source_labels
-        )
-        if (error := target_selector_selection.validation_error()) is not None:
-            parser.error(error)
-        template_source_selection = SelectedOperationTemplateSourceSelection(
-            selector_source_label="selected-operation target selector source",
-            selector_source_supplied=target_selector_selection.supplied,
-            template_source_labels=self.selected_operation_template_source_labels,
-        )
-        if (error := template_source_selection.validation_error()) is not None:
-            parser.error(error)
         if self.mode_count <= 1:
             return
         parser.error(
             "--codemod-synthesize-plan, --codemod-synthesize-class-plan, "
             "--codemod-source-index, "
             "--codemod-resolve-selector, --codemod-target-source, and "
-            "--codemod-replacement-plan, and --codemod-selected-operation-plan "
+            "--codemod-replacement-plan "
             "are mutually exclusive"
         )
 
@@ -3904,133 +3357,6 @@ class CodemodReplacementPlanCliCommand(CodemodSelectorQueryCliCommand):
         return self.args.codemod_replacement_plan
 
 
-class CodemodSelectedOperationPlanCliCommand(CodemodScanQueryCliCommand):
-    """Emit an apply-selected-targets plan for selector and operation templates."""
-
-    command_id = "codemod_selected_operation_plan"
-
-    @property
-    def requested(self) -> bool:
-        return bool(SelectedOperationTargetSelectorSource.selected_sources(self.args))
-
-    def run(self) -> int:
-        snapshot = self.required_source_snapshot()
-        selector = SelectedOperationTargetSelectorSource.required_source(
-            self.args,
-            self.parser,
-        ).target_selector(self.args, self.parser)
-        scaffold = self.scaffold_for_selector(snapshot, selector)
-        return self.execution_mode.run_selected_operation(self, snapshot, scaffold)
-
-    def emit_scaffold(
-        self,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        self.write_scaffold_plan_if_requested(scaffold)
-        print(json.dumps(scaffold.to_dict(), indent=2))
-        return 0
-
-    def write_scaffold_plan_if_requested(
-        self,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> None:
-        write_cli_json_artifact(self.args.codemod_plan_out, scaffold.document.to_dict())
-
-    def scaffold_for_selector(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        selector: CodemodTargetSelector,
-    ) -> CodemodSelectedOperationPlanScaffoldReport:
-        operation_plan_template = SelectedOperationTemplateSource.required_source(
-            self.args,
-            self.parser,
-        ).operation_plan_template(self.args, self.parser)
-        return snapshot.selected_operation_plan_scaffold_report(
-            selector,
-            operation_plan_template,
-        )
-
-    def emit_preflight_report(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> int:
-        report = scaffold.document.preflight_snapshot(snapshot)
-        self.write_scaffold_plan_if_requested(scaffold)
-        print(
-            json.dumps(
-                {
-                    **CodemodPlanPreflightPayload(report).to_dict(),
-                    "scaffold": scaffold.to_dict(),
-                    "document": scaffold.document.to_dict(),
-                },
-                indent=2,
-            )
-        )
-        if report.is_clean:
-            return 0
-        return 1
-
-    def simulation_for_scaffold(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-    ) -> CodemodPlanDocumentSimulation:
-        try:
-            return scaffold.document.simulate_snapshot(snapshot)
-        except CodemodOperationPreflightError as error:
-            self.emit_preflight_failure(scaffold, error)
-            raise SystemExit(1) from error
-
-    def emit_preflight_failure(
-        self,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-        error: CodemodOperationPreflightError,
-    ) -> None:
-        print(
-            json.dumps(
-                {
-                    **CodemodPreflightFailurePayload(error.report).to_dict(),
-                    "scaffold": scaffold.to_dict(),
-                    "document": scaffold.document.to_dict(),
-                },
-                indent=2,
-            )
-        )
-
-    def emit_simulation_report(
-        self,
-        scaffold: CodemodSelectedOperationPlanScaffoldReport,
-        simulation: CodemodPlanDocumentSimulation,
-        *,
-        applied: bool,
-        unified_diff: str | None,
-    ) -> int:
-        payload = CodemodSimulationPayload(
-            simulation.simulation,
-            applied=applied,
-            post_guard_report=simulation.architecture_guard_report,
-            unified_diff=unified_diff,
-        ).to_dict()
-        projected_findings = self.optional_projected_finding_report(
-            simulation.simulation,
-            enabled=self.args.codemod_project_findings,
-        )
-        if projected_findings is not None:
-            payload["projected_findings"] = projected_findings.to_dict()
-            self.write_continuation_plan_if_requested(projected_findings)
-        payload["scaffold"] = scaffold.to_dict()
-        payload["document"] = scaffold.document.to_dict()
-        self.write_scaffold_plan_if_requested(scaffold)
-        print(
-            json.dumps(
-                payload,
-                indent=2,
-            )
-        )
-        return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
-
-
 def _main_without_deadline() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
@@ -4075,11 +3401,6 @@ def _main_without_deadline() -> int:
             ("--codemod-resolve-selector", (args.codemod_resolve_selector,)),
             ("--codemod-target-source", (args.codemod_target_source,)),
             ("--codemod-replacement-plan", (args.codemod_replacement_plan,)),
-            (
-                "--codemod-selected-operation-plan",
-                (args.codemod_selected_operation_plan,),
-            ),
-            ("--codemod-operation-template", (args.codemod_operation_template,)),
         )
     ).require_at_most_one_stdin(parser)
     codemod_requested = (

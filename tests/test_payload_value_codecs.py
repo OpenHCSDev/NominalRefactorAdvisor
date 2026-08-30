@@ -15,18 +15,13 @@ from nominal_refactor_advisor.codemod import (
     MovedSymbolImportPolicy,
     NodeKindArrayPayloadValueCodec,
     ObjectPayloadValueCodec,
-    OptionalOperationTemplateArrayPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
-    OperationTemplateArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadBindingSet,
     PayloadValueCodec,
     RecipeCallReplacement,
     RefactorRecipeOperation,
-    RefactorRecipeOperationTemplate,
-    RefactorRecipeOperationPlanTemplate,
     RequiredStringPayloadValueCodec,
-    ReplaceTextOperation,
     ReplacementImportPayloadValueCodec,
     SelectionCountExpectation,
     SelectionCountPayloadValueCodec,
@@ -52,7 +47,6 @@ def test_registered_payload_bindings_own_exact_codec_leaves() -> None:
     for binding_set in (
         *operation_binding_sets,
         *selector_binding_sets,
-        RefactorRecipeOperationPlanTemplate.payload_bindings,
     ):
         assert isinstance(binding_set, PayloadBindingSet)
         for binding in binding_set:
@@ -71,13 +65,6 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
     selector = SourceIndexTargetSelector(
         node_kinds=(AstTargetNodeKind.FUNCTION,),
         qualnames=("Alpha.run",),
-    )
-    operation_template = RefactorRecipeOperationTemplate.from_payload(
-        {
-            "operation": ReplaceTextOperation.operation_key(),
-            "old_source": "legacy(value)",
-            "new_source": "modern(value)",
-        }
     )
     call_replacement = RecipeCallReplacement.from_json_value(
         {
@@ -106,7 +93,6 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         (NodeKindArrayPayloadValueCodec(), (AstTargetNodeKind.FUNCTION,)),
         (SelectorObjectPayloadValueCodec(), selector),
         (SelectorArrayPayloadValueCodec(), (selector,)),
-        (OperationTemplateArrayPayloadValueCodec(), (operation_template,)),
         (CallReplacementArrayPayloadValueCodec(), (call_replacement,)),
         (AuthorityClaimPayloadValueCodec(), authority_claim),
         (SelectionCountPayloadValueCodec(), selection_count),
@@ -118,52 +104,12 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         assert codec.read({"value": serialized}, "value") == value
 
 
-def test_operation_plan_template_bindings_round_trip_the_complete_schema() -> None:
-    template = RefactorRecipeOperationPlanTemplate.from_payload(
-        {
-            "recipe_id": "selected-modernization",
-            "reason": "Create one helper and update the selected methods.",
-            "setup_operations": (
-                {
-                    "operation": "create_file",
-                    "file_path": "pkg/generated.py",
-                    "source": "",
-                },
-            ),
-            "operation_templates": (
-                {
-                    "operation": "replace_text",
-                    "old_source": "legacy(value)",
-                    "new_source": "modern(value)",
-                },
-            ),
-        }
-    )
-
-    assert RefactorRecipeOperationPlanTemplate.from_json_value(template.to_dict()) == (
-        template
-    )
-
-
 def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
     with pytest.raises(ValueError, match="non-empty string"):
         RequiredStringPayloadValueCodec().read({}, "name")
     assert IntegerPayloadValueCodec().serialize(None) is None
     with pytest.raises(TypeError, match="MovedSymbolImportPolicy"):
         ReplacementImportPayloadValueCodec().serialize("from pkg import value")
-    with pytest.raises(ValueError, match="Unsupported operation plan template field"):
-        RefactorRecipeOperationPlanTemplate.from_payload(
-            {
-                "operation_templates": (
-                    {
-                        "operation": "replace_text",
-                        "old_source": "legacy(value)",
-                        "new_source": "modern(value)",
-                    },
-                ),
-                "recipe_label": "mirrored-name",
-            }
-        )
 
 
 def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:
@@ -177,11 +123,5 @@ def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:
 
 def test_optional_array_codec_leaves_own_missing_value_semantics() -> None:
     assert OptionalStringArrayPayloadValueCodec().read({}, "names") == ()
-    assert OptionalOperationTemplateArrayPayloadValueCodec().read(
-        {}, "operations"
-    ) == ()
-
     with pytest.raises(ValueError, match="string array"):
         StringArrayPayloadValueCodec().read({}, "names")
-    with pytest.raises(ValueError, match="operation-template array"):
-        OperationTemplateArrayPayloadValueCodec().read({}, "operations")
