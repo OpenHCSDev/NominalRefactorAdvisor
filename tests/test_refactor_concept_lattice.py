@@ -287,6 +287,18 @@ def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
     ) == ("authority_source",)
 
 
+def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
+    for operation_type, field_name in (
+        (codemod.EnsureImportOperation, "import_source"),
+        (codemod.ReplaceFunctionSignatureOperation, "signature_source"),
+        (codemod.ReplaceFunctionBodyOperation, "body_source"),
+    ):
+        assert not issubclass(operation_type, codemod.StringPayloadOperation)
+        assert tuple(
+            binding.field_name for binding in operation_type.payload_bindings()
+        ) == (field_name,)
+
+
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:
     mapping_declarations = (
         codemod.MappingSemanticMirrorRecipeBuilder,

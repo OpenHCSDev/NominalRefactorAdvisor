@@ -5117,7 +5117,7 @@ class RefactorRecipeOperation(
     ) -> tuple["ModuleImportMutation", ...]:
         return EnsureImportOperation(
             target=SourceRewriteTarget(file_path=source_path),
-            payload_value=import_source,
+            import_source=import_source,
             rationale=self.rationale_text(default_rationale),
         ).source_edits(source_index, source_by_path)
 
@@ -7234,10 +7234,17 @@ class InsertAfterImportsOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class EnsureImportOperation(StringPayloadOperation):
+class EnsureImportOperation(RefactorRecipeOperation):
     """Insert import source after leading imports unless it already exists."""
 
-    payload_field_name = "import_source"
+    import_source: str
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            import_source=RequiredStringPayloadValueCodec(),
+        )
 
     def source_edits_with_context(
         self,
@@ -7261,7 +7268,7 @@ class EnsureImportOperation(StringPayloadOperation):
         source_path = self.required_source_path(source_index, "ensure_import")
         return ModuleImportMutation.from_source(
             file_path=source_path,
-            import_source=self.payload_value,
+            import_source=self.import_source,
             rationale=self.rationale
             or f"Ensure import source exists in {source_path!r}.",
         )
@@ -10320,7 +10327,7 @@ class DispatchToPolymorphismOperation(
             )
             for replacement in EnsureImportOperation(
                 target=SourceRewriteTarget(file_path=source_path),
-                payload_value=import_source,
+                import_source=import_source,
                 rationale=self.rationale_text("Import dispatch strategy support."),
             ).source_edits(source_index, source_by_path)
         )
@@ -10383,11 +10390,18 @@ class DispatchToPolymorphismOperation(
 @dataclass(frozen=True, kw_only=True)
 class ReplaceFunctionSignatureOperation(
     TargetNodeRecipeOperationMixin,
-    StringPayloadOperation,
+    RefactorRecipeOperation,
 ):
     """Replace a single-line function signature while preserving its body."""
 
-    payload_field_name = "signature_source"
+    signature_source: str
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            signature_source=RequiredStringPayloadValueCodec(),
+        )
 
     def source_edits_for_target_node(
         self,
@@ -10403,7 +10417,7 @@ class ReplaceFunctionSignatureOperation(
         original_line = editor.file_lines[node.lineno - 1]
         replacement_line = FunctionSignatureSourceAuthority(
             original_line,
-        ).replacement_line(self.payload_value)
+        ).replacement_line(self.signature_source)
         return (
             SourceSpanReplacement(
                 file_path=target_digest.file_path,
@@ -10419,11 +10433,18 @@ class ReplaceFunctionSignatureOperation(
 @dataclass(frozen=True, kw_only=True)
 class ReplaceFunctionBodyOperation(
     TargetNodeRecipeOperationMixin,
-    StringPayloadOperation,
+    RefactorRecipeOperation,
 ):
     """Replace a function or method body while preserving its signature."""
 
-    payload_field_name = "body_source"
+    body_source: str
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            body_source=RequiredStringPayloadValueCodec(),
+        )
 
     def source_edits_for_target_node(
         self,
@@ -10459,7 +10480,7 @@ class ReplaceFunctionBodyOperation(
         body_start: int,
     ) -> tuple[str, ...]:
         body_indent = editor.indentation_for_line(body_start)
-        body_lines = SourceTargetEditor.source_lines(self.payload_value)
+        body_lines = SourceTargetEditor.source_lines(self.body_source)
         if not body_lines:
             raise ValueError("Replacement function body must not be empty")
         return tuple(
@@ -15612,7 +15633,7 @@ class EnumSubsetSemanticMirrorRecipeParts:
                     target=SourceRewriteTarget(
                         file_path=self.projection.projection_path
                     ),
-                    payload_value=source_bundle.authority_import_source,
+                    import_source=source_bundle.authority_import_source,
                     rationale="",
                 )
             )
@@ -16278,7 +16299,7 @@ class DataclassProjectionRecipeParts(FindingRecipeParts):
             recipe = recipe.with_operation(
                 EnsureImportOperation(
                     target=SourceRewriteTarget(file_path=self.projection.source_path),
-                    payload_value=self.import_source,
+                    import_source=self.import_source,
                     rationale="Import the dataclass authority used by the projection.",
                 )
             )
@@ -17478,7 +17499,7 @@ class LocalRoleCaseLogicRecipeParts:
                     target=SourceRewriteTarget(
                         qualname=self.function_qualname, file_path=self.source_path
                     ),
-                    payload_value=self.extraction.delegating_body_source(
+                    body_source=self.extraction.delegating_body_source(
                         self.authority_name
                     ),
                     rationale="",
@@ -18685,7 +18706,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
             recipe = recipe.with_operation(
                 EnsureImportOperation(
                     target=SourceRewriteTarget(file_path=self.projection_path),
-                    payload_value=self.import_source(),
+                    import_source=self.import_source(),
                     rationale="",
                 )
             )

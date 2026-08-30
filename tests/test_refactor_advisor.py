@@ -1288,7 +1288,7 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
                     qualname="Detector.normalize",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="return value + 1",
+                body_source="return value + 1",
             )
         )
     )
@@ -1399,7 +1399,7 @@ def test_recipe_operation_target_nodes_reuse_snapshot_cache(
                     qualname="Detector.normalize",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="return DetectorAuthority.normalize(value)",
+                body_source="return DetectorAuthority.normalize(value)",
             )
         )
     )
@@ -1454,7 +1454,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
                     qualname="Changed.value",
                     file_path=changed_path.as_posix(),
                 ),
-                payload_value="return 3",
+                body_source="return 3",
             )
         )
         .simulate_snapshot(snapshot)
@@ -1553,7 +1553,7 @@ def test_projected_finding_report_omits_compact_global_detectors(
                     qualname="Changed.value",
                     file_path=changed_path.as_posix(),
                 ),
-                payload_value="return 3",
+                body_source="return 3",
             )
         )
         .simulate_snapshot(snapshot)
@@ -1764,7 +1764,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
                     qualname="Parser.parse",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="def parse(self, value, *, context):",
+                signature_source="def parse(self, value, *, context):",
             )
         )
         .with_operation(
@@ -1773,7 +1773,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
                     qualname="Parser.parse",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="return context.prepare(value)",
+                body_source="return context.prepare(value)",
             )
         )
         .with_operation(
@@ -2669,7 +2669,7 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
         .with_operation(
             EnsureImportOperation(
                 target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                payload_value="from parser_context import ParseContext\n",
+                import_source="from parser_context import ParseContext\n",
             )
         )
         .with_operation(
@@ -2716,7 +2716,7 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
         .with_operation(
             EnsureImportOperation(
                 target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                payload_value="from parser_context import ParseContext\n",
+                import_source="from parser_context import ParseContext\n",
             )
         )
         .simulate(
@@ -2751,7 +2751,7 @@ def test_refactor_recipe_ensure_import_merges_existing_from_import(
         .with_operation(
             EnsureImportOperation(
                 target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                payload_value="from .taxonomy import LabeledStrEnum\n",
+                import_source="from .taxonomy import LabeledStrEnum\n",
             )
         )
         .simulate(
@@ -2785,7 +2785,7 @@ def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
         .with_operation(
             EnsureImportOperation(
                 target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                payload_value=(
+                import_source=(
                     "from ._base import CrossModuleCollectorCandidateDetector\n"
                 ),
             )

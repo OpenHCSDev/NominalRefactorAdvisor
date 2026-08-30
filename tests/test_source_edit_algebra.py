@@ -230,13 +230,13 @@ def test_compiler_unions_imports_and_carrier_projection_stays_granular(
         .with_operation(
             EnsureImportOperation(
                 target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                payload_value="from pkg.types import Alpha\n",
+                import_source="from pkg.types import Alpha\n",
             )
         )
         .with_operation(
             EnsureImportOperation(
                 target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                payload_value="from pkg.types import Beta\n",
+                import_source="from pkg.types import Beta\n",
             )
         )
         .with_operation(
