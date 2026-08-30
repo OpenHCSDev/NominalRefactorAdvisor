@@ -294,7 +294,8 @@ class PresentationTokenRole(StrEnum):
     """Structural role of one token within its presentation surface."""
 
     CALL_ARGUMENT = "call_argument"
-    CALL_KEYWORD = "call_keyword"
+    CALL_KEYWORD_NAME = "call_keyword_name"
+    CALL_KEYWORD_VALUE = "call_keyword_value"
     CALL_TARGET = "call_target"
     COLLECTION_ITEM = "collection_item"
     DICT_KEY = "dict_key"
@@ -1709,6 +1710,23 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
             )
         )
 
+    def classify_admissible(
+        self,
+        context: "SemanticAuthorityProjectionResolutionContext",
+        candidate: SemanticMirrorEdgeCandidate,
+    ) -> SemanticAuthorityProjectionResolution:
+        proof_edges = context.construction_resolver.family_member_proof_edges(
+            candidate.projection,
+            candidate.authority,
+            candidate.matched_facts,
+        )
+        if proof_edges:
+            return SemanticAuthorityProjectionResolution.derived(
+                candidate,
+                proof_edges,
+            )
+        return super().classify_admissible(context, candidate)
+
 
 class ClassFamilyMirrorPolicy(ClassFamilyLikeMirrorPolicy):
     """Mirror policy for conventional class-family authorities."""
@@ -1769,7 +1787,7 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
             )
         ):
             return False
-        if candidate.projection.kind is PresentationProjectionKind.CALL_LITERAL and (
+        if (
             context.dataclass_descent.projection_constructs_distinct_dataclass_authority(
                 candidate.projection,
                 candidate.authority,
@@ -1798,21 +1816,6 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
                 )
                 or context.dataclass_descent.projection_materializes_any_dataclass_authority(
                     candidate.projection,
-                )
-                or (
-                    candidate.projection.kind is PresentationProjectionKind.CALL_LITERAL
-                    and context.dataclass_descent.projection_constructs_distinct_dataclass_authority(
-                        candidate.projection,
-                        candidate.authority,
-                    )
-                )
-                or (
-                    candidate.projection.kind
-                    is not PresentationProjectionKind.CALL_LITERAL
-                    and context.dataclass_descent.projection_constructs_name_unrelated_dataclass_authority(
-                        candidate.projection,
-                        candidate.authority,
-                    )
                 )
             )
         )
@@ -4723,20 +4726,6 @@ class ProjectionClassSymbolLineageIndex:
 
 
 @dataclass(frozen=True)
-class DataclassAuthorityNameAffinity:
-    """Specific shared role identity between two dataclass authorities."""
-
-    left: SemanticAuthority
-    right: SemanticAuthority
-
-    def has_affinity(self) -> bool:
-        weak_tokens = SemanticRoleIdentityToken.authority_affinity_weak_values()
-        left_tokens = NormalizeNameProjection.token_set(self.left.name) - weak_tokens
-        right_tokens = NormalizeNameProjection.token_set(self.right.name) - weak_tokens
-        return bool(left_tokens & right_tokens)
-
-
-@dataclass(frozen=True)
 class ConstructionAuthorityResolver:
     """Resolve owner construction sites that descend to semantic authorities."""
 
@@ -4760,6 +4749,35 @@ class ConstructionAuthorityResolver:
     ) -> bool:
         return authority.authority_id in (
             self.descended_authority_ids_for_construction_type(construction.type_name)
+        )
+
+    def family_member_proof_edges(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> tuple[AuthorityProofEdge, ...]:
+        constructed_member_names = frozenset(
+            variant
+            for construction in projection.projection_constructions
+            if self.construction_type_descends_to_authority(construction, authority)
+            for variant in normalized_name_variants(construction.type_name)
+        )
+        if not matched_facts or not all(
+            constructed_member_names & frozenset(fact.normalized_aliases)
+            for fact in matched_facts
+        ):
+            return ()
+        return (
+            AuthorityProofEdge(
+                edge_kind=AuthorityProofEdgeKind.INHERITS_FROM,
+                authority_id=authority.authority_id,
+                authority_kind=authority.kind.value,
+                file_path=projection.location.file_path,
+                line=projection.location.line,
+                symbol=projection.location.symbol,
+                detail="projection constructs nominal class-family members",
+            ),
         )
 
     @cached_property
@@ -5143,24 +5161,6 @@ class DataclassProjectionDescentAuthority:
             - {authority.authority_id}
         )
 
-    def projection_constructs_name_unrelated_dataclass_authority(
-        self,
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-    ) -> bool:
-        """Return whether a collection constructs a different semantic role."""
-
-        return any(
-            constructed_authority.authority_id != authority.authority_id
-            and not DataclassAuthorityNameAffinity(
-                constructed_authority,
-                authority,
-            ).has_affinity()
-            for constructed_authority in self.constructed_dataclass_authorities(
-                projection,
-            )
-        )
-
     def constructed_dataclass_authorities(
         self,
         projection: PresentationProjection,
@@ -5462,6 +5462,7 @@ class SemanticAuthorityProjectionResolutionContext:
     """Composed policy context for deciding mirror admissibility and descent."""
 
     projection_semantics: ProjectionSemanticAuthority
+    construction_resolver: ConstructionAuthorityResolver
     dataclass_descent: DataclassProjectionDescentAuthority
     fact_specificity: SemanticFactSpecificityIndex
 
@@ -5516,6 +5517,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
     def resolution_context(self) -> SemanticAuthorityProjectionResolutionContext:
         return SemanticAuthorityProjectionResolutionContext(
             projection_semantics=self.projection_semantics,
+            construction_resolver=self.construction_resolver,
             dataclass_descent=self.dataclass_descent,
             fact_specificity=self.fact_specificity_index,
         )
@@ -5541,8 +5543,16 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         projection: PresentationProjection,
     ) -> FactMatchesByAuthority:
         matches_by_authority: FactMatchesByAuthority = {}
+        constructed_dataclass_authority_ids = (
+            self.dataclass_descent.constructed_dataclass_authority_ids(projection)
+        )
         for token in projection.tokens:
             for ref in self._candidate_refs_for_token(token):
+                if (
+                    token.role is PresentationTokenRole.CALL_KEYWORD_NAME
+                    and ref.authority_id not in constructed_dataclass_authority_ids
+                ):
+                    continue
                 matches_by_authority.setdefault(ref.authority_id, {}).setdefault(
                     ref.fact_id,
                     set(),
@@ -5982,13 +5992,13 @@ class CallPresentationTokenProjector(PresentationTokenNodeProjector):
                     PresentationToken(
                         value,
                         PresentationTokenKind.STRING_LITERAL,
-                        PresentationTokenRole.CALL_KEYWORD,
+                        PresentationTokenRole.CALL_KEYWORD_NAME,
                     )
                     for value in normalized_name_variants(keyword.arg)
                 )
             tokens.extend(
                 PresentationTokenProjection.tokens_for_node(
-                    keyword.value, PresentationTokenRole.CALL_KEYWORD
+                    keyword.value, PresentationTokenRole.CALL_KEYWORD_VALUE
                 )
             )
         return tuple(tokens)

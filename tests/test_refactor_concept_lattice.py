@@ -19,7 +19,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.PrefixBundleCarrierConcept,
         codemod.ConstructorKwargCollapseConcept,
         codemod.ConstructorKwargCarrierProjectionConcept,
-        codemod.DataclassContextCallProjectionConcept,
         codemod.TupleDictReturnNominalizationConcept,
         codemod.DataclassPayloadProjectionConcept,
         codemod.TupleDictReturnRecordConcept,
@@ -56,9 +55,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.DataclassConstructorProjectionMappingRecipeBuilder: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
-    codemod.DataclassContextCallProjectionMappingRecipeBuilder: (
-        codemod.DataclassContextCallProjectionConcept
-    ),
     codemod.LocalRoleCaseLogicMappingRecipeBuilder: (codemod.RoleCaseAuthorityConcept),
     codemod.NumericLiteralDispatchFindingRecipeSynthesizer: (
         codemod.AutoRegisterStrategyFamilyConcept
@@ -68,7 +64,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
 EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
     {
         codemod.DataclassConstructorProjectionMappingRecipeBuilder,
-        codemod.DataclassContextCallProjectionMappingRecipeBuilder,
         codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
         codemod.DataclassPayloadProjectionMappingRecipeBuilder,
     }
@@ -102,12 +97,7 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
     (
         (
             codemod.ConstructorKwargCollapseConcept,
-            frozenset(
-                {
-                    codemod.ConstructorKwargCarrierProjectionConcept,
-                    codemod.DataclassContextCallProjectionConcept,
-                }
-            ),
+            frozenset({codemod.ConstructorKwargCarrierProjectionConcept}),
         ),
         (
             codemod.TupleDictReturnNominalizationConcept,

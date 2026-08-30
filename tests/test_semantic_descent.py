@@ -1000,7 +1000,7 @@ def test_dataclass_template_materializer_certifies_projection_descent(
     )
 
 
-def test_dataclass_template_without_materializer_is_semantic_mirror(
+def test_dataclass_template_construction_does_not_mirror_sibling_schema(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -1031,7 +1031,7 @@ def test_dataclass_template_without_materializer_is_semantic_mirror(
         SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
 
-    assert any(
+    assert not any(
         finding.metrics.plan_mapping_name == "TEMPLATES"
         and finding.metrics.plan_source_name == "Action"
         for finding in findings
@@ -1929,7 +1929,7 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
     assert "class/key pairs are incomplete" in plan.records[0].reason
 
 
-def test_semantic_mirror_mapping_finding_has_dsl_action_key(
+def test_dataclass_template_keywords_do_not_invent_dsl_action(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -1962,20 +1962,10 @@ def test_semantic_mirror_mapping_finding_has_dsl_action_key(
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
-    finding = next(
-        item
-        for item in findings
-        if item.detector_id == "semantic_mirror_without_descent"
-        and item.metrics.plan_source_name == "RefactorAction"
+    assert not any(
+        finding.metrics.plan_source_name == "RefactorAction"
+        for finding in findings
     )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
-
-    assert record.status.value == "rejected_by_safety_check"
-    assert record.action_keys[0].subject_name == "ACTION_TEMPLATES->RefactorAction"
-    assert "no safe mapping recipe exists yet" in record.reason
 
 
 def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
@@ -2336,7 +2326,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     assert "replacement_lines=import_lines" in rewritten_source
 
 
-def test_semantic_mirror_context_call_projection_synthesizes_dataclass_context_recipe(
+def test_nested_factory_keyword_names_do_not_prove_dataclass_authority(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -2364,35 +2354,15 @@ def test_semantic_mirror_context_call_projection_synthesizes_dataclass_context_r
         "            )\n"
         "        ]\n",
     )
-    modules = parse_python_modules(tmp_path)
-    finding = next(
-        item
-        for item in SemanticMirrorWithoutDescentDetector().detect(
-            modules,
-            DetectorConfig(),
-        )
-        if item.detector_id == "semantic_mirror_without_descent"
-        and item.metrics.plan_source_name == "FindingBuildContext"
+    findings = SemanticMirrorWithoutDescentDetector().detect(
+        parse_python_modules(tmp_path),
+        DetectorConfig(),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
-    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
-    rewritten_source = next(iter(simulation.simulation.rewritten_sources.values()))
-    recipe = plan.document.recipes[0]
-
-    assert record.status.value == "planned"
-    assert record.refactor_concept == "dataclass_context_call_projection"
-    assert plan.expected_removed_finding_count == 1
-    assert simulation.is_clean is True
-    assert tuple(operation.operation_key() for operation in recipe.operations) == (
-        "replace_text",
+    assert not any(
+        finding.metrics.plan_source_name == "FindingBuildContext"
+        for finding in findings
     )
-    assert "FindingBuildContext(" in rewritten_source
-    assert 'scaffold="scaffold"' in rewritten_source
-    assert 'codemod_patch="patch"' in rewritten_source
-    assert "metrics=metric" in rewritten_source
 
 
 def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
@@ -3110,6 +3080,49 @@ def test_semantic_descent_treats_constructor_collection_as_descent(
     assert all(
         certificate.edge.authority_id != action_authority.authority_id
         for certificate in graph.missing_descent_certificates
+    )
+
+
+def test_semantic_descent_treats_class_family_construction_as_descent(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from abc import ABC\n"
+        "\n"
+        "class PhysicalSourceEdit(ABC):\n"
+        "    pass\n"
+        "\n"
+        "class SourceInsertion(PhysicalSourceEdit):\n"
+        "    def __init__(self, file_path): self.file_path = file_path\n"
+        "\n"
+        "class SourceSpanReplacement(PhysicalSourceEdit):\n"
+        "    def __init__(self, file_path): self.file_path = file_path\n"
+        "\n"
+        "def source_edits(file_path):\n"
+        "    return (\n"
+        "        SourceInsertion(file_path=file_path),\n"
+        "        SourceSpanReplacement(file_path=file_path),\n"
+        "    )\n",
+    )
+
+    graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+    authority = next(
+        authority
+        for authority in graph.authorities
+        if authority.name == "PhysicalSourceEdit"
+    )
+
+    assert not any(
+        certificate.edge.authority_id == authority.authority_id
+        for certificate in graph.missing_descent_certificates
+    )
+    assert any(
+        certificate.edge.authority_id == authority.authority_id
+        and certificate.proof_edges[0].edge_kind
+        is AuthorityProofEdgeKind.INHERITS_FROM
+        for certificate in graph.certificates
+        if isinstance(certificate, SemanticDerivationCertificate)
     )
 
 
