@@ -6884,26 +6884,6 @@ def _registry_maturity_missing_signals(
     return tuple(missing)
 
 
-_REGISTRY_PROJECTION_EXPORT_ROSTER = "export_roster"
-_REGISTRY_PROJECTION_KEY_ROSTER = "key_roster"
-_REGISTRY_PROJECTION_TYPE_ROSTER = "type_roster"
-_REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX = "key_to_type_index"
-_REGISTRY_PROJECTION_TYPE_TO_KEY_INDEX = "type_to_key_index"
-_REGISTRY_PROJECTION_MAPPING_KINDS = frozenset(
-    {
-        _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX,
-        _REGISTRY_PROJECTION_TYPE_TO_KEY_INDEX,
-    }
-)
-_REGISTRY_PROJECTION_TYPE_SURFACE_KINDS = frozenset(
-    {
-        _REGISTRY_PROJECTION_TYPE_ROSTER,
-        _REGISTRY_PROJECTION_EXPORT_ROSTER,
-        _REGISTRY_PROJECTION_TYPE_TO_KEY_INDEX,
-    }
-)
-
-
 _REGISTRY_PROJECTION_POLICY_HINT_TERMS = frozenset(
     {
         "allow",
@@ -6920,187 +6900,243 @@ _REGISTRY_PROJECTION_POLICY_HINT_TERMS = frozenset(
 )
 
 
-class ProjectionSurfaceRoleCase:
-    def __init__(self, axis_name, expected_value, result):
-        self.axis_name = axis_name
-        self.expected_value = expected_value
-        self.result = result
-
-    def matches(self, axis_values):
-        axis_value = axis_values[self.axis_name]
-        if isinstance(self.expected_value, (frozenset, list, set, tuple)):
-            return axis_value in self.expected_value
-        return axis_value == self.expected_value
+class RegistryProjectionMaterialization(StrEnum):
+    MODULE_ALL_TUPLE = "module_all_tuple"
+    MAPPING_LITERAL = "mapping_literal"
+    PYTEST_PARAM_TUPLE = "pytest_param_tuple"
+    CHOICES_TUPLE = "choices_tuple"
+    SORTED_TUPLE = "sorted_tuple"
 
 
-class ProjectionSurfaceRoleCaseAuthority:
-    @classmethod
-    def role_cases(cls):
+@dataclass(frozen=True)
+class RegistryProjectionSurfaceEvidence:
+    surface_name: str
+    shared_key_names: tuple[str, ...]
+    shared_type_names: tuple[str, ...]
+    has_key_to_type_pairs: bool
+    has_type_to_key_pairs: bool
+
+    def is_test_surface(self, file_path: str) -> bool:
+        path = Path(file_path)
+        path_parts = tuple(part.lower() for part in path.parts)
+        stem = path.stem.lower()
         return (
-            ProjectionSurfaceRoleCase("surface_name", "__all__", "module_all_tuple"),
-            ProjectionSurfaceRoleCase(
-                "surface_kind", _REGISTRY_PROJECTION_EXPORT_ROSTER, "module_all_tuple"
-            ),
-            ProjectionSurfaceRoleCase(
-                "surface_kind", _REGISTRY_PROJECTION_MAPPING_KINDS, "mapping_literal"
-            ),
-            ProjectionSurfaceRoleCase(
-                "projection_role", "test_params", "pytest_param_tuple"
-            ),
-            ProjectionSurfaceRoleCase(
-                "projection_role",
-                ("cli_choices", "config_choices", "ui_options"),
-                "choices_tuple",
-            ),
+            "tests" in path_parts
+            or stem.startswith("test_")
+            or stem.endswith("_test")
         )
 
-    @classmethod
-    def materialization_rule(cls, **axis_values):
-        for role_case in cls.role_cases():
-            if role_case.matches(axis_values):
-                return role_case.result
-        return "sorted_tuple"
+    @property
+    def normalized_surface_name(self) -> str:
+        return self.surface_name.lower()
+
+    def normalized_module_stem(self, file_path: str) -> str:
+        return Path(file_path).stem.lower()
 
 
-class SurfaceRoleRoleCase:
-    def __init__(self, axis_name, expected_value, result):
-        self.axis_name = axis_name
-        self.expected_value = expected_value
-        self.result = result
+class RegistryProjectionRole(StrEnum):
+    def __new__(
+        cls,
+        value: str,
+        terms: tuple[str, ...] = (),
+        roster_materialization: RegistryProjectionMaterialization = (
+            RegistryProjectionMaterialization.SORTED_TUPLE
+        ),
+        test_surface: bool = False,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._terms = terms
+        member._test_surface = test_surface
+        member._roster_materialization = roster_materialization
+        return member
 
-    def matches(self, axis_values):
-        axis_value = axis_values[self.axis_name]
-        if isinstance(self.expected_value, (frozenset, list, set, tuple)):
-            return axis_value in self.expected_value
-        return axis_value == self.expected_value
+    SERIALIZER_MAP = (
+        "serializer_map",
+        ("serial", "deserial", "codec", "encode", "decode"),
+    )
+    CONFIG_CHOICES = (
+        "config_choices",
+        ("config", "setting", "schema", "validation"),
+        RegistryProjectionMaterialization.CHOICES_TUPLE,
+    )
+    CLI_CHOICES = (
+        "cli_choices",
+        ("cli", "arg", "command"),
+        RegistryProjectionMaterialization.CHOICES_TUPLE,
+    )
+    DOCS_CATALOG = (
+        "docs_catalog",
+        ("docs", "doc", "catalog", "index"),
+    )
+    UI_OPTIONS = (
+        "ui_options",
+        ("ui", "view", "menu", "dropdown"),
+        RegistryProjectionMaterialization.CHOICES_TUPLE,
+    )
+    TEST_PARAMS = (
+        "test_params",
+        (),
+        RegistryProjectionMaterialization.PYTEST_PARAM_TUPLE,
+        True,
+    )
+    OPTION_ROSTER = ("option_roster",)
+    LOOKUP_PROJECTION = ("lookup_projection",)
+    REGISTRY_PROJECTION = ("registry_projection",)
 
-
-class SurfaceRoleRoleCaseAuthority:
-    @classmethod
-    def role_cases(cls):
-        return (
-            SurfaceRoleRoleCase(
-                "surface_kind",
-                (_REGISTRY_PROJECTION_KEY_ROSTER, _REGISTRY_PROJECTION_TYPE_ROSTER),
-                "option_roster",
-            ),
-            SurfaceRoleRoleCase(
-                "surface_kind", _REGISTRY_PROJECTION_MAPPING_KINDS, "lookup_projection"
-            ),
+    def claims_surface_name(
+        self,
+        evidence: RegistryProjectionSurfaceEvidence,
+    ) -> bool:
+        return bool(
+            self._terms
+            and any(term in evidence.normalized_surface_name for term in self._terms)
         )
 
-    @classmethod
-    def surface_role(cls, **axis_values):
-        for role_case in cls.role_cases():
-            if role_case.matches(axis_values):
-                return role_case.result
-        return "registry_projection"
-
-
-class CoverageCoordinatesRoleCase:
-    def __init__(self, axis_name, expected_value, value_factories):
-        self.axis_name = axis_name
-        self.expected_value = expected_value
-        self.value_factories = value_factories
-
-    def matches(self, axis_values):
-        axis_value = axis_values[self.axis_name]
-        if isinstance(self.expected_value, (frozenset, list, set, tuple)):
-            return axis_value in self.expected_value
-        return axis_value == self.expected_value
-
-    def values(self, axis_values):
-        return tuple(factory(axis_values) for factory in self.value_factories)
-
-
-class CoverageCoordinatesRoleCaseAuthority:
-    @classmethod
-    def role_cases(cls):
+    def claims_module(
+        self,
+        evidence: RegistryProjectionSurfaceEvidence,
+        *,
+        file_path: str,
+    ) -> bool:
         return (
-            CoverageCoordinatesRoleCase(
-                "surface_kind",
-                (
-                    _REGISTRY_PROJECTION_KEY_ROSTER,
-                    _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX,
-                ),
-                (
-                    lambda axis_values: max(axis_values["key_count"], 1),
-                    lambda axis_values: len(axis_values["shared_key_names"]),
-                ),
-            ),
-            CoverageCoordinatesRoleCase(
-                "surface_kind",
-                _REGISTRY_PROJECTION_TYPE_SURFACE_KINDS,
-                (
-                    lambda axis_values: max(axis_values["type_count"], 1),
-                    lambda axis_values: len(axis_values["shared_type_names"]),
-                ),
-            ),
+            self._test_surface and evidence.is_test_surface(file_path)
+        ) or bool(
+            self._terms
+            and any(
+                term in evidence.normalized_module_stem(file_path)
+                for term in self._terms
+            )
         )
 
+    @property
+    def roster_materialization(self) -> RegistryProjectionMaterialization:
+        return self._roster_materialization
+
     @classmethod
-    def coverage_coordinates(cls, **axis_values):
-        for role_case in cls.role_cases():
-            if role_case.matches(axis_values):
-                return role_case.values(axis_values)
+    def for_surface(
+        cls,
+        evidence: RegistryProjectionSurfaceEvidence,
+        *,
+        file_path: str,
+        default: Self,
+    ) -> Self | None:
+        name_claimed_roles = tuple(
+            role for role in cls if role.claims_surface_name(evidence)
+        )
+        if name_claimed_roles:
+            return single_item(name_claimed_roles)
+        module_claimed_roles = tuple(
+            role
+            for role in cls
+            if role.claims_module(evidence, file_path=file_path)
+        )
+        if module_claimed_roles:
+            return single_item(module_claimed_roles)
+        return default
+
+
+class RegistryProjectionSurfaceKind(StrEnum):
+    def __new__(
+        cls,
+        value: str,
+        claims_surface: Callable[[RegistryProjectionSurfaceEvidence], bool],
+        proof_names: Callable[[InjectiveTypeRegistryProof], tuple[str, ...]],
+        shared_names: Callable[[RegistryProjectionSurfaceEvidence], tuple[str, ...]],
+        default_role: RegistryProjectionRole,
+        fixed_materialization: RegistryProjectionMaterialization | None,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._claims_surface = claims_surface
+        member._proof_names = proof_names
+        member._shared_names = shared_names
+        member._default_role = default_role
+        member._fixed_materialization = fixed_materialization
+        return member
+
+    EXPORT_ROSTER = (
+        "export_roster",
+        lambda evidence: evidence.surface_name == "__all__"
+        and bool(evidence.shared_type_names),
+        lambda proof: proof.registered_type_names,
+        lambda evidence: evidence.shared_type_names,
+        RegistryProjectionRole.REGISTRY_PROJECTION,
+        RegistryProjectionMaterialization.MODULE_ALL_TUPLE,
+    )
+    KEY_ROSTER = (
+        "key_roster",
+        lambda evidence: bool(evidence.shared_key_names)
+        and not evidence.shared_type_names
+        and not evidence.has_key_to_type_pairs
+        and not evidence.has_type_to_key_pairs,
+        lambda proof: proof.key_names,
+        lambda evidence: evidence.shared_key_names,
+        RegistryProjectionRole.OPTION_ROSTER,
+        None,
+    )
+    TYPE_ROSTER = (
+        "type_roster",
+        lambda evidence: evidence.surface_name != "__all__"
+        and bool(evidence.shared_type_names)
+        and not evidence.has_key_to_type_pairs
+        and not evidence.has_type_to_key_pairs,
+        lambda proof: proof.registered_type_names,
+        lambda evidence: evidence.shared_type_names,
+        RegistryProjectionRole.OPTION_ROSTER,
+        None,
+    )
+    KEY_TO_TYPE_INDEX = (
+        "key_to_type_index",
+        lambda evidence: evidence.has_key_to_type_pairs,
+        lambda proof: proof.key_names,
+        lambda evidence: evidence.shared_key_names,
+        RegistryProjectionRole.LOOKUP_PROJECTION,
+        RegistryProjectionMaterialization.MAPPING_LITERAL,
+    )
+    TYPE_TO_KEY_INDEX = (
+        "type_to_key_index",
+        lambda evidence: evidence.has_type_to_key_pairs,
+        lambda proof: proof.registered_type_names,
+        lambda evidence: evidence.shared_type_names,
+        RegistryProjectionRole.LOOKUP_PROJECTION,
+        RegistryProjectionMaterialization.MAPPING_LITERAL,
+    )
+
+    def claims(self, evidence: RegistryProjectionSurfaceEvidence) -> bool:
+        return self._claims_surface(evidence)
+
+    @classmethod
+    def for_evidence(
+        cls,
+        evidence: RegistryProjectionSurfaceEvidence,
+    ) -> Self | None:
+        return single_item(
+            tuple(surface_kind for surface_kind in cls if surface_kind.claims(evidence))
+        )
+
+    @property
+    def default_role(self) -> RegistryProjectionRole:
+        return self._default_role
+
+    def materialization_for(
+        self,
+        role: RegistryProjectionRole,
+    ) -> RegistryProjectionMaterialization:
+        return self._fixed_materialization or role.roster_materialization
+
+    def coverage_coordinates(
+        self,
+        proof: InjectiveTypeRegistryProof,
+        evidence: RegistryProjectionSurfaceEvidence,
+    ) -> tuple[int, int]:
         return (
-            max(axis_values["key_count"] + axis_values["type_count"], 1),
-            len(axis_values["shared_key_names"])
-            + len(axis_values["shared_type_names"]),
+            max(len(self._proof_names(proof)), 1),
+            len(self._shared_names(evidence)),
         )
 
 
 class _RegistryProjectionSurfaceAnalyzer:
-    role_terms: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
-        ("serializer_map", ("serial", "deserial", "codec", "encode", "decode")),
-        ("config_choices", ("config", "setting", "schema", "validation")),
-        ("cli_choices", ("cli", "arg", "option", "choice", "command")),
-        ("docs_catalog", ("docs", "doc", "catalog", "index")),
-        ("ui_options", ("ui", "view", "menu", "dropdown")),
-    )
-
-    def surface_kind(
-        self,
-        *,
-        surface_name: str,
-        shared_key_names: tuple[str, ...],
-        shared_type_names: tuple[str, ...],
-        has_key_to_type_pairs: bool,
-        has_type_to_key_pairs: bool,
-    ) -> str | None:
-        if surface_name == "__all__":
-            return _REGISTRY_PROJECTION_EXPORT_ROSTER if shared_type_names else None
-        if has_key_to_type_pairs:
-            return _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX
-        if has_type_to_key_pairs:
-            return _REGISTRY_PROJECTION_TYPE_TO_KEY_INDEX
-        if shared_key_names and not shared_type_names:
-            return _REGISTRY_PROJECTION_KEY_ROSTER
-        if shared_type_names:
-            return _REGISTRY_PROJECTION_TYPE_ROSTER
-        return None
-
-    def surface_role(
-        self,
-        *,
-        file_path: str,
-        surface_name: str,
-        surface_kind: str,
-    ) -> str:
-        path = Path(file_path)
-        path_parts = tuple(part.lower() for part in path.parts)
-        stem = path.stem.lower()
-        lowered_name = surface_name.lower()
-        if "tests" in path_parts or stem.startswith("test_") or stem.endswith("_test"):
-            return "test_params"
-        text = f"{stem} {lowered_name}"
-        for role_name, terms in self.role_terms:
-            if any((term in text for term in terms)):
-                return role_name
-        return SurfaceRoleRoleCaseAuthority.surface_role(
-            file_path=file_path, surface_name=surface_name, surface_kind=surface_kind
-        )
-
     def subset_policy_hint(self, surface_name: str) -> str | None:
         lowered_name = surface_name.lower()
         return next(
@@ -7112,134 +7148,34 @@ class _RegistryProjectionSurfaceAnalyzer:
             None,
         )
 
-    def coverage_coordinates(
-        self,
-        *,
-        proof: InjectiveTypeRegistryProof,
-        surface_kind: str,
-        shared_key_names: tuple[str, ...],
-        shared_type_names: tuple[str, ...],
-    ) -> tuple[int, int, float, tuple[str, ...], tuple[str, ...]]:
-        key_count = len(proof.key_names)
-        type_count = len(proof.registered_type_names)
-        missing_key_names = sorted_tuple(
-            frozenset(proof.key_names) - frozenset(shared_key_names)
-        )
-        missing_type_names = sorted_tuple(
-            frozenset(proof.registered_type_names) - frozenset(shared_type_names)
-        )
-        denominator, numerator = (
-            CoverageCoordinatesRoleCaseAuthority.coverage_coordinates(
-                surface_kind=surface_kind,
-                shared_key_names=shared_key_names,
-                shared_type_names=shared_type_names,
-                key_count=key_count,
-                type_count=type_count,
-            )
-        )
-        return (
-            key_count,
-            type_count,
-            numerator / denominator,
-            missing_key_names,
-            missing_type_names,
-        )
-
-    def projection_policy_name(self, subset_policy_hint: str | None) -> str:
-        return subset_policy_hint or "full"
-
-    def projection_target_name(self, *, surface_kind: str, projection_role: str) -> str:
-        return f"{projection_role}:{surface_kind}"
-
-    def decompression_key(
-        self,
-        *,
-        registry_class_name: str,
-        key_type_name: str,
-        projection_policy_name: str,
-        projection_target_name: str,
-        materialization_rule: str,
-    ) -> str:
-        return "|".join(
-            (
-                registry_class_name,
-                key_type_name,
-                projection_policy_name,
-                projection_target_name,
-                materialization_rule,
-            )
-        )
-
     def candidate(
         self,
         *,
         file_path: str,
         fact: KeyedRegistryAxisFact,
-        surface_name: str,
+        evidence: RegistryProjectionSurfaceEvidence,
         line: int,
-        surface_kind: str,
+        surface_kind: RegistryProjectionSurfaceKind,
         projected_names: tuple[str, ...],
-        shared_key_names: tuple[str, ...],
-        shared_type_names: tuple[str, ...],
-    ) -> RegistryProjectionSurfaceCandidate:
-        proof = fact.injectivity_proof
-        (
-            registry_key_count,
-            registry_type_count,
-            projection_coverage_ratio,
-            missing_key_names,
-            missing_type_names,
-        ) = self.coverage_coordinates(
-            proof=proof,
-            surface_kind=surface_kind,
-            shared_key_names=shared_key_names,
-            shared_type_names=shared_type_names,
-        )
-        projection_role = self.surface_role(
+    ) -> RegistryProjectionSurfaceCandidate | None:
+        projection_role = RegistryProjectionRole.for_surface(
+            evidence,
             file_path=file_path,
-            surface_name=surface_name,
-            surface_kind=surface_kind,
+            default=surface_kind.default_role,
         )
-        projection_policy_name = self.projection_policy_name(
-            self.subset_policy_hint(surface_name)
-        )
-        projection_target_name = self.projection_target_name(
-            surface_kind=surface_kind,
-            projection_role=projection_role,
-        )
-        materialization_rule = ProjectionSurfaceRoleCaseAuthority.materialization_rule(
-            surface_name=surface_name,
-            surface_kind=surface_kind,
-            projection_role=projection_role,
-        )
+        if projection_role is None:
+            return None
         return RegistryProjectionSurfaceCandidate(
             file_path=file_path,
             line=line,
             registry_class_name=fact.class_name,
             key_type_name=fact.key_type_name,
-            surface_name=surface_name,
+            surface_evidence=evidence,
             surface_kind=surface_kind,
             projection_role=projection_role,
-            projection_policy_name=projection_policy_name,
-            projection_target_name=projection_target_name,
-            materialization_rule=materialization_rule,
-            decompression_key=self.decompression_key(
-                registry_class_name=fact.class_name,
-                key_type_name=fact.key_type_name,
-                projection_policy_name=projection_policy_name,
-                projection_target_name=projection_target_name,
-                materialization_rule=materialization_rule,
-            ),
             projected_names=projected_names,
-            shared_key_names=shared_key_names,
-            shared_type_names=shared_type_names,
-            registry_key_count=registry_key_count,
-            registry_type_count=registry_type_count,
-            projection_coverage_ratio=projection_coverage_ratio,
-            missing_key_names=missing_key_names,
-            missing_type_names=missing_type_names,
-            subset_policy_hint=self.subset_policy_hint(surface_name),
-            injectivity_proof=proof,
+            subset_policy_hint=self.subset_policy_hint(evidence.surface_name),
+            injectivity_proof=fact.injectivity_proof,
         )
 
     def policy_authority_candidates_from_surfaces(
@@ -10608,23 +10544,78 @@ class NonInjectiveTypeRegistryCandidate(
 class RegistryProjectionSurfaceCandidate(LineWitnessCandidate):
     registry_class_name: str
     key_type_name: str
-    surface_name: str
-    surface_kind: str
-    projection_role: str
-    projection_policy_name: str
-    projection_target_name: str
-    materialization_rule: str
-    decompression_key: str
+    surface_evidence: RegistryProjectionSurfaceEvidence
+    surface_kind: RegistryProjectionSurfaceKind
+    projection_role: RegistryProjectionRole
     projected_names: tuple[str, ...]
-    shared_key_names: tuple[str, ...]
-    shared_type_names: tuple[str, ...]
-    registry_key_count: int
-    registry_type_count: int
-    projection_coverage_ratio: float
-    missing_key_names: tuple[str, ...]
-    missing_type_names: tuple[str, ...]
     subset_policy_hint: str | None
     injectivity_proof: InjectiveTypeRegistryProof
+
+    @property
+    def surface_name(self) -> str:
+        return self.surface_evidence.surface_name
+
+    @property
+    def shared_key_names(self) -> tuple[str, ...]:
+        return self.surface_evidence.shared_key_names
+
+    @property
+    def shared_type_names(self) -> tuple[str, ...]:
+        return self.surface_evidence.shared_type_names
+
+    @property
+    def registry_key_count(self) -> int:
+        return len(self.injectivity_proof.key_names)
+
+    @property
+    def registry_type_count(self) -> int:
+        return len(self.injectivity_proof.registered_type_names)
+
+    @property
+    def projection_coverage_ratio(self) -> float:
+        denominator, numerator = self.surface_kind.coverage_coordinates(
+            self.injectivity_proof,
+            self.surface_evidence,
+        )
+        return numerator / denominator
+
+    @property
+    def missing_key_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            frozenset(self.injectivity_proof.key_names)
+            - frozenset(self.shared_key_names)
+        )
+
+    @property
+    def missing_type_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            frozenset(self.injectivity_proof.registered_type_names)
+            - frozenset(self.shared_type_names)
+        )
+
+    @property
+    def projection_policy_name(self) -> str:
+        return self.subset_policy_hint or "full"
+
+    @property
+    def projection_target_name(self) -> str:
+        return f"{self.projection_role.value}:{self.surface_kind.value}"
+
+    @property
+    def materialization_rule(self) -> RegistryProjectionMaterialization:
+        return self.surface_kind.materialization_for(self.projection_role)
+
+    @property
+    def decompression_key(self) -> str:
+        return "|".join(
+            (
+                self.registry_class_name,
+                self.key_type_name,
+                self.projection_policy_name,
+                self.projection_target_name,
+                self.materialization_rule.value,
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -10633,9 +10624,9 @@ class RegistryProjectionPolicyAuthorityCandidate(LineWitnessCandidate):
     key_type_name: str
     policy_hint: str
     surface_names: tuple[str, ...]
-    surface_roles: tuple[str, ...]
+    surface_roles: tuple[RegistryProjectionRole, ...]
     projection_target_names: tuple[str, ...]
-    materialization_rules: tuple[str, ...]
+    materialization_rules: tuple[RegistryProjectionMaterialization, ...]
     decompression_keys: tuple[str, ...]
     file_paths: tuple[str, ...]
     line_numbers: tuple[int, ...]

@@ -4679,6 +4679,25 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
     )
 
 
+def test_registry_projection_role_ambiguity_fails_closed() -> None:
+    evidence = systemic_detectors.RegistryProjectionSurfaceEvidence(
+        surface_name="CLI_CONFIG_MODE_CHOICES",
+        shared_key_names=("ALPHA", "BETA"),
+        shared_type_names=(),
+        has_key_to_type_pairs=False,
+        has_type_to_key_pairs=False,
+    )
+
+    assert (
+        systemic_detectors.RegistryProjectionRole.for_surface(
+            evidence,
+            file_path="pkg/options.py",
+            default=systemic_detectors.RegistryProjectionRole.OPTION_ROSTER,
+        )
+        is None
+    )
+
+
 def test_keyed_registry_detectors_share_one_compact_repository_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

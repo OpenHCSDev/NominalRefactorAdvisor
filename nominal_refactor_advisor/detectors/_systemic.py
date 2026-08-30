@@ -3904,24 +3904,23 @@ def _compact_registry_projection_surface_candidate(
         shared_type_names = sorted_tuple(
             frozenset(reference_names) & frozenset(proof.registered_type_names)
         )
-        surface_kind = _REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_kind(
+        evidence = RegistryProjectionSurfaceEvidence(
             surface_name=surface.surface_name,
             shared_key_names=shared_key_names,
             shared_type_names=shared_type_names,
             has_key_to_type_pairs=False,
             has_type_to_key_pairs=False,
         )
+        surface_kind = RegistryProjectionSurfaceKind.for_evidence(evidence)
         if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 2:
             return None
         return _REGISTRY_PROJECTION_SURFACE_ANALYZER.candidate(
             file_path=surface.file_path,
             fact=fact,
-            surface_name=surface.surface_name,
+            evidence=evidence,
             line=surface.line,
             surface_kind=surface_kind,
             projected_names=reference_names,
-            shared_key_names=shared_key_names,
-            shared_type_names=shared_type_names,
         )
 
     key_names = tuple(
@@ -3948,24 +3947,23 @@ def _compact_registry_projection_surface_candidate(
         len(frozenset(key_names) & proof_type_names) >= 2
         and len(frozenset(value_names) & proof_key_names) >= 2
     )
-    surface_kind = _REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_kind(
+    evidence = RegistryProjectionSurfaceEvidence(
         surface_name=surface.surface_name,
         shared_key_names=shared_key_names,
         shared_type_names=shared_type_names,
         has_key_to_type_pairs=has_key_to_type_pairs,
         has_type_to_key_pairs=has_type_to_key_pairs,
     )
+    surface_kind = RegistryProjectionSurfaceKind.for_evidence(evidence)
     if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 3:
         return None
     return _REGISTRY_PROJECTION_SURFACE_ANALYZER.candidate(
         file_path=surface.file_path,
         fact=fact,
-        surface_name=surface.surface_name,
+        evidence=evidence,
         line=surface.line,
         surface_kind=surface_kind,
         projected_names=(*key_names, *value_names),
-        shared_key_names=shared_key_names,
-        shared_type_names=shared_type_names,
     )
 
 
@@ -4409,7 +4407,7 @@ declare_candidate_rule_detector(
     ),
     codemod_patch=lambda candidate: (
         f"# Delete `{candidate.surface_name}` as a handwritten `{candidate.projection_role}` `{candidate.surface_kind}`.\n"
-        f"# Replace it with RegistryProjectionSpec({candidate.registry_class_name}, policy={candidate.projection_policy_name!r}, target={candidate.projection_target_name!r}, materialization={candidate.materialization_rule!r}).\n"
+        f"# Replace it with RegistryProjectionSpec({candidate.registry_class_name}, policy={candidate.projection_policy_name!r}, target={candidate.projection_target_name!r}, materialization={candidate.materialization_rule.value!r}).\n"
         + (
             f"# Its decompression key is `{candidate.decompression_key}`; derive it from the injective key/type registry proof."
             if candidate.projection_coverage_ratio >= 1.0
@@ -4428,7 +4426,7 @@ declare_candidate_rule_detector(
             candidate.key_type_name,
             candidate.projection_policy_name,
             candidate.projection_target_name,
-            candidate.materialization_rule,
+            candidate.materialization_rule.value,
         ),
     ),
     detector_base=_CompactRegistryProjectionSurfaceDetectorBase,
@@ -4455,7 +4453,7 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.registry_class_name}` has repeated `{candidate.policy_hint}` subset projections "
-        f"{candidate.surface_names} across roles {candidate.surface_roles}; move the quotient into one policy authority "
+        f"{candidate.surface_names} across roles {tuple(role.value for role in candidate.surface_roles)}; move the quotient into one policy authority "
         f"and materialize targets {candidate.projection_target_names} from specs."
     ),
     evidence=lambda candidate: (candidate.evidence,),
@@ -4477,8 +4475,8 @@ declare_candidate_rule_detector(
         field_names=(
             candidate.registry_class_name,
             candidate.key_type_name,
-            *candidate.surface_roles,
-            *candidate.materialization_rules,
+            *(role.value for role in candidate.surface_roles),
+            *(rule.value for rule in candidate.materialization_rules),
         ),
     ),
     detector_base=_CompactRegistryProjectionPolicyAuthorityDetectorBase,
