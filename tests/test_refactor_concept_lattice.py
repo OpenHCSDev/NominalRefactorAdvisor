@@ -16,7 +16,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.RefactorConcept,
         codemod.NominalBoundaryConcept,
         codemod.SemanticCarrierConcept,
-        codemod.PrefixBundleCarrierConcept,
         codemod.CallMappingAuthorityConcept,
         codemod.ConstructorKwargCollapseConcept,
         codemod.ConstructorKwargCarrierProjectionConcept,
@@ -35,9 +34,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
 EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.FlattenedProjectionPropertyFindingRecipeSynthesizer: (
         codemod.DeadCompatibilityErasureConcept
-    ),
-    codemod.PrefixedRoleBundleFindingRecipeSynthesizer: (
-        codemod.PrefixBundleCarrierConcept
     ),
     codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
         codemod.ConstructorKwargCarrierProjectionConcept
@@ -122,7 +118,6 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
             codemod.NominalBoundaryConcept,
             frozenset(
                 {
-                    codemod.PrefixBundleCarrierConcept,
                     codemod.CallMappingAuthorityConcept,
                     codemod.ConstructorKwargCollapseConcept,
                     codemod.ConstructorKwargCarrierProjectionConcept,

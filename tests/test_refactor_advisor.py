@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import ast
 import gc
-import inspect
 import json
 import os
 import subprocess
@@ -126,7 +125,6 @@ from nominal_refactor_advisor.codemod import (
     CodemodSimulationStatus,
     CodemodSourceSnapshot,
     CodemodStrategy,
-    CodemodTargetSelector,
     ConstructorKwargCollapseConcept,
     ConvertManualRegistryToAutoregisterOperation,
     CreateFileOperation,
@@ -170,7 +168,6 @@ from nominal_refactor_advisor.codemod import (
     ReplaceTargetOperation,
     ReplaceTextOperation,
     PromoteClassMethodsOperation,
-    PrefixBundleCarrierConcept,
     RecipeCallReplacement,
     SemanticCarrierConcept,
     SourceEditOrigin,
@@ -193,7 +190,6 @@ from nominal_refactor_advisor.detectors import SemanticMirrorWithoutDescentDetec
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
-from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.economics import (
     EconomicsProofReport,
     RecommendationEconomics,
@@ -453,7 +449,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=20,
             ),
             _impact_ranking_finding(
-                detector_id="prefixed_role_field_bundle",
+                detector_id="repeated_export_dicts",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=30,
@@ -503,7 +499,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=20,
             ),
             _impact_ranking_finding(
-                detector_id="prefixed_role_field_bundle",
+                detector_id="repeated_export_dicts",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=30,
@@ -7934,107 +7930,6 @@ def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
     assert "StructuralRecordBase" in (finding.scaffold or "")
 
 
-def test_detects_prefixed_role_field_bundle(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\nclass ChildrenAuxDataPyTreeMixin:\n    pass\n\n\n@dataclass(frozen=True)\nclass DirectionalBatchInputs(ChildrenAuxDataPyTreeMixin):\n    receptor_coords: object\n    poses_coords: object\n    receptor_anchor_indices: object\n    receptor_directions: object\n    ligand_anchor_indices: object\n    ligand_local_directions: object\n    ligand_frame_coords: object\n    receptor_strengths: object\n    ligand_strengths: object\n    receptor_alignment_sign: float\n    ligand_alignment_sign: float\n    ideal_distance: float\n    distance_width: float\n\n    def _tree_children(self):\n        return (\n            self.receptor_coords,\n            self.poses_coords,\n            self.receptor_anchor_indices,\n            self.receptor_directions,\n            self.ligand_anchor_indices,\n            self.ligand_local_directions,\n            self.ligand_frame_coords,\n            self.receptor_strengths,\n            self.ligand_strengths,\n        )\n\n    def _tree_aux_data(self):\n        return (\n            self.receptor_alignment_sign,\n            self.ligand_alignment_sign,\n            self.ideal_distance,\n            self.distance_width,\n        )\n\n    @classmethod\n    def tree_unflatten(cls, aux_data, children):\n        return cls(\n            receptor_coords=children[0],\n            poses_coords=children[1],\n            receptor_anchor_indices=children[2],\n            receptor_directions=children[3],\n            ligand_anchor_indices=children[4],\n            ligand_local_directions=children[5],\n            ligand_frame_coords=children[6],\n            receptor_strengths=children[7],\n            ligand_strengths=children[8],\n            receptor_alignment_sign=aux_data[0],\n            ligand_alignment_sign=aux_data[1],\n            ideal_distance=aux_data[2],\n            distance_width=aux_data[3],\n        )\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "prefixed_role_field_bundle"
-        )
-    )
-    assert "DirectionalBatchInputs" in finding.summary
-    assert "receptor" in finding.summary
-    assert "ligand" in finding.summary
-    assert "anchor_indices" in finding.summary
-    assert "alignment_sign" in finding.summary
-    assert "Protocol" not in (finding.scaffold or "")
-
-
-def test_prefixed_role_field_bundle_synthesizes_role_carriers(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class DirectionalBatchInputs:\n"
-        "    receptor_coords: object\n"
-        "    receptor_anchor_indices: object\n"
-        "    receptor_strengths: object\n"
-        "    ligand_coords: object\n"
-        "    ligand_anchor_indices: object\n"
-        "    ligand_strengths: object\n"
-        "    ideal_distance: float\n\n"
-        "    def pair(self):\n"
-        "        return self.receptor_coords, self.ligand_anchor_indices, self.receptor_strengths\n",
-    )
-    findings = tuple(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "prefixed_role_field_bundle"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(
-        parse_python_modules(tmp_path), findings
-    )
-
-    plan = snapshot.plan_from_findings(
-        findings,
-        detector_ids=("prefixed_role_field_bundle",),
-    )
-    simulation = plan.simulate_snapshot(
-        snapshot,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = snapshot.unified_diff(simulation.simulation)
-
-    assert plan.expected_removed_finding_count == 1
-    assert len(plan.document.recipes) == 1
-    assert plan.records[0].executable_declaration_name == (
-        "PrefixedRoleBundleFindingRecipeSynthesizer"
-    )
-    assert plan.records[0].refactor_concept == "prefix_bundle_carrier"
-    selector_payload = plan.records[0].evidence_selector.to_dict()
-    selector = CodemodTargetSelector.from_dict(selector_payload)
-    assert selector_payload == {
-        "selector": "finding_evidence_target",
-        "finding_ids": (findings[0].stable_id,),
-    }
-    assert {
-        snapshot.source_index.target_by_id[target_id].qualname
-        for target_id in selector.select(snapshot).target_ids
-    } == {"DirectionalBatchInputs"}
-    assert plan.document.recipes[0].operations[0].to_dict()["operation"] == (
-        "replace_role_prefixed_fields_with_carriers"
-    )
-    assert simulation.is_clean is True
-    assert "+class DirectionalBatchInputsRole:" in diff
-    assert "+class ReceptorDirectionalBatchInputsRole" in diff
-    assert "+class LigandDirectionalBatchInputsRole" in diff
-    assert "+    receptor: ReceptorDirectionalBatchInputsRole" in diff
-    assert "+    ligand: LigandDirectionalBatchInputsRole" in diff
-    assert "self.receptor.coords" in diff
-    assert "self.ligand.anchor_indices" in diff
-    assert "self.receptor.strengths" in diff
-    simulation.document_simulation.apply()
-    rewritten = module_path.read_text()
-    assert "receptor_coords: object" not in rewritten
-    assert "ligand_anchor_indices: object" not in rewritten
-    assert "receptor: ReceptorDirectionalBatchInputsRole" in rewritten
-    assert "ligand: LigandDirectionalBatchInputsRole" in rewritten
-    assert not any(
-        finding.detector_id == "prefixed_role_field_bundle"
-        for finding in analyze_path(tmp_path)
-    )
-
-
 def test_boundary_local_wrapper_collapse_detects_renamed_scope_fanout(
     tmp_path: Path,
 ) -> None:
@@ -13400,7 +13295,6 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
             **keyword_arguments,
         )
 
-    prefix = finding("prefixed_role_field_bundle", symbol="PrefixBundle")
     constructor = finding(
         "semantic_mirror_without_descent",
         mapping_name="dataclass_constructor_projection",
@@ -13425,7 +13319,6 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
         return_record,
         payload_projection,
         constructor,
-        prefix,
     )
 
     snapshot = CodemodSourceSnapshot.from_modules((), findings)
@@ -13433,17 +13326,13 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
     with pytest.raises(ValueError, match="requires source context"):
         SemanticCarrierConcept.target_findings(findings)
     selected = SemanticCarrierConcept.target_findings(findings, snapshot)
-    assert selected == (
-        dead_compat,
-        prefix,
-    )
+    assert selected == (dead_compat,)
     assert RefactorConcept.leaf_concept_for_declaration(
         SemanticCarrierConcept
     ).concept_key() == ("semantic_carrier")
     assert (
         TupleDictReturnNominalizationConcept.target_findings(findings, snapshot) == ()
     )
-    assert PrefixBundleCarrierConcept.target_findings(findings, snapshot) == (prefix,)
     assert DeadCompatibilityErasureConcept.target_findings(findings, snapshot) == (
         dead_compat,
     )

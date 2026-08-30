@@ -8500,9 +8500,9 @@ class FlattenedProjectionPropertyDetector(
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Flattened compatibility projection properties should be deleted",
-        "After a role-prefixed field bundle is moved into nominal nested records, adding properties such as `source_value -> source.value` preserves the old flattened schema as a shadow API. That is a local minimum: callers should move to the nested role record directly so the new schema is the only authority.",
-        "direct nested record access instead of flattened compatibility aliases",
-        "class exposes old role-prefixed fields as properties over nested role records",
+        "Properties such as `source_value -> source.value` preserve a flattened shadow schema over an existing nested owner. Callers should use the nested owner directly so the nominal record remains the only authority.",
+        "direct nested owner access instead of flattened compatibility aliases",
+        "class exposes flattened fields as properties over nested nominal owners",
         (
             CapabilityTag.UNIT_RATE_COHERENCE,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -8529,16 +8529,16 @@ class FlattenedProjectionPropertyDetector(
         )
         return self.build_finding(
             (
-                f"`{class_name}` keeps flattened compatibility properties {aliases} over nested role records."
+                f"`{class_name}` keeps flattened compatibility properties {aliases} over nested nominal owners."
             ),
             evidence,
             scaffold=(
-                "Delete the compatibility properties and update callers to use the nested nominal record directly.\n\n"
+                "Delete the compatibility properties and update callers to use the nested nominal owner directly.\n\n"
                 f"{examples}"
             ),
             codemod_patch=(
                 f"# Remove flattened projection properties from `{class_name}`.\n"
-                "# Rewrite call sites to the nested role-record path shown in the scaffold."
+                "# Rewrite call sites to the nested owner path shown in the scaffold."
             ),
             metrics=MappingMetrics(
                 mapping_site_count=len(ordered),

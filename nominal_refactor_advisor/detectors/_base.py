@@ -177,7 +177,6 @@ from ..models import (
     MappingMetrics,
     OrchestrationMetrics,
     ParameterThreadMetrics,
-    PrefixedRoleBundleMetrics,
     ProbeCountMetrics,
     RefactorFinding,
     RegistrationMetrics,
@@ -443,8 +442,6 @@ class DetectorConfig:
         2,
         "Minimum manual registration sites before surfacing a class-registration finding.",
     )
-    min_prefixed_role_shared_fields: int = 2
-    min_prefixed_role_bundle_fields: int = 3
     min_reflective_selector_values: int = 2
     min_static_payload_function_lines: int = detector_config_option(
         60,
@@ -9379,41 +9376,6 @@ class ClassMethodLineWitnessCandidate(LineWitnessCandidate):
         return f"{self.class_name}.{self.method_name}"
 
     witness_name: ClassVar[AliasProperty[str]] = AliasProperty("symbol")
-
-
-@dataclass(frozen=True)
-class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
-    shared_member_names: tuple[str, ...]
-    role_field_map: NormalizedRoleFieldMap
-    manual_transport_methods: tuple[str, ...]
-    pytree_base_names: tuple[str, ...]
-    observations: tuple[FieldObservation, ...]
-
-    @property
-    def role_names(self) -> tuple[str, ...]:
-        return tuple(role_name for role_name, _ in self.role_field_map)
-
-    @property
-    def field_names(self) -> tuple[str, ...]:
-        return tuple(
-            (
-                field_name
-                for _, field_names in self.role_field_map
-                for field_name in field_names
-            )
-        )
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            super().evidence,
-            *tuple(
-                (
-                    SourceLocation(item.file_path, item.lineno, item.symbol)
-                    for item in self.observations[:7]
-                )
-            ),
-        )
 
 
 @dataclass(frozen=True)

@@ -219,24 +219,6 @@ BehaviorFindingMetrics = CompositeClassSpec(
 ).build(__name__)
 
 
-class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
-    __registry__: ClassVar[
-        dict["ClassNamesMetricKind", type["ClassNamesPlanMetrics"]]
-    ] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-
-    class_names: tuple[str, ...]
-    plan_class_names = AliasProperty[tuple[str, ...]]("class_names")
-
-
-class ClassNamesMetricKind(StrEnum):
-    """Registered class-name metric variants."""
-
-    PREFIXED_ROLE_BUNDLE = "prefixed_role_bundle"
-    WITNESS_CARRIER = "witness_carrier"
-
-
 MappingFindingMetrics = CompositeClassSpec(
     "MappingFindingMetrics", (FindingMetrics, ABC)
 ).build(__name__)
@@ -329,44 +311,9 @@ class HierarchyCandidateMetrics(BehaviorFindingMetrics):
 
 
 @dataclass(frozen=True)
-class PrefixedRoleBundleMetrics(ClassNamesPlanMetrics):
-    """Metrics for role-prefixed fields inside one record surface."""
-
-    registry_key: ClassVar[ClassNamesMetricKind] = (
-        ClassNamesMetricKind.PREFIXED_ROLE_BUNDLE
-    )
-    class_names: tuple[str, ...]
-    shared_member_names: tuple[str, ...]
-    role_field_map: tuple[tuple[str, tuple[str, ...]], ...]
-
-    @property
-    def role_names(self) -> tuple[str, ...]:
-        return tuple(role_name for role_name, _ in self.role_field_map)
-
-    @property
-    def field_names(self) -> tuple[str, ...]:
-        return tuple(
-            field_name
-            for _, field_names in self.role_field_map
-            for field_name in field_names
-        )
-
-    @property
-    def impact_delta(self) -> ImpactDelta:
-        return ImpactDelta.from_repeated_mapping_family(
-            len(self.role_names), len(self.shared_member_names)
-        )
-
-    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
-        "field_names"
-    )
-
-
-@dataclass(frozen=True)
-class WitnessCarrierMetrics(ClassNamesPlanMetrics):
+class WitnessCarrierMetrics(BehaviorFindingMetrics):
     """Metrics for repeated witness-carrier families."""
 
-    registry_key: ClassVar[ClassNamesMetricKind] = ClassNamesMetricKind.WITNESS_CARRIER
     class_count: int
     shared_role_count: int
     class_names: tuple[str, ...]
@@ -380,6 +327,9 @@ class WitnessCarrierMetrics(ClassNamesPlanMetrics):
 
     plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
         "shared_role_names"
+    )
+    plan_class_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
+        "class_names"
     )
 
 

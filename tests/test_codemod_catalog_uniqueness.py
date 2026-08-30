@@ -7,7 +7,6 @@ from nominal_refactor_advisor.codemod import (
     PayloadBinding,
     PayloadBindingSet,
     RefactorRecipeOperation,
-    ReplaceRolePrefixedFieldsWithCarriersOperation,
     RequiredStringPayloadValueCodec,
 )
 
@@ -86,16 +85,3 @@ def test_registered_selector_payload_bindings_are_unique() -> None:
         assert len(
             {binding.constructor_argument_name for binding in binding_set}
         ) == len(binding_set)
-
-
-def test_role_carrier_operation_declares_inherited_bindings_once() -> None:
-    binding_set = ReplaceRolePrefixedFieldsWithCarriersOperation.payload_bindings()
-
-    assert tuple(binding.field_name for binding in binding_set) == (
-        "class_name",
-        "field_projection_pairs",
-        "constructor_names",
-        "attribute_owner_expressions",
-        "carrier_source",
-        "carrier_field_declarations",
-    )

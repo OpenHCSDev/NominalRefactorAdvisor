@@ -1490,7 +1490,7 @@ def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
         )
         if item.detector_id == "semantic_mirror_without_descent"
     )
-    unrelated_finding = replace(finding, detector_id="prefixed_role_field_bundle")
+    unrelated_finding = replace(finding, detector_id="repeated_export_dicts")
 
     plan = codemod_plan_from_findings(
         (finding, unrelated_finding),

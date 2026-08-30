@@ -50,11 +50,6 @@ class StructuralExecutionLevel(StrEnum):
     FUNCTION_BODY = "function_body"
     MODULE_BODY = "module_body"
 
-    @property
-    def allows_prefixed_role_field_bundle(self) -> bool:
-        return self in {self.CLASS_BODY, self.INIT_BODY}
-
-
 _ObservationAxis: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel]
 _FiberGroupKey: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel, str]
 
