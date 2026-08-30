@@ -3900,7 +3900,7 @@ def _main_without_deadline() -> int:
             print(json.dumps(report.to_dict(), indent=2))
         else:
             print(format_codemod_refactor_goal_markdown(report))
-        return 0 if report.completed else 1
+        return 0 if report.stop_reason.completed else 1
     impact_ranking = None
     architecture_guard_report = None
     source_snapshot = None

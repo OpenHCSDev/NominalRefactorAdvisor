@@ -13869,6 +13869,32 @@ def test_codemod_projected_scan_analyzes_created_modules(
     )
 
 
+def test_codemod_refactor_goal_runner_derives_zero_stage_achievement(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=SemanticCarrierConcept,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=[], findings=[]),
+    ).run()
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stop_reason.completed is True
+    assert report.stages == ()
+    assert report.final_target_finding_ids == ()
+    assert report.replay_sequence.documents == ()
+    assert "completed" not in report.to_dict()
+    assert "achieved" not in report.to_dict()
+
+
 def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     tmp_path: Path,
 ) -> None:
@@ -13949,8 +13975,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         else:
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
-    assert report.completed is True
-    assert report.achieved is True
+    assert report.stop_reason.completed is True
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.stage_count == 1
     assert report.total_rewrite_count == 1
@@ -14083,8 +14108,7 @@ def test_applied_migration_termination_uses_actual_rescan(
         else:
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
-    assert report.completed is False
-    assert report.achieved is False
+    assert report.stop_reason.completed is False
     assert report.stop_reason is CodemodWorkflowStopReason.NO_PROGRESS
     assert report.final_target_finding_ids == (finding.stable_id,)
     stage = report.stages[0]
@@ -14130,14 +14154,13 @@ def test_class_family_migration_derives_serial_stages_from_one_concept(
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
-    assert report.completed is True
-    assert report.achieved is True
+    assert report.stop_reason.completed is True
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.stage_count == 2
     assert report.final_target_finding_ids == ()
     first_stage, second_stage = report.stages
-    first_recipe = first_stage.document.recipes[0]
-    second_recipe = second_stage.document.recipes[0]
+    first_recipe = first_stage.simulation.document.recipes[0]
+    second_recipe = second_stage.simulation.document.recipes[0]
     producer_claim = first_recipe.declared_authority_claims[0]
     consumer_claim = second_recipe.authority_claims[0]
     assert producer_claim.claimed_symbol == "RegisteredHandler"
@@ -14153,8 +14176,8 @@ def test_class_family_migration_derives_serial_stages_from_one_concept(
     assert "ALL_HANDLERS = (AlphaHandler, BetaHandler)" in first_source
     assert "ALL_HANDLERS = tuple(RegisteredHandler.__subclasses__())" in final_source
     assert report.replay_sequence.documents == (
-        first_stage.document,
-        second_stage.document,
+        first_stage.simulation.document,
+        second_stage.simulation.document,
     )
     assert all("stage_index" not in stage.to_dict() for stage in report.stages)
 
@@ -14256,8 +14279,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
         else:
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
-    assert report.completed is True
-    assert report.achieved is True
+    assert report.stop_reason.completed is True
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.final_target_finding_ids == ()
     assert report.stages[0].progress.before_target_finding_ids == (
@@ -14341,17 +14363,17 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         else:
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
-    assert report.completed is False
+    assert report.stop_reason.completed is False
     assert report.stop_reason is CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES
     assert report.stage_count == 1
     terminal_stage = report.stages[0]
-    terminal_synthesis = terminal_stage.report
+    terminal_synthesis = terminal_stage.class_plan_report.finding_plan.report
     assert terminal_synthesis.rejected_count == 1
     assert terminal_synthesis.records[0].detector_id == detector_id
     assert len(terminal_stage.class_plan_report.classes) == 1
     assert len(terminal_stage.class_plan_report.classes[0].synthesis_records) == 1
     assert terminal_stage.rewrite_count == 0
-    assert terminal_stage.document.has_recipes is False
+    assert terminal_stage.simulation.document.has_recipes is False
     assert report.replay_sequence.documents == ()
     payload = report.to_dict()
     assert "terminal_synthesis_report" not in payload
@@ -14495,8 +14517,8 @@ def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
     replay_payload = json.loads(plan_path.read_text(encoding="utf-8"))
 
     assert result.returncode == 0, result.stderr
-    assert payload["completed"] is True
-    assert payload["achieved"] is True
+    assert "completed" not in payload
+    assert "achieved" not in payload
     assert payload["stop_reason"] == "achieved"
     assert payload["stage_count"] == 1
     assert payload["total_rewrite_count"] == 1
@@ -14852,7 +14874,7 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert class_delta["fulfilled_expected_removals"] is True
     assert class_delta["status_counts"]["eliminated"] >= 1
     assert class_delta["changes"][0]["status"] == "eliminated"
-    assert class_delta["projected_result_status"] == "eliminated"
+    assert "projected_result_status" not in class_delta
     assert class_delta["class_id"] == class_plan["class_id"]
     assert "synthesis_records" not in class_plan
     assert synthesis_record["refactor_concept"] == "auto_register_class_registry"
@@ -14970,8 +14992,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodClassPlanProjectedDelta
     from nominal_refactor_advisor import CodemodClassPlanProjectedDeltaReport
     from nominal_refactor_advisor import CodemodClassPlanSiteProjectedDelta
-    from nominal_refactor_advisor import CodemodFindingChangeCarrier
-    from nominal_refactor_advisor import CodemodFindingChangeProjection
     from nominal_refactor_advisor import CodemodFindingClassChange
     from nominal_refactor_advisor import CodemodFindingClassDelta
     from nominal_refactor_advisor import CodemodFindingClassSignature
@@ -15004,12 +15024,8 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
             after_ids=("b", "c"),
         ),
     )
-    finding_change = CodemodFindingChangeProjection(
-        expected_removed_finding_ids=("a",),
-        finding_delta=delta,
-    )
-
-    assert CodemodFindingChangeCarrier.__name__ == "CodemodFindingChangeCarrier"
+    assert not hasattr(nra, "CodemodFindingChangeCarrier")
+    assert not hasattr(nra, "CodemodFindingChangeProjection")
     assert CodemodFindingClassChange.__name__ == "CodemodFindingClassChange"
     assert issubclass(CodemodFindingClassChange, CodemodFindingDelta)
     assert CodemodFindingIdTransition.__name__ == "CodemodFindingIdTransition"
@@ -15018,8 +15034,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodFindingClassStatus.MOVED.value == "moved"
     assert not hasattr(nra, "CodemodPlanJsonParser")
     assert not hasattr(nra, "RefactorRecipeTargetShape")
-    assert finding_change.expected_removed_finding_count == 1
-    assert finding_change.to_dict()["finding_delta"]["removed_finding_ids"] == ("a",)
     assert CodemodClassPlanProjectedDelta.__name__ == "CodemodClassPlanProjectedDelta"
     assert (
         CodemodClassPlanProjectedDeltaReport.__name__

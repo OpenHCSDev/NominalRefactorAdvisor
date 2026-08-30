@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
@@ -32,7 +32,6 @@ from .codemod import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeSynthesisRecord,
-    FindingRecipeSynthesisReport,
     JsonObject,
     RefactorConcept,
     module_name_from_source_path,
@@ -46,12 +45,15 @@ class CodemodWorkflowStopReason(StrEnum):
     """Terminal state for staged codemod workflows."""
 
     ACHIEVED = "achieved"
-    NO_TARGET_FINDINGS = "no_target_findings"
     NO_EXECUTABLE_RECIPES = "no_executable_recipes"
     EMPTY_REWRITE_BATCH = "empty_rewrite_batch"
     ARCHITECTURE_GUARD_FAILED = "architecture_guard_failed"
     NO_PROGRESS = "no_progress"
     MAX_STAGES = "max_stages"
+
+    @property
+    def completed(self) -> bool:
+        return self is type(self).ACHIEVED
 
 
 class CodemodFindingClassStatus(StrEnum):
@@ -63,6 +65,17 @@ class CodemodFindingClassStatus(StrEnum):
     PERSISTED = "persisted"
     INTRODUCED = "introduced"
     UNCHANGED = "unchanged"
+
+    @classmethod
+    def counts(
+        cls,
+        changes: tuple["CodemodFindingClassChange", ...],
+    ) -> JsonObject:
+        return {
+            status.value: sum(1 for change in changes if change.status is status)
+            for status in cls
+            if any(change.status is status for change in changes)
+        }
 
 
 @dataclass(frozen=True)
@@ -84,6 +97,13 @@ class CodemodFindingIdTransition:
         before_ids = frozenset(self.before_ids)
         return tuple(
             finding_id for finding_id in self.after_ids if finding_id not in before_ids
+        )
+
+    @property
+    def surviving_ids(self) -> tuple[str, ...]:
+        after_ids = frozenset(self.after_ids)
+        return tuple(
+            finding_id for finding_id in self.before_ids if finding_id in after_ids
         )
 
     @property
@@ -288,6 +308,23 @@ class CodemodFindingClassSignature:
             "relation_context": self.relation_context,
         }
 
+    @classmethod
+    def group_findings(
+        cls,
+        findings: tuple[RefactorFinding, ...],
+    ) -> dict["CodemodFindingClassSignature", tuple[RefactorFinding, ...]]:
+        signatures = tuple(
+            dict.fromkeys(cls.from_finding(finding) for finding in findings)
+        )
+        return {
+            signature: tuple(
+                finding
+                for finding in findings
+                if cls.from_finding(finding) == signature
+            )
+            for signature in signatures
+        }
+
 
 @dataclass(frozen=True)
 class CodemodFindingClassChange(CodemodFindingDelta):
@@ -325,55 +362,6 @@ class CodemodFindingClassChange(CodemodFindingDelta):
 
 
 @dataclass(frozen=True)
-class CodemodFindingClassBuckets:
-    """Findings grouped by semantic class signature without fallback mutation."""
-
-    findings_by_signature: Mapping[
-        CodemodFindingClassSignature,
-        tuple[RefactorFinding, ...],
-    ]
-
-    @classmethod
-    def from_findings(
-        cls,
-        findings: tuple[RefactorFinding, ...],
-    ) -> "CodemodFindingClassBuckets":
-        signatures = tuple(
-            dict.fromkeys(
-                CodemodFindingClassSignature.from_finding(finding)
-                for finding in findings
-            )
-        )
-        return cls(
-            findings_by_signature={
-                signature: tuple(
-                    finding
-                    for finding in findings
-                    if CodemodFindingClassSignature.from_finding(finding) == signature
-                )
-                for signature in signatures
-            }
-        )
-
-    @property
-    def signatures(self) -> tuple[CodemodFindingClassSignature, ...]:
-        return tuple(
-            sorted(
-                self.findings_by_signature,
-                key=lambda signature: signature.class_key,
-            )
-        )
-
-    def findings_for(
-        self,
-        signature: CodemodFindingClassSignature,
-    ) -> tuple[RefactorFinding, ...]:
-        if signature not in self.findings_by_signature:
-            return ()
-        return self.findings_by_signature[signature]
-
-
-@dataclass(frozen=True)
 class CodemodFindingClassDelta:
     """Class-level before/after projection for detecting moved smell classes."""
 
@@ -388,11 +376,15 @@ class CodemodFindingClassDelta:
         expected_removed_finding_ids: tuple[str, ...] = (),
     ) -> "CodemodFindingClassDelta":
         expected_ids = frozenset(expected_removed_finding_ids)
-        before_buckets = CodemodFindingClassBuckets.from_findings(before_findings)
-        after_buckets = CodemodFindingClassBuckets.from_findings(after_findings)
+        before_findings_by_signature = CodemodFindingClassSignature.group_findings(
+            before_findings
+        )
+        after_findings_by_signature = CodemodFindingClassSignature.group_findings(
+            after_findings
+        )
         signatures = tuple(
             sorted(
-                set(before_buckets.signatures) | set(after_buckets.signatures),
+                set(before_findings_by_signature) | set(after_findings_by_signature),
                 key=lambda signature: signature.class_key,
             )
         )
@@ -403,16 +395,20 @@ class CodemodFindingClassDelta:
                     finding_ids=CodemodFindingIdTransition(
                         before_ids=tuple(
                             finding.stable_id
-                            for finding in before_buckets.findings_for(signature)
+                            for finding in before_findings_by_signature.get(
+                                signature, ()
+                            )
                         ),
                         after_ids=tuple(
                             finding.stable_id
-                            for finding in after_buckets.findings_for(signature)
+                            for finding in after_findings_by_signature.get(
+                                signature, ()
+                            )
                         ),
                     ),
                     expected_removed_finding_ids=tuple(
                         finding.stable_id
-                        for finding in before_buckets.findings_for(signature)
+                        for finding in before_findings_by_signature.get(signature, ())
                         if finding.stable_id in expected_ids
                     ),
                 )
@@ -436,7 +432,7 @@ class CodemodFindingClassDelta:
         return sum(1 for change in self.changes if change.status is status)
 
     def status_counts(self) -> JsonObject:
-        return _finding_class_change_status_counts(self.changes)
+        return CodemodFindingClassStatus.counts(self.changes)
 
     def changes_for_before_ids(
         self,
@@ -459,64 +455,11 @@ class CodemodFindingClassDelta:
         }
 
 
-def _finding_class_change_status_counts(
-    changes: tuple[CodemodFindingClassChange, ...],
-) -> JsonObject:
-    return {
-        status.value: sum(1 for change in changes if change.status is status)
-        for status in CodemodFindingClassStatus
-        if any(change.status is status for change in changes)
-    }
-
-
-@dataclass(frozen=True)
-class CodemodFindingChangeProjection:
-    """Expected and observed finding changes for one codemod workflow stage."""
-
-    expected_removed_finding_ids: tuple[str, ...] = ()
-    finding_delta: CodemodFindingDelta | None = None
-
-    @property
-    def expected_removed_finding_count(self) -> int:
-        return len(self.expected_removed_finding_ids)
-
-    def to_dict(self) -> JsonObject:
-        payload: JsonObject = {
-            "expected_removed_finding_ids": self.expected_removed_finding_ids,
-            "expected_removed_finding_count": self.expected_removed_finding_count,
-        }
-        if self.finding_delta is not None:
-            payload["finding_delta"] = self.finding_delta.to_dict(
-                self.expected_removed_finding_ids
-            )
-        return payload
-
-
-@dataclass(frozen=True)
-class CodemodFindingChangeCarrier:
-    """Mixin for workflow payloads that expose expected and observed changes."""
-
-    finding_change: CodemodFindingChangeProjection
-
-    @property
-    def expected_removed_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_change.expected_removed_finding_ids
-
-    @property
-    def expected_removed_finding_count(self) -> int:
-        return self.finding_change.expected_removed_finding_count
-
-    @property
-    def finding_delta(self) -> CodemodFindingDelta | None:
-        return self.finding_change.finding_delta
-
-
 @dataclass(frozen=True)
 class CodemodRefactorGoalProgress:
     """Before/after target-finding progress for one goal stage."""
 
-    before_target_finding_ids: tuple[str, ...]
-    after_target_finding_ids: tuple[str, ...]
+    finding_ids: CodemodFindingIdTransition
 
     @classmethod
     def from_findings(
@@ -529,39 +472,39 @@ class CodemodRefactorGoalProgress:
         after_snapshot: CodemodSourceSnapshot,
     ) -> "CodemodRefactorGoalProgress":
         return cls(
-            before_target_finding_ids=tuple(
-                finding.stable_id
-                for finding in migration_type.target_findings(
-                    before_findings,
-                    before_snapshot,
-                )
-            ),
-            after_target_finding_ids=tuple(
-                finding.stable_id
-                for finding in migration_type.target_findings(
-                    after_findings,
-                    after_snapshot,
-                )
-            ),
+            finding_ids=CodemodFindingIdTransition(
+                before_ids=tuple(
+                    finding.stable_id
+                    for finding in migration_type.target_findings(
+                        before_findings,
+                        before_snapshot,
+                    )
+                ),
+                after_ids=tuple(
+                    finding.stable_id
+                    for finding in migration_type.target_findings(
+                        after_findings,
+                        after_snapshot,
+                    )
+                ),
+            )
         )
+
+    @property
+    def before_target_finding_ids(self) -> tuple[str, ...]:
+        return self.finding_ids.before_ids
+
+    @property
+    def after_target_finding_ids(self) -> tuple[str, ...]:
+        return self.finding_ids.after_ids
 
     @property
     def removed_target_finding_ids(self) -> tuple[str, ...]:
-        after_ids = frozenset(self.after_target_finding_ids)
-        return tuple(
-            finding_id
-            for finding_id in self.before_target_finding_ids
-            if finding_id not in after_ids
-        )
+        return self.finding_ids.removed_ids
 
     @property
     def surviving_target_finding_ids(self) -> tuple[str, ...]:
-        after_ids = frozenset(self.after_target_finding_ids)
-        return tuple(
-            finding_id
-            for finding_id in self.before_target_finding_ids
-            if finding_id in after_ids
-        )
+        return self.finding_ids.surviving_ids
 
     @property
     def removed_target_finding_count(self) -> int:
@@ -593,39 +536,31 @@ class CodemodRefactorGoalProgress:
 
 
 @dataclass(frozen=True)
-class CodemodRefactorGoalStage(CodemodFindingChangeCarrier):
+class CodemodRefactorGoalStage:
     """One simulated or applied staged plan toward a refactor goal."""
 
     class_plan_report: FindingRecipeClassPlanReport
     simulation: CodemodPlanDocumentSimulation
     progress: CodemodRefactorGoalProgress
+    finding_delta: CodemodFindingDelta
     applied: bool = False
 
     @property
-    def report(self) -> FindingRecipeSynthesisReport:
-        return self.class_plan_report.finding_plan.report
-
-    @property
-    def document(self) -> CodemodPlanDocument:
-        return self.simulation.document
+    def expected_removed_finding_ids(self) -> tuple[str, ...]:
+        return self.class_plan_report.finding_plan.expected_removed_finding_ids
 
     @property
     def rewrite_count(self) -> int:
         return self.simulation.simulation.applied_rewrite_count
 
-    @property
-    def changed_file_paths(self) -> tuple[str, ...]:
-        return self.simulation.simulation.changed_file_paths
-
     def to_dict(self) -> JsonObject:
         return {
             "applied": self.applied,
-            "rewrite_count": self.rewrite_count,
-            "changed_file_paths": self.changed_file_paths,
-            "document": self.document.to_dict(),
             "simulation": self.simulation.to_dict(),
             "progress": self.progress.to_dict(),
-            **self.finding_change.to_dict(),
+            "finding_delta": self.finding_delta.to_dict(
+                self.expected_removed_finding_ids
+            ),
             "class_plan_report": self.class_plan_report.to_dict(),
         }
 
@@ -634,12 +569,16 @@ class CodemodRefactorGoalStage(CodemodFindingChangeCarrier):
 class CodemodRefactorGoalReport:
     """Machine-readable result of a goal-directed staged codemod run."""
 
-    completed: bool
     stop_reason: CodemodWorkflowStopReason
     final_finding_count: int
     migration_type: type[RefactorConcept]
     stages: tuple[CodemodRefactorGoalStage, ...]
-    final_target_finding_ids: tuple[str, ...]
+
+    @property
+    def final_target_finding_ids(self) -> tuple[str, ...]:
+        if not self.stages:
+            return ()
+        return self.stages[-1].progress.after_target_finding_ids
 
     @property
     def stage_count(self) -> int:
@@ -653,20 +592,16 @@ class CodemodRefactorGoalReport:
     def replay_sequence(self) -> CodemodPlanSequence:
         return CodemodPlanSequence(
             documents=tuple(
-                stage.document for stage in self.stages if stage.document.has_recipes
+                stage.simulation.document
+                for stage in self.stages
+                if stage.simulation.document.has_recipes
             )
         )
-
-    @property
-    def achieved(self) -> bool:
-        return self.completed and not self.final_target_finding_ids
 
     def to_markdown(self) -> str:
         lines = [
             "Codemod refactor goal report:",
             f"   - Migration: {self.migration_type.concept_key()}",
-            f"   - Completed: {self.completed}",
-            f"   - Achieved: {self.achieved}",
             f"   - Stop reason: {self.stop_reason.value}",
             f"   - Stages: {self.stage_count}",
             f"   - Rewrites: {self.total_rewrite_count}",
@@ -687,8 +622,6 @@ class CodemodRefactorGoalReport:
     def to_dict(self) -> JsonObject:
         return {
             "migration": self.migration_type.concept_key(),
-            "completed": self.completed,
-            "achieved": self.achieved,
             "stop_reason": self.stop_reason.value,
             "stage_count": self.stage_count,
             "total_rewrite_count": self.total_rewrite_count,
@@ -807,7 +740,7 @@ class CodemodClassPlanProjectedDelta:
 
     @property
     def status_counts(self) -> JsonObject:
-        return _finding_class_change_status_counts(self.changes)
+        return CodemodFindingClassStatus.counts(self.changes)
 
     @property
     def site_deltas(self) -> tuple["CodemodClassPlanSiteProjectedDelta", ...]:
@@ -834,31 +767,9 @@ class CodemodClassPlanProjectedDelta:
             for finding_id in self.class_plan.expected_removed_finding_ids
         )
 
-    @property
-    def projected_result_status(self) -> str:
-        statuses = tuple(change.status for change in self.changes)
-        if CodemodFindingClassStatus.MOVED in statuses:
-            return CodemodFindingClassStatus.MOVED.value
-        if statuses and all(
-            status is CodemodFindingClassStatus.ELIMINATED for status in statuses
-        ):
-            return CodemodFindingClassStatus.ELIMINATED.value
-        if CodemodFindingClassStatus.PARTIALLY_ELIMINATED in statuses:
-            return CodemodFindingClassStatus.PARTIALLY_ELIMINATED.value
-        if CodemodFindingClassStatus.PERSISTED in statuses:
-            return CodemodFindingClassStatus.PERSISTED.value
-        if CodemodFindingClassStatus.INTRODUCED in statuses:
-            return CodemodFindingClassStatus.INTRODUCED.value
-        if CodemodFindingClassStatus.UNCHANGED in statuses:
-            return CodemodFindingClassStatus.UNCHANGED.value
-        if self.fulfilled_expected_removals:
-            return CodemodFindingClassStatus.ELIMINATED.value
-        return CodemodFindingClassStatus.PERSISTED.value
-
     def to_dict(self) -> JsonObject:
         return {
             "class_id": self.class_plan.execution_class.class_id,
-            "projected_result_status": self.projected_result_status,
             "fulfilled_expected_removals": self.fulfilled_expected_removals,
             "status_counts": self.status_counts,
             "changes": tuple(change.to_dict() for change in self.changes),
@@ -900,7 +811,7 @@ class CodemodClassPlanSiteProjectedDelta:
 
     @property
     def status_counts(self) -> JsonObject:
-        return _finding_class_change_status_counts(self.changes)
+        return CodemodFindingClassStatus.counts(self.changes)
 
     @property
     def fulfilled_expected_removal(self) -> bool:
@@ -1195,8 +1106,7 @@ class CodemodRefactorGoalRunner:
             return self.report(
                 (),
                 active_scan,
-                CodemodWorkflowStopReason.NO_TARGET_FINDINGS,
-                True,
+                CodemodWorkflowStopReason.ACHIEVED,
             )
         for _stage in range(self.max_stages):
             snapshot = active_scan.source_snapshot
@@ -1228,21 +1138,18 @@ class CodemodRefactorGoalRunner:
                     (*stages, stage),
                     active_scan,
                     CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES,
-                    False,
                 )
             if stage.rewrite_count == 0:
                 return self.report(
                     (*stages, stage),
                     active_scan,
                     CodemodWorkflowStopReason.EMPTY_REWRITE_BATCH,
-                    False,
                 )
             if not stage.simulation.is_clean:
                 return self.report(
                     (*stages, stage),
                     active_scan,
                     CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
-                    False,
                 )
             if self.dry_run:
                 next_scan = projected_scan
@@ -1265,21 +1172,18 @@ class CodemodRefactorGoalRunner:
                     tuple(stages),
                     next_scan,
                     CodemodWorkflowStopReason.ACHIEVED,
-                    True,
                 )
             if not recorded_stage.progress.made_progress:
                 return self.report(
                     tuple(stages),
                     next_scan,
                     CodemodWorkflowStopReason.NO_PROGRESS,
-                    False,
                 )
             active_scan = next_scan
         return self.report(
             tuple(stages),
             active_scan,
             CodemodWorkflowStopReason.MAX_STAGES,
-            False,
         )
 
     def target_findings(
@@ -1314,14 +1218,9 @@ class CodemodRefactorGoalRunner:
                 before_snapshot=before_scan.source_snapshot,
                 after_snapshot=after_scan.source_snapshot,
             ),
-            finding_change=CodemodFindingChangeProjection(
-                expected_removed_finding_ids=(
-                    class_plan_report.finding_plan.expected_removed_finding_ids
-                ),
-                finding_delta=CodemodFindingDelta.from_findings(
-                    tuple(before_scan.findings),
-                    tuple(after_scan.findings),
-                ),
+            finding_delta=CodemodFindingDelta.from_findings(
+                tuple(before_scan.findings),
+                tuple(after_scan.findings),
             ),
         )
 
@@ -1330,21 +1229,12 @@ class CodemodRefactorGoalRunner:
         stages: tuple[CodemodRefactorGoalStage, ...],
         scan: CodemodWorkflowScan,
         reason: CodemodWorkflowStopReason,
-        completed: bool,
     ) -> CodemodRefactorGoalReport:
         return CodemodRefactorGoalReport(
             migration_type=self.migration_type,
             stages=stages,
-            completed=completed,
             stop_reason=reason,
             final_finding_count=len(scan.findings),
-            final_target_finding_ids=tuple(
-                finding.stable_id
-                for finding in self.migration_type.target_findings(
-                    scan.findings,
-                    scan.source_snapshot,
-                )
-            ),
         )
 
 

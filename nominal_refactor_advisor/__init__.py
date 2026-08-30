@@ -77,8 +77,6 @@ from .codemod_workflow import (
     CodemodClassPlanProjectedDelta,
     CodemodClassPlanProjectedDeltaReport,
     CodemodClassPlanSiteProjectedDelta,
-    CodemodFindingChangeCarrier,
-    CodemodFindingChangeProjection,
     CodemodFindingClassChange,
     CodemodFindingClassDelta,
     CodemodFindingClassSignature,
