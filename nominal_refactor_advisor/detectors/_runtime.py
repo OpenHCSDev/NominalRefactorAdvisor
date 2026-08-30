@@ -625,10 +625,6 @@ def _opaque_object_annotation_names(annotation: ast.AST) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
-def _has_opaque_object_annotation(annotation: ast.AST) -> bool:
-    return bool(_opaque_object_annotation_names(annotation))
-
-
 def _annotation_leaf_names(annotation: ast.AST) -> tuple[str, ...]:
     names: list[str] = []
 
@@ -791,12 +787,6 @@ def _is_annotation_like_expression(node: ast.AST) -> bool:
     return False
 
 
-def _is_cast_call(node: ast.Call) -> bool:
-    if isinstance(node.func, ast.Name):
-        return node.func.id == "cast"
-    return isinstance(node.func, ast.Attribute) and node.func.attr == "cast"
-
-
 def _is_dataclass_declaration(node: ast.ClassDef) -> bool:
     return any(
         (
@@ -842,7 +832,7 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
         PatternId.AUTHORITATIVE_SCHEMA,
         "Private object-typed boundary field should become a typed authority",
         "A private dataclass field annotated as `object` and named like an executable/runtime boundary hides both ownership and callable shape. That lets local Python closures cross request boundaries without static evidence.",
-        "nominal typed authority or protocol field for each executable/runtime boundary",
+        "nominal typed authority or ABC field for each executable/runtime boundary",
         "dataclass request boundary stores a private executable/runtime field as `object`",
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
@@ -880,206 +870,13 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
                     ),
                     codemod_patch=(
                         f"# Replace private object boundary fields on `{class_name}` "
-                        "with a named typed authority/protocol field. Do not pass "
+                        "with a named typed authority/ABC field. Do not pass "
                         "private closures through request dataclasses."
                     ),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(field_names),
                         mapping_name=class_name,
                         field_names=field_names,
-                    ),
-                )
-            )
-        return findings
-
-
-@dataclass(frozen=True)
-class OpaqueObjectAnnotationSite:
-    owner_name: str
-    member_name: str
-    role_name: str
-    line: int
-
-    @property
-    def symbol(self) -> str:
-        return f"{self.owner_name}.{self.member_name}"
-
-
-def _opaque_object_annotation_owner(
-    class_stack: Sequence[str],
-    function_stack: Sequence[str],
-) -> str:
-    owner_parts = (*tuple(class_stack), *tuple(function_stack))
-    return ".".join(owner_parts) if owner_parts else "module"
-
-
-def _opaque_object_annotation_sites(
-    module: ParsedModule,
-) -> dict[str, list[OpaqueObjectAnnotationSite]]:
-    sites_by_owner: dict[str, list[OpaqueObjectAnnotationSite]] = defaultdict(list)
-    class_stack: list[str] = []
-    function_stack: list[str] = []
-
-    def add_site(
-        owner_name: str,
-        member_name: str,
-        role_name: str,
-        line: int,
-    ) -> None:
-        sites_by_owner.setdefault(owner_name, []).append(
-            OpaqueObjectAnnotationSite(
-                owner_name=owner_name,
-                member_name=member_name,
-                role_name=role_name,
-                line=line,
-            )
-        )
-
-    def inspect_argument(
-        owner_name: str,
-        argument: ast.arg | None,
-        role_name: str,
-    ) -> None:
-        if argument is None or argument.arg in {"self", "cls"}:
-            return
-        if argument.annotation is None or not _has_opaque_object_annotation(
-            argument.annotation
-        ):
-            return
-        add_site(owner_name, argument.arg, role_name, int(argument.lineno))
-
-    class Visitor(ast.NodeVisitor):
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            class_stack.append(node.name)
-            self.generic_visit(node)
-            class_stack.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            owner_name = _opaque_object_annotation_owner(class_stack, function_stack)
-            function_owner_name = (
-                f"{owner_name}.{node.name}" if owner_name != "module" else node.name
-            )
-            if node.returns is not None and _has_opaque_object_annotation(node.returns):
-                add_site(function_owner_name, "return", "return", int(node.lineno))
-            for argument in (
-                *tuple(node.args.posonlyargs),
-                *tuple(node.args.args),
-                *tuple(node.args.kwonlyargs),
-            ):
-                if (
-                    class_stack
-                    and node.name in {"__eq__", "__ne__"}
-                    and argument.arg == "other"
-                    and argument.annotation is not None
-                    and _opaque_object_annotation_names(argument.annotation)
-                    == ("object",)
-                ):
-                    continue
-                inspect_argument(function_owner_name, argument, "parameter")
-            inspect_argument(function_owner_name, node.args.vararg, "vararg")
-            inspect_argument(function_owner_name, node.args.kwarg, "kwarg")
-            function_stack.append(node.name)
-            self.generic_visit(node)
-            function_stack.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-            if (
-                function_stack
-                or not isinstance(node.target, ast.Name)
-                or not _has_opaque_object_annotation(node.annotation)
-            ):
-                return
-            owner_name = _opaque_object_annotation_owner(class_stack, function_stack)
-            add_site(owner_name, node.target.id, "field", int(node.lineno))
-
-        def visit_Assign(self, node: ast.Assign) -> None:
-            if function_stack:
-                self.generic_visit(node)
-                return
-            if not _is_annotation_like_expression(node.value):
-                self.generic_visit(node)
-                return
-            if not _has_opaque_object_annotation(node.value):
-                self.generic_visit(node)
-                return
-            owner_name = _opaque_object_annotation_owner(class_stack, function_stack)
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    add_site(owner_name, target.id, "type_alias", int(node.lineno))
-            self.generic_visit(node)
-
-        def visit_Call(self, node: ast.Call) -> None:
-            if (
-                _is_cast_call(node)
-                and node.args
-                and _has_opaque_object_annotation(node.args[0])
-            ):
-                owner_name = _opaque_object_annotation_owner(
-                    class_stack,
-                    function_stack,
-                )
-                add_site(owner_name, "cast", "cast", int(node.lineno))
-            self.generic_visit(node)
-
-    Visitor().visit(module.module)
-    return sites_by_owner
-
-
-class OpaqueObjectAnnotationDetector(PerModuleIssueDetector):
-    finding_spec = high_confidence_spec(
-        PatternId.NOMINAL_BOUNDARY,
-        "Opaque object-like annotations should become nominal typed contracts",
-        "`object` or `Any` inside a boundary annotation gives the same operational permission as an untyped value: callers can pass any shape and failures move to late runtime paths. Boundary code should name the carrier, ABC, or authority it requires.",
-        "nominal dataclass/ABC/authority types at every boundary instead of opaque object-like annotations",
-        "field, parameter, return, alias, or cast annotations contain `object` or `Any`",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
-    )
-
-    def _findings_for_module(
-        self,
-        module: ParsedModule,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        findings: list[RefactorFinding] = []
-        for owner_name, sites in sorted(
-            _opaque_object_annotation_sites(module).items()
-        ):
-            site_names = tuple(site.member_name for site in sites)
-            role_names = tuple(sorted_tuple({site.role_name for site in sites}))
-            evidence = tuple(
-                SourceLocation(str(module.path), site.line, site.symbol)
-                for site in sites[:8]
-            )
-            findings.append(
-                self.build_finding(
-                    (
-                        f"`{owner_name}` exposes opaque object-like annotations for "
-                        f"{site_names}; roles={role_names}."
-                    ),
-                    evidence,
-                    scaffold=(
-                        "@dataclass(frozen=True)\n"
-                        "class BoundaryCarrier:\n"
-                        "    value: TypedPayload\n\n"
-                        "class BoundaryRuntime(ABC):\n"
-                        "    @abstractmethod\n"
-                        "    def execute(self, request: BoundaryCarrier) -> BoundaryResult:\n"
-                        "        raise NotImplementedError"
-                    ),
-                    codemod_patch=(
-                        f"# Replace opaque object-like annotations on `{owner_name}` "
-                        "with nominal carrier/ABC/authority types. If the value "
-                        "is polymorphic, make the abstract operation explicit on "
-                        "a nominal base class."
-                    ),
-                    metrics=MappingMetrics.from_field_names(
-                        mapping_site_count=len(sites),
-                        mapping_name=owner_name,
-                        field_names=site_names,
                     ),
                 )
             )

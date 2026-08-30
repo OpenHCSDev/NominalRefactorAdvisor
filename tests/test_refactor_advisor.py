@@ -4911,7 +4911,6 @@ FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 FAIL_SOFT_FALLBACK_DETECTOR_ID = "fail_soft_fallback"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
-OPAQUE_OBJECT_ANNOTATION_DETECTOR_ID = "opaque_object_annotation"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
 SMELLY_TYPE_ALIAS_DETECTOR_ID = "smelly_type_alias"
 NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID = "non_nominal_private_helper"
@@ -11245,33 +11244,8 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     assert "UnsafeRequest" in finding.summary
     assert "_handler_impl" in finding.summary
     assert "SafeRequest" not in finding.summary
-
-
-def test_detects_opaque_object_annotations(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom dataclasses import dataclass\nfrom typing import Any, Callable, Mapping, cast\n\nStageCallback = Callable[[object], tuple[object, ...]]\n\n\n@dataclass(frozen=True)\nclass StageRequest:\n    source_scope: object\n    cache_key: tuple[object, ...]\n    values: Mapping[str, object]\n    callback: StageCallback\n\n\ndef run_stage(request: object, payload: Any) -> dict[str, object]:\n    typed = cast(Mapping[str, object], {"request": request, "payload": payload})\n    return dict(typed)\n',
-    )
-
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == OPAQUE_OBJECT_ANNOTATION_DETECTOR_ID
-    ]
-
-    summaries = "\n".join(finding.summary for finding in findings)
-    assert "StageCallback" in summaries
-    assert "StageRequest" in summaries
-    assert "source_scope" in summaries
-    assert "cache_key" in summaries
-    assert "values" in summaries
-    assert "run_stage" in summaries
-    assert "request" in summaries
-    assert "payload" in summaries
-    assert "return" in summaries
-    assert "cast" in summaries
-    assert all("Protocol" not in (finding.scaffold or "") for finding in findings)
+    assert "Protocol" not in (finding.scaffold or "")
+    assert "protocol" not in (finding.codemod_patch or "").lower()
 
 
 def test_detects_smelly_type_aliases_without_flagging_precise_aliases(
