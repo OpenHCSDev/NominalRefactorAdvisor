@@ -7041,10 +7041,17 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class AuthoritySourceOperation(StringPayloadOperation):
+class AuthoritySourceOperation(RefactorRecipeOperation, ABC):
     """Codemod operation carrying source for a declared authority boundary."""
 
-    payload_field_name = "authority_source"
+    authority_source: str
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            authority_source=RequiredStringPayloadValueCodec(),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -7082,7 +7089,7 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
             SourceInsertion(
                 file_path=target_digest.file_path,
                 insertion_line=target_digest.line,
-                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
+                inserted_lines=SourceTargetEditor.source_lines(self.authority_source),
                 rationale=self.rationale
                 or f"Insert authority before {target_digest.qualname!r}.",
             ),
@@ -7135,7 +7142,7 @@ class DeclareAuthorityOperation(
             SourceInsertion(
                 file_path=source_path,
                 insertion_line=insertion_line,
-                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
+                inserted_lines=SourceTargetEditor.source_lines(self.authority_source),
                 rationale=self.rationale
                 or (f"Declare authority {self.authority_claim.claimed_symbol!r}."),
             ),

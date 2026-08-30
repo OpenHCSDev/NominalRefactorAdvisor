@@ -276,6 +276,17 @@ def test_class_base_operations_own_the_base_name_payload() -> None:
         ) == ("base_name",)
 
 
+def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
+    assert not issubclass(
+        codemod.AuthoritySourceOperation,
+        codemod.StringPayloadOperation,
+    )
+    assert tuple(
+        binding.field_name
+        for binding in codemod.AuthoritySourceOperation.payload_bindings()
+    ) == ("authority_source",)
+
+
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:
     mapping_declarations = (
         codemod.MappingSemanticMirrorRecipeBuilder,

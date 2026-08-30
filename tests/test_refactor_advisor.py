@@ -1169,7 +1169,7 @@ def test_codemod_preflight_accepts_declared_authority_claim(
         DeclareAuthorityOperation(
             target=SourceRewriteTarget(file_path=module_path.as_posix()),
             authority_claim=claim,
-            payload_value="class MissingAuthority(ABC):\n    pass\n\n",
+            authority_source="class MissingAuthority(ABC):\n    pass\n\n",
         )
     )
 
@@ -3599,7 +3599,7 @@ def test_refactor_recipe_extracts_authority(
                 qualname="old_helper",
                 file_path=module_path.as_posix(),
             ),
-            payload_value=(
+            authority_source=(
                 "class HelperAuthority:\n"
                 "    @staticmethod\n"
                 "    def normalize(value):\n"
@@ -3663,7 +3663,7 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
                             qualname="old_helper",
                             file_path=helper_path.as_posix(),
                         ),
-                        payload_value=(
+                        authority_source=(
                             "class HelperAuthority:\n"
                             "    @staticmethod\n"
                             "    def normalize(value):\n"
@@ -3730,7 +3730,7 @@ def test_codemod_plan_document_simulates_and_applies_recipes(
                         qualname="old_helper",
                         file_path=module_path.as_posix(),
                     ),
-                    payload_value=(
+                    authority_source=(
                         "class HelperAuthority:\n"
                         "    @staticmethod\n"
                         "    def normalize(value):\n"
