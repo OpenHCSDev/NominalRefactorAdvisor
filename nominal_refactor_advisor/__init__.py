@@ -39,7 +39,6 @@ from .codemod import (
     CodemodSourceSnapshot,
     CodemodStrategy,
     DeleteClassAssignmentOperation,
-    DerivableDetectorDeclarationsCodemodBuilder,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeSynthesisRecord,

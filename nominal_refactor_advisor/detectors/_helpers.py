@@ -7388,66 +7388,6 @@ def _direct_build_finding_renderer_candidates(
     return tuple(candidates)
 
 
-def _class_detector_id_assignment(node: ast.ClassDef) -> tuple[int, str] | None:
-    for statement in node.body:
-        if not isinstance(statement, ast.Assign):
-            continue
-        if not any((name_id(target) == "detector_id" for target in statement.targets)):
-            continue
-        if isinstance(statement.value, ast.Constant) and isinstance(
-            statement.value.value, str
-        ):
-            return (statement.lineno, statement.value.value)
-    return None
-
-
-def _class_candidate_collector_assignment(node: ast.ClassDef) -> tuple[int, str] | None:
-    for statement in node.body:
-        targets: list[ast.AST]
-        value: ast.AST | None
-        if isinstance(statement, ast.Assign):
-            targets = list(statement.targets)
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            targets = [statement.target]
-            value = statement.value
-        else:
-            continue
-        if not any((name_id(target) == "candidate_collector" for target in targets)):
-            continue
-        collector_name = name_id(value) if value is not None else None
-        if collector_name is not None:
-            return (statement.lineno, collector_name)
-    return None
-
-
-DerivableClassCandidateT = TypeVar("DerivableClassCandidateT")
-ClassAssignmentReader = Callable[[ast.ClassDef], tuple[int, str] | None]
-ClassExpectedValue = Callable[[str], str | None]
-
-
-def _derivable_detector_id_candidates(
-    module: ParsedModule,
-) -> tuple[DerivableDetectorIdCandidate, ...]:
-    return HELPER_SYNTAX_PROJECTION_AUTHORITY.derivable_class_assignment_candidates(
-        module,
-        _class_detector_id_assignment,
-        _detector_id_value_from_class_name,
-        DerivableDetectorIdCandidate,
-    )
-
-
-def _derivable_candidate_collector_candidates(
-    module: ParsedModule,
-) -> tuple[DerivableCandidateCollectorCandidate, ...]:
-    return HELPER_SYNTAX_PROJECTION_AUTHORITY.derivable_class_assignment_candidates(
-        module,
-        _class_candidate_collector_assignment,
-        _candidate_collector_name_from_class_name,
-        DerivableCandidateCollectorCandidate,
-    )
-
-
 @lru_cache(maxsize=1)
 def _canonical_finding_spec_field_names() -> tuple[str, ...]:
     signature = inspect.signature(FindingSpecFactory.__call__)
@@ -7628,30 +7568,6 @@ class HelperSyntaxProjectionAuthority:
                 for statement in node.body
             )
         )
-
-    def derivable_class_assignment_candidates(
-        self,
-        module: ParsedModule,
-        assignment_reader: ClassAssignmentReader,
-        expected_value: ClassExpectedValue,
-        candidate_factory: Callable[[str, int, str, str], DerivableClassCandidateT],
-    ) -> tuple[DerivableClassCandidateT, ...]:
-        candidates: list[DerivableClassCandidateT] = []
-        for node in module.module.body:
-            if not isinstance(node, ast.ClassDef):
-                continue
-            assignment = assignment_reader(node)
-            if assignment is None:
-                continue
-            line, assigned_value = assignment
-            if not self.class_declares_finding_spec(node):
-                continue
-            if assigned_value != expected_value(node.name):
-                continue
-            candidates.append(
-                candidate_factory(str(module.path), line, node.name, assigned_value)
-            )
-        return tuple(candidates)
 
     def class_shape_candidates(
         self,

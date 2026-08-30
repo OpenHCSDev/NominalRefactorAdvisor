@@ -11012,16 +11012,6 @@ class DirectBuildFindingRendererCandidate(
 
 
 @dataclass(frozen=True)
-class DerivableDetectorIdCandidate(ClassLineWitnessCandidate):
-    detector_id_value: str
-
-
-@dataclass(frozen=True)
-class DerivableCandidateCollectorCandidate(ClassLineWitnessCandidate):
-    collector_name: str
-
-
-@dataclass(frozen=True)
 class CanonicalFindingSpecBuilderCandidate(
     BuilderKeywordSurface, ClassLineWitnessCandidate
 ):

@@ -576,9 +576,6 @@ RECIPES_PAYLOAD_FIELD = "recipes"
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
 STAGES_PAYLOAD_FIELD = "stages"
 DETECTOR_ID_FIELD_NAME = "detector_id"
-CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
-DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
-DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
 MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID = "module_authority_reexport_catalog"
 MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
 NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
@@ -16963,46 +16960,6 @@ class ClassAssignmentDeletionFindingRecipeSynthesizer(
         return tuple(names)
 
 
-class DerivableClassAssignmentFindingRecipeSynthesizer(
-    ClassAssignmentDeletionFindingRecipeSynthesizer
-):
-    """Build assignment-deletion recipes for derivable detector declarations."""
-
-    @property
-    @abstractmethod
-    def assignment_name(self):
-        raise NotImplementedError
-
-    assignment_name: ClassVar[str]
-    recipe_id_suffix = "delete-derivable-assignment"
-    recipe_reason = "Delete class assignment derived by the detector base."
-
-    def assignment_names_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[str, ...]:
-        del finding
-        return (self.assignment_name,)
-
-
-class DerivableDetectorIdFindingRecipeSynthesizer(
-    DerivableClassAssignmentFindingRecipeSynthesizer
-):
-    """Build recipes for detector_id values derivable from class names."""
-
-    detector_id = DERIVABLE_DETECTOR_ID_FINDING_ID
-    assignment_name = DETECTOR_ID_FIELD_NAME
-
-
-class DerivableCandidateCollectorFindingRecipeSynthesizer(
-    DerivableClassAssignmentFindingRecipeSynthesizer
-):
-    """Build recipes for candidate collectors derivable from class names."""
-
-    detector_id = DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID
-    assignment_name = CANDIDATE_COLLECTOR_FIELD_NAME
-
-
 class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
     ClassAssignmentDeletionFindingRecipeSynthesizer,
     AutoRegisterConcept,
@@ -22245,7 +22202,6 @@ class CodemodCandidate:
 _DescriptorAssignmentBuilder = Callable[
     [ast.FunctionDef | ast.AsyncFunctionDef], str | None
 ]
-_ClassStatementSelector = Callable[[ast.ClassDef], tuple[ast.stmt, ...]]
 
 
 @dataclass(frozen=True)
@@ -22285,53 +22241,6 @@ class AstExpressionProjection:
         if source_name != carrier_variable_name:
             return None
         return field_name
-
-
-def _derivable_detector_id_assignment(node: ast.ClassDef) -> tuple[ast.stmt, ...]:
-    if not _class_declares_finding_spec(node):
-        return ()
-    expected_detector_id = _detector_id_from_class_name(node.name)
-    if expected_detector_id is None:
-        return ()
-    for statement in node.body:
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            continue
-        if _name_id(statement.targets[0]) != DETECTOR_ID_FIELD_NAME:
-            continue
-        if (
-            isinstance(statement.value, ast.Constant)
-            and statement.value.value == expected_detector_id
-        ):
-            return (statement,)
-    return ()
-
-
-def _derivable_candidate_collector_assignment(
-    node: ast.ClassDef,
-) -> tuple[ast.stmt, ...]:
-    if not _class_declares_finding_spec(node):
-        return ()
-    if not _has_derived_candidate_collector_base(node):
-        return ()
-    expected_collector_name = _candidate_collector_name_from_class_name(node.name)
-    if expected_collector_name is None:
-        return ()
-    for statement in node.body:
-        targets: tuple[ast.expr, ...]
-        value: ast.expr | None
-        if isinstance(statement, ast.Assign):
-            targets = tuple(statement.targets)
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            targets = (statement.target,)
-            value = statement.value
-        else:
-            continue
-        if len(targets) != 1 or _name_id(targets[0]) != CANDIDATE_COLLECTOR_FIELD_NAME:
-            continue
-        if value is not None and _name_id(value) == expected_collector_name:
-            return (statement,)
-    return ()
 
 
 def _source_location_descriptor_assignment(
@@ -22615,49 +22524,6 @@ class ZippedSourceLocationEvidencePropertyFindingRecipeSynthesizer(
     recipe_reason = "Replace boilerplate zipped SourceLocation evidence property with descriptor data."
 
 
-class DetectorDeclarationSelector(ABC, metaclass=AutoRegisterMeta):
-    """Registered selector for derivable detector class declarations."""
-
-    __registry__: ClassVar[dict[str, type["DetectorDeclarationSelector"]]] = {}
-    __registry_key__ = DETECTOR_ID_FIELD_NAME
-    __skip_if_no_key__ = True
-
-    detector_id: ClassVar[str]
-    statement_selector: ClassVar[_ClassStatementSelector]
-
-    @classmethod
-    def select_for_detector_ids(
-        cls,
-        node: ast.ClassDef,
-        detector_ids: frozenset[str],
-    ) -> tuple[ast.stmt, ...]:
-        return tuple(
-            statement
-            for detector_id in sorted(detector_ids)
-            for selector_type in (cls.__registry__.get(detector_id),)
-            if selector_type is not None
-            for statement in selector_type.select(node)
-        )
-
-    @classmethod
-    def select(cls, node: ast.ClassDef) -> tuple[ast.stmt, ...]:
-        return cls.statement_selector(node)
-
-
-class DerivableDetectorIdDeclarationSelector(DetectorDeclarationSelector):
-    """Select detector_id assignments derivable from the detector class name."""
-
-    detector_id = DERIVABLE_DETECTOR_ID_FINDING_ID
-    statement_selector = staticmethod(_derivable_detector_id_assignment)
-
-
-class DerivableCandidateCollectorDeclarationSelector(DetectorDeclarationSelector):
-    """Select candidate_collector assignments derivable from detector class name."""
-
-    detector_id = DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID
-    statement_selector = staticmethod(_derivable_candidate_collector_assignment)
-
-
 class CodemodRewriteBuilder(ABC, metaclass=AutoRegisterMeta):
     """Build planned source rewrites for candidates with mechanical semantics."""
 
@@ -22732,48 +22598,6 @@ class DescriptorPropertyCodemodBuilder(ABC):
         )
 
 
-class ClassStatementDeletionCodemodBuilder(ABC):
-    """Shared rewrite algorithm for deleting derivable class statements."""
-
-    detector_ids: ClassVar[frozenset[str]]
-    statement_selector: ClassVar[type[DetectorDeclarationSelector] | None] = None
-
-    def candidate_matches(self, candidate: CodemodCandidate) -> bool:
-        return candidate.opportunity_key.kind == "ast-target" and bool(
-            self.detector_ids & frozenset(candidate.opportunity.detector_ids)
-        )
-
-    @abstractmethod
-    def selected_statements(
-        self,
-        node: ast.ClassDef,
-        candidate: CodemodCandidate,
-    ) -> tuple[ast.stmt, ...]:
-        del candidate
-        selector = type(self).statement_selector
-        if selector is None:
-            raise NotImplementedError(
-                f"{type(self).__name__} must declare a statement selector"
-            )
-        return selector.select(node)
-
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if not self.candidate_matches(candidate):
-            return ()
-        return _class_statement_deletion_rewrites(
-            candidate,
-            source_index,
-            source_by_path,
-            statement_selector=lambda node: self.selected_statements(node, candidate),
-            rationale=self.strategy_reason,
-        )
-
-
 class SourceLocationEvidencePropertyCodemodBuilder(
     DescriptorPropertyCodemodBuilder,
     DefaultCodemodRewriteBuilder,
@@ -22802,31 +22626,6 @@ class ZippedSourceLocationEvidencePropertyCodemodBuilder(
         "Replace boilerplate zipped SourceLocation evidence property with "
         "ZippedSourceLocationEvidenceProperty descriptor data."
     )
-
-
-class DerivableDetectorDeclarationsCodemodBuilder(
-    ClassStatementDeletionCodemodBuilder,
-    DefaultCodemodRewriteBuilder,
-):
-    """Plan deletion of redundant detector declaration class assignments."""
-
-    strategy_id = "derivable-detector-declarations-delete-mechanical"
-    detector_ids = frozenset(
-        (DERIVABLE_DETECTOR_ID_FINDING_ID, DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID)
-    )
-    strategy_reason = (
-        "Delete redundant detector declarations derived from the detector class name."
-    )
-
-    def selected_statements(
-        self,
-        node: ast.ClassDef,
-        candidate: CodemodCandidate,
-    ) -> tuple[ast.stmt, ...]:
-        return _derivable_detector_declaration_assignments(
-            node,
-            frozenset(candidate.opportunity.detector_ids),
-        )
 
 
 def codemod_candidates_with_automated_rewrites(
@@ -23587,116 +23386,6 @@ def _descriptor_property_rewrites(
             )
         )
     return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
-
-
-def _class_statement_deletion_rewrites(
-    candidate: CodemodCandidate,
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-    *,
-    statement_selector: _ClassStatementSelector,
-    rationale: str,
-) -> tuple[PlannedSourceRewrite, ...]:
-    nodes_by_target_id = AstTargetNodeIndex(
-        source_index,
-        source_by_path,
-    ).nodes_by_target_identifier()
-    rewrites: list[PlannedSourceRewrite] = []
-    for target_id in candidate.target_ids:
-        target = source_index.target_by_id.get(target_id)
-        node = nodes_by_target_id.get(target_id)
-        if target is None or not isinstance(node, ast.ClassDef):
-            continue
-        statements = statement_selector(node)
-        if not statements:
-            continue
-        source = source_by_path.get(target.file_path)
-        if source is None:
-            continue
-        geometry = SourceTextGeometry(source)
-        class_start, class_end = geometry.node_span_offsets(SourceNodeSpan(node))
-        replacements = tuple(
-            SourceTextSpanReplacement.from_offsets(
-                start_offset=start,
-                end_offset=end,
-                replacement_source="",
-            )
-            for statement in statements
-            for start, end in (geometry.node_span_offsets(SourceNodeSpan(statement)),)
-        )
-        rewrites.append(
-            PlannedSourceRewrite(
-                target_id=target_id,
-                replacement_source=geometry.source_with_replacements_in_span(
-                    class_start,
-                    class_end,
-                    replacements,
-                ),
-                rationale=rationale,
-            )
-        )
-    return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
-
-
-def _derivable_detector_declaration_assignments(
-    node: ast.ClassDef,
-    detector_ids: frozenset[str],
-) -> tuple[ast.stmt, ...]:
-    return DetectorDeclarationSelector.select_for_detector_ids(node, detector_ids)
-
-
-def _class_declares_finding_spec(node: ast.ClassDef) -> bool:
-    return any(
-        isinstance(statement, ast.Assign)
-        and any(_name_id(target) == "finding_spec" for target in statement.targets)
-        for statement in node.body
-    )
-
-
-def _has_derived_candidate_collector_base(node: ast.ClassDef) -> bool:
-    return bool(
-        {
-            "DerivedCandidateCollectorMixin",
-            "ModuleCollectorCandidateDetector",
-            "ConfiguredModuleCollectorCandidateDetector",
-            "CrossModuleCollectorCandidateDetector",
-            "ConfiguredCrossModuleCollectorCandidateDetector",
-        }
-        & {AstExpressionProjection(base).base_name() for base in node.bases}
-    )
-
-
-@dataclass(frozen=True)
-class DetectorClassNameStem:
-    """Nominal parse result for detector class-name conventions."""
-
-    stem: str
-    value: str
-
-    pattern: ClassVar[re.Pattern[str]] = re.compile(r"^(?P<stem>.+)Detector$")
-
-    @classmethod
-    def parse(cls, class_name: str) -> "DetectorClassNameStem | None":
-        match = cls.pattern.fullmatch(class_name)
-        if match is None:
-            return None
-        stem = match.group("stem")
-        return cls(
-            stem=stem,
-            value=re.sub(r"(?<!^)(?=[A-Z])", "_", stem).lower(),
-        )
-
-
-def _detector_id_from_class_name(class_name: str) -> str | None:
-    class_name_stem = DetectorClassNameStem.parse(class_name)
-    if class_name_stem is None:
-        return None
-    return class_name_stem.value
-
-
-def _candidate_collector_name_from_class_name(class_name: str) -> str | None:
-    detector_id = _detector_id_from_class_name(class_name)
-    return None if detector_id is None else f"_{detector_id}_candidates"
 
 
 @dataclass(frozen=True)
