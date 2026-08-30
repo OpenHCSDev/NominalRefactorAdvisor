@@ -10353,7 +10353,6 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "--codemod-plan",
             "codemod-plan.json",
             "--codemod-preflight",
-            "--codemod-diff",
             "--codemod-apply",
             "--fail-on-calibration-regression",
             "--exclude-pattern",
@@ -10377,7 +10376,6 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.use_parse_cache is False
     assert args.codemod_plan == Path("codemod-plan.json")
     assert args.codemod_preflight is True
-    assert args.codemod_diff is True
     assert args.codemod_apply is True
     assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
@@ -10430,12 +10428,11 @@ def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:
     assert simulation is CodemodExecutionMode.SIMULATE
     assert simulation.requested is True
     assert simulation.unified_diff_requested is True
-    assert simulation.diff_text_requested is False
     assert simulation.applies_changes is False
 
     with pytest.raises(SystemExit):
         CodemodExecutionMode.from_namespace(
-            parser.parse_args(["--codemod-diff", "--codemod-apply"]),
+            parser.parse_args(["--codemod-preflight", "--codemod-apply"]),
             parser,
         )
     with pytest.raises(SystemExit):

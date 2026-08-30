@@ -454,7 +454,7 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "Scan paths, synthesize executable finding-backed codemod DSL "
                 "recipes, emit the synthesis report, and exit. Combine with "
-                "--codemod-simulate, --codemod-diff, or --codemod-apply to "
+                "--codemod-simulate or --codemod-apply to "
                 "execute the synthesized batch in the same scan."
             ),
         ),
@@ -500,11 +500,6 @@ _CLI_ARGUMENT_SPECS = (
                 "against scanned paths, emit exact selected target source spans, "
                 "and exit. Use '-' to read the selector from stdin."
             ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-diff",),
-            action="store_true",
-            help="Emit a unified diff for all currently planned codemod rewrites.",
         ),
         CliArgumentSpec(
             flags=("--codemod-preflight",),
@@ -2377,8 +2372,8 @@ class CodemodCliExecution(
     """Run the CLI codemod simulation/apply phase through plan-level DSL APIs."""
 
     source_snapshot_error_message: ClassVar[str] = (
-        "--codemod-diff/--codemod-preflight/--codemod-simulate/"
-        "--codemod-apply require a codemod plan"
+        "--codemod-preflight/--codemod-simulate/--codemod-apply require a "
+        "codemod plan"
     )
     parser: argparse.ArgumentParser
     args: argparse.Namespace
@@ -2503,11 +2498,6 @@ class CodemodCliExecution(
                 )
             )
         else:
-            if self.execution_request.mode.diff_text_requested:
-                print(
-                    snapshot.unified_diff(simulation),
-                    end="",
-                )
             print(format_architecture_guard_markdown(architecture_guard_report))
         return 1
 
@@ -2562,11 +2552,6 @@ class CodemodCliExecution(
                     indent=2,
                 )
             )
-        elif self.execution_request.mode.diff_text_requested:
-            print(
-                snapshot.unified_diff(simulation),
-                end="",
-            )
         else:
             print(
                 "Codemod apply complete: "
@@ -2596,7 +2581,6 @@ class CodemodExecutionMode(Enum):
 
     NONE = "none"
     PREFLIGHT = "preflight"
-    DIFF = "diff"
     SIMULATE = "simulate"
     APPLY = "apply"
 
@@ -2609,7 +2593,6 @@ class CodemodExecutionMode(Enum):
         selected = tuple(
             mode
             for mode, supplied in (
-                (cls.DIFF, args.codemod_diff),
                 (cls.PREFLIGHT, args.codemod_preflight),
                 (cls.SIMULATE, args.codemod_simulate),
                 (cls.APPLY, args.codemod_apply),
@@ -2618,8 +2601,8 @@ class CodemodExecutionMode(Enum):
         )
         if len(selected) > 1:
             parser.error(
-                "--codemod-diff, --codemod-preflight, --codemod-simulate, and "
-                "--codemod-apply are mutually exclusive"
+                "--codemod-preflight, --codemod-simulate, and --codemod-apply "
+                "are mutually exclusive"
             )
         return selected[0] if selected else cls.NONE
 
@@ -2637,11 +2620,7 @@ class CodemodExecutionMode(Enum):
 
     @property
     def unified_diff_requested(self) -> bool:
-        return self in (type(self).DIFF, type(self).SIMULATE)
-
-    @property
-    def diff_text_requested(self) -> bool:
-        return self is type(self).DIFF
+        return self is type(self).SIMULATE
 
     def json_report_requested(
         self,
@@ -2863,11 +2842,6 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
             simulation = finding_recipe_plan.simulate_snapshot(snapshot)
             unified_diff = snapshot.unified_diff(simulation.simulation)
             applied = self.apply_synthesized_plan(simulation)
-            if self.execution_mode.diff_text_requested and not self.args.json:
-                print(unified_diff, end="")
-                return CodemodSynthesisExitCodeAuthority(
-                    simulation.is_clean
-                ).exit_code()
             payload = {
                 **simulation.to_dict(),
                 "applied": applied,
@@ -2923,11 +2897,6 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
             simulation = report.finding_plan.simulate_snapshot(snapshot)
             unified_diff = snapshot.unified_diff(simulation.simulation)
             applied = self.apply_synthesized_plan(simulation)
-            if self.execution_mode.diff_text_requested and not self.args.json:
-                print(unified_diff, end="")
-                return CodemodSynthesisExitCodeAuthority(
-                    simulation.is_clean
-                ).exit_code()
             payload = {
                 **report.to_dict(),
                 "simulation_result": simulation.to_dict(),
