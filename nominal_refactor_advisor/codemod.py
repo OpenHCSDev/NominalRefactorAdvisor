@@ -555,8 +555,6 @@ class SourceNodeDecoratorPolicy(StrEnum):
     INCLUDE = "include"
 
 
-OLD_SOURCE_PAYLOAD_FIELD = "old_source"
-NEW_SOURCE_PAYLOAD_FIELD = "new_source"
 RECIPES_PAYLOAD_FIELD = "recipes"
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
 STAGES_PAYLOAD_FIELD = "stages"
@@ -1925,13 +1923,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
         )
 
     def to_dict(self) -> JsonObject:
-        return JsonObject(
-            dict(
-                item
-                for binding in self.payload_bindings()
-                for item in binding.payload_items(self)
-            )
-        )
+        return self.payload_bindings().payload(self)
 
 
 @dataclass(frozen=True)
@@ -2742,11 +2734,7 @@ class SelectionCountExpectation:
                 f"Unsupported selection_count field(s): {', '.join(unknown_fields)}"
             )
         expectation = cls(
-            **{
-                key: value
-                for binding in cls.payload_bindings()
-                for key, value in binding.constructor_kwargs(payload).items()
-            }
+            **cls.payload_bindings().constructor_kwargs(payload)
         )
         expectation.validate_definition()
         return expectation
@@ -2785,14 +2773,7 @@ class SelectionCountExpectation:
             )
 
     def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                key: value
-                for binding in self.payload_bindings()
-                for key, value in binding.payload_items(self)
-                if value is not None
-            }
-        )
+        return self.payload_bindings().payload(self, omit_none=True)
 
 
 class PayloadValueCodec(Generic[PayloadValueT], ABC):
@@ -3300,6 +3281,29 @@ class PayloadBindingSet(
     def __add__(self, other: Self) -> Self:
         return type(self)((*self, *other))
 
+    def constructor_kwargs(
+        self,
+        payload: Mapping[str, JsonValue],
+    ) -> dict[str, PayloadValueT]:
+        constructor_kwargs: dict[str, PayloadValueT] = {}
+        for binding in self:
+            constructor_kwargs.update(binding.constructor_kwargs(payload))
+        return constructor_kwargs
+
+    def payload(
+        self,
+        owner: PayloadOwnerT,
+        *,
+        omit_none: bool = False,
+    ) -> JsonObject:
+        payload = {
+            key: value
+            for binding in self
+            for key, value in binding.payload_items(owner)
+            if not omit_none or value is not None
+        }
+        return JsonObject(payload)
+
     @staticmethod
     def require_unique_binding_names(
         bindings: tuple[
@@ -3361,10 +3365,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
         cls,
         payload: Mapping[str, JsonValue],
     ) -> "CodemodTargetSelector":
-        constructor_kwargs: dict[str, JsonValue] = {}
-        for binding in cls.payload_bindings:
-            constructor_kwargs.update(binding.constructor_kwargs(payload))
-        return cls(**constructor_kwargs)
+        return cls(**cls.payload_bindings.constructor_kwargs(payload))
 
     def select(self, context: CodemodSelectorContext) -> CodemodTargetSelection:
         return CodemodTargetSelection(self.target_ids(context))
@@ -3376,11 +3377,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
         }
 
     def selector_payload(self) -> JsonObject:
-        return {
-            key: value
-            for binding in type(self).payload_bindings
-            for key, value in binding.payload_items(self)
-        }
+        return type(self).payload_bindings.payload(self)
 
     @abstractmethod
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -3925,11 +3922,7 @@ class CodemodPayload:
 
     def source_target(self) -> SourceRewriteTarget:
         return SourceRewriteTarget(
-            **{
-                key: value
-                for binding in SourceRewriteTarget.payload_bindings()
-                for key, value in binding.constructor_kwargs(self.fields).items()
-            }
+            **SourceRewriteTarget.payload_bindings().constructor_kwargs(self.fields)
         )
 
 
@@ -3941,14 +3934,21 @@ class RecipeCallReplacement(SourceRewriteTargetReference):
     new_source: str
 
     @classmethod
+    def payload_bindings(
+        cls,
+    ) -> PayloadBindingSet["RecipeCallReplacement", str]:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            old_source=RequiredStringPayloadValueCodec(),
+            new_source=RequiredStringPayloadValueCodec(),
+        )
+
+    @classmethod
     def from_json_value(cls, value: JsonValue) -> "RecipeCallReplacement":
-        if not isinstance(value, Mapping):
-            raise ValueError("Call replacement entries must be objects")
-        payload = CodemodPayload(value)
+        payload = CodemodPayload.from_json_value(value, role="call replacement")
         replacement = cls(
-            target=SourceRewriteTarget.from_mapping(value),
-            old_source=payload.required_string(OLD_SOURCE_PAYLOAD_FIELD),
-            new_source=payload.required_string(NEW_SOURCE_PAYLOAD_FIELD),
+            target=payload.source_target(),
+            **cls.payload_bindings().constructor_kwargs(payload.fields),
         )
         payload.require_supported_fields(
             replacement.to_dict(),
@@ -3959,8 +3959,7 @@ class RecipeCallReplacement(SourceRewriteTargetReference):
     def to_dict(self) -> JsonObject:
         return {
             **self.target.to_dict(),
-            OLD_SOURCE_PAYLOAD_FIELD: self.old_source,
-            NEW_SOURCE_PAYLOAD_FIELD: self.new_source,
+            **type(self).payload_bindings().payload(self),
         }
 
     def line_replacement(
@@ -5049,13 +5048,10 @@ class RefactorRecipeOperation(
         target: SourceRewriteTarget,
         payload: CodemodPayload,
     ) -> "RefactorRecipeOperation":
-        constructor_kwargs: dict[str, object] = {}
-        for binding in cls.payload_bindings():
-            constructor_kwargs.update(binding.constructor_kwargs(payload.fields))
         return cls(
             target=target,
             rationale=payload.string_or_empty("rationale"),
-            **constructor_kwargs,
+            **cls.payload_bindings().constructor_kwargs(payload.fields),
         )
 
     @classmethod
@@ -5063,12 +5059,7 @@ class RefactorRecipeOperation(
         return PayloadBindingSet()
 
     def operation_payload(self) -> JsonObject:
-        return {
-            key: value
-            for binding in type(self).payload_bindings()
-            for key, value in binding.payload_items(self)
-            if value is not None
-        }
+        return type(self).payload_bindings().payload(self, omit_none=True)
 
     @abstractmethod
     def source_edits(
