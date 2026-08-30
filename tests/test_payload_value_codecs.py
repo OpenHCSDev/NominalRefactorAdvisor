@@ -8,6 +8,8 @@ from nominal_refactor_advisor import codemod as codemod_module
 from nominal_refactor_advisor.codemod import (
     AuthorityClaimPayloadValueCodec,
     BooleanPayloadValueCodec,
+    CodemodPayload,
+    CodemodPayloadRole,
     CodemodTargetSelector,
     DefaultedStringPayloadValueCodec,
     IntegerPayloadValueCodec,
@@ -25,7 +27,6 @@ from nominal_refactor_advisor.codemod import (
     ReplacementImportPayloadValueCodec,
     SelectionCountExpectation,
     SelectionCountPayloadValueCodec,
-    SelectorArrayPayloadValueCodec,
     SelectorObjectPayloadValueCodec,
     SourceIndexTargetSelector,
     StringArrayPayloadValueCodec,
@@ -92,7 +93,7 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         (ObjectPayloadValueCodec(), {"owner": "AlphaAuthority"}),
         (NodeKindArrayPayloadValueCodec(), (AstTargetNodeKind.FUNCTION,)),
         (SelectorObjectPayloadValueCodec(), selector),
-        (SelectorArrayPayloadValueCodec(), (selector,)),
+        (PayloadRecordArrayValueCodec(CodemodTargetSelector), (selector,)),
         (
             PayloadRecordArrayValueCodec(RecipeCallReplacement),
             (call_replacement,),
@@ -113,6 +114,24 @@ def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
     assert IntegerPayloadValueCodec().serialize(None) is None
     with pytest.raises(TypeError, match="MovedSymbolImportPolicy"):
         ReplacementImportPayloadValueCodec().serialize("from pkg import value")
+
+
+def test_payload_roles_own_boundary_diagnostics() -> None:
+    with pytest.raises(ValueError, match="target selector must be an object"):
+        CodemodPayload.from_json_value(
+            (),
+            role=CodemodPayloadRole.TARGET_SELECTOR,
+        )
+
+    payload = CodemodPayload.from_json_value(
+        {"legacy": True},
+        role=CodemodPayloadRole.REFACTOR_RECIPE,
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported refactor recipe field\(s\): 'legacy'",
+    ):
+        payload.require_supported_fields({})
 
 
 def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:

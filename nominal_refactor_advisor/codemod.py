@@ -31,7 +31,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclass_fields
-from enum import StrEnum
+from enum import Enum, StrEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
@@ -168,6 +168,34 @@ class CodemodPayloadRecord(CodemodJsonReport, ABC):
     @abstractmethod
     def from_json_value(cls, value: JsonValue) -> Self:
         raise NotImplementedError
+
+
+class CodemodPayloadRole(Enum):
+    """Nominal owner of one codemod payload boundary's diagnostics."""
+
+    SOURCE_REWRITE_CONTRIBUTOR = "source rewrite contributor"
+    ARCHITECTURE_GUARD = "architecture guard"
+    TARGET_SELECTOR = "target selector"
+    CALL_REPLACEMENT = "call replacement"
+    REFACTOR_RECIPE_OPERATION = "refactor recipe operation"
+    REFACTOR_RECIPE = "refactor recipe"
+    PLAN_DOCUMENT = "plan document"
+    PLAN_SEQUENCE = "plan sequence"
+
+    def object_fields(self, value: JsonValue) -> Mapping[str, JsonValue]:
+        """Read an object payload or raise this boundary's own diagnostic."""
+
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{self.value} must be an object")
+        return cast(Mapping[str, JsonValue], value)
+
+    def unsupported_fields_error(self, fields: tuple[str, ...]) -> ValueError:
+        """Build this boundary's unsupported-field diagnostic."""
+
+        return ValueError(
+            f"Unsupported {self.value} field(s): "
+            f"{', '.join(repr(field) for field in fields)}"
+        )
 
 
 class RewriteOperation(StrEnum):
@@ -778,7 +806,7 @@ class SourceEditOrigin:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceRewriteContributor(SourceEditOrigin):
+class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
     """Nominal plan-item provenance plus its executable source precondition."""
 
     file_path: str
@@ -886,32 +914,32 @@ class SourceRewriteContributor(SourceEditOrigin):
             )
 
     @classmethod
-    def from_mapping(
+    def from_json_value(
         cls,
-        payload: Mapping[str, JsonValue],
+        value: JsonValue,
     ) -> "SourceRewriteContributor":
-        reader = CodemodPayload(payload)
-        plan_item_index = payload.get("plan_item_index")
-        line = payload.get("line")
-        end_line = payload.get("end_line")
+        payload = CodemodPayload.from_json_value(
+            value,
+            role=CodemodPayloadRole.SOURCE_REWRITE_CONTRIBUTOR,
+        )
+        plan_item_index = payload.fields.get("plan_item_index")
+        line = payload.fields.get("line")
+        end_line = payload.fields.get("end_line")
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
             for value in (plan_item_index, line, end_line)
         ):
             raise ValueError("Source rewrite contributor geometry must be non-negative")
         contributor = cls(
-            recipe_id=reader.required_string("recipe_id"),
-            plan_item_declaration=reader.required_string("plan_item_declaration"),
+            recipe_id=payload.required_string("recipe_id"),
+            plan_item_declaration=payload.required_string("plan_item_declaration"),
             plan_item_index=plan_item_index,
-            file_path=reader.required_string("file_path"),
+            file_path=payload.required_string("file_path"),
             line=line,
             end_line=end_line,
-            source_hash=reader.required_string("source_hash"),
+            source_hash=payload.required_string("source_hash"),
         )
-        reader.require_supported_fields(
-            contributor.to_dict(),
-            role="source rewrite contributor",
-        )
+        payload.require_supported_fields(contributor.to_dict())
         return contributor
 
     def to_dict(self) -> JsonObject:
@@ -1018,10 +1046,10 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
     def from_json_value(cls, value: JsonValue) -> "ArchitectureGuardRule":
         payload = CodemodPayload.from_json_value(
             value,
-            role="architecture guard",
+            role=CodemodPayloadRole.ARCHITECTURE_GUARD,
         )
         rule = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(rule.to_dict(), role="architecture guard")
+        payload.require_supported_fields(rule.to_dict())
         return rule
 
     def applies_to_file(self, file_path: str) -> bool:
@@ -1829,8 +1857,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
 
     @classmethod
     def from_mapping(cls, fields: Mapping[str, JsonValue]) -> "SourceRewriteTarget":
-        payload = CodemodPayload(fields)
-        return payload.source_target()
+        return cls(**cls.payload_bindings().constructor_kwargs(fields))
 
     def optional_file_path(self, source_index: SourceIndex) -> str | None:
         if self.file_path is None:
@@ -3046,78 +3073,12 @@ class SelectorObjectPayloadValueCodec(PayloadValueCodec["CodemodTargetSelector"]
         field_name: str,
     ) -> "CodemodTargetSelector":
         value = ObjectPayloadValueCodec().read(payload, field_name)
-        return CodemodTargetSelector.from_dict(value)
+        return CodemodTargetSelector.from_json_value(value)
 
     def serialize(self, value: object) -> JsonValue:
         if not isinstance(value, CodemodTargetSelector):
             raise TypeError("selector payload codec requires a target selector")
         return value.to_dict()
-
-
-@dataclass(frozen=True)
-class SelectorArrayPayloadValueCodec(
-    PayloadValueCodec[tuple["CodemodTargetSelector", ...]]
-):
-    """Optional array of registered target-selector payloads."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> tuple["CodemodTargetSelector", ...]:
-        value = payload.get(field_name)
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"Expected selector array field {field_name!r}")
-        return tuple(
-            CodemodTargetSelector.from_dict(ObjectPayloadValueCodec().serialize(item))
-            for item in value
-        )
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, (list, tuple)) or not all(
-            isinstance(item, CodemodTargetSelector) for item in value
-        ):
-            raise TypeError("selector-array payload codec requires target selectors")
-        return tuple(item.to_dict() for item in value)
-
-
-@dataclass(frozen=True)
-class SourceRewriteContributorArrayPayloadValueCodec(
-    PayloadValueCodec[tuple[SourceRewriteContributor, ...]]
-):
-    """Optional array of source-revision-checked rewrite contributors."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> tuple[SourceRewriteContributor, ...]:
-        value = payload.get(field_name)
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"Expected contributor array field {field_name!r}")
-        contributors: list[SourceRewriteContributor] = []
-        for item in value:
-            if not isinstance(item, Mapping):
-                raise ValueError(
-                    f"Expected contributor objects in field {field_name!r}"
-                )
-            contributors.append(SourceRewriteContributor.from_mapping(item))
-        return tuple(contributors)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, (list, tuple)) or not all(
-            isinstance(item, SourceRewriteContributor) for item in value
-        ):
-            raise TypeError(
-                "contributor-array payload codec requires "
-                "SourceRewriteContributor values"
-            )
-        return tuple(item.to_dict() for item in value)
-
 
 @dataclass(frozen=True)
 class PayloadRecordArrayValueCodec(
@@ -3403,7 +3364,11 @@ SelectorPayloadBindings: TypeAlias = PayloadBindingSet[
 ]
 
 
-class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
+class CodemodTargetSelector(
+    CodemodPayloadRecord,
+    ABC,
+    metaclass=AutoRegisterMeta,
+):
     """Semantic selector that resolves to source-index target ids."""
 
     __registry__: ClassVar[dict[str, type["CodemodTargetSelector"]]] = {}
@@ -3415,18 +3380,22 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet()
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, JsonValue]) -> "CodemodTargetSelector":
-        selector_key = RequiredStringPayloadValueCodec().read(payload, "selector")
+    def from_json_value(cls, value: JsonValue) -> "CodemodTargetSelector":
+        payload = CodemodPayload.from_json_value(
+            value,
+            role=CodemodPayloadRole.TARGET_SELECTOR,
+        )
+        selector_key = RequiredStringPayloadValueCodec().read(
+            payload.fields,
+            "selector",
+        )
         if selector_key is None:
             raise ValueError("Expected non-empty string field 'selector'")
         selector_type = cls.__registry__.get(selector_key)
         if selector_type is None:
             raise ValueError(f"Unsupported target selector: {selector_key}")
-        selector = selector_type.from_selector_payload(payload)
-        CodemodPayload(payload).require_supported_fields(
-            selector.to_dict(),
-            role=f"{selector_key} selector",
-        )
+        selector = selector_type.from_selector_payload(payload.fields)
+        payload.require_supported_fields(selector.to_dict())
         return selector
 
     @classmethod
@@ -3484,9 +3453,9 @@ class TargetSetExpressionSelector(CodemodTargetSelector):
     exclude: tuple[CodemodTargetSelector, ...] = ()
     payload_bindings: ClassVar[SelectorPayloadBindings] = (
         PayloadBindingSet.from_field_codecs(
-            include=SelectorArrayPayloadValueCodec(),
-            require=SelectorArrayPayloadValueCodec(),
-            exclude=SelectorArrayPayloadValueCodec(),
+            include=PayloadRecordArrayValueCodec(CodemodTargetSelector),
+            require=PayloadRecordArrayValueCodec(CodemodTargetSelector),
+            exclude=PayloadRecordArrayValueCodec(CodemodTargetSelector),
         )
     )
 
@@ -3933,27 +3902,26 @@ class CodemodPayload:
     """Typed reader and declaration-derived field gate for codemod payloads."""
 
     fields: Mapping[str, JsonValue]
+    role: CodemodPayloadRole
 
     @classmethod
-    def from_json_value(cls, value: JsonValue, *, role: str) -> "CodemodPayload":
-        if not isinstance(value, Mapping):
-            raise ValueError(f"{role} must be an object")
-        return cls(cast(Mapping[str, JsonValue], value))
+    def from_json_value(
+        cls,
+        value: JsonValue,
+        *,
+        role: CodemodPayloadRole,
+    ) -> "CodemodPayload":
+        return cls(role.object_fields(value), role)
 
     def require_supported_fields(
         self,
         canonical_payload: Mapping[str, JsonValue],
-        *,
-        role: str,
     ) -> None:
         """Reject fields absent from the nominal declaration's own projection."""
 
         unsupported_fields = tuple(sorted(set(self.fields) - set(canonical_payload)))
         if unsupported_fields:
-            raise ValueError(
-                f"Unsupported {role} field(s): "
-                f"{', '.join(repr(field) for field in unsupported_fields)}"
-            )
+            raise self.role.unsupported_fields_error(unsupported_fields)
 
     def required_string(self, field_name: str) -> str:
         value = self.fields.get(field_name)
@@ -4014,15 +3982,15 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "RecipeCallReplacement":
-        payload = CodemodPayload.from_json_value(value, role="call replacement")
+        payload = CodemodPayload.from_json_value(
+            value,
+            role=CodemodPayloadRole.CALL_REPLACEMENT,
+        )
         replacement = cls(
             target=payload.source_target(),
             **cls.payload_bindings().constructor_kwargs(payload.fields),
         )
-        payload.require_supported_fields(
-            replacement.to_dict(),
-            role="call replacement",
-        )
+        payload.require_supported_fields(replacement.to_dict())
         return replacement
 
     def to_dict(self) -> JsonObject:
@@ -5080,7 +5048,7 @@ class RefactorRecipeOperation(
         return cls.from_dict(
             CodemodPayload.from_json_value(
                 value,
-                role="refactor recipe operation",
+                role=CodemodPayloadRole.REFACTOR_RECIPE_OPERATION,
             ).fields
         )
 
@@ -5089,7 +5057,10 @@ class RefactorRecipeOperation(
         cls,
         payload: Mapping[str, JsonValue],
     ) -> "RefactorRecipeOperation":
-        plan_payload = CodemodPayload(payload)
+        plan_payload = CodemodPayload(
+            payload,
+            CodemodPayloadRole.REFACTOR_RECIPE_OPERATION,
+        )
         operation_key = plan_payload.required_string("operation")
         operation_type = cls.__registry__.get(operation_key)
         if operation_type is None or not issubclass(operation_type, cls):
@@ -5098,10 +5069,7 @@ class RefactorRecipeOperation(
             plan_payload.source_target(),
             plan_payload,
         )
-        plan_payload.require_supported_fields(
-            operation.to_dict(),
-            role=f"{operation_key} operation",
-        )
+        plan_payload.require_supported_fields(operation.to_dict())
         return operation
 
     def to_dict(self) -> JsonObject:
@@ -5261,7 +5229,7 @@ class ReplaceTargetOperation(RefactorRecipeOperation):
         del cls
         return PayloadBindingSet.from_field_codecs(
             replacement_source=RequiredStringPayloadValueCodec(),
-            contributors=SourceRewriteContributorArrayPayloadValueCodec(),
+            contributors=PayloadRecordArrayValueCodec(SourceRewriteContributor),
         )
 
     def source_edits(
@@ -10944,9 +10912,12 @@ class RefactorRecipe(CodemodPayloadRecord):
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "RefactorRecipe":
-        payload = CodemodPayload.from_json_value(value, role="refactor recipe")
+        payload = CodemodPayload.from_json_value(
+            value,
+            role=CodemodPayloadRole.REFACTOR_RECIPE,
+        )
         recipe = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(recipe.to_dict(), role="refactor recipe")
+        payload.require_supported_fields(recipe.to_dict())
         return recipe
 
     @classmethod
@@ -11338,9 +11309,12 @@ class CodemodPlanDocument(CodemodPayloadRecord):
         cls,
         value: JsonValue,
     ) -> "CodemodPlanDocument":
-        payload = CodemodPayload.from_json_value(value, role="plan document")
+        payload = CodemodPayload.from_json_value(
+            value,
+            role=CodemodPayloadRole.PLAN_DOCUMENT,
+        )
         document = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(document.to_dict(), role="plan document")
+        payload.require_supported_fields(document.to_dict())
         return document
 
     @property
@@ -11477,9 +11451,12 @@ class CodemodPlanSequence(CodemodPayloadRecord):
     def from_json_value(cls, value: JsonValue) -> "CodemodPlanSequence":
         if not cls.is_sequence_payload(value):
             return cls.from_document(CodemodPlanDocument.from_json_value(value))
-        payload = CodemodPayload.from_json_value(value, role="plan sequence")
+        payload = CodemodPayload.from_json_value(
+            value,
+            role=CodemodPayloadRole.PLAN_SEQUENCE,
+        )
         sequence = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(sequence.to_dict(), role="plan sequence")
+        payload.require_supported_fields(sequence.to_dict())
         return sequence
 
     @classmethod

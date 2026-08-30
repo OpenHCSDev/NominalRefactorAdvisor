@@ -14,6 +14,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipeOperation,
     RecipeCallReplacement,
     RequiredStringPayloadValueCodec,
+    SourceRewriteContributor,
 )
 
 
@@ -135,6 +136,7 @@ def test_payload_records_own_their_wire_schema() -> None:
     }
 
     assert issubclass(RefactorRecipeOperation, CodemodPayloadRecord)
+    assert issubclass(SourceRewriteContributor, CodemodPayloadRecord)
     for record_type, binding_names in expected_binding_names.items():
         assert issubclass(record_type, CodemodPayloadRecord)
         assert tuple(

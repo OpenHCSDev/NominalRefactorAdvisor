@@ -14,7 +14,7 @@ import multiprocessing
 import os
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
@@ -1391,10 +1391,7 @@ def load_codemod_plan_validation_payload(path: Path) -> JsonObject:
 def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
     """Load one registry-backed codemod target selector from JSON."""
 
-    payload = JsonDocumentSource(path).load()
-    if not isinstance(payload, Mapping):
-        raise ValueError("codemod selector JSON must be an object")
-    return CodemodTargetSelector.from_dict(cast(Mapping[str, JsonValue], payload))
+    return CodemodTargetSelector.from_json_value(JsonDocumentSource(path).load())
 
 
 def write_cli_json_artifact(path: Path | None, payload: JsonObject) -> None:
