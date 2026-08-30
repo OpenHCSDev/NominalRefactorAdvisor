@@ -1000,12 +1000,27 @@ class CompactProjectionBuildRequest:
 
 
 @dataclass(frozen=True)
+class CompactFamilyProjectionBatch:
+    """One AST-free family projection and its derived content identity."""
+
+    family: type[CollectedFamily]
+    items: tuple[object, ...]
+    content_signature: str | None = None
+
+    def __post_init__(self) -> None:
+        if any(
+            CompactGlobalProjectionAccumulator._retains_ast(item)
+            for item in self.items
+        ):
+            raise TypeError(f"{self.family.__name__} projection retains an AST")
+
+
+@dataclass(frozen=True)
 class CompactProjectionBuildResult:
     """AST-free result returned by one cold projection worker."""
 
     path: Path
-    runtime_projections: tuple[tuple[type[CollectedFamily], tuple[object, ...]], ...]
-    runtime_projection_signatures: tuple[tuple[type[CollectedFamily], str], ...]
+    projection_batches: tuple[CompactFamilyProjectionBatch, ...]
     cache_bundle_complete: bool
     local_findings: tuple[RefactorFinding, ...]
     local_analysis_seconds: float
@@ -1019,17 +1034,20 @@ def build_compact_projection_shard(
 
     started = perf_counter()
     source = request.source
-    runtime_projections: list[tuple[type[CollectedFamily], tuple[object, ...]]] = []
-    runtime_projection_signatures: list[tuple[type[CollectedFamily], str]] = []
+    projection_batches: list[CompactFamilyProjectionBatch] = []
 
     def add_runtime_projection(
         family: type[CollectedFamily],
         projections: tuple[object, ...],
         signature: str | None,
     ) -> None:
-        runtime_projections.append((family, projections))
-        if signature is not None:
-            runtime_projection_signatures.append((family, signature))
+        projection_batches.append(
+            CompactFamilyProjectionBatch(
+                family=family,
+                items=projections,
+                content_signature=signature,
+            )
+        )
 
     local_findings: tuple[RefactorFinding, ...] = ()
     local_analysis_seconds = 0.0
@@ -1134,13 +1152,6 @@ def build_compact_projection_shard(
                     if projections_list is None:
                         continue
                     projections = tuple(projections_list)
-                    if any(
-                        CompactGlobalProjectionAccumulator._retains_ast(projection)
-                        for projection in projections
-                    ):
-                        raise TypeError(
-                            f"{family.__name__} source projection retains an AST"
-                        )
                     if family not in demand_by_family:
                         projection_signature = (
                             source.store_items(family, projections)
@@ -1188,11 +1199,6 @@ def build_compact_projection_shard(
                     if family in demand_by_family
                     else full_projections
                 )
-            if any(
-                CompactGlobalProjectionAccumulator._retains_ast(projection)
-                for projection in projections
-            ):
-                raise TypeError(f"{family.__name__} runtime projection retains an AST")
             # The family cache remains the authority for later scans.  Keep the
             # value already constructed by this worker for the current join so
             # the parent does not immediately reopen every newly written file.
@@ -1225,8 +1231,7 @@ def build_compact_projection_shard(
     release_module_analysis_memory(collect_cycles=False)
     return CompactProjectionBuildResult(
         path=source.path,
-        runtime_projections=tuple(runtime_projections),
-        runtime_projection_signatures=tuple(runtime_projection_signatures),
+        projection_batches=tuple(projection_batches),
         cache_bundle_complete=cache_bundle_complete,
         local_findings=local_findings,
         local_analysis_seconds=local_analysis_seconds,
@@ -1314,25 +1319,20 @@ class BoundedCompactProjectionManifest:
                 families.append(family)
         return tuple(families)
 
-    def add_runtime(
+    def add_runtime_batch(
         self,
-        family: type[CollectedFamily],
         source: CompactProjectionCacheSource,
-        projections: tuple[object, ...],
-        projection_signature: str | None = None,
+        batch: CompactFamilyProjectionBatch,
     ) -> None:
-        for projection in projections:
-            if CompactGlobalProjectionAccumulator._retains_ast(projection):
-                raise TypeError(f"{family.__name__} runtime projection retains an AST")
-        key = family, source.resolved_path_text
-        self.runtime_projections[key] = projections
+        key = batch.family, source.resolved_path_text
+        self.runtime_projections[key] = batch.items
         signature = (
-            projection_signature
-            if projection_signature is not None
-            else collected_family_items_content_signature(projections)
+            batch.content_signature
+            if batch.content_signature is not None
+            else collected_family_items_content_signature(batch.items)
         )
         self._source_projection_signatures[key] = signature
-        self._record_content_signature(source, family, signature)
+        self._record_content_signature(source, batch.family, signature)
 
     def _content_signature_index(
         self,
@@ -2203,13 +2203,10 @@ def analyze_compact_roots_with_cache(
                     module_findings,
                 ),
             )
-        projection_signatures = dict(result.runtime_projection_signatures)
-        for family, projections in result.runtime_projections:
-            projection_manifest.add_runtime(
-                family,
+        for batch in result.projection_batches:
+            projection_manifest.add_runtime_batch(
                 projection_source,
-                projections,
-                projection_signatures.get(family),
+                batch,
             )
         if not result.cache_bundle_complete:
             projection_manifest.cache_bundle_is_complete(projection_source)

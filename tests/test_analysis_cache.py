@@ -2552,7 +2552,7 @@ def test_source_native_projection_shard_skips_python_ast_construction(
     )
 
     assert [
-        (family, len(projections)) for family, projections in result.runtime_projections
+        (batch.family, len(batch.items)) for batch in result.projection_batches
     ] == [
         (RegistrationShapeFamily, 2),
         (ExportDictShapeFamily, 1),
@@ -2561,6 +2561,14 @@ def test_source_native_projection_shard_skips_python_ast_construction(
         (environment_detectors._EnvironmentBooleanModuleProjectionFamily, 1),
         (runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily, 1),
     ]
+
+
+def test_compact_family_projection_batch_rejects_ast_payloads() -> None:
+    with pytest.raises(TypeError, match="RegistrationShapeFamily projection"):
+        analysis_module.CompactFamilyProjectionBatch(
+            family=RegistrationShapeFamily,
+            items=(ast.parse("VALUE = 1\n"),),
+        )
 
 
 def test_source_local_detector_shard_skips_python_ast_when_exact(
@@ -2726,7 +2734,7 @@ def test_source_local_detector_does_not_switch_mixed_families_to_native(
         )
     )
 
-    assert [family for family, _items in result.runtime_projections] == [
+    assert [batch.family for batch in result.projection_batches] == [
         RegistrationShapeFamily,
         runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
     ]
@@ -2807,7 +2815,9 @@ def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
         )
     )
 
-    projections = dict(result.runtime_projections)
+    projections = {
+        batch.family: batch.items for batch in result.projection_batches
+    }
     boundary_projection = projections[boundary_family][0]
     assert {item.field_name for item in boundary_projection.declarations} == {
         "projected_axis_offsets"
@@ -3620,14 +3630,18 @@ def test_mixed_projection_shard_uses_only_python_ast(
         )
     )
 
-    assert [family for family, _ in result.runtime_projections] == [
+    assert [batch.family for batch in result.projection_batches] == [
         RegistrationShapeFamily,
         runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
     ]
     assert result.cache_bundle_complete
-    assert dict(result.runtime_projection_signatures) == {
-        family: ast_tools_module.collected_family_items_content_signature(projections)
-        for family, projections in result.runtime_projections
+    assert {
+        batch.family: batch.content_signature for batch in result.projection_batches
+    } == {
+        batch.family: ast_tools_module.collected_family_items_content_signature(
+            batch.items
+        )
+        for batch in result.projection_batches
     }
     assert (
         projection_source.load_content_signature(
