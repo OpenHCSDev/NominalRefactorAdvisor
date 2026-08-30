@@ -2985,36 +2985,12 @@ def _declared_field_extraction_sites(
 ) -> tuple[DeclaredFieldExtractionSite, ...]:
     sites: list[DeclaredFieldExtractionSite] = []
 
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-            self.function_stack: list[str] = []
-
-        @property
-        def owner_symbol(self) -> str:
-            if self.function_stack:
-                return ".".join((*self.class_stack, *self.function_stack))
-            if self.class_stack:
-                return ".".join(self.class_stack)
-            return "<module>"
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self.function_stack.append(node.name)
-            self.generic_visit(node)
-            self.function_stack.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
+    class Visitor(ClassFunctionStackNodeVisitor):
         def visit_Call(self, node: ast.Call) -> None:
             site = _declared_field_extraction_site(
                 module,
                 node,
-                self.owner_symbol,
+                self.qualname,
                 len(sites),
             )
             if site is not None:

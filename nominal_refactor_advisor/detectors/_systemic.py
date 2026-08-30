@@ -2786,7 +2786,6 @@ class NominalInstanceExplicitOrderingDetector(
     compact_shared_context_builder = staticmethod(
         CompactClassRepositoryContext.from_projections
     )
-    detector_id = "nominal_instance_explicit_ordering"
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Nominal declaration catalog uses explicit ordering instead of MRO",

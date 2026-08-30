@@ -386,22 +386,6 @@ class RefactorImpactRankingRequest:
         self._ranked_opportunity_cache[remaining_finding_ids] = ranked
         return ranked
 
-    def _grouped_findings(
-        self,
-        findings: tuple[RefactorFinding, ...],
-    ) -> OpportunityGroups:
-        grouped: OpportunityGroups = {}
-        for finding in findings:
-            finding_id = finding.stable_id
-            keys = self._keys_by_finding_id.get(finding_id)
-            if keys is None:
-                keys = self._keys_for_finding(finding)
-            for key in keys:
-                if key not in grouped:
-                    grouped[key] = []
-                grouped[key].append(finding)
-        return grouped
-
     @staticmethod
     def _finding_ids_for(findings: tuple[RefactorFinding, ...]) -> frozenset[str]:
         return frozenset(finding.stable_id for finding in findings)

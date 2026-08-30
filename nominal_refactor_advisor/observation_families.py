@@ -18,6 +18,7 @@ from .export_tools import PublicExportPolicy, derive_public_exports
 from .collection_algebra import sorted_tuple
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .native_syntax import NativePythonSyntaxIndex
+from .semantic_match import loaded_nominal_descendants
 
 from .observation_shapes import (
     BuilderCallShape,
@@ -53,7 +54,6 @@ from .ast_tools import (
     FunctionObservationSpec,
     ObservationShapeSpec,
     ParsedModule,
-    REGISTERED_TYPE_LINEAGE,
     RegisteredSpecCollectedFamily,
     ScopedAstObservation,
     SharedRegistryRootBase,
@@ -257,7 +257,7 @@ class FamilyGeneratingSpec(ABC):
 def _declared_family_spec_types() -> tuple[type[FamilyGeneratingSpec], ...]:
     ordered = [
         cast(type[FamilyGeneratingSpec], current)
-        for current in REGISTERED_TYPE_LINEAGE.descendant_types(FamilyGeneratingSpec)
+        for current in loaded_nominal_descendants(FamilyGeneratingSpec)
         if current.__dict__.get("family_specs")
     ]
     return sorted_tuple(

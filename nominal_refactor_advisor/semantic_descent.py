@@ -2159,11 +2159,7 @@ class SemanticDescentCertificate(SemanticRecord, ABC):
     """Nominal certificate emitted by one authority-projection relation leaf."""
 
     edge: SemanticAuthorityProjectionRelation
-
-    @property
-    @abstractmethod
-    def status(self) -> DescentStatus:
-        """Return the nominal result state owned by this certificate leaf."""
+    status: ClassVar[DescentStatus]
 
     def to_dict(self) -> dict[str, object]:
         payload = super().to_dict()
@@ -2175,12 +2171,9 @@ class SemanticDescentCertificate(SemanticRecord, ABC):
 class DescentCertificate(SemanticDescentCertificate):
     """Certificate for a mirror relation that lacks semantic descent."""
 
+    status = DescentStatus.MIRRORED_WITHOUT_DESCENT
     edge: MirrorEdge
     missing_derivation_path: str
-
-    @property
-    def status(self) -> DescentStatus:
-        return DescentStatus.MIRRORED_WITHOUT_DESCENT
 
     @classmethod
     def mirrored_without_descent(
@@ -2203,11 +2196,8 @@ class DescentCertificate(SemanticDescentCertificate):
 class SemanticDerivationCertificate(SemanticDescentCertificate):
     """Positive certificate preserving the source edges that prove descent."""
 
+    status = DescentStatus.DESCENDS_TO_AUTHORITY
     edge: SemanticDerivationEdge
-
-    @property
-    def status(self) -> DescentStatus:
-        return DescentStatus.DESCENDS_TO_AUTHORITY
 
     @property
     def proof_edges(self) -> tuple[AuthorityProofEdge, ...]:

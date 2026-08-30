@@ -1269,21 +1269,6 @@ def _is_direct_registered_descendant(
 
 
 class RegisteredTypeLineage:
-    def descendant_types(
-        self, root: type[_TRegistered]
-    ) -> tuple[type[_TRegistered], ...]:
-        seen: set[type] = set()
-        ordered: list[type[_TRegistered]] = []
-        queue = list(root.__subclasses__())
-        while queue:
-            current = queue.pop(0)
-            queue.extend(current.__subclasses__())
-            if current in seen:
-                continue
-            seen.add(current)
-            ordered.append(cast(type[_TRegistered], current))
-        return tuple(ordered)
-
     def ordered_registered_types(
         self,
         root: type[_TRegisteredType],

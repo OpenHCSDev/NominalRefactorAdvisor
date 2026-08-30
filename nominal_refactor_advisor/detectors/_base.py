@@ -7191,15 +7191,6 @@ class _RegistryProjectionSurfaceAnalyzer:
             None,
         )
 
-    def materialization_rule(
-        self, *, surface_name: str, surface_kind: str, projection_role: str
-    ) -> str:
-        return ProjectionSurfaceRoleCaseAuthority.materialization_rule(
-            surface_name=surface_name,
-            surface_kind=surface_kind,
-            projection_role=projection_role,
-        )
-
     def coverage_coordinates(
         self,
         *,
@@ -7295,7 +7286,7 @@ class _RegistryProjectionSurfaceAnalyzer:
             surface_kind=surface_kind,
             projection_role=projection_role,
         )
-        materialization_rule = self.materialization_rule(
+        materialization_rule = ProjectionSurfaceRoleCaseAuthority.materialization_rule(
             surface_name=surface_name,
             surface_kind=surface_kind,
             projection_role=projection_role,
