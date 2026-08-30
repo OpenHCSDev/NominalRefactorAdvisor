@@ -1225,59 +1225,6 @@ class TypingProtocolContractDetector(
 
 
 
-class OrchestrationHubDetector(
-    SourceSignalGatedIssueDetectorMixin,
-    CandidateFindingDetector[FunctionProfile],
-):
-    finding_spec = high_confidence_spec(
-        PatternId.STAGED_ORCHESTRATION,
-        "Oversized orchestration hub",
-        "One function is owning too many control branches, helper calls, and phase transitions at once. The architecture wants explicit staged boundaries so the orchestration surface remains nominal and legible.",
-        "explicit staged orchestration boundaries with named phase contracts",
-        "one owner centralizes many operational phases and helper families",
-        _SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-    )
-
-    @classmethod
-    def source_may_contain_finding(
-        cls,
-        module: SourceModule,
-        syntax_index: NativePythonSyntaxIndex,
-        config: DetectorConfig,
-    ) -> bool:
-        del cls, module
-        return any(
-            function.end_point.row - function.start_point.row + 1
-            >= config.min_orchestration_function_lines
-            for function in syntax_index.common_captures().get("function", ())
-        )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[FunctionProfile]:
-        return tuple(
-            (
-                profile
-                for profile in _function_profiles(module)
-                if profile.line_count >= config.min_orchestration_function_lines
-                and profile.branch_count >= config.min_orchestration_branches
-                and (profile.call_count >= config.min_orchestration_calls)
-            )
-        )
-
-    finding_renderer = CandidateFindingRenderer[FunctionProfile](
-        summary=lambda profile: f"`{profile.qualname}` concentrates {profile.line_count} lines, {profile.branch_count} branches, and {profile.call_count} calls across {profile.callee_family_count} callee families in one owner.",
-        evidence=lambda profile: (profile.evidence,),
-        scaffold=lambda profile: _orchestration_stage_scaffold(profile),
-        codemod_patch=lambda profile: _orchestration_stage_patch(profile),
-        metrics=lambda profile: OrchestrationMetrics(
-            function_line_count=profile.line_count,
-            branch_site_count=profile.branch_count,
-            call_site_count=profile.call_count,
-            parameter_count=len(profile.parameter_names),
-            callee_family_count=profile.callee_family_count,
-        ),
-    )
 
 
 

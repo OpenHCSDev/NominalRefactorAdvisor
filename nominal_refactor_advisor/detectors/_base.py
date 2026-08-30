@@ -572,9 +572,6 @@ class DetectorConfig:
         4,
         "Minimum live carrier-boundary sites before surfacing a local-wrapper containment failure.",
     )
-    min_orchestration_function_lines: int = 150
-    min_orchestration_branches: int = 15
-    min_orchestration_calls: int = 50
     min_shared_parameters: int = 5
     min_parameter_family_function_lines: int = 40
     excluded_pattern_ids: tuple = ()
@@ -9778,25 +9775,6 @@ def _witness_mixin_enforcement_patch(
         )
     )
     return f"# Collapse renamed semantic role slices {role_summary} into reusable mixins.\n# Normalize the leaf carriers onto the shared semantic base plus those mixins.\n# Use multiple inheritance when one carrier needs several orthogonal witness roles."
-
-
-def _orchestration_stage_scaffold(profile: FunctionProfile) -> str:
-    stage_context_name = (
-        f"{profile.qualname.split('.')[-1].title().replace('_', '')}StageContext"
-    )
-    return f"@dataclass(frozen=True)\nclass {stage_context_name}:\n    ...\n\ndef prepare_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\ndef execute_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\ndef finalize_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ..."
-
-
-def _orchestration_stage_patch(profile: FunctionProfile) -> str:
-    function_name = profile.qualname.split(".")[-1]
-    stage_context_name = f"{function_name.title().replace('_', '')}StageContext"
-    return (
-        f"# Extract a nominal stage context from `{function_name}`\n"
-        f"ctx = {stage_context_name}(...)\n"
-        f"prepared = prepare_{function_name}_stage(ctx)\n"
-        f"executed = execute_{function_name}_stage(prepared)\n"
-        f"return finalize_{function_name}_stage(executed)"
-    )
 
 
 def _authoritative_context_scaffold(

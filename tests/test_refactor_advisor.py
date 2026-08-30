@@ -7333,7 +7333,7 @@ def test_calibration_manifest_certifies_detector_expectations(
                                 "min_count": 1,
                             }
                         ],
-                        "forbidden_detectors": ["orchestration_hub"],
+                        "forbidden_detectors": ["string_dispatch"],
                         "max_scan_seconds": 20.0,
                     }
                 ]
@@ -8641,30 +8641,6 @@ def test_detects_typing_protocol_contracts(tmp_path: Path) -> None:
     assert "ContractName.register" in (finding.scaffold or "")
 
 
-
-def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
-    branch_body = "\n".join(
-        (
-            f"\n    if branch_{index}(request):\n        value = phase_{index}(value)\n    else:\n        value = fallback_{index}(value)\n    audit_{index}(value)\n".rstrip()
-            for index in range(12)
-        )
-    )
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        f"def orchestrate(request):\n    value = start(request)\n{branch_body}\n    finalized = finalize(value)\n    publish(finalized)\n    return finalized\n",
-    )
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_orchestration_function_lines=40,
-            min_orchestration_branches=10,
-            min_orchestration_calls=24,
-        ),
-    )
-    assert any(
-        (finding.pattern_id == PatternId.STAGED_ORCHESTRATION for finding in findings)
-    )
 
 
 
