@@ -11119,9 +11119,6 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "--codemod-preflight",
             "--codemod-diff",
             "--codemod-apply",
-            "--codemod-fixpoint",
-            "--codemod-fixpoint-max-iterations",
-            "4",
             "--fail-on-calibration-regression",
             "--exclude-pattern",
             "14",
@@ -11146,8 +11143,6 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.codemod_preflight is True
     assert args.codemod_diff is True
     assert args.codemod_apply is True
-    assert args.codemod_fixpoint is True
-    assert args.codemod_fixpoint_max_iterations == 4
     assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
     assert args.paths == ["nominal_refactor_advisor", "tests"]
@@ -11175,15 +11170,8 @@ def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:
             parser,
         )
     with pytest.raises(SystemExit):
-        CodemodExecutionMode.DIFF.require_valid(
-            parser,
-            fixpoint=True,
-            project_findings=False,
-        )
-    with pytest.raises(SystemExit):
         CodemodExecutionMode.APPLY.require_valid(
             parser,
-            fixpoint=False,
             project_findings=True,
         )
 
@@ -11934,11 +11922,11 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
     assert rebuild_count == 0
 
 
-def test_codemod_fixpoint_scan_reuses_source_snapshot(
+def test_codemod_workflow_scan_reuses_source_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
 
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
@@ -11959,7 +11947,7 @@ def test_codemod_fixpoint_scan_reuses_source_snapshot(
         "from_modules",
         classmethod(counted_from_modules),
     )
-    scan = CodemodFixpointScan(modules=modules, findings=[])
+    scan = CodemodWorkflowScan(modules=modules, findings=[])
 
     first_snapshot = scan.source_snapshot
     second_snapshot = scan.source_snapshot
@@ -13780,229 +13768,17 @@ def test_module_cli_codemod_simulate_reports_diff_without_applying(
     assert "return value + 1" not in module_path.read_text()
 
 
-def test_module_cli_codemod_fixpoint_applies_and_rescans(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n',
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--no-cache",
-            "--codemod-fixpoint",
-            "--codemod-apply",
-            "--codemod-fixpoint-max-iterations",
-            "4",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    payload = json.loads(result.stdout)
-
-    assert result.returncode == 0, result.stderr
-    assert payload["completed"] is True
-    assert payload["applied"] is True
-    assert payload["stop_reason"] == "no_executable_recipes"
-    assert payload["iteration_count"] == 2
-    assert payload["total_applied_rewrite_count"] == 1
-    assert payload["changed_file_paths"] == [module_path.as_posix()]
-    first_iteration, terminal_iteration = payload["iterations"]
-    assert first_iteration["applied"] is True
-    assert first_iteration["expected_removed_finding_count"] == 1
-    assert first_iteration["simulation"]["parse_validation"]["parse_valid"] is True
-    assert (
-        first_iteration["finding_delta"]["confirmed_expected_removed_finding_count"]
-        == 1
-    )
-    assert (
-        first_iteration["finding_delta"]["surviving_expected_removed_finding_count"]
-        == 0
-    )
-    assert first_iteration["finding_delta"]["fulfilled_expected_removals"] is True
-    assert terminal_iteration["applied"] is False
-    assert terminal_iteration["recipe_count"] == 0
-    assert "REGISTRY[" not in module_path.read_text()
-    remaining = tuple(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "manual_class_registration"
-    )
-    assert remaining == ()
-
-
-def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    original_source = '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n'
-    _write_module(tmp_path, "pkg/mod.py", original_source)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--no-cache",
-            "--codemod-fixpoint",
-            "--codemod-fixpoint-max-iterations",
-            "4",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    payload = json.loads(result.stdout)
-
-    assert result.returncode == 0, result.stderr
-    assert payload["completed"] is True
-    assert payload["applied"] is False
-    assert payload["stop_reason"] == "no_executable_recipes"
-    assert payload["iteration_count"] == 2
-    assert payload["total_applied_rewrite_count"] == 0
-    assert payload["total_simulated_rewrite_count"] == 1
-    assert payload["changed_file_paths"] == []
-    assert payload["simulated_changed_file_paths"] == [module_path.as_posix()]
-    iteration, terminal_iteration = payload["iterations"]
-    assert iteration["applied"] is False
-    assert iteration["applied_rewrite_count"] == 0
-    assert iteration["simulated_rewrite_count"] == 1
-    assert iteration["recipe_count"] == 1
-    assert iteration["synthesis_report"]["planned_count"] == 1
-    planned_record = next(
-        record
-        for record in iteration["synthesis_report"]["records"]
-        if record["detector_id"] == "manual_class_registration"
-    )
-    assert planned_record["status"] == "planned"
-    assert (
-        planned_record["title"]
-        == "Manual class registration should become metaclass-registry AutoRegisterMeta"
-    )
-    assert len(iteration["document"]["recipes"]) == 1
-    operation = iteration["document"]["recipes"][0]["operations"][0]
-    assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert operation["class_key_pairs"] == [
-        "AlphaHandler='alpha'",
-        "BetaHandler='beta'",
-    ]
-    assert iteration["simulation"]["applied_rewrite_count"] == 1
-    assert iteration["simulation"]["parse_validation"]["parse_valid"] is True
-    assert iteration["finding_delta"]["confirmed_expected_removed_finding_count"] == 1
-    assert iteration["finding_delta"]["surviving_expected_removed_finding_count"] == 0
-    assert iteration["finding_delta"]["fulfilled_expected_removals"] is True
-    assert terminal_iteration["applied"] is False
-    assert terminal_iteration["recipe_count"] == 0
-    assert terminal_iteration["finding_count"] == payload["final_finding_count"]
-    assert terminal_iteration["synthesis_report"]["planned_count"] == 0
-    assert {
-        record["detector_id"]
-        for record in terminal_iteration["synthesis_report"]["records"]
-    }.isdisjoint({"manual_class_registration"})
-    assert module_path.read_text() == original_source
-
-
-def test_module_cli_codemod_fixpoint_plan_out_replays_as_staged_plan(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    original_source = '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n'
-    _write_module(tmp_path, "pkg/mod.py", original_source)
-    replay_plan_path = tmp_path / "fixpoint-replay-plan.json"
-
-    dry_run = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--no-cache",
-            "--codemod-fixpoint",
-            "--codemod-fixpoint-max-iterations",
-            "4",
-            "--codemod-fixpoint-plan-out",
-            replay_plan_path.as_posix(),
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    dry_run_payload = json.loads(dry_run.stdout)
-    replay_payload = json.loads(replay_plan_path.read_text(encoding="utf-8"))
-    replay_sequence = load_codemod_plan_sequence(replay_plan_path)
-
-    assert dry_run.returncode == 0, dry_run.stderr
-    assert dry_run_payload["completed"] is True
-    assert dry_run_payload["applied"] is False
-    assert dry_run_payload["replay_plan"]["stage_count"] == 1
-    assert dry_run_payload["replay_plan"]["has_stages"] is True
-    assert replay_sequence.has_recipes
-    assert len(replay_payload["stages"]) == 1
-    assert (
-        replay_payload["stages"][0]["recipes"][0]["operations"][0]["operation"]
-        == "convert_manual_registry_to_autoregister"
-    )
-    assert module_path.read_text() == original_source
-
-    apply_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--no-cache",
-            "--codemod-plan",
-            replay_plan_path.as_posix(),
-            "--codemod-apply",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    apply_payload = json.loads(apply_result.stdout)
-
-    assert apply_result.returncode == 0, apply_result.stderr
-    assert apply_payload["applied"] is True
-    assert apply_payload["applied_rewrite_count"] == 1
-    assert "REGISTRY[" not in module_path.read_text()
-    remaining = tuple(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "manual_class_registration"
-    )
-    assert remaining == ()
-
-
-def test_codemod_fixpoint_projected_scan_reuses_unchanged_modules(
+def test_codemod_projected_scan_reuses_unchanged_modules(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import CodemodParseValidationReport
     from nominal_refactor_advisor.codemod import CodemodSimulationReport
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import ProjectedScanModuleSet
 
     _write_module(tmp_path, "pkg/alpha.py", "\nclass Alpha:\n    pass\n")
     beta_path = tmp_path / "pkg/beta.py"
     _write_module(tmp_path, "pkg/beta.py", "\nclass Beta:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-    scan = CodemodFixpointScan(modules=modules, findings=[])
     simulation = CodemodSimulationReport(
         rewrites=(),
         rewritten_sources={
@@ -14020,29 +13796,25 @@ def test_codemod_fixpoint_projected_scan_reuses_unchanged_modules(
             ),
         ),
     )
-    runner = CodemodFixpointRunner(
+    projected_modules = ProjectedScanModuleSet(
+        modules=tuple(modules),
+        simulation=simulation,
         roots=(tmp_path,),
-        config=DetectorConfig(),
-        parse_workers=1,
-        dry_run=True,
-        max_iterations=1,
-        guard_suite=ArchitectureGuardSuite(),
-    )
+    ).modules_after_projection()
 
-    projected_scan = runner.projected_scan(scan, simulation)
-
-    assert projected_scan.modules[0] is modules[0]
-    assert projected_scan.modules[1] is not modules[1]
-    assert "BetaTwo" in projected_scan.modules[1].source
+    assert projected_modules[0] is modules[0]
+    assert projected_modules[1] is not modules[1]
+    assert "BetaTwo" in projected_modules[1].source
 
 
-def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
+def test_codemod_projected_scan_analyzes_created_modules(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import CodemodParseValidationReport
     from nominal_refactor_advisor.codemod import CodemodSimulationReport
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import (
+        CodemodSimulationFindingProjection,
+    )
 
     _write_module(
         tmp_path,
@@ -14061,7 +13833,6 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
         "    pass\n"
     )
     modules = parse_python_modules(tmp_path)
-    scan = CodemodFixpointScan(modules=modules, findings=[])
     simulation = CodemodSimulationReport(
         rewrites=(),
         rewritten_sources={created_path.as_posix(): created_source},
@@ -14074,16 +13845,13 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
             CodemodSourceRevision.from_sources(created_path.as_posix(), {}),
         ),
     )
-    runner = CodemodFixpointRunner(
-        roots=(tmp_path,),
+    projected_scan = CodemodSimulationFindingProjection(
+        modules=tuple(modules),
+        findings=(),
+        simulation=simulation,
         config=DetectorConfig(),
-        parse_workers=1,
-        dry_run=True,
-        max_iterations=1,
-        guard_suite=ArchitectureGuardSuite(),
-    )
-
-    projected_scan = runner.projected_scan(scan, simulation)
+        roots=(tmp_path,),
+    ).scan()
     projected_module = next(
         module for module in projected_scan.modules if module.path == created_path
     )
@@ -14106,7 +13874,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -14170,7 +13938,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
             migration_type=SemanticCarrierConcept,
             max_stages=2,
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodFixpointScan(
+            initial_scan=CodemodWorkflowScan(
                 modules=modules,
                 findings=[finding],
             ),
@@ -14227,7 +13995,7 @@ def test_applied_migration_termination_uses_actual_rescan(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -14250,7 +14018,7 @@ def test_applied_migration_termination_uses_actual_rescan(
         "Alpha.run encodes the semantic fact outside its boundary.",
         (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
     )
-    initial_scan = CodemodFixpointScan(modules=modules, findings=[finding])
+    initial_scan = CodemodWorkflowScan(modules=modules, findings=[finding])
 
     class AppliedMigrationSynthesizer(
         FindingRecipeSynthesizer,
@@ -14284,21 +14052,20 @@ def test_applied_migration_termination_uses_actual_rescan(
                 )
             )
 
-    def divergent_scan(
-        self: object,
-        iteration_index: int,
-    ) -> CodemodFixpointScan:
+    def divergent_fresh_scan(self: object) -> CodemodWorkflowScan:
         del self
-        if iteration_index == 0:
-            return initial_scan
-        return CodemodFixpointScan(
+        return CodemodWorkflowScan(
             modules=parse_python_modules(tmp_path),
             findings=[finding],
         )
 
     previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
     FindingRecipeSynthesizer.__registry__[detector_id] = AppliedMigrationSynthesizer
-    monkeypatch.setattr(CodemodRefactorGoalRunner, "scan", divergent_scan)
+    monkeypatch.setattr(
+        CodemodRefactorGoalRunner,
+        "fresh_scan",
+        divergent_fresh_scan,
+    )
     try:
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
@@ -14397,7 +14164,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -14478,7 +14245,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
             migration_type=SemanticCarrierConcept,
             max_stages=2,
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodFixpointScan(
+            initial_scan=CodemodWorkflowScan(
                 modules=modules,
                 findings=[report_finding, context_finding],
             ),
@@ -14507,7 +14274,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -14561,7 +14328,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
             parse_workers=1,
             dry_run=True,
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodFixpointScan(
+            initial_scan=CodemodWorkflowScan(
                 modules=modules,
                 findings=[finding],
             ),
@@ -15211,8 +14978,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingClassStatus
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFindingIdTransition
-    from nominal_refactor_advisor import CodemodFixpointReplayPlan
-    from nominal_refactor_advisor import CodemodFixpointRunner
     from nominal_refactor_advisor import CodemodPlanSequence
     from nominal_refactor_advisor import CodemodPlanSequenceContinuationReport
     from nominal_refactor_advisor import CodemodPlanSequenceStageReport
@@ -15225,8 +14990,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodWorkflowStopReason
     from nominal_refactor_advisor import CodemodSimulationFindingProjection
     from nominal_refactor_advisor import CodemodSourceSnapshot
-    from nominal_refactor_advisor import CodemodWorkflowReport
-    from nominal_refactor_advisor import CodemodWorkflowScanRequest
+    from nominal_refactor_advisor import CodemodWorkflowScan
     from nominal_refactor_advisor import FindingRecipeClassPlan
     from nominal_refactor_advisor import FindingRecipeClassPlanReport
     from nominal_refactor_advisor import NominalBoundaryConcept
@@ -15265,11 +15029,9 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         CodemodClassPlanSiteProjectedDelta.__name__
         == "CodemodClassPlanSiteProjectedDelta"
     )
-    assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
     assert FindingRecipeClassPlan.__name__ == "FindingRecipeClassPlan"
     assert FindingRecipeClassPlanReport.__name__ == "FindingRecipeClassPlanReport"
     assert not hasattr(nra, "CodemodGuardedWorkflowRequest")
-    assert CodemodFixpointReplayPlan.__name__ == "CodemodFixpointReplayPlan"
     assert CodemodPlanSequence.__name__ == "CodemodPlanSequence"
     assert (
         CodemodPlanSequenceContinuationReport.__name__
@@ -15294,10 +15056,12 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert NominalBoundaryConcept.concept_key() == "nominal_boundary"
     assert ReplaceTargetOperation.operation_key() == "replace_target"
     assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
-    assert CodemodWorkflowReport.__name__ == "CodemodWorkflowReport"
+    assert CodemodWorkflowScan.__name__ == "CodemodWorkflowScan"
+    assert not hasattr(nra, "CodemodWorkflowReport")
     assert not hasattr(nra, "CodemodWorkflowPlan")
     assert not hasattr(nra, "CodemodWorkflowPlanJsonParser")
     assert not hasattr(nra, "CodemodWorkflowPlanKind")
+    assert not hasattr(nra, "CodemodFixpointRunner")
     assert not hasattr(nra, "CodemodFixpointWorkflowPlan")
     assert not hasattr(nra, "CodemodRefactorGoalWorkflowPlan")
     assert not hasattr(nra, "CodemodWorkflowRunContext")
@@ -15305,7 +15069,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert not hasattr(nra, "CodemodStrategyRegistry")
     assert not hasattr(nra, "DerivableDetectorIdCodemodBuilder")
     assert not hasattr(nra, "DerivableCandidateCollectorCodemodBuilder")
-    assert CodemodWorkflowScanRequest.__name__ == "CodemodWorkflowScanRequest"
+    assert not hasattr(nra, "CodemodWorkflowScanRequest")
     assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
     assert (
         ReplaceFieldsWithCarrierOperation.__name__

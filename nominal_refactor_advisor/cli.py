@@ -95,9 +95,7 @@ from .codemod import (
 )
 from .codemod_source_cache import CodemodSourceContextCache
 from .codemod_workflow import (
-    CodemodFixpointReport,
-    CodemodFixpointRunner,
-    CodemodFixpointScan,
+    CodemodWorkflowScan,
     CodemodProjectedFindingReport,
     CodemodRefactorGoalReport,
     CodemodRefactorGoalRunner,
@@ -580,28 +578,6 @@ _CLI_ARGUMENT_SPECS = (
             help="Write all simulated codemod rewrites to disk after validation.",
         ),
         CliArgumentSpec(
-            flags=("--codemod-fixpoint",),
-            action="store_true",
-            help=(
-                "Iteratively synthesize finding-backed DSL recipes. Without "
-                "--codemod-apply, run the first clean batch as a dry run."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-fixpoint-max-iterations",),
-            value_type=int,
-            default=8,
-            help="Maximum apply/rescan iterations for --codemod-fixpoint.",
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-fixpoint-plan-out",),
-            value_type=Path,
-            help=(
-                "With --codemod-fixpoint, write the replayable staged "
-                "CodemodPlanSequence JSON synthesized by the fixpoint run."
-            ),
-        ),
-        CliArgumentSpec(
             flags=("--codemod-refactor-goal",),
             value_type=str,
             help=(
@@ -1071,7 +1047,6 @@ class SourceSnapshotCacheEligibility:
     include_impact_ranking: bool
     codemod_plan_sequence_has_recipes: bool
     codemod_scan_query_needs_source_snapshot: bool
-    codemod_fixpoint: bool
     codemod_refactor_goal_requested: bool
 
     @property
@@ -1085,8 +1060,7 @@ class SourceSnapshotCacheEligibility:
     @property
     def requires_parsed_modules(self) -> bool:
         return (
-            self.codemod_fixpoint
-            or self.codemod_refactor_goal_requested
+            self.codemod_refactor_goal_requested
             or self.codemod_plan_sequence_has_recipes
         )
 
@@ -1525,7 +1499,6 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             args.codemod_compose_sequence is not None,
             args.codemod_synthesize_plan,
             args.codemod_synthesize_class_plan,
-            args.codemod_fixpoint,
             args.codemod_refactor_goal is not None,
         )
     )
@@ -1623,12 +1596,6 @@ class CodemodProjectedFindingReporter(ABC):
             self.args.codemod_continuation_plan_out,
             report.continuation_report.continuation_sequence.to_dict(),
         )
-
-
-def format_codemod_fixpoint_markdown(report: CodemodFixpointReport) -> str:
-    """Render a concise fixpoint workflow summary."""
-
-    return report.to_markdown()
 
 
 def format_codemod_refactor_goal_markdown(
@@ -2797,13 +2764,10 @@ class CodemodExecutionMode(Enum):
         self,
         parser: argparse.ArgumentParser,
         *,
-        fixpoint: bool,
         project_findings: bool,
     ) -> None:
         if project_findings and self is not type(self).SIMULATE:
             parser.error("--codemod-project-findings requires --codemod-simulate")
-        if fixpoint and self not in (type(self).NONE, type(self).APPLY):
-            parser.error("--codemod-fixpoint can only be combined with --codemod-apply")
 
 
 @dataclass(frozen=True)
@@ -3305,7 +3269,6 @@ def _main_without_deadline() -> int:
     codemod_execution_mode = CodemodExecutionMode.from_namespace(args, parser)
     codemod_execution_mode.require_valid(
         parser,
-        fixpoint=args.codemod_fixpoint,
         project_findings=args.codemod_project_findings,
     )
     codemod_scan_query_mode = CodemodScanQueryMode.from_namespace(
@@ -3334,7 +3297,6 @@ def _main_without_deadline() -> int:
     codemod_requested = (
         args.codemod_plan is not None
         or codemod_execution_mode.requested
-        or args.codemod_fixpoint
         or args.codemod_refactor_goal is not None
         or codemod_scan_query_mode.requested
     )
@@ -3349,8 +3311,6 @@ def _main_without_deadline() -> int:
         parser.error(
             "--codemod-project-source-index requires --codemod-project-findings"
         )
-    if args.codemod_fixpoint_plan_out is not None and not args.codemod_fixpoint:
-        parser.error("--codemod-fixpoint-plan-out requires --codemod-fixpoint")
     if args.codemod_goal_plan_out is not None and args.codemod_refactor_goal is None:
         parser.error("--codemod-goal-plan-out requires --codemod-refactor-goal")
     codemod_plan_sequence = (
@@ -3366,17 +3326,13 @@ def _main_without_deadline() -> int:
     if (
         codemod_requested
         and not explicit_impact_ranking_request
-        and not args.codemod_fixpoint
         and args.codemod_refactor_goal is None
         and not codemod_scan_query_mode.requested
         and not codemod_plan_sequence.has_recipes
     ):
         args.include_impact_ranking = True
-    if args.codemod_fixpoint and args.codemod_fixpoint_max_iterations < 1:
-        parser.error("--codemod-fixpoint-max-iterations must be at least 1")
     if (
         codemod_requested
-        and not args.codemod_fixpoint
         and args.codemod_refactor_goal is None
         and not codemod_scan_query_mode.requested
         and not args.include_impact_ranking
@@ -3488,7 +3444,6 @@ def _main_without_deadline() -> int:
     try:
         SemanticRefactorGateMode.from_flags(
             include_impact_ranking=args.include_impact_ranking
-            or args.codemod_fixpoint
             or codemod_scan_query_mode.requested,
             semantic_refactor_gate=emitted_semantic_refactor_gate,
             raw_findings=(
@@ -3503,7 +3458,6 @@ def _main_without_deadline() -> int:
     if (
         codemod_execution_request.exact_recipe_execution
         and not args.include_impact_ranking
-        and not args.codemod_fixpoint
         and args.codemod_refactor_goal is None
         and args.import_lean_export is None
         and not codemod_scan_query_mode.requested
@@ -3537,7 +3491,6 @@ def _main_without_deadline() -> int:
         codemod_scan_query_needs_source_snapshot=(
             codemod_scan_query_mode.needs_source_snapshot
         ),
-        codemod_fixpoint=args.codemod_fixpoint,
         codemod_refactor_goal_requested=args.codemod_refactor_goal is not None,
     )
     cached_source_context = None
@@ -3547,8 +3500,7 @@ def _main_without_deadline() -> int:
             payload_profile=json_payload_profile,
             load_bearing_ranking_enabled=args.include_impact_ranking,
             parsed_modules_required=(
-                args.codemod_fixpoint
-                or args.codemod_refactor_goal is not None
+                args.codemod_refactor_goal is not None
                 or codemod_plan_sequence.has_recipes
                 or (
                     codemod_scan_query_mode.needs_source_snapshot
@@ -3919,31 +3871,10 @@ def _main_without_deadline() -> int:
         modules,
         architecture_guard_rules,
     )
-    workflow_initial_scan = CodemodFixpointScan(
+    workflow_initial_scan = CodemodWorkflowScan(
         modules=modules,
         findings=findings,
     )
-    if args.codemod_fixpoint:
-        report = CodemodFixpointRunner(
-            resolved_dir=parse_cache_dir,
-            enabled=args.use_parse_cache,
-            roots=roots,
-            report_roots=path_scope.report_roots,
-            config=config,
-            parse_workers=args.parse_workers,
-            guard_suite=codemod_plan_sequence.guard_suite,
-            dry_run=not codemod_execution_mode.applies_changes,
-            initial_scan=workflow_initial_scan,
-            max_iterations=args.codemod_fixpoint_max_iterations,
-        ).run()
-        replay_plan_payload = report.replay_plan.sequence.to_dict()
-        write_cli_json_artifact(args.codemod_fixpoint_plan_out, replay_plan_payload)
-        write_cli_json_artifact(args.codemod_plan_out, replay_plan_payload)
-        if args.json:
-            print(json.dumps(report.to_dict(), indent=2))
-        else:
-            print(format_codemod_fixpoint_markdown(report))
-        return 0 if report.completed else 1
     if args.codemod_refactor_goal is not None:
         try:
             migration_type = codemod_refactor_concept_from_args(args)

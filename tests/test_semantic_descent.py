@@ -12,6 +12,7 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
+    NominalBoundaryConcept,
     codemod_plan_from_findings,
 )
 from nominal_refactor_advisor.detectors import (
@@ -1271,6 +1272,8 @@ def test_identity_keyword_forwarding_shell_synthesizes_inline_delete_recipe(
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
     assert plan.records[0].status.value == "planned"
+    assert plan.records[0].refactor_concept == ""
+    assert NominalBoundaryConcept.target_findings((finding,), snapshot) == ()
     assert (
         plan.records[0].executable_declaration_name
         == "IdentityKeywordForwardingShellFindingRecipeSynthesizer"
