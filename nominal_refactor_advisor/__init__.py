@@ -91,7 +91,6 @@ from .codemod_workflow import (
     CodemodFixpointRunner,
     CodemodFixpointScan,
     CodemodProjectedFindingReport,
-    CodemodRefactorGoal,
     CodemodRefactorGoalProgress,
     CodemodRefactorGoalReport,
     CodemodRefactorGoalRunner,

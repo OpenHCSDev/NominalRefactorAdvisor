@@ -23,6 +23,7 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.DataclassPayloadProjectionConcept,
         codemod.TupleDictReturnRecordConcept,
         codemod.DeadCompatibilityErasureConcept,
+        codemod.ClassFamilyAuthorityConcept,
         codemod.AutoRegisterConcept,
         codemod.AutoRegisterClassRegistryConcept,
         codemod.AutoRegisterStrategyFamilyConcept,
@@ -45,6 +46,9 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ),
     codemod.ManualClassRegistrationFindingRecipeSynthesizer: (
         codemod.AutoRegisterClassRegistryConcept
+    ),
+    codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
+        codemod.ClassFamilyAuthorityConcept
     ),
     codemod.DataclassPayloadProjectionMappingRecipeBuilder: (
         codemod.DataclassPayloadProjectionConcept
@@ -81,6 +85,8 @@ def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
         "__registry__" not in declaration_type.__dict__
         for declaration_type in EXPECTED_CONCEPT_DECLARATIONS
     )
+    assert not hasattr(codemod_workflow, "CodemodRefactorGoal")
+    assert not hasattr(codemod_workflow, "CodemodRefactorGoalStageAttempt")
 
 
 def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
@@ -105,6 +111,16 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                 {
                     codemod.DataclassPayloadProjectionConcept,
                     codemod.TupleDictReturnRecordConcept,
+                }
+            ),
+        ),
+        (
+            codemod.ClassFamilyAuthorityConcept,
+            frozenset(
+                {
+                    codemod.ClassFamilyAuthorityConcept,
+                    codemod.AutoRegisterClassRegistryConcept,
+                    codemod.AutoRegisterStrategyFamilyConcept,
                 }
             ),
         ),

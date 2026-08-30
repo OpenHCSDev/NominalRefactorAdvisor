@@ -111,6 +111,7 @@ from nominal_refactor_advisor.codemod import (
     CancelableCompositionKind,
     CallSiteSelector,
     CallSiteTargetSelector,
+    ClassFamilyAuthorityConcept,
     ClassFamilyTargetSelector,
     CodemodSelectorContext,
     CodemodRewriteBuilder,
@@ -14237,7 +14238,6 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -14261,7 +14261,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
     )
 
-    class GoalTestSynthesizer(FindingRecipeSynthesizer):
+    class GoalTestSynthesizer(FindingRecipeSynthesizer, SemanticCarrierConcept):
         def action_keys_for_finding(
             self,
             finding: RefactorFinding,
@@ -14298,11 +14298,8 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
             config=DetectorConfig(),
             parse_workers=1,
             dry_run=True,
-            goal=CodemodRefactorGoal(
-                goal_id="extract-semantic-fact",
-                detector_ids=(detector_id,),
-                max_stages=2,
-            ),
+            migration_type=SemanticCarrierConcept,
+            max_stages=2,
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodFixpointScan(
                 modules=modules,
@@ -14349,13 +14346,77 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
 
 
+def test_class_family_migration_derives_serial_stages_from_one_concept(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "REGISTRY = {}\n"
+        "\n"
+        "\n"
+        "class AlphaHandler:\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class BetaHandler:\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "ALL_HANDLERS = (AlphaHandler, BetaHandler)\n"
+        "REGISTRY['alpha'] = AlphaHandler\n"
+        "REGISTRY['beta'] = BetaHandler\n",
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=ClassFamilyAuthorityConcept,
+        max_stages=3,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+    assert report.completed is True
+    assert report.achieved is True
+    assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stage_count == 2
+    assert report.final_target_finding_ids == ()
+    first_stage, second_stage = report.stages
+    first_recipe = first_stage.document.recipes[0]
+    second_recipe = second_stage.document.recipes[0]
+    producer_claim = first_recipe.declared_authority_claims[0]
+    consumer_claim = second_recipe.authority_claims[0]
+    assert producer_claim.claimed_symbol == "RegisteredHandler"
+    assert consumer_claim.claimed_symbol == "RegisteredHandler"
+    assert consumer_claim.matches_declared_claim(producer_claim)
+    first_source = first_stage.simulation.simulation.rewritten_sources[
+        module_path.as_posix()
+    ]
+    final_source = second_stage.simulation.simulation.rewritten_sources[
+        module_path.as_posix()
+    ]
+    assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in first_source
+    assert "ALL_HANDLERS = (AlphaHandler, BetaHandler)" in first_source
+    assert "ALL_HANDLERS = tuple(RegisteredHandler.__subclasses__())" in final_source
+    assert report.replay_sequence.documents == (
+        first_stage.document,
+        second_stage.document,
+    )
+    assert all("stage_index" not in stage.to_dict() for stage in report.stages)
+
+
 def test_codemod_refactor_goal_runner_scopes_context_root_progress(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -14392,7 +14453,10 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
         (SourceLocation(context_path.as_posix(), 3, "Context.run"),),
     )
 
-    class GoalScopeTestSynthesizer(FindingRecipeSynthesizer):
+    class GoalScopeTestSynthesizer(
+        FindingRecipeSynthesizer,
+        SemanticCarrierConcept,
+    ):
         def action_keys_for_finding(
             self,
             finding: RefactorFinding,
@@ -14430,11 +14494,8 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
             config=DetectorConfig(),
             parse_workers=1,
             dry_run=True,
-            goal=CodemodRefactorGoal(
-                goal_id="extract-report-semantic-fact",
-                detector_ids=(detector_id,),
-                max_stages=2,
-            ),
+            migration_type=SemanticCarrierConcept,
+            max_stages=2,
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodFixpointScan(
                 modules=modules,
@@ -14463,8 +14524,9 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
 def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     tmp_path: Path,
 ) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -14487,43 +14549,70 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         "Alpha.run encodes the semantic fact outside its boundary.",
         (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
     )
-    report = CodemodRefactorGoalRunner(
-        roots=(tmp_path,),
-        config=DetectorConfig(),
-        parse_workers=1,
-        dry_run=True,
-        guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodFixpointScan(
-            modules=modules,
-            findings=[finding],
-        ),
-        goal=CodemodRefactorGoal(
-            goal_id="unsupported-goal",
-            detector_ids=(detector_id,),
+
+    class RejectedGoalTestSynthesizer(
+        FindingRecipeSynthesizer,
+        SemanticCarrierConcept,
+    ):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "Alpha.run"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.rejected_evaluation("test migration is not executable")
+
+    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
+    FindingRecipeSynthesizer.__registry__[detector_id] = RejectedGoalTestSynthesizer
+    try:
+        report = CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodFixpointScan(
+                modules=modules,
+                findings=[finding],
+            ),
+            migration_type=SemanticCarrierConcept,
             max_stages=1,
-        ),
-    ).run()
+        ).run()
+    finally:
+        if previous_synthesizer is None:
+            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+        else:
+            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
     assert report.completed is False
     assert report.terminal_reason is CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES
-    assert report.terminal_synthesis_report.unsupported_count == 1
+    assert report.terminal_synthesis_report.rejected_count == 1
     assert report.terminal_synthesis_report.records[0].detector_id == detector_id
     assert report.terminal_class_plan_report is not None
     assert len(report.terminal_class_plan_report.classes) == 1
     assert len(report.terminal_class_plan_report.classes[0].site_plans) == 1
     payload = report.to_dict()
     assert payload["terminal_synthesis_report"]["records"][0]["status"] == (
-        "no_synthesizer"
+        "rejected_by_safety_check"
     )
     assert payload["terminal_synthesis_report"]["status_counts"] == {
-        "no_synthesizer": 1
+        "rejected_by_safety_check": 1
     }
     terminal_class_plan = payload["terminal_class_plan_report"]
     assert (
         terminal_class_plan["finding_recipe_plan"]["synthesis_report"]["records"][0][
             "status"
         ]
-        == "no_synthesizer"
+        == "rejected_by_safety_check"
     )
     assert (
         terminal_class_plan["classes"][0]["site_plans"][0]["replacement_scaffold"][
@@ -14534,8 +14623,6 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
 
 
 def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
-
     def finding(
         detector_id: str,
         *,
@@ -14597,37 +14684,25 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
         prefix,
     )
 
-    goal = CodemodRefactorGoal(
-        goal_id="semantic-carrier-priority",
-        concept_type=SemanticCarrierConcept,
-    )
     snapshot = CodemodSourceSnapshot.from_modules((), findings)
 
     with pytest.raises(ValueError, match="requires source context"):
-        goal.target_findings(findings)
-    selected = goal.target_findings(findings, snapshot)
+        SemanticCarrierConcept.target_findings(findings)
+    selected = SemanticCarrierConcept.target_findings(findings, snapshot)
     assert selected == (
         dead_compat,
         prefix,
     )
     assert RefactorConcept.leaf_concept_for_declaration(
-        goal.concept_type
+        SemanticCarrierConcept
     ).concept_key() == ("semantic_carrier")
     assert (
-        CodemodRefactorGoal(
-            goal_id="tuple-dict",
-            concept_type=TupleDictReturnNominalizationConcept,
-        ).target_findings(findings, snapshot)
-        == ()
+        TupleDictReturnNominalizationConcept.target_findings(findings, snapshot) == ()
     )
-    assert CodemodRefactorGoal(
-        goal_id="prefix",
-        concept_type=PrefixBundleCarrierConcept,
-    ).target_findings(findings, snapshot) == (prefix,)
-    assert CodemodRefactorGoal(
-        goal_id="dead-compat",
-        concept_type=DeadCompatibilityErasureConcept,
-    ).target_findings(findings, snapshot) == (dead_compat,)
+    assert PrefixBundleCarrierConcept.target_findings(findings, snapshot) == (prefix,)
+    assert DeadCompatibilityErasureConcept.target_findings(findings, snapshot) == (
+        dead_compat,
+    )
     assert ConstructorKwargCollapseConcept.concept_key() == "constructor_kwarg_collapse"
 
 
@@ -14662,9 +14737,7 @@ def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
             tmp_path.as_posix(),
             "--no-cache",
             "--codemod-refactor-goal",
-            "nominal_boundary",
-            "--codemod-goal-detector",
-            "runtime_product_record_schema",
+            "tuple_dict_return_record",
             "--codemod-goal-plan-out",
             plan_path.as_posix(),
             "--json",
@@ -15176,7 +15249,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodPlanSequenceStageReport
     from nominal_refactor_advisor import CodemodPlanSequenceSimulation
     from nominal_refactor_advisor import CodemodProjectedFindingReport
-    from nominal_refactor_advisor import CodemodRefactorGoal
     from nominal_refactor_advisor import CodemodRefactorGoalProgress
     from nominal_refactor_advisor import CodemodRefactorGoalReport
     from nominal_refactor_advisor import CodemodRefactorGoalRunner
@@ -15242,13 +15314,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         == "CodemodSimulationFindingProjection"
     )
     assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
-    assert CodemodRefactorGoal.__name__ == "CodemodRefactorGoal"
+    assert not hasattr(nra, "CodemodRefactorGoal")
     assert not hasattr(nra, "CodemodRefactorGoalFindingSelector")
     assert not hasattr(nra, "CodemodRefactorGoalSelectorCoverage")
     assert not hasattr(nra, "CodemodRefactorGoalSelectorManifest")
-    assert CodemodRefactorGoal(goal_id="default-carrier").concept_type is (
-        SemanticCarrierConcept
-    )
     assert CodemodRefactorGoalProgress.__name__ == "CodemodRefactorGoalProgress"
     assert CodemodRefactorGoalReport.__name__ == "CodemodRefactorGoalReport"
     assert CodemodRefactorGoalRunner.__name__ == "CodemodRefactorGoalRunner"
@@ -15548,13 +15617,20 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
-    operation = plan.document.recipes[0].operations[0].to_dict()
+    operation_declaration = plan.document.recipes[0].operations[0]
+    operation = operation_declaration.to_dict()
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert operation["base_name"] == "RegisteredHandler"
     assert operation["class_key_pairs"] == (
         "AlphaHandler='alpha'",
         "BetaHandler='beta'",
     )
+    assert len(operation_declaration.declared_authority_claims) == 1
+    declared_claim = operation_declaration.declared_authority_claims[0]
+    assert declared_claim.claimed_symbol == "RegisteredHandler"
+    assert declared_claim.file_path == module_path.as_posix()
+    assert declared_claim.qualname == "RegisteredHandler"
+    assert declared_claim.authority_kind == SemanticAuthorityKind.AUTOREGISTER_FAMILY
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
     assert simulation.to_dict()["expected_removed_finding_count"] == 1

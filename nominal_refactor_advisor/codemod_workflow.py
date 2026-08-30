@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -27,7 +28,6 @@ from .codemod import (
     CodemodJsonReport,
     CodemodPlanSequence,
     CodemodPlanSequenceContinuationReport,
-    CodemodSelectorContext,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
     FindingRecipeClassPlan,
@@ -38,7 +38,6 @@ from .codemod import (
     FindingRecipeSynthesisReport,
     JsonObject,
     RefactorConcept,
-    SemanticCarrierConcept,
     module_name_from_source_path,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
@@ -135,9 +134,7 @@ class CodemodFindingDelta:
     ) -> "CodemodFindingDelta":
         return cls(
             finding_ids=CodemodFindingIdTransition(
-                before_ids=tuple(
-                    finding.stable_id for finding in before_findings
-                ),
+                before_ids=tuple(finding.stable_id for finding in before_findings),
                 after_ids=tuple(finding.stable_id for finding in after_findings),
             ),
         )
@@ -520,60 +517,6 @@ class CodemodFindingChangeCarrier:
 
 
 @dataclass(frozen=True)
-class CodemodRefactorGoal:
-    """Declarative target for staged semantic-fact extraction refactors."""
-
-    goal_id: str
-    concept_type: type[RefactorConcept] = SemanticCarrierConcept
-    target_finding_ids: tuple[str, ...] = ()
-    detector_ids: tuple[str, ...] = ()
-    pattern_ids: tuple[int, ...] = ()
-    max_stages: int = 8
-
-    @property
-    def has_explicit_targets(self) -> bool:
-        return bool(self.target_finding_ids or self.detector_ids or self.pattern_ids)
-
-    @property
-    def concept_key(self) -> str:
-        return self.concept_type.concept_key()
-
-    def target_findings(
-        self,
-        findings: Iterable[RefactorFinding],
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[RefactorFinding, ...]:
-        return tuple(
-            finding
-            for finding in findings
-            if self.matches_finding(finding, selector_context)
-        )
-
-    def matches_finding(
-        self,
-        finding: RefactorFinding,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> bool:
-        if self.has_explicit_targets:
-            return (
-                finding.stable_id in self.target_finding_ids
-                or finding.detector_id in self.detector_ids
-                or int(finding.pattern_id) in self.pattern_ids
-            )
-        return self.concept_type.matches_finding(finding, selector_context)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "goal_id": self.goal_id,
-            "concept": self.concept_key,
-            "target_finding_ids": self.target_finding_ids,
-            "detector_ids": self.detector_ids,
-            "pattern_ids": self.pattern_ids,
-            "max_stages": self.max_stages,
-        }
-
-
-@dataclass(frozen=True)
 class CodemodRefactorGoalProgress:
     """Before/after target-finding progress for one goal stage."""
 
@@ -583,7 +526,7 @@ class CodemodRefactorGoalProgress:
     @classmethod
     def from_findings(
         cls,
-        goal: CodemodRefactorGoal,
+        migration_type: type[RefactorConcept],
         before_findings: Iterable[RefactorFinding],
         after_findings: Iterable[RefactorFinding],
         *,
@@ -593,14 +536,14 @@ class CodemodRefactorGoalProgress:
         return cls(
             before_target_finding_ids=tuple(
                 finding.stable_id
-                for finding in goal.target_findings(
+                for finding in migration_type.target_findings(
                     before_findings,
                     before_snapshot,
                 )
             ),
             after_target_finding_ids=tuple(
                 finding.stable_id
-                for finding in goal.target_findings(
+                for finding in migration_type.target_findings(
                     after_findings,
                     after_snapshot,
                 )
@@ -655,16 +598,17 @@ class CodemodRefactorGoalProgress:
 
 
 @dataclass(frozen=True)
-class CodemodRefactorGoalStage(
-    CodemodFindingChangeCarrier,
-    FindingRecipeSynthesisBoundary,
-):
+class CodemodRefactorGoalStage(CodemodFindingChangeCarrier):
     """One simulated or applied staged plan toward a refactor goal."""
 
-    stage_index: int
+    class_plan_report: FindingRecipeClassPlanReport
     simulation: CodemodPlanDocumentSimulation
     progress: CodemodRefactorGoalProgress
     applied: bool = False
+
+    @property
+    def report(self) -> FindingRecipeSynthesisReport:
+        return self.class_plan_report.finding_plan.report
 
     @property
     def document(self) -> CodemodPlanDocument:
@@ -680,7 +624,6 @@ class CodemodRefactorGoalStage(
 
     def to_dict(self) -> JsonObject:
         return {
-            "stage_index": self.stage_index,
             "applied": self.applied,
             "rewrite_count": self.rewrite_count,
             "changed_file_paths": self.changed_file_paths,
@@ -688,46 +631,12 @@ class CodemodRefactorGoalStage(
             "simulation": self.simulation.to_dict(),
             "progress": self.progress.to_dict(),
             **self.finding_change.to_dict(),
-            **self.synthesis_payload(),
-        }
-
-
-@dataclass(frozen=True)
-class CodemodRefactorGoalStageAttempt(CodemodJsonReport):
-    """Synthesis attempt for one goal stage, including no-stage diagnostics."""
-
-    stage_index: int
-    target_finding_count: int
-    stage: CodemodRefactorGoalStage | None = None
-    projected_scan: "CodemodFixpointScan | None" = None
-    class_plan_report: FindingRecipeClassPlanReport | None = None
-
-    @property
-    def report(self) -> FindingRecipeSynthesisReport:
-        if self.stage is not None:
-            return self.stage.report
-        if self.class_plan_report is not None:
-            return self.class_plan_report.finding_plan.report
-        return FindingRecipeSynthesisReport()
-
-    @property
-    def has_stage(self) -> bool:
-        return self.stage is not None
-
-    def to_dict(self) -> JsonObject:
-        payload = {
-            "stage_index": self.stage_index,
-            "target_finding_count": self.target_finding_count,
-            "has_stage": self.has_stage,
             **self.report.projection_payload(self.class_plan_report),
         }
-        if self.stage is not None:
-            payload["stage"] = self.stage.to_dict()
-        return payload
 
 
 @dataclass(frozen=True)
-class CodemodWorkflowReport:
+class CodemodWorkflowReport(ABC):
     """Shared terminal summary for staged codemod workflow reports."""
 
     completed: bool
@@ -739,8 +648,9 @@ class CodemodWorkflowReport:
         return self.terminal_reason
 
     @property
+    @abstractmethod
     def replay_sequence(self) -> CodemodPlanSequence:
-        return CodemodPlanSequence()
+        raise NotImplementedError
 
     def to_markdown(self) -> str:
         return "\n".join(
@@ -757,7 +667,7 @@ class CodemodWorkflowReport:
 class CodemodRefactorGoalReport(CodemodWorkflowReport):
     """Machine-readable result of a goal-directed staged codemod run."""
 
-    goal: CodemodRefactorGoal
+    migration_type: type[RefactorConcept]
     stages: tuple[CodemodRefactorGoalStage, ...]
     final_target_finding_ids: tuple[str, ...]
     terminal_class_plan_report: FindingRecipeClassPlanReport | None = None
@@ -789,7 +699,7 @@ class CodemodRefactorGoalReport(CodemodWorkflowReport):
     def to_markdown(self) -> str:
         lines = [
             "Codemod refactor goal report:",
-            f"   - Goal: {self.goal.goal_id} ({self.goal.concept_key})",
+            f"   - Migration: {self.migration_type.concept_key()}",
             f"   - Completed: {self.completed}",
             f"   - Achieved: {self.achieved}",
             f"   - Stop reason: {self.terminal_reason.value}",
@@ -809,10 +719,10 @@ class CodemodRefactorGoalReport(CodemodWorkflowReport):
                     f"statuses={status_counts}",
                 )
             )
-        for stage in self.stages:
+        for stage_number, stage in enumerate(self.stages, start=1):
             lines.append(
                 "   - "
-                f"Stage {stage.stage_index}: "
+                f"Stage {stage_number}: "
                 f"rewrites={stage.rewrite_count}, "
                 f"removed_targets={stage.progress.removed_target_finding_count}, "
                 f"surviving_targets={stage.progress.surviving_target_finding_count}, "
@@ -822,7 +732,7 @@ class CodemodRefactorGoalReport(CodemodWorkflowReport):
 
     def to_dict(self) -> JsonObject:
         return {
-            "goal": self.goal.to_dict(),
+            "migration": self.migration_type.concept_key(),
             "completed": self.completed,
             "achieved": self.achieved,
             "terminal_reason": self.terminal_reason.value,
@@ -1721,142 +1631,119 @@ class CodemodFixpointRunner(CodemodWorkflowScanRequest):
 
 @dataclass(frozen=True, kw_only=True)
 class CodemodRefactorGoalRunner(CodemodWorkflowScanRequest):
-    """Simulate or apply staged DSL recipes until a declared goal resolves."""
+    """Derive and execute stages until one semantic migration resolves."""
 
-    goal: CodemodRefactorGoal
+    migration_type: type[RefactorConcept]
+    max_stages: int = 8
 
     def run(self) -> CodemodRefactorGoalReport:
-        if self.goal.max_stages < 1:
-            raise ValueError("goal max_stages must be at least 1")
+        if self.max_stages < 1:
+            raise ValueError("max_stages must be at least 1")
         stages: list[CodemodRefactorGoalStage] = []
         active_scan = self.scan(0)
-        if not self.goal.target_findings(
-            active_scan.findings,
-            active_scan.source_snapshot,
-        ):
-            return self._run_report_authority(
+        if not self.target_findings(active_scan):
+            return self.report(
                 (),
                 active_scan,
                 CodemodWorkflowStopReason.NO_TARGET_FINDINGS,
                 True,
             )
-        for stage_index in range(self.goal.max_stages):
-            stage_attempt = self.stage_attempt(stage_index, active_scan)
-            if stage_attempt.stage is None:
-                return self._run_report_authority(
+        for _stage in range(self.max_stages):
+            snapshot = active_scan.source_snapshot
+            target_findings = self.target_findings(active_scan)
+            plan = snapshot.plan_from_findings(target_findings)
+            class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
+                target_findings,
+                root=self.class_plan_root(),
+                context=snapshot,
+                finding_plan=plan,
+            )
+            if not plan.document.has_recipes:
+                return self.report(
                     tuple(stages),
                     active_scan,
                     CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES,
                     False,
-                    stage_attempt.class_plan_report,
+                    class_plan_report,
                 )
-            stage = stage_attempt.stage
+            document = CodemodPlanDocument(
+                recipes=plan.document.recipes,
+                guard_suite=self.guard_suite.merge(plan.document.guard_suite),
+            )
+            simulation = document.simulate_snapshot(snapshot)
+            projected_scan = self.projected_scan(
+                active_scan,
+                simulation.simulation,
+            )
+            stage = CodemodRefactorGoalStage(
+                class_plan_report=class_plan_report,
+                simulation=simulation,
+                progress=CodemodRefactorGoalProgress.from_findings(
+                    self.migration_type,
+                    active_scan.findings,
+                    projected_scan.findings,
+                    before_snapshot=snapshot,
+                    after_snapshot=projected_scan.source_snapshot,
+                ),
+                finding_change=CodemodFindingChangeProjection(
+                    expected_removed_finding_ids=plan.expected_removed_finding_ids,
+                    finding_delta=CodemodFindingDelta.from_findings(
+                        tuple(active_scan.findings),
+                        tuple(projected_scan.findings),
+                    ),
+                ),
+            )
             if stage.rewrite_count == 0:
-                return self._run_report_authority(
+                return self.report(
                     (*stages, stage),
                     active_scan,
                     CodemodWorkflowStopReason.EMPTY_REWRITE_BATCH,
                     False,
                 )
             if not stage.simulation.is_clean:
-                return self._run_report_authority(
+                return self.report(
                     (*stages, stage),
                     active_scan,
                     CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
                     False,
                 )
-            next_scan = self.next_scan(
-                active_scan,
-                stage,
-                projected_scan=stage_attempt.projected_scan,
-            )
-            recorded_stage = stage if self.dry_run else replace(stage, applied=True)
+            if self.dry_run:
+                next_scan = projected_scan
+                recorded_stage = stage
+            else:
+                stage.simulation.apply()
+                next_scan = self.scan(len(stages) + 1)
+                recorded_stage = replace(stage, applied=True)
             stages.append(recorded_stage)
             if stage.progress.achieved:
-                return self._run_report_authority(
+                return self.report(
                     tuple(stages),
                     next_scan,
                     CodemodWorkflowStopReason.ACHIEVED,
                     True,
                 )
             if not stage.progress.made_progress:
-                return self._run_report_authority(
+                return self.report(
                     tuple(stages),
                     next_scan,
                     CodemodWorkflowStopReason.NO_PROGRESS,
                     False,
                 )
             active_scan = next_scan
-        return self._run_report_authority(
+        return self.report(
             tuple(stages),
             active_scan,
             CodemodWorkflowStopReason.MAX_STAGES,
             False,
         )
 
-    def stage_attempt(
+    def target_findings(
         self,
-        stage_index: int,
         scan: CodemodFixpointScan,
-    ) -> CodemodRefactorGoalStageAttempt:
-        snapshot = scan.source_snapshot
-        target_findings = self.goal.target_findings(
+    ) -> tuple[RefactorFinding, ...]:
+        return self.migration_type.target_findings(
             scan.findings,
-            snapshot,
-        )
-        if not target_findings:
-            return CodemodRefactorGoalStageAttempt(
-                stage_index=stage_index,
-                target_finding_count=0,
-            )
-        plan = snapshot.plan_from_findings(
-            target_findings,
-            detector_ids=self.goal.detector_ids,
-        )
-        class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
-            target_findings,
-            root=self.class_plan_root(),
-            context=snapshot,
-            finding_plan=plan,
-        )
-        if not plan.document.has_recipes:
-            return CodemodRefactorGoalStageAttempt(
-                stage_index=stage_index,
-                target_finding_count=len(target_findings),
-                class_plan_report=class_plan_report,
-            )
-        document = CodemodPlanDocument(
-            recipes=plan.document.recipes,
-            guard_suite=self.guard_suite.merge(plan.document.guard_suite),
-        )
-        simulation = document.simulate_snapshot(snapshot)
-        projected_scan = self.projected_goal_scan(scan, simulation.simulation)
-        progress = CodemodRefactorGoalProgress.from_findings(
-            self.goal,
-            scan.findings,
-            projected_scan.findings,
-            before_snapshot=snapshot,
-            after_snapshot=projected_scan.source_snapshot,
-        )
-        return CodemodRefactorGoalStageAttempt(
-            stage_index=stage_index,
-            target_finding_count=len(target_findings),
-            projected_scan=projected_scan,
-            stage=CodemodRefactorGoalStage(
-                stage_index=stage_index,
-                report=plan.report,
-                class_plan_report=class_plan_report,
-                simulation=simulation,
-                progress=progress,
-                finding_change=CodemodFindingChangeProjection(
-                    expected_removed_finding_ids=plan.expected_removed_finding_ids,
-                    finding_delta=CodemodFindingDelta.from_findings(
-                        tuple(scan.findings),
-                        tuple(projected_scan.findings),
-                    ),
-                ),
-                applied=False,
-            ),
+            scan.source_snapshot,
         )
 
     def class_plan_root(self) -> Path:
@@ -1864,84 +1751,8 @@ class CodemodRefactorGoalRunner(CodemodWorkflowScanRequest):
             return self.roots[0]
         return Path.cwd()
 
-    def next_scan(
-        self,
-        scan: CodemodFixpointScan,
-        stage: CodemodRefactorGoalStage,
-        *,
-        projected_scan: CodemodFixpointScan | None = None,
-    ) -> CodemodFixpointScan:
-        if self.dry_run:
-            if projected_scan is not None:
-                return projected_scan
-            return self.projected_scan(scan, stage.simulation.simulation)
-        stage.simulation.apply()
-        return self.scan(stage.stage_index + 1)
-
-    def projected_goal_scan(
-        self,
-        scan: CodemodFixpointScan,
-        simulation: CodemodSimulationReport,
-    ) -> CodemodFixpointScan:
-        detector_types = self.goal_detector_types()
-        if not detector_types:
-            return self.projected_scan(scan, simulation)
-        modules = ProjectedScanModuleSet(
-            modules=tuple(scan.modules),
-            simulation=simulation,
-            roots=self.roots,
-        ).modules_after_projection()
-        target_findings = self.report_scoped_findings(
-            analyze_detector_types(
-                list(modules),
-                self.config,
-                detector_types=detector_types,
-            )
-        )
-        preserved_findings = tuple(
-            finding
-            for finding in scan.findings
-            if finding.detector_id not in self.goal.detector_ids
-        )
-        return CodemodFixpointScan(
-            modules=list(modules),
-            findings=[*preserved_findings, *target_findings],
-        )
-
-    def goal_detector_types(self) -> tuple[type[IssueDetector], ...]:
-        if not self.goal.detector_ids:
-            return ()
-        detector_types = tuple(
-            IssueDetector.registered_detector_type_for_id(detector_id)
-            for detector_id in self.goal.detector_ids
-        )
-        if any(detector_type is None for detector_type in detector_types):
-            return ()
-        return tuple(
-            detector_type
-            for detector_type in detector_types
-            if detector_type is not None
-        )
-
-    def _run_report_authority(
-        self,
-        stages: tuple[CodemodRefactorGoalStage, ...],
-        scan: CodemodFixpointScan,
-        reason: CodemodWorkflowStopReason,
-        completed: bool,
-        terminal_class_plan_report: FindingRecipeClassPlanReport | None = None,
-    ) -> CodemodRefactorGoalReport:
-        return self.report(
-            stages=stages,
-            scan=scan,
-            reason=reason,
-            completed=completed,
-            terminal_class_plan_report=terminal_class_plan_report,
-        )
-
     def report(
         self,
-        *,
         stages: tuple[CodemodRefactorGoalStage, ...],
         scan: CodemodFixpointScan,
         reason: CodemodWorkflowStopReason,
@@ -1949,14 +1760,14 @@ class CodemodRefactorGoalRunner(CodemodWorkflowScanRequest):
         terminal_class_plan_report: FindingRecipeClassPlanReport | None = None,
     ) -> CodemodRefactorGoalReport:
         return CodemodRefactorGoalReport(
-            goal=self.goal,
+            migration_type=self.migration_type,
             stages=stages,
             completed=completed,
             terminal_reason=reason,
             final_finding_count=len(scan.findings),
             final_target_finding_ids=tuple(
                 finding.stable_id
-                for finding in self.goal.target_findings(
+                for finding in self.migration_type.target_findings(
                     scan.findings,
                     scan.source_snapshot,
                 )

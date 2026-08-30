@@ -461,6 +461,20 @@ class RefactorConcept(ABC):
         )
 
     @classmethod
+    def target_findings(
+        cls,
+        findings: Iterable[RefactorFinding],
+        selector_context: "CodemodSelectorContext | None" = None,
+    ) -> tuple[RefactorFinding, ...]:
+        """Project findings whose executable declaration inherits this concept."""
+
+        return tuple(
+            finding
+            for finding in findings
+            if cls.matches_finding(finding, selector_context)
+        )
+
+    @classmethod
     def leaf_concept_for_declaration(
         cls,
         declaration_type: type["RefactorConcept"],
@@ -533,7 +547,11 @@ class DeadCompatibilityErasureConcept(SemanticCarrierConcept):
     """Erase compatibility projections after their authority is established."""
 
 
-class AutoRegisterConcept(RefactorConcept):
+class ClassFamilyAuthorityConcept(RefactorConcept):
+    """Establish a class-family authority and derive its collection views."""
+
+
+class AutoRegisterConcept(ClassFamilyAuthorityConcept):
     """Replace registration mirrors with nominal automatic registration."""
 
 
@@ -22279,6 +22297,13 @@ class SemanticMirrorAuthorityLocation:
     authority_path: str
     authority_name: str
 
+    def authority_claim(self) -> AuthorityClaim:
+        return AuthorityClaim(
+            claimed_symbol=self.authority_name,
+            file_path=self.authority_path,
+            qualname=self.authority_name,
+        )
+
     @classmethod
     def at_authority_file(
         cls,
@@ -22459,7 +22484,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-class-family-collection",
             reason="Derive subclass collection from the class-family authority.",
-        )
+        ).with_authority_claim(self.authority_claim())
         if self.projection_path != self.authority_path:
             recipe = recipe.with_operation(
                 EnsureImportOperation(
@@ -22482,6 +22507,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
 class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
     SharedAssignmentValueMixin,
     ContextualSemanticMirrorRecipeBuilder,
+    ClassFamilyAuthorityConcept,
 ):
     """Build recipes for literal subclass collections that mirror a class family."""
 

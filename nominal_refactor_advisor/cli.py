@@ -99,7 +99,6 @@ from .codemod_workflow import (
     CodemodFixpointRunner,
     CodemodFixpointScan,
     CodemodProjectedFindingReport,
-    CodemodRefactorGoal,
     CodemodRefactorGoalReport,
     CodemodRefactorGoalRunner,
     CodemodSimulationFindingProjection,
@@ -631,8 +630,7 @@ _CLI_ARGUMENT_SPECS = (
             dest="codemod_goal_detectors",
             default=[],
             help=(
-                "Restrict --codemod-refactor-goal, --codemod-synthesize-plan, "
-                "and --codemod-synthesize-class-plan to findings from this detector "
+                "Restrict one-shot plan synthesis to findings from this detector "
                 "(can be repeated)."
             ),
         ),
@@ -642,18 +640,7 @@ _CLI_ARGUMENT_SPECS = (
             dest="codemod_goal_finding_ids",
             default=[],
             help=(
-                "Restrict --codemod-refactor-goal to one stable finding id "
-                "(can be repeated)."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-goal-pattern",),
-            action="append",
-            dest="codemod_goal_patterns",
-            value_type=int,
-            default=[],
-            help=(
-                "Restrict --codemod-refactor-goal to a canonical pattern id "
+                "Restrict one-shot plan synthesis to one stable finding id "
                 "(can be repeated)."
             ),
         ),
@@ -1664,10 +1651,10 @@ def format_codemod_refactor_goal_markdown(
     return report.to_markdown()
 
 
-def codemod_refactor_goal_from_args(
+def codemod_refactor_concept_from_args(
     args: argparse.Namespace,
-) -> CodemodRefactorGoal:
-    """Build the high-level codemod goal requested by CLI flags."""
+) -> type[RefactorConcept]:
+    """Resolve the nominal semantic migration requested at the CLI boundary."""
 
     try:
         concept_type = RefactorConcept.declaration_for_key(args.codemod_refactor_goal)
@@ -1680,14 +1667,7 @@ def codemod_refactor_goal_from_args(
             f"unknown codemod refactor goal {args.codemod_refactor_goal!r}; "
             f"choose one of {choices}"
         ) from error
-    return CodemodRefactorGoal(
-        goal_id=concept_type.concept_key(),
-        concept_type=concept_type,
-        target_finding_ids=tuple(args.codemod_goal_finding_ids),
-        detector_ids=tuple(args.codemod_goal_detectors),
-        pattern_ids=tuple(args.codemod_goal_patterns),
-        max_stages=args.codemod_goal_max_stages,
-    )
+    return concept_type
 
 
 def format_architecture_guard_markdown(report: ArchitectureGuardReport) -> str:
@@ -1773,7 +1753,7 @@ def format_plans_markdown(plans: list[RefactorPlan]) -> str:
                 "   - Escape missing capabilities: "
                 f"{', '.join(trajectory.missing_capabilities)}"
             )
-            lines.append("   - Escape trajectory: " f"{' -> '.join(trajectory.steps)}")
+            lines.append(f"   - Escape trajectory: {' -> '.join(trajectory.steps)}")
             lines.append(
                 "   - Counterfactual findings removed: "
                 f"{', '.join(trajectory.expected_removed_findings)}"
@@ -1871,7 +1851,7 @@ def format_execution_plan_markdown(
 
 
 def _format_change_budget_item(name: str, budget: LineChangeBudget) -> str:
-    return f"{name} +{budget.added}/-{budget.deleted} " f"(net {budget.net_added:+d})"
+    return f"{name} +{budget.added}/-{budget.deleted} (net {budget.net_added:+d})"
 
 
 def format_timing_markdown(timing: ScanTiming) -> str:
@@ -2835,9 +2815,8 @@ class CodemodExecutionMode(Enum):
         if project_findings and self is not type(self).SIMULATE:
             parser.error("--codemod-project-findings requires --codemod-simulate")
         if fixpoint and self not in (type(self).NONE, type(self).APPLY):
-            parser.error(
-                "--codemod-fixpoint can only be combined with --codemod-apply"
-            )
+            parser.error("--codemod-fixpoint can only be combined with --codemod-apply")
+
 
 @dataclass(frozen=True)
 class CodemodPlanExecutionRequest:
@@ -4008,7 +3987,7 @@ def _main_without_deadline() -> int:
         return 0 if report.completed else 1
     if args.codemod_refactor_goal is not None:
         try:
-            refactor_goal = codemod_refactor_goal_from_args(args)
+            migration_type = codemod_refactor_concept_from_args(args)
         except ValueError as error:
             parser.error(str(error))
         report = CodemodRefactorGoalRunner(
@@ -4021,7 +4000,8 @@ def _main_without_deadline() -> int:
             guard_suite=codemod_plan_sequence.guard_suite,
             dry_run=not codemod_execution_mode.applies_changes,
             initial_scan=workflow_initial_scan,
-            goal=refactor_goal,
+            migration_type=migration_type,
+            max_stages=args.codemod_goal_max_stages,
         ).run()
         replay_plan_payload = report.replay_sequence.to_dict()
         write_cli_json_artifact(args.codemod_goal_plan_out, replay_plan_payload)

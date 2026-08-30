@@ -15,7 +15,6 @@ from nominal_refactor_advisor.codemod import (
     NominalBoundaryConcept,
     codemod_plan_from_findings,
 )
-from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
 from nominal_refactor_advisor.detectors import (
     DetectorCacheGranularity,
     DetectorConfig,
@@ -937,11 +936,6 @@ def test_nominal_boundary_goal_targets_all_ssot_authority_findings_by_default() 
     non_mirror_ssot_finding = _goal_policy_finding("repeated_builder_calls")
     ordinary_finding = _goal_policy_finding("typing_protocol_contract")
     findings = (mirror_finding, non_mirror_ssot_finding, ordinary_finding)
-    goal = CodemodRefactorGoal(
-        goal_id="semantic-descent",
-        concept_type=NominalBoundaryConcept,
-    )
-
     assert (
         non_mirror_ssot_finding.detector_id
         in IssueDetector.ssot_authority_detector_ids()
@@ -950,10 +944,10 @@ def test_nominal_boundary_goal_targets_all_ssot_authority_findings_by_default() 
         non_mirror_ssot_finding.detector_id
         not in IssueDetector.semantic_mirror_detector_ids()
     )
-    assert tuple(finding.detector_id for finding in goal.target_findings(findings)) == (
-        "semantic_mirror_without_descent",
-        "repeated_builder_calls",
-    )
+    assert tuple(
+        finding.detector_id
+        for finding in NominalBoundaryConcept.target_findings(findings)
+    ) == ("semantic_mirror_without_descent", "repeated_builder_calls")
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(
@@ -2466,6 +2460,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate_snapshot(snapshot)
     recipe_payload = plan.document.to_dict()["recipes"][0]
+    recipe = plan.document.recipes[0]
     operations = recipe_payload["operations"]
     rewritten = next(
         source
@@ -2474,6 +2469,13 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     )
 
     assert plan.records[0].status.value == "planned"
+    assert len(recipe.authority_claims) == 1
+    claim = recipe.authority_claims[0]
+    assert claim.claimed_symbol == "LabeledMode"
+    assert claim.file_path == (package_dir / "taxonomy.py").as_posix()
+    assert claim.qualname == "LabeledMode"
+    assert claim.authority_kind == ""
+    assert claim.claimed_symbol not in {"CapabilityMode", "ObservationMode"}
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert [operation["operation"] for operation in operations] == [
