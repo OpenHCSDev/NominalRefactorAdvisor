@@ -308,7 +308,6 @@ class DetectorSemanticEngineSignature(AnalysisEngineSignature):
             "nominal_refactor_advisor.annotation_semantics",
             "nominal_refactor_advisor.assignment_projection",
             "nominal_refactor_advisor.ast_tools",
-            "nominal_refactor_advisor.candidate_collection_semantics",
             "nominal_refactor_advisor.class_index",
             "nominal_refactor_advisor.constructor_algebra",
             "nominal_refactor_advisor.detectors._base",

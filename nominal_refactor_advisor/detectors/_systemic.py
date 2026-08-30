@@ -5335,44 +5335,6 @@ declare_candidate_rule_detector(
 )
 
 
-declare_candidate_rule_detector(
-    NamedFunctionCollectorBoilerplateCandidate,
-    high_confidence_certified_spec(
-        PatternId.STAGED_ORCHESTRATION,
-        "Named-function candidate collectors should share traversal algebra",
-        "A candidate collector that manually initializes `candidates`, walks `_iter_named_functions(module)`, appends candidate records, and returns the accumulator is repeating traversal and accumulator mechanics. The collector should delegate named-function traversal to one typed query helper and keep only the per-function projection as semantic residue.",
-        "one named-function collector algebra owns traversal and accumulation",
-        "candidate collector repeats named-function traversal with manual append accumulator",
-        (
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda collector: (
-        f"`{collector.function_name}` manually accumulates {collector.candidate_type_names} over `_iter_named_functions(module)` across {collector.line_count} lines."
-    ),
-    scaffold=lambda collector: (
-        "def _candidate_for_function(module, qualname, function):\n    yield Candidate(...)\n\ndef _candidates(module):\n    return _collect_named_function_candidates(module, _candidate_for_function)"
-    ),
-    codemod_patch=lambda collector: (
-        "# Delete the manual `_iter_named_functions(module)` traversal and route collection through `_collect_named_function_candidates(...)`; keep only the per-function projection hook."
-    ),
-    metrics=lambda collector: OrchestrationMetrics(
-        function_line_count=collector.line_count,
-        branch_site_count=collector.append_count,
-        call_site_count=1,
-        parameter_count=len(collector.candidate_type_names),
-        callee_family_count=1,
-    ),
-    detector_priority=-14,
-    candidate_collector=_named_function_collector_boilerplate_candidates,
-)
-
 
 declare_candidate_rule_detector(
     IdentityKeywordForwardingShellCandidate,
@@ -5744,45 +5706,6 @@ declare_candidate_rule_detector(
     ),
     detector_priority=-12,
     candidate_collector=_optional_parameter_branch_candidates,
-)
-
-
-declare_candidate_rule_detector(
-    AstStreamCollectorBoilerplateCandidate,
-    high_confidence_certified_spec(
-        PatternId.STAGED_ORCHESTRATION,
-        "AST stream candidate collectors should share traversal algebra",
-        "A candidate collector that manually creates a list accumulator, walks an AST stream such as `ast.walk(...)` or `_walk_nodes(...)`, appends candidate records, and returns the accumulator is repeating stream traversal and accumulation mechanics. The collector should delegate typed AST stream traversal to one query helper and keep only node-level projection semantics.",
-        "one typed AST stream collector algebra owns traversal and accumulation",
-        "candidate collector repeats AST stream traversal with manual append accumulator",
-        (
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda collector: (
-        f"`{collector.function_name}` manually accumulates {collector.candidate_type_names} from {collector.stream_call_names} via `{collector.accumulator_name}` across {collector.line_count} lines."
-    ),
-    scaffold=lambda collector: (
-        "def _candidate_for_node(module, node):\n    yield Candidate(...)\n\ndef _candidates(module):\n    return _collect_ast_node_candidates(module, module.module, ast.NodeType, _candidate_for_node)"
-    ),
-    codemod_patch=lambda collector: (
-        "# Delete the manual AST traversal and route collection through `_collect_ast_node_candidates(...)`; keep only the typed node projection hook."
-    ),
-    metrics=lambda collector: OrchestrationMetrics(
-        function_line_count=collector.line_count,
-        branch_site_count=collector.append_count,
-        call_site_count=len(collector.stream_call_names),
-        parameter_count=len(collector.candidate_type_names),
-        callee_family_count=1,
-    ),
-    detector_priority=-13,
-    candidate_collector=_ast_stream_collector_boilerplate_candidates,
 )
 
 

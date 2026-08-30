@@ -3145,53 +3145,6 @@ NamedFunctionProjector: TypeAlias = Callable[
 ]
 
 
-ConfiguredNamedFunctionProjectorP = ParamSpec("ConfiguredNamedFunctionProjectorP")
-
-
-def _collect_named_function_candidates(
-    module: ParsedModule,
-    projector: NamedFunctionProjector,
-    *projector_args: NamedFunctionProjectorP.args,
-    sort_key: NamedFunctionSortKey[NamedFunctionCandidateT] = None,
-    **projector_kwargs: NamedFunctionProjectorP.kwargs,
-) -> tuple[NamedFunctionCandidateT, ...]:
-    projected = (
-        candidate
-        for qualname, function in _iter_named_functions(module)
-        for candidate in projector(
-            module, qualname, function, *projector_args, **projector_kwargs
-        )
-    )
-    return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)
-
-
-def _collect_configured_named_function_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-    projector: Callable[
-        Concatenate[
-            ParsedModule,
-            str,
-            NamedFunctionNode,
-            DetectorConfig,
-            ConfiguredNamedFunctionProjectorP,
-        ],
-        Iterable[NamedFunctionCandidateT],
-    ],
-    *projector_args: ConfiguredNamedFunctionProjectorP.args,
-    sort_key: NamedFunctionSortKey[NamedFunctionCandidateT] = None,
-    **projector_kwargs: ConfiguredNamedFunctionProjectorP.kwargs,
-) -> tuple[NamedFunctionCandidateT, ...]:
-    projected = (
-        candidate
-        for qualname, function in _iter_named_functions(module)
-        for candidate in projector(
-            module, qualname, function, config, *projector_args, **projector_kwargs
-        )
-    )
-    return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)
-
-
 @lru_cache(maxsize=None)
 def _module_builder_call_shapes(
     module: ParsedModule,
@@ -11152,22 +11105,6 @@ class InlineAstPredicateGrammarCandidate(ClassMethodLineWitnessCandidate):
     ast_type_names: tuple[str, ...]
     predicate_count: int
     traversal_count: int
-    line_count: int
-
-
-@dataclass(frozen=True)
-class NamedFunctionCollectorBoilerplateCandidate(FunctionLineWitnessCandidate):
-    candidate_type_names: tuple[str, ...]
-    append_count: int
-    line_count: int
-
-
-@dataclass(frozen=True)
-class AstStreamCollectorBoilerplateCandidate(FunctionLineWitnessCandidate):
-    accumulator_name: str
-    stream_call_names: tuple[str, ...]
-    candidate_type_names: tuple[str, ...]
-    append_count: int
     line_count: int
 
 

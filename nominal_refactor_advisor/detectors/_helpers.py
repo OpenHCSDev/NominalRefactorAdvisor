@@ -15,10 +15,6 @@ from ..factorization import (
     ResidueHookNamesCarrier,
     factorization_axis_catalog_certificate,
 )
-from ..candidate_collection_semantics import (
-    AstStreamTraversal,
-    named_function_loop_components,
-)
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_tools import SourceModule
 from ..native_syntax import NativePythonSyntaxIndex
@@ -63,6 +59,8 @@ DerivedQuerySignature: TypeAlias = tuple[str, str, str]
 DerivedQuerySpecsBySignature: TypeAlias = dict[
     DerivedQuerySignature, MutableNamedStringSequenceSpecs
 ]
+
+_APPEND_METHOD_NAME = "append"
 
 
 @dataclass(frozen=True)
@@ -6947,261 +6945,6 @@ def _inline_candidate_renderer_declaration_candidates(
     )
 
 
-_CANDIDATE_ACCUMULATOR_NAME = "candidates"
-_APPEND_METHOD_NAME = "append"
-
-
-def _assigns_candidate_accumulator(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.AnnAssign)
-        and isinstance(node.target, ast.Name)
-        and node.target.id == _CANDIDATE_ACCUMULATOR_NAME
-    ) or (
-        isinstance(node, ast.Assign)
-        and any(
-            (
-                isinstance(target, ast.Name)
-                and target.id == _CANDIDATE_ACCUMULATOR_NAME
-                for target in node.targets
-            )
-        )
-    )
-
-
-def _is_named_function_iteration(node: ast.For) -> bool:
-    return named_function_loop_components(node) is not None
-
-
-def _candidate_append_constructor_name(node: ast.AST) -> str | None:
-    call = as_ast(node, ast.Call)
-    if call is None:
-        return None
-    match = attribute_call_match(
-        call,
-        method_name=_APPEND_METHOD_NAME,
-        owner_type=ast.Name,
-        owner_name=_CANDIDATE_ACCUMULATOR_NAME,
-        single_argument_required=True,
-        argument_count=1,
-        allow_keywords=False,
-    )
-    appended = as_ast(match.single_argument if match is not None else None, ast.Call)
-    candidate_name = _call_name(appended.func) if appended is not None else None
-    return (
-        candidate_name
-        if candidate_name is not None and candidate_name.endswith("Candidate")
-        else None
-    )
-
-
-def _candidate_append_constructor_names(node: ast.AST) -> tuple[str, ...]:
-    return tuple(
-        (
-            candidate_name
-            for child in _walk_nodes(node)
-            if (candidate_name := _candidate_append_constructor_name(child)) is not None
-        )
-    )
-
-
-def _is_candidate_accumulator_return_value(node: ast.AST | None) -> bool:
-    call = as_ast(node, ast.Call)
-    if call is None or not call.args:
-        return False
-    if _call_name(call.func) not in {"tuple", "sorted_tuple"}:
-        return False
-    return name_id(call.args[0]) == _CANDIDATE_ACCUMULATOR_NAME
-
-
-def _returns_candidate_accumulator(node: ast.FunctionDef) -> bool:
-    for statement in _trim_docstring_body(node.body):
-        if not isinstance(statement, ast.Return):
-            continue
-        if _is_candidate_accumulator_return_value(statement.value):
-            return True
-    return False
-
-
-def _named_function_collector_boilerplate_candidates(
-    module: ParsedModule,
-) -> tuple[NamedFunctionCollectorBoilerplateCandidate, ...]:
-    collector_candidates: list[NamedFunctionCollectorBoilerplateCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.FunctionDef) or node.end_lineno is None:
-            continue
-        if not node.name.endswith("_candidates"):
-            continue
-        if not any(
-            _assigns_candidate_accumulator(child) for child in _walk_nodes(node)
-        ):
-            continue
-        if not _returns_candidate_accumulator(node):
-            continue
-        append_type_names = tuple(
-            (
-                candidate_name
-                for child in _walk_nodes(node)
-                if isinstance(child, ast.For) and _is_named_function_iteration(child)
-                for candidate_name in _candidate_append_constructor_names(child)
-            )
-        )
-        if not append_type_names:
-            continue
-        collector_candidates.append(
-            NamedFunctionCollectorBoilerplateCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                function_name=node.name,
-                candidate_type_names=sorted_tuple(set(append_type_names)),
-                append_count=len(append_type_names),
-                line_count=node.end_lineno - node.lineno + 1,
-            )
-        )
-    return tuple(collector_candidates)
-
-
-@dataclass(frozen=True)
-class _ListAccumulatorBinding:
-    name: str
-
-    @classmethod
-    def from_statement(cls, statement: ast.stmt) -> "_ListAccumulatorBinding | None":
-        binding = named_value_binding(statement)
-        if binding is None:
-            return None
-        if isinstance(binding.value, ast.List):
-            return cls(binding.name) if not binding.value.elts else None
-        if not isinstance(binding.value, ast.Call):
-            return None
-        is_empty_list = (
-            _call_name(binding.value.func) == BuiltinCallName.LIST
-            and not binding.value.args
-            and not binding.value.keywords
-        )
-        return cls(binding.name) if is_empty_list else None
-
-
-def _local_list_accumulator_names(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> frozenset[str]:
-    return frozenset(
-        binding.name
-        for statement in _trim_docstring_body(function.body)
-        if (binding := _ListAccumulatorBinding.from_statement(statement)) is not None
-    )
-
-
-def _returned_accumulator_names(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> frozenset[str]:
-    returned_names: set[str] = set()
-    for statement in _trim_docstring_body(function.body):
-        if not isinstance(statement, ast.Return):
-            continue
-        call = as_ast(statement.value, ast.Call)
-        if call is None or not call.args:
-            continue
-        if _call_name(call.func) not in {"tuple", "sorted_tuple"}:
-            continue
-        if (returned_name := name_id(call.args[0])) is not None:
-            returned_names.add(returned_name)
-    return frozenset(returned_names)
-
-
-def _append_candidate_constructor_name(
-    node: ast.AST, accumulator_names: frozenset[str]
-) -> tuple[str, str] | None:
-    return (
-        Maybe.of(as_ast(node, ast.Call))
-        .project(
-            lambda call: attribute_call_match(
-                call,
-                method_name=_APPEND_METHOD_NAME,
-                owner_type=ast.Name,
-                single_argument_required=True,
-                argument_count=1,
-                allow_keywords=False,
-            )
-        )
-        .filter(lambda match: match.owner.id in accumulator_names)
-        .combine(
-            lambda match: (
-                _call_name(appended.func)
-                if (appended := as_ast(match.single_argument, ast.Call)) is not None
-                else None
-            ),
-            lambda match, candidate_name: (
-                (match.owner.id, candidate_name)
-                if candidate_name.endswith("Candidate")
-                else None
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _ast_stream_call_name(node: ast.AST) -> str | None:
-    call = as_ast(node, ast.Call)
-    if call is None:
-        return None
-    traversal_match = AstStreamTraversal.first_match(call)
-    return traversal_match.call_name if traversal_match is not None else None
-
-
-def _ast_stream_collector_boilerplate_candidates(
-    module: ParsedModule,
-) -> tuple[AstStreamCollectorBoilerplateCandidate, ...]:
-    stream_collectors: list[AstStreamCollectorBoilerplateCandidate] = []
-    for function in module.module.body:
-        if not isinstance(function, ast.FunctionDef) or function.end_lineno is None:
-            continue
-        accumulator_names = _local_list_accumulator_names(
-            function
-        ) & _returned_accumulator_names(function)
-        if not accumulator_names:
-            continue
-        stream_calls: list[str] = []
-        appended_pairs: list[tuple[str, str]] = []
-        for node in _walk_nodes(function):
-            if not isinstance(node, ast.For):
-                continue
-            stream_call_name = _ast_stream_call_name(node.iter)
-            if stream_call_name is None:
-                continue
-            loop_pairs = tuple(
-                pair
-                for child in _walk_nodes(node)
-                if (
-                    pair := _append_candidate_constructor_name(child, accumulator_names)
-                )
-                is not None
-            )
-            if not loop_pairs:
-                continue
-            stream_calls.append(stream_call_name)
-            appended_pairs.extend(loop_pairs)
-        if not appended_pairs:
-            continue
-        accumulator_name = next(
-            iter(sorted({name for name, _ in appended_pairs} & accumulator_names))
-        )
-        stream_collectors.append(
-            AstStreamCollectorBoilerplateCandidate(
-                file_path=str(module.path),
-                line=function.lineno,
-                function_name=function.name,
-                accumulator_name=accumulator_name,
-                stream_call_names=sorted_tuple(set(stream_calls)),
-                candidate_type_names=sorted_tuple(
-                    {candidate_name for _, candidate_name in appended_pairs}
-                ),
-                append_count=len(appended_pairs),
-                line_count=function.end_lineno - function.lineno + 1,
-            )
-        )
-    return tuple(stream_collectors)
-
-
 def _candidate_detector_scope_kind(
     node: ast.ClassDef,
 ) -> CandidateCollectorScope | None:
@@ -8728,7 +8471,7 @@ def _numeric_subscript_path(node: ast.AST) -> tuple[str, tuple[int, ...]] | None
 def _tuple_index_semantic_opacity_candidates(
     module: ParsedModule,
 ) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
-    return _collect_named_function_candidates(
+    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
         module,
         _tuple_index_semantic_opacity_candidate_for_function,
         sort_key=lambda candidate: (
@@ -9249,10 +8992,10 @@ def _nested_builder_shell_candidates(
     module: ParsedModule,
     config: DetectorConfig,
 ) -> tuple[NestedBuilderShellCandidate, ...]:
-    return _collect_configured_named_function_candidates(
+    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
         module,
-        config,
         _nested_builder_shell_candidates_for_function,
+        config,
         sort_key=lambda item: (item.file_path, item.lineno),
     )
 
