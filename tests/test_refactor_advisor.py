@@ -8868,51 +8868,6 @@ def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
     assert "class StateFamily(ABC)" in case_finding.scaffold
 
 
-def test_detects_isinstance_family_scatter_with_polymorphic_solution(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass EvidenceAction:\n    pass\n\n\nclass PayloadProjection:\n    pass\n\n\nclass PolicyEvidence:\n    pass\n\n\nclass EvidenceScope:\n    pass\n\n\ndef evidence_values(value, field):\n    if isinstance(value, EvidenceAction):\n        return value.action_values(field)\n    if isinstance(value, PayloadProjection):\n        return value.projection_values(field)\n    if isinstance(value, PolicyEvidence):\n        return value.policy_values(field)\n    if isinstance(value, EvidenceScope):\n        return value.scope_values(field)\n    return ()\n",
-    )
-    findings = analyze_path(tmp_path)
-    scatter_finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "isinstance_family_scatter"
-        )
-    )
-    assert scatter_finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
-    assert "evidence_values" in scatter_finding.summary
-    assert "EvidenceScope" in scatter_finding.summary
-    assert scatter_finding.scaffold is not None
-    assert "class ValueCarrier(ABC)" in scatter_finding.scaffold
-    assert "project_family_value" in scatter_finding.scaffold
-    assert scatter_finding.codemod_patch is not None
-    assert "polymorphic ABC/base method" in scatter_finding.codemod_patch
-
-
-def test_detects_two_case_isinstance_family_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass ObjectLabelPayload:\n    pass\n\n\nclass ObjectLabelSet:\n    pass\n\n\ndef contextualize(output_value, source_payload):\n    if isinstance(output_value, ObjectLabelPayload):\n        return output_value.with_source_image_context(source_payload)\n    if isinstance(output_value, ObjectLabelSet):\n        return output_value.with_source_image_context(source_payload)\n    return output_value\n",
-    )
-    findings = analyze_path(tmp_path)
-    scatter_finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "isinstance_family_scatter"
-        )
-    )
-    assert scatter_finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
-    assert "2 `isinstance` checks" in scatter_finding.summary
-    assert "ObjectLabelPayload" in scatter_finding.summary
-    assert "ObjectLabelSet" in scatter_finding.summary
-    assert "polymorphic ABC/base method" in (scatter_finding.codemod_patch or "")
 
 
 def test_abc_polymorphism_detector_requires_shared_base(tmp_path: Path) -> None:

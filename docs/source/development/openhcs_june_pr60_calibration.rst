@@ -242,8 +242,9 @@ to 1.35x and 1.21x respectively because the removed noise was itself
 concentrated on dataclass-heavy compatibility code.  This is a precision win,
 not an enrichment win: the compiler deletion loses all eight unsound
 composition findings and 25 of 29 reflection findings while preserving the
-``available_carrier_reuse``, ``isinstance_family_scatter``, private-authority,
-and wrapper-lattice signals.
+``available_carrier_reuse``, shared-base nominal-dispatch, private-authority,
+and wrapper-lattice signals. The broad ``isinstance`` scatter observation is now
+reported only when class-index evidence proves an existing nominal base.
 
 Correlation-Preserving Mirror Correction
 -----------------------------------------

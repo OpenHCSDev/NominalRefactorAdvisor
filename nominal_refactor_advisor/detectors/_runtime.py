@@ -2229,67 +2229,6 @@ def _isinstance_family_scatter_candidates(
     )
 
 
-class IsinstanceFamilyScatterDetector(PerModuleIssueDetector):
-    finding_spec = high_confidence_spec(
-        PatternId.NOMINAL_INTERFACE_WITNESS,
-        "Scattered concrete isinstance recovery should become polymorphic behavior",
-        "Repeated `isinstance` checks against several concrete members of the same semantic family leave the consumer responsible for decoding family membership. The nominal boundary should expose polymorphic behavior through an ABC/base method or generated adapter family instead of scattering concrete type recovery through the walker.",
-        "single polymorphic ABC/base authority owns concrete family evidence projection",
-        "one owner repeatedly checks one subject against several concrete runtime types",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS,
-    )
-
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        del config
-        findings: list[RefactorFinding] = []
-        for candidate in _isinstance_family_scatter_candidates(module):
-            type_summary = ", ".join(candidate.type_names[:6])
-            evidence = tuple(
-                SourceLocation(
-                    candidate.file_path,
-                    line,
-                    f"{candidate.qualname}:{candidate.subject_expression}",
-                )
-                for line in candidate.line_numbers[:8]
-            )
-            family_name = (
-                f"{_camel_case(candidate.subject_expression.rsplit('.', 1)[-1])}"
-                "Carrier"
-            )
-            findings.append(
-                self.build_finding(
-                    (
-                        f"`{candidate.qualname}` scatters {candidate.site_count} "
-                        f"`isinstance` checks on `{candidate.subject_expression}` "
-                        f"across concrete family types {type_summary}."
-                    ),
-                    evidence,
-                    scaffold=(
-                        f"class {family_name}(ABC):\n"
-                        "    @abstractmethod\n"
-                        "    def project_family_value(self, request): ...\n\n"
-                        "# Make each concrete family member inherit the ABC and implement the hook.\n"
-                        "# If the concrete classes are external, register nominal adapter classes once;\n"
-                        "# consumers should call the polymorphic method, not enumerate concrete types."
-                    ),
-                    codemod_patch=(
-                        "# Replace the scattered "
-                        f"`isinstance({candidate.subject_expression}, ...)` branches "
-                        f"in `{candidate.qualname}` with one polymorphic ABC/base method.\n"
-                        "# Move each concrete case body onto the matching subclass or a registered "
-                        "adapter; leave at most one fail-loud nominal boundary check."
-                    ),
-                    metrics=DispatchCountMetrics(
-                        dispatch_site_count=candidate.site_count,
-                        dispatch_axis=candidate.subject_expression,
-                        literal_cases=candidate.type_names,
-                    ),
-                )
-            )
-        return findings
 
 
 
