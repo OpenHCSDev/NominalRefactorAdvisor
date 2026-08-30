@@ -5951,51 +5951,6 @@ declare_candidate_rule_detector(
 
 
 
-declare_candidate_rule_detector(
-    LatentNominalFunctionFamilyCandidate,
-    high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Scattered function cohort should become a nominal owner family",
-        "A cohort of module-level functions shares the same semantic first parameter and repeatedly reads the same owner attributes, but its naming does not expose a simple prefix/suffix axis. The code is still acting like a latent object: the shared parameter should become a nominal owner/ABC and the functions should become methods, hooks, or strategy operations.",
-        "nominal owner ABC with operation hooks derived from a scattered function cohort",
-        "module-level functions share an owner parameter and attribute surface without a named owner",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
-    ),
-    summary=lambda family: (
-        f"`{family.file_path}` has scattered functions {family.function_names} "
-        f"sharing first parameter `{family.owner_parameter_name}` and owner "
-        f"attributes {family.owner_attribute_names}; recover the latent nominal owner"
-        + (
-            f" with consumer fanout {family.consumer_symbols}."
-            if family.consumer_symbols
-            else "."
-        )
-    ),
-    scaffold=lambda family: (
-        "class LatentOwnerFamily(ABC):\n"
-        f"    # Own `{family.owner_parameter_name}` and expose shared attributes "
-        f"{family.owner_attribute_names} through a nominal contract.\n"
-        "    @abstractmethod\n"
-        "    def run_operation(self): ..."
-    ),
-    codemod_patch=lambda family: (
-        f"# Move scattered functions {family.function_names} behind a nominal owner "
-        f"for `{family.owner_parameter_name}`.\n"
-        "# Convert each operation into a method/hook/strategy case; keep top-level "
-        "functions only as compatibility facades if they are public API."
-    ),
-    compression_certificate=lambda family: family.compression_certificate,
-    metrics=lambda family: OrchestrationMetrics(
-        function_line_count=family.line_count,
-        branch_site_count=0,
-        call_site_count=len(family.function_names) + len(family.consumer_symbols),
-        parameter_count=1,
-        callee_family_count=len(family.function_names),
-    ),
-    detector_priority=-12,
-    candidate_collector=_latent_nominal_function_family_candidates,
-)
 
 
 declare_candidate_rule_detector(

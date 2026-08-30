@@ -12557,10 +12557,6 @@ class FunctionFamilyCompressionSurface(FunctionFamilyLineSurface):
     compression_certificate: CompressionCertificate
 
 
-@dataclass(frozen=True)
-class OwnerFunctionFamilyCompressionSurface(FunctionFamilyCompressionSurface):
-    owner_parameter_name: str
-    owner_attribute_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -12687,13 +12683,6 @@ class LifecycleStageSequenceCandidate(
 ):
     stage_names: tuple[str, ...]
 
-
-@dataclass(frozen=True)
-class LatentNominalFunctionFamilyCandidate(
-    OwnerFunctionFamilyCompressionSurface, LineWitnessCandidate
-):
-    shared_call_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
 
 
 @dataclass(frozen=True)

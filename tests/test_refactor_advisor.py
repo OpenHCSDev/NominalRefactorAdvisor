@@ -8731,34 +8731,6 @@ def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
 
 
 
-def test_detects_latent_nominal_function_family_without_name_axis(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/records.py",
-        "\ndef render_dashboard(record, context):\n    title = record.title\n    status = record.status\n    return render(title, status, context.theme)\n\n\ndef validate_input(record, context):\n    errors = []\n    if not record.title:\n        errors.append('title')\n    if not record.status:\n        errors.append('status')\n    return tuple(errors)\n\n\ndef emit_payload(record, context):\n    payload = {'title': record.title, 'status': record.status}\n    return encode(payload, context.format)\n\n\ndef publish(record, context):\n    return emit_payload(record, context), render_dashboard(record, context)\n",
-    )
-
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            item
-            for item in findings
-            if item.detector_id == "latent_nominal_function_family"
-        )
-    )
-
-    assert "render_dashboard" in finding.summary
-    assert "validate_input" in finding.summary
-    assert "emit_payload" in finding.summary
-    assert "first parameter `record`" in finding.summary
-    assert "title" in finding.summary
-    assert "consumer fanout" in finding.summary
-    assert "publish" in finding.summary
-    assert "LatentOwnerFamily" in (finding.scaffold or "")
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
 
 
 
