@@ -24,7 +24,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.TupleDictReturnNominalizationConcept,
         codemod.DataclassPayloadProjectionConcept,
         codemod.TupleDictReturnRecordConcept,
-        codemod.BoundarySourceContextAuthorityConcept,
         codemod.DeadCompatibilityErasureConcept,
         codemod.AutoRegisterConcept,
         codemod.AutoRegisterClassRegistryConcept,
@@ -63,9 +62,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ),
     codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder: (
         codemod.DataclassPayloadProjectionConcept
-    ),
-    codemod.BoundarySourceContextReturnDictMappingRecipeBuilder: (
-        codemod.BoundarySourceContextAuthorityConcept
     ),
     codemod.SemanticDictBagReturnRecordMappingRecipeBuilder: (
         codemod.TupleDictReturnRecordConcept
@@ -107,9 +103,6 @@ EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
 )
 
 EXPECTED_DECLARED_MAPPING_BRIDGES = {
-    codemod.FormalBoundarySourceScopeFindingRecipeSynthesizer: (
-        codemod.BoundarySourceContextReturnDictMappingRecipeBuilder
-    ),
     codemod.GenericRoleCaseTableFindingRecipeSynthesizer: (
         codemod.GenericRoleCaseTableMappingRecipeBuilder
     ),

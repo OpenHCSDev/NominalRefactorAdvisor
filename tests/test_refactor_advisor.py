@@ -18052,17 +18052,11 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
         symbol="ActionReport.to_dict:return@15",
         authority_symbol="RefactorAction",
     )
-    source_context = finding(
-        "formal_boundary_stringly_source_scope",
-        mapping_name="formal_boundary_source_scope_return_dict",
-        symbol="SourceContext",
-    )
     dead_compat = finding("flattened_projection_property", symbol="DeadCompat")
     unrelated = finding("random_detector", symbol="Unrelated")
     findings = (
         dead_compat,
         unrelated,
-        source_context,
         return_record,
         payload_projection,
         constructor,
@@ -18081,7 +18075,6 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
     selected = goal.target_findings(findings, snapshot)
     assert selected == (
         dead_compat,
-        source_context,
         dataclass_lift,
         prefix,
     )
@@ -25641,206 +25634,6 @@ def test_detects_repeated_export_policy_predicates(tmp_path: Path) -> None:
     assert "_is_public_alpha_export" in finding.summary
     assert "_is_public_beta_export" in finding.summary
     assert "DerivedSurfacePolicy" in (finding.scaffold or "")
-
-
-def test_detects_formal_boundary_literal_registry_mirror(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build_request_profile(options):\n    return materialize_runtime_default_profile(\n        {\n            'alpha_start': options.alpha_start,\n            'alpha_limit': options.alpha_limit,\n            'audit_enabled': options.audit_enabled,\n            'projection_start': options.projection_start,\n        }\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "formal_boundary_literal_registry_mirror"
-        )
-    )
-    assert "materialize_runtime_default_profile" in finding.summary
-    assert "alpha_start" in finding.summary
-    assert "exported formal/profile authority" in (finding.codemod_patch or "")
-
-
-def test_detects_formal_boundary_string_id_catalog_mirror(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nREQUEST_PROFILE_ID = "selection_replay_repair_audit_request"\nREUSE_PROFILE_ID = "selection_replay_repair_audit_reuse"\nFINAL_PROFILE_ID = "selection_replay_repair_final_bound"\n\n\ndef build_profile():\n    return LeanRuntimePolicyStaticDefaultProfileEntryAuthority.profile(REQUEST_PROFILE_ID)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "formal_boundary_literal_registry_mirror"
-        )
-    )
-    assert "formal-boundary string ids" in finding.summary
-    assert "REQUEST_PROFILE_ID" in finding.summary
-    assert "exported formal/profile/schema catalog" in (finding.codemod_patch or "")
-
-
-def test_allows_scaffold_only_formal_boundary_string_ids(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\n_AXIS_POLICY_ROOT_NAME = "AxisPolicy"\n_AXIS_POLICY_KEY_TYPE_NAME = "AxisEnum"\n_AXIS_POLICY_KEY_ATTR_NAME = "axis_key"\n\n\ndef scaffold():\n    return f"class {_AXIS_POLICY_ROOT_NAME}:\\n    axis: {_AXIS_POLICY_KEY_TYPE_NAME}\\n    key = {_AXIS_POLICY_KEY_ATTR_NAME}"\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "formal_boundary_literal_registry_mirror"
-        for finding in findings
-    )
-
-
-def test_detects_formal_boundary_stringly_source_scope_kwargs(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass RuntimeMaterialization:\n    def source_scope(self, source_scope, **kwargs):\n        return kwargs\n\n\ndef source_object(materialization, source_scope, state, debug, scores):\n    return materialization.source_scope(\n        source_scope,\n        local_state=state,\n        repair_seed_debug=debug,\n        exact_score_values=scores,\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "formal_boundary_stringly_source_scope"
-        )
-    )
-    assert "local_state" in finding.summary
-    assert "exact_score_values" in finding.summary
-    assert "declared dataclass/nominal carrier" in (finding.codemod_patch or "")
-
-
-def test_detects_formal_boundary_stringly_source_scope_literal_mapping(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef policy_source_scope(state, debug, scores):\n    return lean_runtime_policy_source_scope(\n        {\n            'local_state': state,\n            'repair_seed_debug': debug,\n            'exact_score_values': scores,\n        }\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "formal_boundary_stringly_source_scope"
-        )
-    )
-    assert "string-key mapping" in finding.summary
-    assert "repair_seed_debug" in finding.summary
-    assert "FormalBoundarySourcePayload" in (finding.scaffold or "")
-
-
-def test_detects_formal_boundary_stringly_source_scope_return_dict(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef policy_source_scope(state, debug, scores):\n    return {\n        'local_state': state,\n        'repair_seed_debug': debug,\n        'exact_score_values': scores,\n    }\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "formal_boundary_stringly_source_scope"
-        )
-    )
-    assert "string-key mapping" in finding.summary
-    assert "FormalBoundarySourcePayload" in (finding.scaffold or "")
-
-
-def test_allows_non_scope_source_helper_kwargs(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef import_source_for_path(projection_path, authority_path, authority_name):\n"
-        "    return authority_name\n\n\n"
-        "def build_import(seed):\n"
-        "    return import_source_for_path(\n"
-        "        projection_path=seed.projection_path,\n"
-        "        authority_path=seed.authority_path,\n"
-        "        authority_name=seed.authority_name,\n"
-        "    )\n",
-    )
-    findings = analyze_path(tmp_path)
-
-    assert not any(
-        finding.detector_id == "formal_boundary_stringly_source_scope"
-        for finding in findings
-    )
-
-
-def test_formal_boundary_source_scope_return_dict_synthesizes_carrier(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef policy_source_scope(state, debug, scores):\n"
-        "    return {\n"
-        "        'local_state': state,\n"
-        "        'repair_seed_debug': debug,\n"
-        "        'exact_score_values': scores,\n"
-        "    }\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "formal_boundary_stringly_source_scope"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("formal_boundary_stringly_source_scope",),
-        selector_context=snapshot,
-    )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-
-    assert plan.records[0].status.value == "planned"
-    assert plan.records[0].executable_declaration_name == (
-        "BoundarySourceContextReturnDictMappingRecipeBuilder"
-    )
-    assert plan.records[0].refactor_concept == "boundary_source_context_authority"
-    assert "@dataclass(frozen=True)\nclass PolicySourceScopeContext:" in rewritten
-    assert "local_state: object" in rewritten
-    assert (
-        "return PolicySourceScopeContext(local_state=state, "
-        "repair_seed_debug=debug, exact_score_values=scores)"
-    ) in rewritten
-    assert simulation.is_clean is True
-    module_path.write_text(rewritten, encoding="utf-8")
-    assert not any(
-        finding.detector_id == "formal_boundary_stringly_source_scope"
-        for finding in analyze_modules(parse_python_modules(tmp_path))
-    )
-
-
-def test_allows_formal_boundary_source_scope_nominal_request_constructor(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass LocalSeedContactSourceScopeRequest:\n    source_scope: object\n    materialization: object\n    domain_indices: object\n\n\ndef build_request(source_scope, materialization, domain_indices):\n    return LocalSeedContactSourceScopeRequest(\n        source_scope=source_scope,\n        materialization=materialization,\n        domain_indices=domain_indices,\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "formal_boundary_stringly_source_scope"
-        for finding in findings
-    )
 
 
 def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
