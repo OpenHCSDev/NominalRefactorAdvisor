@@ -2621,15 +2621,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodTargetSourceReport":
         return CodemodTargetSourceReport.from_selector_context(selector, self)
 
-    def replacement_plan_scaffold_report(
-        self,
-        selector: "CodemodTargetSelector",
-    ) -> "CodemodReplacementPlanScaffoldReport":
-        return CodemodReplacementPlanScaffoldReport.from_selector_context(
-            selector,
-            self,
-        )
-
     def candidates_with_automated_rewrites(
         self,
         candidates: Iterable["CodemodCandidate"],
@@ -3776,59 +3767,6 @@ class CodemodTargetSourceReport(CodemodJsonReport):
                 "targets": tuple(record.to_dict() for record in self.records),
             }
         )
-
-
-@dataclass(frozen=True)
-class CodemodReplacementPlanScaffoldReport(CodemodTargetSourceReport):
-    """Editable CodemodPlanDocument seeded with exact selected target source."""
-
-    @classmethod
-    def from_selector_context(
-        cls,
-        selector: CodemodTargetSelector,
-        context: CodemodSelectorContext,
-    ) -> "CodemodReplacementPlanScaffoldReport":
-        source_report = CodemodTargetSourceReport.from_selector_context(
-            selector,
-            context,
-        )
-        return cls(
-            selector_resolution=source_report.selector_resolution,
-            records=source_report.records,
-        )
-
-    @cached_property
-    def document(self) -> "CodemodPlanDocument":
-        return self.document_for_records(self.records)
-
-    @classmethod
-    def document_for_records(
-        cls,
-        records: Iterable[CodemodTargetSourceRecord],
-    ) -> "CodemodPlanDocument":
-        recipe = RefactorRecipe(
-            recipe_id="selected-target-replacement-scaffold",
-            reason="Edit replacement_source values, then run --codemod-simulate.",
-            operations=tuple(cls.operation_for_record(record) for record in records),
-        )
-        return CodemodPlanDocument(recipes=(recipe,))
-
-    @staticmethod
-    def operation_for_record(
-        record: CodemodTargetSourceRecord,
-    ) -> "ReplaceTargetOperation":
-        target = record.target
-        return ReplaceTargetOperation(
-            target=SourceRewriteTarget(
-                qualname=target.qualname,
-                file_path=target.file_path,
-            ),
-            replacement_source=record.source,
-            rationale=f"Exact current source scaffold for {target.qualname}.",
-        )
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject({**super().to_dict(), "document": self.document.to_dict()})
 
 
 class _CallSiteSelectorVisitor(ast.NodeVisitor):
@@ -14144,41 +14082,20 @@ class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
 
 
 @dataclass(frozen=True)
-class FindingRecipeClassSitePlan(CodemodJsonReport):
-    """One finding site inside a graph-clustered smell class."""
-
-    synthesis_record: FindingRecipeSynthesisRecord
-    replacement_scaffold: CodemodReplacementPlanScaffoldReport
-
-    @classmethod
-    def from_synthesis_record(
-        cls,
-        synthesis_record: FindingRecipeSynthesisRecord,
-        context: CodemodSourceSnapshot,
-    ) -> "FindingRecipeClassSitePlan":
-        return cls(
-            synthesis_record=synthesis_record,
-            replacement_scaffold=context.replacement_plan_scaffold_report(
-                synthesis_record.evidence_selector
-            ),
-        )
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "finding_id": self.synthesis_record.finding_id,
-                "replacement_scaffold": self.replacement_scaffold.to_dict(),
-            }
-        )
-
-
-@dataclass(frozen=True)
 class FindingRecipeClassPlan(CodemodJsonReport):
     """One graph-clustered smell class with executable DSL planning context."""
 
     execution_class: RefactorExecutionClass
-    replacement_scaffold: CodemodReplacementPlanScaffoldReport
-    site_plans: tuple[FindingRecipeClassSitePlan, ...]
+    finding_plan: FindingRecipePlan
+
+    @cached_property
+    def synthesis_records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
+        finding_ids = frozenset(self.execution_class.finding_ids)
+        return tuple(
+            record
+            for record in self.finding_plan.records
+            if record.finding_id in finding_ids
+        )
 
     @property
     def document(self) -> CodemodPlanDocument:
@@ -14189,36 +14106,11 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         return self.execution_class.finding_ids
 
     @property
-    def synthesis_records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
-        return tuple(site_plan.synthesis_record for site_plan in self.site_plans)
-
-    @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
         return tuple(
             record.finding_id
             for record in self.synthesis_records
             if record.planned_recipes
-        )
-
-    @classmethod
-    def from_execution_class(
-        cls,
-        execution_class: RefactorExecutionClass,
-        records: Iterable[FindingRecipeSynthesisRecord],
-        context: CodemodSourceSnapshot,
-    ) -> "FindingRecipeClassPlan":
-        finding_ids = frozenset(execution_class.finding_ids)
-        class_records = tuple(
-            record for record in records if record.finding_id in finding_ids
-        )
-        selector = FindingEvidenceTargetSelector(execution_class.finding_ids)
-        return cls(
-            execution_class=execution_class,
-            replacement_scaffold=context.replacement_plan_scaffold_report(selector),
-            site_plans=tuple(
-                FindingRecipeClassSitePlan.from_synthesis_record(record, context)
-                for record in class_records
-            ),
         )
 
     @staticmethod
@@ -14243,9 +14135,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     def to_dict(self) -> JsonObject:
         return {
             "class_id": self.execution_class.class_id,
-            "replacement_scaffold": self.replacement_scaffold.to_dict(),
             "document": self.document.to_dict(),
-            "site_plans": tuple(site_plan.to_dict() for site_plan in self.site_plans),
         }
 
 
@@ -14255,7 +14145,13 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
 
     execution_plan: RefactorExecutionPlanReport
     finding_plan: FindingRecipePlan
-    classes: tuple[FindingRecipeClassPlan, ...]
+
+    @cached_property
+    def classes(self) -> tuple[FindingRecipeClassPlan, ...]:
+        return tuple(
+            FindingRecipeClassPlan(execution_class, self.finding_plan)
+            for execution_class in self.execution_plan.classes
+        )
 
     @classmethod
     def from_findings(
@@ -14280,7 +14176,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         return cls.from_finding_plan(
             planning_findings,
             root=root,
-            context=context,
             finding_plan=finding_plan,
         )
 
@@ -14290,7 +14185,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         findings: Iterable[RefactorFinding],
         *,
         root: Path,
-        context: CodemodSourceSnapshot,
         finding_plan: FindingRecipePlan,
     ) -> "FindingRecipeClassPlanReport":
         """Group a precomputed finding-backed recipe plan by execution class."""
@@ -14300,14 +14194,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         return cls(
             execution_plan=execution_plan,
             finding_plan=finding_plan,
-            classes=tuple(
-                FindingRecipeClassPlan.from_execution_class(
-                    execution_class,
-                    finding_plan.records,
-                    context,
-                )
-                for execution_class in execution_plan.classes
-            ),
         )
 
     @classmethod

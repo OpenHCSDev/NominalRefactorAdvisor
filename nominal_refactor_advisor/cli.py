@@ -482,8 +482,7 @@ _CLI_ARGUMENT_SPECS = (
             action="store_true",
             help=(
                 "Scan paths, cluster findings into graph-derived refactor classes, "
-                "and emit executable DSL plans plus evidence selectors and "
-                "replacement scaffolds for each class."
+                "and emit the executable typed DSL plan for each class."
             ),
         ),
         CliArgumentSpec(
@@ -527,16 +526,6 @@ _CLI_ARGUMENT_SPECS = (
                 "Load one codemod target selector JSON object, resolve it "
                 "against scanned paths, emit exact selected target source spans, "
                 "and exit. Use '-' to read the selector from stdin."
-            ),
-        ),
-        CliArgumentSpec(
-            flags=("--codemod-replacement-plan",),
-            value_type=Path,
-            help=(
-                "Load one codemod target selector JSON object, resolve it "
-                "against scanned paths, emit an editable replacement-source "
-                "CodemodPlanDocument scaffold, and exit. Use '-' to read "
-                "the selector from stdin."
             ),
         ),
         CliArgumentSpec(
@@ -1536,7 +1525,6 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             args.codemod_compose_sequence is not None,
             args.codemod_synthesize_plan,
             args.codemod_synthesize_class_plan,
-            args.codemod_replacement_plan is not None,
             args.codemod_fixpoint,
             args.codemod_refactor_goal is not None,
         )
@@ -2845,7 +2833,6 @@ class CodemodScanQueryMode:
     source_index: bool
     selector_path: Path | None
     target_source_selector_path: Path | None
-    replacement_plan_selector_path: Path | None
     synthesis_has_registered_detector: bool
     synthesis_execution_mode: CodemodExecutionMode
 
@@ -2861,7 +2848,6 @@ class CodemodScanQueryMode:
             source_index=args.codemod_source_index,
             selector_path=args.codemod_resolve_selector,
             target_source_selector_path=args.codemod_target_source,
-            replacement_plan_selector_path=args.codemod_replacement_plan,
             synthesis_has_registered_detector=(
                 FindingRecipeSynthesizer.has_registered_detector(
                     args.codemod_goal_detectors
@@ -2898,7 +2884,6 @@ class CodemodScanQueryMode:
                 self.source_index,
                 self.selector_path is not None,
                 self.target_source_selector_path is not None,
-                self.replacement_plan_selector_path is not None,
             )
         )
 
@@ -2908,8 +2893,7 @@ class CodemodScanQueryMode:
         parser.error(
             "--codemod-synthesize-plan, --codemod-synthesize-class-plan, "
             "--codemod-source-index, "
-            "--codemod-resolve-selector, --codemod-target-source, and "
-            "--codemod-replacement-plan "
+            "--codemod-resolve-selector, and --codemod-target-source "
             "are mutually exclusive"
         )
 
@@ -3148,7 +3132,7 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
 
 
 class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
-    """Emit graph-clustered finding-backed codemod plans with scaffolds."""
+    """Emit graph-clustered finding-backed typed codemod plans."""
 
     command_id = "codemod_synthesize_class_plan"
 
@@ -3234,7 +3218,6 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
     """Scan-backed command that loads one selector and emits a JSON payload."""
 
     payload_builder: ClassVar[CodemodSelectorPayloadBuilder | None] = None
-    writes_plan_document: ClassVar[bool] = False
 
     def run(self) -> int:
         snapshot = self.required_source_snapshot()
@@ -3243,11 +3226,6 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.parser.error(str(error))
         payload = self.payload_for_selector(snapshot, selector)
-        if self.writes_plan_document:
-            write_cli_json_artifact(
-                self.args.codemod_plan_out,
-                JsonObject(payload["document"]),
-            )
         print(
             json.dumps(
                 payload,
@@ -3308,24 +3286,6 @@ class CodemodTargetSourceCliCommand(CodemodSelectorQueryCliCommand):
         return self.args.codemod_target_source
 
 
-class CodemodReplacementPlanCliCommand(CodemodSelectorQueryCliCommand):
-    """Emit an editable replacement-source plan for selected targets."""
-
-    command_id = "codemod_replacement_plan"
-    writes_plan_document = True
-    payload_builder = CodemodSelectorPayloadBuilder(
-        CodemodSourceSnapshot.replacement_plan_scaffold_report
-    )
-
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_replacement_plan is not None
-
-    @property
-    def selector_path(self) -> Path:
-        return self.args.codemod_replacement_plan
-
-
 def _main_without_deadline() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
@@ -3369,7 +3329,6 @@ def _main_without_deadline() -> int:
             ("--codemod-plan", (args.codemod_plan,)),
             ("--codemod-resolve-selector", (args.codemod_resolve_selector,)),
             ("--codemod-target-source", (args.codemod_target_source,)),
-            ("--codemod-replacement-plan", (args.codemod_replacement_plan,)),
         )
     ).require_at_most_one_stdin(parser)
     codemod_requested = (

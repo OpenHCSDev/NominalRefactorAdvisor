@@ -12989,100 +12989,6 @@ def test_module_cli_emits_codemod_target_source_spans(tmp_path: Path) -> None:
     )
 
 
-def test_module_cli_scaffolds_editable_replacement_plan(
-    tmp_path: Path,
-) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        (
-            "\nclass Alpha:\n"
-            "    def run(self, value):\n"
-            "        prepared = value + 1\n"
-            "        return prepared\n"
-        ),
-    )
-    selector_path = tmp_path / "selector.json"
-    selector_path.write_text(
-        json.dumps(
-            {
-                "selector": "source_index_target",
-                "node_kinds": ["method"],
-                "qualnames": ["Alpha.run"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    plan_path = tmp_path / "replacement-plan.json"
-
-    scaffold_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-replacement-plan",
-            selector_path.as_posix(),
-            "--codemod-plan-out",
-            plan_path.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    scaffold_payload = json.loads(scaffold_result.stdout)
-    plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
-    rewrite = plan_payload["recipes"][0]["operations"][0]
-
-    assert scaffold_result.returncode == 0, scaffold_result.stderr
-    assert scaffold_payload["selected_count"] == 1
-    assert rewrite["operation"] == "replace_target"
-    assert rewrite["target_id"] is None
-    assert rewrite["target_qualname"] == "Alpha.run"
-    assert rewrite["file_path"] == module_path.as_posix()
-    assert rewrite["replacement_source"] == (
-        "    def run(self, value):\n"
-        "        prepared = value + 1\n"
-        "        return prepared\n"
-    )
-
-    rewrite["replacement_source"] = rewrite["replacement_source"].replace(
-        "return prepared",
-        "return prepared + 1",
-    )
-    plan_path.write_text(json.dumps(plan_payload), encoding="utf-8")
-    module_path.write_text(
-        "# line shift after scaffold generation\n" + module_path.read_text(),
-        encoding="utf-8",
-    )
-    simulate_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            plan_path.as_posix(),
-            "--codemod-simulate",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    simulate_payload = json.loads(simulate_result.stdout)
-
-    assert simulate_result.returncode == 0, simulate_result.stderr
-    assert simulate_payload["applied"] is False
-    assert simulate_payload["parse_validation"]["parse_valid"] is True
-    assert "+        return prepared + 1" in simulate_payload["unified_diff"]
-    assert "return prepared + 1" not in module_path.read_text()
-
-
 def test_module_cli_rejects_multiple_scan_query_stdin_documents(
     tmp_path: Path,
 ) -> None:
@@ -14289,7 +14195,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         stage.expected_removed_finding_ids
     ) == (finding.stable_id,)
     assert len(stage.class_plan_report.classes) == 1
-    assert len(stage.class_plan_report.classes[0].site_plans) == 1
+    assert len(stage.class_plan_report.classes[0].synthesis_records) == 1
     assert (
         report.replay_sequence.documents[0]
         .recipes[0]
@@ -14306,7 +14212,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         ]
         == 1
     )
-    assert len(stage_payload["class_plan_report"]["classes"][0]["site_plans"]) == 1
+    assert "synthesis_records" not in stage_payload["class_plan_report"]["classes"][0]
     replay_payload = report.replay_sequence.to_dict()
     assert len(replay_payload["stages"]) == 1
     assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
@@ -14675,7 +14581,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     assert terminal_synthesis.rejected_count == 1
     assert terminal_synthesis.records[0].detector_id == detector_id
     assert len(terminal_stage.class_plan_report.classes) == 1
-    assert len(terminal_stage.class_plan_report.classes[0].site_plans) == 1
+    assert len(terminal_stage.class_plan_report.classes[0].synthesis_records) == 1
     assert terminal_stage.rewrite_count == 0
     assert terminal_stage.document.has_recipes is False
     assert report.replay_sequence.documents == ()
@@ -14689,12 +14595,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         ]
         == "rejected_by_safety_check"
     )
-    assert (
-        terminal_class_plan["classes"][0]["site_plans"][0]["replacement_scaffold"][
-            "selected_count"
-        ]
-        >= 1
-    )
+    assert "synthesis_records" not in terminal_class_plan["classes"][0]
 
 
 def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None:
@@ -14980,7 +14881,7 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
     assert statuses_by_title["Manual registry mirrors class family"] == "eliminated"
 
 
-def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
+def test_codemod_class_plan_groups_typed_synthesis_records(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -15016,7 +14917,7 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     synthesis_record = finding_plan["synthesis_report"]["records"][0]
     recipe = class_payload["document"]["recipes"][0]
     operation = recipe["operations"][0]
-    site_plan = class_payload["site_plans"][0]
+    class_record = report.classes[0].synthesis_records[0].to_dict()
 
     assert isinstance(report, FindingRecipeClassPlanReport)
     assert isinstance(report.classes[0], FindingRecipeClassPlan)
@@ -15025,15 +14926,14 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     assert class_payload["class_id"] == execution_class["class_id"]
     assert execution_class["evidence_site_count"] >= 1
     assert execution_class["evidence"]
-    assert class_payload["replacement_scaffold"]["selected_count"] >= 1
-    assert len(class_payload["site_plans"]) == 1
+    assert len(report.classes[0].synthesis_records) == 1
     assert synthesis_record["status"] == "planned"
     assert synthesis_record["refactor_concept"] == "auto_register_class_registry"
-    assert site_plan["finding_id"] == execution_class["finding_ids"][0]
-    assert site_plan["replacement_scaffold"]["selector"]["selector"] == (
-        "finding_evidence_target"
-    )
-    assert site_plan["replacement_scaffold"]["selected_count"] >= 1
+    assert class_record["finding_id"] == execution_class["finding_ids"][0]
+    assert class_record == synthesis_record
+    assert "synthesis_records" not in class_payload
+    assert "replacement_scaffold" not in class_payload
+    assert "site_plans" not in class_payload
     assert synthesis_record["recipe"]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
@@ -15080,7 +14980,7 @@ def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
     assert document.recipes[0].authority_claims == (claim,)
 
 
-def test_module_cli_synthesizes_class_plan_with_scaffolds(
+def test_module_cli_synthesizes_class_plan_with_typed_recipes(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -15121,13 +15021,10 @@ def test_module_cli_synthesizes_class_plan_with_scaffolds(
     assert (
         class_payload["class_id"] == payload["execution_plan"]["classes"][0]["class_id"]
     )
-    assert class_payload["replacement_scaffold"]["selected_count"] >= 1
-    assert len(class_payload["site_plans"]) == 1
-    assert (
-        class_payload["site_plans"][0]["replacement_scaffold"]["selector"]["selector"]
-        == "finding_evidence_target"
-    )
-    assert class_payload["site_plans"][0]["replacement_scaffold"]["selected_count"] >= 1
+    assert len(payload["finding_recipe_plan"]["synthesis_report"]["records"]) == 1
+    assert "synthesis_records" not in class_payload
+    assert "replacement_scaffold" not in class_payload
+    assert "site_plans" not in class_payload
     assert (
         class_payload["document"]["recipes"][0]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"
@@ -15189,15 +15086,11 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert class_delta["changes"][0]["status"] == "eliminated"
     assert class_delta["projected_result_status"] == "eliminated"
     assert class_delta["class_id"] == class_plan["class_id"]
-    assert len(class_plan["site_plans"]) == 1
+    assert "synthesis_records" not in class_plan
     assert synthesis_record["refactor_concept"] == "auto_register_class_registry"
-    assert site_delta["finding_id"] == class_plan["site_plans"][0]["finding_id"]
+    assert site_delta["finding_id"] == synthesis_record["finding_id"]
     assert site_delta["status_counts"]["eliminated"] >= 1
     assert site_delta["fulfilled_expected_removal"] is True
-    assert (
-        class_plan["site_plans"][0]["replacement_scaffold"]["selector"]["selector"]
-        == "finding_evidence_target"
-    )
     assert (
         synthesis_record["recipe"]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"

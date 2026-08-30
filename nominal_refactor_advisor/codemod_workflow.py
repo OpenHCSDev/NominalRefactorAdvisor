@@ -32,9 +32,9 @@ from .codemod import (
     CodemodSourceSnapshot,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
-    FindingRecipeClassSitePlan,
     FindingRecipePlan,
     FindingRecipeSynthesisBoundary,
+    FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisReport,
     JsonObject,
     RefactorConcept,
@@ -838,14 +838,14 @@ class CodemodClassPlanProjectedDelta:
     @property
     def site_deltas(self) -> tuple["CodemodClassPlanSiteProjectedDelta", ...]:
         return tuple(
-            CodemodClassPlanSiteProjectedDelta.from_site_plan(
-                site_plan,
+            CodemodClassPlanSiteProjectedDelta.from_synthesis_record(
+                synthesis_record,
                 self.changes,
                 expected_removed_finding_ids=(
                     self.class_plan.expected_removed_finding_ids
                 ),
             )
-            for site_plan in self.class_plan.site_plans
+            for synthesis_record in self.class_plan.synthesis_records
         )
 
     @property
@@ -898,29 +898,29 @@ class CodemodClassPlanProjectedDelta:
 class CodemodClassPlanSiteProjectedDelta:
     """Projected finding-class status for one planned site inside a class plan."""
 
-    site_plan: FindingRecipeClassSitePlan
+    synthesis_record: FindingRecipeSynthesisRecord
     changes: tuple[CodemodFindingClassChange, ...]
     expected_removed_finding_ids: tuple[str, ...] = ()
 
     @classmethod
-    def from_site_plan(
+    def from_synthesis_record(
         cls,
-        site_plan: FindingRecipeClassSitePlan,
+        synthesis_record: FindingRecipeSynthesisRecord,
         changes: tuple[CodemodFindingClassChange, ...],
         *,
         expected_removed_finding_ids: tuple[str, ...],
     ) -> "CodemodClassPlanSiteProjectedDelta":
         return cls(
-            site_plan=site_plan,
+            synthesis_record=synthesis_record,
             changes=tuple(
                 change
                 for change in changes
-                if site_plan.synthesis_record.finding_id in change.before_finding_ids
+                if synthesis_record.finding_id in change.before_finding_ids
             ),
             expected_removed_finding_ids=tuple(
                 finding_id
                 for finding_id in expected_removed_finding_ids
-                if finding_id == site_plan.synthesis_record.finding_id
+                if finding_id == synthesis_record.finding_id
             ),
         )
 
@@ -940,9 +940,8 @@ class CodemodClassPlanSiteProjectedDelta:
         )
 
     def to_dict(self) -> JsonObject:
-        synthesis_record = self.site_plan.synthesis_record
         return {
-            "finding_id": synthesis_record.finding_id,
+            "finding_id": self.synthesis_record.finding_id,
             "fulfilled_expected_removal": self.fulfilled_expected_removal,
             "status_counts": self.status_counts,
             "changes": tuple(change.to_dict() for change in self.changes),
@@ -1629,7 +1628,6 @@ class CodemodRefactorGoalRunner(CodemodWorkflowScanRequest):
             class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
                 target_findings,
                 root=self.class_plan_root(),
-                context=snapshot,
                 finding_plan=plan,
             )
             document = CodemodPlanDocument(
