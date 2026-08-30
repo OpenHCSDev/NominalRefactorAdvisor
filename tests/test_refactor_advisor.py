@@ -81,10 +81,9 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CliCommand
-from nominal_refactor_advisor.cli import CliEarlyExitCommand
 from nominal_refactor_advisor.cli import CodemodExecutionMode
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
-from nominal_refactor_advisor.cli import CodemodScanQueryCliCommand
+from nominal_refactor_advisor.cli import CodemodRefactorGoalCliCommand
 from nominal_refactor_advisor.cli import CodemodSourceIndexCliCommand
 from nominal_refactor_advisor.cli import CodemodSynthesizePlanCliCommand
 from nominal_refactor_advisor.cli import CodemodValidatePlanCliCommand
@@ -10384,22 +10383,26 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.paths == ["nominal_refactor_advisor", "tests"]
 
 
-def test_codemod_scan_query_selection_returns_declaration_owner() -> None:
+def test_cli_command_selection_returns_declaration_owner() -> None:
     parser = argparse.ArgumentParser()
     for spec in _CLI_ARGUMENT_SPECS:
         spec.add_to_parser(parser)
 
-    source_index_type = CodemodScanQueryCliCommand.selected_type(
+    source_index_type = CliCommand.selected_type(
         parser,
         parser.parse_args(["--codemod-source-index"]),
     )
-    synthesis_type = CodemodScanQueryCliCommand.selected_type(
+    synthesis_type = CliCommand.selected_type(
         parser,
         parser.parse_args(["--codemod-synthesize-plan"]),
     )
-    validation_type = CliEarlyExitCommand.selected_type(
+    validation_type = CliCommand.selected_type(
         parser,
         parser.parse_args(["--codemod-validate-plan"]),
+    )
+    goal_type = CliCommand.selected_type(
+        parser,
+        parser.parse_args(["--codemod-refactor-goal", "example"]),
     )
 
     assert source_index_type is CodemodSourceIndexCliCommand
@@ -10407,35 +10410,95 @@ def test_codemod_scan_query_selection_returns_declaration_owner() -> None:
     assert synthesis_type is CodemodSynthesizePlanCliCommand
     assert synthesis_type.requires_analysis() is True
     assert validation_type is CodemodValidatePlanCliCommand
+    assert goal_type is CodemodRefactorGoalCliCommand
+    assert goal_type.requires_parsed_modules() is True
+    assert goal_type.requires_source_snapshot() is False
     assert "codemod_execution" not in CliCommand.__registry__
 
 
-def test_codemod_scan_query_selection_rejects_multiple_declarations() -> None:
-    parser = argparse.ArgumentParser()
-    for spec in _CLI_ARGUMENT_SPECS:
-        spec.add_to_parser(parser)
-    args = parser.parse_args(
-        ["--codemod-source-index", "--codemod-synthesize-plan"]
-    )
-
-    with pytest.raises(SystemExit):
-        CodemodScanQueryCliCommand.selected_type(parser, args)
-
-
-def test_early_exit_command_selection_rejects_multiple_declarations() -> None:
-    parser = argparse.ArgumentParser()
-    for spec in _CLI_ARGUMENT_SPECS:
-        spec.add_to_parser(parser)
-    args = parser.parse_args(
-        [
+@pytest.mark.parametrize(
+    "command_args",
+    (
+        ("--codemod-source-index", "--codemod-synthesize-plan"),
+        (
             "--codemod-validate-plan",
             "--codemod-compose-plans",
             "plan.json",
-        ]
-    )
+        ),
+        ("--codemod-validate-plan", "--codemod-source-index"),
+        (
+            "--codemod-refactor-goal",
+            "example",
+            "--codemod-source-index",
+        ),
+        (
+            "--codemod-refactor-goal",
+            "example",
+            "--codemod-synthesize-plan",
+        ),
+    ),
+)
+def test_cli_command_selection_rejects_multiple_declarations(
+    command_args: tuple[str, ...],
+) -> None:
+    parser = argparse.ArgumentParser()
+    for spec in _CLI_ARGUMENT_SPECS:
+        spec.add_to_parser(parser)
+    args = parser.parse_args(command_args)
 
     with pytest.raises(SystemExit):
-        CliEarlyExitCommand.selected_type(parser, args)
+        CliCommand.selected_type(parser, args)
+
+
+@pytest.mark.parametrize(
+    ("command_args", "expected_error"),
+    (
+        (
+            ("--codemod-source-index", "--codemod-apply"),
+            "does not accept codemod execution modes",
+        ),
+        (
+            (
+                "--codemod-refactor-goal",
+                "tuple_dict_return_record",
+                "--codemod-simulate",
+            ),
+            "does not accept codemod execution modes",
+        ),
+        (
+            (
+                "--codemod-synthesize-plan",
+                "--codemod-plan",
+                "ignored-plan.json",
+            ),
+            "does not consume --codemod-plan",
+        ),
+    ),
+)
+def test_module_cli_rejects_incompatible_command_modifiers(
+    tmp_path: Path,
+    command_args: tuple[str, ...],
+    expected_error: str,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            *command_args,
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
 
 
 def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:
@@ -12271,7 +12334,7 @@ def test_module_cli_emits_codemod_target_source_spans(tmp_path: Path) -> None:
     )
 
 
-def test_module_cli_rejects_multiple_scan_query_stdin_documents(
+def test_module_cli_rejects_plan_input_for_selector_query(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -12300,7 +12363,7 @@ def test_module_cli_rejects_multiple_scan_query_stdin_documents(
     )
 
     assert result.returncode != 0
-    assert "stdin JSON document token '-'" in result.stderr
+    assert "does not consume --codemod-plan" in result.stderr
 
 
 def test_load_codemod_plan_document_includes_architecture_guards(
@@ -13711,6 +13774,51 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
         dead_compat,
     )
     assert ConstructorKwargCollapseConcept.concept_key() == "constructor_kwarg_collapse"
+
+
+def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    plan_path = tmp_path / "recipe-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "ignored-recipe",
+                        "operations": [
+                            {
+                                "operation": "ensure_import",
+                                "file_path": (tmp_path / "pkg/mod.py").as_posix(),
+                                "import_source": "from pkg.other import Other\n",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-refactor-goal",
+            "tuple_dict_return_record",
+            "--codemod-plan",
+            plan_path.as_posix(),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "accepts guard-only --codemod-plan input" in result.stderr
 
 
 def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
