@@ -4772,7 +4772,6 @@ DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
 DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID = "detector_backend_payoff_guard"
 EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
-AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID = "available_abstraction_reuse"
 AVAILABLE_CARRIER_REUSE_DETECTOR_ID = "available_carrier_reuse"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
@@ -21890,114 +21889,6 @@ def test_detects_duplicate_nominal_authority_field_flow_component(
     assert "RuntimePayloadContext" in finding.summary
     assert "AdapterPayloadContext" in finding.summary
     assert "StepPayloadContext" in finding.summary
-
-
-def test_detects_local_reimplementation_of_available_abstraction(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/shared/button_panel.py",
-        "\nclass ButtonPanel:\n    def __init__(self, button_configs, on_action, style_generator=None, parent=None):\n        layout = QGridLayout(self)\n        layout.setContentsMargins(5, 5, 5, 5)\n        layout.setSpacing(5)\n        self.buttons = {}\n        for index, (label, action_id, tooltip) in enumerate(button_configs):\n            button = QPushButton(label)\n            button.setToolTip(tooltip)\n            if style_generator:\n                button.setStyleSheet(style_generator.generate_button_style())\n            button.clicked.connect(lambda checked, a=action_id: on_action(a))\n            self.buttons[action_id] = button\n            layout.addWidget(button, 0, index)\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/debug_toolbar.py",
-        '\nclass DebugToolbarWidget:\n    BUTTONS = (("Run", "run", "Run"), ("Stop", "stop", "Stop"))\n\n    def __init__(self, style_generator=None):\n        layout = QVBoxLayout(self)\n        layout.setContentsMargins(0, 0, 0, 0)\n        layout.setSpacing(0)\n        self.buttons = {}\n        for label, action_id, tooltip in self.BUTTONS:\n            button = QPushButton(label)\n            button.setToolTip(tooltip)\n            if style_generator:\n                button.setStyleSheet(style_generator.generate_button_style())\n            button.clicked.connect(lambda checked, a=action_id: self.emit(a))\n            self.buttons[action_id] = button\n            layout.addWidget(button)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID
-        )
-    )
-    assert "DebugToolbarWidget.__init__" in finding.summary
-    assert "ButtonPanel" in finding.summary
-    assert "construct:QPushButton" in finding.summary
-    assert "ButtonPanel(...)" in (finding.scaffold or "")
-
-
-def test_available_abstraction_reuse_ignores_direct_authority_call(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/shared/button_panel.py",
-        "\nclass ButtonPanel:\n    def __init__(self, button_configs, on_action, style_generator=None, parent=None):\n        layout = QGridLayout(self)\n        layout.setContentsMargins(5, 5, 5, 5)\n        layout.setSpacing(5)\n        self.buttons = {}\n        for index, (label, action_id, tooltip) in enumerate(button_configs):\n            button = QPushButton(label)\n            button.setToolTip(tooltip)\n            if style_generator:\n                button.setStyleSheet(style_generator.generate_button_style())\n            button.clicked.connect(lambda checked, a=action_id: on_action(a))\n            self.buttons[action_id] = button\n            layout.addWidget(button, 0, index)\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/debug_toolbar.py",
-        '\nfrom pkg.shared.button_panel import ButtonPanel\n\n\nclass DebugToolbarWidget:\n    def __init__(self, style_generator=None):\n        self.button_panel = ButtonPanel(\n            button_configs=(("Run", "run", "Run"),),\n            on_action=self.emit,\n            style_generator=style_generator,\n            parent=self,\n        )\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID
-        for finding in findings
-    )
-
-
-def test_available_abstraction_reuse_ignores_qualified_authority_method_use(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/shared/pattern_data_manager.py",
-        "\nclass PatternDataManager:\n    @staticmethod\n    def extract_func_and_kwargs(item):\n        if isinstance(item, tuple) and len(item) == 2 and callable(item[0]):\n            return item[0], item[1]\n        if callable(item):\n            return item, {}\n        return None, {}\n\n    @staticmethod\n    def validate_pattern_structure(pattern):\n        if isinstance(pattern, dict):\n            for key, value in pattern.items():\n                if not PatternDataManager.validate_pattern_structure(value):\n                    return False\n            return True\n        items = pattern if isinstance(pattern, list) else [pattern]\n        for item in items:\n            func, kwargs = PatternDataManager.extract_func_and_kwargs(item)\n            if func is None:\n                return False\n            if not isinstance(kwargs, dict):\n                return False\n        return True\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/function_pane.py",
-        "\nfrom pkg.shared.pattern_data_manager import PatternDataManager\n\n\nclass FunctionPaneWidget:\n    def __init__(self, pattern):\n        self.rows = []\n        if isinstance(pattern, dict):\n            for key, value in pattern.items():\n                func, kwargs = PatternDataManager.extract_func_and_kwargs(value)\n                if func is None:\n                    continue\n                self.rows.append((func, kwargs))\n        else:\n            func, kwargs = PatternDataManager.extract_func_and_kwargs(pattern)\n            if func is not None:\n                self.rows.append((func, kwargs))\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID
-        for finding in findings
-    )
-
-
-def test_available_abstraction_reuse_keeps_same_name_shadow_authority(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/shared/pattern_data_manager.py",
-        "\nclass PatternDataManager:\n    @staticmethod\n    def extract_func_and_kwargs(item):\n        if isinstance(item, tuple) and len(item) == 2 and callable(item[0]):\n            return item[0], item[1]\n        if callable(item):\n            return item, {}\n        return None, {}\n\n    @staticmethod\n    def validate_pattern_structure(pattern):\n        if isinstance(pattern, dict):\n            for key, value in pattern.items():\n                if not PatternDataManager.validate_pattern_structure(value):\n                    return False\n            return True\n        items = pattern if isinstance(pattern, list) else [pattern]\n        for item in items:\n            func, kwargs = PatternDataManager.extract_func_and_kwargs(item)\n            if func is None:\n                return False\n            if not isinstance(kwargs, dict):\n                return False\n        return True\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/textual/pattern_data_manager.py",
-        "\nclass PatternDataManager:\n    @staticmethod\n    def extract_func_and_kwargs(item):\n        if isinstance(item, tuple) and len(item) == 2 and callable(item[0]):\n            return item[0], item[1]\n        if callable(item):\n            return item, {}\n        return None, {}\n\n    @staticmethod\n    def validate_pattern_structure(pattern):\n        if isinstance(pattern, dict):\n            for key, value in pattern.items():\n                if not PatternDataManager.validate_pattern_structure(value):\n                    return False\n            return True\n        items = pattern if isinstance(pattern, list) else [pattern]\n        for item in items:\n            func, kwargs = PatternDataManager.extract_func_and_kwargs(item)\n            if func is None:\n                return False\n            if not isinstance(kwargs, dict):\n                return False\n        return True\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID
-        and "PatternDataManager.validate_pattern_structure" in finding.summary
-        for finding in findings
-    )
-
-
-def test_available_abstraction_reuse_ignores_sparse_widget_code(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/shared/button_panel.py",
-        "\nclass ButtonPanel:\n    def __init__(self, button_configs, on_action, style_generator=None, parent=None):\n        layout = QGridLayout(self)\n        layout.setContentsMargins(5, 5, 5, 5)\n        layout.setSpacing(5)\n        self.buttons = {}\n        for index, (label, action_id, tooltip) in enumerate(button_configs):\n            button = QPushButton(label)\n            button.setToolTip(tooltip)\n            if style_generator:\n                button.setStyleSheet(style_generator.generate_button_style())\n            button.clicked.connect(lambda checked, a=action_id: on_action(a))\n            self.buttons[action_id] = button\n            layout.addWidget(button, 0, index)\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/single_button.py",
-        "\ndef make_button(label, layout):\n    button = QPushButton(label)\n    layout.addWidget(button)\n    return button\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID
-        for finding in findings
-    )
 
 
 def test_detects_pass_through_nominal_wrapper(tmp_path: Path) -> None:

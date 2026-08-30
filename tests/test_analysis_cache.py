@@ -220,8 +220,6 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     ast_tools_module.walk_function_body_nodes(function)
     ast_tools_module.named_function_nodes(module)
     ast_tools_module.module_syntax_index(module)
-    first_signature = abstraction_reuse_detectors._signature_for_node(function)
-    assert first_signature is abstraction_reuse_detectors._signature_for_node(function)
     runtime_detectors.SurfaceFunctionIndex.from_module(module)
 
     cleared_cache_count = release_module_analysis_memory()
@@ -231,7 +229,6 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     assert ast_tools_module.walk_function_body_nodes.cache_info().currsize == 0
     assert ast_tools_module.named_function_nodes.cache_info().currsize == 0
     assert ast_tools_module.module_syntax_index.cache_info().currsize == 0
-    assert abstraction_reuse_detectors._signature_for_node.cache_info().currsize == 0
     assert runtime_detectors.SurfaceFunctionIndex.from_module.cache_info().currsize == 0
 
 
@@ -3268,55 +3265,6 @@ def test_native_public_delegate_demand_falls_back_for_possible_wrapper(
     )
 
 
-def test_native_available_abstraction_demand_matches_structural_overlap(
-    tmp_path: Path,
-) -> None:
-    shared_root = tmp_path / "pkg" / "shared"
-    feature_root = tmp_path / "pkg" / "feature"
-    shared_root.mkdir(parents=True)
-    feature_root.mkdir(parents=True)
-    target_path = shared_root / "target.py"
-    context_path = feature_root / "context.py"
-    shared_body = (
-        "    value = Builder()\n"
-        "    value.configure()\n"
-        "    value.prepare()\n"
-        "    value.execute()\n"
-        "    value.finish()\n"
-        "    value.publish()\n"
-        "    return value\n"
-    )
-    target_source = "def buildAuthority():\n" + shared_body
-    context_source = "def assemble_locally():\n" + shared_body
-    target_path.write_text(target_source, encoding="utf-8")
-    context_path.write_text(context_source, encoding="utf-8")
-    modules = {
-        module.path: module
-        for module in parse_python_modules(tmp_path, use_parse_cache=False)
-    }
-    family = (
-        abstraction_reuse_detectors.CompactAvailableAbstractionReuseModuleProjectionFamily
-    )
-    target_items = tuple(family.collect(modules[target_path]))
-    context_items = tuple(family.collect(modules[context_path]))
-    demand = family.report_demand(target_items, DetectorConfig())
-
-    expected = family.project_cached_demand(context_items, demand)
-    actual = family.collect_demanded_source(
-        SourceModule(
-            context_path,
-            modules[context_path].module_name,
-            context_source,
-        ),
-        NativePythonSyntaxIndex.from_source(context_source),
-        demand,
-    )
-
-    assert expected
-    assert actual is not None
-    assert tuple(actual) == expected
-
-
 def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
     tmp_path: Path,
 ) -> None:
@@ -5877,148 +5825,6 @@ def test_compact_carrier_reuse_candidates_preserve_semantics_without_ast_shadow(
         assert not hasattr(abstraction_reuse_detectors, removed_name)
 
 
-def test_compact_available_abstraction_reuse_preserves_semantics_without_ast_shadow(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    shared_root = package_root / "shared"
-    shared_root.mkdir(parents=True)
-    (shared_root / "button_panel.py").write_text(
-        "class ButtonPanel:\n"
-        "    def __init__(self, button_configs, on_action, style_generator=None, parent=None):\n"
-        "        layout = QGridLayout(self)\n"
-        "        layout.setContentsMargins(5, 5, 5, 5)\n"
-        "        layout.setSpacing(5)\n"
-        "        self.buttons = {}\n"
-        "        for index, (label, action_id, tooltip) in enumerate(button_configs):\n"
-        "            button = QPushButton(label)\n"
-        "            button.setToolTip(tooltip)\n"
-        "            if style_generator:\n"
-        "                button.setStyleSheet(style_generator.generate_button_style())\n"
-        "            button.clicked.connect(lambda checked, a=action_id: on_action(a))\n"
-        "            self.buttons[action_id] = button\n"
-        "            layout.addWidget(button, 0, index)\n",
-        encoding="utf-8",
-    )
-    (package_root / "debug_toolbar.py").write_text(
-        "class DebugToolbarWidget:\n"
-        "    BUTTONS = (('Run', 'run', 'Run'), ('Stop', 'stop', 'Stop'))\n\n"
-        "    def __init__(self, style_generator=None):\n"
-        "        layout = QVBoxLayout(self)\n"
-        "        layout.setContentsMargins(0, 0, 0, 0)\n"
-        "        layout.setSpacing(0)\n"
-        "        self.buttons = {}\n"
-        "        for label, action_id, tooltip in self.BUTTONS:\n"
-        "            button = QPushButton(label)\n"
-        "            button.setToolTip(tooltip)\n"
-        "            if style_generator:\n"
-        "                button.setStyleSheet(style_generator.generate_button_style())\n"
-        "            button.clicked.connect(lambda checked, a=action_id: self.emit(a))\n"
-        "            self.buttons[action_id] = button\n"
-        "            layout.addWidget(button, 0, index)\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
-    detector = abstraction_reuse_detectors.AvailableAbstractionReuseDetector()
-    projections = type(detector).compact_module_projections(modules)
-    compact_candidates = (
-        abstraction_reuse_detectors._compact_available_abstraction_reuse_candidates(
-            projections
-        )
-    )
-    authorities = tuple(
-        authority for projection in projections for authority in projection.authorities
-    )
-    local_signatures = tuple(
-        local for projection in projections for local in projection.locals
-    )
-    exhaustive_candidates = []
-    for local in local_signatures:
-        candidates = tuple(
-            candidate
-            for authority in authorities
-            if (
-                candidate := abstraction_reuse_detectors._reimplements_authority(
-                    local, authority
-                )
-            )
-            is not None
-        )
-        if candidates:
-            exhaustive_candidates.append(
-                sorted(
-                    candidates,
-                    key=lambda candidate: (
-                        -candidate.overlap_score,
-                        candidate.authority.file_path,
-                        candidate.authority.line,
-                        candidate.authority.name,
-                    ),
-                )[0]
-            )
-    exhaustive_candidates = tuple(
-        sorted(
-            exhaustive_candidates,
-            key=lambda candidate: (
-                candidate.local.file_path,
-                candidate.local.line,
-                candidate.local.symbol,
-                candidate.authority.name,
-            ),
-        )
-    )
-
-    assert compact_candidates == exhaustive_candidates
-    assert len(compact_candidates) == 1
-    assert compact_candidates[0].local.symbol == "DebugToolbarWidget.__init__"
-    assert compact_candidates[0].authority.name == "ButtonPanel"
-    assert not hasattr(
-        abstraction_reuse_detectors,
-        "_available_abstraction_reuse_candidates",
-    )
-    assert "candidate_collector" not in type(detector).__dict__
-    config = DetectorConfig()
-    assert detector._findings_from_compact_projections(
-        projections, config
-    ) == detector._findings_for_candidates(compact_candidates, config)
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (tmp_path,),
-        (type(detector),),
-        use_parse_cache=False,
-    )
-    assert accumulator.projection_count == len(modules)
-    assert accumulator.findings_by_detector(config)[type(detector)] == (
-        detector._findings_for_candidates(compact_candidates, config)
-    )
-    target_path = package_root / "debug_toolbar.py"
-    report_scope = AnalysisPathScope(
-        analysis_roots=(package_root,), report_roots=(target_path,)
-    )
-    family = type(detector).module_projection_family
-    target_projections = tuple(
-        projection
-        for projection in projections
-        if any(local.file_path == str(target_path) for local in projection.locals)
-    )
-    demand = family.report_demand(target_projections, config)
-    demanded_projections = target_projections + family.project_cached_demand(
-        tuple(
-            projection
-            for projection in projections
-            if projection not in target_projections
-        ),
-        demand,
-    )
-    assert report_scope.filter_findings(
-        detector._findings_from_compact_projections(demanded_projections, config)
-    ) == report_scope.filter_findings(
-        detector._findings_from_compact_projections(projections, config)
-    )
-    assert sum(
-        len(item.authorities) + len(item.locals) for item in demanded_projections
-    ) < sum(len(item.authorities) + len(item.locals) for item in projections)
-
-
 def test_compact_public_private_delegate_context_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
@@ -6799,9 +6605,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert semantic_descent_detectors.SemanticMirrorWithoutDescentDetector in (
         partition.compact_global_detector_types
     )
-    assert abstraction_reuse_detectors.AvailableAbstractionReuseDetector in (
-        partition.compact_global_detector_types
-    )
     assert runtime_detectors.PublicApiPrivateDelegateShellDetector in (
         partition.compact_global_detector_types
     )
@@ -6823,7 +6626,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 55
+    assert len(partition.compact_global_detector_types) == 54
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id
