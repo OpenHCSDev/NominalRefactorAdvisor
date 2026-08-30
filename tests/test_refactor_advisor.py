@@ -11768,8 +11768,10 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
     )
     assert len(simulation.stage_reports) == 2
     first_stage, second_stage = simulation.stage_reports
-    assert first_stage.stage_index == 0
-    assert second_stage.stage_index == 1
+    assert (
+        tuple(stage.document_simulation.document for stage in simulation.stage_reports)
+        == sequence.documents
+    )
     assert any(
         target.qualname == "Generated.run"
         for target in first_stage.after_source_index.ast_targets
@@ -11959,9 +11961,7 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
     assert len(simulation.stage_reports) == 3
     assert (
         "return 4"
-        in simulation.required_final_snapshot.sources_by_file_path[
-            module_path.as_posix()
-        ]
+        in simulation.final_snapshot.sources_by_file_path[module_path.as_posix()]
     )
     assert rebuild_count == 0
 
@@ -12077,9 +12077,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     simulation = sequence.simulate_snapshot(snapshot)
     findings = tuple(
         finding
-        for finding in analyze_modules(
-            simulation.required_final_snapshot.parsed_modules
-        )
+        for finding in analyze_modules(simulation.final_snapshot.parsed_modules)
         if finding.detector_id == "runtime_product_record_schema"
     )
     continuation_report = simulation.continuation_report_from_findings(findings)
@@ -12087,10 +12085,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     assert generated_path.exists() is False
     assert len(findings) == 2
     assert continuation_report.finding_count == 2
-    assert (
-        continuation_report.source_index
-        is simulation.required_final_snapshot.source_index
-    )
+    assert continuation_report.source_index is simulation.final_snapshot.source_index
     assert continuation_report.plan.expected_removed_finding_count == 1
     assert continuation_report.has_continuation_stage is True
     assert continuation_report.continuation_stage_count == 1
@@ -12201,8 +12196,8 @@ def test_module_cli_simulates_staged_codemod_plan(
     sequence_payload = payload["plan_sequence_simulation"]
     assert sequence_payload["stage_count"] == 2
     first_stage, second_stage = sequence_payload["stages"]
-    assert first_stage["stage_index"] == 0
-    assert second_stage["stage_index"] == 1
+    assert "stage_index" not in first_stage
+    assert "stage_index" not in second_stage
     assert any(
         target["qualname"] == "Generated.run"
         for target in first_stage["after_source_index"]["ast_targets"]

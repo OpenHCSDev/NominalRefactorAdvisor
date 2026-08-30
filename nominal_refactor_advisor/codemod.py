@@ -13052,7 +13052,7 @@ class CodemodPlanSequence:
     ) -> "CodemodPlanSequenceSimulation":
         active_snapshot = snapshot
         stage_reports: list[CodemodPlanSequenceStageReport] = []
-        for stage_index, document in enumerate(self.documents):
+        for document in self.documents:
             before_snapshot = active_snapshot
             stage = document.simulate_snapshot(
                 before_snapshot,
@@ -13061,7 +13061,6 @@ class CodemodPlanSequence:
             active_snapshot = stage.required_after_snapshot
             stage_reports.append(
                 CodemodPlanSequenceStageReport(
-                    stage_index=stage_index,
                     document_simulation=stage,
                     before_source_index=before_snapshot.source_index,
                     after_source_index=active_snapshot.source_index,
@@ -13404,13 +13403,11 @@ class CodemodDocumentSimulationCarrier:
 class CodemodPlanSequenceStageReport(CodemodDocumentSimulationCarrier):
     """One staged codemod document plus source indexes before and after it."""
 
-    stage_index: int
     before_source_index: SourceIndex
     after_source_index: SourceIndex
 
     def to_dict(self) -> JsonObject:
         return {
-            "stage_index": self.stage_index,
             "document": self.document_simulation.document.to_dict(),
             **self.document_simulation.simulation_payload(),
             "before_source_index": self.before_source_index.to_dict(),
@@ -13423,18 +13420,12 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
     """Simulation result for an ordered codemod plan sequence."""
 
     sequence: CodemodPlanSequence
+    final_snapshot: CodemodSourceSnapshot
     stage_reports: tuple[CodemodPlanSequenceStageReport, ...] = ()
-    final_snapshot: CodemodSourceSnapshot | None = None
 
     @property
     def stages(self) -> tuple[CodemodPlanDocumentSimulation, ...]:
         return tuple(stage.document_simulation for stage in self.stage_reports)
-
-    @property
-    def required_final_snapshot(self) -> CodemodSourceSnapshot:
-        if self.final_snapshot is None:
-            raise ValueError("plan sequence simulation has no final source snapshot")
-        return self.final_snapshot
 
     def continuation_report_from_findings(
         self,
@@ -13442,26 +13433,24 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
         *,
         detector_ids: Iterable[str] = (),
     ) -> "CodemodPlanSequenceContinuationReport":
-        final_snapshot = self.required_final_snapshot
         finding_tuple = tuple(findings)
         detector_id_tuple = tuple(detector_ids)
         return CodemodPlanSequenceContinuationReport(
             sequence=self.sequence,
-            source_index=final_snapshot.source_index,
+            source_index=self.final_snapshot.source_index,
             findings=finding_tuple,
-            plan=final_snapshot.plan_from_findings(
+            plan=self.final_snapshot.plan_from_findings(
                 finding_tuple,
                 detector_ids=detector_id_tuple,
             ),
         )
 
     def to_dict(self) -> JsonObject:
-        final_snapshot = self.required_final_snapshot
         return {
             "sequence": self.sequence.to_dict(),
             "stage_count": len(self.stage_reports),
             "stages": tuple(stage.to_dict() for stage in self.stage_reports),
-            "final_source_index": final_snapshot.source_index.to_dict(),
+            "final_source_index": self.final_snapshot.source_index.to_dict(),
             **self.simulation_payload(),
         }
 
