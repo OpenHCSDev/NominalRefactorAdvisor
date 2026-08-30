@@ -526,7 +526,7 @@ def test_semantic_descent_graph_flags_returned_declaration_table(
         "    STATUS = 'status'\n"
         "\n"
         "class Manifest:\n"
-        "    def to_dict(self):\n"
+        "    def to_dict(self) -> dict[str, tuple[FieldName, ...]]:\n"
         "        return {'fields': ('title', 'summary', 'status')}\n",
     )
 
@@ -2380,7 +2380,10 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
         encoding="utf-8",
     )
     (package_dir / "codemod.py").write_text(
-        "_ACTIONABLE_CONFIDENCE_LEVELS = frozenset(('high', 'medium'))\n",
+        "import pkg.taxonomy\n"
+        "\n"
+        "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
+        "frozenset(('high', 'medium'))\n",
         encoding="utf-8",
     )
     modules = parse_python_modules(tmp_path)
@@ -2667,7 +2670,7 @@ def test_enum_string_literal_branch_still_reports_mirror(
         "    SLOW = 'slow'\n"
         "    SAFE = 'safe'\n"
         "\n"
-        "def classify(mode):\n"
+        "def classify(mode: Mode):\n"
         "    if mode in ('fast', 'slow', 'safe'):\n"
         "        return True\n"
         "    return False\n",
@@ -2683,6 +2686,68 @@ def test_enum_string_literal_branch_still_reports_mirror(
     assert any(
         finding.metrics.plan_source_name == "Mode"
         and finding.metrics.plan_mapping_name.startswith("if@")
+        for finding in findings
+    )
+
+
+def test_untyped_enum_string_literal_branch_is_not_authority_proof(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from enum import StrEnum\n"
+        "\n"
+        "class Mode(StrEnum):\n"
+        "    FAST = 'fast'\n"
+        "    SLOW = 'slow'\n"
+        "    SAFE = 'safe'\n"
+        "\n"
+        "def classify(mode):\n"
+        "    if mode in ('fast', 'slow', 'safe'):\n"
+        "        return True\n"
+        "    return False\n",
+    )
+
+    findings = SemanticMirrorWithoutDescentDetector().detect(
+        parse_python_modules(tmp_path),
+        DetectorConfig(),
+    )
+
+    assert not any(
+        finding.metrics.plan_source_name == "Mode"
+        for finding in findings
+    )
+
+
+def test_builtin_calls_do_not_prove_enum_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from enum import StrEnum\n"
+        "\n"
+        "class BuiltinCallName(StrEnum):\n"
+        "    MIN = 'min'\n"
+        "    STR = 'str'\n"
+        "    SUM = 'sum'\n"
+        "    TUPLE = 'tuple'\n"
+        "\n"
+        "def collect(values):\n"
+        "    return (\n"
+        "        build(label='minimum', value=min(values)),\n"
+        "        build(label='text', value=str(values)),\n"
+        "        build(label='total', value=sum(values)),\n"
+        "        build(label='items', value=tuple(values)),\n"
+        "    )\n",
+    )
+
+    findings = SemanticMirrorWithoutDescentDetector().detect(
+        parse_python_modules(tmp_path),
+        DetectorConfig(),
+    )
+
+    assert not any(
+        finding.metrics.plan_source_name == "BuiltinCallName"
         for finding in findings
     )
 
@@ -2944,7 +3009,10 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
         encoding="utf-8",
     )
     (package_dir / "codemod.py").write_text(
-        "_ACTIONABLE_CONFIDENCE_LEVELS = frozenset(('high', 'medium'))\n",
+        "import pkg.taxonomy\n"
+        "\n"
+        "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
+        "frozenset(('high', 'medium'))\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)

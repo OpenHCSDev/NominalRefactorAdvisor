@@ -821,16 +821,31 @@ class AuthorityProofEdge(SemanticRecord):
         *,
         detail: str = "",
     ) -> "AuthorityProofEdge":
+        return cls.from_location(
+            authority,
+            authority.location,
+            edge_kind,
+            detail=detail,
+        )
+
+    @classmethod
+    def from_location(
+        cls,
+        authority: SemanticAuthority,
+        location: SourceLocation,
+        edge_kind: AuthorityProofEdgeKind,
+        *,
+        detail: str,
+    ) -> "AuthorityProofEdge":
         return cls(
             edge_kind=edge_kind,
             authority_id=authority.authority_id,
             authority_kind=authority.kind.value,
-            file_path=authority.location.file_path,
-            line=authority.location.line,
-            symbol=authority.location.symbol,
+            file_path=location.file_path,
+            line=location.line,
+            symbol=location.symbol,
             detail=detail,
         )
-
 
 @dataclass(frozen=True)
 class AuthorityDiscoveryRequired(SemanticRecord):
@@ -1092,6 +1107,7 @@ class PresentationProjection(SemanticProjectionReference):
     key_value_pairs: tuple[PresentationKeyValuePair, ...] = ()
     class_symbols: tuple[str, ...] = ()
     class_reference_parts: tuple[tuple[str, ...], ...] = ()
+    axis_type_names: tuple[str, ...] = ()
 
     @cached_property
     def normalized_tokens(self) -> tuple[str, ...]:
@@ -1858,26 +1874,19 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
-        if (
-            candidate.branch_like_projection
-            and not context.projection_semantics.enum_branch_has_case_syntax(
+        if not context.projection_semantics.has_typed_authority_axis(
+            candidate.projection,
+            candidate.authority,
+        ):
+            return False
+        if candidate.branch_like_projection:
+            return context.projection_semantics.enum_branch_has_case_syntax(
                 candidate.projection,
                 frozenset(candidate.match.tokens),
             )
-            and not candidate.authority_affinity.has_authority_affinity()
-            and not context.projection_semantics.has_qualified_authority_reference(
-                candidate.projection,
-                candidate.authority,
-            )
-        ):
-            return False
-        return not (
-            candidate.match.fact_count <= 2
-            and not candidate.authority_affinity.has_authority_affinity()
-            and not context.projection_semantics.has_qualified_authority_reference(
-                candidate.projection,
-                candidate.authority,
-            )
+        return context.projection_semantics.enum_projection_has_literal_syntax(
+            candidate.projection,
+            frozenset(candidate.match.tokens),
         )
 
 
@@ -4171,6 +4180,80 @@ class ProjectionOwnerConstructionFrame:
     projection_indices: list[int]
 
 
+@dataclass(frozen=True)
+class ProjectionTypeScope:
+    """Typed value and return axes visible to one function projection scope."""
+
+    type_names_by_value: Mapping[str, tuple[str, ...]]
+    return_type_names: tuple[str, ...]
+
+    @classmethod
+    def from_function(
+        cls,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        parent: "ProjectionTypeScope | None",
+    ) -> "ProjectionTypeScope":
+        type_names_by_value = dict(
+            parent.type_names_by_value if parent is not None else {}
+        )
+        arguments = (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+            *((node.args.vararg,) if node.args.vararg is not None else ()),
+            *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+        )
+        for argument in arguments:
+            if argument.annotation is None:
+                type_names_by_value.pop(argument.arg, None)
+            else:
+                type_names_by_value[argument.arg] = cls.annotation_type_names(
+                    argument.annotation
+                )
+        return cls(
+            type_names_by_value=type_names_by_value,
+            return_type_names=(
+                ()
+                if node.returns is None
+                else cls.annotation_type_names(node.returns)
+            ),
+        )
+
+    @staticmethod
+    def annotation_type_names(annotation: ast.AST) -> tuple[str, ...]:
+        return sorted_tuple(
+            {
+                name
+                for child in ast.walk(annotation)
+                for name in (
+                    (child.id,)
+                    if isinstance(child, ast.Name)
+                    else ((child.attr,) if isinstance(child, ast.Attribute) else ())
+                )
+            }
+        )
+
+    def projection_type_names(
+        self,
+        node: ast.AST,
+        *,
+        include_return: bool = False,
+    ) -> tuple[str, ...]:
+        referenced_names = frozenset(
+            child.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+        )
+        return sorted_tuple(
+            {
+                type_name
+                for name in referenced_names
+                for type_name in self.type_names_by_value.get(name, ())
+            }
+            | (set(self.return_type_names) if include_return else set())
+        )
+
+
 @dataclass
 class CompactSemanticClassSupplementFrame:
     """Accumulate class construction facts during the projection traversal."""
@@ -4205,6 +4288,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
         self.projections: list[PresentationProjection] = []
         self.owner_construction_stack: list[ProjectionOwnerConstructionFrame] = []
+        self.type_scopes: list[ProjectionTypeScope] = []
         self.class_supplement_stack: list[CompactSemanticClassSupplementFrame] = []
         self.active_class_method_frames: list[CompactSemanticClassSupplementFrame] = []
         self._class_supplements: list[SemanticClassSupplement | None] = []
@@ -4248,7 +4332,10 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                     )
                 )
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
         direct_class_frames = tuple(
             frame
             for frame in self.class_supplement_stack
@@ -4265,9 +4352,16 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
         if frame is not None:
             self.owner_construction_stack.append(frame)
+        self.type_scopes.append(
+            ProjectionTypeScope.from_function(
+                node,
+                self.type_scopes[-1] if self.type_scopes else None,
+            )
+        )
         try:
             super().visit_FunctionDef(node)
         finally:
+            self.type_scopes.pop()
             if frame is not None:
                 self.owner_construction_stack.pop()
                 owner_constructions = frozenset(frame.constructions)
@@ -4286,6 +4380,13 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 del self.active_class_method_frames[-len(direct_class_frames) :]
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def _axis_type_names_for_node(self, node: ast.AST) -> tuple[str, ...]:
+        return (
+            self.type_scopes[-1].projection_type_names(node)
+            if self.type_scopes
+            else ()
+        )
 
     def visit_Call(self, node: ast.Call) -> None:
         if self.active_class_method_frames:
@@ -4339,7 +4440,9 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             self.generic_visit(node)
             return
         if node.value is not None and self._collect_assignment_projection(
-            node, node.value
+            node,
+            node.value,
+            axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
         ):
             return
         self.generic_visit(node)
@@ -4368,6 +4471,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 PresentationProjectionKind.BRANCH_LITERAL,
                 f"if@{node.lineno}",
                 tokens,
+                axis_type_names=self._axis_type_names_for_node(node.test),
             )
         self.generic_visit(node)
 
@@ -4389,10 +4493,17 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 PresentationProjectionKind.MATCH_LITERAL,
                 f"match@{node.lineno}",
                 tuple(tokens),
+                axis_type_names=self._axis_type_names_for_node(node.subject),
             )
         self.generic_visit(node)
 
-    def _collect_assignment_projection(self, node: ast.stmt, value: ast.AST) -> bool:
+    def _collect_assignment_projection(
+        self,
+        node: ast.stmt,
+        value: ast.AST,
+        *,
+        axis_type_names: tuple[str, ...] = (),
+    ) -> bool:
         label = _assignment_label(node)
         if ProjectionSuppressionPolicy(label).suppresses_semantic_projection():
             return False
@@ -4403,6 +4514,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             value,
             label=label,
             allow_call_projection=self.current_function_name is None,
+            axis_type_names=axis_type_names,
         )
 
     def _collect_return_projection(self, node: ast.Return, value: ast.AST) -> bool:
@@ -4411,6 +4523,14 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             value,
             label=f"{self.qualname}:return@{node.lineno}",
             allow_call_projection=False,
+            axis_type_names=(
+                self.type_scopes[-1].projection_type_names(
+                    value,
+                    include_return=True,
+                )
+                if self.type_scopes
+                else ()
+            ),
         )
 
     def _collect_value_projection(
@@ -4420,6 +4540,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         *,
         label: str,
         allow_call_projection: bool,
+        axis_type_names: tuple[str, ...],
     ) -> bool:
         projection_kind = self._projection_kind(value, allow_call_projection)
         if projection_kind is None:
@@ -4467,6 +4588,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             key_value_pairs,
             class_symbols,
             class_reference_parts,
+            axis_type_names,
         )
         return True
 
@@ -4545,6 +4667,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         key_value_pairs: tuple[PresentationKeyValuePair, ...] = (),
         class_symbols: tuple[str, ...] = (),
         class_reference_parts: tuple[tuple[str, ...], ...] = (),
+        axis_type_names: tuple[str, ...] = (),
     ) -> None:
         line = node.lineno
         projection_id = (
@@ -4578,6 +4701,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 key_value_pairs=key_value_pairs,
                 class_symbols=class_symbols,
                 class_reference_parts=class_reference_parts,
+                axis_type_names=axis_type_names,
             )
         )
         if self.owner_construction_stack:
@@ -4632,6 +4756,13 @@ class ProjectionSemanticAuthority:
         )
 
     @staticmethod
+    def has_typed_authority_axis(
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return authority.name in projection.axis_type_names
+
+    @staticmethod
     def has_matched_class_reference(
         projection: PresentationProjection,
         matched_facts: tuple[SemanticFact, ...],
@@ -4661,6 +4792,17 @@ class ProjectionSemanticAuthority:
                 }
             )
             >= 2
+        )
+
+    @staticmethod
+    def enum_projection_has_literal_syntax(
+        projection: PresentationProjection,
+        matched_tokens: frozenset[str],
+    ) -> bool:
+        return any(
+            token.kind is PresentationTokenKind.STRING_LITERAL
+            and token.value in matched_tokens
+            for token in projection.tokens
         )
 
     @staticmethod
@@ -4769,13 +4911,10 @@ class ConstructionAuthorityResolver:
         ):
             return ()
         return (
-            AuthorityProofEdge(
-                edge_kind=AuthorityProofEdgeKind.INHERITS_FROM,
-                authority_id=authority.authority_id,
-                authority_kind=authority.kind.value,
-                file_path=projection.location.file_path,
-                line=projection.location.line,
-                symbol=projection.location.symbol,
+            AuthorityProofEdge.from_location(
+                authority,
+                projection.location,
+                AuthorityProofEdgeKind.INHERITS_FROM,
                 detail="projection constructs nominal class-family members",
             ),
         )
@@ -5257,17 +5396,18 @@ class DataclassProjectionDescentAuthority:
             return ()
         owns_authority = projection_class_symbol == authority.authority_id
         return (
-            AuthorityProofEdge(
-                edge_kind=(
+            AuthorityProofEdge.from_location(
+                authority,
+                SourceLocation(
+                    indexed_class.file_path,
+                    indexed_class.line,
+                    indexed_class.symbol,
+                ),
+                (
                     AuthorityProofEdgeKind.OWNS_FIELD_SET
                     if owns_authority
                     else AuthorityProofEdgeKind.INHERITS_FROM
                 ),
-                authority_id=authority.authority_id,
-                authority_kind=authority.kind.value,
-                file_path=indexed_class.file_path,
-                line=indexed_class.line,
-                symbol=indexed_class.symbol,
                 detail=(
                     "projection is owned by the dataclass authority"
                     if owns_authority
@@ -5301,13 +5441,10 @@ class DataclassProjectionDescentAuthority:
             edge_kind = AuthorityProofEdgeKind.PROVIDES_QUERY_METHOD
             detail = "projection calls an authority-owned derivation method"
         return (
-            AuthorityProofEdge(
-                edge_kind=edge_kind,
-                authority_id=authority.authority_id,
-                authority_kind=authority.kind.value,
-                file_path=projection.location.file_path,
-                line=projection.location.line,
-                symbol=projection.location.symbol,
+            AuthorityProofEdge.from_location(
+                authority,
+                projection.location,
+                edge_kind,
                 detail=detail,
             ),
         )
