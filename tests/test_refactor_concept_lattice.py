@@ -235,11 +235,11 @@ def test_mapping_builder_identity_is_nominally_owned() -> None:
         is EXPECTED_EXECUTABLE_CONCEPTS[builder_type]
         for builder_type in EXPECTED_MAPPING_DECLARATIONS
     )
-    assert (
-        codemod.ContextualSemanticMirrorRecipeBuilder.builder_registry_key(
-            codemod.ContextualSemanticMirrorRecipeBuilder
+    assert all(
+        builder_type.registry_key == registry_key
+        for registry_key, builder_type in (
+            codemod.ContextualSemanticMirrorRecipeBuilder.__registry__.items()
         )
-        == "contextual_semantic_mirror"
     )
 
 

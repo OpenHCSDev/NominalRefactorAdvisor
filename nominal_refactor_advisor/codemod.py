@@ -3302,6 +3302,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
+    registry_key: ClassVar[str]
     payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet()
 
     @classmethod
@@ -3334,10 +3335,7 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
 
     def to_dict(self) -> JsonObject:
         return {
-            "selector": _suffix_trimmed_class_name_registry_key(
-                type(self).__name__,
-                type(self),
-            ),
+            "selector": type(self).registry_key,
             **self.selector_payload(),
         }
 
@@ -18563,6 +18561,7 @@ class ContextualSemanticMirrorRecipeBuilder(
     __skip_if_no_key__ = True
 
     registry_key_suffix: ClassVar[str] = "RecipeBuilder"
+    registry_key: ClassVar[str]
     finding: RefactorFinding
     missing_context_rejection: ClassVar[str]
 
@@ -18578,7 +18577,7 @@ class ContextualSemanticMirrorRecipeBuilder(
                 for builder_type in cls.__registry__.values()
                 if issubclass(builder_type, cls) and builder_type is not cls
             ),
-            key=cls.builder_registry_key,
+            key=lambda builder_type: builder_type.registry_key,
         )
 
     @classmethod
@@ -18601,19 +18600,10 @@ class ContextualSemanticMirrorRecipeBuilder(
     ) -> tuple[str, ...]:
         return tuple(
             (
-                f"{cls.builder_registry_key(builder_type)}: "
+                f"{builder_type.registry_key}: "
                 f"{builder_type.rejection_reason_from_context(finding, context)}"
             )
             for builder_type in cls.builder_types()
-        )
-
-    @staticmethod
-    def builder_registry_key(
-        builder_type: type["ContextualSemanticMirrorRecipeBuilder"],
-    ) -> str:
-        return _suffix_trimmed_class_name_registry_key(
-            builder_type.__name__,
-            builder_type,
         )
 
     @classmethod

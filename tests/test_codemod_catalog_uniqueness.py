@@ -69,6 +69,7 @@ def test_registered_operation_payload_bindings_are_unique() -> None:
     for operation_key, operation_type in RefactorRecipeOperation.__registry__.items():
         binding_set = operation_type.payload_bindings()
 
+        assert operation_type.operation_key() == operation_key
         assert isinstance(binding_set, PayloadBindingSet), operation_key
         assert len({binding.field_name for binding in binding_set}) == len(binding_set)
         assert len(
@@ -88,6 +89,7 @@ def test_registered_selector_payload_bindings_are_unique() -> None:
     for selector_key, selector_type in CodemodTargetSelector.__registry__.items():
         binding_set = selector_type.payload_bindings
 
+        assert selector_type.registry_key == selector_key
         assert isinstance(binding_set, PayloadBindingSet), selector_key
         assert len({binding.field_name for binding in binding_set}) == len(binding_set)
         assert len(
