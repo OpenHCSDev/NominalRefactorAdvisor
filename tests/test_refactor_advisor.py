@@ -132,7 +132,9 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisStatus,
     FindingEvidenceTargetSelector,
-    FindingRecipeEvaluation,
+    ExecutableRecipeEvaluation,
+    MappingSemanticMirrorRecipeStrategy,
+    SemanticDescentRecipeEvaluation,
     DeclareAuthorityOperation,
     DeadCompatibilityErasureConcept,
     DeleteClassAssignmentOperation,
@@ -1193,7 +1195,10 @@ def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() ->
     )
 
     evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
-        FindingRecipeEvaluation(recipe=recipe),
+        ExecutableRecipeEvaluation(
+            executable_recipe=recipe,
+            executable_declaration_type=FindingRecipeAuthorityClaimGate,
+        ),
         None,
         RefactorFinding(
             detector_id="authority_gate_fixture",
@@ -1209,6 +1214,82 @@ def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() ->
     assert evaluation.recipe is None
     assert "Authority Claim Gate" in evaluation.rejection_reason
     assert "AuthorityClaim" in evaluation.rejection_reason
+
+
+def test_authority_gate_rejection_removes_semantic_repair_plan() -> None:
+    finding = RefactorFinding(
+        detector_id="authority_gate_fixture",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Authority gate fixture",
+        summary="recipe uses authority language without a claim",
+        why="authority claims must be proof-carrying",
+        capability_gap="resolved authority claim",
+        relation_context="generated recipe text mentions authority",
+    )
+    evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
+        SemanticDescentRecipeEvaluation(
+            executable_recipe=RefactorRecipe(
+                recipe_id="unsafe-semantic-plan",
+                reason="route through authority",
+            ),
+            executable_declaration_type=FindingRecipeAuthorityClaimGate,
+            strategy_type=MappingSemanticMirrorRecipeStrategy,
+        ),
+        None,
+        finding,
+    )
+    record = FindingRecipeSynthesisRecord(
+        finding=finding,
+        status=FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
+        evaluation=evaluation,
+    )
+
+    assert record.semantic_repair_plan is None
+
+
+def test_authority_inference_updates_the_recipe_used_by_semantic_repair(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "class HandlerAuthority:\n    pass\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    finding = RefactorFinding(
+        detector_id="authority_gate_fixture",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Authority gate fixture",
+        summary="projection should derive from HandlerAuthority",
+        why="authority claims must be proof-carrying",
+        capability_gap="resolved authority claim",
+        relation_context="projection lacks a derivation path",
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            field_names=("handler",),
+            mapping_name="HANDLERS",
+            source_name="HandlerAuthority",
+        ),
+    )
+    original_recipe = RefactorRecipe(
+        recipe_id="inferred-semantic-plan",
+        reason="derive the projection from its authority",
+    )
+    evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
+        SemanticDescentRecipeEvaluation(
+            executable_recipe=original_recipe,
+            executable_declaration_type=FindingRecipeAuthorityClaimGate,
+            strategy_type=MappingSemanticMirrorRecipeStrategy,
+        ),
+        snapshot,
+        finding,
+    )
+    record = FindingRecipeSynthesisRecord(
+        finding=finding,
+        status=FindingRecipeSynthesisStatus.PLANNED,
+        evaluation=evaluation,
+    )
+
+    assert original_recipe.authority_claims == ()
+    assert evaluation.required_recipe.authority_claims
+    assert record.semantic_repair_plan is not None
+    assert record.semantic_repair_plan.recipe is evaluation.required_recipe
 
 
 def test_refactor_recipe_dsl_operations_compile_to_rewrites(
@@ -13769,7 +13850,9 @@ def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
     assert payload["applied"] is True
     assert payload["applied_rewrite_count"] == 1
     assert payload["parse_validation"]["parse_valid"] is True
-    assert payload["parse_validation"]["validated_file_paths"] == [module_path.as_posix()]
+    assert payload["parse_validation"]["validated_file_paths"] == [
+        module_path.as_posix()
+    ]
     assert payload["parse_validation"]["parse_valid"] is True
     assert 'detector_id = "local_rule"' not in module_path.read_text()
     assert "finding_spec = HighConfidenceFindingSpec(" in module_path.read_text()
@@ -14438,9 +14521,9 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     }
     terminal_class_plan = payload["terminal_class_plan_report"]
     assert (
-        terminal_class_plan["finding_recipe_plan"]["synthesis_report"]["records"][
-            0
-        ]["status"]
+        terminal_class_plan["finding_recipe_plan"]["synthesis_report"]["records"][0][
+            "status"
+        ]
         == "no_synthesizer"
     )
     assert (
@@ -14834,14 +14917,15 @@ def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
         "REGISTRY duplicates HandlerAuthority membership.",
         (),
     )
-    record = FindingRecipeSynthesisRecord.for_finding(
-        finding,
+    record = FindingRecipeSynthesisRecord(
+        finding=finding,
         status=FindingRecipeSynthesisStatus.PLANNED,
-        evaluation=FindingRecipeEvaluation(
-            recipe=RefactorRecipe(
+        evaluation=ExecutableRecipeEvaluation(
+            executable_recipe=RefactorRecipe(
                 recipe_id="manual-registry-repair",
                 authority_claims=(claim,),
-            )
+            ),
+            executable_declaration_type=FindingRecipeClassPlan,
         ),
     )
 
@@ -14888,14 +14972,15 @@ def test_module_cli_synthesizes_class_plan_with_scaffolds(
 
     assert result.returncode == 0, result.stderr
     assert len(payload["classes"]) == 1
-    assert class_payload["class_id"] == payload["execution_plan"]["classes"][0][
-        "class_id"
-    ]
+    assert (
+        class_payload["class_id"] == payload["execution_plan"]["classes"][0]["class_id"]
+    )
     assert class_payload["replacement_scaffold"]["selected_count"] >= 1
     assert len(class_payload["site_plans"]) == 1
-    assert class_payload["site_plans"][0]["replacement_scaffold"]["selector"][
-        "selector"
-    ] == "finding_evidence_target"
+    assert (
+        class_payload["site_plans"][0]["replacement_scaffold"]["selector"]["selector"]
+        == "finding_evidence_target"
+    )
     assert class_payload["site_plans"][0]["replacement_scaffold"]["selected_count"] >= 1
     assert (
         class_payload["document"]["recipes"][0]["operations"][0]["operation"]
@@ -14944,9 +15029,7 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     class_delta = class_projection["classes"][0]
     site_delta = class_delta["site_deltas"][0]
     class_plan = payload["classes"][0]
-    synthesis_record = payload["finding_recipe_plan"]["synthesis_report"][
-        "records"
-    ][0]
+    synthesis_record = payload["finding_recipe_plan"]["synthesis_report"]["records"][0]
 
     assert result.returncode == 0, result.stderr
     assert len(payload["classes"]) == 1
@@ -14965,9 +15048,10 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert site_delta["finding_id"] == class_plan["site_plans"][0]["finding_id"]
     assert site_delta["status_counts"]["eliminated"] >= 1
     assert site_delta["fulfilled_expected_removal"] is True
-    assert class_plan["site_plans"][0]["replacement_scaffold"]["selector"][
-        "selector"
-    ] == "finding_evidence_target"
+    assert (
+        class_plan["site_plans"][0]["replacement_scaffold"]["selector"]["selector"]
+        == "finding_evidence_target"
+    )
     assert (
         synthesis_record["recipe"]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"
@@ -15477,9 +15561,9 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     assert simulation.simulation.applied_rewrite_count == 1
     assert simulation.to_dict()["expected_removed_finding_count"] == 1
     assert simulation.to_dict()["simulation"]["parse_validation"]["parse_valid"] is True
-    assert simulation.to_dict()["simulation"]["parse_validation"]["validated_file_paths"] == (
-        module_path.as_posix(),
-    )
+    assert simulation.to_dict()["simulation"]["parse_validation"][
+        "validated_file_paths"
+    ] == (module_path.as_posix(),)
     simulation.document_simulation.apply()
     remaining = tuple(
         finding

@@ -91,7 +91,9 @@ def test_semantic_authority_selection_is_one_mro_owned_fallback_chain() -> None:
         semantic_descent_module.ClassFamilySemanticAuthorityProvider,
     )
 
-    assert semantic_descent_module.SemanticAuthorityProvider.__mro__[:3] == provider_types
+    assert (
+        semantic_descent_module.SemanticAuthorityProvider.__mro__[:3] == provider_types
+    )
     assert not hasattr(
         semantic_descent_module,
         "CompactSemanticAuthorityBuilder",
@@ -1120,6 +1122,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert operation["class_key_pairs"] == ("LoadStep='load'", "SaveStep='save'")
     assert repair_plan is not None
     assert repair_plan.repair_kind == "registration"
+    assert repair_plan.action_keys == record.action_keys
     assert repair_plan.operation_kinds == ("convert_manual_registry_to_autoregister",)
     repaired_finding = next(
         finding for finding in findings if finding.stable_id == repair_plan.finding_id
@@ -1172,10 +1175,6 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
         importing_file_path=beta_path.as_posix(),
         imported_file_path=alpha_path.as_posix(),
     )
-
-
-
-
 
 
 def test_inherited_autoregister_config_synthesizes_assignment_deletions(
@@ -1283,7 +1282,6 @@ def test_derived_metric_count_synthesizes_constructor_rewrite(
     assert "field_count=len(field_names)" not in rewritten
     assert "field_names=field_names" in rewritten
     assert simulation.is_clean is True
-
 
 
 def test_identity_keyword_forwarding_shell_synthesizes_inline_delete_recipe(
@@ -1963,8 +1961,7 @@ def test_dataclass_template_keywords_do_not_invent_dsl_action(
         SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     assert not any(
-        finding.metrics.plan_source_name == "RefactorAction"
-        for finding in findings
+        finding.metrics.plan_source_name == "RefactorAction" for finding in findings
     )
 
 
@@ -2017,6 +2014,10 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert record.refactor_concept == "dataclass_payload_projection"
+    assert (
+        record.executable_declaration_name
+        == "DataclassPayloadProjectionMappingRecipeBuilder"
+    )
     assert record.semantic_repair_plan is not None
     assert record.semantic_repair_plan.repair_kind == "mapping"
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
@@ -2713,10 +2714,7 @@ def test_untyped_enum_string_literal_branch_is_not_authority_proof(
         DetectorConfig(),
     )
 
-    assert not any(
-        finding.metrics.plan_source_name == "Mode"
-        for finding in findings
-    )
+    assert not any(finding.metrics.plan_source_name == "Mode" for finding in findings)
 
 
 def test_builtin_calls_do_not_prove_enum_authority(
@@ -2747,8 +2745,7 @@ def test_builtin_calls_do_not_prove_enum_authority(
     )
 
     assert not any(
-        finding.metrics.plan_source_name == "BuiltinCallName"
-        for finding in findings
+        finding.metrics.plan_source_name == "BuiltinCallName" for finding in findings
     )
 
 
@@ -3187,8 +3184,7 @@ def test_semantic_descent_treats_class_family_construction_as_descent(
     )
     assert any(
         certificate.edge.authority_id == authority.authority_id
-        and certificate.proof_edges[0].edge_kind
-        is AuthorityProofEdgeKind.INHERITS_FROM
+        and certificate.proof_edges[0].edge_kind is AuthorityProofEdgeKind.INHERITS_FROM
         for certificate in graph.certificates
         if isinstance(certificate, SemanticDerivationCertificate)
     )

@@ -366,6 +366,7 @@ class FindingRecipeSynthesisStatus(StrEnum):
     def unsupported(self) -> bool:
         return self._disposition is FindingRecipeSynthesisDisposition.UNSUPPORTED
 
+
 class CancelableCompositionKind(StrEnum):
     """Kinds of product-carrier compositions that can be factored away."""
 
@@ -449,7 +450,7 @@ class RefactorConcept(ABC):
         synthesizer = FindingRecipeSynthesizer.for_finding(finding)
         if synthesizer is None:
             return False
-        evaluation = synthesizer.declared_evaluation_for_finding(
+        evaluation = synthesizer.evaluate_recipe_for_finding(
             finding,
             selector_context,
         )
@@ -1008,9 +1009,7 @@ class ArchitectureGuardRule:
         )
         rule = cls(
             rule_id=payload.required_string("rule_id"),
-            forbidden_attribute_names=payload.string_tuple(
-                "forbidden_attribute_names"
-            ),
+            forbidden_attribute_names=payload.string_tuple("forbidden_attribute_names"),
             forbidden_call_names=payload.string_tuple("forbidden_call_names"),
             forbidden_literal_dispatch_subjects=payload.string_tuple(
                 "forbidden_literal_dispatch_subjects"
@@ -13297,6 +13296,7 @@ class CodemodAfterSnapshotProjection:
 @dataclass(frozen=True)
 class SourceRewriteSimulationResult:
     """Shared result envelope for executable source rewrite simulations."""
+
     simulation: CodemodSimulationReport
     architecture_guard_report: ArchitectureGuardReport
 
@@ -13554,26 +13554,20 @@ class FindingRecipeActionKey:
 class SemanticDescentRepairPlan:
     """Finding-backed semantic repair intent compiled into DSL operations."""
 
-    finding: RefactorFinding
+    record: "FindingRecipeSynthesisRecord"
     repair_kind: str
-    action_keys: tuple[FindingRecipeActionKey, ...]
-    recipe: RefactorRecipe
 
-    @classmethod
-    def from_recipe(
-        cls,
-        finding: RefactorFinding,
-        *,
-        repair_kind: str,
-        action_keys: tuple[FindingRecipeActionKey, ...],
-        recipe: RefactorRecipe,
-    ) -> "SemanticDescentRepairPlan":
-        return cls(
-            finding=finding,
-            repair_kind=repair_kind,
-            action_keys=action_keys,
-            recipe=recipe,
-        )
+    @property
+    def finding(self) -> RefactorFinding:
+        return self.record.finding
+
+    @property
+    def action_keys(self) -> tuple[FindingRecipeActionKey, ...]:
+        return self.record.action_keys
+
+    @property
+    def recipe(self) -> RefactorRecipe:
+        return self.record.evaluation.required_recipe
 
     @property
     def finding_id(self) -> str:
@@ -13618,25 +13612,6 @@ class FindingRecipeSynthesisRecord:
     status: FindingRecipeSynthesisStatus
     evaluation: "FindingRecipeEvaluation"
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
-
-    @classmethod
-    def for_finding(
-        cls,
-        finding: RefactorFinding,
-        status: FindingRecipeSynthesisStatus,
-        *,
-        action_keys: tuple[FindingRecipeActionKey, ...] = (),
-        evaluation: "FindingRecipeEvaluation | None" = None,
-    ) -> "FindingRecipeSynthesisRecord":
-        evaluated_recipe = (
-            evaluation if evaluation is not None else FindingRecipeEvaluation()
-        )
-        return cls(
-            finding=finding,
-            status=status,
-            evaluation=evaluated_recipe,
-            action_keys=action_keys,
-        )
 
     @property
     def finding_id(self) -> str:
@@ -13690,10 +13665,7 @@ class FindingRecipeSynthesisRecord:
 
     @property
     def executable_declaration_name(self) -> str:
-        declaration_type = self.evaluation.executable_declaration_type
-        if declaration_type is None:
-            return ""
-        return declaration_type.__name__
+        return self.evaluation.executable_declaration_name
 
     @property
     def refactor_concept(self) -> str:
@@ -13704,7 +13676,7 @@ class FindingRecipeSynthesisRecord:
 
     @property
     def semantic_repair_plan(self) -> SemanticDescentRepairPlan | None:
-        return self.evaluation.semantic_repair_plan
+        return self.evaluation.semantic_repair_plan_for(self)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -13810,41 +13782,130 @@ class FindingRecipeSynthesisBoundary(CodemodJsonReport):
         return self.synthesis_payload()
 
 
-@dataclass(frozen=True)
-class FindingRecipeEvaluation:
-    """Single safety-pass result for one finding-backed recipe attempt."""
+@dataclass(frozen=True, kw_only=True)
+class FindingRecipeEvaluation(ABC):
+    """Closed nominal outcome of one finding-backed recipe safety pass."""
 
-    recipe: RefactorRecipe | None = None
-    semantic_repair_plan: SemanticDescentRepairPlan | None = None
-    rejection_reason: str = ""
-    executable_declaration_type: type[object] | None = None
+    @property
+    def recipe(self) -> RefactorRecipe | None:
+        return self.recipe_or_none()
+
+    @abstractmethod
+    def recipe_or_none(self) -> RefactorRecipe | None:
+        """Return the executable recipe owned by this outcome, when present."""
+
+    @property
+    def rejection_reason(self) -> str:
+        return ""
+
+    @property
+    def required_recipe(self) -> RefactorRecipe:
+        recipe = self.recipe
+        if recipe is None:
+            raise TypeError("Finding recipe evaluation has no executable recipe")
+        return recipe
+
+    def with_recipe(self, recipe: RefactorRecipe) -> Self:
+        raise TypeError(f"{type(self).__name__} cannot own an executable recipe")
+
+    def semantic_repair_plan_for(
+        self,
+        record: FindingRecipeSynthesisRecord,
+    ) -> SemanticDescentRepairPlan | None:
+        del record
+        return None
 
     @property
     def refactor_concept_type(self) -> type[RefactorConcept] | None:
-        declaration_type = self.executable_declaration_type
-        if declaration_type is None or not issubclass(
-            declaration_type, RefactorConcept
-        ):
-            return None
-        return RefactorConcept.leaf_concept_for_declaration(declaration_type)
+        return None
+
+    @property
+    def executable_declaration_name(self) -> str:
+        return ""
 
     @property
     def required_executable_declaration_type(self) -> type[object]:
-        if self.executable_declaration_type is None:
-            raise TypeError("Finding recipe evaluation has no executable declaration")
+        raise TypeError("Finding recipe evaluation has no executable declaration")
+
+
+@dataclass(frozen=True, kw_only=True)
+class UnevaluatedRecipeOutcome(FindingRecipeEvaluation):
+    """Terminal synthesis outcome reached before declaration evaluation."""
+
+    reason: str
+
+    def recipe_or_none(self) -> None:
+        return None
+
+    @property
+    def rejection_reason(self) -> str:
+        return self.reason
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeclaredRecipeEvaluation(FindingRecipeEvaluation, ABC):
+    """Evaluation outcome with one required executable declaration owner."""
+
+    executable_declaration_type: type[object]
+
+    @property
+    def executable_declaration_name(self) -> str:
+        return self.executable_declaration_type.__name__
+
+    @property
+    def refactor_concept_type(self) -> type[RefactorConcept] | None:
+        if not issubclass(self.executable_declaration_type, RefactorConcept):
+            return None
+        return RefactorConcept.leaf_concept_for_declaration(
+            self.executable_declaration_type
+        )
+
+    @property
+    def required_executable_declaration_type(self) -> type[object]:
         return self.executable_declaration_type
 
-    def declared_by(self, declaration_type: type[object]) -> Self:
-        if (
-            self.executable_declaration_type is not None
-            and self.executable_declaration_type is not declaration_type
-        ):
-            raise TypeError(
-                "Finding recipe evaluation already belongs to "
-                f"{self.executable_declaration_type.__name__}, not "
-                f"{declaration_type.__name__}"
-            )
-        return replace(self, executable_declaration_type=declaration_type)
+
+@dataclass(frozen=True, kw_only=True)
+class RejectedRecipeEvaluation(DeclaredRecipeEvaluation):
+    """Declaration-owned safety outcome without an executable recipe."""
+
+    reason: str
+
+    def recipe_or_none(self) -> None:
+        return None
+
+    @property
+    def rejection_reason(self) -> str:
+        return self.reason
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
+    """Declaration-owned safety outcome with exactly one executable recipe."""
+
+    executable_recipe: RefactorRecipe
+
+    def recipe_or_none(self) -> RefactorRecipe:
+        return self.executable_recipe
+
+    def with_recipe(self, recipe: RefactorRecipe) -> Self:
+        return replace(self, executable_recipe=recipe)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SemanticDescentRecipeEvaluation(ExecutableRecipeEvaluation):
+    """Executable outcome declared by one semantic-mirror strategy leaf."""
+
+    strategy_type: type["SemanticMirrorFindingRecipeStrategy"]
+
+    def semantic_repair_plan_for(
+        self,
+        record: FindingRecipeSynthesisRecord,
+    ) -> SemanticDescentRepairPlan:
+        return SemanticDescentRepairPlan(
+            record=record,
+            repair_kind=self.strategy_type.repair_kind(),
+        )
 
 
 @dataclass(frozen=True)
@@ -13947,17 +14008,18 @@ class FindingRecipeAuthorityClaimGate:
                 context=context,
             ).recipe_with_inferred_claims(recipe)
             if inferred_recipe is not recipe:
-                evaluation = replace(evaluation, recipe=inferred_recipe)
+                evaluation = evaluation.with_recipe(inferred_recipe)
                 recipe = inferred_recipe
         authority_report = cls.authority_report_for_recipe(recipe, context)
         if authority_report is None:
             return evaluation
         if authority_report.status is CodemodPreflightStatus.PASSED:
             return evaluation
-        return replace(
-            evaluation,
-            recipe=None,
-            rejection_reason=cls.rejection_reason(authority_report),
+        return RejectedRecipeEvaluation(
+            reason=cls.rejection_reason(authority_report),
+            executable_declaration_type=(
+                evaluation.required_executable_declaration_type
+            ),
         )
 
     @staticmethod
@@ -13986,7 +14048,7 @@ class FindingRecipeSynthesisAttempt:
         synthesizer = FindingRecipeSynthesizer.for_finding(self.finding)
         result_status = FindingRecipeSynthesisStatus.NO_SYNTHESIZER
         result_action_keys: tuple[FindingRecipeActionKey, ...] = ()
-        result_evaluation = FindingRecipeEvaluation()
+        result_evaluation: FindingRecipeEvaluation | None = None
         if synthesizer is not None:
             raw_action_keys = synthesizer.action_keys_for_finding(self.finding)
             action_keys = tuple(
@@ -14002,7 +14064,7 @@ class FindingRecipeSynthesisAttempt:
                 result_status = FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS
                 result_action_keys = raw_action_keys
             else:
-                evaluation = synthesizer.declared_evaluation_for_finding(
+                evaluation = synthesizer.evaluate_recipe_for_finding(
                     self.finding,
                     self.selector_context,
                 )
@@ -14025,9 +14087,13 @@ class FindingRecipeSynthesisAttempt:
                 else:
                     result_status = FindingRecipeSynthesisStatus.PLANNED
                     result_evaluation = evaluation
-        return FindingRecipeSynthesisRecord.for_finding(
-            self.finding,
-            result_status,
+        if result_evaluation is None:
+            result_evaluation = UnevaluatedRecipeOutcome(
+                reason=result_status.default_reason
+            )
+        return FindingRecipeSynthesisRecord(
+            finding=self.finding,
+            status=result_status,
             action_keys=result_action_keys,
             evaluation=result_evaluation,
         )
@@ -14041,7 +14107,9 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
 
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
-        return tuple(record.finding_id for record in self.records if record.status.planned)
+        return tuple(
+            record.finding_id for record in self.records if record.status.planned
+        )
 
     @property
     def expected_removed_finding_count(self) -> int:
@@ -14462,20 +14530,14 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
     ) -> FindingRecipeEvaluation:
         recipe = self.recipe_for_finding(finding, context)
         if recipe is not None:
-            return FindingRecipeEvaluation(recipe=recipe).declared_by(type(self))
-        return FindingRecipeEvaluation(
-            rejection_reason=self.rejection_reason_for_finding(finding, context)
-        ).declared_by(type(self))
-
-    def declared_evaluation_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        evaluation = self.evaluate_recipe_for_finding(finding, context)
-        if evaluation.executable_declaration_type is not None:
-            return evaluation
-        return evaluation.declared_by(type(self))
+            return ExecutableRecipeEvaluation(
+                executable_recipe=recipe,
+                executable_declaration_type=type(self),
+            )
+        return RejectedRecipeEvaluation(
+            reason=self.rejection_reason_for_finding(finding, context),
+            executable_declaration_type=type(self),
+        )
 
     def action_keys_for_finding(
         self,
@@ -14547,25 +14609,6 @@ class InferredFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
     @abstractmethod
     def supports_finding(cls, finding: RefactorFinding) -> bool:
         raise NotImplementedError
-
-
-class DynamicallyDeclaredFindingRecipeSynthesizer(
-    EvaluatedFindingRecipeSynthesizer,
-    ABC,
-):
-    """Require dynamic recipe selection to name its exact declaration."""
-
-    def declared_evaluation_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        evaluation = self.evaluate_recipe_for_finding(finding, context)
-        if evaluation.executable_declaration_type is None:
-            raise TypeError(
-                f"{type(self).__name__} did not declare its selected execution type"
-            )
-        return evaluation
 
 
 class RuntimeProductRecordSchemaFindingRecipeSynthesizer(
@@ -14804,7 +14847,7 @@ class FlattenedProjectionPropertyFindingRecipeSynthesizer(
 
 
 class MappingBuilderFindingRecipeSynthesizer(
-    DynamicallyDeclaredFindingRecipeSynthesizer,
+    EvaluatedFindingRecipeSynthesizer,
     ABC,
 ):
     """Finding bridge whose declaration owns its exact recipe builder."""
@@ -14821,15 +14864,20 @@ class MappingBuilderFindingRecipeSynthesizer(
             context,
         )
         if builder is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="mapping recipe construction requires source context"
-            ).declared_by(type(self))
+            return RejectedRecipeEvaluation(
+                reason="mapping recipe construction requires source context",
+                executable_declaration_type=type(self),
+            )
         recipe = builder.recipe()
         if recipe is not None:
-            return FindingRecipeEvaluation(recipe=recipe).declared_by(type(builder))
-        return FindingRecipeEvaluation(
-            rejection_reason=builder.rejection_reason()
-        ).declared_by(type(builder))
+            return ExecutableRecipeEvaluation(
+                executable_recipe=recipe,
+                executable_declaration_type=type(builder),
+            )
+        return RejectedRecipeEvaluation(
+            reason=builder.rejection_reason(),
+            executable_declaration_type=type(builder),
+        )
 
     def action_keys_for_finding(
         self,
@@ -14906,8 +14954,14 @@ class PrefixedRoleBundleFindingRecipeSynthesizer(
         try:
             parts = self.required_recipe_parts(finding, context)
         except PrefixedRoleBundleRecipeRejection as rejection:
-            return FindingRecipeEvaluation(rejection_reason=rejection.reason)
-        return FindingRecipeEvaluation(recipe=parts.recipe_for_finding(finding))
+            return RejectedRecipeEvaluation(
+                reason=rejection.reason,
+                executable_declaration_type=type(self),
+            )
+        return ExecutableRecipeEvaluation(
+            executable_recipe=parts.recipe_for_finding(finding),
+            executable_declaration_type=type(self),
+        )
 
     def required_recipe_parts(
         self,
@@ -15664,21 +15718,29 @@ class CollectorBoilerplateFindingRecipeSynthesizer(
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         if context is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=f"{self.collector_label} extraction requires source context"
+            return RejectedRecipeEvaluation(
+                reason=f"{self.collector_label} extraction requires source context",
+                executable_declaration_type=type(self),
             )
         extraction = self.extraction_for_finding(finding, context)
         if extraction is None:
-            return FindingRecipeEvaluation(rejection_reason=self.extraction_requirement)
+            return RejectedRecipeEvaluation(
+                reason=self.extraction_requirement,
+                executable_declaration_type=type(self),
+            )
         recipe = extraction.recipe_for(finding)
         if recipe is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
+            return RejectedRecipeEvaluation(
+                reason=(
                     f"{self.collector_label} extraction could not rewrite the "
                     "collector residue safely"
-                )
+                ),
+                executable_declaration_type=type(self),
             )
-        return FindingRecipeEvaluation(recipe=recipe)
+        return ExecutableRecipeEvaluation(
+            executable_recipe=recipe,
+            executable_declaration_type=type(self),
+        )
 
     def extraction_for_finding(
         self,
@@ -15768,19 +15830,27 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         if context is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
+            return RejectedRecipeEvaluation(
+                reason=(
                     "identity keyword forwarding collapse requires a source selector context"
-                )
+                ),
+                executable_declaration_type=type(self),
             )
         parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
         if rejection_reason:
-            return FindingRecipeEvaluation(rejection_reason=rejection_reason)
-        if parts is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="identity keyword forwarding collapse found no recipe parts"
+            return RejectedRecipeEvaluation(
+                reason=rejection_reason,
+                executable_declaration_type=type(self),
             )
-        return FindingRecipeEvaluation(recipe=parts.recipe_for(finding))
+        if parts is None:
+            return RejectedRecipeEvaluation(
+                reason="identity keyword forwarding collapse found no recipe parts",
+                executable_declaration_type=type(self),
+            )
+        return ExecutableRecipeEvaluation(
+            executable_recipe=parts.recipe_for(finding),
+            executable_declaration_type=type(self),
+        )
 
     def recipe_parts_for_finding(
         self,
@@ -16259,6 +16329,12 @@ class RepeatedAuthorityRecipeParts(AuthorityClaimCarrier):
 
     rewrite_steps: tuple[RepeatedAuthorityTargetRewrite, ...]
 
+    def executable_declaration_type(
+        self,
+        synthesizer_type: type[object],
+    ) -> type[object]:
+        return synthesizer_type
+
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
@@ -16284,6 +16360,13 @@ class RepeatedBuilderAuthorityRecipeParts(RepeatedAuthorityRecipeParts):
         "Move repeated constructor field mapping behind an owned builder authority."
     )
     authority_method: RepeatedBuilderAuthorityMethod
+
+    def executable_declaration_type(
+        self,
+        synthesizer_type: type[object],
+    ) -> type[object]:
+        del synthesizer_type
+        return type(self.authority_method)
 
 
 @dataclass(frozen=True)
@@ -16330,9 +16413,7 @@ class RepeatedMethodCallAuthorityExtraction(
     calls: tuple[ast.Call, ...]
 
 
-class RepeatedBuilderCallFindingRecipeSynthesizer(
-    DynamicallyDeclaredFindingRecipeSynthesizer
-):
+class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesizer):
     """Build class-owned constructor authority recipes for repeated builder calls."""
 
     detector_id = "repeated_builder_calls"
@@ -16343,24 +16424,27 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         if context is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
+            return RejectedRecipeEvaluation(
+                reason=(
                     "repeated-builder authority extraction requires a source selector context"
-                )
-            ).declared_by(type(self))
+                ),
+                executable_declaration_type=type(self),
+            )
         parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
         if rejection_reason:
-            return FindingRecipeEvaluation(
-                rejection_reason=rejection_reason
-            ).declared_by(type(self))
+            return RejectedRecipeEvaluation(
+                reason=rejection_reason,
+                executable_declaration_type=type(self),
+            )
         if parts is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="repeated-builder authority extraction found no recipe parts"
-            ).declared_by(type(self))
-        evaluation = FindingRecipeEvaluation(recipe=parts.recipe_for(finding))
-        if isinstance(parts, RepeatedBuilderAuthorityRecipeParts):
-            return evaluation.declared_by(type(parts.authority_method))
-        return evaluation.declared_by(type(self))
+            return RejectedRecipeEvaluation(
+                reason="repeated-builder authority extraction found no recipe parts",
+                executable_declaration_type=type(self),
+            )
+        return ExecutableRecipeEvaluation(
+            executable_recipe=parts.recipe_for(finding),
+            executable_declaration_type=parts.executable_declaration_type(type(self)),
+        )
 
     def recipe_parts_for_finding(
         self,
@@ -17782,20 +17866,21 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         if context is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="method-promotion recipes require a source selector context"
+            return RejectedRecipeEvaluation(
+                reason="method-promotion recipes require a source selector context",
+                executable_declaration_type=type(self),
             )
         source_path = self.source_path(finding)
         if source_path is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="method-promotion finding spans more than one source file"
+            return RejectedRecipeEvaluation(
+                reason="method-promotion finding spans more than one source file",
+                executable_declaration_type=type(self),
             )
         names = self.class_and_method_names_or_none(finding)
         if names is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "finding metrics do not expose class-qualified method symbols"
-                )
+            return RejectedRecipeEvaluation(
+                reason=("finding metrics do not expose class-qualified method symbols"),
+                executable_declaration_type=type(self),
             )
         class_names, method_names = names
         targets = ClassMemberPromotionTargets.resolve_or_none(
@@ -17804,36 +17889,40 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
             class_names=class_names,
         )
         if targets is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
+            return RejectedRecipeEvaluation(
+                reason=(
                     ClassMemberPromotionTargets.unresolved_class_target_reason(
                         context,
                         source_path=source_path,
                         class_names=class_names,
                     )
-                )
+                ),
+                executable_declaration_type=type(self),
             )
         if not self.methods_are_identical(targets, method_names):
-            return FindingRecipeEvaluation(
-                rejection_reason="method bodies are not exact AST duplicates"
+            return RejectedRecipeEvaluation(
+                reason="method bodies are not exact AST duplicates",
+                executable_declaration_type=type(self),
             )
         if not targets.supports_base_rewrites():
-            return FindingRecipeEvaluation(
-                rejection_reason="method-promotion target has unsupported class header"
+            return RejectedRecipeEvaluation(
+                reason="method-promotion target has unsupported class header",
+                executable_declaration_type=type(self),
             )
         if self.direct_bases_define_methods(targets, method_names, context):
-            return FindingRecipeEvaluation(
-                rejection_reason=(
+            return RejectedRecipeEvaluation(
+                reason=(
                     "a direct base already defines at least one promoted method name"
-                )
+                ),
+                executable_declaration_type=type(self),
             )
         promotion = RepeatedMethodPromotionPlan(
             source_path=source_path,
             class_names=class_names,
             method_names=method_names,
         )
-        return FindingRecipeEvaluation(
-            recipe=RefactorRecipe(
+        return ExecutableRecipeEvaluation(
+            executable_recipe=RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-promote-class-methods",
                 reason="Promote exact repeated class methods to a shared mixin.",
             ).with_operation(
@@ -17844,7 +17933,8 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
                     method_names=tuple(promotion.method_names),
                     rationale="",
                 )
-            )
+            ),
+            executable_declaration_type=type(self),
         )
 
     def action_keys_for_finding(
@@ -18946,36 +19036,11 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
     ) -> tuple[FindingRecipeActionKey, ...]:
         raise NotImplementedError
 
-    def repair_kind(self) -> str:
-        strategy_type = type(self)
+    @classmethod
+    def repair_kind(cls) -> str:
         return class_name_registry_key(
-            strategy_type.__name__.removesuffix("SemanticMirrorRecipeStrategy"),
-            strategy_type,
-        )
-
-    def repair_plan_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> SemanticDescentRepairPlan | None:
-        recipe = self.recipe_for_finding(finding, context)
-        if recipe is None:
-            return None
-        return self.repair_plan_from_recipe(finding, recipe)
-
-    def repair_plan_from_recipe(
-        self,
-        finding: RefactorFinding,
-        recipe: RefactorRecipe,
-    ) -> SemanticDescentRepairPlan | None:
-        action_keys = self.action_keys_for_finding(finding)
-        if not action_keys:
-            return None
-        return SemanticDescentRepairPlan.from_recipe(
-            finding,
-            repair_kind=self.repair_kind(),
-            action_keys=action_keys,
-            recipe=recipe,
+            cls.__name__.removesuffix("SemanticMirrorRecipeStrategy"),
+            cls,
         )
 
     def evaluation_from_recipe(
@@ -18984,10 +19049,12 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         recipe: RefactorRecipe,
         declaration_type: type[object],
     ) -> FindingRecipeEvaluation:
-        return FindingRecipeEvaluation(
-            recipe=recipe,
-            semantic_repair_plan=self.repair_plan_from_recipe(finding, recipe),
-        ).declared_by(declaration_type)
+        del finding
+        return SemanticDescentRecipeEvaluation(
+            executable_recipe=recipe,
+            executable_declaration_type=declaration_type,
+            strategy_type=type(self),
+        )
 
     def rejection_reason_for_finding(
         self,
@@ -19002,15 +19069,13 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        repair_plan = self.repair_plan_for_finding(finding, context)
-        if repair_plan is not None:
-            return FindingRecipeEvaluation(
-                recipe=repair_plan.recipe,
-                semantic_repair_plan=repair_plan,
-            ).declared_by(type(self))
-        return FindingRecipeEvaluation(
-            rejection_reason=self.rejection_reason_for_finding(finding, context)
-        ).declared_by(type(self))
+        recipe = self.recipe_for_finding(finding, context)
+        if recipe is not None:
+            return self.evaluation_from_recipe(finding, recipe, type(self))
+        return RejectedRecipeEvaluation(
+            reason=self.rejection_reason_for_finding(finding, context),
+            executable_declaration_type=type(self),
+        )
 
 
 class TypedMetricSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy, ABC):
@@ -22847,9 +22912,10 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                     parts.recipe_for(finding),
                     type(enum_subset_builder),
                 )
-        return FindingRecipeEvaluation(
-            rejection_reason=self.rejection_reason_for_finding(finding, context)
-        ).declared_by(type(self))
+        return RejectedRecipeEvaluation(
+            reason=self.rejection_reason_for_finding(finding, context),
+            executable_declaration_type=type(self),
+        )
 
     def action_keys_for_finding(
         self,
@@ -23038,17 +23104,19 @@ class BranchSemanticMirrorRecipeStrategy(
     ) -> FindingRecipeEvaluation:
         builder = self.builder_for_finding(finding, context)
         if builder is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
+            return RejectedRecipeEvaluation(
+                reason=(
                     "branch-chain semantic mirror extraction requires a source selector context"
-                )
-            ).declared_by(type(self))
+                ),
+                executable_declaration_type=type(self),
+            )
         recipe = builder.recipe()
         if recipe is not None:
             return self.evaluation_from_recipe(finding, recipe, type(builder))
-        return FindingRecipeEvaluation(
-            rejection_reason=builder.rejection_reason()
-        ).declared_by(type(builder))
+        return RejectedRecipeEvaluation(
+            reason=builder.rejection_reason(),
+            executable_declaration_type=type(builder),
+        )
 
     @staticmethod
     def builder_for_finding(
@@ -23079,7 +23147,7 @@ def _semantic_mirror_method_name(mapping_name: str) -> str:
 
 
 class SemanticMirrorRegistrationFindingRecipeSynthesizer(
-    DynamicallyDeclaredFindingRecipeSynthesizer,
+    EvaluatedFindingRecipeSynthesizer,
     InferredFindingRecipeSynthesizer,
 ):
     """Build metric-specific recipes for semantic mirror findings."""
@@ -23111,9 +23179,10 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(
     ) -> FindingRecipeEvaluation:
         strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding)
         if strategy is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="semantic mirror metrics have no registered recipe strategy"
-            ).declared_by(type(self))
+            return RejectedRecipeEvaluation(
+                reason="semantic mirror metrics have no registered recipe strategy",
+                executable_declaration_type=type(self),
+            )
         return strategy.evaluate_recipe_for_finding(finding, context)
 
 
@@ -23451,14 +23520,15 @@ class FindingRecipePlanBuilder:
             )
             if overlap_reason:
                 synthesis_records.append(
-                    FindingRecipeSynthesisRecord.for_finding(
-                        finding,
-                        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
+                    FindingRecipeSynthesisRecord(
+                        finding=finding,
+                        status=FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
                         action_keys=result.action_keys,
-                        evaluation=FindingRecipeEvaluation(
-                            rejection_reason=overlap_reason,
-                        ).declared_by(
-                            result.evaluation.required_executable_declaration_type
+                        evaluation=RejectedRecipeEvaluation(
+                            reason=overlap_reason,
+                            executable_declaration_type=(
+                                result.evaluation.required_executable_declaration_type
+                            ),
                         ),
                     )
                 )
@@ -24267,43 +24337,50 @@ class DescriptorPropertyFindingRecipeSynthesizer(
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         if context is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="descriptor property rewrite requires source context"
+            return RejectedRecipeEvaluation(
+                reason="descriptor property rewrite requires source context",
+                executable_declaration_type=type(self),
             )
         evidence = FindingPrimaryEvidence(finding).source_location
         if evidence is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="descriptor property finding has no primary evidence"
+            return RejectedRecipeEvaluation(
+                reason="descriptor property finding has no primary evidence",
+                executable_declaration_type=type(self),
             )
         target_id = SourceRewriteTarget(
             qualname=evidence.symbol,
             file_path=evidence.file_path,
         ).optional_target_id(context.source_index)
         if target_id is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="descriptor property evidence did not resolve to one target"
+            return RejectedRecipeEvaluation(
+                reason="descriptor property evidence did not resolve to one target",
+                executable_declaration_type=type(self),
             )
         node = context.ast_target_nodes_by_id[target_id]
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return FindingRecipeEvaluation(
-                rejection_reason="descriptor property target is not a function"
+            return RejectedRecipeEvaluation(
+                reason="descriptor property target is not a function",
+                executable_declaration_type=type(self),
             )
         assignment = type(self).descriptor_assignment_authority.assignment(node)
         if assignment is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="descriptor assignment authority rejected target shape"
+            return RejectedRecipeEvaluation(
+                reason="descriptor assignment authority rejected target shape",
+                executable_declaration_type=type(self),
             )
         class_target = ContainingClassTargetBoundaryPolicy(
             context.source_index
         ).target_for(target_id)
         if class_target is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="descriptor property target has no containing class"
+            return RejectedRecipeEvaluation(
+                reason="descriptor property target has no containing class",
+                executable_declaration_type=type(self),
             )
         source = context.sources_by_file_path.get(class_target.file_path)
         if source is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="descriptor property source text is unavailable"
+            return RejectedRecipeEvaluation(
+                reason="descriptor property source text is unavailable",
+                executable_declaration_type=type(self),
             )
         geometry = SourceTextGeometry(source)
         start, end = geometry.node_span_offsets(
@@ -24327,7 +24404,10 @@ class DescriptorPropertyFindingRecipeSynthesizer(
                 rationale=self.recipe_reason,
             )
         )
-        return FindingRecipeEvaluation(recipe=recipe)
+        return ExecutableRecipeEvaluation(
+            executable_recipe=recipe,
+            executable_declaration_type=type(self),
+        )
 
     def action_keys_for_finding(
         self,

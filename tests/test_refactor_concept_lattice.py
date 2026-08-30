@@ -148,9 +148,10 @@ def test_unrelated_concepts_do_not_match() -> None:
 
 
 def test_mapping_builder_identity_is_nominally_owned() -> None:
-    assert frozenset(
-        codemod.InferredSemanticMirrorMappingRecipeBuilder.builder_types()
-    ) == EXPECTED_INFERRED_MAPPING_DECLARATIONS
+    assert (
+        frozenset(codemod.InferredSemanticMirrorMappingRecipeBuilder.builder_types())
+        == EXPECTED_INFERRED_MAPPING_DECLARATIONS
+    )
     assert "__registry__" not in codemod.MappingSemanticMirrorRecipeBuilder.__dict__
     assert all(
         not hasattr(builder_type, "mapping_name")
@@ -223,7 +224,7 @@ def _repeated_builder_declaration_for_source(
     snapshot = codemod.CodemodSourceSnapshot.from_modules(modules, findings)
     synthesizer = codemod.FindingRecipeSynthesizer.for_finding(findings[0])
     assert synthesizer is not None
-    evaluation = synthesizer.declared_evaluation_for_finding(findings[0], snapshot)
+    evaluation = synthesizer.evaluate_recipe_for_finding(findings[0], snapshot)
     return (evaluation.required_executable_declaration_type,)
 
 
