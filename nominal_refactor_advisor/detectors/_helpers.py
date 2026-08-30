@@ -33,8 +33,6 @@ from ..semantic_description_length import (
 )
 from ..semantic_identity import SemanticRoleIdentityToken
 from ..semantic_match import EffectStep
-from ..impact_ranking import RefactorImpactKey
-
 import pickle
 import re
 import zlib
@@ -1260,14 +1258,6 @@ def _class_direct_constant_string_assignments(node: ast.ClassDef) -> dict[str, s
     }
 
 
-def _class_direct_non_none_assignment_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return sorted_tuple(
-        (
-            name
-            for name, value in CLASS_NODE_AUTHORITY.direct_assignments(node).items()
-            if not (isinstance(value, ast.Constant) and value.value is None)
-        )
-    )
 
 
 def _function_parameter_annotation_map(
@@ -4954,16 +4944,6 @@ def _registry_attribute_names(
     )
 
 
-def _registry_traversal_group(
-    modules: Sequence[ParsedModule],
-) -> SubclassTraversalGroup | None:
-    return _registry_traversal_group_from_sites(
-        tuple(
-            site
-            for module in modules
-            for site in collect_family_items(module, SubclassTraversalSiteFamily)
-        )
-    )
 
 
 def _registry_traversal_group_from_sites(
@@ -5180,146 +5160,6 @@ _METRIC_BAG_SCHEMAS = metric_semantic_bag_descriptors()
 
 _IMPACT_BAG_SCHEMA = impact_delta_semantic_bag_descriptor()
 
-_SEMANTIC_STRING_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
-_SEMANTIC_KEYWORD_RECORD_TYPES = (
-    FindingSemantics,
-    FindingSpecSemanticDefaults,
-    RefactorImpactKey,
-)
-_SEMANTIC_KEYWORD_ENUM_TYPES = (FindingSpecSemanticField,)
-_SEMANTIC_EXTRA_KEYWORD_NAMES = frozenset(
-    (
-        "backend",
-        "registry_key",
-        "status",
-        *SemanticRoleIdentityToken.semantic_extra_keyword_values(),
-    )
-)
-_SEMANTIC_SUFFIX_ONLY_NAMES = frozenset(
-    ("pattern", *SemanticRoleIdentityToken.semantic_suffix_only_values())
-)
-
-
-@lru_cache(maxsize=1)
-def _semantic_keyword_names() -> frozenset[str]:
-    return frozenset(
-        (
-            *(
-                field_item.name
-                for record_type in _SEMANTIC_KEYWORD_RECORD_TYPES
-                for field_item in fields(record_type)
-            ),
-            *(
-                member.value
-                for enum_type in _SEMANTIC_KEYWORD_ENUM_TYPES
-                for member in enum_type
-            ),
-            *_SEMANTIC_EXTRA_KEYWORD_NAMES,
-        )
-    )
-
-
-@lru_cache(maxsize=1)
-def _semantic_name_suffixes() -> tuple[str, ...]:
-    return tuple(
-        f"_{name}"
-        for name in sorted((*_semantic_keyword_names(), *_SEMANTIC_SUFFIX_ONLY_NAMES))
-    )
-
-
-def _semantic_string_literal_sites(
-    module: ParsedModule,
-) -> dict[str, list[SourceLocation]]:
-    groups: dict[str, set[SourceLocation]] = defaultdict(set)
-
-    class Visitor(ClassFunctionStackNodeVisitor):
-        def visit_Module(self, node: ast.Module) -> None:
-            self.traverse_trimmed_statements(node.body)
-
-        traverse_class_body = ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
-        traverse_function_body = (
-            ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
-        )
-
-        def visit_Assign(self, node: ast.Assign) -> None:
-            self._record_literals(node.value, node.lineno, "assign")
-            self.generic_visit(node)
-
-        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-            if node.value is not None:
-                self._record_literals(node.value, node.lineno, "assign")
-            self.generic_visit(node)
-
-        def visit_Call(self, node: ast.Call) -> None:
-            for keyword in node.keywords:
-                if keyword.arg is None:
-                    continue
-                if not _is_semantic_keyword_name(keyword.arg):
-                    continue
-                self._record_literals(keyword.value, node.lineno, keyword.arg)
-            self.generic_visit(node)
-
-        def visit_Compare(self, node: ast.Compare) -> None:
-            if not _compare_subject_is_semantic(node):
-                self.generic_visit(node)
-                return
-            self._record_literals(node.left, node.lineno, "compare")
-            for comparator in node.comparators:
-                self._record_literals(comparator, node.lineno, "compare")
-            self.generic_visit(node)
-
-        def _record_literals(self, node: ast.AST, lineno: int, kind: str) -> None:
-            for literal in _literal_strings(node):
-                groups[literal].add(
-                    SourceLocation(str(module.path), lineno, self._symbol(kind))
-                )
-
-        def _symbol(self, kind: str) -> str:
-            owner = self.function_stack[-1] if self.function_stack else "<module>"
-            if self.class_stack:
-                owner = f"{self.class_stack[-1]}.{owner}"
-            return f"{owner}:{kind}"
-
-    Visitor().visit(module.module)
-    return {
-        literal: sorted(
-            sites, key=lambda item: (item.file_path, item.line, item.symbol)
-        )
-        for literal, sites in groups.items()
-        if len(sites) >= 2
-    }
-
-
-def _literal_strings(node: ast.AST) -> tuple[str, ...]:
-    literals: list[str] = []
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        if _is_semantic_string(node.value):
-            literals.append(node.value)
-    elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-        for item in node.elts:
-            literals.extend(_literal_strings(item))
-    return tuple(literals)
-
-
-def _is_semantic_string(value: str) -> bool:
-    return bool(_SEMANTIC_STRING_RE.fullmatch(value))
-
-
-def _is_semantic_keyword_name(name: str) -> bool:
-    return name in _semantic_keyword_names() or name.endswith(_semantic_name_suffixes())
-
-
-def _compare_subject_is_semantic(node: ast.Compare) -> bool:
-    candidates = [node.left] + list(node.comparators)
-    return any((_looks_like_semantic_subject(candidate) for candidate in candidates))
-
-
-def _looks_like_semantic_subject(node: ast.AST) -> bool:
-    if isinstance(node, ast.Name):
-        return _is_semantic_keyword_name(node.id)
-    if isinstance(node, ast.Attribute):
-        return _is_semantic_keyword_name(node.attr)
-    return False
 
 
 def _collect_dict_attrs(node: ast.ClassDef) -> set[str]:

@@ -1414,17 +1414,6 @@ def _distributed_boundary_declarations(
     return tuple(declarations)
 
 
-def _distributed_boundary_class_base_names(
-    modules: tuple[ParsedModule, ...],
-) -> dict[str, tuple[str, ...]]:
-    return {
-        node.name: CLASS_NODE_AUTHORITY.declared_base_names(node)
-        for module in modules
-        for node in _walk_nodes(module.module)
-        if isinstance(node, ast.ClassDef)
-    }
-
-
 def _class_field_names_by_class(
     declarations: tuple[DistributedBoundaryDeclaration, ...],
 ) -> dict[str, frozenset[str]]:

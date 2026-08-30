@@ -492,23 +492,6 @@ _SMELLY_TYPE_ALIAS_STRUCTURAL_NAME_TOKENS = (
 )
 
 
-def _opaque_object_annotation_names(annotation: ast.AST) -> tuple[str, ...]:
-    names: list[str] = []
-
-    def visit(node: ast.AST) -> None:
-        if isinstance(node, ast.Name):
-            if node.id in _OPAQUE_OBJECT_ANNOTATION_NAMES:
-                names.append(node.id)
-            return
-        if isinstance(node, ast.Attribute):
-            if node.attr in _OPAQUE_OBJECT_ANNOTATION_NAMES:
-                names.append(node.attr)
-            return
-        for child in ast.iter_child_nodes(node):
-            visit(child)
-
-    visit(annotation)
-    return tuple(dict.fromkeys(names))
 
 
 def _annotation_leaf_names(annotation: ast.AST) -> tuple[str, ...]:
@@ -2926,36 +2909,6 @@ def _accessed_members_by_subject_expression(
     }
 
 
-def _compact_role_guarded_access_facts_for_module(
-    module: ParsedModule,
-) -> tuple[CompactRoleGuardedAccessFact, ...]:
-    facts: list[CompactRoleGuardedAccessFact] = []
-    for qualname, function in _iter_named_functions(module):
-        for node in ast.walk(function):
-            if not isinstance(node, ast.If):
-                continue
-            bindings = _isinstance_guard_bindings(node.test)
-            if not bindings:
-                continue
-            accessed_by_subject = _accessed_members_by_subject_expression(
-                node.body,
-                frozenset(subject for subject, _, _ in bindings),
-            )
-            for subject_expression, type_name, guard_expression in bindings:
-                facts.append(
-                    CompactRoleGuardedAccessFact(
-                        file_path=str(module.path),
-                        line=node.lineno,
-                        qualname=qualname,
-                        subject_expression=subject_expression,
-                        role_type_name=type_name,
-                        guard_expression=guard_expression,
-                        accessed_members=accessed_by_subject.get(
-                            subject_expression, ()
-                        ),
-                    )
-                )
-    return tuple(facts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -8266,25 +8219,6 @@ class FunctionParameterNameProjection:
 FUNCTION_PARAMETER_NAME_PROJECTION = FunctionParameterNameProjection()
 
 
-def _function_symbol_references(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> frozenset[str]:
-    return frozenset(
-        (
-            (
-                node.id
-                if isinstance(node, ast.Name)
-                else node.attr if isinstance(node, ast.Attribute) else node.value
-            )
-            for node in _walk_function_body_nodes(function)
-            if (
-                isinstance(node, ast.Name)
-                or isinstance(node, ast.Attribute)
-                or (isinstance(node, ast.Constant) and isinstance(node.value, str))
-            )
-        )
-    )
-
 
 class DeadEmbeddedStaticPayloadDetector(
     CompactProjectionCandidateDetector[
@@ -8891,37 +8825,6 @@ def _trimmed_function_body(
     return tuple(_trim_docstring_body(function.body))
 
 
-def _normalized_small_method_template(
-    body: tuple[ast.stmt, ...],
-) -> tuple[str, ...]:
-    class Normalizer(ast.NodeTransformer):
-        def visit_arg(self, node: ast.arg) -> ast.arg:
-            return ast.copy_location(ast.arg(arg="ARG", annotation=None), node)
-
-        def visit_Name(self, node: ast.Name) -> ast.AST:
-            if node.id in _NORMALIZED_TEMPLATE_STABLE_NAMES:
-                return node
-            return ast.copy_location(ast.Name(id="NAME", ctx=node.ctx), node)
-
-        def visit_Constant(self, node: ast.Constant) -> ast.AST:
-            if isinstance(node.value, str):
-                return ast.copy_location(ast.Constant(value="STR"), node)
-            if isinstance(node.value, (int, float, complex, bool, type(None))):
-                return ast.copy_location(ast.Constant(value="CONST"), node)
-            return node
-
-    normalizer = Normalizer()
-    return tuple(
-        (
-            ast.dump(
-                ast.fix_missing_locations(
-                    cast(ast.stmt, normalizer.visit(copy.deepcopy(statement)))
-                ),
-                include_attributes=False,
-            )
-            for statement in body
-        )
-    )
 
 
 def _normalized_role_residue_small_method_template(

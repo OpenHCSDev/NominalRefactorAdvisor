@@ -172,10 +172,6 @@ class Owner:
     ).functions:
         indexed_function = indexed_functions[id(function)]
         assert index.function_counts_by_id[id(function)] == symbol_counts(function)
-        assert (
-            indexed_function.symbol_references
-            == runtime_detectors._function_symbol_references(function)
-        )
         assert indexed_function.body_digest == runtime_detectors._stable_text_digest(
             f"{module.semantic_hash}\0{indexed_function.qualname}"
         )
@@ -186,9 +182,6 @@ class Owner:
         "pkg.sample.Nested": ("field",),
         "pkg.sample.Owner": ("_method",),
     }
-    assert index.role_guarded_accesses == (
-        runtime_detectors._compact_role_guarded_access_facts_for_module(module)
-    )
     legacy_named_functions = systemic_detectors._iter_named_functions(module)
     assert len(index.named_functions) == len(legacy_named_functions)
     for indexed_function, (qualname, function) in zip(

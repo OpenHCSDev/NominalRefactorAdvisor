@@ -1170,30 +1170,6 @@ def _fixed_key_authority_wrapper_facts(
     return tuple(facts)
 
 
-def _fixed_key_authority_wrapper_sites(
-    scopes: Iterable[_FunctionScope],
-    authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
-) -> tuple[_FixedKeyAuthorityWrapperSite, ...]:
-    sites: list[_FixedKeyAuthorityWrapperSite] = []
-    authority_symbols = {authority.symbol for authority in authorities}
-    for fact in _fixed_key_authority_wrapper_facts(scopes):
-        if fact.symbol in authority_symbols:
-            continue
-        authority = _authority_for_selector_chain(fact.selector_chain, authorities)
-        if authority is None:
-            continue
-        sites.append(
-            _FixedKeyAuthorityWrapperSite(
-                file_path=fact.file_path,
-                line=fact.line,
-                symbol=fact.symbol,
-                environment_key=fact.environment_key,
-                authority=authority,
-            )
-        )
-    return tuple(sites)
-
-
 @dataclass(frozen=True)
 class _EnvironmentBooleanDriftCandidate(SourceLocation):
     kind: EnvironmentBooleanDriftKind
