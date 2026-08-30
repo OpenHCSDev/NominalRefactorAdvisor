@@ -17,7 +17,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.NominalBoundaryConcept,
         codemod.SemanticCarrierConcept,
         codemod.PrefixBundleCarrierConcept,
-        codemod.DataclassInheritanceLiftConcept,
         codemod.ConstructorKwargCollapseConcept,
         codemod.ConstructorKwargCarrierProjectionConcept,
         codemod.DataclassContextCallProjectionConcept,
@@ -38,9 +37,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ),
     codemod.FlattenedProjectionPropertyFindingRecipeSynthesizer: (
         codemod.DeadCompatibilityErasureConcept
-    ),
-    codemod.RepeatedFieldFamilyFindingRecipeSynthesizer: (
-        codemod.DataclassInheritanceLiftConcept
     ),
     codemod.PrefixedRoleBundleFindingRecipeSynthesizer: (
         codemod.PrefixBundleCarrierConcept

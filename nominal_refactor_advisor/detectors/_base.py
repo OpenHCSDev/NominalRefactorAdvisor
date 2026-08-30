@@ -170,7 +170,6 @@ from ..models import (
     CertifiedFindingSpec,
     DerivedCountMetricShape,
     DispatchCountMetrics,
-    FieldFamilyMetrics,
     FindingMetrics,
     FindingSemantics,
     FindingSpec,
@@ -10102,16 +10101,6 @@ SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()
 
 
 @dataclass(frozen=True)
-class FieldFamilyCandidate:
-    class_names: tuple[str, ...]
-    field_names: tuple[str, ...]
-    execution_level: StructuralExecutionLevel
-    observations: tuple[FieldObservation, ...]
-    dataclass_count: int
-    field_type_map: tuple[tuple[str, str], ...] = ()
-
-
-@dataclass(frozen=True)
 class LineWitnessCandidate(SourceLineReference, ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
@@ -10199,13 +10188,15 @@ class ClassMethodLineWitnessCandidate(LineWitnessCandidate):
 
 @dataclass(frozen=True)
 class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
-    role_names: tuple[str, ...]
     shared_member_names: tuple[str, ...]
     role_field_map: NormalizedRoleFieldMap
     manual_transport_methods: tuple[str, ...]
     pytree_base_names: tuple[str, ...]
-    is_dataclass_family: bool
     observations: tuple[FieldObservation, ...]
+
+    @property
+    def role_names(self) -> tuple[str, ...]:
+        return tuple(role_name for role_name, _ in self.role_field_map)
 
     @property
     def field_names(self) -> tuple[str, ...]:

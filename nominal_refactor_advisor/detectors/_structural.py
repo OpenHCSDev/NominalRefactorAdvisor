@@ -36,11 +36,6 @@ _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
 )
 RoleFieldObservationGroups: TypeAlias = dict[str, dict[str, FieldObservation]]
-_REGISTRY_PROTOCOL_FIELD_NAMES = frozenset(
-    {"__key_extractor__", "__registry_key__", "__skip_if_no_key__"}
-)
-
-
 def _reflective_self_attribute_compression_certificate(
     candidate: ReflectiveSelfAttributeCandidate,
 ) -> CompressionCertificate:
@@ -310,160 +305,6 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
         ]
 
 
-def _shared_field_type_map(
-    observations: tuple[FieldObservation, ...], field_names: tuple[str, ...]
-) -> tuple[tuple[str, str], ...] | None:
-    typed_fields: list[tuple[str, str]] = []
-    for field_name in field_names:
-        annotations = {
-            (item.annotation_fingerprint, item.annotation_text)
-            for item in observations
-            if item.field_name == field_name and item.annotation_fingerprint is not None
-        }
-        if len({fingerprint for fingerprint, _ in annotations}) > 1:
-            return None
-        if annotations:
-            _, annotation_text = next(iter(annotations))
-            if annotation_text is not None:
-                typed_fields.append((field_name, annotation_text))
-    return tuple(typed_fields)
-
-
-def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate, ...]:
-    observations: tuple[FieldObservation, ...] = (
-        CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-            module, FieldObservationFamily, FieldObservation
-        )
-    )
-    graph = ObservationGraph(
-        observations=tuple((item.structural_observation for item in observations))
-    )
-    candidates: list[FieldFamilyCandidate] = []
-    for execution_level in (
-        StructuralExecutionLevel.CLASS_BODY,
-        StructuralExecutionLevel.INIT_BODY,
-    ):
-        grouped_by_level = {
-            group.nominal_witness: set(group.observed_names)
-            for group in graph.witness_groups_for(
-                ObservationKind.FIELD, execution_level
-            )
-        }
-        for cohort in graph.coherence_cohorts_for(
-            ObservationKind.FIELD,
-            execution_level,
-            minimum_witnesses=2,
-            minimum_fibers=2,
-        ):
-            field_names = sorted_tuple(
-                set(cohort.observed_names) - _REGISTRY_PROTOCOL_FIELD_NAMES
-            )
-            if len(field_names) < 2:
-                continue
-            supporting_classes = cohort.nominal_witnesses
-            shared_field_set = set(field_names)
-            if any(
-                (
-                    len(shared_field_set) / max(len(grouped_by_level[class_name]), 1)
-                    < 0.5
-                    for class_name in supporting_classes
-                )
-            ):
-                continue
-            if any(
-                (
-                    not grouped_by_level[class_name] - shared_field_set
-                    for class_name in supporting_classes
-                )
-            ):
-                continue
-            supporting_observations: tuple[FieldObservation, ...] = sorted_tuple(
-                (
-                    item
-                    for item in observations
-                    if item.execution_level == execution_level
-                    and item.class_name in supporting_classes
-                    and (item.field_name in field_names)
-                ),
-                key=lambda item: (item.file_path, item.lineno, item.symbol),
-            )
-            field_type_map = _shared_field_type_map(
-                supporting_observations, field_names
-            )
-            if field_type_map is None:
-                continue
-            candidates.append(
-                FieldFamilyCandidate(
-                    class_names=supporting_classes,
-                    field_names=field_names,
-                    execution_level=execution_level,
-                    observations=supporting_observations,
-                    dataclass_count=sum(
-                        (
-                            1
-                            for class_name in supporting_classes
-                            if any(
-                                (
-                                    item.class_name == class_name
-                                    and item.is_dataclass_family
-                                    for item in supporting_observations
-                                )
-                            )
-                        )
-                    ),
-                    field_type_map=field_type_map,
-                )
-            )
-
-    maximal_candidates: list[FieldFamilyCandidate] = []
-    for candidate in sorted(
-        candidates,
-        key=lambda item: (
-            item.execution_level,
-            len(item.class_names),
-            len(item.field_names),
-        ),
-        reverse=True,
-    ):
-        if any(
-            (
-                candidate.execution_level == other.execution_level
-                and set(candidate.class_names) == set(other.class_names)
-                and (set(candidate.field_names) < set(other.field_names))
-                for other in maximal_candidates
-            )
-        ):
-            continue
-        maximal_candidates.append(candidate)
-    return sorted_tuple(
-        maximal_candidates,
-        key=lambda item: (item.execution_level, item.class_names, item.field_names),
-    )
-
-
-def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
-    base_name = _shared_field_base_name(candidate.class_names)
-    field_type_lookup = dict(candidate.field_type_map)
-    field_block = "\n".join(
-        (
-            f"    {field}: {field_type_lookup.get(field, 'object')}"
-            for field in candidate.field_names
-        )
-    )
-    if candidate.dataclass_count == len(candidate.class_names):
-        return f"@dataclass(frozen=True)\nclass {base_name}(ABC):\n{field_block}\n\n# Move shared dataclass fields from {', '.join(candidate.class_names)} into {base_name}."
-    init_params = ", ".join(candidate.field_names)
-    assignments = "\n".join(
-        (f"        self.{field} = {field}" for field in candidate.field_names)
-    )
-    return (
-        f"class {base_name}(ABC):\n"
-        f"    def __init__(self, {init_params}):\n"
-        f"{assignments}\n\n"
-        f"# Move shared fields from {', '.join(candidate.class_names)} at {candidate.execution_level} into {base_name}."
-    )
-
-
 _PYTREE_TRANSPORT_METHOD_NAMES = frozenset(
     {"_tree_children", "_tree_aux_data", "tree_flatten", "tree_unflatten"}
 )
@@ -635,12 +476,10 @@ def _prefixed_role_bundle_candidate_for_class(
                     file_path=str(module.path),
                     class_name=class_node.name,
                     line=class_node.lineno,
-                    role_names=role_names,
                     shared_member_names=shared_member_names,
                     role_field_map=role_field_map,
                     manual_transport_methods=manual_transport_methods,
                     pytree_base_names=pytree_base_names,
-                    is_dataclass_family=is_dataclass_family,
                     observations=candidate_observations,
                 )
             )
@@ -708,78 +547,6 @@ def _public_class_name(name: str) -> str:
     )
 
 
-def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
-    suffix = CLASS_NAME_ALGEBRA.longest_common_suffix(class_names)
-    if suffix:
-        return suffix if suffix.endswith("Base") else f"{suffix}Base"
-    prefix = CLASS_NAME_ALGEBRA.longest_common_prefix(class_names)
-    if prefix:
-        return prefix if prefix.endswith("Base") else f"{prefix}Base"
-    return "SharedFieldsBase"
-
-
-class RepeatedFieldFamilyDetector(
-    SourceSignalGatedIssueDetectorMixin,
-    CandidateFindingDetector[FieldFamilyCandidate],
-):
-    finding_spec = high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Repeated field family indicates underleveraged inheritance",
-        "The docs treat repeated shared state components the same way as repeated shared algorithms: when the same field family is declared across sibling classes at the same structural execution level, the shared component should move to one authoritative inherited base rather than being duplicated in each leaf class.",
-        "single authoritative state component for a nominal class family",
-        "same field family repeats across sibling classes at one structural execution level",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
-
-    @classmethod
-    def source_may_contain_finding(
-        cls,
-        module: SourceModule,
-        syntax_index: NativePythonSyntaxIndex,
-        config: DetectorConfig,
-    ) -> bool:
-        del cls, module, config
-        return len(syntax_index.common_captures().get("class", ())) >= 2
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return tuple(
-            (
-                candidate
-                for candidate in _field_family_candidates(module)
-                if len(candidate.class_names) >= 2 and len(candidate.field_names) >= 2
-            )
-        )
-
-    def _finding_for_candidate(
-        self, field_candidate: FieldFamilyCandidate
-    ) -> RefactorFinding:
-        evidence = tuple(
-            (
-                SourceLocation(item.file_path, item.lineno, item.symbol)
-                for item in field_candidate.observations[:8]
-            )
-        )
-        return self.build_finding(
-            f"Classes {', '.join(field_candidate.class_names)} underleverage inheritance by repeating fields {field_candidate.field_names} at `{field_candidate.execution_level}`.",
-            evidence,
-            relation_context=f"same field family repeats across sibling classes at `{field_candidate.execution_level}`",
-            scaffold=_field_family_scaffold(field_candidate),
-            metrics=FieldFamilyMetrics(
-                class_count=len(field_candidate.class_names),
-                field_count=len(field_candidate.field_names),
-                class_names=field_candidate.class_names,
-                field_names=field_candidate.field_names,
-                execution_level=field_candidate.execution_level,
-                dataclass_count=field_candidate.dataclass_count,
-                field_type_map=field_candidate.field_type_map,
-            ),
-        )
-
-
 class PrefixedRoleFieldBundleDetector(
     ConfiguredModuleCollectorCandidateDetector[PrefixedRoleFieldBundleCandidate]
 ):
@@ -815,13 +582,7 @@ class PrefixedRoleFieldBundleDetector(
                 f"# Replace prefixed fields {bundle_candidate.field_names} with typed role subrecords and derive PyTree children from those records."
             ),
             metrics=PrefixedRoleBundleMetrics(
-                class_count=1,
-                field_count=len(bundle_candidate.field_names),
                 class_names=(bundle_candidate.class_name,),
-                field_names=bundle_candidate.field_names,
-                execution_level=StructuralExecutionLevel.CLASS_BODY,
-                dataclass_count=1 if bundle_candidate.is_dataclass_family else 0,
-                role_names=bundle_candidate.role_names,
                 shared_member_names=bundle_candidate.shared_member_names,
                 role_field_map=bundle_candidate.role_field_map,
             ),

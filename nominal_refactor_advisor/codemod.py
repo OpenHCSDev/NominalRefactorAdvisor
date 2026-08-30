@@ -68,7 +68,6 @@ from .models import (
     BranchCountMetrics,
     DerivedCountMetricShape,
     EvidenceSymbol,
-    FieldFamilyMetrics,
     FindingMetrics,
     ImpactDelta,
     MappingMetrics,
@@ -80,7 +79,6 @@ from .models import (
     SourceLocationZipDescriptorShape,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
-from .observation_graph import StructuralExecutionLevel
 from .patterns import PatternId
 from .planner import (
     RefactorExecutionClass,
@@ -529,10 +527,6 @@ class SemanticCarrierConcept(RefactorConcept):
 
 class PrefixBundleCarrierConcept(SemanticCarrierConcept):
     """Move repeated prefixed primitive fields into one carrier."""
-
-
-class DataclassInheritanceLiftConcept(SemanticCarrierConcept):
-    """Lift repeated dataclass fields into a nominal base declaration."""
 
 
 class ConstructorKwargCollapseConcept(SemanticCarrierConcept):
@@ -2171,6 +2165,33 @@ class ResolvedClassTarget:
     @property
     def line(self) -> int:
         return self.target.line
+
+    @property
+    def dataclass_argument_sources(self) -> tuple[str, ...] | None:
+        for decorator in self.node.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if isinstance(target, ast.Name):
+                target_name = target.id
+            elif isinstance(target, ast.Attribute):
+                target_name = target.attr
+            else:
+                continue
+            if target_name != "dataclass":
+                continue
+            if not isinstance(decorator, ast.Call):
+                return ()
+            return (
+                *(ast.unparse(argument) for argument in decorator.args),
+                *(
+                    (
+                        f"{keyword.arg}={ast.unparse(keyword.value)}"
+                        if keyword.arg is not None
+                        else f"**{ast.unparse(keyword.value)}"
+                    )
+                    for keyword in decorator.keywords
+                ),
+            )
+        return None
 
 
 @dataclass(frozen=True)
@@ -7173,144 +7194,6 @@ class SemanticCarrierSourceAuthority:
             raise ValueError(
                 f"Carrier collapse field declarations are duplicated: {duplicate_names!r}"
             )
-
-
-@dataclass(frozen=True, kw_only=True)
-class CollapseFieldsToCarrierOperation(
-    FieldDeclarationSourcesPayloadMixin,
-    RefactorRecipeOperation,
-):
-    """Collapse duplicated class fields into a generated nominal carrier."""
-
-    carrier_name: str
-    class_names: tuple[str, ...]
-    field_declaration_sources: tuple[str, ...]
-    carrier_base_names: tuple[str, ...] = ()
-    carrier_dataclass_arguments: tuple[str, ...] = ("frozen=True",)
-    inherited_field_names: tuple[str, ...] = ()
-    insert_carrier: bool = True
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            carrier_name=RequiredStringPayloadValueCodec(),
-            class_names=StringArrayPayloadValueCodec(),
-            field_declaration_sources=StringArrayPayloadValueCodec(),
-            carrier_base_names=OptionalStringArrayPayloadValueCodec(),
-            carrier_dataclass_arguments=OptionalStringArrayPayloadValueCodec(),
-            inherited_field_names=OptionalStringArrayPayloadValueCodec(),
-            insert_carrier=BooleanPayloadValueCodec(declared_default=True),
-        )
-
-    @property
-    def carrier_authority(self) -> SemanticCarrierSourceAuthority:
-        return SemanticCarrierSourceAuthority(
-            carrier_name=self.carrier_name,
-            field_declarations=tuple(
-                CarrierFieldDeclaration(source)
-                for source in self.field_declaration_sources
-            ),
-            base_names=self.carrier_base_names,
-            dataclass_arguments=self.carrier_dataclass_arguments,
-        )
-
-    @property
-    def removed_field_names(self) -> tuple[str, ...]:
-        return (*self.carrier_authority.field_names, *self.inherited_field_names)
-
-    def source_edits(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[NominalSourceEdit, ...]:
-        source_path = self.required_source_path(
-            source_index,
-            "collapse_fields_to_carrier",
-        )
-        targets = ClassMemberPromotionTargets.resolve(
-            CodemodSelectorContext(
-                source_index=source_index,
-                sources_by_file_path=source_by_path,
-            ),
-            source_path=source_path,
-            class_names=self.class_names,
-        )
-        self.validate_targets(targets)
-        carrier_replacements = self.carrier_insertion_replacements(
-            source_index,
-            targets,
-        )
-        member_plan = ClassMemberPromotionReplacementPlan(
-            base_name=self.carrier_name,
-            member_names=self.removed_field_names,
-            statement_type=ClassDeclarationPromotionStatement,
-            rationale=self.rationale,
-            inserted_base_role="carrier",
-            deleted_member_role="carrier field",
-        )
-        return (
-            *self.dataclass_import_mutations(
-                source_index,
-                source_by_path,
-                source_path,
-            ),
-            *carrier_replacements,
-            *member_plan.base_addition_replacements(targets),
-            *member_plan.member_deletion_replacements(targets),
-        )
-
-    def dataclass_import_mutations(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        source_path: str,
-    ) -> tuple[ModuleImportMutation, ...]:
-        if not self.insert_carrier:
-            return ()
-        return self.required_import_mutations(
-            source_index,
-            source_by_path,
-            source_path,
-            import_source="from dataclasses import dataclass\n",
-            default_rationale="Import dataclass for generated carrier.",
-        )
-
-    def validate_targets(self, targets: ClassMemberPromotionTargets) -> None:
-        if not self.class_names:
-            raise ValueError("Carrier collapse requires at least one target class")
-        if not targets.supports_base_rewrites():
-            raise ValueError(
-                "Carrier collapse requires single-line class headers for base rewrites"
-            )
-
-    def carrier_insertion_replacements(
-        self,
-        source_index: SourceIndex,
-        targets: ClassMemberPromotionTargets,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        if not self.insert_carrier:
-            return ()
-        class_target = targets.insertion_target
-        if any(
-            candidate.is_class
-            and candidate.file_path == class_target.file_path
-            and candidate.matches_symbol(self.carrier_name)
-            for candidate in source_index.ast_targets
-        ):
-            return ()
-        return (
-            SourceInsertion(
-                file_path=class_target.file_path,
-                insertion_line=targets.insertion_line,
-                inserted_lines=SourceTargetEditor.source_lines(
-                    f"{self.carrier_authority.source}\n"
-                ),
-                rationale=self.rationale_text(
-                    f"Insert carrier {self.carrier_name!r} for duplicated fields."
-                ),
-            ),
-        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -15643,25 +15526,6 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(
         )
 
 
-def _field_family_carrier_name_from_class_names(
-    class_names: tuple[str, ...],
-) -> str | None:
-    prefix_tokens = CLASS_NAME_ALGEBRA.longest_common_token_prefix(class_names)
-    suffix_tokens = CLASS_NAME_ALGEBRA.longest_common_token_suffix(class_names)
-    if prefix_tokens and suffix_tokens:
-        return _field_family_base_name_from_tokens((*prefix_tokens, *suffix_tokens))
-    if suffix_tokens:
-        return _field_family_base_name_from_tokens(suffix_tokens)
-    if prefix_tokens:
-        return _field_family_base_name_from_tokens(prefix_tokens)
-    return None
-
-
-def _field_family_base_name_from_tokens(tokens: tuple[str, ...]) -> str:
-    name = CLASS_NAME_ALGEBRA.public_name_from_tokens(tokens)
-    return f"{name}Base"
-
-
 class SingleSourcePathFindingMixin:
     @staticmethod
     def source_path(finding: RefactorFinding) -> str | None:
@@ -15872,210 +15736,6 @@ class MappingBuilderFindingRecipeSynthesizer(
             ((evidence.file_path, f"{mapping_name}->{source_name}"),),
         )
 
-class RepeatedFieldFamilyFindingRecipeSynthesizer(
-    SingleSourcePathFindingMixin,
-    EvaluatedFindingRecipeSynthesizer,
-    DataclassInheritanceLiftConcept,
-):
-    """Build executable carrier-collapse recipes for dataclass field families."""
-
-    detector_id = "repeated_field_family"
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        if context is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "repeated-field carrier collapse requires a source selector context"
-                )
-            )
-        if not isinstance(finding.metrics, FieldFamilyMetrics):
-            return FindingRecipeEvaluation(
-                rejection_reason="finding metrics are not repeated-field family metrics"
-            )
-        metrics = finding.metrics
-        if metrics.execution_level != StructuralExecutionLevel.CLASS_BODY.value:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "repeated-field carrier collapse only supports class-body "
-                    "dataclass fields"
-                )
-            )
-        if metrics.dataclass_count != metrics.class_count:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "repeated-field carrier collapse requires every target class "
-                    "to be a dataclass"
-                )
-            )
-        source_path = self.source_path(finding)
-        if source_path is None:
-            return FindingRecipeEvaluation(
-                rejection_reason="repeated-field carrier collapse requires one source file"
-            )
-        field_declarations = self.field_declarations_or_none(metrics)
-        if field_declarations is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "repeated-field carrier collapse requires typed field declarations"
-                )
-            )
-        targets = ClassMemberPromotionTargets.resolve_or_none(
-            context,
-            source_path=source_path,
-            class_names=metrics.class_names,
-        )
-        if targets is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    ClassMemberPromotionTargets.unresolved_class_target_reason(
-                        context,
-                        source_path=source_path,
-                        class_names=metrics.class_names,
-                    )
-                )
-            )
-        if not targets.supports_base_rewrites():
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "repeated-field carrier collapse target has unsupported class header"
-                )
-            )
-        carrier_name = self.carrier_name_or_none(metrics.class_names)
-        if carrier_name is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "repeated-field carrier collapse requires a shared class-name "
-                    "prefix or suffix; field-only carrier names need an authority "
-                    "design decision"
-                )
-            )
-        carrier_dataclass_arguments = self.carrier_dataclass_arguments_or_none(targets)
-        if carrier_dataclass_arguments is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "repeated-field carrier collapse requires matching dataclass "
-                    "decorator arguments"
-                )
-            )
-        if ClassMemberPromotionTargets.matching_class_targets(
-            context.source_index,
-            source_path=source_path,
-            class_name=carrier_name,
-        ):
-            return FindingRecipeEvaluation(
-                rejection_reason=(
-                    "repeated-field carrier collapse will not overwrite an existing "
-                    f"{carrier_name} class"
-                )
-            )
-        return FindingRecipeEvaluation(
-            recipe=RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-collapse-fields-to-carrier",
-                reason=(
-                    "Lift duplicated dataclass field declarations into a shared "
-                    "nominal base."
-                ),
-            ).with_operation(
-                CollapseFieldsToCarrierOperation(
-                    target=SourceRewriteTarget(file_path=source_path),
-                    carrier_name=carrier_name,
-                    class_names=metrics.class_names,
-                    field_declaration_sources=field_declarations,
-                    carrier_dataclass_arguments=carrier_dataclass_arguments,
-                )
-            )
-        )
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        if not isinstance(finding.metrics, FieldFamilyMetrics):
-            return ()
-        source_path = self.source_path(finding)
-        if source_path is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            ((source_path, class_name) for class_name in finding.metrics.class_names),
-        )
-
-    @staticmethod
-    def field_declarations_or_none(
-        metrics: FieldFamilyMetrics,
-    ) -> tuple[str, ...] | None:
-        field_type_by_name = dict(metrics.field_type_map)
-        if any(
-            field_name not in field_type_by_name for field_name in metrics.field_names
-        ):
-            return None
-        return tuple(
-            f"{field_name}: {field_type_by_name[field_name]}"
-            for field_name in metrics.field_names
-        )
-
-    @staticmethod
-    def carrier_name_or_none(class_names: tuple[str, ...]) -> str | None:
-        return _field_family_carrier_name_from_class_names(class_names)
-
-    @classmethod
-    def carrier_dataclass_arguments_or_none(
-        cls,
-        targets: ClassMemberPromotionTargets,
-    ) -> tuple[str, ...] | None:
-        argument_sets = tuple(
-            cls.dataclass_arguments_for_node(class_target.node)
-            for class_target in targets.targets
-        )
-        if any(arguments is None for arguments in argument_sets):
-            return None
-        concrete_argument_sets = tuple(
-            arguments for arguments in argument_sets if arguments is not None
-        )
-        if len(set(concrete_argument_sets)) != 1:
-            return None
-        return concrete_argument_sets[0]
-
-    @classmethod
-    def dataclass_arguments_for_node(
-        cls,
-        node: ast.ClassDef,
-    ) -> tuple[str, ...] | None:
-        for decorator in node.decorator_list:
-            if cls.is_dataclass_decorator(decorator):
-                if isinstance(decorator, ast.Call):
-                    return cls.call_argument_sources(decorator)
-                return ()
-        return None
-
-    @staticmethod
-    def is_dataclass_decorator(decorator: ast.expr) -> bool:
-        target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        if isinstance(target, ast.Name):
-            return target.id == "dataclass"
-        if isinstance(target, ast.Attribute):
-            return target.attr == "dataclass"
-        return False
-
-    @staticmethod
-    def call_argument_sources(call: ast.Call) -> tuple[str, ...]:
-        return (
-            *(ast.unparse(argument) for argument in call.args),
-            *(
-                (
-                    f"{keyword.arg}={ast.unparse(keyword.value)}"
-                    if keyword.arg is not None
-                    else f"**{ast.unparse(keyword.value)}"
-                )
-                for keyword in call.keywords
-            ),
-        )
-
-
 class PrefixedRoleBundleRecipeRejection(FindingRecipeRequirementRejection):
     """Typed rejection while resolving a prefixed-role bundle recipe."""
 
@@ -16218,11 +15878,7 @@ class PrefixedRoleBundleFindingRecipeSynthesizer(
 
     @staticmethod
     def required_dataclass_arguments(target: ResolvedClassTarget) -> tuple[str, ...]:
-        dataclass_arguments = (
-            RepeatedFieldFamilyFindingRecipeSynthesizer.dataclass_arguments_for_node(
-                target.node
-            )
-        )
+        dataclass_arguments = target.dataclass_argument_sources
         if dataclass_arguments is None:
             raise PrefixedRoleBundleRecipeRejection(
                 "prefixed role bundle extraction currently requires dataclass targets"

@@ -106,7 +106,6 @@ from nominal_refactor_advisor.codemod import (
     AddClassBaseOperation,
     ApplySelectedTargetsOperation,
     AuthorityBoundaryPlan,
-    CollapseFieldsToCarrierOperation,
     CodemodActionability,
     CodemodAutomationLevel,
     CodemodOperationPreflightError,
@@ -473,7 +472,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=20,
             ),
             _impact_ranking_finding(
-                detector_id="repeated_field_family",
+                detector_id="prefixed_role_field_bundle",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=30,
@@ -523,7 +522,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=20,
             ),
             _impact_ranking_finding(
-                detector_id="repeated_field_family",
+                detector_id="prefixed_role_field_bundle",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=30,
@@ -1917,136 +1916,6 @@ def test_refactor_recipe_rewrites_multiline_class_base_headers(
     assert "class WorkerRemove(ExistingBase):" in rewritten
 
 
-def test_refactor_recipe_collapses_fields_to_carrier(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import asdict, dataclass\n\n\n"
-        "class SemanticInspectionRecord:\n"
-        "    pass\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class SourceLineReference:\n"
-        "    file_path: str\n"
-        "    line: int\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class AlphaSignal(SemanticInspectionRecord):\n"
-        "    file_path: str\n"
-        "    line: int\n"
-        "    semantic_key: str\n"
-        "    alpha_score: int\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class BetaSignal(SemanticInspectionRecord):\n"
-        "    file_path: str\n"
-        "    line: int\n"
-        "    semantic_key: str\n"
-        "    beta_score: int\n",
-    )
-    source_index = build_source_index(parse_python_modules(tmp_path), ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    recipe = RefactorRecipe(
-        recipe_id="collapse-semantic-key",
-        reason="Move duplicated semantic key ownership into a nominal carrier.",
-    ).with_operation(
-        CollapseFieldsToCarrierOperation(
-            target=SourceRewriteTarget(file_path=module_path.as_posix()),
-            carrier_name="SemanticKeyCarrier",
-            class_names=("AlphaSignal", "BetaSignal"),
-            field_declaration_sources=("semantic_key: str",),
-            carrier_base_names=("SourceLineReference",),
-            inherited_field_names=("file_path", "line"),
-        )
-    )
-    document = CodemodPlanDocument.from_json_value(
-        CodemodPlanDocument(recipes=(recipe,)).to_dict()
-    )
-
-    simulation = document.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = simulation.unified_diff(source_by_path)
-
-    assert simulation.is_clean is True
-    assert "+from dataclasses import dataclass" not in diff
-    assert "+class SemanticKeyCarrier(SourceLineReference):" in diff
-    assert "+class AlphaSignal(SemanticKeyCarrier, SemanticInspectionRecord):" in diff
-    assert "+class BetaSignal(SemanticKeyCarrier, SemanticInspectionRecord):" in diff
-    assert "-    semantic_key: str" in diff
-    assert "-    file_path: str" in diff
-    assert "-    line: int" in diff
-    simulation.apply()
-    rewritten = module_path.read_text()
-    assert "class SemanticKeyCarrier(SourceLineReference):" in rewritten
-    assert (
-        "class AlphaSignal(SemanticKeyCarrier, SemanticInspectionRecord):" in rewritten
-    )
-    assert (
-        "class BetaSignal(SemanticKeyCarrier, SemanticInspectionRecord):" in rewritten
-    )
-    assert rewritten.count("semantic_key: str") == 1
-    assert rewritten.count("file_path: str") == 1
-    assert rewritten.count("line: int") == 1
-    assert rewritten.count("@dataclass(frozen=True)") == 4
-    build_source_index(parse_python_modules(tmp_path), ())
-
-
-def test_refactor_recipe_collapses_fields_to_existing_carrier(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class ExistingCarrier:\n"
-        "    semantic_key: str\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class AlphaSignal:\n"
-        "    semantic_key: str\n"
-        "    alpha_score: int\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class BetaSignal:\n"
-        "    semantic_key: str\n"
-        "    beta_score: int\n",
-    )
-    source_index = build_source_index(parse_python_modules(tmp_path), ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    recipe = RefactorRecipe(
-        recipe_id="reuse-existing-carrier",
-        reason="Reuse the existing semantic carrier instead of generating a duplicate.",
-    ).with_operation(
-        CollapseFieldsToCarrierOperation(
-            target=SourceRewriteTarget(file_path=module_path.as_posix()),
-            carrier_name="ExistingCarrier",
-            class_names=("AlphaSignal", "BetaSignal"),
-            field_declaration_sources=("semantic_key: str",),
-            insert_carrier=False,
-        )
-    )
-
-    simulation = CodemodPlanDocument(recipes=(recipe,)).simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = simulation.unified_diff(source_by_path)
-
-    assert simulation.is_clean is True
-    assert "+class ExistingCarrier:" not in diff
-    assert "+class AlphaSignal(ExistingCarrier):" in diff
-    assert "+class BetaSignal(ExistingCarrier):" in diff
-    simulation.apply()
-    rewritten = module_path.read_text()
-    assert rewritten.count("class ExistingCarrier") == 1
-    assert rewritten.count("semantic_key: str") == 1
-    build_source_index(parse_python_modules(tmp_path), ())
-
-
 def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     tmp_path: Path,
 ) -> None:
@@ -2579,49 +2448,6 @@ def test_finding_evidence_selector_resolves_qualified_owner_subject(
         source_index.target_by_id[target_id].qualname
         for target_id in selected.target_ids
     ) == ("ProjectionSurfaceAuthority",)
-
-
-def test_synthesis_records_expose_evidence_selectors(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from dataclasses import dataclass\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class Alpha:\n"
-        "    shared: str\n"
-        "    count: int\n"
-        "    alpha_only: bool\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class Beta:\n"
-        "    shared: str\n"
-        "    count: int\n"
-        "    beta_only: bool\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "repeated_field_family"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = snapshot.plan_from_findings(
-        findings,
-        detector_ids=("repeated_field_family",),
-    )
-    record = plan.records[0]
-    selector_payload = record.evidence_selector.to_dict()
-
-    assert isinstance(selector_payload, dict)
-    selector = CodemodTargetSelector.from_dict(selector_payload)
-    assert selector_payload == {
-        "selector": "finding_evidence_target",
-        "finding_ids": (findings[0].stable_id,),
-    }
-    assert {
-        snapshot.source_index.target_by_id[target_id].qualname
-        for target_id in selector.select(snapshot).target_ids
-    } == {"Alpha", "Beta"}
 
 
 def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
@@ -9223,7 +9049,9 @@ def test_prefixed_role_field_bundle_synthesizes_role_carriers(
         for finding in analyze_path(tmp_path)
         if finding.detector_id == "prefixed_role_field_bundle"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path), findings
+    )
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -9241,6 +9069,16 @@ def test_prefixed_role_field_bundle_synthesizes_role_carriers(
         "PrefixedRoleBundleFindingRecipeSynthesizer"
     )
     assert plan.records[0].refactor_concept == "prefix_bundle_carrier"
+    selector_payload = plan.records[0].evidence_selector.to_dict()
+    selector = CodemodTargetSelector.from_dict(selector_payload)
+    assert selector_payload == {
+        "selector": "finding_evidence_target",
+        "finding_ids": (findings[0].stable_id,),
+    }
+    assert {
+        snapshot.source_index.target_by_id[target_id].qualname
+        for target_id in selector.select(snapshot).target_ids
+    } == {"DirectionalBatchInputs"}
     assert plan.document.recipes[0].operations[0].to_dict()["operation"] == (
         "replace_role_prefixed_fields_with_carriers"
     )
@@ -16352,7 +16190,6 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
         )
 
     prefix = finding("prefixed_role_field_bundle", symbol="PrefixBundle")
-    dataclass_lift = finding("repeated_field_family", symbol="DataclassLift")
     constructor = finding(
         "semantic_mirror_without_descent",
         mapping_name="dataclass_constructor_projection",
@@ -16377,7 +16214,6 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
         return_record,
         payload_projection,
         constructor,
-        dataclass_lift,
         prefix,
     )
 
@@ -16392,7 +16228,6 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None
     selected = goal.target_findings(findings, snapshot)
     assert selected == (
         dead_compat,
-        dataclass_lift,
         prefix,
     )
     assert RefactorConcept.leaf_concept_for_declaration(
@@ -18464,58 +18299,6 @@ def test_collects_namespaced_dataclass_fields_via_name_family(tmp_path: Path) ->
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, FieldObservationFamily)
     assert {item.field_name for item in observations} == {"pose_id", "score"}
-
-
-def test_detects_repeated_field_family_in_dataclasses(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    score: float\n    label: str\n    alpha_only: int\n\n\n@dataclass\nclass BetaResult:\n    pose_id: int\n    score: float\n    label: str\n    beta_only: int\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "repeated_field_family"
-        )
-    )
-    assert finding.pattern_id == 5
-    assert "underleverage inheritance" in finding.summary
-    assert "pose_id" in finding.summary
-    assert "ResultBase" in (finding.scaffold or "")
-    assert "pose_id: int" in (finding.scaffold or "")
-
-
-def test_does_not_merge_dataclass_fields_with_conflicting_types(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    score: float\n    alpha_only: int\n\n\n@dataclass\nclass BetaResult:\n    pose_id: str\n    score: float\n    beta_only: int\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == "repeated_field_family" for finding in findings)
-    )
-
-
-def test_plan_extracts_shared_fields_to_abc_base(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass AlphaController:\n    def __init__(self, pose_id, score, label, alpha_only):\n        self.pose_id = pose_id\n        self.score = score\n        self.label = label\n        self.alpha_only = alpha_only\n\n\nclass BetaController:\n    def __init__(self, pose_id, score, label, beta_only):\n        self.pose_id = pose_id\n        self.score = score\n        self.label = label\n        self.beta_only = beta_only\n",
-    )
-    findings = analyze_path(tmp_path)
-    plans = build_refactor_plans(findings, tmp_path)
-    plan = next(
-        (plan for plan in plans if plan.pattern_sequence.primary_pattern_id == 5)
-    )
-    assert any((action.kind == "extract_shared_fields" for action in plan.actions))
-    field_action = next(
-        (action for action in plan.actions if action.kind == "extract_shared_fields")
-    )
-    assert field_action.statement_operation == "move"
-    assert "pose_id" in field_action.description
 
 
 def test_json_payload_exposes_observation_graph(tmp_path: Path) -> None:

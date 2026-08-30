@@ -280,7 +280,6 @@ class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
 class ClassNamesMetricKind(StrEnum):
     """Registered class-name metric variants."""
 
-    FIELD_FAMILY = "field_family"
     PREFIXED_ROLE_BUNDLE = "prefixed_role_bundle"
     WITNESS_CARRIER = "witness_carrier"
 
@@ -377,42 +376,37 @@ class HierarchyCandidateMetrics(BehaviorFindingMetrics):
 
 
 @dataclass(frozen=True)
-class FieldFamilyMetrics(ClassNamesPlanMetrics):
-    """Metrics for repeated field families across classes."""
-
-    registry_key: ClassVar[ClassNamesMetricKind] = ClassNamesMetricKind.FIELD_FAMILY
-    class_count: int
-    field_count: int
-    class_names: tuple[str, ...]
-    field_names: tuple[str, ...]
-    execution_level: str
-    dataclass_count: int = 0
-    field_type_map: tuple[tuple[str, str], ...] = ()
-
-    @property
-    def impact_delta(self) -> ImpactDelta:
-        return ImpactDelta.from_repeated_mapping_family(
-            self.class_count, self.field_count
-        )
-
-    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
-        "field_names"
-    )
-    plan_field_execution_level: ClassVar[AliasProperty[str]] = AliasProperty(
-        "execution_level"
-    )
-
-
-@dataclass(frozen=True)
-class PrefixedRoleBundleMetrics(FieldFamilyMetrics):
+class PrefixedRoleBundleMetrics(ClassNamesPlanMetrics):
     """Metrics for role-prefixed fields inside one record surface."""
 
     registry_key: ClassVar[ClassNamesMetricKind] = (
         ClassNamesMetricKind.PREFIXED_ROLE_BUNDLE
     )
-    role_names: tuple[str, ...] = ()
-    shared_member_names: tuple[str, ...] = ()
-    role_field_map: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    class_names: tuple[str, ...]
+    shared_member_names: tuple[str, ...]
+    role_field_map: tuple[tuple[str, tuple[str, ...]], ...]
+
+    @property
+    def role_names(self) -> tuple[str, ...]:
+        return tuple(role_name for role_name, _ in self.role_field_map)
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(
+            field_name
+            for _, field_names in self.role_field_map
+            for field_name in field_names
+        )
+
+    @property
+    def impact_delta(self) -> ImpactDelta:
+        return ImpactDelta.from_repeated_mapping_family(
+            len(self.role_names), len(self.shared_member_names)
+        )
+
+    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
+        "field_names"
+    )
 
 
 @dataclass(frozen=True)
