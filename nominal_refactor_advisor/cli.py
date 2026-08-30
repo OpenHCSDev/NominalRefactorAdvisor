@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
-from typing import ClassVar, TypeAlias, cast
+from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -1407,16 +1407,6 @@ def write_cli_json_artifact(path: Path | None, payload: JsonObject) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
-    """Return whether the selected command can produce reusable plan JSON."""
-
-    return args.codemod_refactor_goal is not None or any(
-        issubclass(command_type, CodemodPlanProducingCliCommand)
-        and command_type.requested(args)
-        for command_type in CliCommand.__registry__.values()
-    )
-
-
 @dataclass(frozen=True)
 class CodemodSimulationPayload:
     """JSON-ready metadata for a codemod simulation/apply run."""
@@ -2143,6 +2133,22 @@ class CliCommand(ABC, metaclass=AutoRegisterMeta):
     parser: argparse.ArgumentParser
     args: argparse.Namespace
     command_id: ClassVar[str | None] = None
+    selection_error_message: ClassVar[str] = "CLI commands are mutually exclusive"
+
+    @classmethod
+    def selected_type(
+        cls,
+        parser: argparse.ArgumentParser,
+        args: argparse.Namespace,
+    ) -> type[Self] | None:
+        selected_types = tuple(
+            cast(type[Self], command_type)
+            for command_type in CliCommand.__registry__.values()
+            if issubclass(command_type, cls) and command_type.requested(args)
+        )
+        if len(selected_types) > 1:
+            parser.error(cls.selection_error_message)
+        return selected_types[0] if selected_types else None
 
     @classmethod
     @abstractmethod
@@ -2158,18 +2164,7 @@ class CliCommand(ABC, metaclass=AutoRegisterMeta):
 class CliEarlyExitCommand(CliCommand, ABC):
     """Registered command that can satisfy CLI execution before source scanning."""
 
-    @classmethod
-    def run_first(
-        cls,
-        parser: argparse.ArgumentParser,
-        args: argparse.Namespace,
-    ) -> int | None:
-        for command_type in CliCommand.__registry__.values():
-            if not issubclass(command_type, cls):
-                continue
-            if command_type.requested(args):
-                return command_type(parser, args).run()
-        return None
+    selection_error_message = "early-exit CLI commands are mutually exclusive"
 
 
 class CodemodPlanProducingCliCommand(ABC):
@@ -2774,21 +2769,9 @@ class CodemodScanQueryCliCommand(
     report_roots: tuple[Path, ...]
     semantic_descent_source: SemanticDescentGraphAnalysisSource
     execution_mode: CodemodExecutionMode
-
-    @classmethod
-    def selected_type(
-        cls,
-        parser: argparse.ArgumentParser,
-        args: argparse.Namespace,
-    ) -> type[CodemodScanQueryCliCommand] | None:
-        selected_types = tuple(
-            cast(type[CodemodScanQueryCliCommand], command_type)
-            for command_type in CliCommand.__registry__.values()
-            if issubclass(command_type, cls) and command_type.requested(args)
-        )
-        if len(selected_types) > 1:
-            parser.error("scan-backed codemod query commands are mutually exclusive")
-        return selected_types[0] if selected_types else None
+    selection_error_message = (
+        "scan-backed codemod query commands are mutually exclusive"
+    )
 
     @classmethod
     def requires_analysis(cls) -> bool:
@@ -3022,16 +3005,27 @@ def _main_without_deadline() -> int:
         spec.add_to_parser(parser)
     args = parser.parse_args()
 
+    early_exit_command_type = CliEarlyExitCommand.selected_type(parser, args)
     codemod_scan_query_type = CodemodScanQueryCliCommand.selected_type(parser, args)
     scan_analysis_required = (
         codemod_scan_query_type is None
         or codemod_scan_query_type.requires_analysis()
     )
-    if args.codemod_plan_out is not None and not codemod_plan_output_supported(args):
+    selected_command_types = tuple(
+        command_type
+        for command_type in (early_exit_command_type, codemod_scan_query_type)
+        if command_type is not None
+    )
+    if args.codemod_plan_out is not None and not (
+        args.codemod_refactor_goal is not None
+        or any(
+            issubclass(command_type, CodemodPlanProducingCliCommand)
+            for command_type in selected_command_types
+        )
+    ):
         parser.error("--codemod-plan-out requires a plan-producing codemod command")
-    early_exit_code = CliEarlyExitCommand.run_first(parser, args)
-    if early_exit_code is not None:
-        return early_exit_code
+    if early_exit_command_type is not None:
+        return early_exit_command_type(parser, args).run()
 
     config = DetectorConfig.from_namespace(args)
     codemod_execution_mode = CodemodExecutionMode.from_namespace(args, parser)

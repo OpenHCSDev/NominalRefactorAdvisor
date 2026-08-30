@@ -81,11 +81,13 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CliCommand
+from nominal_refactor_advisor.cli import CliEarlyExitCommand
 from nominal_refactor_advisor.cli import CodemodExecutionMode
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
 from nominal_refactor_advisor.cli import CodemodScanQueryCliCommand
 from nominal_refactor_advisor.cli import CodemodSourceIndexCliCommand
 from nominal_refactor_advisor.cli import CodemodSynthesizePlanCliCommand
+from nominal_refactor_advisor.cli import CodemodValidatePlanCliCommand
 from nominal_refactor_advisor.cli import FastPreparseSemanticDescentSourceAuthority
 from nominal_refactor_advisor.cli import FocusedLoopColdAnalysisPolicy
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
@@ -10395,11 +10397,16 @@ def test_codemod_scan_query_selection_returns_declaration_owner() -> None:
         parser,
         parser.parse_args(["--codemod-synthesize-plan"]),
     )
+    validation_type = CliEarlyExitCommand.selected_type(
+        parser,
+        parser.parse_args(["--codemod-validate-plan"]),
+    )
 
     assert source_index_type is CodemodSourceIndexCliCommand
     assert source_index_type.requires_analysis() is False
     assert synthesis_type is CodemodSynthesizePlanCliCommand
     assert synthesis_type.requires_analysis() is True
+    assert validation_type is CodemodValidatePlanCliCommand
     assert "codemod_execution" not in CliCommand.__registry__
 
 
@@ -10413,6 +10420,22 @@ def test_codemod_scan_query_selection_rejects_multiple_declarations() -> None:
 
     with pytest.raises(SystemExit):
         CodemodScanQueryCliCommand.selected_type(parser, args)
+
+
+def test_early_exit_command_selection_rejects_multiple_declarations() -> None:
+    parser = argparse.ArgumentParser()
+    for spec in _CLI_ARGUMENT_SPECS:
+        spec.add_to_parser(parser)
+    args = parser.parse_args(
+        [
+            "--codemod-validate-plan",
+            "--codemod-compose-plans",
+            "plan.json",
+        ]
+    )
+
+    with pytest.raises(SystemExit):
+        CliEarlyExitCommand.selected_type(parser, args)
 
 
 def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:
