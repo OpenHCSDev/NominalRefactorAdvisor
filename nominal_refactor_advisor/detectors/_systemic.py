@@ -5887,45 +5887,6 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    RuntimeProductRecordSchemaCandidate,
-    high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Runtime product_record schemas should become AST-visible dataclasses",
-        "`product_record` and `product_record_spec` create classes through runtime calls, which hides the class body, fields, inheritance, and docs from AST-level refactoring analysis. Field-only records should be explicit `@dataclass(frozen=True)` classes unless there is a stronger metaprogramming payoff proof.",
-        "explicit frozen dataclass declaration visible to AST analysis",
-        "runtime product_record schema hides an otherwise ordinary class declaration",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"`{candidate.callee_name}` in `{candidate.context_qualname}` materializes product record(s) {candidate.declared_names or ('<dynamic>',)} over {candidate.line_count} line(s); spell these as explicit frozen dataclasses."
-    ),
-    scaffold=lambda candidate: (
-        "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass RecordName:\n    field_name: FieldType"
-    ),
-    codemod_patch=lambda candidate: (
-        "# Replace runtime `product_record` / `product_record_spec` materialization with explicit `@dataclass(frozen=True)` classes so NRA and other AST tooling can see the nominal structure."
-    ),
-    metrics=lambda candidate: MappingMetrics(
-        mapping_site_count=1,
-        field_count=max(1, len(candidate.declared_names)),
-        mapping_name=candidate.callee_name,
-        field_names=candidate.declared_names or ("dynamic_product_record",),
-    ),
-    candidate_collector=_runtime_product_record_schema_candidates,
-)
-
-
-
-
-declare_candidate_rule_detector(
     OptionRecordQuotientCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,

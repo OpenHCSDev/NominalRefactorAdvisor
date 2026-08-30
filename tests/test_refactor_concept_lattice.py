@@ -22,7 +22,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.ConstructorKwargCarrierProjectionConcept,
         codemod.TupleDictReturnNominalizationConcept,
         codemod.DataclassPayloadProjectionConcept,
-        codemod.TupleDictReturnRecordConcept,
         codemod.DeadCompatibilityErasureConcept,
         codemod.DerivedProjectionConcept,
         codemod.ClassFamilyAuthorityConcept,
@@ -34,9 +33,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
 )
 
 EXPECTED_EXECUTABLE_CONCEPTS = {
-    codemod.RuntimeProductRecordSchemaFindingRecipeSynthesizer: (
-        codemod.TupleDictReturnRecordConcept
-    ),
     codemod.FlattenedProjectionPropertyFindingRecipeSynthesizer: (
         codemod.DeadCompatibilityErasureConcept
     ),
@@ -131,7 +127,6 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                     codemod.ConstructorKwargCollapseConcept,
                     codemod.ConstructorKwargCarrierProjectionConcept,
                     codemod.DataclassPayloadProjectionConcept,
-                    codemod.TupleDictReturnRecordConcept,
                     codemod.DeadCompatibilityErasureConcept,
                     codemod.DerivedProjectionConcept,
                     codemod.ClassFamilyAuthorityConcept,
@@ -166,7 +161,6 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
             frozenset(
                 {
                     codemod.DataclassPayloadProjectionConcept,
-                    codemod.TupleDictReturnRecordConcept,
                 }
             ),
         ),
@@ -211,10 +205,6 @@ def test_parent_concepts_match_descendants_by_mro(
 
 
 def test_unrelated_concepts_do_not_match() -> None:
-    assert not issubclass(
-        codemod.RuntimeProductRecordSchemaFindingRecipeSynthesizer,
-        codemod.AutoRegisterConcept,
-    )
     assert not issubclass(
         codemod.NumericLiteralDispatchFindingRecipeSynthesizer,
         codemod.SemanticCarrierConcept,

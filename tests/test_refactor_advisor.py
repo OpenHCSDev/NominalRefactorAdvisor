@@ -169,7 +169,6 @@ from nominal_refactor_advisor.codemod import (
     ReplaceModuleAssignmentOperation,
     ReplaceTargetOperation,
     ReplaceTextOperation,
-    ProductRecordToDataclassOperation,
     PromoteClassMethodsOperation,
     PrefixBundleCarrierConcept,
     RecipeCallReplacement,
@@ -253,11 +252,6 @@ from nominal_refactor_advisor.planner import (
     build_refactor_execution_plan,
     build_refactor_plans,
 )
-from nominal_refactor_advisor.product_record_schema import (
-    ProductRecordDeclaredNameExtractor,
-    ProductRecordSchemaCallKind,
-)
-from nominal_refactor_advisor.record_algebra import product_record
 from nominal_refactor_advisor.scan_prediction import (
     ScanTiming,
     build_scan_prediction_report,
@@ -1922,315 +1916,6 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     assert "payload_candidate.static_payload_stats.marker_kinds" in rewritten
     assert "other.static_payload_line_count" in rewritten
     build_source_index(parse_python_modules(tmp_path), ())
-
-
-def test_refactor_recipe_converts_product_records_to_dataclasses(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from dataclasses import dataclass\n"
-        "from typing import ClassVar\n"
-        "from nominal_refactor_advisor.record_algebra import (\n"
-        "    materialize_product_record,\n"
-        "    product_record,\n"
-        "    product_record_spec,\n"
-        ")\n\n\n"
-        "class SemanticRecord:\n"
-        "    pass\n\n\n"
-        "# fmt: off\n"
-        "LocalRecord = product_record(\n"
-        '    "LocalRecord",\n'
-        '    "name: str; value: int",\n'
-        '    defaults={"value": 0},\n'
-        '    doc="Local docs.",\n'
-        ")\n"
-        "# fmt: on\n"
-        "materialize_product_record(\n"
-        "    product_record_spec(\n"
-        '        "GeneratedRecord",\n'
-        '        "path: str; marker: ClassVar[str]",\n'
-        '        "SemanticRecord",\n'
-        '        defaults={"marker": "path"},\n'
-        "        kw_only=True,\n"
-        "    )\n"
-        ")\n",
-    )
-    source_index = build_source_index(parse_python_modules(tmp_path), ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    recipe = (
-        RefactorRecipe(recipe_id="runtime-records-to-dataclasses")
-        .with_operation(
-            ProductRecordToDataclassOperation(
-                target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                payload_value="LocalRecord",
-            )
-        )
-        .with_operation(
-            ProductRecordToDataclassOperation(
-                target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                payload_value="GeneratedRecord",
-            )
-        )
-    )
-
-    simulation = recipe.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = simulation.unified_diff(source_by_path)
-
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-    assert "+class LocalRecord:" in diff
-    assert '+    """Local docs."""' in diff
-    assert "+    value: int = 0" in diff
-    assert "+@dataclass(frozen=True, kw_only=True)" in diff
-    assert "+class GeneratedRecord(SemanticRecord):" in diff
-    assert '+    marker: ClassVar[str] = "path"' in diff
-    simulation.apply()
-    rewritten = module_path.read_text()
-    assert "LocalRecord = product_record" not in rewritten
-    assert "# fmt: off" not in rewritten
-    assert "# fmt: on" not in rewritten
-    assert "materialize_product_record(" not in rewritten
-    assert "class LocalRecord:" in rewritten
-    assert "class GeneratedRecord(SemanticRecord):" in rewritten
-    build_source_index(parse_python_modules(tmp_path), ())
-
-
-def test_json_recipe_converts_batched_product_record_spec_to_dataclass(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    plan_path = tmp_path / "codemod-plan.json"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from dataclasses import dataclass\n"
-        "from typing import ClassVar\n"
-        "from nominal_refactor_advisor.record_algebra import (\n"
-        "    materialize_product_records,\n"
-        "    product_record_spec,\n"
-        ")\n\n"
-        "materialize_product_records((\n"
-        '    product_record_spec("OtherRecord", "label: str"),\n'
-        "    product_record_spec(\n"
-        '        "ClusterRecord",\n'
-        '        "items: tuple[str, ...]; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]",\n'
-        '        "LineWitnessCandidate",\n'
-        "        defaults={\n"
-        '            "evidence_locations": ZippedSourceLocationEvidenceProperty(\n'
-        '                "line_numbers",\n'
-        '                "helper_names",\n'
-        "            )\n"
-        "        },\n"
-        '        doc="Cluster docs.",\n'
-        "    ),\n"
-        "))\n",
-    )
-    plan_path.write_text(
-        json.dumps(
-            {
-                "recipes": [
-                    {
-                        "recipe_id": "batch-record-to-dataclass",
-                        "operations": [
-                            {
-                                "operation": "product_record_to_dataclass",
-                                "file_path": module_path.as_posix(),
-                                "record_name": "ClusterRecord",
-                            }
-                        ],
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    source_index = build_source_index(parse_python_modules(tmp_path), ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    document = load_codemod_plan_document(plan_path)
-
-    simulation = document.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = simulation.unified_diff(source_by_path)
-
-    assert document.recipes[0].operations[0].to_dict()["operation"] == (
-        "product_record_to_dataclass"
-    )
-    assert document.recipes[0].operations[0].to_dict()["record_name"] == (
-        "ClusterRecord"
-    )
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-    assert "+class ClusterRecord(LineWitnessCandidate):" in diff
-    assert '+    """Cluster docs."""' in diff
-    assert (
-        "+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = "
-        "ZippedSourceLocationEvidenceProperty("
-    ) in diff
-    simulation.apply()
-    rewritten = module_path.read_text()
-    assert 'product_record_spec("OtherRecord", "label: str")' in rewritten
-    assert 'product_record_spec(\n        "ClusterRecord"' not in rewritten
-    assert "class ClusterRecord(LineWitnessCandidate):" in rewritten
-    build_source_index(parse_python_modules(tmp_path), ())
-
-
-def test_runtime_product_record_findings_synthesize_recipe_plan(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from dataclasses import dataclass\n"
-        "from nominal_refactor_advisor.record_algebra import (\n"
-        "    materialize_product_record,\n"
-        "    product_record_spec,\n"
-        ")\n\n\n"
-        "class SemanticRecord:\n"
-        "    pass\n\n\n"
-        "materialize_product_record(\n"
-        "    product_record_spec(\n"
-        '        "GeneratedRecord",\n'
-        '        "path: str",\n'
-        '        "SemanticRecord",\n'
-        '        doc="Generated docs.",\n'
-        "    )\n"
-        ")\n",
-    )
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "runtime_product_record_schema"
-    ]
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-
-    plan = snapshot.plan_from_findings(findings)
-    simulation = plan.simulate_snapshot(
-        snapshot,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = snapshot.unified_diff(simulation.simulation)
-
-    assert plan.expected_removed_finding_count == 1
-    assert len(plan.document.recipes) == 1
-    assert plan.records[0].executable_declaration_name == (
-        "RuntimeProductRecordSchemaFindingRecipeSynthesizer"
-    )
-    assert plan.records[0].refactor_concept == "tuple_dict_return_record"
-    assert plan.document.recipes[0].operations[0].to_dict()["operation"] == (
-        "product_record_to_dataclass"
-    )
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-    assert "+class GeneratedRecord(SemanticRecord):" in diff
-    assert '+    """Generated docs."""' in diff
-    simulation.document_simulation.apply()
-    rewritten = module_path.read_text()
-    assert "materialize_product_record(" not in rewritten
-    assert "class GeneratedRecord(SemanticRecord):" in rewritten
-
-
-def test_product_record_schema_authority_normalizes_aliases() -> None:
-    call = (
-        ast.parse(
-            '_materialize_product_record(_product_record_spec("GeneratedRecord", "path: str"))'
-        )
-        .body[0]
-        .value
-    )
-
-    assert isinstance(call, ast.Call)
-    assert (
-        ProductRecordSchemaCallKind.from_call(call)
-        is ProductRecordSchemaCallKind.MATERIALIZE_PRODUCT_RECORD
-    )
-    assert ProductRecordDeclaredNameExtractor.declared_names_for(call) == (
-        "GeneratedRecord",
-    )
-    assert ProductRecordDeclaredNameExtractor.registered_callee_names() == frozenset(
-        call_kind.value for call_kind in ProductRecordSchemaCallKind
-    )
-
-
-def test_runtime_product_record_batch_findings_synthesize_ordered_recipe_plan(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from dataclasses import dataclass\n"
-        "from nominal_refactor_advisor.record_algebra import (\n"
-        "    materialize_product_records,\n"
-        "    product_record_spec,\n"
-        ")\n\n\n"
-        "class SemanticRecord:\n"
-        "    pass\n\n\n"
-        "# fmt: off\n"
-        "materialize_product_records((\n"
-        "    product_record_spec(\n"
-        '        "ParentRecord",\n'
-        '        "name: str",\n'
-        '        "SemanticRecord",\n'
-        '        doc="Parent docs.",\n'
-        "    ),\n"
-        "    product_record_spec(\n"
-        '        "ChildRecord",\n'
-        '        "value: int",\n'
-        '        "ParentRecord",\n'
-        '        doc="Child docs.",\n'
-        "    ),\n"
-        "))\n"
-        "# fmt: on\n",
-    )
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "runtime_product_record_schema"
-    ]
-    source_index = build_source_index(parse_python_modules(tmp_path), ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-
-    plan = codemod_plan_from_findings(findings)
-    simulation = plan.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = simulation.document_simulation.unified_diff(source_by_path)
-
-    assert plan.expected_removed_finding_count == 1
-    assert len(plan.document.recipes) == 1
-    operation = plan.document.recipes[0].operations[0].to_dict()
-    assert operation["operation"] == "product_records_to_dataclasses"
-    assert operation["record_names"] == ("ParentRecord", "ChildRecord")
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-    assert "+class ParentRecord(SemanticRecord):" in diff
-    assert "+class ChildRecord(ParentRecord):" in diff
-    simulation.document_simulation.apply()
-    rewritten = module_path.read_text()
-    assert rewritten.index("class ParentRecord") < rewritten.index("class ChildRecord")
-    assert "materialize_product_records(" not in rewritten
-    assert "product_record_spec(" not in rewritten
-    assert "# fmt: off" not in rewritten
-    assert "# fmt: on" not in rewritten
-    remaining = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "runtime_product_record_schema"
-    ]
-    assert remaining == []
 
 
 def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
@@ -4139,19 +3824,6 @@ def test_effect_step_declaration_derives_loaded_family_names() -> None:
     )
 
 
-def test_product_record_preserves_classvar_descriptor_defaults() -> None:
-    record_type = product_record(
-        "DescriptorBackedRecord",
-        "name_family: tuple[str, ...]; keyword_names: ClassVar[AliasProperty[tuple[str, ...]]]",
-        defaults={"keyword_names": AliasProperty("name_family")},
-    )
-
-    record = record_type(name_family=("alpha", "beta"))
-
-    assert record.keyword_names == ("alpha", "beta")
-    assert "keyword_names" not in inspect.signature(record_type).parameters
-
-
 def test_fiber_geometry_computes_exact_identity_debt() -> None:
     representation = {
         "Alpha": "000",
@@ -5996,6 +5668,18 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
+
+
+def _manual_class_registration_source() -> str:
+    return (
+        "REGISTRY = {}\n\n\n"
+        "class AlphaHandler:\n"
+        "    pass\n\n\n"
+        "class BetaHandler:\n"
+        "    pass\n\n\n"
+        "REGISTRY['alpha'] = AlphaHandler\n"
+        "REGISTRY['beta'] = BetaHandler\n"
+    )
 
 
 def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:
@@ -9216,23 +8900,6 @@ def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
     assert "coordinate names" in (findings[0].codemod_patch or "")
 
 
-def test_detects_runtime_product_record_schema(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom nominal_refactor_advisor.record_algebra import product_record, product_record_spec, materialize_product_record\n\nLocalRecord = product_record("LocalRecord", "name: str; value: int")\nmaterialize_product_record(product_record_spec("GeneratedRecord", "path: str"))\n',
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "runtime_product_record_schema"
-    ]
-    assert len(findings) == 3
-    assert any("LocalRecord" in finding.summary for finding in findings)
-    assert any("GeneratedRecord" in finding.summary for finding in findings)
-    assert all("dataclass" in (finding.codemod_patch or "") for finding in findings)
-
-
 def test_disabled_simple_property_alias_detector_family_is_removed() -> None:
     removed_candidate_names = (
         "SimplePropertyAliasClassCandidate",
@@ -10481,7 +10148,7 @@ def test_cli_command_selection_rejects_multiple_declarations(
         (
             (
                 "--codemod-refactor-goal",
-                "tuple_dict_return_record",
+                "auto_register_class_registry",
                 "--codemod-simulate",
             ),
             "does not accept codemod execution modes",
@@ -11370,31 +11037,17 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     tmp_path: Path,
 ) -> None:
     _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
-    generated_path = tmp_path / "pkg/generated_record.py"
+    generated_path = tmp_path / "pkg/generated_registry.py"
     sequence = CodemodPlanSequence(
         documents=(
             CodemodPlanDocument(
                 recipes=(
-                    RefactorRecipe("create-generated-record").with_operation(
+                    RefactorRecipe("create-generated-registry").with_operation(
                         CreateFileOperation(
                             target=SourceRewriteTarget(
                                 file_path=generated_path.as_posix()
                             ),
-                            payload_value=(
-                                "from nominal_refactor_advisor.record_algebra import (\n"
-                                "    materialize_product_record,\n"
-                                "    product_record_spec,\n"
-                                ")\n\n\n"
-                                "class SemanticRecord:\n"
-                                "    pass\n\n\n"
-                                "materialize_product_record(\n"
-                                "    product_record_spec(\n"
-                                '        "GeneratedRecord",\n'
-                                '        "path: str",\n'
-                                '        "SemanticRecord",\n'
-                                "    )\n"
-                                ")\n"
-                            ),
+                            payload_value=_manual_class_registration_source(),
                         )
                     ),
                 )
@@ -11407,13 +11060,13 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     findings = tuple(
         finding
         for finding in analyze_modules(simulation.final_snapshot.parsed_modules)
-        if finding.detector_id == "runtime_product_record_schema"
+        if finding.detector_id == "manual_class_registration"
     )
     continuation_report = simulation.continuation_report_from_findings(findings)
 
     assert generated_path.exists() is False
-    assert len(findings) == 2
-    assert continuation_report.finding_count == 2
+    assert len(findings) == 1
+    assert continuation_report.finding_count == 1
     assert continuation_report.source_index is simulation.final_snapshot.source_index
     assert continuation_report.plan.expected_removed_finding_count == 1
     assert continuation_report.has_continuation_stage is True
@@ -11428,7 +11081,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
         continuation_report.plan.document.recipes[0]
         .operations[0]
         .to_dict()["operation"]
-        == "product_record_to_dataclass"
+        == "convert_manual_registry_to_autoregister"
     )
     continuation_payload = continuation_report.to_dict()
     assert continuation_payload["has_continuation_stage"] is True
@@ -11436,13 +11089,13 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
         continuation_payload["continuation_sequence"]["stages"][0]["recipes"][0][
             "operations"
         ][0]["operation"]
-        == "product_record_to_dataclass"
+        == "convert_manual_registry_to_autoregister"
     )
     assert (
         continuation_payload["extended_sequence"]["stages"][-1]["recipes"][0][
             "operations"
         ][0]["operation"]
-        == "product_record_to_dataclass"
+        == "convert_manual_registry_to_autoregister"
     )
 
 
@@ -13828,7 +13481,7 @@ def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
             tmp_path.as_posix(),
             "--no-cache",
             "--codemod-refactor-goal",
-            "tuple_dict_return_record",
+            "auto_register_class_registry",
             "--codemod-plan",
             plan_path.as_posix(),
         ],
@@ -13850,19 +13503,7 @@ def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "from nominal_refactor_advisor.record_algebra import (\n"
-        "    materialize_product_record,\n"
-        "    product_record_spec,\n"
-        ")\n\n\n"
-        "class SemanticRecord:\n"
-        "    pass\n\n\n"
-        "materialize_product_record(\n"
-        "    product_record_spec(\n"
-        '        "GeneratedRecord",\n'
-        '        "path: str",\n'
-        '        "SemanticRecord",\n'
-        "    )\n"
-        ")\n",
+        _manual_class_registration_source(),
     )
 
     result = subprocess.run(
@@ -13873,7 +13514,7 @@ def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
             tmp_path.as_posix(),
             "--no-cache",
             "--codemod-refactor-goal",
-            "tuple_dict_return_record",
+            "auto_register_class_registry",
             "--codemod-plan-out",
             plan_path.as_posix(),
             "--json",
@@ -14262,7 +13903,7 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
-    created_path = tmp_path / "pkg/generated_record.py"
+    created_path = tmp_path / "pkg/generated_registry.py"
     plan_path = tmp_path / "codemod-plan.json"
     continuation_plan_path = tmp_path / "next-plan.json"
     plan_path.write_text(
@@ -14270,26 +13911,12 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
             {
                 "recipes": [
                     {
-                        "recipe_id": "create-generated-record",
+                        "recipe_id": "create-generated-registry",
                         "operations": [
                             {
                                 "operation": "create_file",
                                 "file_path": created_path.as_posix(),
-                                "source": (
-                                    "from nominal_refactor_advisor.record_algebra import (\n"
-                                    "    materialize_product_record,\n"
-                                    "    product_record_spec,\n"
-                                    ")\n\n\n"
-                                    "class SemanticRecord:\n"
-                                    "    pass\n\n\n"
-                                    "materialize_product_record(\n"
-                                    "    product_record_spec(\n"
-                                    '        "GeneratedRecord",\n'
-                                    '        "path: str",\n'
-                                    '        "SemanticRecord",\n'
-                                    "    )\n"
-                                    ")\n"
-                                ),
+                                "source": _manual_class_registration_source(),
                             }
                         ],
                     }
@@ -14326,7 +13953,7 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
     assert "projected_source_index" not in projected_findings
     assert created_path.exists() is False
     assert any(
-        finding["detector_id"] == "runtime_product_record_schema"
+        finding["detector_id"] == "manual_class_registration"
         for finding in projected_findings["after_findings"]
     )
     assert projected_continuation["has_continuation_stage"] is True
@@ -14342,7 +13969,7 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
         projected_continuation["extended_sequence"]["stages"][-1]["recipes"][0][
             "operations"
         ][0]["operation"]
-        == "product_record_to_dataclass"
+        == "convert_manual_registry_to_autoregister"
     )
     continuation_payload = json.loads(
         continuation_plan_path.read_text(encoding="utf-8")
@@ -14352,7 +13979,7 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
     assert len(continuation_payload["stages"]) == 1
     assert (
         continuation_payload["stages"][0]["recipes"][0]["operations"][0]["operation"]
-        == "product_record_to_dataclass"
+        == "convert_manual_registry_to_autoregister"
     )
 
 

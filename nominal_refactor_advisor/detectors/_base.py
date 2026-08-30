@@ -10535,16 +10535,6 @@ class CalleeLineSurface:
 
 
 @dataclass(frozen=True)
-class RuntimeProductRecordSchemaCandidate(CalleeLineSurface, LineWitnessCandidate):
-    declared_names: tuple[str, ...]
-    context_qualname: str
-
-    @property
-    def witness_name(self) -> str:
-        return self.callee_name
-
-
-@dataclass(frozen=True)
 class ManualStructuralRecordMechanicsClassCandidate(ClassLineWitnessCandidate):
     base_names: tuple[str, ...]
     validation_method_name: str

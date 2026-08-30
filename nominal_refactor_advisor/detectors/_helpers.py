@@ -18,10 +18,6 @@ from ..factorization import (
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_tools import SourceModule
 from ..native_syntax import NativePythonSyntaxIndex
-from ..product_record_schema import (
-    ProductRecordDeclaredNameExtractor,
-    ProductRecordSchemaCallKind,
-)
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
@@ -3091,33 +3087,6 @@ class ManualPublicApiSurfaceBuilder:
 
 
 MANUAL_PUBLIC_API_SURFACE_BUILDER = ManualPublicApiSurfaceBuilder()
-
-
-def _runtime_product_record_schema_candidates(
-    module: ParsedModule,
-) -> tuple[RuntimeProductRecordSchemaCandidate, ...]:
-    candidates: list[RuntimeProductRecordSchemaCandidate] = []
-
-    class Visitor(ClassFunctionStackNodeVisitor):
-        def visit_Call(self, node: ast.Call) -> None:
-            call_kind = ProductRecordSchemaCallKind.from_call(node)
-            if call_kind in ProductRecordDeclaredNameExtractor.registered_call_kinds():
-                candidates.append(
-                    RuntimeProductRecordSchemaCandidate(
-                        file_path=str(module.path),
-                        line=node.lineno,
-                        callee_name=call_kind.value,
-                        declared_names=ProductRecordDeclaredNameExtractor.declared_names_for(
-                            node
-                        ),
-                        context_qualname=self.qualname,
-                        line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
-                    )
-                )
-            self.generic_visit(node)
-
-    Visitor().visit(module.module)
-    return tuple(candidates)
 
 
 def _dict_key_kind(value: ast.AST) -> str | None:
