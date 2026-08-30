@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -78,6 +79,8 @@ from nominal_refactor_advisor.class_index import (
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CliCommand
 from nominal_refactor_advisor.cli import CodemodExecutionMode
+from nominal_refactor_advisor.cli import CodemodPlanExecutionRequest
+from nominal_refactor_advisor.cli import CodemodPlanExecutionPresenter
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
 from nominal_refactor_advisor.cli import CodemodRefactorGoalCliCommand
 from nominal_refactor_advisor.cli import CodemodSourceIndexCliCommand
@@ -9993,6 +9996,148 @@ def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:
         )
 
 
+def test_codemod_execution_modes_share_one_typed_plan_authority(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = "VALUE = 1\n"
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe("replace-value").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(
+                            file_path=module_path.as_posix(),
+                        ),
+                        old_source="VALUE = 1",
+                        new_source="VALUE = 2",
+                    )
+                ),
+            )
+        )
+    )
+
+    preflight_presenter = Mock(spec=CodemodPlanExecutionPresenter)
+    preflight_exit_code = CodemodPlanExecutionRequest(
+        sequence,
+        CodemodExecutionMode.PREFLIGHT,
+        project_findings=False,
+    ).execute(snapshot, preflight_presenter)
+    simulation_presenter = Mock(spec=CodemodPlanExecutionPresenter)
+    simulation_exit_code = CodemodPlanExecutionRequest(
+        sequence,
+        CodemodExecutionMode.SIMULATE,
+        project_findings=False,
+    ).execute(snapshot, simulation_presenter)
+
+    preflight_report = preflight_presenter.present_preflight.call_args.args[0]
+    sequence_simulation = simulation_presenter.present_simulation.call_args.args[0]
+    assert preflight_exit_code == 0
+    assert preflight_report.is_clean is True
+    assert simulation_exit_code == 0
+    assert sequence_simulation.is_clean is True
+    assert simulation_presenter.present_simulation.call_args.kwargs == {
+        "applied": False
+    }
+    assert module_path.read_text() == original_source
+
+    apply_presenter = Mock(spec=CodemodPlanExecutionPresenter)
+    apply_exit_code = CodemodPlanExecutionRequest(
+        sequence,
+        CodemodExecutionMode.APPLY,
+        project_findings=False,
+    ).execute(snapshot, apply_presenter)
+
+    applied_simulation = apply_presenter.present_simulation.call_args.args[0]
+    assert apply_exit_code == 0
+    assert applied_simulation.is_clean is True
+    assert apply_presenter.present_simulation.call_args.kwargs == {"applied": True}
+    assert module_path.read_text() == "VALUE = 2\n"
+
+
+def test_codemod_apply_execution_blocks_dirty_guard_without_mutation(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = (
+        "def legacy():\n    return 1\n\n\ndef caller():\n    return legacy()\n"
+    )
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("rewrite-legacy").with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                    old_source="return 1",
+                    new_source="return 2",
+                )
+            ),
+        ),
+        guard_suite=ArchitectureGuardSuite(
+            (
+                ArchitectureGuardRule(
+                    rule_id="no-legacy-call",
+                    forbidden_call_names=("legacy",),
+                ),
+            )
+        ),
+    )
+
+    presenter = Mock(spec=CodemodPlanExecutionPresenter)
+    exit_code = CodemodPlanExecutionRequest(
+        CodemodPlanSequence.from_document(document),
+        CodemodExecutionMode.APPLY,
+        project_findings=False,
+    ).execute(snapshot, presenter)
+
+    sequence_simulation = presenter.present_simulation.call_args.args[0]
+    assert sequence_simulation.is_clean is False
+    assert presenter.present_simulation.call_args.kwargs == {"applied": False}
+    assert exit_code == 1
+    assert module_path.read_text() == original_source
+
+
+def test_codemod_simulation_presents_operation_preflight_failure_report(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class LocalBase:\n    pass\n\n\nclass Helper(LocalBase):\n    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe("move-helper-only").with_operation(
+                    MoveSymbolsToModuleOperation(
+                        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+                        symbol_qualnames=("Helper",),
+                        destination_path=destination_path.as_posix(),
+                    )
+                ),
+            )
+        )
+    )
+
+    presenter = Mock(spec=CodemodPlanExecutionPresenter)
+    exit_code = CodemodPlanExecutionRequest(
+        sequence,
+        CodemodExecutionMode.SIMULATE,
+        project_findings=False,
+    ).execute(snapshot, presenter)
+
+    report = presenter.present_operation_preflight_failure.call_args.args[0]
+    assert report.operation == "move_symbols_to_module"
+    assert exit_code == 1
+
+
 def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     document = CodemodPlanDocument.from_json_value(
         {
@@ -13622,6 +13767,56 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
         synthesis_record["recipe"]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"
     )
+
+
+@pytest.mark.parametrize(
+    ("execution_flag", "result_field", "expected_applied"),
+    (
+        ("--codemod-preflight", "preflight_report", False),
+        ("--codemod-apply", "simulation_result", True),
+    ),
+)
+def test_module_cli_class_plan_uses_shared_typed_execution_lifecycle(
+    tmp_path: Path,
+    execution_flag: str,
+    result_field: str,
+    expected_applied: bool,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = _manual_class_registration_source()
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-synthesize-class-plan",
+            "--codemod-goal-detector",
+            "manual_class_registration",
+            execution_flag,
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert result_field in payload
+    if expected_applied:
+        assert payload["simulation_result"]["is_clean"] is True
+        assert payload["applied"] is True
+        assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in (
+            module_path.read_text()
+        )
+    else:
+        assert payload["is_clean"] is True
+        assert module_path.read_text() == original_source
 
 
 def test_module_cli_simulates_projected_findings_with_executable_continuation(

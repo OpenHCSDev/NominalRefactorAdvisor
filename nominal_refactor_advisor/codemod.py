@@ -12637,6 +12637,28 @@ class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
 
     plan: FindingRecipePlan
 
+    @classmethod
+    def from_sequence_simulation(
+        cls,
+        plan: FindingRecipePlan,
+        sequence_simulation: CodemodPlanSequenceSimulation,
+    ) -> "FindingRecipePlanSimulation":
+        """Recover one finding plan result from its canonical one-stage sequence."""
+
+        expected_sequence = CodemodPlanSequence.from_document(plan.document)
+        if sequence_simulation.sequence != expected_sequence:
+            raise ValueError("sequence simulation does not execute the finding plan")
+        if len(sequence_simulation.stage_reports) != 1:
+            raise ValueError(
+                "finding plan execution requires exactly one sequence stage"
+            )
+        return cls(
+            plan=plan,
+            document_simulation=(
+                sequence_simulation.stage_reports[0].document_simulation
+            ),
+        )
+
     @property
     def simulation(self) -> CodemodSimulationReport:
         return self.document_simulation.simulation

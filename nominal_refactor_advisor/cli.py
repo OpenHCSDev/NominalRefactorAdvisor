@@ -78,13 +78,15 @@ from .codemod import (
     CodemodSimulationStatus,
     CodemodSourceContext,
     CodemodSourceSnapshot,
+    FindingRecipeClassPlanReport,
+    FindingRecipePlan,
+    FindingRecipePlanPreflight,
     FindingRecipePlanSimulation,
     JsonObject,
     JsonValue,
     RefactorConcept,
     SourcePathCandidateAuthority,
     SourcePathCandidateSet,
-    apply_codemod_simulation,
     codemod_class_plan_from_findings,
     codemod_candidates_from_impact_ranking,
     evaluate_architecture_guards,
@@ -2096,18 +2098,6 @@ class CalibrationExitCodeAuthority:
 
 
 @dataclass(frozen=True)
-class CodemodSynthesisExitCodeAuthority:
-    """Exit-code policy for one synthesized codemod batch."""
-
-    is_clean: bool
-
-    def exit_code(self) -> int:
-        if self.is_clean:
-            return 0
-        return 1
-
-
-@dataclass(frozen=True)
 class SingleRootModeAuthority:
     """Validate CLI modes that accept exactly one path root."""
 
@@ -2437,15 +2427,166 @@ class CodemodSourceSnapshotRequired(ABC):
         raise RuntimeError("argparse.error should have exited")
 
 
+class CodemodPlanExecutionPresenter(ABC):
+    """Nominal presentation boundary for typed plan-execution reports."""
+
+    @abstractmethod
+    def present_preflight(
+        self,
+        report: CodemodPlanPreflightReport,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def present_simulation(
+        self,
+        simulation: CodemodPlanSequenceSimulation,
+        *,
+        applied: bool,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def present_operation_preflight_failure(
+        self,
+        report: CodemodOperationPreflightReport,
+    ) -> None:
+        raise NotImplementedError
+
+
+class CodemodExecutionStrategy(ABC):
+    """Leaf-owned execution semantics carried by a codemod mode member."""
+
+    requested: ClassVar[bool] = True
+    applies_changes: ClassVar[bool] = False
+    unified_diff_requested: ClassVar[bool] = False
+    requires_json_report: ClassVar[bool] = False
+    allows_projected_findings: ClassVar[bool] = False
+
+    @classmethod
+    def accepted_by(cls, command_type: type[CliCommand]) -> bool:
+        return issubclass(command_type, CodemodExecutionModeCliCommand)
+
+    @classmethod
+    def json_report_requested(
+        cls,
+        json_flag: bool,
+        *,
+        project_findings: bool,
+    ) -> bool:
+        return json_flag or cls.requires_json_report or project_findings
+
+    @classmethod
+    def require_valid(
+        cls,
+        parser: argparse.ArgumentParser,
+        *,
+        project_findings: bool,
+    ) -> None:
+        if project_findings and not cls.allows_projected_findings:
+            parser.error("--codemod-project-findings requires --codemod-simulate")
+
+    @classmethod
+    @abstractmethod
+    def execute(
+        cls,
+        sequence: CodemodPlanSequence,
+        snapshot: CodemodSourceSnapshot,
+        presenter: CodemodPlanExecutionPresenter,
+    ) -> int | None:
+        raise NotImplementedError
+
+
+class NoCodemodExecutionStrategy(CodemodExecutionStrategy):
+    """No execution was requested."""
+
+    requested = False
+
+    @classmethod
+    def accepted_by(cls, command_type: type[CliCommand]) -> bool:
+        del command_type
+        return True
+
+    @classmethod
+    def execute(
+        cls,
+        sequence: CodemodPlanSequence,
+        snapshot: CodemodSourceSnapshot,
+        presenter: CodemodPlanExecutionPresenter,
+    ) -> None:
+        del sequence, snapshot, presenter
+        return None
+
+
+class PreflightCodemodExecutionStrategy(CodemodExecutionStrategy):
+    """Preflight one plan sequence without constructing rewritten source."""
+
+    requires_json_report = True
+
+    @classmethod
+    def execute(
+        cls,
+        sequence: CodemodPlanSequence,
+        snapshot: CodemodSourceSnapshot,
+        presenter: CodemodPlanExecutionPresenter,
+    ) -> int:
+        report = sequence.preflight_snapshot(snapshot)
+        presenter.present_preflight(report)
+        return 0 if report.is_clean else 1
+
+
+class SimulateCodemodExecutionStrategy(CodemodExecutionStrategy):
+    """Simulate a plan and retain its unified diff without applying it."""
+
+    unified_diff_requested = True
+    requires_json_report = True
+    allows_projected_findings = True
+
+    @classmethod
+    def execute(
+        cls,
+        sequence: CodemodPlanSequence,
+        snapshot: CodemodSourceSnapshot,
+        presenter: CodemodPlanExecutionPresenter,
+    ) -> int:
+        try:
+            simulation = sequence.simulate_snapshot(snapshot)
+        except CodemodOperationPreflightError as error:
+            presenter.present_operation_preflight_failure(error.report)
+            return 1
+        applied = cls.applies_changes and simulation.is_clean
+        if applied:
+            simulation.apply()
+        presenter.present_simulation(simulation, applied=applied)
+        return 0 if simulation.is_clean else 1
+
+
+class ApplyCodemodExecutionStrategy(SimulateCodemodExecutionStrategy):
+    """Apply a clean plan simulation through its source-revision guards."""
+
+    applies_changes = True
+    unified_diff_requested = False
+    requires_json_report = False
+    allows_projected_findings = False
+
+    @classmethod
+    def accepted_by(cls, command_type: type[CliCommand]) -> bool:
+        return super().accepted_by(command_type) or issubclass(
+            command_type,
+            CodemodApplyExecutionModeCliCommand,
+        )
+
+
 @dataclass(frozen=True)
 class CodemodCliExecution(
-    CodemodSourceSnapshotRequired, CodemodProjectedFindingReporter
+    CodemodSourceSnapshotRequired,
+    CodemodProjectedFindingReporter,
+    CodemodPlanExecutionPresenter,
 ):
     """Run the CLI codemod simulation/apply phase through plan-level DSL APIs."""
 
     source_snapshot_error_message: ClassVar[str] = (
-        "--codemod-preflight/--codemod-simulate/--codemod-apply require a "
-        "codemod plan"
+        "--codemod-preflight/--codemod-simulate/--codemod-apply require a codemod plan"
     )
     parser: argparse.ArgumentParser
     args: argparse.Namespace
@@ -2462,56 +2603,52 @@ class CodemodCliExecution(
         if not self.execution_request.mode.requested:
             return None
         snapshot = self.required_source_snapshot()
-        if self.execution_request.mode.is_preflight:
-            return self.emit_preflight_report(
-                self.execution_request.sequence.preflight_snapshot(snapshot)
-            )
-        try:
-            simulation, architecture_guard_report, plan_sequence_simulation = (
-                self.simulation_context(snapshot)
-            )
-        except CodemodOperationPreflightError as error:
-            return self.emit_preflight_failure(error.report)
-        if (
-            architecture_guard_report is not None
-            and not architecture_guard_report.is_clean
-        ):
-            return self.emit_guard_failure(
+        return self.execution_request.execute(snapshot, self)
+
+    def present_preflight(
+        self,
+        report: CodemodPlanPreflightReport,
+    ) -> None:
+        self.emit_preflight_report(report)
+
+    def present_simulation(
+        self,
+        sequence_simulation: CodemodPlanSequenceSimulation,
+        *,
+        applied: bool,
+    ) -> None:
+        simulation = sequence_simulation.simulation
+        snapshot = self.required_source_snapshot()
+        architecture_guard_report = (
+            sequence_simulation.architecture_guard_report
+            if self.execution_request.sequence.has_architecture_guards
+            else None
+        )
+        if not sequence_simulation.is_clean:
+            self.emit_guard_failure(
                 snapshot,
                 simulation,
                 architecture_guard_report,
             )
-        applied = self.apply_if_requested(simulation, plan_sequence_simulation)
-        self.emit_success(
-            snapshot,
-            simulation,
-            applied,
-            architecture_guard_report,
-            plan_sequence_simulation,
-        )
-        return 0
+        else:
+            self.emit_success(
+                snapshot,
+                simulation,
+                applied,
+                architecture_guard_report,
+                sequence_simulation,
+            )
 
-    def simulation_context(
+    def present_operation_preflight_failure(
         self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[
-        CodemodSimulationReport,
-        ArchitectureGuardReport | None,
-        CodemodPlanSequenceSimulation | None,
-    ]:
-        plan_sequence_simulation = self.execution_request.sequence.simulate_snapshot(
-            snapshot
-        )
-        return (
-            plan_sequence_simulation.simulation,
-            self.plan_sequence_guard_report(plan_sequence_simulation),
-            plan_sequence_simulation,
-        )
+        report: CodemodOperationPreflightReport,
+    ) -> None:
+        self.emit_preflight_failure(report)
 
     def emit_preflight_failure(
         self,
         report: CodemodOperationPreflightReport,
-    ) -> int:
+    ) -> None:
         if self.execution_request.mode.json_report_requested(
             self.args.json,
             project_findings=self.execution_request.project_findings,
@@ -2524,36 +2661,26 @@ class CodemodCliExecution(
             )
         else:
             print(f"Codemod preflight failed: {report.message}", file=sys.stderr)
-        return 1
 
     def emit_preflight_report(
         self,
         report: CodemodPlanPreflightReport,
-    ) -> int:
+    ) -> None:
         print(
             json.dumps(
                 CodemodPlanPreflightPayload(report).to_dict(),
                 indent=2,
             )
         )
-        if report.is_clean:
-            return 0
-        return 1
-
-    def plan_sequence_guard_report(
-        self,
-        plan_sequence_simulation: CodemodPlanSequenceSimulation,
-    ) -> ArchitectureGuardReport | None:
-        if not self.execution_request.sequence.has_architecture_guards:
-            return None
-        return plan_sequence_simulation.architecture_guard_report
 
     def emit_guard_failure(
         self,
         snapshot: CodemodSourceSnapshot,
         simulation: CodemodSimulationReport,
-        architecture_guard_report: ArchitectureGuardReport,
-    ) -> int:
+        architecture_guard_report: ArchitectureGuardReport | None,
+    ) -> None:
+        if architecture_guard_report is None:
+            raise RuntimeError("dirty codemod simulation requires architecture guards")
         if self.execution_request.mode.json_report_requested(
             self.args.json,
             project_findings=self.execution_request.project_findings,
@@ -2571,20 +2698,6 @@ class CodemodCliExecution(
             )
         else:
             print(format_architecture_guard_markdown(architecture_guard_report))
-        return 1
-
-    def apply_if_requested(
-        self,
-        simulation: CodemodSimulationReport,
-        plan_sequence_simulation: CodemodPlanSequenceSimulation | None,
-    ) -> bool:
-        if not self.execution_request.mode.applies_changes:
-            return False
-        if plan_sequence_simulation is not None:
-            plan_sequence_simulation.apply()
-        else:
-            apply_codemod_simulation(simulation)
-        return True
 
     def emit_success(
         self,
@@ -2592,7 +2705,7 @@ class CodemodCliExecution(
         simulation: CodemodSimulationReport,
         applied: bool,
         architecture_guard_report: ArchitectureGuardReport | None,
-        plan_sequence_simulation: CodemodPlanSequenceSimulation | None,
+        plan_sequence_simulation: CodemodPlanSequenceSimulation,
     ) -> None:
         if self.execution_request.mode.json_report_requested(
             self.args.json,
@@ -2604,16 +2717,11 @@ class CodemodCliExecution(
                 post_guard_report=architecture_guard_report,
                 unified_diff=self.optional_unified_diff(snapshot, simulation),
             ).to_dict()
-            if plan_sequence_simulation is not None:
-                payload["plan_sequence_simulation"] = plan_sequence_simulation.to_dict()
+            payload["plan_sequence_simulation"] = plan_sequence_simulation.to_dict()
             projected_findings = self.optional_projected_finding_report(
                 simulation,
                 enabled=self.execution_request.project_findings,
-                source_sequence=(
-                    plan_sequence_simulation.sequence
-                    if plan_sequence_simulation is not None
-                    else None
-                ),
+                source_sequence=plan_sequence_simulation.sequence,
             )
             if projected_findings is not None:
                 payload["projected_findings"] = projected_findings.to_dict()
@@ -2651,22 +2759,19 @@ class CodemodCliExecution(
 class CodemodExecutionMode(Enum):
     """Single authority for codemod execution semantics."""
 
-    NONE = "none"
-    PREFLIGHT = "preflight"
-    SIMULATE = "simulate"
-    APPLY = "apply"
+    NONE = NoCodemodExecutionStrategy
+    PREFLIGHT = PreflightCodemodExecutionStrategy
+    SIMULATE = SimulateCodemodExecutionStrategy
+    APPLY = ApplyCodemodExecutionStrategy
+
+    @property
+    def strategy(self) -> type[CodemodExecutionStrategy]:
+        return self.value
 
     def accepted_by(self, command_type: type[CliCommand]) -> bool:
         """Return whether a nominal command family accepts this mode."""
 
-        if self is type(self).NONE:
-            return True
-        if issubclass(command_type, CodemodExecutionModeCliCommand):
-            return True
-        return self is type(self).APPLY and issubclass(
-            command_type,
-            CodemodApplyExecutionModeCliCommand,
-        )
+        return self.strategy.accepted_by(command_type)
 
     @classmethod
     def from_namespace(
@@ -2692,19 +2797,15 @@ class CodemodExecutionMode(Enum):
 
     @property
     def requested(self) -> bool:
-        return self is not type(self).NONE
-
-    @property
-    def is_preflight(self) -> bool:
-        return self is type(self).PREFLIGHT
+        return self.strategy.requested
 
     @property
     def applies_changes(self) -> bool:
-        return self is type(self).APPLY
+        return self.strategy.applies_changes
 
     @property
     def unified_diff_requested(self) -> bool:
-        return self is type(self).SIMULATE
+        return self.strategy.unified_diff_requested
 
     def json_report_requested(
         self,
@@ -2712,10 +2813,9 @@ class CodemodExecutionMode(Enum):
         *,
         project_findings: bool,
     ) -> bool:
-        return (
-            json_flag
-            or self in (type(self).PREFLIGHT, type(self).SIMULATE)
-            or project_findings
+        return self.strategy.json_report_requested(
+            json_flag,
+            project_findings=project_findings,
         )
 
     def require_valid(
@@ -2724,8 +2824,18 @@ class CodemodExecutionMode(Enum):
         *,
         project_findings: bool,
     ) -> None:
-        if project_findings and self is not type(self).SIMULATE:
-            parser.error("--codemod-project-findings requires --codemod-simulate")
+        self.strategy.require_valid(
+            parser,
+            project_findings=project_findings,
+        )
+
+    def execute(
+        self,
+        sequence: CodemodPlanSequence,
+        snapshot: CodemodSourceSnapshot,
+        presenter: CodemodPlanExecutionPresenter,
+    ) -> int | None:
+        return self.strategy.execute(sequence, snapshot, presenter)
 
 
 @dataclass(frozen=True)
@@ -2735,6 +2845,13 @@ class CodemodPlanExecutionRequest:
     sequence: CodemodPlanSequence
     mode: CodemodExecutionMode
     project_findings: bool
+
+    def execute(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        presenter: CodemodPlanExecutionPresenter,
+    ) -> int | None:
+        return self.mode.execute(self.sequence, snapshot, presenter)
 
     @property
     def exact_recipe_execution(self) -> bool:
@@ -2868,14 +2985,16 @@ class CodemodSynthesisExecutionCliCommand(
 ):
     """Shared execution surface for finding-backed synthesis commands."""
 
-    def apply_synthesized_plan(
+    def run(self) -> int:
+        snapshot = self.required_source_snapshot()
+        return self.synthesis_execution(snapshot).run()
+
+    @abstractmethod
+    def synthesis_execution(
         self,
-        simulation: "FindingRecipePlanSimulation",
-    ) -> bool:
-        if not self.execution_mode.applies_changes:
-            return False
-        simulation.document_simulation.apply()
-        return True
+        snapshot: CodemodSourceSnapshot,
+    ) -> "CodemodSynthesisExecution":
+        raise NotImplementedError
 
 
 class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
@@ -2887,44 +3006,18 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
     def requested(cls, args: argparse.Namespace) -> bool:
         return args.codemod_synthesize_plan
 
-    def run(self) -> int:
-        detector_ids = tuple(self.args.codemod_goal_detectors)
-        snapshot = self.required_source_snapshot()
-        finding_recipe_plan = snapshot.plan_from_findings(
-            self.findings,
-            detector_ids=detector_ids,
+    def synthesis_execution(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> "FindingRecipePlanSynthesisExecution":
+        return FindingRecipePlanSynthesisExecution(
+            command=self,
+            snapshot=snapshot,
+            plan=snapshot.plan_from_findings(
+                self.findings,
+                detector_ids=tuple(self.args.codemod_goal_detectors),
+            ),
         )
-        write_cli_json_artifact(
-            self.args.codemod_plan_out,
-            finding_recipe_plan.document.to_dict(),
-        )
-        if self.execution_mode.is_preflight:
-            payload = finding_recipe_plan.preflight_snapshot(snapshot).to_dict()
-            print(json.dumps(payload, indent=2))
-            return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
-        if self.execution_mode.requested:
-            simulation = finding_recipe_plan.simulate_snapshot(snapshot)
-            unified_diff = snapshot.unified_diff(simulation.simulation)
-            applied = self.apply_synthesized_plan(simulation)
-            payload = {
-                **simulation.to_dict(),
-                "applied": applied,
-                "unified_diff": unified_diff,
-            }
-            projected_findings = self.optional_projected_finding_report(
-                simulation.simulation,
-                enabled=self.args.codemod_project_findings,
-                expected_removed_finding_ids=(
-                    finding_recipe_plan.expected_removed_finding_ids
-                ),
-            )
-            if projected_findings is not None:
-                payload["projected_findings"] = projected_findings.to_dict()
-                self.write_continuation_plan_if_requested(projected_findings)
-            print(json.dumps(payload, indent=2))
-            return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
-        print(json.dumps(finding_recipe_plan.to_dict(), indent=2))
-        return 0
 
 
 class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
@@ -2936,54 +3029,218 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
     def requested(cls, args: argparse.Namespace) -> bool:
         return args.codemod_synthesize_class_plan
 
+    def synthesis_execution(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> "FindingRecipeClassPlanSynthesisExecution":
+        return FindingRecipeClassPlanSynthesisExecution(
+            command=self,
+            snapshot=snapshot,
+            report=codemod_class_plan_from_findings(
+                self.findings,
+                root=self.roots[0],
+                selector_context=snapshot,
+                detector_ids=tuple(self.args.codemod_goal_detectors),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CodemodSynthesisExecution(
+    CodemodPlanExecutionPresenter,
+    ABC,
+):
+    """Execute and present one synthesized plan through its nominal envelope."""
+
+    command: CodemodSynthesisExecutionCliCommand
+    snapshot: CodemodSourceSnapshot
+
+    @property
+    @abstractmethod
+    def finding_plan(self) -> FindingRecipePlan:
+        raise NotImplementedError
+
+    @abstractmethod
+    def unexecuted_payload(self) -> JsonObject:
+        raise NotImplementedError
+
+    @abstractmethod
+    def preflight_payload(
+        self,
+        report: CodemodPlanPreflightReport,
+    ) -> JsonObject:
+        raise NotImplementedError
+
+    @abstractmethod
+    def simulation_result_payload(
+        self,
+        simulation: FindingRecipePlanSimulation,
+    ) -> JsonObject:
+        raise NotImplementedError
+
+    def simulation_payload(
+        self,
+        simulation: FindingRecipePlanSimulation,
+        *,
+        applied: bool,
+    ) -> JsonObject:
+        return {
+            **self.simulation_result_payload(simulation),
+            "applied": applied,
+            "unified_diff": self.snapshot.unified_diff(simulation.simulation),
+        }
+
+    def operation_preflight_failure_payload(
+        self,
+        report: CodemodOperationPreflightReport,
+    ) -> JsonObject:
+        return {
+            **self.unexecuted_payload(),
+            **CodemodPreflightFailurePayload(report).to_dict(),
+        }
+
+    def with_projected_findings(
+        self,
+        payload: JsonObject,
+        report: CodemodProjectedFindingReport,
+    ) -> JsonObject:
+        return {
+            **payload,
+            "projected_findings": report.to_dict(),
+        }
+
     def run(self) -> int:
-        snapshot = self.required_source_snapshot()
-        report = codemod_class_plan_from_findings(
-            self.findings,
-            root=self.roots[0],
-            selector_context=snapshot,
-            detector_ids=tuple(self.args.codemod_goal_detectors),
-        )
         write_cli_json_artifact(
-            self.args.codemod_plan_out,
-            report.finding_plan.document.to_dict(),
+            self.command.args.codemod_plan_out,
+            self.finding_plan.document.to_dict(),
         )
-        if self.execution_mode.is_preflight:
-            preflight = report.finding_plan.preflight_snapshot(snapshot)
-            payload = {
-                **report.to_dict(),
-                "preflight_report": preflight.preflight_report.to_dict(),
-                "is_clean": preflight.is_clean,
-            }
-            print(json.dumps(payload, indent=2))
-            return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
-        if self.execution_mode.requested:
-            simulation = report.finding_plan.simulate_snapshot(snapshot)
-            unified_diff = snapshot.unified_diff(simulation.simulation)
-            applied = self.apply_synthesized_plan(simulation)
-            payload = {
-                **report.to_dict(),
-                "simulation_result": simulation.to_dict(),
-                "applied": applied,
-                "unified_diff": unified_diff,
-            }
-            projected_findings = self.optional_projected_finding_report(
-                simulation.simulation,
-                enabled=self.args.codemod_project_findings,
-                expected_removed_finding_ids=(
-                    report.finding_plan.expected_removed_finding_ids
-                ),
+        if not self.command.execution_mode.requested:
+            print(json.dumps(self.unexecuted_payload(), indent=2))
+            return 0
+        execution_request = CodemodPlanExecutionRequest(
+            sequence=CodemodPlanSequence.from_document(self.finding_plan.document),
+            mode=self.command.execution_mode,
+            project_findings=self.command.args.codemod_project_findings,
+        )
+        exit_code = execution_request.execute(self.snapshot, self)
+        if exit_code is None:
+            raise RuntimeError("requested synthesized execution returned no exit code")
+        return exit_code
+
+    def present_preflight(
+        self,
+        report: CodemodPlanPreflightReport,
+    ) -> None:
+        print(json.dumps(self.preflight_payload(report), indent=2))
+
+    def present_simulation(
+        self,
+        sequence_simulation: CodemodPlanSequenceSimulation,
+        *,
+        applied: bool,
+    ) -> None:
+        simulation = FindingRecipePlanSimulation.from_sequence_simulation(
+            self.finding_plan,
+            sequence_simulation,
+        )
+        payload = self.simulation_payload(simulation, applied=applied)
+        projected_findings = self.command.optional_projected_finding_report(
+            simulation.simulation,
+            enabled=self.command.args.codemod_project_findings,
+            source_sequence=sequence_simulation.sequence,
+            expected_removed_finding_ids=(
+                self.finding_plan.expected_removed_finding_ids
+            ),
+        )
+        if projected_findings is not None:
+            payload = self.with_projected_findings(payload, projected_findings)
+            self.command.write_continuation_plan_if_requested(projected_findings)
+        print(json.dumps(payload, indent=2))
+
+    def present_operation_preflight_failure(
+        self,
+        report: CodemodOperationPreflightReport,
+    ) -> None:
+        print(
+            json.dumps(
+                self.operation_preflight_failure_payload(report),
+                indent=2,
             )
-            if projected_findings is not None:
-                payload["projected_findings"] = projected_findings.to_dict()
-                payload["class_plan_projected_deltas"] = (
-                    projected_findings.class_plan_delta_report(report).to_dict()
-                )
-                self.write_continuation_plan_if_requested(projected_findings)
-            print(json.dumps(payload, indent=2))
-            return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
-        print(json.dumps(report.to_dict(), indent=2))
-        return 0
+        )
+
+
+@dataclass(frozen=True)
+class FindingRecipePlanSynthesisExecution(CodemodSynthesisExecution):
+    """Flat JSON envelope for one synthesized finding plan."""
+
+    plan: FindingRecipePlan
+
+    @property
+    def finding_plan(self) -> FindingRecipePlan:
+        return self.plan
+
+    def unexecuted_payload(self) -> JsonObject:
+        return self.plan.to_dict()
+
+    def preflight_payload(
+        self,
+        report: CodemodPlanPreflightReport,
+    ) -> JsonObject:
+        return FindingRecipePlanPreflight(
+            plan=self.plan,
+            preflight_report=report,
+        ).to_dict()
+
+    def simulation_result_payload(
+        self,
+        simulation: FindingRecipePlanSimulation,
+    ) -> JsonObject:
+        return simulation.to_dict()
+
+
+@dataclass(frozen=True)
+class FindingRecipeClassPlanSynthesisExecution(CodemodSynthesisExecution):
+    """Class-grouped JSON envelope for one synthesized finding plan."""
+
+    report: FindingRecipeClassPlanReport
+
+    @property
+    def finding_plan(self) -> FindingRecipePlan:
+        return self.report.finding_plan
+
+    def unexecuted_payload(self) -> JsonObject:
+        return self.report.to_dict()
+
+    def preflight_payload(
+        self,
+        report: CodemodPlanPreflightReport,
+    ) -> JsonObject:
+        return {
+            **self.report.to_dict(),
+            "preflight_report": report.to_dict(),
+            "is_clean": report.is_clean,
+        }
+
+    def simulation_result_payload(
+        self,
+        simulation: FindingRecipePlanSimulation,
+    ) -> JsonObject:
+        return {
+            **self.report.to_dict(),
+            "simulation_result": simulation.to_dict(),
+        }
+
+    def with_projected_findings(
+        self,
+        payload: JsonObject,
+        report: CodemodProjectedFindingReport,
+    ) -> JsonObject:
+        return {
+            **super().with_projected_findings(payload, report),
+            "class_plan_projected_deltas": report.class_plan_delta_report(
+                self.report
+            ).to_dict(),
+        }
 
 
 class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
