@@ -546,10 +546,6 @@ class DetectorConfig:
     min_prefixed_role_shared_fields: int = 2
     min_prefixed_role_bundle_fields: int = 3
     min_reflective_selector_values: int = 2
-    min_hardcoded_string_sites: int = detector_config_option(
-        3,
-        "Minimum repeated semantic string-literal sites before surfacing an SSOT finding.",
-    )
     min_literal_schema_field_count: int = detector_config_option(
         2,
         "Minimum distinct literal mapping fields in an owner before surfacing schema-dispatch duplication.",

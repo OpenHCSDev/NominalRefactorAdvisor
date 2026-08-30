@@ -20033,14 +20033,6 @@ class SemanticOverlapAbcOptimizationFindingRecipeSynthesizer(
     detector_id = "semantic_overlap_abc_optimization"
 
 
-class CrossClassSmallMethodTemplateFindingRecipeSynthesizer(
-    RepeatedMethodPromotionFindingRecipeSynthesizer
-):
-    """Promote repeated public method templates reported by method-symbol detectors."""
-
-    detector_id = "cross_class_small_method_template"
-
-
 class HelperBackedObservationSpecFindingRecipeSynthesizer(
     RepeatedMethodPromotionFindingRecipeSynthesizer
 ):

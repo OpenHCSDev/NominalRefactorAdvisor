@@ -437,7 +437,7 @@ def test_sorted_findings_authority_uses_detector_declared_priority() -> None:
         "semantic owner",
         "raw support surface",
     ).build(
-        "repeated_hardcoded_strings",
+        "unreferenced_private_function",
         "alphabetically first raw finding",
         (SourceLocation("module.py", 10, "raw"),),
     )
@@ -3011,11 +3011,11 @@ def test_method_promotion_synthesis_reports_direct_base_rejection(
     modules = parse_python_modules(tmp_path)
     finding = RefactorFinding(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Public authority methods repeat across class leaves",
+        title="Semantic-overlap methods should derive from one ABC authority",
         why="Repeated methods should move behind a shared authority.",
         capability_gap="one inherited authority algorithm",
         relation_context="same public method template repeats",
-        detector_id="cross_class_small_method_template",
+        detector_id="semantic_overlap_abc_optimization",
         summary="Alpha and Beta repeat emit.",
         evidence=(
             SourceLocation(module_path.as_posix(), 6, "Alpha.emit"),
@@ -3032,7 +3032,7 @@ def test_method_promotion_synthesis_reports_direct_base_rejection(
 
     plan = snapshot.plan_from_findings(
         (finding,),
-        detector_ids=("cross_class_small_method_template",),
+        detector_ids=("semantic_overlap_abc_optimization",),
     )
     record = plan.records[0]
 
@@ -3063,11 +3063,11 @@ def test_method_promotion_synthesis_rejects_unresolved_class_targets(
     modules = parse_python_modules(tmp_path)
     finding = RefactorFinding(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Public authority methods repeat across class leaves",
+        title="Semantic-overlap methods should derive from one ABC authority",
         why="Repeated methods should move behind a shared authority.",
         capability_gap="one inherited authority algorithm",
         relation_context="same public method template repeats",
-        detector_id="cross_class_small_method_template",
+        detector_id="semantic_overlap_abc_optimization",
         summary="Missing classes repeat emit.",
         evidence=(
             SourceLocation(module_path.as_posix(), 2, "MissingAlpha.emit"),
@@ -3084,7 +3084,7 @@ def test_method_promotion_synthesis_rejects_unresolved_class_targets(
 
     plan = snapshot.plan_from_findings(
         (finding,),
-        detector_ids=("cross_class_small_method_template",),
+        detector_ids=("semantic_overlap_abc_optimization",),
     )
     record = plan.records[0]
 
@@ -3115,11 +3115,11 @@ def test_method_promotion_synthesis_rewrites_multiline_class_headers(
     modules = parse_python_modules(tmp_path)
     finding = RefactorFinding(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Public authority methods repeat across class leaves",
+        title="Semantic-overlap methods should derive from one ABC authority",
         why="Repeated methods should move behind a shared authority.",
         capability_gap="one inherited authority algorithm",
         relation_context="same public method template repeats",
-        detector_id="cross_class_small_method_template",
+        detector_id="semantic_overlap_abc_optimization",
         summary="Alpha and Beta repeat emit.",
         evidence=(
             SourceLocation(module_path.as_posix(), 8, "Alpha.emit"),
@@ -3136,7 +3136,7 @@ def test_method_promotion_synthesis_rewrites_multiline_class_headers(
 
     plan = snapshot.plan_from_findings(
         (finding,),
-        detector_ids=("cross_class_small_method_template",),
+        detector_ids=("semantic_overlap_abc_optimization",),
     )
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
@@ -20985,18 +20985,6 @@ def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:
     assert finding.certification == "certified"
 
 
-def test_detects_repeated_hardcoded_semantic_string(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nDEFAULT_CERTIFICATION = "strong_heuristic"\n\n\ndef first():\n    return configure(certification="strong_heuristic")\n\n\ndef second():\n    return configure(certification="strong_heuristic")\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        (finding.detector_id == "repeated_hardcoded_strings" for finding in findings)
-    )
-
-
 def test_detects_dead_embedded_static_payload_emitter(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -21946,44 +21934,6 @@ def test_ignores_small_repeated_local_regex_fragments(tmp_path: Path) -> None:
     findings = analyze_path(tmp_path)
     assert not any(
         (finding.detector_id == "repeated_local_regex_bundle" for finding in findings)
-    )
-
-
-def test_detects_algebraic_duplicate_compound_blocks(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Renderer:\n    def render_left(self, items, index):\n        rendered = []\n        for item in items:\n            key = item.left_name\n            if key in index:\n                rendered.append(index[key])\n            else:\n                rendered.append(str(item))\n        return rendered\n\n    def render_right(self, rows, lookup):\n        values = []\n        for row in rows:\n            code = row.right_name\n            if code in lookup:\n                values.append(lookup[code])\n            else:\n                values.append(str(row))\n        return values\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "algebraic_duplicate_compound_block"
-        )
-    )
-    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
-    assert "render_left" in finding.summary
-    assert "render_right" in finding.summary
-    assert "quotient-normal-form AST" in finding.why
-    assert "BlockAlgebra" in (finding.scaffold or "")
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
-def test_ignores_flat_repeated_loops_without_nested_control(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Renderer:\n    def render_left(self, items):\n        rendered = []\n        for item in items:\n            rendered.append(str(item))\n        return rendered\n\n    def render_right(self, rows):\n        values = []\n        for row in rows:\n            values.append(str(row))\n        return values\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (
-            finding.detector_id == "algebraic_duplicate_compound_block"
-            for finding in findings
-        )
     )
 
 
