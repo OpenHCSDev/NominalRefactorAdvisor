@@ -2963,9 +2963,7 @@ class OptionalStringPayloadValueCodec(DefaultedStringPayloadValueCodec):
 
 @dataclass(frozen=True)
 class StringArrayPayloadValueCodec(PayloadValueCodec[tuple[str, ...]]):
-    """Array-of-string payload semantics."""
-
-    is_required: bool = True
+    """Required array-of-string payload semantics."""
 
     def read(
         self,
@@ -2973,9 +2971,7 @@ class StringArrayPayloadValueCodec(PayloadValueCodec[tuple[str, ...]]):
         field_name: str,
     ) -> tuple[str, ...]:
         if field_name not in payload or payload[field_name] is None:
-            if self.is_required:
-                raise ValueError(f"Expected string array field {field_name!r}")
-            return ()
+            raise ValueError(f"Expected string array field {field_name!r}")
         value = payload[field_name]
         if not isinstance(value, (list, tuple)) or not all(
             isinstance(item, str) for item in value
@@ -2989,6 +2985,20 @@ class StringArrayPayloadValueCodec(PayloadValueCodec[tuple[str, ...]]):
         ):
             raise TypeError("string-array payload codec requires string values")
         return tuple(value)
+
+
+@dataclass(frozen=True)
+class OptionalStringArrayPayloadValueCodec(StringArrayPayloadValueCodec):
+    """Array-of-string payload semantics with an empty missing-field value."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[str, ...]:
+        if field_name not in payload or payload[field_name] is None:
+            return ()
+        return super().read(payload, field_name)
 
 
 @dataclass(frozen=True)
@@ -3019,8 +3029,6 @@ class BooleanPayloadValueCodec(PayloadValueCodec[bool]):
 class IntegerPayloadValueCodec(PayloadValueCodec[int | None]):
     """Optional non-negative integer payload semantics."""
 
-    is_required: bool = False
-
     def read(
         self,
         payload: Mapping[str, JsonValue],
@@ -3028,8 +3036,6 @@ class IntegerPayloadValueCodec(PayloadValueCodec[int | None]):
     ) -> int | None:
         value = payload.get(field_name)
         if value is None:
-            if self.is_required:
-                raise ValueError(f"Expected non-negative integer field {field_name!r}")
             return None
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"Expected non-negative integer field {field_name!r}")
@@ -3037,10 +3043,6 @@ class IntegerPayloadValueCodec(PayloadValueCodec[int | None]):
 
     def serialize(self, value: object) -> JsonValue:
         if value is None:
-            if self.is_required:
-                raise TypeError(
-                    "required integer payload codec requires a non-negative integer"
-                )
             return None
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise TypeError("integer payload codec requires a non-negative integer")
@@ -3068,10 +3070,8 @@ class ObjectPayloadValueCodec(PayloadValueCodec[Mapping[str, JsonValue]]):
 
 
 @dataclass(frozen=True)
-class NodeKindArrayPayloadValueCodec(StringArrayPayloadValueCodec):
+class NodeKindArrayPayloadValueCodec(OptionalStringArrayPayloadValueCodec):
     """AST target-node kind array payload semantics."""
-
-    is_required: bool = False
 
     def read(
         self,
@@ -3141,9 +3141,7 @@ class SelectorArrayPayloadValueCodec(
 class OperationTemplateArrayPayloadValueCodec(
     PayloadValueCodec[tuple["RefactorRecipeOperationTemplate", ...]]
 ):
-    """Selected-target operation-template array semantics."""
-
-    is_required: bool = True
+    """Required selected-target operation-template array semantics."""
 
     def read(
         self,
@@ -3151,8 +3149,6 @@ class OperationTemplateArrayPayloadValueCodec(
         field_name: str,
     ) -> tuple["RefactorRecipeOperationTemplate", ...]:
         value = payload.get(field_name)
-        if value is None and not self.is_required:
-            return ()
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"Expected operation-template array field {field_name!r}")
         return tuple(
@@ -3167,6 +3163,22 @@ class OperationTemplateArrayPayloadValueCodec(
                 "operation-template payload codec requires operation templates"
             )
         return tuple(item.to_dict() for item in value)
+
+
+@dataclass(frozen=True)
+class OptionalOperationTemplateArrayPayloadValueCodec(
+    OperationTemplateArrayPayloadValueCodec
+):
+    """Operation-template array semantics with an empty missing-field value."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple["RefactorRecipeOperationTemplate", ...]:
+        if field_name not in payload or payload[field_name] is None:
+            return ()
+        return super().read(payload, field_name)
 
 
 @dataclass(frozen=True)
@@ -3476,7 +3488,7 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
     finding_ids: tuple[str, ...]
     payload_bindings: ClassVar[SelectorPayloadBindings] = (
         PayloadBindingSet.from_field_codecs(
-            finding_ids=StringArrayPayloadValueCodec(is_required=False),
+            finding_ids=OptionalStringArrayPayloadValueCodec(),
         )
     )
 
@@ -3557,11 +3569,11 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
     payload_bindings: ClassVar[SelectorPayloadBindings] = (
         PayloadBindingSet.from_field_codecs(
             node_kinds=NodeKindArrayPayloadValueCodec(),
-            file_paths=StringArrayPayloadValueCodec(is_required=False),
-            qualnames=StringArrayPayloadValueCodec(is_required=False),
-            file_path_patterns=StringArrayPayloadValueCodec(is_required=False),
-            name_patterns=StringArrayPayloadValueCodec(is_required=False),
-            qualname_patterns=StringArrayPayloadValueCodec(is_required=False),
+            file_paths=OptionalStringArrayPayloadValueCodec(),
+            qualnames=OptionalStringArrayPayloadValueCodec(),
+            file_path_patterns=OptionalStringArrayPayloadValueCodec(),
+            name_patterns=OptionalStringArrayPayloadValueCodec(),
+            qualname_patterns=OptionalStringArrayPayloadValueCodec(),
         )
     )
 
@@ -3622,7 +3634,7 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
     include_descendants: bool = False
     payload_bindings: ClassVar[SelectorPayloadBindings] = (
         PayloadBindingSet.from_field_codecs(
-            class_symbols=StringArrayPayloadValueCodec(is_required=False),
+            class_symbols=OptionalStringArrayPayloadValueCodec(),
             include_self=BooleanPayloadValueCodec(declared_default=True),
             include_ancestors=BooleanPayloadValueCodec(),
             include_descendants=BooleanPayloadValueCodec(),
@@ -3672,8 +3684,8 @@ class InheritanceEdgeTargetSelector(CodemodTargetSelector):
     include_children: bool = True
     payload_bindings: ClassVar[SelectorPayloadBindings] = (
         PayloadBindingSet.from_field_codecs(
-            parent_symbols=StringArrayPayloadValueCodec(is_required=False),
-            child_symbols=StringArrayPayloadValueCodec(is_required=False),
+            parent_symbols=OptionalStringArrayPayloadValueCodec(),
+            child_symbols=OptionalStringArrayPayloadValueCodec(),
             include_parents=BooleanPayloadValueCodec(declared_default=True),
             include_children=BooleanPayloadValueCodec(declared_default=True),
         )
@@ -3744,7 +3756,7 @@ class CallSiteTargetSelector(CodemodTargetSelector):
     callee_names: tuple[str, ...]
     payload_bindings: ClassVar[SelectorPayloadBindings] = (
         PayloadBindingSet.from_field_codecs(
-            callee_names=StringArrayPayloadValueCodec(is_required=False),
+            callee_names=OptionalStringArrayPayloadValueCodec(),
         )
     )
 
@@ -4334,9 +4346,7 @@ class RefactorRecipeOperationPlanTemplate:
             DefaultedStringPayloadValueCodec(default_reason)
         ),
         setup_operations=SetupOperationArrayPayloadValueCodec(),
-        operation_templates=OperationTemplateArrayPayloadValueCodec(
-            is_required=False
-        ),
+        operation_templates=OptionalOperationTemplateArrayPayloadValueCodec(),
     )
 
     @classmethod
@@ -6865,11 +6875,9 @@ class ExtractMethodsToClassOperation(
                 StringArrayPayloadValueCodec(),
             ),
         ) + PayloadBindingSet.from_field_codecs(
-            field_declaration_sources=StringArrayPayloadValueCodec(
-                is_required=False
-            ),
-            class_base_names=StringArrayPayloadValueCodec(is_required=False),
-            class_decorator_sources=StringArrayPayloadValueCodec(is_required=False),
+            field_declaration_sources=OptionalStringArrayPayloadValueCodec(),
+            class_base_names=OptionalStringArrayPayloadValueCodec(),
+            class_decorator_sources=OptionalStringArrayPayloadValueCodec(),
         )
 
     def source_edits_for_target_node(
@@ -7226,11 +7234,9 @@ class CollapseFieldsToCarrierOperation(
             carrier_name=RequiredStringPayloadValueCodec(),
             class_names=StringArrayPayloadValueCodec(),
             field_declaration_sources=StringArrayPayloadValueCodec(),
-            carrier_base_names=StringArrayPayloadValueCodec(is_required=False),
-            carrier_dataclass_arguments=StringArrayPayloadValueCodec(
-                is_required=False
-            ),
-            inherited_field_names=StringArrayPayloadValueCodec(is_required=False),
+            carrier_base_names=OptionalStringArrayPayloadValueCodec(),
+            carrier_dataclass_arguments=OptionalStringArrayPayloadValueCodec(),
+            inherited_field_names=OptionalStringArrayPayloadValueCodec(),
             insert_carrier=BooleanPayloadValueCodec(declared_default=True),
         )
 
@@ -7358,10 +7364,8 @@ class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
         return PayloadBindingSet.from_field_codecs(
             class_name=RequiredStringPayloadValueCodec(),
             field_projection_pairs=StringArrayPayloadValueCodec(),
-            constructor_names=StringArrayPayloadValueCodec(is_required=False),
-            attribute_owner_expressions=StringArrayPayloadValueCodec(
-                is_required=False
-            ),
+            constructor_names=OptionalStringArrayPayloadValueCodec(),
+            attribute_owner_expressions=OptionalStringArrayPayloadValueCodec(),
         )
 
     @property
@@ -10040,9 +10044,7 @@ class ExposeGlobalCandidateCacheContextOperation(
                 WholeModuleCandidateCollectorScopeSource.scope_key,
             ),
             candidate_collector_uses_config=BooleanPayloadValueCodec(),
-            candidate_item_sort_attributes=StringArrayPayloadValueCodec(
-                is_required=False
-            ),
+            candidate_item_sort_attributes=OptionalStringArrayPayloadValueCodec(),
         ) + PayloadBindingSet.from_explicit_fields(
             (
                 BASE_NAME_PAYLOAD_FIELD,

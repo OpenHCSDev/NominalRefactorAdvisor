@@ -15,6 +15,8 @@ from nominal_refactor_advisor.codemod import (
     MovedSymbolImportPolicy,
     NodeKindArrayPayloadValueCodec,
     ObjectPayloadValueCodec,
+    OptionalOperationTemplateArrayPayloadValueCodec,
+    OptionalStringArrayPayloadValueCodec,
     OperationTemplateArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadBindingSet,
@@ -146,8 +148,7 @@ def test_operation_plan_template_bindings_round_trip_the_complete_schema() -> No
 def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
     with pytest.raises(ValueError, match="non-empty string"):
         RequiredStringPayloadValueCodec().read({}, "name")
-    with pytest.raises(TypeError, match="required integer"):
-        IntegerPayloadValueCodec(is_required=True).serialize(None)
+    assert IntegerPayloadValueCodec().serialize(None) is None
     with pytest.raises(TypeError, match="MovedSymbolImportPolicy"):
         ReplacementImportPayloadValueCodec().serialize("from pkg import value")
     with pytest.raises(ValueError, match="Unsupported operation plan template field"):
@@ -172,3 +173,15 @@ def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:
 
     with pytest.raises(ValueError, match="non-empty string"):
         DefaultedStringPayloadValueCodec("default").read({"name": ""}, "name")
+
+
+def test_optional_array_codec_leaves_own_missing_value_semantics() -> None:
+    assert OptionalStringArrayPayloadValueCodec().read({}, "names") == ()
+    assert OptionalOperationTemplateArrayPayloadValueCodec().read(
+        {}, "operations"
+    ) == ()
+
+    with pytest.raises(ValueError, match="string array"):
+        StringArrayPayloadValueCodec().read({}, "names")
+    with pytest.raises(ValueError, match="operation-template array"):
+        OperationTemplateArrayPayloadValueCodec().read({}, "operations")
