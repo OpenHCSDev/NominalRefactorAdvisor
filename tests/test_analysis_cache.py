@@ -3011,25 +3011,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         )
 
 
-def test_custom_empty_report_demands_reject_context_promotion() -> None:
-    config = DetectorConfig()
-    support_family = systemic_detectors.PublicBareSupportModuleProjectionFamily
-    support_projection = systemic_detectors.PublicBareSupportModuleProjection(
-        file_path="target.py",
-        module_role=None,
-        definitions=(),
-        reference_counts=(),
-    )
-
-    assert not systemic_detectors.PublicBareSupportFunctionDetector.compact_report_context_can_promote(
-        {support_family: (support_projection,)},
-        config,
-    )
-    assert support_family.report_demand_includes_context(
-        systemic_detectors.PublicBareSupportProjectionDemand(
-            function_names=frozenset({"support_value"})
-        )
-    )
 
 
 def test_class_demand_omits_unreportable_autoregister_reference_graph(
@@ -3104,29 +3085,6 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
     assert positive_demand.include_autoregister_references is True
 
 
-def test_public_bare_support_empty_demand_skips_context_collection(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    source_path = package_root / "_support.py"
-    source = "def reusable_helper(value):\n    return value\n"
-    source_path.write_text(source, encoding="utf-8")
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    demand = systemic_detectors.PublicBareSupportProjectionDemand(
-        function_names=frozenset()
-    )
-    family = systemic_detectors.PublicBareSupportModuleProjectionFamily
-
-    assert family.collect_demanded(parsed_module, demand) == []
-    assert (
-        family.collect_demanded_source(
-            SourceModule(source_path, "_support", source),
-            NativePythonSyntaxIndex.from_source(source),
-            demand,
-        )
-        == []
-    )
 
 
 def test_native_definition_headers_preserve_decorators_lines_and_full_span() -> None:
@@ -4223,74 +4181,6 @@ def test_compact_private_reference_detectors_preserve_semantics_without_ast_shad
         assert not hasattr(runtime_detectors, removed_name)
 
 
-def test_compact_public_support_projection_preserves_semantics_without_ast_shadow(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "_helpers.py").write_text(
-        "def parameter_names(function):\n"
-        "    return tuple(function.args)\n"
-        "\n"
-        "def enum_member_ref(node):\n"
-        "    return node.name, node.value\n",
-        encoding="utf-8",
-    )
-    (package_root / "runtime.py").write_text(
-        "from pkg._helpers import parameter_names\n"
-        "\n"
-        "def consume(function):\n"
-        "    return parameter_names(function)\n",
-        encoding="utf-8",
-    )
-    detector_type = systemic_detectors.PublicBareSupportFunctionDetector
-    config = DetectorConfig()
-    modules = parse_python_modules(package_root, use_parse_cache=False)
-    detector = detector_type()
-    projections = type(detector).compact_module_projections(modules)
-    candidates = systemic_detectors._public_bare_support_function_candidates_from_projections(
-        projections
-    )
-    assert len(candidates) == 1
-    assert candidates[0].function_names == ("enum_member_ref", "parameter_names")
-    assert candidates[0].external_reference_count == 1
-    assert detector._candidate_items(modules, config) == candidates
-    assert not hasattr(
-        systemic_detectors,
-        "_public_bare_support_function_candidates",
-    )
-    assert "candidate_collector" not in detector_type.__dict__
-    projected_findings = accumulate_compact_global_projections_for_roots(
-        (package_root,),
-        (detector_type,),
-        use_parse_cache=False,
-    ).findings_by_detector(config)[detector_type]
-
-    assert projected_findings == detector._findings_for_candidates(candidates, config)
-    target_path = package_root / "_helpers.py"
-    report_scope = AnalysisPathScope(
-        analysis_roots=(package_root,), report_roots=(target_path,)
-    )
-    family = type(detector).module_projection_family
-    target_projections = tuple(
-        projection
-        for projection in projections
-        if projection.file_path == str(target_path)
-    )
-    demand = family.report_demand(target_projections, config)
-    demanded_projections = target_projections + family.project_cached_demand(
-        tuple(
-            projection
-            for projection in projections
-            if projection not in target_projections
-        ),
-        demand,
-    )
-    assert report_scope.filter_findings(
-        detector._findings_from_compact_projections(demanded_projections, config)
-    ) == report_scope.filter_findings(
-        detector._findings_from_compact_projections(projections, config)
-    )
 
 
 def test_compact_flattened_candidate_projections_match_full_ast_detection(
@@ -6370,71 +6260,6 @@ def test_carrier_reuse_detectors_share_one_compact_context(
     assert calls == 1
 
 
-def _write_compact_private_helper_cluster_fixture(package_root: Path) -> None:
-    package_root.mkdir()
-    (package_root / "helpers.py").write_text(
-        "def _class_field_names(node):\n"
-        "    names = []\n"
-        "    for item in node.body:\n"
-        "        if isinstance(item, AnnAssign):\n"
-        "            names.append(item.target)\n"
-        "    return tuple(names)\n\n"
-        "def _class_method_names(node):\n"
-        "    names = []\n"
-        "    for item in node.body:\n"
-        "        if isinstance(item, FunctionDef):\n"
-        "            names.append(item.name)\n"
-        "    return tuple(names)\n\n"
-        "def _class_base_names(node):\n"
-        "    names = []\n"
-        "    for item in node.bases:\n"
-        "        if isinstance(item, Name):\n"
-        "            names.append(item.id)\n"
-        "    return tuple(names)\n\n"
-        "def _class_decorator_names(node):\n"
-        "    names = []\n"
-        "    for item in node.decorator_list:\n"
-        "        if isinstance(item, Name):\n"
-        "            names.append(item.id)\n"
-        "    return tuple(names)\n",
-        encoding="utf-8",
-    )
-    (package_root / "consumer.py").write_text(
-        "def inspect_fields(node):\n    return _class_field_names(node)\n",
-        encoding="utf-8",
-    )
-
-
-
-def test_compact_private_helper_cluster_preserves_semantics_without_ast_shadow(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    _write_compact_private_helper_cluster_fixture(package_root)
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    detector = runtime_detectors.PrivateHelperSemanticClusterDetector()
-    projections = type(detector).compact_module_projections(modules)
-    compact_candidates = (
-        runtime_detectors._compact_private_helper_semantic_cluster_candidates(
-            projections,
-            config,
-        )
-    )
-    assert compact_candidates
-    assert "inspect_fields" in compact_candidates[0].consumer_symbols
-    assert detector._candidate_items(list(modules), config) == compact_candidates
-    assert detector._findings_from_compact_projections(
-        projections,
-        config,
-    ) == [detector._finding_for_candidate(candidate) for candidate in compact_candidates]
-    assert not hasattr(
-        runtime_detectors,
-        "_private_helper_semantic_cluster_candidates",
-    )
-    assert "_candidate_items_for_private_reference_context" not in type(
-        detector
-    ).__dict__
 
 
 def test_compact_boundary_wrapper_graph_preserves_semantics_without_ast_shadow(
@@ -6999,9 +6824,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert environment_detectors.EnvironmentBooleanAuthorityDriftDetector in (
         partition.compact_global_detector_types
     )
-    assert systemic_detectors.PublicBareSupportFunctionDetector in (
-        partition.compact_global_detector_types
-    )
     assert systemic_detectors.ParallelKeyedAxisFamilyDetector in (
         partition.compact_global_detector_types
     )
@@ -7092,9 +6914,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector in (
         partition.compact_global_detector_types
     )
-    assert runtime_detectors.PrivateHelperSemanticClusterDetector in (
-        partition.compact_global_detector_types
-    )
     assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
         partition.compact_global_detector_types
     )
@@ -7134,7 +6953,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 60
+    assert len(partition.compact_global_detector_types) == 58
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

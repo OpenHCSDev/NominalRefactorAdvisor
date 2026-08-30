@@ -11904,17 +11904,6 @@ class UnderAmortizedInfrastructureCandidate(LineWitnessCandidate):
         return ", ".join(self.declaration_names[:4])
 
 
-@dataclass(frozen=True)
-class PublicBareSupportFunctionCandidate(LineWitnessCandidate):
-    function_names: tuple[str, ...]
-    module_role: str
-    semantic_family: str
-    recommended_owner: str
-    external_reference_count: int
-
-    @property
-    def witness_name(self) -> str:
-        return ", ".join(self.function_names[:4])
 
 
 @dataclass(frozen=True)

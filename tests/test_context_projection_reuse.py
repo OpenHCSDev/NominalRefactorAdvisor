@@ -369,7 +369,3 @@ def test_empty_derived_contract_projection_is_not_recomputed(
         private_projections,
         DetectorConfig(),
     )
-    runtime_detectors._compact_private_helper_semantic_cluster_candidates(
-        private_projections,
-        DetectorConfig(),
-    )

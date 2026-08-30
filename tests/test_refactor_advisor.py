@@ -8731,33 +8731,6 @@ def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
 
 
 
-def test_detects_public_bare_support_functions_in_private_modules(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/_helpers.py",
-        "\ndef parameter_names(function):\n    return tuple(function.args)\n\n\ndef enum_member_ref(node):\n    return node.name, node.value\n\n\nclass WidgetProjection:\n    def project(self, node):\n        return enum_member_ref(node)\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/runtime.py",
-        "\nfrom pkg._helpers import parameter_names\n\n\ndef consume(function):\n    return parameter_names(function)\n",
-    )
-
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "public_bare_support_function"
-    ]
-    summaries = "\n".join((finding.summary for finding in findings))
-
-    assert "parameter_names" in summaries
-    assert "enum_member_ref" in summaries
-    assert any("semantic family" in finding.summary for finding in findings)
-    assert any("nominal owner" in (finding.codemod_patch or "") for finding in findings)
-
-
 def test_detects_latent_nominal_function_family_without_name_axis(
     tmp_path: Path,
 ) -> None:
@@ -20832,26 +20805,6 @@ def test_detects_public_api_private_delegate_shell(
         and "route_scoring" in finding.summary
         for finding in findings
     )
-def test_detects_private_helper_semantic_cluster(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/_helpers.py",
-        "\ndef _class_field_names(node):\n    names = []\n    for item in node.body:\n        if isinstance(item, AnnAssign):\n            names.append(item.target)\n    return tuple(names)\n\n\ndef _class_method_names(node):\n    names = []\n    for item in node.body:\n        if isinstance(item, FunctionDef):\n            names.append(item.name)\n    return tuple(names)\n\n\ndef _class_base_names(node):\n    names = []\n    for item in node.bases:\n        if isinstance(item, Name):\n            names.append(item.id)\n    return tuple(names)\n\n\ndef _class_decorator_names(node):\n    names = []\n    for item in node.decorator_list:\n        if isinstance(item, Name):\n            names.append(item.id)\n    return tuple(names)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "private_helper_semantic_cluster"
-        )
-    )
-    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
-    assert "ClassProjection" in finding.summary
-    assert "collection_projection" in finding.summary
-    assert "certified_savings" in finding.summary
-    assert "_class_field_names" in finding.summary
-    assert "Do not fix" in (finding.codemod_patch or "")
-    assert "Rent proof" in (finding.codemod_patch or "")
 
 
 def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarations(
@@ -20875,7 +20828,6 @@ def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarat
         for detector_type in (
             runtime_detectors.DanglingPrivateMethodDetector,
             runtime_detectors.DeadEmbeddedStaticPayloadDetector,
-            runtime_detectors.PrivateHelperSemanticClusterDetector,
             runtime_detectors.UnreferencedPrivateFunctionDetector,
         )
     }
@@ -20894,7 +20846,6 @@ def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarat
         for detector_type in (
             runtime_detectors.DanglingPrivateMethodDetector,
             runtime_detectors.DeadEmbeddedStaticPayloadDetector,
-            runtime_detectors.PrivateHelperSemanticClusterDetector,
             runtime_detectors.UnreferencedPrivateFunctionDetector,
         )
     }

@@ -7210,29 +7210,6 @@ class DanglingPrivateMethodCandidate(CallCountedQualnameCandidate):
     method_name: str
 
 
-@dataclass(frozen=True)
-class PrivateHelperClusterClassification:
-    owner_name: str
-    cluster_normal_form: str
-    shared_stem: str
-    classification_role_tokens: tuple[str, ...]
-    return_kinds: tuple[str, ...]
-    constructed_type_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class PrivateHelperSemanticClusterCandidate(LineCountedWitnessCandidate):
-    helper_names: tuple[str, ...]
-    semantic_family: str
-    classification: PrivateHelperClusterClassification
-    shared_parameter_names: tuple[str, ...]
-    shared_call_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    cluster_size: int
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "helper_names")
-    )
 
 
 class DerivedCandidateCollectorContracts:
@@ -7336,10 +7313,6 @@ class CompactPrivateFunctionFact:
     is_detector_override_hook: bool
     static_payload_stats: StaticPayloadStats
     sink_kinds: tuple[str, ...]
-    parameter_names: tuple[str, ...] = ()
-    private_helper_callee_names: tuple[str, ...] = ()
-    private_helper_return_kinds: tuple[str, ...] = ()
-    private_helper_constructed_type_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -7349,7 +7322,6 @@ class CompactPrivateReferenceModuleProjection:
     total_counts: tuple[tuple[str, int], ...]
     derived_candidate_collector_contract_names: tuple[str, ...]
     functions: tuple[CompactPrivateFunctionFact, ...]
-    caller_symbols_by_private_name: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 class CompactPrivateReferenceModuleProjectionFamily(
@@ -7377,15 +7349,9 @@ class CompactPrivateReferenceModuleProjectionFamily(
         del cls
         module_index = PrivateReferenceModuleIndex.from_module(parsed_module)
         functions: list[CompactPrivateFunctionFact] = []
-        caller_symbols_by_private_name: dict[str, set[str]] = defaultdict(set)
         for indexed_function in module_index.functions:
             function = indexed_function.function
             body_nodes = _walk_function_body_nodes(function)
-            for symbol_name in indexed_function.symbol_references:
-                if _is_private_symbol_name(symbol_name):
-                    caller_symbols_by_private_name[symbol_name].add(
-                        indexed_function.qualname
-                    )
             if not _is_private_symbol_name(function.name):
                 continue
             owner_name = (
@@ -7418,45 +7384,6 @@ class CompactPrivateReferenceModuleProjectionFamily(
                     ),
                     static_payload_stats=_static_payload_stats(function),
                     sink_kinds=_static_payload_sink_kinds(function),
-                    parameter_names=FUNCTION_PARAMETER_NAME_PROJECTION.names(function),
-                    private_helper_callee_names=sorted_tuple(
-                        {
-                            call_name
-                            for node in body_nodes
-                            if isinstance(node, ast.Call)
-                            for call_name in (_call_name(node.func),)
-                            if call_name is not None and not call_name.startswith("_")
-                        }
-                    ),
-                    private_helper_return_kinds=sorted_tuple(
-                        {
-                            _private_helper_return_kind(node.value)
-                            for node in body_nodes
-                            if isinstance(node, ast.Return)
-                        }
-                    ),
-                    private_helper_constructed_type_names=sorted_tuple(
-                        {
-                            call_name
-                            for node in body_nodes
-                            if isinstance(node, ast.Call)
-                            for call_name in (_call_name(node.func),)
-                            if call_name is not None
-                            and call_name.endswith(
-                                (
-                                    "Candidate",
-                                    "Finding",
-                                    "Metrics",
-                                    "Observation",
-                                    "Plan",
-                                    "Profile",
-                                    "Shape",
-                                    "Spec",
-                                    "Witness",
-                                )
-                            )
-                        }
-                    ),
                 )
             )
         return [
@@ -7475,12 +7402,6 @@ class CompactPrivateReferenceModuleProjectionFamily(
                     )
                 ),
                 functions=tuple(functions),
-                caller_symbols_by_private_name=tuple(
-                    (symbol_name, sorted_tuple(caller_symbols))
-                    for symbol_name, caller_symbols in sorted(
-                        caller_symbols_by_private_name.items()
-                    )
-                ),
             )
         ]
 
@@ -7584,23 +7505,6 @@ def _compact_dangling_private_method_candidates(
     )
 
 
-class FunctionParameterNameProjection:
-    def names(
-        self, function: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> tuple[str, ...]:
-        return tuple(
-            (
-                argument.arg
-                for argument in (
-                    *function.args.posonlyargs,
-                    *function.args.args,
-                    *function.args.kwonlyargs,
-                )
-            )
-        )
-
-
-FUNCTION_PARAMETER_NAME_PROJECTION = FunctionParameterNameProjection()
 
 
 
@@ -7660,359 +7564,6 @@ class DeadEmbeddedStaticPayloadDetector(
         )
 
 
-_PRIVATE_HELPER_AUTHORITY_VERB_TOKENS = frozenset(
-    {
-        "as",
-        "build",
-        "candidate",
-        "candidates",
-        "collect",
-        "compute",
-        "derive",
-        "derived",
-        "detect",
-        "find",
-        "for",
-        "from",
-        "get",
-        "has",
-        "is",
-        "iter",
-        "make",
-        "to",
-    }
-)
-def _private_helper_name_tokens(function_name: str) -> tuple[str, ...]:
-    return tuple(
-        token
-        for token in function_name.removeprefix("_").split("_")
-        if token and token not in _PRIVATE_HELPER_AUTHORITY_VERB_TOKENS
-    )
-
-
-def _private_helper_pascal_name(tokens: tuple[str, ...], fallback: str) -> str:
-    if not tokens:
-        return fallback
-    return "".join(token.capitalize() for token in tokens)
-
-
-def _shared_private_helper_stem_from_names(
-    function_names: tuple[str, ...],
-) -> tuple[str, ...]:
-    token_lists = tuple(
-        _private_helper_name_tokens(function_name) for function_name in function_names
-    )
-    if not token_lists:
-        return ()
-    shared: list[str] = []
-    for token_column in zip(*token_lists):
-        if len(set(token_column)) != 1:
-            break
-        shared.append(token_column[0])
-    return tuple(shared)
-
-
-_PRIVATE_HELPER_OWNER_RESIDUE_TOKENS = frozenset(
-    (
-        "api",
-        "body",
-        "candidate",
-        "candidates",
-        "expression",
-        "for",
-        "from",
-        "function",
-        "names",
-        "public",
-        "return",
-        "returns",
-        "strategy",
-        "surface",
-    )
-)
-
-
-def _dominant_private_helper_role_tokens_from_names(
-    function_names: tuple[str, ...],
-    stem_tokens: tuple[str, ...],
-) -> tuple[str, ...]:
-    token_lists = tuple(
-        _private_helper_name_tokens(function_name) for function_name in function_names
-    )
-    threshold = max(2, (len(token_lists) + 1) // 2)
-    stem_set = frozenset(stem_tokens)
-    ordered_tokens = tuple(
-        dict.fromkeys((token for tokens in token_lists for token in tokens))
-    )
-    return tuple(
-        token
-        for token in ordered_tokens
-        if token not in stem_set
-        and token not in _PRIVATE_HELPER_OWNER_RESIDUE_TOKENS
-        and sum((token in tokens for tokens in token_lists)) >= threshold
-    )
-
-
-def _private_helper_cluster_family(function_name: str) -> tuple[str, str]:
-    return PUBLIC_BARE_SUPPORT_FUNCTION_FAMILY_AUTHORITY.family(
-        function_name.lstrip("_")
-    )
-
-
-def _private_helper_cluster_key(function_name: str) -> tuple[str, str, str]:
-    semantic_family, recommended_owner = _private_helper_cluster_family(function_name)
-    tokens = _private_helper_name_tokens(function_name)
-    role_token = tokens[0] if tokens else function_name.removeprefix("_")
-    return semantic_family, recommended_owner, role_token
-
-
-def _private_helper_return_kind(node: ast.AST | None) -> str:
-    if node is None:
-        return "none"
-    if isinstance(node, ast.Call):
-        return _call_name(node.func) or "call"
-    if isinstance(node, ast.Tuple):
-        return "tuple_literal"
-    if isinstance(node, ast.List):
-        return "list_literal"
-    if isinstance(node, ast.Dict):
-        return "dict_literal"
-    if isinstance(node, ast.Set):
-        return "set_literal"
-    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return type(node).__name__
-    if isinstance(node, ast.Constant):
-        return type(node.value).__name__
-    if isinstance(node, ast.Name):
-        return "name"
-    if isinstance(node, ast.Attribute):
-        return "attribute"
-    return type(node).__name__
-
-
-def _private_helper_cluster_normal_form(
-    *,
-    semantic_tokens: tuple[str, ...],
-    return_kinds: tuple[str, ...],
-    constructed_type_names: tuple[str, ...],
-    shared_call_names: tuple[str, ...],
-) -> str:
-    stem = "_".join(semantic_tokens)
-    if "manifest" in semantic_tokens or {"TypeError", "isinstance"} <= set(
-        shared_call_names
-    ):
-        return "typed_decoder"
-    if "pattern" in semantic_tokens:
-        return "catalog_schema"
-    if "traversal" in semantic_tokens or "subclass" in semantic_tokens:
-        return "traversal_profile"
-    if "guard" in semantic_tokens or "validator" in semantic_tokens:
-        return "candidate_pipeline"
-    if "enum" in semantic_tokens and "dispatch" in semantic_tokens:
-        return "extractor_family"
-    if set(return_kinds) <= {"join", "str", "Constant", "FormattedValue"} or any(
-        token in semantic_tokens for token in ("format", "markdown", "render")
-    ):
-        return "renderer"
-    if constructed_type_names:
-        return "candidate_builder"
-    if stem.endswith("sorted_tuple") or "tuple" in return_kinds:
-        return "collection_projection"
-    if semantic_tokens and (
-        set(return_kinds) <= {"tuple", "tuple_literal", "name", "attribute"}
-    ):
-        return "syntax_projection"
-    return "semantic_authority"
-
-
-def _private_helper_owner_suffix(normal_form: str) -> str:
-    return {
-        "candidate_builder": "Builder",
-        "candidate_pipeline": "Pipeline",
-        "catalog_schema": "Catalog",
-        "collection_projection": "Projection",
-        "extractor_family": "Extractor",
-        "renderer": "Renderer",
-        "semantic_authority": "Authority",
-        "syntax_projection": "Projection",
-        "traversal_profile": "Profile",
-        "typed_decoder": "Decoder",
-    }[normal_form]
-
-
-def _private_helper_cluster_classification_from_summaries(
-    *,
-    function_names: tuple[str, ...],
-    return_kinds: tuple[str, ...],
-    constructed_type_names: tuple[str, ...],
-    shared_call_names: tuple[str, ...],
-) -> PrivateHelperClusterClassification:
-    stem_tokens = _shared_private_helper_stem_from_names(function_names)
-    dominant_role_tokens = _dominant_private_helper_role_tokens_from_names(
-        function_names,
-        stem_tokens,
-    )
-    semantic_tokens = (*stem_tokens, *dominant_role_tokens)
-    normal_form = _private_helper_cluster_normal_form(
-        semantic_tokens=semantic_tokens,
-        return_kinds=return_kinds,
-        constructed_type_names=constructed_type_names,
-        shared_call_names=shared_call_names,
-    )
-    owner_stem = _private_helper_pascal_name(semantic_tokens, "Semantic")
-    suffix = _private_helper_owner_suffix(normal_form)
-    owner_name = owner_stem if owner_stem.endswith(suffix) else f"{owner_stem}{suffix}"
-    role_tokens = sorted_tuple(
-        {
-            token
-            for function_name in function_names
-            for token in _private_helper_name_tokens(function_name)
-            if token not in set(stem_tokens)
-        }
-    )
-    return PrivateHelperClusterClassification(
-        owner_name=owner_name,
-        cluster_normal_form=normal_form,
-        shared_stem="_".join(stem_tokens),
-        classification_role_tokens=role_tokens,
-        return_kinds=return_kinds,
-        constructed_type_names=constructed_type_names,
-    )
-
-
-def _private_helper_cluster_certificate(
-    cluster: PrivateHelperSemanticClusterCandidate,
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=cluster.cluster_size,
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("private_helper_owner",),
-        ),
-        semantic_axes=(
-            *cluster.shared_parameter_names,
-            *cluster.shared_call_names,
-        ),
-        residual_object_count=max(
-            1,
-            (len(cluster.shared_parameter_names) + len(cluster.shared_call_names)) // 2,
-        ),
-    )
-
-
-def _compact_private_helper_caller_symbols_by_name(
-    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
-) -> dict[str, tuple[str, ...]]:
-    callers_by_name: dict[str, set[str]] = defaultdict(set)
-    for projection in projections:
-        for function_name, caller_symbols in projection.caller_symbols_by_private_name:
-            callers_by_name[function_name].update(caller_symbols)
-    return {
-        function_name: sorted_tuple(caller_symbols)
-        for function_name, caller_symbols in callers_by_name.items()
-    }
-
-
-def _compact_private_helper_semantic_cluster_candidates(
-    projections: tuple[CompactPrivateReferenceModuleProjection, ...],
-    config: DetectorConfig,
-) -> tuple[PrivateHelperSemanticClusterCandidate, ...]:
-    contract_names = frozenset(
-        name
-        for projection in projections
-        for name in projection.derived_candidate_collector_contract_names
-    )
-    callers_by_name = _compact_private_helper_caller_symbols_by_name(projections)
-    minimum_cluster_line_count = max(
-        3, config.min_unreferenced_private_function_lines // 2
-    )
-    all_candidates: list[PrivateHelperSemanticClusterCandidate] = []
-    for projection in projections:
-        grouped: dict[tuple[str, str, str], list[CompactPrivateFunctionFact]] = (
-            defaultdict(list)
-        )
-        for function in projection.functions:
-            if function.owner_name is not None:
-                continue
-            if function.has_external_protocol_shape:
-                continue
-            if function.function_name in contract_names:
-                continue
-            if function.line_count < minimum_cluster_line_count:
-                continue
-            grouped[_private_helper_cluster_key(function.function_name)].append(
-                function
-            )
-
-        candidates: list[PrivateHelperSemanticClusterCandidate] = []
-        for (semantic_family, _, _), helpers in sorted(grouped.items()):
-            if len(helpers) < 4:
-                continue
-            parameter_sets = tuple(
-                set(function.parameter_names) for function in helpers
-            )
-            shared_parameter_names = sorted_tuple(set.intersection(*parameter_sets))
-            call_name_sets = tuple(
-                set(function.private_helper_callee_names) for function in helpers
-            )
-            shared_call_names = (
-                sorted_tuple(set.intersection(*call_name_sets))
-                if call_name_sets
-                else ()
-            )
-            consumer_symbols = sorted_tuple(
-                {
-                    caller_symbol
-                    for function in helpers
-                    for caller_symbol in callers_by_name.get(function.function_name, ())
-                    if caller_symbol != function.qualname
-                }
-            )
-            if not (shared_parameter_names or shared_call_names):
-                continue
-            function_names = tuple(function.function_name for function in helpers)
-            classification = _private_helper_cluster_classification_from_summaries(
-                function_names=function_names,
-                return_kinds=sorted_tuple(
-                    {
-                        return_kind
-                        for function in helpers
-                        for return_kind in function.private_helper_return_kinds
-                    }
-                ),
-                constructed_type_names=sorted_tuple(
-                    {
-                        type_name
-                        for function in helpers
-                        for type_name in (
-                            function.private_helper_constructed_type_names
-                        )
-                    }
-                ),
-                shared_call_names=shared_call_names,
-            )
-            line_numbers = tuple(function.line for function in helpers)
-            candidate = PrivateHelperSemanticClusterCandidate(
-                file_path=helpers[0].file_path,
-                line=min(line_numbers),
-                helper_names=sorted_tuple(function_names),
-                semantic_family=semantic_family,
-                classification=classification,
-                shared_parameter_names=shared_parameter_names,
-                shared_call_names=shared_call_names,
-                consumer_symbols=consumer_symbols,
-                line_numbers=line_numbers,
-                line_count=sum(function.line_count for function in helpers),
-                cluster_size=len(helpers),
-            )
-            if _private_helper_cluster_certificate(candidate).pays_rent:
-                candidates.append(candidate)
-        all_candidates.extend(
-            sorted_tuple(
-                candidates,
-                key=lambda item: (item.file_path, item.line, item.semantic_family),
-            )
-        )
-    return tuple(all_candidates)
 
 
 class UnreferencedPrivateFunctionDetector(
@@ -8057,73 +7608,6 @@ class UnreferencedPrivateFunctionDetector(
     )
 
 
-class PrivateHelperSemanticClusterDetector(
-    CompactProjectionCandidateDetector[
-        CompactPrivateReferenceModuleProjection,
-        PrivateHelperSemanticClusterCandidate,
-    ],
-):
-    module_projection_family = CompactPrivateReferenceModuleProjectionFamily
-    finding_spec = high_confidence_spec(
-        PatternId.NOMINAL_INTERFACE_WITNESS,
-        "Private helper cluster should have a semantic owner",
-        "A family of private module helpers with shared parameters, shared callees, or shared consumers is not local residue; it is an unowned semantic algebra. Making the functions private only hides the missing owner. The normal form is a real ABC/template method, effect-step family, descriptor, product/schema algebra, or registered strategy family that owns the invariant once.",
-        "nominal owner for clustered private helper semantics",
-        "private helpers cluster by semantic family without an owning abstraction",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
-        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
-    )
-
-    def _candidates_from_compact_projections(
-        self,
-        projections: tuple[CompactPrivateReferenceModuleProjection, ...],
-        config: DetectorConfig,
-    ) -> Sequence[PrivateHelperSemanticClusterCandidate]:
-        return _compact_private_helper_semantic_cluster_candidates(
-            projections,
-            config,
-        )
-
-    finding_renderer = CandidateFindingRenderer[PrivateHelperSemanticClusterCandidate](
-        summary=lambda cluster: (
-            f"{cluster.cluster_size} private helpers {cluster.helper_names} in "
-            f"`{cluster.semantic_family}` share stem `{cluster.classification.shared_stem}` "
-            f"and normal form `{cluster.classification.cluster_normal_form}`; inferred owner "
-            f"`{cluster.classification.owner_name}`. Roles: {cluster.classification.classification_role_tokens}; "
-            f"returns: {cluster.classification.return_kinds}; constructs: "
-            f"{cluster.classification.constructed_type_names}; consumers: {cluster.consumer_symbols[:6]}. "
-            f"Rent proof: {_private_helper_cluster_certificate(cluster).rent_proof_summary}."
-        ),
-        evidence=lambda cluster: cluster.evidence_locations,
-        scaffold=lambda cluster: (
-            f"class {cluster.classification.owner_name}(ABC):\n"
-            f"    normal_form = {cluster.classification.cluster_normal_form!r}\n"
-            f"    role_tokens = {cluster.classification.classification_role_tokens!r}\n"
-            "    # Put the shared algorithm in concrete ABC methods.\n"
-            "    # Keep only role-specific residue as classvars/properties/hooks.\n"
-            "    ..."
-        ),
-        codemod_patch=lambda cluster: (
-            f"# Do not fix {cluster.helper_names} by renaming or wrapping them.\n"
-            f"# Factor `{cluster.classification.shared_stem}` into `{cluster.classification.owner_name}` "
-            f"as `{cluster.classification.cluster_normal_form}`.\n"
-            f"# Role/residue tokens: {cluster.classification.classification_role_tokens}\n"
-            f"# Return kinds: {cluster.classification.return_kinds}\n"
-            f"# Constructed types: {cluster.classification.constructed_type_names}\n"
-            f"# Shared parameters: {cluster.shared_parameter_names}\n"
-            f"# Shared callees: {cluster.shared_call_names}\n"
-            f"# Rent proof: {_private_helper_cluster_certificate(cluster).rent_proof_summary}\n"
-            "# Insert the owner only where it deletes duplicated helper mechanics; otherwise keep investigating the true invariant."
-        ),
-        compression_certificate=_private_helper_cluster_certificate,
-        metrics=lambda cluster: OrchestrationMetrics(
-            function_line_count=cluster.line_count,
-            branch_site_count=0,
-            call_site_count=len(cluster.consumer_symbols),
-            parameter_count=len(cluster.shared_parameter_names),
-            callee_family_count=max(1, len(cluster.shared_call_names)),
-        ),
-    )
 
 
 class DanglingPrivateMethodDetector(
