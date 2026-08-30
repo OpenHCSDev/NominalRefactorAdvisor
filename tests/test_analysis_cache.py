@@ -2515,7 +2515,7 @@ def test_source_native_projection_shard_skips_python_ast_construction(
                 runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
                 surface_detectors.CompactDistributedBoundaryModuleProjectionFamily,
                 environment_detectors._EnvironmentBooleanModuleProjectionFamily,
-                runtime_detectors.CompactNominalBypassModuleProjectionFamily,
+                runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily,
             ),
             config=DetectorConfig(),
         )
@@ -2529,7 +2529,7 @@ def test_source_native_projection_shard_skips_python_ast_construction(
         (runtime_detectors.RepeatedBuilderCallShapeProjectionFamily, 1),
         (surface_detectors.CompactDistributedBoundaryModuleProjectionFamily, 1),
         (environment_detectors._EnvironmentBooleanModuleProjectionFamily, 1),
-        (runtime_detectors.CompactNominalBypassModuleProjectionFamily, 1),
+        (runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily, 1),
     ]
 
 
@@ -4877,7 +4877,6 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
         systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
         semantic_descent_detectors.SemanticMirrorWithoutDescentDetector,
-        runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector,
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     manifest = analysis_module.BoundedCompactProjectionManifest(detector_types)
@@ -5779,63 +5778,12 @@ def test_compact_boundary_wrapper_graph_preserves_semantics_without_ast_shadow(
     ] == wrapper_detector._findings_for_candidates(compact_wrappers, config)
 
 
-def test_nominal_bypass_ast_demand_skips_context_without_dispatch_facts(
+def test_compact_algebraic_variant_candidates_own_global_analysis(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module_path = tmp_path / "context.py"
-    module_path.write_text(
-        "def unrelated(value):\n    return value + 1\n",
-        encoding="utf-8",
-    )
-    module = parse_python_modules(tmp_path, use_parse_cache=False)[0]
-
-    def unexpected_collection(*_args: object, **_kwargs: object) -> tuple[object, ...]:
-        raise AssertionError("context-only ancillary facets must not be collected")
-
-    monkeypatch.setattr(
-        runtime_detectors,
-        "_cancelable_composition_signals_for_module",
-        unexpected_collection,
-    )
-    monkeypatch.setattr(
-        runtime_detectors,
-        "_variant_method_surfaces",
-        unexpected_collection,
-    )
-
-    actual = (
-        runtime_detectors.CompactNominalBypassModuleProjectionFamily.collect_demanded(
-            module,
-            runtime_detectors.CompactNominalBypassProjectionDemand(),
-        )
-    )
-
-    assert actual == []
-
-
-def test_compact_nominal_bypass_and_variant_candidates_own_global_analysis(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "mod.py").write_text(
-        "from abc import ABC\n\n"
-        "class Payload(ABC):\n"
-        "    pass\n\n"
-        "class AlphaPayload(Payload):\n"
-        "    def render_payload(self, request):\n"
-        "        return PayloadResult(request.left, request.right)\n\n"
-        "class BetaPayload(Payload):\n"
-        "    def render_payload(self, request):\n"
-        "        return PayloadResult(request.left, request.right)\n\n"
-        "def render_payload(value, request):\n"
-        "    if isinstance(value, AlphaPayload):\n"
-        "        return value.render_payload(request)\n"
-        "    if isinstance(value, BetaPayload):\n"
-        "        return value.render_payload(request)\n"
-        "    return None\n\n"
         "class PayloadBuilder:\n"
         "    def build_alpha_payload(self, request):\n"
         "        return PayloadResult(request.left, request.right)\n\n"
@@ -5851,76 +5799,41 @@ def test_compact_nominal_bypass_and_variant_candidates_own_global_analysis(
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
-    bypass_detector = (
-        runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector()
-    )
     variant_detector = runtime_detectors.AlgebraicVariantMethodFamilyDetector()
-    original_normalize = runtime_detectors._normalized_cross_class_method_template
-    normalized_bodies: list[tuple[ast.stmt, ...]] = []
-
-    def tracked_normalize(body: tuple[ast.stmt, ...]) -> tuple[str, ...]:
-        normalized_bodies.append(body)
-        return original_normalize(body)
-
-    monkeypatch.setattr(
-        runtime_detectors,
-        "_normalized_cross_class_method_template",
-        tracked_normalize,
-    )
-    groups = type(bypass_detector).compact_module_projection_groups(modules)
-    assert len(normalized_bodies) == 2
-    monkeypatch.setattr(
-        runtime_detectors,
-        "_normalized_cross_class_method_template",
-        original_normalize,
-    )
-    nominal_projections = groups[
-        runtime_detectors.CompactNominalBypassModuleProjectionFamily
-    ]
+    projections = variant_detector.compact_module_projections(modules)
     source_module = SourceModule(
         path=modules[0].path,
         module_name=modules[0].module_name,
         source=modules[0].source,
     )
-    native_nominal_projections = (
-        runtime_detectors.CompactNominalBypassModuleProjectionFamily.collect_source(
+    native_projections = (
+        runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily.collect_source(
             source_module,
             NativePythonSyntaxIndex.from_source(source_module.source),
         )
     )
-    assert tuple(native_nominal_projections or ()) == nominal_projections
+    assert tuple(native_projections or ()) == projections
 
-    compact_bypass = bypass_detector._candidates_from_compact_projection_groups(
-        groups,
-        config,
-    )
     compact_variants = variant_detector._candidates_from_compact_projections(
-        nominal_projections,
+        projections,
         config,
     )
 
-    assert len(compact_bypass) == 1
     assert len(compact_variants) == 1
-    assert bypass_detector._candidate_items(list(modules), config) == compact_bypass
     assert variant_detector._candidate_items(list(modules), config) == compact_variants
-    assert "candidate_collector" not in type(bypass_detector).__dict__
     assert "candidate_collector" not in type(variant_detector).__dict__
     for removed_name in (
-        "_indexed_classes_for_type_names",
-        "_shared_nominal_base_classes",
+        "ABCPolymorphismBypassedByConcreteDispatchDetector",
+        "CompactNominalBypassProjectionDemand",
+        "_isinstance_family_scatter_candidates",
+        "_cross_class_small_method_template_candidates",
         "CancelableCompositionSignalQuery",
         "_nominal_authority_bypass_candidates",
         "_variant_method_family_candidates",
     ):
         assert not hasattr(runtime_detectors, removed_name)
-    assert bypass_detector._findings_from_compact_projection_groups(
-        groups,
-        config,
-    ) == [
-        bypass_detector._finding_for_candidate(candidate) for candidate in compact_bypass
-    ]
     assert variant_detector._findings_from_compact_projections(
-        nominal_projections,
+        projections,
         config,
     ) == [
         variant_detector._finding_for_candidate(candidate)
@@ -5929,44 +5842,12 @@ def test_compact_nominal_bypass_and_variant_candidates_own_global_analysis(
 
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
-        (type(bypass_detector), type(variant_detector)),
+        (type(variant_detector),),
         use_parse_cache=False,
     )
     findings = accumulator.findings_by_detector(config)
-    assert accumulator.projection_count == 2
-    assert len(findings[type(bypass_detector)]) == 1
+    assert accumulator.projection_count == 1
     assert len(findings[type(variant_detector)]) == 1
-
-
-def test_isinstance_scatter_uses_one_nested_function_attribution_path(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "mod.py").write_text(
-        "class AlphaPayload:\n"
-        "    pass\n\n"
-        "class BetaPayload:\n"
-        "    pass\n\n"
-        "def outer(value):\n"
-        "    def inner():\n"
-        "        if isinstance(value, AlphaPayload):\n"
-        "            return 'alpha'\n"
-        "        if isinstance(value, BetaPayload):\n"
-        "            return 'beta'\n"
-        "        return None\n"
-        "    return inner()\n",
-        encoding="utf-8",
-    )
-    module = parse_python_modules(package_root, use_parse_cache=False)[0]
-
-    candidates = runtime_detectors._isinstance_family_scatter_candidates(module)
-
-    assert {candidate.qualname for candidate in candidates} == {"inner", "outer"}
-    assert not hasattr(
-        runtime_detectors,
-        "_compact_isinstance_family_scatter_candidates",
-    )
 
 
 def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
@@ -6309,9 +6190,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector in (
         partition.compact_global_detector_types
     )
     assert runtime_detectors.AlgebraicVariantMethodFamilyDetector in (

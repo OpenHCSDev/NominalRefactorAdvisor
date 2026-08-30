@@ -8068,24 +8068,6 @@ def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
 
 
 
-def test_abc_polymorphism_detector_requires_shared_base(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass AlphaPayload:\n    pass\n\n\nclass BetaPayload:\n    pass\n\n\ndef render_payload(value):\n    if isinstance(value, AlphaPayload):\n        return value.alpha()\n    if isinstance(value, BetaPayload):\n        return value.beta()\n    return None\n",
-    )
-    modules = parse_python_modules(tmp_path)
-
-    findings = (
-        runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector().detect(
-            modules,
-            DetectorConfig(),
-        )
-    )
-
-    assert findings == []
-
-
 def test_variant_method_detector_requires_a_variant_seed(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

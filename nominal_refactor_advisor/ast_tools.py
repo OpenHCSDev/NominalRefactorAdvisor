@@ -913,27 +913,6 @@ class BuiltinCallName(StrEnum):
         return frozenset((cls.ABS, cls.ALL, cls.ANY, cls.MAX, cls.MIN, cls.SUM))
 
     @classmethod
-    def isinstance_scatter_builtin_type_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset(
-            (
-                cls.BYTEARRAY,
-                cls.BOOL,
-                cls.BYTES,
-                cls.DICT,
-                cls.FLOAT,
-                cls.FROZENSET,
-                cls.INT,
-                cls.LIST,
-                cls.MEMORYVIEW,
-                cls.OBJECT,
-                cls.SET,
-                cls.STR,
-                cls.TUPLE,
-                cls.TYPE,
-            )
-        )
-
-    @classmethod
     def normalized_template_stable_builtin_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset(
             (

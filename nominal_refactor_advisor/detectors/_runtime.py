@@ -15,7 +15,7 @@ import re
 import tempfile
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 
@@ -1764,177 +1764,6 @@ def _runtime_semantic_identifier_tokens(text: str) -> tuple[str, ...]:
 def _runtime_semantic_axis_is_interesting(dispatch_axis_expression: str) -> bool:
     tokens = set(_runtime_semantic_identifier_tokens(dispatch_axis_expression))
     return bool(tokens & _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS)
-
-
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeSubjectFunctionCandidate:
-    file_path: str
-    line: int
-    qualname: str
-    subject_expression: str
-
-
-@dataclass(frozen=True, slots=True)
-class IsinstanceFamilyScatterCandidate(RuntimeSubjectFunctionCandidate):
-    type_names: tuple[str, ...]
-    site_count: int
-    line_numbers: tuple[int, ...]
-    test_expressions: tuple[str, ...]
-
-
-_ISINSTANCE_SCATTER_EXCLUDED_DOMAIN_TYPE_NAMES = frozenset(
-    {
-        "ABC",
-        "Any",
-        "Callable",
-        "ClassVar",
-        "Iterable",
-        "Iterator",
-        "Mapping",
-        "MutableMapping",
-        "MutableSequence",
-        "None",
-        "NoneType",
-        "Sequence",
-        "Set",
-        "SimpleNamespace",
-        "TypeAlias",
-        "generic",
-        "ndarray",
-    }
-)
-_ISINSTANCE_SCATTER_EXCLUDED_TYPE_NAMES = (
-    _ISINSTANCE_SCATTER_EXCLUDED_DOMAIN_TYPE_NAMES
-    | BuiltinCallName.isinstance_scatter_builtin_type_names()
-)
-
-
-def _isinstance_scatter_type_name(type_expr: ast.AST) -> str | None:
-    if isinstance(type_expr, ast.Attribute) and isinstance(type_expr.value, ast.Name):
-        if type_expr.value.id == "ast":
-            return None
-    type_name = ast.unparse(type_expr)
-    terminal_name = _ast_terminal_name(type_expr)
-    if terminal_name in _ISINSTANCE_SCATTER_EXCLUDED_TYPE_NAMES:
-        return None
-    if type_name.startswith(("ast.", "jax.", "jnp.", "np.", "numpy.")):
-        return None
-    return type_name
-
-
-def _isinstance_scatter_type_names(type_expr: ast.AST) -> tuple[str, ...]:
-    if isinstance(type_expr, (ast.Tuple, ast.List, ast.Set)):
-        names = tuple(
-            name
-            for element in type_expr.elts
-            if (name := _isinstance_scatter_type_name(element)) is not None
-        )
-    else:
-        name = _isinstance_scatter_type_name(type_expr)
-        names = () if name is None else (name,)
-    return sorted_tuple(set(names))
-
-
-def _isinstance_family_scatter_candidates_from_named_functions(
-    module: ParsedModule,
-    named_functions: Sequence[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]],
-) -> tuple[IsinstanceFamilyScatterCandidate, ...]:
-    candidates: list[IsinstanceFamilyScatterCandidate] = []
-    for qualname, function in named_functions:
-        grouped: dict[str, list[tuple[int, str, tuple[str, ...]]]] = defaultdict(list)
-        for subnode in _walk_nodes(function):
-            if not (
-                isinstance(subnode, ast.Call)
-                and len(subnode.args) == 2
-                and not subnode.keywords
-                and _ast_terminal_name(subnode.func) == "isinstance"
-            ):
-                continue
-            type_names = _isinstance_scatter_type_names(subnode.args[1])
-            if not type_names:
-                continue
-            grouped[ast.unparse(subnode.args[0])].append(
-                (subnode.lineno, ast.unparse(subnode), type_names)
-            )
-        for subject_expression, sites in sorted(grouped.items()):
-            sites.sort(key=lambda item: (item[0], item[1], item[2]))
-            unique_type_names = sorted_tuple(
-                {
-                    type_name
-                    for _line, _test, type_names in sites
-                    for type_name in type_names
-                }
-            )
-            if len(sites) < 2 or len(unique_type_names) < 2:
-                continue
-            line_numbers = tuple(line for line, _test, _types in sites)
-            candidates.append(
-                IsinstanceFamilyScatterCandidate(
-                    file_path=str(module.path),
-                    line=min(line_numbers),
-                    qualname=qualname,
-                    subject_expression=subject_expression,
-                    type_names=unique_type_names,
-                    site_count=len(sites),
-                    line_numbers=line_numbers,
-                    test_expressions=tuple(test for _line, test, _types in sites),
-                )
-            )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.file_path,
-                item.line,
-                item.qualname,
-                item.subject_expression,
-            ),
-        )
-    )
-
-
-def _isinstance_family_scatter_candidates(
-    module: ParsedModule,
-) -> tuple[IsinstanceFamilyScatterCandidate, ...]:
-    """Preserve nested attribution while skipping irrelevant functions."""
-
-    relevant_function_ids: set[int] = set()
-
-    class RelevanceVisitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.function_stack: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self.function_stack.append(node)
-            self.generic_visit(node)
-            self.function_stack.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_Call(self, node: ast.Call) -> None:
-            if (
-                len(node.args) == 2
-                and not node.keywords
-                and _ast_terminal_name(node.func) == "isinstance"
-                and _isinstance_scatter_type_names(node.args[1])
-            ):
-                relevant_function_ids.update(map(id, self.function_stack))
-            self.generic_visit(node)
-
-    RelevanceVisitor().visit(module.module)
-    if not relevant_function_ids:
-        return ()
-    return _isinstance_family_scatter_candidates_from_named_functions(
-        module,
-        tuple(
-            (qualname, function)
-            for qualname, function in _iter_named_functions(module)
-            if id(function) in relevant_function_ids
-        ),
-    )
-
 
 
 
@@ -6473,42 +6302,6 @@ def _normalized_role_residue_small_method_template(
     )
 
 
-def _normalized_cross_class_method_template(
-    body: tuple[ast.stmt, ...],
-) -> tuple[str, ...]:
-    class Normalizer(ast.NodeTransformer):
-        def visit_arg(self, node: ast.arg) -> ast.arg:
-            return ast.copy_location(ast.arg(arg="ARG", annotation=None), node)
-
-        def visit_Name(self, node: ast.Name) -> ast.AST:
-            if node.id in _NORMALIZED_TEMPLATE_STABLE_NAMES:
-                return node
-            return ast.copy_location(ast.Name(id="NAME", ctx=node.ctx), node)
-
-        def visit_Constant(self, node: ast.Constant) -> ast.AST:
-            if isinstance(node.value, str):
-                return ast.copy_location(ast.Constant(value="STR"), node)
-            if isinstance(node.value, (int, float, complex, bool, type(None))):
-                return ast.copy_location(ast.Constant(value="CONST"), node)
-            return node
-
-        def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
-            return ast.copy_location(ast.Constant(value="LAMBDA_RESIDUE"), node)
-
-    normalizer = Normalizer()
-    return tuple(
-        (
-            ast.dump(
-                ast.fix_missing_locations(
-                    cast(ast.stmt, normalizer.visit(copy.deepcopy(statement)))
-                ),
-                include_attributes=False,
-            )
-            for statement in body
-        )
-    )
-
-
 def _method_name_family_tokens(method_names: tuple[str, ...]) -> tuple[str, ...]:
     token_sets = [
         set(CLASS_NAME_ALGEBRA.ordered_tokens(method_name.strip("_")))
@@ -6609,19 +6402,6 @@ class SiblingSmallMethodTemplateDetector(
         )
 
 
-@dataclass(frozen=True)
-class CrossClassSmallMethodTemplateCandidate(MethodEvidenceLocationsCandidate):
-    owner_name: str
-    owner_names: tuple[str, ...]
-    method_name: str
-    statement_count: int
-    parameter_count: int
-
-    @property
-    def witness_name(self) -> str:
-        return self.method_name
-
-
 _CLASSLEVEL_METHOD_DECORATORS = frozenset({"classmethod", "staticmethod"})
 
 
@@ -6643,123 +6423,6 @@ def _has_only_nominal_method_decorators(function: _RuntimeFunctionNode) -> bool:
         decorator_name in _CLASSLEVEL_METHOD_DECORATORS
         for decorator_name in decorator_names
     )
-
-
-def _public_method_template_owner(qualname: str, function_name: str) -> str | None:
-    if "." not in qualname:
-        return None
-    if _is_private_symbol_name(function_name) or function_name.startswith("__"):
-        return None
-    return qualname.rsplit(".", 1)[0]
-
-
-@dataclass(frozen=True)
-class _CrossClassMethodTemplateSurface:
-    owner_name: str
-    qualname: str
-    method_name: str
-    line: int
-    parameter_count: int
-    body: tuple[ast.stmt, ...]
-
-
-def _cross_class_small_method_template_candidates(
-    module: ParsedModule,
-) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
-    surfaces = []
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        owner_name = _public_method_template_owner(qualname, function.name)
-        if owner_name is None:
-            continue
-        if not _has_only_nominal_method_decorators(function):
-            continue
-        body = _trimmed_function_body(function)
-        if not 1 <= len(body) <= 8:
-            continue
-        surfaces.append(
-            _CrossClassMethodTemplateSurface(
-                owner_name=owner_name,
-                qualname=qualname,
-                method_name=function.name,
-                line=function.lineno,
-                parameter_count=(
-                    len(function.args.args) + len(function.args.kwonlyargs)
-                ),
-                body=body,
-            )
-        )
-    return _cross_class_small_method_template_candidates_from_surfaces(
-        str(module.path),
-        tuple(surfaces),
-    )
-
-
-def _cross_class_small_method_template_candidates_from_surfaces(
-    file_path: str,
-    surfaces: tuple[_CrossClassMethodTemplateSurface, ...],
-) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
-    """Group exact method surfaces from either AST or native source facts."""
-
-    coarse_groups: dict[
-        tuple[str, int, tuple[type[ast.stmt], ...]],
-        list[_CrossClassMethodTemplateSurface],
-    ] = defaultdict(list)
-    for surface in surfaces:
-        coarse_groups[
-            (
-                surface.method_name,
-                surface.parameter_count,
-                tuple(type(statement) for statement in surface.body),
-            )
-        ].append(surface)
-
-    grouped: dict[
-        tuple[str, int, tuple[str, ...]],
-        list[_CrossClassMethodTemplateSurface],
-    ] = defaultdict(list)
-    for (
-        method_name,
-        parameter_count,
-        _statement_types,
-    ), coarse_functions in coarse_groups.items():
-        if len(coarse_functions) < 2:
-            continue
-        for surface in coarse_functions:
-            key = (
-                method_name,
-                parameter_count,
-                _normalized_cross_class_method_template(surface.body),
-            )
-            grouped[key].append(surface)
-
-    candidates: list[CrossClassSmallMethodTemplateCandidate] = []
-    for (method_name, parameter_count, template), grouped_surfaces in grouped.items():
-        owner_names = sorted_tuple({surface.owner_name for surface in grouped_surfaces})
-        if len(owner_names) < 2:
-            continue
-        ordered = sorted_tuple(
-            grouped_surfaces,
-            key=lambda surface: (surface.line, surface.qualname),
-        )
-        method_names = tuple(surface.qualname for surface in ordered)
-        line_numbers = tuple(surface.line for surface in ordered)
-        candidates.append(
-            CrossClassSmallMethodTemplateCandidate(
-                file_path=file_path,
-                line=line_numbers[0],
-                owner_name=", ".join(owner_names),
-                method_names=method_names,
-                line_numbers=line_numbers,
-                owner_names=owner_names,
-                method_name=method_name,
-                statement_count=len(template),
-                parameter_count=parameter_count,
-            )
-        )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.method_name)
-    )
-
 
 
 _IDENTIFIER_STOP_TOKENS = frozenset(
@@ -6788,21 +6451,6 @@ _IDENTIFIER_STOP_TOKENS = frozenset(
 
 
 @dataclass(frozen=True)
-class _NominalAuthorityBypassSeed:
-    module_name: str
-    scatter: IsinstanceFamilyScatterCandidate
-    indexed_classes: tuple[CompactIndexedClass, ...]
-    shared_base: CompactIndexedClass
-
-
-@dataclass(frozen=True)
-class _NominalAuthorityBypassCandidate:
-    seed: _NominalAuthorityBypassSeed
-    repeated_templates: tuple[CrossClassSmallMethodTemplateCandidate, ...]
-    composition_signals: tuple[CancelableCompositionSignal, ...]
-
-
-@dataclass(frozen=True)
 class _VariantMethodSurface:
     file_path: str
     owner_class_name: str
@@ -6822,11 +6470,9 @@ class _VariantMethodSurface:
 
 
 @dataclass(frozen=True)
-class CompactNominalBypassModuleProjection(CompactModuleIdentity):
-    """AST-free local facts shared by nominal-bypass global joins."""
+class CompactAlgebraicVariantModuleProjection(CompactModuleIdentity):
+    """AST-free local facts for algebraic variant-family joins."""
 
-    isinstance_scatters: tuple[IsinstanceFamilyScatterCandidate, ...]
-    repeated_templates: tuple[CrossClassSmallMethodTemplateCandidate, ...]
     composition_signals: tuple[CancelableCompositionSignal, ...]
     variant_method_surfaces: tuple[_VariantMethodSurface, ...]
 
@@ -6934,7 +6580,7 @@ def _cancelable_composition_signals_for_module(
     )
 
 
-_NATIVE_NOMINAL_BYPASS_QUERY = """
+_NATIVE_ALGEBRAIC_VARIANT_QUERY = """
 (attribute) @attribute
 (return_statement) @return
 """
@@ -6969,26 +6615,6 @@ def _native_unwrapped_expression(node: Node | None) -> Node | None:
     ):
         node = node.named_children[0]
     return node
-
-
-def _native_surface_function(
-    syntax_index: NativePythonSyntaxIndex,
-    function_node: Node,
-) -> bool:
-    statement_node = (
-        function_node.parent
-        if function_node.parent is not None
-        and function_node.parent.type == "decorated_definition"
-        else function_node
-    )
-    if statement_node.parent == syntax_index.tree.root_node:
-        return True
-    if syntax_index.direct_enclosing_class(function_node) is None:
-        return False
-    return not any(
-        scope.type == "function_definition"
-        for scope in syntax_index.named_scope_nodes(function_node)
-    )
 
 
 def _native_function_decorators(
@@ -7042,122 +6668,6 @@ def _native_function_stub(
     function.lineno = function_node.start_point.row + 1
     function.end_lineno = function_node.end_point.row + 1
     return function
-
-
-def _native_nominal_bypass_module_identity(
-    source_module: SourceModule,
-) -> ParsedModule:
-    return source_module.parsed_module(
-        ast.Module(body=[], type_ignores=[]),
-    )
-
-
-def _native_isinstance_scatter_candidates(
-    module: ParsedModule,
-    syntax_index: NativePythonSyntaxIndex,
-    function_nodes: tuple[Node, ...],
-) -> tuple[IsinstanceFamilyScatterCandidate, ...]:
-    calls_by_function: dict[Node, list[ast.Call]] = defaultdict(list)
-    function_node_set = set(function_nodes)
-    for call_node in syntax_index.common_captures().get("call", ()):
-        called = call_node.child_by_field_name("function")
-        if called is None:
-            continue
-        terminal = (
-            called
-            if called.type == "identifier"
-            else called.child_by_field_name("attribute")
-        )
-        if terminal is None or syntax_index.source_for(terminal) != b"isinstance":
-            continue
-        call = syntax_index.expression_for(call_node)
-        if not isinstance(call, ast.Call):
-            raise TypeError("native call expression did not parse as a call")
-        if len(call.args) != 2 or call.keywords:
-            continue
-        for function_node in syntax_index.enclosing_function_nodes(call_node):
-            if function_node in function_node_set:
-                calls_by_function[function_node].append(call)
-    named_functions = tuple(
-        (
-            syntax_index.class_qualified_function_name(function_node),
-            _native_function_stub(
-                syntax_index,
-                function_node,
-                tuple(ast.Expr(value=call) for call in calls),
-            ),
-        )
-        for function_node, calls in calls_by_function.items()
-    )
-    return _isinstance_family_scatter_candidates_from_named_functions(
-        module,
-        named_functions,
-    )
-
-
-def _native_cross_class_template_candidates(
-    module: ParsedModule,
-    syntax_index: NativePythonSyntaxIndex,
-    function_nodes: tuple[Node, ...],
-    decorators_by_function: dict[Node, tuple[ast.expr, ...]],
-) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
-    preliminary_groups: dict[tuple[str, int], list[tuple[Node, tuple[Node, ...]]]] = (
-        defaultdict(list)
-    )
-    for function_node in function_nodes:
-        if not _native_surface_function(syntax_index, function_node):
-            continue
-        qualname = syntax_index.class_qualified_function_name(function_node)
-        method_name = syntax_index.declared_name(function_node)
-        if _public_method_template_owner(qualname, method_name) is None:
-            continue
-        decorators = _native_function_decorators(
-            syntax_index,
-            function_node,
-            decorators_by_function,
-        )
-        if not all(
-            _decorator_simple_name(decorator) in _CLASSLEVEL_METHOD_DECORATORS
-            for decorator in decorators
-        ):
-            continue
-        statements = _native_trimmed_function_statements(
-            syntax_index,
-            function_node,
-        )
-        if 1 <= len(statements) <= 8:
-            preliminary_groups[method_name, len(statements)].append(
-                (function_node, statements)
-            )
-
-    surfaces: list[_CrossClassMethodTemplateSurface] = []
-    for grouped_functions in preliminary_groups.values():
-        owner_names = {
-            syntax_index.class_qualified_function_name(function_node).rsplit(".", 1)[0]
-            for function_node, _statements in grouped_functions
-        }
-        if len(owner_names) < 2:
-            continue
-        for function_node, statement_nodes in grouped_functions:
-            qualname = syntax_index.class_qualified_function_name(function_node)
-            arguments = syntax_index.arguments_for(function_node)
-            surfaces.append(
-                _CrossClassMethodTemplateSurface(
-                    owner_name=qualname.rsplit(".", 1)[0],
-                    qualname=qualname,
-                    method_name=syntax_index.declared_name(function_node),
-                    line=function_node.start_point.row + 1,
-                    parameter_count=len(arguments.args) + len(arguments.kwonlyargs),
-                    body=tuple(
-                        syntax_index.statement_for(statement)
-                        for statement in statement_nodes
-                    ),
-                )
-            )
-    return _cross_class_small_method_template_candidates_from_surfaces(
-        str(module.path),
-        tuple(surfaces),
-    )
 
 
 def _native_composition_body(
@@ -7281,7 +6791,7 @@ def _native_variant_method_surfaces(
     function_nodes: tuple[Node, ...],
     decorators_by_function: dict[Node, tuple[ast.expr, ...]],
 ) -> tuple[_VariantMethodSurface, ...]:
-    captures = syntax_index.captures(_NATIVE_NOMINAL_BYPASS_QUERY)
+    captures = syntax_index.captures(_NATIVE_ALGEBRAIC_VARIANT_QUERY)
     attributes_by_function: dict[Node, list[tuple[str, str]]] = defaultdict(list)
     returned_calls_by_function: dict[Node, list[Node]] = defaultdict(list)
     function_node_set = set(function_nodes)
@@ -7400,14 +6910,13 @@ def _native_variant_method_surfaces(
     )
 
 
-def _native_nominal_bypass_projection(
+def _native_algebraic_variant_projection(
     source_module: SourceModule,
     syntax_index: NativePythonSyntaxIndex,
-) -> list[CompactNominalBypassModuleProjection] | None:
+) -> list[CompactAlgebraicVariantModuleProjection] | None:
     if not syntax_index.is_complete:
         return None
     try:
-        module = _native_nominal_bypass_module_identity(source_module)
         function_nodes = syntax_index.common_captures().get("function", ())
         decorators_by_function: dict[Node, tuple[ast.expr, ...]] = {}
         composition_signals = _native_composition_signals(
@@ -7416,20 +6925,9 @@ def _native_nominal_bypass_projection(
             function_nodes,
         )
         return [
-            CompactNominalBypassModuleProjection(
+            CompactAlgebraicVariantModuleProjection(
                 module_name=source_module.module_name,
                 file_path=str(source_module.path),
-                isinstance_scatters=_native_isinstance_scatter_candidates(
-                    module,
-                    syntax_index,
-                    function_nodes,
-                ),
-                repeated_templates=_native_cross_class_template_candidates(
-                    module,
-                    syntax_index,
-                    function_nodes,
-                    decorators_by_function,
-                ),
                 composition_signals=composition_signals,
                 variant_method_surfaces=_native_variant_method_surfaces(
                     source_module,
@@ -7443,125 +6941,30 @@ def _native_nominal_bypass_projection(
         return None
 
 
-class CompactNominalBypassModuleProjectionFamily(
-    CollectedFamily[CompactNominalBypassModuleProjection]
+class CompactAlgebraicVariantModuleProjectionFamily(
+    CollectedFamily[CompactAlgebraicVariantModuleProjection]
 ):
-    """Persist local nominal-bypass facts for exact repository-wide joins."""
+    """Persist algebraic variant facts for exact repository-wide joins."""
 
-    item_type = CompactNominalBypassModuleProjection
-    source_collector = staticmethod(_native_nominal_bypass_projection)
+    item_type = CompactAlgebraicVariantModuleProjection
+    source_collector = staticmethod(_native_algebraic_variant_projection)
 
     @classmethod
     def collect(
         cls,
         parsed_module: ParsedModule,
-    ) -> list[CompactNominalBypassModuleProjection]:
+    ) -> list[CompactAlgebraicVariantModuleProjection]:
         del cls
         return [
-            CompactNominalBypassModuleProjection(
+            CompactAlgebraicVariantModuleProjection(
                 module_name=parsed_module.module_name,
                 file_path=str(parsed_module.path),
-                isinstance_scatters=_isinstance_family_scatter_candidates(
-                    parsed_module
-                ),
-                repeated_templates=_cross_class_small_method_template_candidates(
-                    parsed_module
-                ),
                 composition_signals=_cancelable_composition_signals_for_module(
                     parsed_module
                 ),
                 variant_method_surfaces=_variant_method_surfaces(parsed_module),
             )
         ]
-
-
-@dataclass(frozen=True)
-class CompactNominalBypassProjectionDemand:
-    """Retain contextual dispatch facts but omit context-local variant families."""
-
-    include_context_dispatch: bool = True
-
-
-def _nominal_bypass_projection_demand(
-    target_items: tuple[object, ...],
-    config: object,
-) -> CompactNominalBypassProjectionDemand:
-    del target_items, config
-    return CompactNominalBypassProjectionDemand()
-
-
-def _project_nominal_bypass_demand(
-    items: tuple[object, ...],
-    demand: object,
-) -> tuple[object, ...]:
-    if not isinstance(demand, CompactNominalBypassProjectionDemand):
-        return items
-    projected: list[CompactNominalBypassModuleProjection] = []
-    for item in items:
-        if not isinstance(item, CompactNominalBypassModuleProjection):
-            continue
-        if not item.isinstance_scatters and not item.repeated_templates:
-            continue
-        projected.append(
-            replace(
-                item,
-                variant_method_surfaces=(),
-            )
-        )
-    return tuple(projected)
-
-
-def _collect_nominal_bypass_source_demand(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-    demand: object,
-) -> list[object] | None:
-    projections = _native_nominal_bypass_projection(source_module, syntax_index)
-    if projections is None:
-        return None
-    return list(_project_nominal_bypass_demand(tuple(projections), demand))
-
-
-def _collect_nominal_bypass_ast_demand(
-    parsed_module: ParsedModule,
-    demand: object,
-) -> list[object]:
-    if not isinstance(demand, CompactNominalBypassProjectionDemand):
-        raise TypeError("nominal-bypass demand has the wrong authority type")
-    isinstance_scatters = (
-        _isinstance_family_scatter_candidates(parsed_module)
-        if "isinstance" in parsed_module.source
-        else ()
-    )
-    repeated_templates = _cross_class_small_method_template_candidates(parsed_module)
-    if not isinstance_scatters and not repeated_templates:
-        return []
-    return [
-        CompactNominalBypassModuleProjection(
-            module_name=parsed_module.module_name,
-            file_path=str(parsed_module.path),
-            isinstance_scatters=isinstance_scatters,
-            repeated_templates=repeated_templates,
-            composition_signals=_cancelable_composition_signals_for_module(
-                parsed_module
-            ),
-            variant_method_surfaces=(),
-        )
-    ]
-
-
-CompactNominalBypassModuleProjectionFamily.report_demand_builder = staticmethod(
-    _nominal_bypass_projection_demand
-)
-CompactNominalBypassModuleProjectionFamily.source_demand_collector = staticmethod(
-    _collect_nominal_bypass_source_demand
-)
-CompactNominalBypassModuleProjectionFamily.ast_demand_collector = staticmethod(
-    _collect_nominal_bypass_ast_demand
-)
-CompactNominalBypassModuleProjectionFamily.cached_demand_projector = staticmethod(
-    _project_nominal_bypass_demand
-)
 
 
 class RelatedCompositionSignalsAuthority:
@@ -7601,312 +7004,6 @@ class RelatedCompositionSignalsAuthority:
             ),
         )
 
-
-def _templates_related_to_checked_classes(
-    templates: tuple[CrossClassSmallMethodTemplateCandidate, ...],
-    checked_classes: tuple[CompactIndexedClass, ...],
-) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
-    checked_names = {indexed_class.simple_name for indexed_class in checked_classes}
-    related = []
-    for template in templates:
-        owner_names = {owner.rsplit(".", 1)[-1] for owner in template.owner_names}
-        if len(checked_names & owner_names) >= 2:
-            related.append(template)
-    return sorted_tuple(
-        related,
-        key=lambda item: (item.file_path, item.line, item.method_name),
-    )
-
-
-def _compact_indexed_classes_for_type_names(
-    projection: CompactNominalBypassModuleProjection,
-    class_index: CompactClassFamilyIndex,
-    type_names: tuple[str, ...],
-) -> tuple[CompactIndexedClass, ...]:
-    indexed_classes: list[CompactIndexedClass] = []
-    seen_symbols: set[str] = set()
-    for type_name in type_names:
-        simple_name = type_name.rsplit(".", 1)[-1]
-        module_local_symbol = f"{projection.module_name}.{simple_name}"
-        indexed_class = class_index.class_for(module_local_symbol)
-        if indexed_class is None:
-            symbols = class_index.symbols_by_simple_name.get(simple_name, ())
-            if len(symbols) == 1:
-                indexed_class = class_index.class_for(symbols[0])
-        if indexed_class is None or indexed_class.symbol in seen_symbols:
-            continue
-        seen_symbols.add(indexed_class.symbol)
-        indexed_classes.append(indexed_class)
-    return tuple(indexed_classes)
-
-
-def _compact_shared_nominal_base_classes(
-    class_index: CompactClassFamilyIndex,
-    indexed_classes: tuple[CompactIndexedClass, ...],
-) -> tuple[CompactIndexedClass, ...]:
-    if len(indexed_classes) < 2:
-        return ()
-    checked_symbols = {indexed_class.symbol for indexed_class in indexed_classes}
-    common_symbols = set(class_index.ancestor_symbols(indexed_classes[0].symbol))
-    for indexed_class in indexed_classes[1:]:
-        common_symbols &= set(class_index.ancestor_symbols(indexed_class.symbol))
-    base_classes = tuple(
-        indexed_class
-        for symbol in sorted(common_symbols)
-        if symbol not in checked_symbols
-        if (indexed_class := class_index.class_for(symbol)) is not None
-        if not indexed_class.simple_name.startswith("_")
-    )
-    abstract_bases = tuple(
-        indexed_class for indexed_class in base_classes if indexed_class.is_abstract
-    )
-    return abstract_bases or base_classes
-
-
-def _nominal_authority_bypass_candidates_from_compact_projections(
-    projections: tuple[CompactNominalBypassModuleProjection, ...],
-    class_index: CompactClassFamilyIndex,
-) -> tuple[_NominalAuthorityBypassCandidate, ...]:
-    seeds: list[_NominalAuthorityBypassSeed] = []
-    for projection in projections:
-        for scatter in projection.isinstance_scatters:
-            checked_classes = _compact_indexed_classes_for_type_names(
-                projection,
-                class_index,
-                scatter.type_names,
-            )
-            shared_bases = _compact_shared_nominal_base_classes(
-                class_index,
-                checked_classes,
-            )
-            if not shared_bases:
-                continue
-            seeds.append(
-                _NominalAuthorityBypassSeed(
-                    module_name=projection.module_name,
-                    scatter=scatter,
-                    indexed_classes=checked_classes,
-                    shared_base=shared_bases[0],
-                )
-            )
-    if not seeds:
-        return ()
-
-    templates = tuple(
-        template
-        for projection in projections
-        for template in projection.repeated_templates
-    )
-    composition_signals = tuple(
-        signal
-        for projection in projections
-        for signal in projection.composition_signals
-    )
-    candidates: list[_NominalAuthorityBypassCandidate] = []
-    for seed in seeds:
-        base_display_name = _compact_class_display_name(seed.shared_base, class_index)
-        related_templates = _templates_related_to_checked_classes(
-            templates,
-            seed.indexed_classes,
-        )
-        token_sources = (
-            seed.scatter.qualname,
-            seed.scatter.subject_expression,
-            base_display_name,
-            *(indexed_class.simple_name for indexed_class in seed.indexed_classes),
-            *(template.method_name for template in related_templates),
-        )
-        candidates.append(
-            _NominalAuthorityBypassCandidate(
-                seed=seed,
-                repeated_templates=related_templates,
-                composition_signals=RelatedCompositionSignalsAuthority.related(
-                    composition_signals,
-                    file_path=seed.scatter.file_path,
-                    token_sources=token_sources,
-                ),
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.seed.scatter.file_path,
-            item.seed.scatter.line,
-            item.seed.scatter.qualname,
-            item.seed.shared_base.symbol,
-        ),
-    )
-
-
-class ABCPolymorphismBypassedByConcreteDispatchDetector(
-    CompactMultiProjectionCandidateDetector[_NominalAuthorityBypassCandidate],
-):
-    module_projection_families = (
-        CompactNominalBypassModuleProjectionFamily,
-        CompactModuleClassProjectionFamily,
-    )
-    compact_shared_group_context_builder = staticmethod(
-        compact_class_index_from_projection_groups
-    )
-    detector_id = "abc_polymorphism_bypassed_by_concrete_dispatch"
-    detector_priority = -20
-    finding_spec = high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "ABC polymorphism bypassed by helper-level concrete dispatch",
-        "A helper that branches on concrete carrier classes while those classes already share a nominal base has moved behavior out of the family authority. The root cause is not the local isinstance syntax: it is bypassed polymorphism, often amplified by duplicate leaf methods and cancelable product pack/unpack/forward layers.",
-        "shared nominal carrier authority exposes one polymorphic/template-method hook",
-        "helper-level concrete runtime dispatch crosses a shared ABC/base family",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS
-        + _ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
-
-    def _candidates_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> Sequence[_NominalAuthorityBypassCandidate]:
-        projections = cast(
-            tuple[CompactNominalBypassModuleProjection, ...],
-            projections_by_family[CompactNominalBypassModuleProjectionFamily],
-        )
-        return _nominal_authority_bypass_candidates_from_compact_projections(
-            projections,
-            compact_class_index_from_projection_groups(
-                projections_by_family,
-                config,
-            ),
-        )
-
-    def _candidates_from_compact_projection_groups_context(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> Sequence[_NominalAuthorityBypassCandidate]:
-        del config
-        if not isinstance(context, CompactClassFamilyIndex):
-            raise TypeError("shared compact class index is unavailable")
-        projections = cast(
-            tuple[CompactNominalBypassModuleProjection, ...],
-            projections_by_family[CompactNominalBypassModuleProjectionFamily],
-        )
-        return _nominal_authority_bypass_candidates_from_compact_projections(
-            projections,
-            context,
-        )
-
-    def _finding_for_candidate(
-        self, candidate: _NominalAuthorityBypassCandidate
-    ) -> RefactorFinding:
-        scatter = candidate.seed.scatter
-        base_name = candidate.seed.shared_base.simple_name
-        checked_type_names = tuple(
-            indexed_class.simple_name
-            for indexed_class in candidate.seed.indexed_classes
-        )
-        branch_summary = ", ".join(scatter.test_expressions[:4])
-        template_summary = ", ".join(
-            sorted_tuple(
-                {template.method_name for template in candidate.repeated_templates}
-            )
-        )
-        composition_summary = ", ".join(
-            signal.qualname for signal in candidate.composition_signals[:3]
-        )
-        extra_context = []
-        if template_summary:
-            extra_context.append(f"duplicate leaf template(s): {template_summary}")
-        if composition_summary:
-            extra_context.append(
-                f"cancelable product composition(s): {composition_summary}"
-            )
-        context_suffix = (
-            f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
-        )
-        evidence = tuple(
-            [
-                *(
-                    SourceLocation(
-                        scatter.file_path,
-                        line,
-                        f"{scatter.qualname}:{scatter.subject_expression}",
-                    )
-                    for line in scatter.line_numbers[:4]
-                ),
-                SourceLocation(
-                    candidate.seed.shared_base.file_path,
-                    candidate.seed.shared_base.line,
-                    base_name,
-                ),
-                *(
-                    location
-                    for template in candidate.repeated_templates[:2]
-                    for location in template.evidence_locations[:2]
-                ),
-                *(
-                    SourceLocation(signal.file_path, signal.line, signal.qualname)
-                    for signal in candidate.composition_signals[:2]
-                ),
-            ][:8]
-        )
-        method_symbols = tuple(
-            (
-                *(
-                    f"{scatter.qualname}:{test}"
-                    for test in scatter.test_expressions[:4]
-                ),
-                *(
-                    method_name
-                    for template in candidate.repeated_templates
-                    for method_name in template.method_names
-                ),
-                *(signal.qualname for signal in candidate.composition_signals),
-            )
-        )
-        return self.build_finding(
-            (
-                "ABC polymorphism bypassed by helper-level concrete dispatch: "
-                f"`{scatter.qualname}` checks `{scatter.subject_expression}` with "
-                f"{branch_summary} even though {', '.join(checked_type_names)} share "
-                f"`{base_name}`.{context_suffix}"
-            ),
-            evidence,
-            scaffold=(
-                f"class {base_name}(...):\n"
-                "    def construct_from(self, request):\n"
-                "        return self._construct_from_nominal_context(request)\n\n"
-                "    def _construct_from_nominal_context(self, request): ...\n\n"
-                f"# Replace helper branches in `{scatter.qualname}` with one call through "
-                f"`{base_name}`. Put concrete construction residue on the leaf classes or "
-                "on a nominal request/context object; do not unpack a product carrier through "
-                "external helper dispatch."
-            ),
-            codemod_patch=(
-                f"# Collapse `{scatter.qualname}` concrete isinstance branches into a "
-                f"`{base_name}` polymorphic/template-method hook.\n"
-                "# Move duplicate leaf method templates and cancelable pack/unpack forwarding "
-                "into the same nominal authority before deleting the helper-level branch table."
-            ),
-            metrics=RepeatedMethodMetrics.from_duplicate_family(
-                duplicate_site_count=max(
-                    2,
-                    scatter.site_count
-                    + len(candidate.repeated_templates)
-                    + len(candidate.composition_signals)
-                ),
-                statement_count=max(
-                    2,
-                    1
-                    + sum(
-                        template.statement_count
-                        for template in candidate.repeated_templates
-                    ),
-                ),
-                class_count=max(2, len(candidate.seed.indexed_classes)),
-                method_symbols=method_symbols,
-            ),
-        )
 
 
 def _method_parameter_names(function: _RuntimeFunctionNode) -> tuple[str, ...]:
@@ -8100,7 +7197,7 @@ def _variant_method_family_candidate(
 
 
 def _variant_method_family_candidates_from_compact_projections(
-    projections: tuple[CompactNominalBypassModuleProjection, ...],
+    projections: tuple[CompactAlgebraicVariantModuleProjection, ...],
 ) -> tuple[_VariantMethodFamilyCandidate, ...]:
     grouped: dict[
         tuple[str, str, str, tuple[str, ...], str],
@@ -8151,11 +7248,11 @@ def _variant_method_family_candidates_from_compact_projections(
 
 class AlgebraicVariantMethodFamilyDetector(
     CompactProjectionCandidateDetector[
-        CompactNominalBypassModuleProjection,
+        CompactAlgebraicVariantModuleProjection,
         _VariantMethodFamilyCandidate,
     ],
 ):
-    module_projection_family = CompactNominalBypassModuleProjectionFamily
+    module_projection_family = CompactAlgebraicVariantModuleProjectionFamily
     detector_priority = -15
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -8170,7 +7267,7 @@ class AlgebraicVariantMethodFamilyDetector(
 
     def _candidates_from_compact_projections(
         self,
-        projections: tuple[CompactNominalBypassModuleProjection, ...],
+        projections: tuple[CompactAlgebraicVariantModuleProjection, ...],
         config: DetectorConfig,
     ) -> Sequence[_VariantMethodFamilyCandidate]:
         del config
