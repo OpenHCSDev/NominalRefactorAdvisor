@@ -52,7 +52,6 @@ from ..class_index import (
     CompactModuleClassProjection,
     build_compact_class_family_index,
 )
-from ..taxonomy import LabeledStrEnum
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
 ExternalCallsitesByTarget: TypeAlias = dict[str, tuple[ResolvedExternalCallsite, ...]]
@@ -137,7 +136,6 @@ class HelperSupportProjectionAuthority:
                 module.source, node
             ) or ast.unparse(node)
         return self._source_segments_by_key[key]
-
 
     def declares_autoregister_meta(self, node: ast.ClassDef) -> bool:
         return any(
@@ -354,7 +352,6 @@ class HelperSupportProjectionAuthority:
         )
         return single_item(base_names) if len(base_names) == 1 else None
 
-
     def if_returns_none_only(self, node: ast.If) -> bool:
         return bool(
             len(node.body) == 1
@@ -542,16 +539,12 @@ class HelperSupportProjectionAuthority:
 HELPER_SUPPORT_PROJECTION_AUTHORITY = HelperSupportProjectionAuthority()
 
 
-
-
 def _class_direct_constant_string_assignments(node: ast.ClassDef) -> dict[str, str]:
     return {
         name: string_value
         for name, value in CLASS_NODE_AUTHORITY.direct_assignments(node).items()
         if (string_value := _constant_string(value)) is not None
     }
-
-
 
 
 def _function_parameter_annotation_map(
@@ -679,6 +672,7 @@ class NominalAuthorityIndex:
 
     def shapes_named(self, class_name: str) -> tuple[NominalAuthorityShape, ...]:
         return tuple(self._shapes_by_name.get(class_name, ()))
+
 
 def _enum_key_family(node: ast.AST) -> tuple[str, str] | None:
     if not isinstance(node, ast.Attribute):
@@ -1237,7 +1231,8 @@ def _runtime_adapter_shell_candidates_for_function(
             if keyword.arg is None:
                 continue
             if (
-                direct_attr_name := HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
+                direct_attr_name
+                := HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
                     keyword.value, source_name
                 )
             ) is not None:
@@ -3251,7 +3246,9 @@ class _RegisteredUnionSurfaceSource:
         if not isinstance(node, ast.Assign):
             return None
         target_name = name_id(single_item(node.targets))
-        return None if target_name is None else cls(target_name, node.value, node.lineno)
+        return (
+            None if target_name is None else cls(target_name, node.value, node.lineno)
+        )
 
 
 def _registered_union_surface_candidates_for_node(
@@ -3809,8 +3806,6 @@ def _registry_attribute_names(
     )
 
 
-
-
 def _registry_traversal_group_from_sites(
     projected_sites: Sequence[SubclassTraversalSite],
 ) -> SubclassTraversalGroup | None:
@@ -4021,9 +4016,6 @@ def _alternate_constructor_family_groups(
     return tuple(groups)
 
 
-
-
-
 _ABC_OPTIMIZER_IGNORED_BASE_NAMES = frozenset({"ABC", "Generic", "Protocol", "object"})
 _SemanticCoordinate: TypeAlias = tuple[tuple[str, ...], str, str]
 _ABCOptimizerFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
@@ -4037,6 +4029,8 @@ _ABCOptimizerLatticeEdgesByFamily: TypeAlias = dict[
     _ABCOptimizerFamilyKey, set[tuple[tuple[str, ...], tuple[str, ...]]]
 ]
 _ABCOptimizerMethodPlanKey: TypeAlias = tuple[str, tuple[str, ...]]
+
+
 @dataclass(frozen=True)
 class _ABCOptimizerMethodGroupProfile(ResidueHookNamesCarrier):
     shared_statement_count: int
@@ -4570,7 +4564,7 @@ def _abc_optimizer_hierarchy_normal_form(
     mixin_axis_specs: tuple[str, ...],
     overlap_axis_specs: tuple[str, ...],
 ) -> str:
-    root = f"ABC({base_name}:{','.join(class_names)})" f"{{{','.join(method_names)}}}"
+    root = f"ABC({base_name}:{','.join(class_names)}){{{','.join(method_names)}}}"
     mixins = f" + MIXIN({';'.join(mixin_axis_specs)})" if mixin_axis_specs else ""
     overlaps = (
         f" + OVERLAP({';'.join(overlap_axis_specs)})" if overlap_axis_specs else ""
@@ -5174,8 +5168,6 @@ def _abc_optimizer_family_method_plans(
     )
 
 
-
-
 def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:
     target_file = builders[0].file_path
     callee_name = builders[0].callee_name
@@ -5244,8 +5236,6 @@ def _autoregister_patch(
         + f"+# Replace `{registry_name}` with `{base_name}.__registry__`.\n"
         + "*** End Patch"
     )
-
-
 
 
 def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
@@ -5353,8 +5343,6 @@ def _is_framework_lineage_symbol(symbol: str) -> bool:
         "collect",
         "registered_specs_for_literal_type",
     }
-
-
 
 
 @dataclass(frozen=True)
@@ -5948,9 +5936,14 @@ def _policy_selector_match(
             ),
         )
         .filter(
-            lambda selector_match: bool(selector_match[2])
-            and any(
-                (_looks_like_self_selector_source(expr) for expr in selector_match[2])
+            lambda selector_match: (
+                bool(selector_match[2])
+                and any(
+                    (
+                        _looks_like_self_selector_source(expr)
+                        for expr in selector_match[2]
+                    )
+                )
             )
         )
         .unwrap_or_none()
@@ -6158,7 +6151,6 @@ class ReturnStatementAuthority:
 
 
 RETURN_STATEMENT_AUTHORITY = ReturnStatementAuthority()
-
 
 
 def _ast_type_name(node: ast.AST) -> str | None:
@@ -8421,7 +8413,6 @@ class HelperSyntaxProjectionAuthority:
             )
         )
 
-
     def typed_field_map(self, node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
         typed_fields: dict[str, str] = {}
         for statement in node.body:
@@ -8732,7 +8723,9 @@ class _ZippedSourceLocationEvidenceShape:
         file_attribute_name = _self_attribute_name(source_location_call.args[0])
         line_variable_name = name_id(source_location_call.args[1])
         symbol_variable_name = name_id(source_location_call.args[2])
-        comprehension = single_item(generator.generators) if generator is not None else None
+        comprehension = (
+            single_item(generator.generators) if generator is not None else None
+        )
         if (
             file_attribute_name is None
             or line_variable_name is None
@@ -9347,150 +9340,6 @@ def _cli_argument_spec_fields(
     return tuple(specs)
 
 
-_SEMANTIC_TAG_KEYWORDS = frozenset({"capability_tags", "observation_tags"})
-_SEMANTIC_TAG_CONSTANT_SUFFIX = {
-    "capability_tags": "CAPABILITY_TAGS",
-    "observation_tags": "OBSERVATION_TAGS",
-}
-
-
-def _semantic_tag_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return name_id(node)
-
-
-def _semantic_tag_tuple_value(
-    keyword: ast.keyword,
-) -> tuple[str, tuple[str, ...]] | None:
-    tuple_node = as_ast(keyword.value, ast.Tuple)
-    if tuple_node is None or len(tuple_node.elts) < 2:
-        return None
-    tag_names = tuple(_semantic_tag_name(element) for element in tuple_node.elts)
-    if any((tag_name is None for tag_name in tag_names)):
-        return None
-    return ast.unparse(tuple_node), cast(tuple[str, ...], tag_names)
-
-
-def _semantic_tag_constant_name(keyword_name: str, tag_names: tuple[str, ...]) -> str:
-    role_tokens = tuple(
-        (
-            tag_name.removesuffix("_MAPPING").removesuffix("_TAG")
-            for tag_name in tag_names
-        )
-    )
-    return f"_{'_'.join(role_tokens)}_{_SEMANTIC_TAG_CONSTANT_SUFFIX[keyword_name]}"
-
-
-def _semantic_tag_tuple_boilerplate_candidates(
-    module: ParsedModule,
-) -> tuple[SemanticTagTupleBoilerplateCandidate, ...]:
-    candidates: list[SemanticTagTupleBoilerplateCandidate] = []
-    for node in _walk_nodes(module.module):
-        if not isinstance(node, ast.keyword) or node.arg not in _SEMANTIC_TAG_KEYWORDS:
-            continue
-        tuple_value = _semantic_tag_tuple_value(node)
-        if tuple_value is None:
-            continue
-        _, tag_names = tuple_value
-        location = SourceLocation(str(module.path), node.lineno, node.arg)
-        candidates.append(
-            SemanticTagTupleBoilerplateCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                evidence_locations=(location,),
-                keyword_name=node.arg,
-                constant_name=_semantic_tag_constant_name(node.arg, tag_names),
-                tag_names=tag_names,
-            )
-        )
-    return (*candidates, *_derivable_semantic_tag_constant_candidates(module))
-
-
-_SEMANTIC_TAG_CONSTANT_SUFFIXES = tuple(_SEMANTIC_TAG_CONSTANT_SUFFIX.values())
-_SEMANTIC_TAG_ASSIGNMENT_OWNER_NAMES = frozenset(
-    member_type.__name__ for member_type in LabeledStrEnum.__subclasses__()
-)
-
-
-def _semantic_tag_constant_member_names(target_name: str | None) -> tuple[str, ...]:
-    if target_name is None:
-        return ()
-    try:
-        return tuple(
-            tag.name for tag in _semantic_tag_tuple_from_constant_name(target_name)
-        )
-    except (StopIteration, ValueError):
-        return ()
-
-
-def _semantic_tag_tuple_member_names(
-    tuple_node: ast.Tuple | None,
-) -> tuple[str, ...]:
-    if tuple_node is None or len(tuple_node.elts) < 2:
-        return ()
-    tag_names = tuple(
-        (
-            element.attr
-            for element in tuple_node.elts
-            if isinstance(element, ast.Attribute)
-            and name_id(element.value) in _SEMANTIC_TAG_ASSIGNMENT_OWNER_NAMES
-        )
-    )
-    return tag_names if len(tag_names) == len(tuple_node.elts) else ()
-
-
-def _derivable_semantic_tag_constant_assignment(
-    statement: ast.stmt,
-) -> tuple[str, str] | None:
-    assignment = as_ast(statement, ast.Assign)
-    target_name = name_id(single_item(assignment.targets)) if assignment else None
-    tuple_node = as_ast(assignment.value, ast.Tuple) if assignment else None
-    assigned_tag_names = _semantic_tag_tuple_member_names(tuple_node)
-    if (
-        not assigned_tag_names
-        or assigned_tag_names != _semantic_tag_constant_member_names(target_name)
-    ):
-        return None
-    suffix = next(
-        suffix
-        for suffix in _SEMANTIC_TAG_CONSTANT_SUFFIXES
-        if cast(str, target_name).endswith(f"_{suffix}")
-    )
-    return suffix.removesuffix("_TAGS").lower(), cast(str, target_name)
-
-
-def _derivable_semantic_tag_constant_candidates(
-    module: ParsedModule,
-) -> tuple[SemanticTagTupleBoilerplateCandidate, ...]:
-    grouped: dict[str, list[tuple[str, SourceLocation]]] = defaultdict(list)
-    for statement in module.module.body:
-        constant = _derivable_semantic_tag_constant_assignment(statement)
-        if constant is None:
-            continue
-        tag_kind, constant_name = constant
-        grouped[tag_kind].append(
-            (
-                constant_name,
-                SourceLocation(str(module.path), statement.lineno, constant_name),
-            )
-        )
-    return tuple(
-        (
-            SemanticTagTupleBoilerplateCandidate(
-                file_path=str(module.path),
-                line=min((location.line for _, location in entries)),
-                evidence_locations=tuple((location for _, location in entries)),
-                keyword_name=tag_kind,
-                constant_name=f"{tag_kind}_tag_constants",
-                tag_names=tuple((constant_name for constant_name, _ in entries)),
-                source_kind="derived_constant",
-            )
-            for tag_kind, entries in sorted(grouped.items())
-        )
-    )
-
-
 def _ast_expression_equal(left: ast.AST, right: ast.AST) -> bool:
     return ast.dump(left, include_attributes=False) == ast.dump(
         right, include_attributes=False
@@ -10015,8 +9864,10 @@ def _schema_accessor_self_fetch_func(call: ast.Call) -> ast.Attribute | None:
     return (
         Maybe.of(as_ast(call.func, ast.Attribute))
         .filter(
-            lambda func: isinstance(func.value, ast.Name)
-            and func.value.id == _SCHEMA_ACCESSOR_SELF_NAME
+            lambda func: (
+                isinstance(func.value, ast.Name)
+                and func.value.id == _SCHEMA_ACCESSOR_SELF_NAME
+            )
         )
         .unwrap_or_none()
     )
@@ -10666,8 +10517,10 @@ def _optional_keyword_bag_write(
             lambda context, target: (context[0], context[1], target),
         )
         .filter(
-            lambda context: name_id(context[2].value) == bag_name
-            and name_id(context[1].value) == context[0]
+            lambda context: (
+                name_id(context[2].value) == bag_name
+                and name_id(context[1].value) == context[0]
+            )
         )
         .combine(
             lambda context: _constant_string(context[2].slice),
@@ -10812,10 +10665,6 @@ def _optional_parameter_branch_candidates(
         _optional_parameter_branch_candidates_for_function,
         sort_key=lambda item: (item.file_path, item.line, item.parameter_name),
     )
-
-
-
-
 
 
 def _indexed_family_wrapper_candidates_for_function(

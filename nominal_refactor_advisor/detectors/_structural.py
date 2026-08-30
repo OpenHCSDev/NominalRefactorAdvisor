@@ -24,6 +24,7 @@ from ..semantic_match import (
     Maybe,
     attribute_call_match,
 )
+from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import *
 from ._helpers import *
 from ._helpers import (
@@ -36,6 +37,8 @@ _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
 )
 RoleFieldObservationGroups: TypeAlias = dict[str, dict[str, FieldObservation]]
+
+
 def _reflective_self_attribute_compression_certificate(
     candidate: ReflectiveSelfAttributeCandidate,
 ) -> CompressionCertificate:
@@ -261,7 +264,11 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
         "Several carrier classes repeat the same semantic slice under renamed fields such as `line` vs `method_line` or `name_family` vs `class_names`. One shared base is not enough when those slices are orthogonal; the architecture wants reusable mixins composed through multiple inheritance.",
         "one authoritative semantic carrier spine plus reusable semantic-role mixins",
         "same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
-        _NOMINAL_IDENTITY_AUTHORITATIVE_MRO_ORDERING_CAPABILITY_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.MRO_ORDERING,
+        ),
     )
 
     def _findings_for_module(
@@ -556,8 +563,16 @@ class PrefixedRoleFieldBundleDetector(
         "A record that repeats the same member family behind role prefixes is encoding nominal role identity in string-shaped field names. The docs prefer explicit role records or ABC/dataclass side objects so the schema, PyTree behavior, and type-level role identity have one authoritative boundary.",
         "explicit nominal role records instead of parallel role-prefixed fields",
         "same semantic member family repeats under several leading role prefixes in one record",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     )
 
     def _finding_for_candidate(
@@ -600,8 +615,15 @@ class RepeatedPropertyAliasHookDetector(
         "Several subclasses re-declare the same one-line property hook over the same backing attribute. That is non-orthogonal hook duplication and should live once in a shared base or mixin.",
         "single authoritative hook property implementation for a nominal subclass family",
         "same property hook alias repeats across siblings of one base family",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
     )
 
     def _finding_for_candidate(
@@ -649,8 +671,15 @@ class ConstantPropertyHookDetector(
         "Several subclasses implement the same property as a one-line constant return. That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin.",
         "single authoritative constant hook implementation for a nominal subclass family",
         "same property hook is re-declared as a constant return across one subclass family",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
     )
 
     def _finding_for_candidate(
@@ -789,8 +818,15 @@ declare_candidate_rule_detector(
         "Sibling classes that share a base and implement the same method with the same statement skeleton are paying for one algorithm multiple times. When the differences are a small set of expression coordinates, the base should own the concrete algorithm and leaves should expose only classvars, properties, or abstract hooks for the irreducible residue.",
         "one intermediate ABC owns the shared method skeleton and leaves keep only minimal hooks/declarations",
         "same method across sibling classes has an anti-unifiable statement skeleton with small residue",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.method_name}` in siblings {candidate.class_names} over `{candidate.base_name}` shares "
@@ -833,8 +869,15 @@ declare_candidate_rule_detector(
         "A class family has several methods with compatible anti-unifiable bodies over the same base and subclass set. Treating each method independently misses the larger normal form: the base hierarchy should own the full algorithm family while leaves expose only the combined residue.",
         "one ABC family owns all shared method skeletons and leaf classes keep only residue declarations",
         "multiple semantic-overlap ABC method candidates share the same base and subclass family",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.base_name}` subclasses {candidate.class_names} repeat family methods {candidate.method_names} "
@@ -868,8 +911,15 @@ declare_candidate_rule_detector(
         "A base class has several overlapping subclass method families. Optimizing each repeated override independently can trap the hierarchy in a local minimum; the base should solve the full class-set lattice and place shared algorithms, subset mixins, and partial-overlap layers globally.",
         "one inheritance-lattice cover assigns shared methods to ABCs or mixins while leaves keep only residue declarations",
         "multiple semantic-overlap ABC families under one root have intersecting but non-identical subclass sets",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.base_name}` has a global inheritance lattice over classes {candidate.class_names}: "
@@ -907,8 +957,16 @@ declare_candidate_rule_detector(
         "A semantic-overlap ABC family has several methods whose varying coordinates share the same residue kind signature. Naming classvars and hooks independently per method keeps a second manual axis beside the template hierarchy.",
         "one residue-axis catalog derives classvar and hook declarations for the ABC family",
         "multiple ABC family methods share the same residue coordinate kinds",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.base_name}` family methods {candidate.method_names} share residue kinds "
@@ -938,12 +996,25 @@ declare_candidate_rule_detector(
         "A class that repeats many one-line properties returning literal defaults is using method syntax for data. The default surface should be declared as typed descriptors or a property-default table while real override behavior stays in subclasses.",
         "typed constant-property descriptor defaults on the nominal base",
         "same class repeats constant-return property methods for default hook values",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}` repeats {len(candidate.property_names)} constant property defaults over {candidate.return_expressions}.",
-    scaffold=lambda candidate: "from descriptor_algebra import ConstantProperty\n\nclass Base:\n    property_name = ConstantProperty(default_value)",
-    codemod_patch=lambda candidate: f"# Replace constant-return property methods on `{candidate.class_name}` with `ConstantProperty[...]` descriptors.\n# Keep method syntax only for defaults that allocate or compute.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` repeats {len(candidate.property_names)} constant property defaults over {candidate.return_expressions}."
+    ),
+    scaffold=lambda candidate: (
+        "from descriptor_algebra import ConstantProperty\n\nclass Base:\n    property_name = ConstantProperty(default_value)"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace constant-return property methods on `{candidate.class_name}` with `ConstantProperty[...]` descriptors.\n# Keep method syntax only for defaults that allocate or compute."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.property_names),
         mapping_name=candidate.class_name,
@@ -965,8 +1036,15 @@ class ReflectiveSelfAttributeEscapeDetector(
         "A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. That keeps the contract partial, stringly, and fail-soft.",
         "declared fail-loud nominal attribute contract on the carrier family",
         "class template probes its own required state through reflective string access",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        _PARTIAL_VIEW_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.PARTIAL_VIEW,
+            ObservationTag.NORMALIZED_AST,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1009,7 +1087,11 @@ class ClassvarOnlySiblingLeafDetector(
         "Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should collapse into one declarative family table plus metaprogrammed class generation.",
         "one authoritative declarative family-definition table with class-generation",
         "same class-level family declaration boilerplate repeats across sibling family leaves",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1102,7 +1184,11 @@ declare_candidate_rule_detector(
         "A repeated nominal class family whose bodies contain only declarative class-level data may be a real registered strategy family or a relation table wearing class syntax. Keep explicit subclasses when class identity, inheritance, registry membership, or debugger navigation is the authority. Collapse to a typed declaration table or enum only when no nominal class identity is consumed. Do not replace clear nominal subclasses with dynamic `type(...)` materialization.",
         "explicit nominal subclasses for behavioral/registered families, or one typed table/enum for pure data families",
         "same semantic class family repeats class declarations whose bodies are only metadata",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     ),
     summary=_metadata_only_class_family_summary,
     evidence=lambda candidate: candidate.evidence,
@@ -1193,7 +1279,11 @@ class DynamicClassMaterializationDetector(EvidenceOnlyPerModuleDetector):
         "Dynamic `type(...)` materialization for public strategy or policy classes hides inheritance, class identity, navigation, and debugger affordances. If consumers need class objects, keep explicit subclasses and move repeated behavior into a base class. Use tables/enums only when consumers need data rows rather than nominal classes.",
         "explicit nominal subclasses with shared base behavior, or pure data rows with no generated public classes",
         "public class-like names are generated through `type(...)` materialization instead of declared as nominal subclasses",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     )
 
     def _minimum_evidence(self, config: DetectorConfig) -> int:
@@ -1315,7 +1405,11 @@ class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
         "AutoRegisterMeta is a metaclass for behavioral plugin families with lazy discovery and subclass registration. When applied to classes whose bodies contain only declarative class-level data, it turns a configuration table into an implicit registry. The metadata should live in an authoritative typed declaration table or enum, and AutoRegisterMeta should be reserved for families where subclasses implement genuinely different behavior or algorithmic variants.",
         "one authoritative typed declaration table or enum for pure metadata families; AutoRegisterMeta reserved for behavioral plugin families",
         "class uses AutoRegisterMeta but its body contains only metadata assignments with no behavioral methods or abstract contracts",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     )
     detector_id = "autoregister_meta_misuse"
 
@@ -1380,9 +1474,15 @@ declare_candidate_rule_detector(
         "A module that repeatedly assigns `Name = builder('Name', ...)` is encoding a relation between exported names and builder payloads in duplicated assignment syntax. The names, schemas, bases, and options should live in one typed catalog that materializes the declarations.",
         "one declaration catalog feeding a builder materializer",
         "same self-naming module-level builder call repeats across sibling declarations",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     ),
-    summary=lambda candidate: f"{len(candidate.class_names)} `{candidate.builder_name}` assignments repeat {candidate.line_count} lines of self-naming declaration calls with keywords {candidate.keyword_names}.",
+    summary=lambda candidate: (
+        f"{len(candidate.class_names)} `{candidate.builder_name}` assignments repeat {candidate.line_count} lines of self-naming declaration calls with keywords {candidate.keyword_names}."
+    ),
     evidence=lambda candidate: candidate.evidence,
     scaffold=lambda candidate: (
         "DECLARATIONS = (...)\n"
@@ -1412,13 +1512,27 @@ declare_candidate_rule_detector(
         "Several classes repeat the same contiguous base bundle. That bundle is already a semantic composition unit, so it should have a nominal name and be reused as one ABC/mixin rather than respelled across implementation classes.",
         "named ABC/mixin for one repeated semantic MRO bundle",
         "class family repeats the same composable base sequence in each class declaration",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
-    summary=lambda candidate: f"Classes {candidate.class_names} repeat MRO bundle {candidate.base_names} across {candidate.class_count} declarations.",
+    summary=lambda candidate: (
+        f"Classes {candidate.class_names} repeat MRO bundle {candidate.base_names} across {candidate.class_count} declarations."
+    ),
     evidence=lambda candidate: candidate.evidence,
-    scaffold=lambda candidate: f"class SharedSemanticMixin({', '.join(candidate.base_names)}, ABC):\n    pass",
-    codemod_patch=lambda candidate: "# Extract the repeated contiguous base bundle into one named ABC/mixin.\n# Replace the repeated base sequence in each class with that nominal bundle and keep only class-specific orthogonal bases explicit.",
+    scaffold=lambda candidate: (
+        f"class SharedSemanticMixin({', '.join(candidate.base_names)}, ABC):\n    pass"
+    ),
+    codemod_patch=lambda candidate: (
+        "# Extract the repeated contiguous base bundle into one named ABC/mixin.\n# Replace the repeated base sequence in each class with that nominal bundle and keep only class-specific orthogonal bases explicit."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.class_count,
         mapping_name="mro-base-bundle",
@@ -1440,7 +1554,11 @@ class TypeIndexedDefinitionBoilerplateDetector(
         "Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. That metadata should live once in a typed declaration table and definition-time materializer.",
         "one authoritative typed declaration table for family generation and export derivation",
         "same type-indexed family definition and alias boilerplate repeats across sibling declarations",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1484,7 +1602,11 @@ class DerivedExportSurfaceDetector(
         "A module manually enumerates export names even though those exports are derivable from one local nominal class family. That creates a second authority for the public surface.",
         "one derived export surface projected from the authoritative class family",
         "manual export tuple/list repeats names already implied by local type families",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1525,16 +1647,26 @@ declare_candidate_rule_detector(
         "A module hand-maintains `__all__` even though the exported names are derivable from the module's own public declarations. That creates a second authority for the public surface.",
         "one derived public API surface projected from the module's authoritative declarations",
         "manual public export list repeats names already present in module bindings",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     ),
-    summary=lambda api_candidate: f"`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings.",
+    summary=lambda api_candidate: (
+        f"`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings."
+    ),
     evidence=lambda api_candidate: (
         SourceLocation(
             api_candidate.file_path, api_candidate.line, api_candidate.export_symbol
         ),
     ),
-    scaffold=lambda api_candidate: "def is_public_api_export(name: str, value: object) -> bool:\n    return not name.startswith('_') and is_public_binding(value)\n\n__all__ = sorted(\n    name for name, value in globals().items() if is_public_api_export(name, value)\n)",
-    codemod_patch=lambda api_candidate: f"# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n# Derive the public export surface from module bindings instead of restating names in a second manual surface.",
+    scaffold=lambda api_candidate: (
+        "def is_public_api_export(name: str, value: object) -> bool:\n    return not name.startswith('_') and is_public_binding(value)\n\n__all__ = sorted(\n    name for name, value in globals().items() if is_public_api_export(name, value)\n)"
+    ),
+    codemod_patch=lambda api_candidate: (
+        f"# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n# Derive the public export surface from module bindings instead of restating names in a second manual surface."
+    ),
     metrics=lambda api_candidate: MappingMetrics(
         mapping_site_count=len(api_candidate.exported_names),
         field_count=api_candidate.source_name_count,
@@ -1615,7 +1747,11 @@ class ExportPolicyPredicateDetector(
         "Several modules hand-code derived-surface policy predicates instead of routing those surfaces through one declarative policy helper.",
         "one declarative policy substrate for derived module surfaces",
         "surface-policy helper logic repeats across multiple modules with only orthogonal policy residue",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     )
 
     def _findings_from_compact_projections(
@@ -1680,7 +1816,11 @@ class DerivedIndexedSurfaceDetector(
         "A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. That splits authority between the family and a second registry projection.",
         "one derived index projected from the authoritative local type family",
         "manual dict index repeats keys and values already implied by local type families",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1721,9 +1861,15 @@ declare_candidate_rule_detector(
         "A module manually unions sibling class-level registry queries even though one authoritative query or shared root can derive the full family set.",
         "one derived registry-union query on an authoritative metaclass-registry root or traversal helper",
         "manual union of sibling registry queries repeats information already present in class-time registration",
-        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.ENUMERATION,
+        ),
     ),
-    summary=lambda union_candidate: f"`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}.",
+    summary=lambda union_candidate: (
+        f"`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}."
+    ),
     evidence=lambda union_candidate: (
         SourceLocation(
             union_candidate.file_path,
@@ -1731,8 +1877,12 @@ declare_candidate_rule_detector(
             union_candidate.owner_name,
         ),
     ),
-    scaffold=lambda union_candidate: f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())",
-    codemod_patch=lambda union_candidate: f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand.",
+    scaffold=lambda union_candidate: (
+        f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())"
+    ),
+    codemod_patch=lambda union_candidate: (
+        f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand."
+    ),
     metrics=lambda union_candidate: RegistrationMetrics.from_class_names(
         registration_site_count=len(union_candidate.root_names),
         registry_name=union_candidate.accessor_name,
@@ -1790,7 +1940,11 @@ declare_candidate_rule_detector(
         "A function accepts a union of concrete class objects, then treats the parameter as one constructor or class-level capability. That concrete roster is a local re-encoding of a nominal contract.",
         "one shared ABC/protocol/base type used as type[SharedContract] or a TypeVar bound to it",
         "function parameter annotation unions concrete class objects while the body calls common class-level behavior on that parameter",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.function_name}.{candidate.parameter_name}` is annotated as a concrete class-object union "
@@ -1822,7 +1976,11 @@ class RegistryTraversalSubstrateDetector(
         "Several helpers re-implement the same subclass traversal and materialization algorithm instead of sharing one authoritative family-discovery substrate.",
         "one authoritative subclass-family discovery substrate with declarative materialization hooks",
         "same subclass traversal algorithm repeats across roots, helpers, or modules with only filter/materialization residue differing",
-        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
     )
 
     def _findings_from_compact_projections(
@@ -2049,12 +2207,14 @@ class _CatalogInstallingMixinShape:
                 )
             )
             .project(
-                lambda statements: Maybe.of(as_ast(statements[0].value, ast.Call))
-                .with_projection(
-                    lambda _first_call: as_ast(statements[1].value, ast.Call)
+                lambda statements: (
+                    Maybe.of(as_ast(statements[0].value, ast.Call))
+                    .with_projection(
+                        lambda _first_call: as_ast(statements[1].value, ast.Call)
+                    )
+                    .map(lambda calls: cls(*calls))
+                    .unwrap_or_none()
                 )
-                .map(lambda calls: cls(*calls))
-                .unwrap_or_none()
             )
             .unwrap_or_none()
         )
@@ -2231,7 +2391,11 @@ class AlternateConstructorFamilyDetector(
         "Several classmethods on one record class rebuild the same keyword schema from different source node types. That provenance family should collapse into one authoritative constructor with dispatch over source kind.",
         "single provenance-aware builder for one record schema",
         "same record schema is rebuilt across sibling alternate constructors for different source types",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
     )
 
     def _finding_for_candidate(
@@ -2263,8 +2427,6 @@ class AlternateConstructorFamilyDetector(
         )
 
 
-
-
 declare_candidate_rule_detector(
     AccumulatorFoldFamilyCandidate,
     high_confidence_certified_spec(
@@ -2273,13 +2435,26 @@ declare_candidate_rule_detector(
         "Several methods instantiate the same accumulator, stream one source iterable through different accumulator step hooks, and return the same projection. The loop skeleton is an algebraic fold and should be one reusable composition primitive.",
         "single accumulator-fold substrate with declarative step hooks",
         "same owner class repeats accumulator initialization, loop, and result projection with only the step hook varying",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
-    summary=lambda fold_candidate: f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`.",
+    summary=lambda fold_candidate: (
+        f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`."
+    ),
     evidence=lambda fold_candidate: fold_candidate.evidence,
-    scaffold=lambda fold_candidate: "@dataclass(frozen=True)\nclass AccumulatorFoldSpec:\n    name: str\n    step_method_name: str\n\nclass AccumulatorFoldMixin:\n    __accumulator_folds__: ClassVar[AccumulatorFoldCatalog]\n    def __init_subclass__(cls):\n        cls.__accumulator_folds__.install(cls)",
-    codemod_patch=lambda fold_candidate: f"# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n# Keep accumulator type and result projection in one authority; each source method only declares its step hook.",
+    scaffold=lambda fold_candidate: (
+        "@dataclass(frozen=True)\nclass AccumulatorFoldSpec:\n    name: str\n    step_method_name: str\n\nclass AccumulatorFoldMixin:\n    __accumulator_folds__: ClassVar[AccumulatorFoldCatalog]\n    def __init_subclass__(cls):\n        cls.__accumulator_folds__.install(cls)"
+    ),
+    codemod_patch=lambda fold_candidate: (
+        f"# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n# Keep accumulator type and result projection in one authority; each source method only declares its step hook."
+    ),
     metrics=lambda fold_candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(fold_candidate.method_names),
         statement_count=3,
@@ -2303,13 +2478,26 @@ declare_candidate_rule_detector(
         "Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm.",
         "one reusable catalog-installing subclass hook with declarative catalog attribute residue",
         "sibling mixins repeat an identical class-creation hook over different catalog classvars",
-        _SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_AUTHORITATIVE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.MRO_ORDERING,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda catalog_candidate: f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}.",
+    summary=lambda catalog_candidate: (
+        f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}."
+    ),
     evidence=lambda catalog_candidate: catalog_candidate.evidence,
-    scaffold=lambda catalog_candidate: "class CatalogInstallingMixin:\n    __catalog_attribute__: ClassVar[str]\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        getattr(cls, cls.__catalog_attribute__).install(cls)",
-    codemod_patch=lambda catalog_candidate: "# Delete the repeated `__init_subclass__` bodies after moving the lifecycle code into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin.",
+    scaffold=lambda catalog_candidate: (
+        "class CatalogInstallingMixin:\n    __catalog_attribute__: ClassVar[str]\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        getattr(cls, cls.__catalog_attribute__).install(cls)"
+    ),
+    codemod_patch=lambda catalog_candidate: (
+        "# Delete the repeated `__init_subclass__` bodies after moving the lifecycle code into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin."
+    ),
     metrics=lambda catalog_candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(catalog_candidate.class_names),
         statement_count=2,
@@ -2333,13 +2521,26 @@ declare_candidate_rule_detector(
         "Several methods repeat `match = pattern.<mode>(text); return match.group(n) if match else None`. The pattern field and matcher mode are data; the extractor algorithm should be one descriptor or helper substrate.",
         "one regex group extraction descriptor with declared pattern and matcher coordinates",
         "same class repeats regex group extractor methods over different pattern fields",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
-    summary=lambda regex_candidate: f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}.",
+    summary=lambda regex_candidate: (
+        f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}."
+    ),
     evidence=lambda regex_candidate: regex_candidate.evidence,
-    scaffold=lambda regex_candidate: "@dataclass(frozen=True)\nclass RegexGroupExtractor:\n    pattern_attr: str\n    matcher_name: str = 'search'\n    group_index: int = 1\n    def __get__(self, instance, owner): ...",
-    codemod_patch=lambda regex_candidate: "# Replace repeated regex extractor methods with descriptor rows.\n# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index.",
+    scaffold=lambda regex_candidate: (
+        "@dataclass(frozen=True)\nclass RegexGroupExtractor:\n    pattern_attr: str\n    matcher_name: str = 'search'\n    group_index: int = 1\n    def __get__(self, instance, owner): ..."
+    ),
+    codemod_patch=lambda regex_candidate: (
+        "# Replace repeated regex extractor methods with descriptor rows.\n# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index."
+    ),
     metrics=lambda regex_candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(regex_candidate.method_names),
         mapping_name=regex_candidate.class_name,
@@ -2347,8 +2548,6 @@ declare_candidate_rule_detector(
     ),
     candidate_collector=_regex_group_extractor_family_candidates,
 )
-
-
 
 
 class SupportPreludeModuleFamilyDetector(
@@ -2363,8 +2562,15 @@ class SupportPreludeModuleFamilyDetector(
         "Many one-class modules importing the same support prelude form an implicit module family. The family boundary should be derived from one manifest/catalog rather than remaining visible only as repeated import shape.",
         "one manifest authority for a support-prelude module family",
         "several one-class modules share the same star-import support prelude without a module-family catalog",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     )
 
     def _findings_from_compact_projections(
@@ -2405,13 +2611,27 @@ declare_candidate_rule_detector(
         "Several module-level constant rows instantiate the same policy constructor with the same argument schema. Those rows are semantic data, so the architecture should derive them from one role/catalog authority rather than spell each constructor call by hand.",
         "one constructor-row catalog keyed by semantic policy role",
         "same module has multiple constant rows assigned from the same constructor shape",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        _KEYWORD_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        (
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     ),
-    summary=lambda policy_candidate: f"Module constants {', '.join(policy_candidate.row_names)} repeat `{policy_candidate.constructor_name}` constructor rows with schema {policy_candidate.field_names}.",
+    summary=lambda policy_candidate: (
+        f"Module constants {', '.join(policy_candidate.row_names)} repeat `{policy_candidate.constructor_name}` constructor rows with schema {policy_candidate.field_names}."
+    ),
     evidence=lambda policy_candidate: policy_candidate.evidence,
-    scaffold=lambda policy_candidate: "@dataclass(frozen=True)\nclass PolicyRowSpec:\n    role_name: str\n    constructor_args: tuple[object, ...]\n\nclass PolicyCatalog:\n    def materialize(self) -> dict[str, object]: ...",
-    codemod_patch=lambda policy_candidate: "# Replace repeated module-level constructor rows with one semantic policy catalog.\n# Keep role names and constructor coordinates as data, then derive the module constants from the catalog.",
+    scaffold=lambda policy_candidate: (
+        "@dataclass(frozen=True)\nclass PolicyRowSpec:\n    role_name: str\n    constructor_args: tuple[object, ...]\n\nclass PolicyCatalog:\n    def materialize(self) -> dict[str, object]: ..."
+    ),
+    codemod_patch=lambda policy_candidate: (
+        "# Replace repeated module-level constructor rows with one semantic policy catalog.\n# Keep role names and constructor coordinates as data, then derive the module constants from the catalog."
+    ),
     metrics=lambda policy_candidate: MappingMetrics(
         mapping_site_count=len(policy_candidate.row_names),
         field_count=len(policy_candidate.field_names),
@@ -2430,11 +2650,21 @@ declare_candidate_rule_detector(
         "A class selects one of its own fields through reflective indirection instead of declaring one fail-loud hook or one canonical field.",
         "declared nominal count/value hook instead of selector-driven reflective lookup",
         "class template selects its own state through dynamic reflective field names",
-        _FAIL_LOUD_CONTRACTS_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
     ),
-    summary=lambda dynamic_candidate: f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal value.",
-    scaffold=lambda dynamic_candidate: "class DeclaredCountValue(ABC):\n    @property\n    @abstractmethod\n    def count_value(self) -> int: ...",
-    codemod_patch=lambda dynamic_candidate: f"# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier.",
+    summary=lambda dynamic_candidate: (
+        f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal value."
+    ),
+    scaffold=lambda dynamic_candidate: (
+        "class DeclaredCountValue(ABC):\n    @property\n    @abstractmethod\n    def count_value(self) -> int: ..."
+    ),
+    codemod_patch=lambda dynamic_candidate: (
+        f"# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier."
+    ),
     candidate_collector=_dynamic_self_field_selection_candidates,
 )
 
@@ -2446,12 +2676,26 @@ declare_candidate_rule_detector(
         "The docs say a class family should not smuggle behavior through string selectors and reflection. When subclasses only supply constant names that are resolved through globals, getattr, or __dict__, the boundary should become one declared nominal hook or typed handle.",
         "declared nominal hook or typed family handle instead of string selector plus reflection",
         "class family encodes behavior with constant selector strings and resolves it reflectively",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        _STRING_DISPATCH_SEMANTIC_STRING_LITERAL_CLASS_FAMILY_OBSERVATION_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.STRING_DISPATCH,
+            ObservationTag.SEMANTIC_STRING_LITERAL,
+            ObservationTag.CLASS_FAMILY,
+        ),
     ),
-    summary=lambda reflective_candidate: f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes.",
-    scaffold=lambda reflective_candidate: "class DeclaredNominalRole(ABC):\n    @classmethod\n    @abstractmethod\n    def declared_handle(cls) -> object: ...",
-    codemod_patch=lambda reflective_candidate: f"# Delete the reflective `{reflective_candidate.lookup_kind}` lookup keyed by `{reflective_candidate.selector_attr_name}`.\n# Move the family boundary to one declared hook, typed handle, or polymorphic method.",
+    summary=lambda reflective_candidate: (
+        f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes."
+    ),
+    scaffold=lambda reflective_candidate: (
+        "class DeclaredNominalRole(ABC):\n    @classmethod\n    @abstractmethod\n    def declared_handle(cls) -> object: ..."
+    ),
+    codemod_patch=lambda reflective_candidate: (
+        f"# Delete the reflective `{reflective_candidate.lookup_kind}` lookup keyed by `{reflective_candidate.selector_attr_name}`.\n# Move the family boundary to one declared hook, typed handle, or polymorphic method."
+    ),
     metrics=lambda reflective_candidate: SentinelSimulationMetrics(
         class_count=len(reflective_candidate.concrete_class_names),
         branch_site_count=1,

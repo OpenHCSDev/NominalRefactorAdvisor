@@ -373,15 +373,6 @@ def test_builtin_call_name_declares_collection_factory_names() -> None:
     )
 
 
-def test_labeled_str_enum_subclasses_own_name_aliases() -> None:
-    assert CapabilityTag.name_aliases() == {"AUTHORITATIVE": "AUTHORITATIVE_MAPPING"}
-    assert ObservationTag.name_aliases() == {
-        "EXPORT": "EXPORT_MAPPING",
-        "KEYWORD": "KEYWORD_MAPPING",
-        "LINEAGE": "LINEAGE_MAPPING",
-    }
-
-
 def _test_scan_economics_proof(
     label: str,
     path: Path,
@@ -633,8 +624,9 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
         mechanical_applicability.actionability is CodemodActionability.SAFE_MECHANICAL
     )
     assert "Safe mechanical rewrite" in mechanical_applicability.agent_action
-    assert mechanical_applicability.to_dict()["strategy_id"] == (
-        mechanical_strategy.to_dict()["strategy_id"]
+    assert (
+        mechanical_applicability.to_dict()["strategy_id"]
+        == (mechanical_strategy.to_dict()["strategy_id"])
     )
     assert mechanical_applicability.to_dict()["safe_to_apply"] is True
     assert planned_candidate.has_planned_rewrites
@@ -1056,8 +1048,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
     ).with_operation(
         ReplaceTargetOperation(
             replacement_source=(
-                "    def run(self, value):\n"
-                "        return AlphaAuthority.run(value)\n"
+                "    def run(self, value):\n        return AlphaAuthority.run(value)\n"
             ),
             target=SourceRewriteTarget(
                 qualname="Alpha.run",
@@ -6546,8 +6537,6 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
-
-
 def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:
     detector_root = (
         Path(__file__).resolve().parents[1] / "nominal_refactor_advisor" / "detectors"
@@ -7762,9 +7751,9 @@ def caller():
     )
     module = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)[0]
     projection = (
-        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily.collect(
-            module
-        )[0]
+        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily.collect(module)[
+            0
+        ]
     )
     function = next(
         function
@@ -7772,7 +7761,10 @@ def caller():
         if function.function_name == "_helper"
     )
 
-    assert dict(projection.total_counts)["_helper"] - function.own_name_reference_count == 1
+    assert (
+        dict(projection.total_counts)["_helper"] - function.own_name_reference_count
+        == 1
+    )
 
 
 def test_parallel_analyze_modules_matches_sequential_stable_ids(
@@ -7896,7 +7888,6 @@ def test_parse_python_modules_canonicalizes_equal_large_line_numbers(
     assert line_numbers[0] is line_numbers[1]
 
 
-
 def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass ProjectSource:\n    pass\n")
     env_module = tmp_path / ".venv/lib/python/site-packages/bad_encoding.py"
@@ -7906,8 +7897,6 @@ def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> 
     modules = parse_python_modules(tmp_path)
 
     assert [module.module_name for module in modules] == ["pkg.mod"]
-
-
 
 
 def test_detects_sibling_role_helper_symmetry(tmp_path: Path) -> None:
@@ -7949,12 +7938,6 @@ def test_detects_typing_protocol_contracts(tmp_path: Path) -> None:
     assert "ColumnarRows" in finding.summary
     assert "ABC" in finding.title
     assert "ContractName.register" in (finding.scaffold or "")
-
-
-
-
-
-
 
 
 def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
@@ -8065,8 +8048,6 @@ def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
     assert "State" in case_finding.summary
     assert case_finding.scaffold is not None
     assert "class StateFamily(ABC)" in case_finding.scaffold
-
-
 
 
 def test_variant_method_detector_requires_a_variant_seed(tmp_path: Path) -> None:
@@ -9549,7 +9530,6 @@ def test_detects_repeated_result_assembly_pipeline(tmp_path: Path) -> None:
     assert "sample_biased_rotations" in finding.summary
 
 
-
 def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -9571,8 +9551,6 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     assert "SafeRequest" not in finding.summary
     assert "Protocol" not in (finding.scaffold or "")
     assert "protocol" not in (finding.codemod_patch or "").lower()
-
-
 
 
 def test_flags_abstraction_detector_without_backend_loc_payoff_guard(
@@ -9951,7 +9929,7 @@ def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass LocalRuleDetector(IssueDetector):\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="Local rule",\n        why="Local rule",\n        capability_gap="local rule",\n        relation_context="local rule",\n        capability_tags=_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,\n        observation_tags=_DATAFLOW_ROOT_OBSERVATION_TAGS,\n    )\n',
+        '\nclass LocalRuleDetector(IssueDetector):\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="Local rule",\n        why="Local rule",\n        capability_gap="local rule",\n        relation_context="local rule",\n        capability_tags=(\n            CapabilityTag.AUTHORITATIVE_MAPPING,\n            CapabilityTag.PROVENANCE,\n        ),\n        observation_tags=(ObservationTag.DATAFLOW_ROOT,),\n    )\n',
     )
     findings = [
         item
@@ -10002,16 +9980,15 @@ def test_disabled_simple_property_alias_detector_family_is_removed() -> None:
         for detector_type in default_detector_types_for_analysis()
     }
 
-    assert all(
-        not hasattr(base_detectors, name) for name in removed_candidate_names
+    assert all(not hasattr(base_detectors, name) for name in removed_candidate_names)
+    assert all(not hasattr(helper_detectors, name) for name in removed_helper_names)
+    assert (
+        not {
+            "simple_property_alias_class",
+            "simple_property_alias_method",
+        }
+        & detector_ids
     )
-    assert all(
-        not hasattr(helper_detectors, name) for name in removed_helper_names
-    )
-    assert not {
-        "simple_property_alias_class",
-        "simple_property_alias_method",
-    } & detector_ids
 
 
 def test_detects_source_location_evidence_property(tmp_path: Path) -> None:
@@ -10064,7 +10041,6 @@ def test_detects_zipped_source_location_evidence_property(tmp_path: Path) -> Non
     assert all(not hasattr(helper_detectors, name) for name in removed_names)
 
 
-
 def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -10078,9 +10054,7 @@ def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
     ]
     assert not findings
     module = parse_python_modules(tmp_path)[0]
-    node = next(
-        item for item in module.module.body if isinstance(item, ast.ClassDef)
-    )
+    node = next(item for item in module.module.body if isinstance(item, ast.ClassDef))
     candidate = base_detectors.FieldOnlyFrozenDataclassCandidate.from_class(
         module,
         node,
@@ -10117,113 +10091,6 @@ def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
     assert len(findings) == 1
     assert "collect.Visitor" in findings[0].summary
     assert "ClassFunctionStackNodeVisitor" in (findings[0].scaffold or "")
-
-
-def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass First:\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="First",\n        why="First",\n        capability_gap="first",\n        relation_context="first",\n        capability_tags=(\n            CapabilityTag.AUTHORITATIVE_MAPPING,\n            CapabilityTag.PROVENANCE,\n            CapabilityTag.NOMINAL_IDENTITY,\n        ),\n    )\n\n\nclass Second:\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="Second",\n        why="Second",\n        capability_gap="second",\n        relation_context="second",\n        capability_tags=(\n            CapabilityTag.AUTHORITATIVE_MAPPING,\n            CapabilityTag.PROVENANCE,\n            CapabilityTag.NOMINAL_IDENTITY,\n        ),\n    )\n',
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "semantic_tag_tuple_boilerplate"
-    ]
-    assert len(findings) == 2
-    assert all(
-        (
-            "AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS"
-            in finding.summary
-            for finding in findings
-        )
-    )
-
-
-def test_detects_derivable_semantic_tag_constant(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\n_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS = (\n    CapabilityTag.AUTHORITATIVE_MAPPING,\n    CapabilityTag.PROVENANCE,\n    CapabilityTag.NOMINAL_IDENTITY,\n)\n\n_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS = (\n    ObservationTag.DATAFLOW_ROOT,\n    ObservationTag.NORMALIZED_AST,\n)\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "semantic_tag_tuple_boilerplate"
-    ]
-    assert len(findings) == 2
-    assert any(
-        ("1 capability tag constants" in finding.summary for finding in findings)
-    )
-    assert any(
-        ("1 observation tag constants" in finding.summary for finding in findings)
-    )
-
-
-def test_derived_semantic_tag_constants_synthesize_recipe_plan(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\n_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS = (\n"
-        "    CapabilityTag.AUTHORITATIVE_MAPPING,\n"
-        "    CapabilityTag.PROVENANCE,\n"
-        "    CapabilityTag.NOMINAL_IDENTITY,\n"
-        ")\n\n"
-        "_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS = (\n"
-        "    ObservationTag.DATAFLOW_ROOT,\n"
-        "    ObservationTag.NORMALIZED_AST,\n"
-        ")\n\n"
-        "def keep_runtime_code():\n"
-        "    return 42\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "semantic_tag_tuple_boilerplate"
-    )
-    source_index = build_source_index(modules, findings)
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("semantic_tag_tuple_boilerplate",),
-    )
-    simulation = plan.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-
-    assert plan.expected_removed_finding_count == 2
-    assert len(plan.document.recipes) == 1
-    operations = tuple(
-        operation.to_dict() for operation in plan.document.recipes[0].operations
-    )
-    assert {
-        assignment_name
-        for operation in operations
-        for assignment_name in operation["assignment_names"]
-    } == {
-        "_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS",
-        "_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS",
-    }
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-    simulation.document_simulation.apply()
-    rewritten = module_path.read_text()
-    assert "CAPABILITY_TAGS" not in rewritten
-    assert "OBSERVATION_TAGS" not in rewritten
-    assert "def keep_runtime_code" in rewritten
-    remaining = [
-        finding
-        for finding in analyze_modules(parse_python_modules(tmp_path))
-        if finding.detector_id == "semantic_tag_tuple_boilerplate"
-    ]
-    assert remaining == []
 
 
 def test_detects_derived_metric_count_boilerplate(tmp_path: Path) -> None:
@@ -10930,8 +10797,6 @@ def test_markdown_output_handles_multiple_example_skeletons(tmp_path: Path) -> N
     assert "Suggested patch:" in output
 
 
-
-
 def test_observation_graph_caches_derived_groupings() -> None:
     observations = (
         StructuralObservation(
@@ -10997,8 +10862,6 @@ def test_observation_graph_caches_derived_groupings() -> None:
         minimum_witnesses=2,
         minimum_fibers=2,
     )
-
-
 
 
 def test_collects_literal_dispatch_observations_via_spec_family(tmp_path: Path) -> None:
@@ -12995,8 +12858,9 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
-    assert "+class RegisteredHandler(metaclass=AutoRegisterMeta):" in (
-        payload["unified_diff"]
+    assert (
+        "+class RegisteredHandler(metaclass=AutoRegisterMeta):"
+        in (payload["unified_diff"])
     )
     assert module_path.read_text() == original_source
 
@@ -16976,9 +16840,7 @@ def test_selection_guard_kind_has_no_parallel_step_or_compact_authority() -> Non
         "_selection_guard_kind",
     )
 
-    assert all(
-        not hasattr(helper_detectors, name) for name in removed_step_names
-    )
+    assert all(not hasattr(helper_detectors, name) for name in removed_step_names)
     assert not hasattr(class_index_module, "_compact_selection_guard_kind")
 
 
@@ -19776,10 +19638,6 @@ def test_detects_dataclass_field_projection_boilerplate(tmp_path: Path) -> None:
     assert "type annotations" in (finding.codemod_patch or "")
 
 
-
-
-
-
 def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -20036,7 +19894,6 @@ def test_ignores_small_repeated_local_regex_fragments(tmp_path: Path) -> None:
     assert not any(
         (finding.detector_id == "repeated_local_regex_bundle" for finding in findings)
     )
-
 
 
 def test_unreferenced_private_function_uses_repo_wide_call_witness(
@@ -20533,8 +20390,6 @@ def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
     assert isinstance(finding.metrics, DispatchCountMetrics)
     assert finding.metrics.dispatch_site_count == 3
     assert finding.metrics.dispatch_axis == "pattern_id"
-
-
 
 
 def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:
@@ -21677,9 +21532,7 @@ def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
         "_RegisteredUnionAssignmentSourceStep",
         "_registered_union_surface_source",
     )
-    assert all(
-        not hasattr(helper_detectors, name) for name in removed_step_names
-    )
+    assert all(not hasattr(helper_detectors, name) for name in removed_step_names)
 
 
 def test_registered_union_surface_source_accepts_named_assignment() -> None:
@@ -21782,8 +21635,6 @@ def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
     assert "RegistrationShape" in finding.summary
     assert "from_assignment" in finding.summary
     assert "@singledispatchmethod" in (finding.scaffold or "")
-
-
 
 
 def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
@@ -21894,9 +21745,7 @@ def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:
         "_CatalogSuperInitSubclassStep",
         "_CatalogInstallAttributeStep",
     )
-    assert all(
-        not hasattr(structural_detectors, name) for name in removed_step_types
-    )
+    assert all(not hasattr(structural_detectors, name) for name in removed_step_types)
 
 
 @pytest.mark.parametrize(
@@ -21982,11 +21831,8 @@ def test_regex_group_extractor_method_rejects_nonmatching_shapes(
 
     assert isinstance(method, ast.FunctionDef)
     assert (
-        regex_extractor_detectors._RegexGroupExtractorMethod.from_method(method)
-        is None
+        regex_extractor_detectors._RegexGroupExtractorMethod.from_method(method) is None
     )
-
-
 
 
 def test_detects_support_prelude_module_family_without_manifest(tmp_path: Path) -> None:

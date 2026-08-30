@@ -205,7 +205,6 @@ from ..taxonomy import (
     CertificationLevel,
     ConfidenceLevel,
     ObservationTag,
-    LabeledStrEnum,
     SPECULATIVE,
 )
 from ._substrate_support import *
@@ -219,91 +218,6 @@ _REFLECTIVE_SELF_BUILTINS = frozenset(
 )
 _PIPELINE_ASSIGN_STAGE = "assign"
 _PIPELINE_RETURN_STAGE = "return"
-
-SemanticTag = CapabilityTag | ObservationTag
-SemanticTagEnum = type[CapabilityTag] | type[ObservationTag]
-
-_SEMANTIC_TAG_CONSTANT_NAME_RE = re.compile(
-    r"_[A-Z0-9_]+_(?:CAPABILITY|OBSERVATION)_TAGS"
-)
-_SEMANTIC_TAG_ENUMS: tuple[SemanticTagEnum, ...] = tuple(
-    LabeledStrEnum.__subclasses__()
-)
-
-
-def _semantic_tag_constant_suffix_for_enum(tag_enum: SemanticTagEnum) -> str:
-    return f"{re.sub(r'(?<!^)(?=[A-Z])', '_', tag_enum.__name__).upper()}S"
-
-
-@lru_cache(maxsize=None)
-def _semantic_tag_token_matchers(
-    tag_enum: SemanticTagEnum,
-) -> tuple[tuple[tuple[str, ...], SemanticTag], ...]:
-    rows = (
-        *(
-            (tuple(name.split("_")), member)
-            for name, member in tag_enum.__members__.items()
-        ),
-        *(
-            (tuple(alias.split("_")), tag_enum[member_name])
-            for alias, member_name in tag_enum.name_aliases().items()
-        ),
-    )
-    return sorted_tuple(rows, key=lambda row: (-len(row[0]), row[0]))
-
-
-def _semantic_tag_constant_suffix(constant_name: str) -> tuple[str, SemanticTagEnum]:
-    bare_name = constant_name.removeprefix("_")
-    return next(
-        (
-            (suffix, tag_enum)
-            for tag_enum in _SEMANTIC_TAG_ENUMS
-            if (suffix := _semantic_tag_constant_suffix_for_enum(tag_enum))
-            if bare_name.endswith(f"_{suffix}")
-        )
-    )
-
-
-def _semantic_tag_tuple_from_constant_name(
-    constant_name: str,
-) -> tuple[SemanticTag, ...]:
-    suffix, tag_enum = _semantic_tag_constant_suffix(constant_name)
-    unresolved_tokens = (
-        constant_name.removeprefix("_").removesuffix(f"_{suffix}").split("_")
-    )
-    resolved_tags: list[SemanticTag] = []
-    matchers = _semantic_tag_token_matchers(tag_enum)
-    while unresolved_tokens:
-        token_match = next(
-            (
-                (tokens, tag)
-                for tokens, tag in matchers
-                if tuple(unresolved_tokens[: len(tokens)]) == tokens
-            ),
-            None,
-        )
-        if token_match is None:
-            raise ValueError(f"Cannot derive semantic tag constant `{constant_name}`")
-        tokens, tag = token_match
-        resolved_tags.append(tag)
-        del unresolved_tokens[: len(tokens)]
-    return tuple(resolved_tags)
-
-
-@lru_cache(maxsize=1)
-def _semantic_tag_constant_names_from_detector_sources() -> tuple[str, ...]:
-    detector_source = "\n".join(
-        (source_path.read_text() for source_path in Path(__file__).parent.glob("_*.py"))
-    )
-    return sorted_tuple(set(_SEMANTIC_TAG_CONSTANT_NAME_RE.findall(detector_source)))
-
-
-globals().update(
-    {
-        constant_name: _semantic_tag_tuple_from_constant_name(constant_name)
-        for constant_name in _semantic_tag_constant_names_from_detector_sources()
-    }
-)
 
 
 def _detector_id_value_from_class_name(name: str) -> str | None:
@@ -1411,7 +1325,6 @@ class SourceLocationEvidenceProperty:
 class SourceLocationZipEvidenceProperty(
     SourceLocationZipDescriptorShape, ABC, metaclass=AutoRegisterMeta
 ):
-
     def __get__(
         self,
         instance: object | None,
@@ -2215,7 +2128,9 @@ class DetectorDeclaration(Generic[CandidateItemT]):
     def required_namespace_field_names(cls) -> tuple[str, ...]:
         return ("finding_spec", "finding_renderer")
 
-    def namespace(self, module_name: str, firstlineno: int) -> dict[
+    def namespace(
+        self, module_name: str, firstlineno: int
+    ) -> dict[
         str,
         str
         | int
@@ -4474,9 +4389,11 @@ def _transport_shell_assignment_shape(
             ),
         )
         .filter(
-            lambda shape: shape.selector_attr_name is not None
-            and shape.source_param_name is not None
-            and shape.constructor_name is not None
+            lambda shape: (
+                shape.selector_attr_name is not None
+                and shape.source_param_name is not None
+                and shape.constructor_name is not None
+            )
         )
         .map(
             lambda shape: _TransportShellAssignmentShape(
@@ -4581,8 +4498,10 @@ def _transport_shell_inner_hook_name(
     return (
         Maybe.of(inner_call)
         .filter(
-            lambda call: not call.keywords
-            and single_call_arg_name(call) == intermediate_var_name
+            lambda call: (
+                not call.keywords
+                and single_call_arg_name(call) == intermediate_var_name
+            )
         )
         .project(_self_method_call_name)
         .unwrap_or_none()
@@ -6111,8 +6030,10 @@ def _selection_helper_shape(
             lambda returned, generator: _SelectionDictCompContext(returned, generator),
         )
         .filter(
-            lambda context: not context.generator.ifs
-            and isinstance(context.generator.target, ast.Name)
+            lambda context: (
+                not context.generator.ifs
+                and isinstance(context.generator.target, ast.Name)
+            )
         )
         .combine(
             lambda context: _selection_dict_value_field(
@@ -7863,7 +7784,8 @@ def _common_abstract_base_names(
             indexed_class
             for class_name in class_names
             if (
-                indexed_class := SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
+                indexed_class
+                := SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
                     module, class_index, class_name
                 )
             )
@@ -9965,8 +9887,7 @@ class PropertyHookGroup(ClassLineNumbersGroup):
             statement_count=1,
             class_count=len(self.class_names),
             method_symbols=tuple(
-                f"{class_name}.{self.property_name}"
-                for class_name in self.class_names
+                f"{class_name}.{self.property_name}" for class_name in self.class_names
             ),
         )
 
@@ -10271,7 +10192,6 @@ class ResidualClosedAxisIndirectionCandidate(
             SourceLocation(self.file_path, self.table_line, self.table_name),
             SourceLocation(self.file_path, self.line, self.qualname),
         )
-
 
 
 @dataclass(frozen=True)
@@ -11109,7 +11029,6 @@ class RepeatedResultAssemblyPipelineCandidate:
     functions: tuple[ResultAssemblyPipelineFunction, ...]
 
 
-
 @dataclass(frozen=True)
 class EffectStepImplementationLeakCandidate(ClassMethodLineWitnessCandidate):
     none_return_count: int
@@ -11674,9 +11593,7 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
                 continue
             assignment = as_ast(statement, ast.AnnAssign)
             target = (
-                as_ast(assignment.target, ast.Name)
-                if assignment is not None
-                else None
+                as_ast(assignment.target, ast.Name) if assignment is not None else None
             )
             if assignment is None or target is None:
                 return None
@@ -11766,8 +11683,6 @@ class FunctionFamilyEvidenceCompressionSurface(FunctionFamilyEvidenceSurface):
 @dataclass(frozen=True)
 class FunctionFamilyCompressionSurface(FunctionFamilyLineSurface):
     compression_certificate: CompressionCertificate
-
-
 
 
 @dataclass(frozen=True)
@@ -11895,7 +11810,6 @@ class LifecycleStageSequenceCandidate(
     stage_names: tuple[str, ...]
 
 
-
 @dataclass(frozen=True)
 class ClassFamilyWitnessCarrier:
     base_name: str
@@ -12017,15 +11931,6 @@ class SemanticOverlapABCResidueAxisCatalogCandidate(
 ):
     residue_kind_names: tuple[str, ...]
     residue_site_count: int
-
-
-@dataclass(frozen=True)
-class SemanticTagTupleBoilerplateCandidate(EvidenceLocationsWitnessCandidate):
-    keyword_name: str
-    constant_name: str
-    tag_names: tuple[str, ...]
-    source_kind: str = "literal"
-    witness_name = AliasProperty[str]("constant_name")
 
 
 @dataclass(frozen=True)

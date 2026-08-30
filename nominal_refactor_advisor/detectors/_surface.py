@@ -15,6 +15,7 @@ from ..class_index import (
     CompactNominalWrapperAuthority,
 )
 from ..native_syntax import NativePythonSyntaxIndex
+from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import *
 from ._helpers import *
 from ._helpers import (
@@ -101,10 +102,7 @@ def _compact_manual_family_roster_candidates(
             ancestor_symbols = {
                 ancestor_symbol
                 for ancestor_symbol in class_index.ancestor_symbols(member.symbol)
-                if (
-                    ancestor := class_index.class_for(ancestor_symbol)
-                )
-                is not None
+                if (ancestor := class_index.class_for(ancestor_symbol)) is not None
                 if ancestor.simple_name not in _IGNORED_ANCESTOR_NAMES
             }
             if not ancestor_symbols:
@@ -174,7 +172,11 @@ class ManualFamilyRosterDetector(
         "One helper manually enumerates a class family instead of deriving membership from class existence. The docs treat that as class-level registration logic that should live in one authoritative `metaclass-registry` hook.",
         "zero-delay metaclass-registry class-family discovery",
         "family membership is maintained by a manual roster function or constant",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
     )
 
     def _candidates_from_compact_context(
@@ -225,7 +227,11 @@ class FragmentedFamilyAuthorityDetector(
         "Several dicts keyed by the same nominal family collectively encode one semantic record. The docs treat that as fragmented authority that should collapse into one authoritative schema.",
         "single authoritative enum-keyed planning record",
         "one key family is split across parallel metadata tables",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
     )
 
     def _finding_for_candidate(
@@ -269,12 +275,22 @@ declare_candidate_rule_detector(
         "Several lookup helpers linearly rescan the same immutable authority to answer different key queries. The docs treat those repeated scans as a derived-index surface that should be materialized once.",
         "one authoritative immutable family plus derived keyed indexes",
         "same immutable authority is rescanned by multiple query helpers with different key selectors",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
     ),
-    summary=lambda query_candidate: f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}.",
+    summary=lambda query_candidate: (
+        f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}."
+    ),
     evidence=lambda query_candidate: query_candidate.evidence,
-    scaffold=lambda query_candidate: "ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nSECONDARY_KEY_ITEMS = authoritative_secondary_key_items()\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in SECONDARY_KEY_ITEMS}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]",
-    codemod_patch=lambda query_candidate: f"# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Delete the repeated linear-scan helper bodies by deriving keyed indexes once and routing the query helpers through those indexes.",
+    scaffold=lambda query_candidate: (
+        "ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nSECONDARY_KEY_ITEMS = authoritative_secondary_key_items()\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in SECONDARY_KEY_ITEMS}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]"
+    ),
+    codemod_patch=lambda query_candidate: (
+        f"# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Delete the repeated linear-scan helper bodies by deriving keyed indexes once and routing the query helpers through those indexes."
+    ),
     metrics=lambda query_candidate: MappingMetrics(
         mapping_site_count=len(query_candidate.function_names),
         field_count=max(len(query_candidate.query_key_names), 1),
@@ -296,8 +312,16 @@ declare_candidate_rule_detector(
         "A dataclass whose name is a role refinement of another dataclass and whose fields restate that authority's typed field surface is a manually maintained companion projection. The OpenHCS lazy-config pattern treats the eager schema as the authority and derives the companion surface by inspecting dataclass fields.",
         "schema-owned companion generator/metaclass that derives fields, defaults, preservation, and materialization from the authoritative dataclass",
         "companion dataclass manually repeats the authoritative dataclass field surface",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.companion_class_name}` is a `{candidate.surface_role_name}` companion of "
@@ -338,7 +362,11 @@ class RuntimeAdapterShellDetector(
         "A function is rebuilding a local runtime/spec record by copying fields from one authoritative source record and resolving strategy ids through lookup tables. The docs treat that as secondary writable authority rather than a true abstraction boundary.",
         "single authoritative spec/runtime record with local resolver hooks instead of a rehydrated adapter shell",
         "one function copies source-record fields into a second record and resolves runtime hooks through keyed tables",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
     )
 
     def _finding_for_candidate(
@@ -387,11 +415,20 @@ declare_candidate_rule_detector(
         "A helper is projecting one record into a kwargs bag field-by-field before a downstream builder call. The docs treat that as a transport shell unless the kwargs bag is itself the real authority.",
         "single authoritative record projection or owner method instead of a standalone kwargs adapter shell",
         "one helper copies several fields from a source record into a transient kwargs dictionary",
-        _AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
     ),
-    summary=lambda adapter_candidate: f"`{adapter_candidate.function_name}` projects kwargs {adapter_candidate.key_names} from `{adapter_candidate.source_name}` fields {adapter_candidate.source_field_names}.",
-    scaffold=lambda adapter_candidate: '@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n\n    def as_kwargs(self) -> dict[str, object]:\n        kwargs: dict[str, object] = {"help": self.help}\n        if self.action is not None:\n            kwargs["action"] = self.action\n        return kwargs',
-    codemod_patch=lambda adapter_candidate: f"# Delete standalone helper `{adapter_candidate.function_name}`.\n# Put the kwargs projection on `{adapter_candidate.source_name}` itself or make the downstream builder consume the record directly.",
+    summary=lambda adapter_candidate: (
+        f"`{adapter_candidate.function_name}` projects kwargs {adapter_candidate.key_names} from `{adapter_candidate.source_name}` fields {adapter_candidate.source_field_names}."
+    ),
+    scaffold=lambda adapter_candidate: (
+        '@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n\n    def as_kwargs(self) -> dict[str, object]:\n        kwargs: dict[str, object] = {"help": self.help}\n        if self.action is not None:\n            kwargs["action"] = self.action\n        return kwargs'
+    ),
+    codemod_patch=lambda adapter_candidate: (
+        f"# Delete standalone helper `{adapter_candidate.function_name}`.\n# Put the kwargs projection on `{adapter_candidate.source_name}` itself or make the downstream builder consume the record directly."
+    ),
     metrics=lambda adapter_candidate: MappingMetrics.from_field_names(
         mapping_site_count=1,
         mapping_name=adapter_candidate.function_name,
@@ -414,7 +451,11 @@ class PassThroughNominalWrapperDetector(
         "A wrapper re-exposes an existing nominal contract through pure forwarding without adding any new invariant, provenance boundary, or semantic residue. The docs treat that as zero-information duplication: consumers should use the existing authority directly.",
         "direct reuse of the existing nominal authority instead of a zero-information forwarding wrapper",
         "a concrete class forwards an existing nominal contract member-for-member without adding new semantics",
-        _NOMINAL_IDENTITY_PROVENANCE_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+        ),
     )
 
     module_projection_family = CompactModuleClassProjectionFamily
@@ -470,7 +511,11 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
         "Several detectors repeat the same candidate-to-finding pipeline with only orthogonal hooks varying. The docs prefer one template-method substrate plus mixins for residue.",
         "candidate-driven detector template with abstract hooks and mixins",
         "same finding assembly stages repeat across sibling detector classes",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
     )
 
     def _findings_for_module(
@@ -527,8 +572,16 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
         "Several call sites rebuild the same nominal record by projecting overlapping source authorities field-by-field, often with guard/default residue mixed into the call. The docs treat that as fragmented builder authority: the projection belongs in one authoritative constructor, classmethod, or helper.",
         "one authoritative projection builder for a repeated record family",
         "same nominal record is re-projected from overlapping sources at several call sites",
-        _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        _KEYWORD_BUILDER_CALL_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        (
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.NORMALIZED_AST,
+        ),
     )
 
     def _findings_for_module(
@@ -575,7 +628,11 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
         "Several observation-spec methods differ only by a scope guard and one delegate helper call. The docs prefer one shared wrapper substrate with orthogonal scope mixins.",
         "shared wrapper substrate with orthogonal scope mixins",
         "guard-and-delegate wrapper logic repeats across sibling observation specs",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
     )
 
     def _findings_for_module(
@@ -642,7 +699,11 @@ class StructuralObservationProjectionDetector(
         "Several classes repeat the same property-backed constructor projection schema with only role hooks varying. The docs prefer one authoritative projection template.",
         "single authoritative projection builder with role hooks",
         "same property-backed constructor schema is manually rebuilt across many classes",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
     )
 
     def _candidate_items(
@@ -2123,9 +2184,7 @@ class CompactDistributedBoundaryContext:
         projections: tuple[CompactDistributedBoundaryModuleProjection, ...],
         config: DetectorConfig,
     ) -> "CompactDistributedBoundaryContext":
-        return cls(
-            _compact_distributed_boundary_fanout_candidates(projections, config)
-        )
+        return cls(_compact_distributed_boundary_fanout_candidates(projections, config))
 
 
 DistributedBoundaryCandidateT = TypeVar("DistributedBoundaryCandidateT")
@@ -2254,8 +2313,16 @@ declare_candidate_rule_detector(
         "A carrier-style field was introduced around an existing distributed boundary, but both the original primitive boundary and the wrapper boundary still fan out through declarations, forwarding, or projections. That is a local containment failure, not the authoritative context collapse requested by Pattern 16.",
         "one owner-level execution/context record that consumes the full semantic family directly",
         "a wrapper-name fanout coexists with the original boundary fanout for the same semantic core",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.summary,
     evidence=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.evidence,

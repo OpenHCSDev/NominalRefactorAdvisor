@@ -35,6 +35,7 @@ from ..registry_normal_form import (
     SingleRegistryAuthorityStage,
     UnifiedRegistryAxisFamilyStage,
 )
+from ..taxonomy import CapabilityTag, ObservationTag
 
 from ._base import *
 from ._helpers import *
@@ -784,8 +785,6 @@ def _closed_axis_conversion_matrix_compression_certificate(
     )
 
 
-
-
 def _option_record_quotient_compression_certificate(
     candidate: OptionRecordQuotientCandidate,
 ) -> CompressionCertificate:
@@ -867,8 +866,15 @@ class TypingProtocolContractDetector(
         "`typing.Protocol` is structural: it lets values claim membership by shape rather than by a declared nominal contract. The advisor's nominal architecture rules should route those interfaces through ABCs, explicit subclassing, or ABC virtual registration instead.",
         "nominal runtime contract instead of structural shape membership",
         "class declares interface identity through structural typing",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_VIRTUAL_MEMBERSHIP_CAPABILITY_TAGS,
-        _CLASS_FAMILY_RUNTIME_MEMBERSHIP_OBSERVATION_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.VIRTUAL_MEMBERSHIP,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.RUNTIME_MEMBERSHIP,
+        ),
     )
 
     @classmethod
@@ -950,12 +956,6 @@ class TypingProtocolContractDetector(
         ]
 
 
-
-
-
-
-
-
 declare_candidate_rule_detector(
     FacadeOnlyNominalAuthorityCandidate,
     high_confidence_spec(
@@ -964,8 +964,16 @@ declare_candidate_rule_detector(
         "A nominal authority class whose public methods only call private module functions is a facade-only refactor. It hides bare helpers without moving semantic ownership, so the abstraction does not pay rent until the class owns the shared algorithm, policy state, registration axis, or derived projections.",
         "authority object with real semantic ownership rather than one-line private-helper delegation",
         "nominal authority methods are all pass-through calls to private functions",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` exposes facade-only methods {candidate.method_names} "
@@ -1041,8 +1049,16 @@ declare_candidate_rule_detector(
         "A nominal authority whose public surface is only aliases to private helpers is name shuffling, not semantic compression. The authority must own a shared algorithm, policy state, registry axis, or derived projection; otherwise keep the helpers local until a real invariant is found.",
         "authority object with owned shared behavior rather than alias catalog",
         "nominal authority class contains only public aliases to helper functions",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` aliases public names {candidate.alias_names} "
@@ -1080,8 +1096,16 @@ declare_candidate_rule_detector(
         "A class named like an authority, policy, registry, or resolver must own at least one concrete proof edge: inheritance boundary, abstract contract, dataclass field, class assignment, method behavior, registry contract, or declaration query. Empty shells are fabricated authority.",
         "nominal authority boundary with source-backed ownership proof edge",
         "authority-like class has no ownership edges",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` claims suffix `{candidate.suffix}` but has no "
@@ -1119,8 +1143,16 @@ declare_candidate_rule_detector(
         "A module-level block that re-exports authority methods under the old helper names preserves the public helper surface while adding an object indirection. That is not semantic compression unless the authority removes duplicate algorithms or derives the surface from one invariant.",
         "authority-owned algorithm without compatibility re-export catalog",
         "module re-exports several authority methods as top-level helper aliases",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.authority_name}` is re-exported through helper aliases "
@@ -1156,8 +1188,15 @@ declare_candidate_rule_detector(
         "A collection authority with several methods that repeat source selection, projection, and tuple/sorted materialization is still manually declaring a product of stream mechanics. The semantic normal form is one typed stream/spec algebra whose methods only declare the source stream and projection.",
         "typed candidate stream algebra deriving projection and materialization mechanics",
         "collection authority repeats stream projection and materialization across methods",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` repeats stream materialization across methods "
@@ -1324,8 +1363,16 @@ declare_candidate_rule_detector(
         "A nominal authority method that still hand-codes AST traversal, isinstance checks, attribute guards, and boolean predicate ladders has only moved the smell. The deeper normal form is a declarative matcher/effect-step grammar: node types and field predicates are data, while traversal and failure semantics live in one reusable ABC.",
         "declarative AST matcher grammar with traversal and predicate semantics owned once",
         "authority method repeats AST traversal and predicate mechanics inline",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
-        _NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+        ),
+        (
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}.{candidate.method_name}` has "
@@ -1478,13 +1525,27 @@ declare_candidate_rule_detector(
         "Several properties project Path-valued views from owned base fields through the same `/` algebra. That is a descriptor-derived view family: the varying suffixes should be data while the projection algorithm lives in one reusable descriptor.",
         "single descriptor authority for repeated Path projection properties",
         "same class repeats Path projection properties over owned base fields",
-        _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        _PROJECTION_HELPER_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        (
+            ObservationTag.PROJECTION_HELPER,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     ),
-    summary=lambda projection_candidate: f"`{projection_candidate.class_name}` repeats Path projection properties {', '.join(projection_candidate.property_names)} over bases {', '.join(projection_candidate.base_names)}.",
+    summary=lambda projection_candidate: (
+        f"`{projection_candidate.class_name}` repeats Path projection properties {', '.join(projection_candidate.property_names)} over bases {', '.join(projection_candidate.base_names)}."
+    ),
     evidence=lambda projection_candidate: projection_candidate.evidence_locations,
-    scaffold=lambda projection_candidate: "@dataclass(frozen=True)\nclass PathProjection:\n    base_attr: str\n    parts: tuple[str, ...]\n    def __get__(self, instance, owner=None) -> Path: ...",
-    codemod_patch=lambda projection_candidate: "# Replace repeated @property path projections with PathProjection descriptors.\n# Keep only base attribute and path parts as declarative data.",
+    scaffold=lambda projection_candidate: (
+        "@dataclass(frozen=True)\nclass PathProjection:\n    base_attr: str\n    parts: tuple[str, ...]\n    def __get__(self, instance, owner=None) -> Path: ..."
+    ),
+    codemod_patch=lambda projection_candidate: (
+        "# Replace repeated @property path projections with PathProjection descriptors.\n# Keep only base attribute and path parts as declarative data."
+    ),
     metrics=lambda projection_candidate: MappingMetrics(
         mapping_site_count=len(projection_candidate.property_names),
         field_count=len(projection_candidate.base_names),
@@ -1502,9 +1563,11 @@ def _collection_projection_property_shape(
     return (
         Maybe.of(as_ast(returned, ast.Call))
         .filter(
-            lambda call: name_id(call.func) in {"tuple", "list", "set", "frozenset"}
-            and len(call.args) == 1
-            and not call.keywords
+            lambda call: (
+                name_id(call.func) in {"tuple", "list", "set", "frozenset"}
+                and len(call.args) == 1
+                and not call.keywords
+            )
         )
         .project(lambda call: as_ast(call.args[0], ast.GeneratorExp))
         .filter(lambda generator: len(generator.generators) == 1)
@@ -1602,8 +1665,16 @@ declare_candidate_rule_detector(
         "Sibling properties that only map one owned collection to member attributes are descriptor-derived views. Repeating `tuple(item.attr for item in self.collection)` per property makes each projected attribute look like behavior when the actual semantic object is the collection projection relation.",
         "single collection-projection descriptor parameterized by collection and member attribute",
         "same class repeats collection projection properties over one owned collection",
-        _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        _PROJECTION_HELPER_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        (
+            ObservationTag.PROJECTION_HELPER,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` repeats collection projection properties "
@@ -1642,8 +1713,16 @@ class SuffixAxisCompatibilitySurfaceDetector(
         "Several operations are exposed once per suffix-named axis, such as `*_for_context` and `*_for_session`. When the same axis split repeats across an owner, the code is usually maintaining adapter surfaces instead of choosing one authoritative request/context record and deriving any compatibility projection at the boundary.",
         "single authoritative context/request record instead of repeated suffix-axis adapter surfaces",
         "same owner repeats an operation family across the same suffix-named axes",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _METHOD_ROLE_PARTIAL_VIEW_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.PARTIAL_VIEW,
+            ObservationTag.NORMALIZED_AST,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1682,8 +1761,16 @@ class SiblingRoleHelperSymmetryDetector(
         "One owner has private helpers whose names differ by a role token but whose control skeletons and parameters are parallel. That is usually one local computation split into symmetrical role-specific helpers, which makes future changes require duplicated edits.",
         "one authoritative local computation instead of parallel role-specific helpers",
         "same owner has role-token sibling helpers with matching control skeletons",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_PROVENANCE_CAPABILITY_TAGS,
-        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1722,8 +1809,16 @@ class ResidualClosedAxisIndirectionDetector(
         "A function that indexes an enum-keyed table and still branches on the same enum axis is not using the table as an authority. The table is a degenerate projection over behavior that still lives in branches. The stronger normal form is an ABC-backed strategy family keyed by the enum, with `AutoRegisterMeta` owning import-time registration and any table-like views derived from the family.",
         "metaclass-registry-backed nominal strategy family instead of enum table plus residual branching",
         "same function indexes an enum-keyed table and branches on that enum axis",
-        _AUTHORITATIVE_DISPATCH_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _PROJECTION_DICT_BRANCH_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.PROJECTION_DICT,
+            ObservationTag.BRANCH_DISPATCH,
+            ObservationTag.CLOSED_FAMILY_CASES,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1763,8 +1858,15 @@ class InlineEnumSubsetGuardDetector(
         "A branch that hardcodes an enum-member subset is a closed-axis policy table in disguise. The policy should be owned by the enum member or a typed row family, with any lookup derived exhaustively from that type-safe source.",
         "type-safe enum-owned policy instead of inline enum subset literals",
         "function branches on a hand-enumerated subset of one closed enum axis",
-        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _BRANCH_DISPATCH_PROJECTION_DICT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.BRANCH_DISPATCH,
+            ObservationTag.PROJECTION_DICT,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1805,8 +1907,16 @@ class SplitDispatchAuthorityDetector(
         "The docs treat repeated cooperating dispatch layers as split authority. When one orchestration function selects a strategy-family implementation and separately routes another axis through `singledispatch`, the operation usually wants one authoritative product-family policy or one request-dispatched plan.",
         "single authoritative product-family or request-dispatched policy for cooperating dispatch axes",
         "one orchestrator combines a strategy-family selector with a separate singledispatch generic",
-        _AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_FACTORY_DISPATCH_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.FACTORY_DISPATCH,
+            ObservationTag.REPEATED_METHOD_ROLES,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1863,8 +1973,15 @@ class EmptyLeafProductFamilyDetector(
         "The docs allow mixins for orthogonal reusable concerns, but empty leaf classes that merely enumerate all combinations of two reusable axes are usually a handwritten product table in inheritance form. That product should become one keyed authority or one product-family selector.",
         "single authoritative keyed product family instead of empty inheritance combinations",
         "empty leaf classes encode the full Cartesian product of two reusable inheritance axes",
-        _AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.REPEATED_METHOD_ROLES,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1902,8 +2019,16 @@ class ClosedConstantSelectorDetector(
         "The docs treat branch ladders that choose among sibling specs, plans, contracts, or other immutable constants as duplicated selector logic once the constant family already exists. The selector should collapse into one authoritative keyed table or selector record so wrappers and downstream views are derived.",
         "single authoritative selector table for a closed constant family",
         "one function branches over a small predicate family and returns sibling constants or one shared wrapper around them",
-        _AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_PROVENANCE_CAPABILITY_TAGS,
-        _BUILDER_CALL_DATAFLOW_ROOT_PREDICATE_CHAIN_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.PREDICATE_CHAIN,
+        ),
     )
 
     def _finding_for_candidate(
@@ -1958,8 +2083,16 @@ class DerivedWrapperSpecShadowDetector(
         "The docs treat writable wrapper-spec tables as secondary authorities when they just point back at an existing spec family and feed code generation. Wrapper metadata should live on the authoritative spec records so generated wrappers are derived from one source rather than synchronized across parallel tables.",
         "single authoritative spec family carrying wrapper-generation metadata",
         "secondary spec table references an authoritative spec family entry-by-entry and is only consumed by wrapper generation",
-        _AUTHORITATIVE_PROVENANCE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _BUILDER_CALL_DATAFLOW_ROOT_SCOPED_SHAPE_WRAPPER_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.SCOPED_SHAPE_WRAPPER,
+        ),
     )
 
     def _finding_for_candidate(
@@ -2003,13 +2136,27 @@ declare_candidate_rule_detector(
         "The docs push reusable table/index machinery into one authoritative substrate. When a module defines a local selection-rule dataclass, a dict-index builder, and a keyed lookup helper that power multiple rule tables, it is reintroducing a second keyed-table framework instead of reusing the generic keyed-record helper.",
         "single authoritative keyed-record table substrate reused across module-level selector tables",
         "module-local selection helper framework powers multiple keyed rule tables",
-        _AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_PROVENANCE_CAPABILITY_TAGS,
-        _BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.CLASS_FAMILY,
+        ),
     ),
-    summary=lambda helper_candidate: f"`{helper_candidate.rule_class_name}`, `{helper_candidate.helper_function_name}`, and `{helper_candidate.lookup_function_name}` implement a local keyed-selection substrate for {', '.join(helper_candidate.rule_table_names[:4])} and indexes {', '.join(helper_candidate.index_table_names[:4])}.",
+    summary=lambda helper_candidate: (
+        f"`{helper_candidate.rule_class_name}`, `{helper_candidate.helper_function_name}`, and `{helper_candidate.lookup_function_name}` implement a local keyed-selection substrate for {', '.join(helper_candidate.rule_table_names[:4])} and indexes {', '.join(helper_candidate.index_table_names[:4])}."
+    ),
     evidence=lambda helper_candidate: helper_candidate.evidence,
-    scaffold=lambda helper_candidate: 'KeyT = TypeVar("KeyT")\nRecordT = TypeVar("RecordT")\n\n@dataclass(frozen=True)\nclass KeyedRecordTable(Generic[KeyT, RecordT]):\n    records: tuple[RecordT, ...]\n    key_of: Callable[[RecordT], KeyT]\n    def require(self, key: KeyT, *, missing_error=None) -> RecordT: ...\n',
-    codemod_patch=lambda helper_candidate: f"# Remove local keyed-selection helper `{helper_candidate.rule_class_name}` / `{helper_candidate.helper_function_name}` / `{helper_candidate.lookup_function_name}`.\n# Re-express these rule tables through the shared KeyedRecordTable substrate.",
+    scaffold=lambda helper_candidate: (
+        'KeyT = TypeVar("KeyT")\nRecordT = TypeVar("RecordT")\n\n@dataclass(frozen=True)\nclass KeyedRecordTable(Generic[KeyT, RecordT]):\n    records: tuple[RecordT, ...]\n    key_of: Callable[[RecordT], KeyT]\n    def require(self, key: KeyT, *, missing_error=None) -> RecordT: ...\n'
+    ),
+    codemod_patch=lambda helper_candidate: (
+        f"# Remove local keyed-selection helper `{helper_candidate.rule_class_name}` / `{helper_candidate.helper_function_name}` / `{helper_candidate.lookup_function_name}`.\n# Re-express these rule tables through the shared KeyedRecordTable substrate."
+    ),
     metrics=lambda helper_candidate: MappingMetrics(
         mapping_site_count=len(helper_candidate.rule_table_names),
         field_count=1,
@@ -2137,14 +2284,28 @@ declare_candidate_rule_detector(
         "The docs require one authoritative owner per closed semantic axis. When one module already owns an enum/keyed family nominally and another module reintroduces a second family over the same cases, the axis has split authority and local behavior should derive from the authoritative family instead.",
         "single authoritative closed-axis family reused across modules",
         "same keyed enum axis is modeled by an authoritative family in one module and a shadow selector family in another",
-        _AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_FACTORY_DISPATCH_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.FACTORY_DISPATCH,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     ),
-    summary=lambda shadow_candidate: f"Axis `{shadow_candidate.key_type_name}` is already owned by `{shadow_candidate.authoritative.family_name}` but re-encoded by `{shadow_candidate.shadow.family_name}.{shadow_candidate.selector_method_name}` across cases {', '.join(shadow_candidate.shared_case_names[:4])}.",
+    summary=lambda shadow_candidate: (
+        f"Axis `{shadow_candidate.key_type_name}` is already owned by `{shadow_candidate.authoritative.family_name}` but re-encoded by `{shadow_candidate.shadow.family_name}.{shadow_candidate.selector_method_name}` across cases {', '.join(shadow_candidate.shared_case_names[:4])}."
+    ),
     evidence=lambda shadow_candidate: shadow_candidate.evidence,
-    scaffold=lambda shadow_candidate: _axis_policy_registry_scaffold("invariant(self)")
-    + f"\n\ndef run_with_axis(axis: {_AXIS_POLICY_KEY_TYPE_NAME}, ...):\n    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(axis)\n    # derive local execution from authoritative policy facts\n",
-    codemod_patch=lambda shadow_candidate: f"# Remove shadow family `{shadow_candidate.shadow.family_name}`.\n# Derive local behavior from authoritative family `{shadow_candidate.authoritative.family_name}` instead of re-owning axis `{shadow_candidate.key_type_name}`.",
+    scaffold=lambda shadow_candidate: (
+        _axis_policy_registry_scaffold("invariant(self)")
+        + f"\n\ndef run_with_axis(axis: {_AXIS_POLICY_KEY_TYPE_NAME}, ...):\n    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(axis)\n    # derive local execution from authoritative policy facts\n"
+    ),
+    codemod_patch=lambda shadow_candidate: (
+        f"# Remove shadow family `{shadow_candidate.shadow.family_name}`.\n# Derive local behavior from authoritative family `{shadow_candidate.authoritative.family_name}` instead of re-owning axis `{shadow_candidate.key_type_name}`."
+    ),
     metrics=lambda shadow_candidate: DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
         shadow_candidate.shared_case_names, shadow_candidate.key_type_name
     ),
@@ -2164,8 +2325,16 @@ class ResidualClosedAxisBranchingDetector(
         "The docs require one authoritative owner per closed enum/key axis. When a keyed nominal family already owns that axis, downstream `if`/`match` ladders over the same cases become residual shadow dispatch.",
         "behavior derived from authoritative keyed family rather than downstream enum branching",
         "function branches on an enum axis already owned by a keyed nominal family in another module",
-        _AUTHORITATIVE_DISPATCH_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _BRANCH_DISPATCH_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.BRANCH_DISPATCH,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _candidates_from_compact_context(
@@ -2224,8 +2393,17 @@ class ParallelKeyedAxisFamilyDetector(
         "The docs require one authoritative nominal owner per closed semantic axis. When two modules each define a keyed family over the same enum/key cases, the axis has split ownership even if both sides are nominal.",
         "single cross-module keyed-axis authority with module-local adapters derived from it",
         "same keyed enum axis is modeled by multiple nominal families across modules",
-        _AUTHORITATIVE_DISPATCH_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_FACTORY_DISPATCH_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.FACTORY_DISPATCH,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _candidates_from_compact_context(
@@ -2306,16 +2484,28 @@ declare_candidate_rule_detector(
         "The docs require one authoritative owner per closed semantic axis. When multiple modules maintain keyed tables over the same cases, those tables are usually shadow registries for one semantic family. The stronger default normal form is an ABC plus `AutoRegisterMeta`, with table-like views derived from `Family.__registry__` only when callers still need projections.",
         "single AutoRegisterMeta-backed semantic family with derived module-local projections",
         "same closed enum/key axis is encoded by multiple keyed tables across modules",
-        _AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _PROJECTION_DICT_DATAFLOW_ROOT_BUILDER_CALL_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.PROJECTION_DICT,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.BUILDER_CALL,
+        ),
     ),
-    summary=lambda table_candidate: f"Axis `{table_candidate.key_type_name}` is restated by `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` across cases {', '.join(table_candidate.shared_case_names[:4])}.",
+    summary=lambda table_candidate: (
+        f"Axis `{table_candidate.key_type_name}` is restated by `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` across cases {', '.join(table_candidate.shared_case_names[:4])}."
+    ),
     evidence=lambda table_candidate: table_candidate.evidence,
-    scaffold=lambda table_candidate: _axis_policy_registry_scaffold(
-        "run(self, request)"
-    )
-    + f"\n\ndef run_{table_candidate.key_type_name.lower()}(method, request):\n    return {_AXIS_POLICY_ROOT_NAME}.__registry__[method].run(request)\n\n# Derive table-like projections from {_AXIS_POLICY_ROOT_NAME}.__registry__ only if legacy callers need them.\n",
-    codemod_patch=lambda table_candidate: f"# Collapse `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` onto one AutoRegisterMeta-backed semantic family.\n# Replace hardcoded keyed tables with registered subclasses and route behavior through `Family.__registry__[key].run(...)`.\n# Keep any table-like surface as a derived read-only projection from the registry, not as a writable authority.",
+    scaffold=lambda table_candidate: (
+        _axis_policy_registry_scaffold("run(self, request)")
+        + f"\n\ndef run_{table_candidate.key_type_name.lower()}(method, request):\n    return {_AXIS_POLICY_ROOT_NAME}.__registry__[method].run(request)\n\n# Derive table-like projections from {_AXIS_POLICY_ROOT_NAME}.__registry__ only if legacy callers need them.\n"
+    ),
+    codemod_patch=lambda table_candidate: (
+        f"# Collapse `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` onto one AutoRegisterMeta-backed semantic family.\n# Replace hardcoded keyed tables with registered subclasses and route behavior through `Family.__registry__[key].run(...)`.\n# Keep any table-like surface as a derived read-only projection from the registry, not as a writable authority."
+    ),
     metrics=lambda table_candidate: MappingMetrics(
         mapping_site_count=2,
         field_count=max(len(table_candidate.shared_case_names), 1),
@@ -2342,8 +2532,17 @@ class ParallelKeyedTableAndFamilyDetector(
         "The docs require one authoritative owner per closed semantic axis. When a module keeps one keyed table of per-case records and a second keyed nominal family over the same cases, the axis is split across data and behavior. If the family already carries the runtime behavior boundary, the table should derive from that family instead of competing with it.",
         "single authoritative metaclass-registry axis family with derived table/view projections",
         "same enum/key axis is encoded by both a keyed table and a keyed nominal family",
-        _AUTHORITATIVE_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _candidates_from_compact_context(
@@ -2394,8 +2593,16 @@ class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
         "A builder call that maps method-axis member names to callable behavior is a hardcoded strategy family in registry-table form. The canonical shape is an ABC plus `AutoRegisterMeta`, with each method implementation declared as a subclass and dispatch routed through `Family.__registry__[method].run(...)`.",
         "AutoRegisterMeta-backed strategy family instead of callable method-axis registry",
         "module-level registry builder maps closed method-axis cases to callable behavior",
-        _AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.CLASS_FAMILY,
+        ),
     )
 
     def _findings_for_module(
@@ -2501,8 +2708,15 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
         "An AutoRegisterMeta root that directly repeats registry protocol fields already declared by a base is carrying boilerplate instead of relying on inheritance. The registry key, skip policy, and related protocol fields should be inherited from the shared nominal base. If AutoRegisterMeta cannot honor inherited registry config, fix the metaclass package rather than repeating the fields on every root.",
         "inherited AutoRegister registry protocol configuration",
         "AutoRegisterMeta class repeats registry protocol assignments from an inherited base",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _findings_from_compact_projections(
@@ -2634,8 +2848,15 @@ class AutoRegisterExplicitPriorityOrderingDetector(
         "An AutoRegisterMeta family whose registered leaves carry a `priority`, `precedence`, `rank`, or `order` class attribute is maintaining a second ordering authority beside the inheritance graph. If ordering is semantic, the nominal hierarchy and MRO should carry it; if ordering is only presentation, it should be a derived view outside the registered family.",
         "MRO-owned ordering for registered semantic families",
         "AutoRegisterMeta family declares or consumes a class-level priority-like axis to sort registered implementations",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _findings_from_compact_projections(
@@ -2797,7 +3018,10 @@ class NominalInstanceExplicitOrderingDetector(
             CapabilityTag.MRO_ORDERING,
             CapabilityTag.PROVENANCE,
         ),
-        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _findings_from_compact_projections(
@@ -2970,8 +3194,16 @@ class EnumKeyedTableClassAxisShadowDetector(
         "The docs require a single writable owner per closed semantic axis. If a module already declares that axis through class-level enum assignments, adding a writable enum-keyed table over the same cases creates duplicate authority and a synchronization surface. The class-declared axis should be the primary owner and any enum-keyed lookup should be derived from the family registry.",
         "one authoritative metaclass-registry closed-axis owner with derived table/view projections",
         "module-level enum-keyed table overlaps a class family that already declares the same enum axis",
-        _AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _PROJECTION_DICT_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.PROJECTION_DICT,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _finding_for_candidate(
@@ -3160,8 +3392,16 @@ class ManualEnumConstructorPolicyTableDetector(PerModuleIssueDetector):
         "A dict that maps enum cases directly to concrete policy/strategy/handler constructor calls is a manually synchronized closed behavioral axis. The enum case and concrete implementation membership should be declared by the implementation class and collected by an AutoRegisterMeta-backed nominal family.",
         "AutoRegisterMeta-backed policy family with class-declared enum keys",
         "enum-keyed dict literal constructs concrete behavioral policy instances",
-        _AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _PROJECTION_DICT_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.PROJECTION_DICT,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _findings_for_module(
@@ -3220,8 +3460,16 @@ class TransportShellTemplateMethodDetector(
         "The docs say nominal families should have one authoritative owner. When an ABC template method only materializes an intermediate object from a class-level selector, delegates through one hook, and repackages through another hook, the extra family is usually a transport shell around an already authoritative boundary.",
         "single authoritative materialization/execution family instead of a parallel transport shell",
         "template family varies mostly by class-level selector and result adapter",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _finding_for_candidate(
@@ -3264,8 +3512,16 @@ class CrossModuleSpecAxisAuthorityDetector(
         "The docs say one semantic family should have one authoritative owner. When two modules encode the same identity-axis -> executable-axis spec pairs, one table is a duplicate authority unless it is explicitly derived.",
         "one repository-wide authoritative spec-axis family",
         "same identity/executable spec axis is re-encoded across modules",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.CLASS_FAMILY,
+        ),
     )
 
     def _findings_from_compact_projections(
@@ -3323,8 +3579,16 @@ class ParallelRegistryProjectionFamilyDetector(
         "The docs say one semantic family should have one authoritative owner. When several functions differ only in which registry authority feeds which target constructor, the projection-axis mapping should become one declared spec or family authority instead of several hand-wired wrappers.",
         "single authoritative registry-projection family",
         "same registry-authority-to-target projection shape repeated across sibling functions",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _BUILDER_CALL_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     def _finding_for_candidate(
@@ -3393,8 +3657,15 @@ class RepeatedKeyedFamilyDetector(
         "The docs encourage aggressive metaprogramming when several nominal families repeat the same class-level registration and lookup shell. When many roots restate `registry_key_attr`, `_registry`, and `for_*` lookup methods, the family algorithm should live in one typed `metaclass-registry` base.",
         "single typed metaclass-registry substrate for keyed nominal registries",
         "same keyed family registration and lookup shell repeated across nominal family roots",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
     )
 
     @staticmethod
@@ -3669,7 +3940,7 @@ def _compact_registry_projection_reference_name(
     canonical_head = import_aliases[alias_head]
     if value == alias_head:
         return canonical_head
-    return f"{canonical_head}{value[len(alias_head):]}"
+    return f"{canonical_head}{value[len(alias_head) :]}"
 
 
 def _compact_registry_projection_surface_candidate(
@@ -3890,6 +4161,7 @@ class _CompactKeyedRegistryCandidateDetectorBase(
         CompactClassRepositoryContext.from_projections
     )
 
+
 class _CompactPrematureRegistryInfrastructureDetectorBase(
     _CompactKeyedRegistryCandidateDetectorBase[
         PrematureRegistryInfrastructureCandidate
@@ -3991,9 +4263,7 @@ class _CompactRegistryProjectionSurfaceDetectorBase(
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
     ) -> Sequence[RegistryProjectionSurfaceCandidate]:
-        return _compact_registry_projection_surface_candidates(
-            projections, config
-        )
+        return _compact_registry_projection_surface_candidates(projections, config)
 
     def _findings_from_compact_context(
         self,
@@ -4060,8 +4330,15 @@ declare_candidate_rule_detector(
         "A nominal registry is only type-safe when each concrete implementation has one canonical key and each key resolves to one implementation. Duplicate keys, duplicate type identities, or concrete descendants without keys mean the registry cannot serve as an injective authority.",
         "injective type registry with one stable key per concrete implementation",
         "registry key axis aliases multiple implementation types or misses concrete descendants",
-        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` registry axis `{candidate.key_type_name}` is not injective: "
@@ -4095,8 +4372,15 @@ declare_candidate_rule_detector(
         "A registry with a stable key axis, lookup lifecycle, consumer fanout, and an injective type-to-key proof has reached the point where handwritten registration mechanics are declaration noise. The metaclass should own population while implementation classes declare only their canonical key and behavior hooks.",
         "AutoRegisterMeta-backed ABC with an injective type-key proof",
         "registry axis proves one key per implementation type plus mature lookup and consumer fanout",
-        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` is a mature injective registry over `{candidate.key_type_name}`: "
@@ -4131,8 +4415,15 @@ declare_candidate_rule_detector(
         "Once a registry proves one canonical key per implementation type, export rosters, key/type maps, and option lists are projections of that registry authority. Hand-maintaining those surfaces creates shadow authorities that can drift away from the type-safe registry.",
         "generated projection surface derived from an injective registry proof",
         "manual list or dict surface repeats keys/types already proven by an injective registry",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.surface_name}` is a manual `{candidate.projection_role}` "
@@ -4209,8 +4500,15 @@ declare_candidate_rule_detector(
         "A partial projection of an injective registry is a quotient of the registry axis. When several surfaces repeat the same quotient hint, the hint should become a first-class projection policy instead of living as independent allowlists.",
         "nominal registry projection policy reused by generated subset surfaces",
         "multiple registry projection surfaces repeat the same subset hint without one owner",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.registry_class_name}` has repeated `{candidate.policy_hint}` subset projections "
@@ -4252,8 +4550,15 @@ declare_candidate_rule_detector(
         "The OpenHCS history showed that registries pay rent only when the key axis is stable, registration lifecycle is explicit, and more than one consumer uses the registry. A registry-shaped class without those signals is likely a premature abstraction boundary.",
         "mature registry authority with stable key axis, class-time lifecycle, and consumer fanout",
         "keyed registry infrastructure exists before registered cases and consumers prove the axis",
-        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` is registry-shaped over `{candidate.key_type_name}` via "
@@ -4287,8 +4592,16 @@ class ManualKeyedRecordTableDetector(
         "When several frozen record classes repeat `_registry`, `register`, and `for_*` lookup around closed keys, the code is hand-maintaining multiple writable tables. The docs prefer one authoritative spec tuple or generic keyed-record table with derived indexes.",
         "single authoritative keyed-record table or derived index",
         "same manual record registration and keyed lookup shell repeated across data classes",
-        _AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_PROVENANCE_CAPABILITY_TAGS,
-        _BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.CLASS_FAMILY,
+        ),
     )
 
     def _finding_for_candidate(
@@ -4331,8 +4644,17 @@ class ManualStructuralRecordMechanicsDetector(
         "When several frozen dataclass records hand-write validation, tuple-style field projection, round-trip reconstruction, and fieldwise transform logic, those mechanics have become a second authority beside the field declarations. The docs prefer one metadata-driven record substrate that derives those mechanics from typed fields.",
         "single typed structural-record substrate with derived validation, projection, and transform mechanics",
         "same dataclass record lifecycle mechanics repeated across sibling structural record classes",
-        _AUTHORITATIVE_FAIL_LOUD_CONTRACTS_PROVENANCE_TYPE_LINEAGE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_DATAFLOW_ROOT_BUILDER_CALL_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.TYPE_LINEAGE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.BUILDER_CALL,
+        ),
     )
 
     def _finding_for_candidate(
@@ -4385,8 +4707,16 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         "When several functions repeatedly recover the same semantic family through concrete `isinstance` checks on one carried attribute, the family boundary is still latent. The docs want one nominal ABC and concrete leaf behavior exposed through typed properties or hooks instead of repeated leaf decoding.",
         "single ABC-backed family for the carried subject, with repeated case recovery moved into nominal properties or hooks",
         "same attribute-carried family is re-decoded through repeated concrete runtime type checks across several functions",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     )
 
     def _findings_from_compact_projection_groups(
@@ -4492,8 +4822,16 @@ class ImplicitSelfContractMixinDetector(
         "The docs reserve mixins for orthogonal reusable concerns that participate in nominal MRO cleanly. When a concrete mixin erases `self` through `cast(..., self)` to reach consumer-owned fields, the mixin is carrying non-orthogonal family logic through a hidden contract instead of a declared base or policy.",
         "declared nominal base or policy row for the shared algorithm instead of a hidden mixin self-contract",
         "concrete mixin methods erase `self` through casts and depend on consumer-owned attributes across several subclasses",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_REPEATED_METHOD_ROLES_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.REPEATED_METHOD_ROLES,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     )
 
     def _findings_from_compact_projection_groups(
@@ -4569,8 +4907,16 @@ class RepeatedGuardValidatorFamilyDetector(
         "When several sibling boolean helpers walk the same subject through fail-fast guards and case-local final checks, the algorithm skeleton is split across helper names instead of being owned by one nominal case policy or declarative rule family.",
         "single authoritative case-policy or rule-table validator",
         "same subject and subordinate view validated through repeated fail-fast sibling helpers",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_PARTIAL_VIEW_CLASS_FAMILY_OBSERVATION_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.PARTIAL_VIEW,
+            ObservationTag.CLASS_FAMILY,
+        ),
     )
 
     def _finding_for_candidate(
@@ -4613,7 +4959,11 @@ class AllMissingAxisPredicateDetector(
         "A raw conjunction of several `not axis` clauses is a derived predicate over a semantic axis bundle. Spelling that bundle inline makes the relation easy to fork and hard to audit. The normal form is a named tuple, policy, or context method that owns the axis set and lets the branch ask the derived question once.",
         "one named axis bundle or policy predicate deriving the all-missing condition",
         "three or more sibling axes are checked through an inline all-negative boolean conjunction before appending a missing signal",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
     )
 
     def _finding_for_candidate(
@@ -4653,8 +5003,16 @@ class RepeatedValidateShapeGuardFamilyDetector(
         "Sibling nominal records repeat the same fail-fast shape and dimensional guards in `validate()` while differing only in field names or a small residue check. The docs treat that as duplicated contract authority that should move into one shared validated-record base, field-spec table, or mixin hook.",
         "single authoritative validated-record contract for repeated shape/ndim guards",
         "same nominal record family repeats fail-loud shape validation scaffolding",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_METHOD_ROLE_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.NORMALIZED_AST,
+        ),
     )
 
     def _findings_from_compact_projections(
@@ -4707,7 +5065,11 @@ class RepeatedResultAssemblyPipelineDetector(
         "Several owners repeat the same downstream result-assembly stages and differ only in the upstream source or projection that feeds the pipeline. The docs treat that as shared algorithm authority that should move into one template method or authoritative helper with one orthogonal source hook.",
         "single authoritative result-assembly pipeline with one source hook",
         "same staged assembly tail is repeated across sibling functions or methods",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
     )
 
     def _finding_for_candidate(
@@ -4755,7 +5117,6 @@ class RepeatedResultAssemblyPipelineDetector(
         )
 
 
-
 declare_candidate_rule_detector(
     EffectStepImplementationLeakCandidate,
     high_confidence_spec(
@@ -4764,12 +5125,25 @@ declare_candidate_rule_detector(
         "Concrete effect-step leaves should carry semantic residue as attributes/properties and small hooks. When a leaf owns raw optional exits, AST type checks, or cardinality checks inside `apply()` or a bulky hook, the ABC is not doing enough of the work and the monadic infrastructure is not compressing semantics.",
         "template-method EffectStep base that owns optional flow, type narrowing, and guard sequencing",
         "concrete EffectStep leaf repeats mechanics that belong in an ABC/template base",
-        _FAIL_LOUD_CONTRACTS_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _PREDICATE_CHAIN_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.PREDICATE_CHAIN,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda leak: f"`{leak.class_name}.{leak.method_name}` owns {leak.raw_guard_count} raw guard mechanics and {leak.none_return_count} optional exits; move the algorithm into `{leak.suggested_base_name}` and leave only attrs/properties plus hooks on the leaf.",
-    scaffold=lambda leak: f"class {leak.class_name}({leak.suggested_base_name}):\n    # declare class attrs/properties here\n\n    def accepts(self, value): ...\n    def project(self, value): ...",
-    codemod_patch=lambda leak: "# Delete the concrete mechanics-heavy leaf method.\n# Move optional flow/type narrowing/cardinality mechanics to the ABC/template base.\n# Keep the implementation class declarative: attrs, properties, and the smallest semantic hooks.",
+    summary=lambda leak: (
+        f"`{leak.class_name}.{leak.method_name}` owns {leak.raw_guard_count} raw guard mechanics and {leak.none_return_count} optional exits; move the algorithm into `{leak.suggested_base_name}` and leave only attrs/properties plus hooks on the leaf."
+    ),
+    scaffold=lambda leak: (
+        f"class {leak.class_name}({leak.suggested_base_name}):\n    # declare class attrs/properties here\n\n    def accepts(self, value): ...\n    def project(self, value): ..."
+    ),
+    codemod_patch=lambda leak: (
+        "# Delete the concrete mechanics-heavy leaf method.\n# Move optional flow/type narrowing/cardinality mechanics to the ABC/template base.\n# Keep the implementation class declarative: attrs, properties, and the smallest semantic hooks."
+    ),
     metrics=lambda leak: OrchestrationMetrics(
         function_line_count=0,
         branch_site_count=leak.none_return_count,
@@ -4793,12 +5167,25 @@ declare_candidate_rule_detector(
         "A detector that recommends helpers, wrappers, template bases, registries, or other abstraction machinery must make the rent check explicit: the proposed abstraction should reduce semantic description length, reduce backend LOC, or carry fanout/amortization evidence that explains why the added infrastructure pays rent.",
         "detector advice includes a compression certificate or backend LOC/fanout budget with net reduction action",
         "detector recommends abstraction without proving the backend LOC payoff",
-        _SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda detector: f"`{detector.qualname}` uses abstraction terms {detector.abstraction_terms} but is missing payoff guard(s) {detector.missing_guard_names}; detector refactors must carry a `CompressionCertificate`, cut backend LOC, or expose fanout.",
-    scaffold=lambda detector: "# Add `compression_certificate=` or structured `metrics=` to the detector declaration.\n# Candidate evidence should expose manual cost, replacement grammar cost, residuals, margin, or fanout.",
-    codemod_patch=lambda detector: "# Require `compression_certificate=` for MDL-style abstraction advice when possible.\n# Otherwise require structured backend/fanout metrics, or inline/delete under-amortized machinery.",
+    summary=lambda detector: (
+        f"`{detector.qualname}` uses abstraction terms {detector.abstraction_terms} but is missing payoff guard(s) {detector.missing_guard_names}; detector refactors must carry a `CompressionCertificate`, cut backend LOC, or expose fanout."
+    ),
+    scaffold=lambda detector: (
+        "# Add `compression_certificate=` or structured `metrics=` to the detector declaration.\n# Candidate evidence should expose manual cost, replacement grammar cost, residuals, margin, or fanout."
+    ),
+    codemod_patch=lambda detector: (
+        "# Require `compression_certificate=` for MDL-style abstraction advice when possible.\n# Otherwise require structured backend/fanout metrics, or inline/delete under-amortized machinery."
+    ),
     metrics=lambda detector: OrchestrationMetrics(
         function_line_count=detector.declaration_line_count,
         branch_site_count=len(detector.missing_guard_names),
@@ -4819,12 +5206,25 @@ declare_candidate_rule_detector(
         "Detector classes repeatedly implement `_candidate_items()` as a one-line forwarding method. That is boilerplate control flow: the detector identity and finding rendering are semantic, while candidate collection is a typed class-level strategy that can be inherited.",
         "typed metaprogrammed detector base that derives candidate collection from a declared strategy",
         "detector class repeats collector forwarding method instead of declaring a collector",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda collector: f"`{collector.class_name}.{collector.method_name}` only forwards to `{collector.collector_name}`; inherit `{collector.recommended_base_name}` and declare `candidate_collector` instead.",
-    scaffold=lambda collector: f"class {collector.class_name}({collector.recommended_base_name}):\n    candidate_collector = {collector.collector_name}\n",
-    codemod_patch=lambda collector: f"# Delete the forwarding `_candidate_items()` method.\n# Change the detector base to `{collector.recommended_base_name}` and assign `candidate_collector = {collector.collector_name}`.",
+    summary=lambda collector: (
+        f"`{collector.class_name}.{collector.method_name}` only forwards to `{collector.collector_name}`; inherit `{collector.recommended_base_name}` and declare `candidate_collector` instead."
+    ),
+    scaffold=lambda collector: (
+        f"class {collector.class_name}({collector.recommended_base_name}):\n    candidate_collector = {collector.collector_name}\n"
+    ),
+    codemod_patch=lambda collector: (
+        f"# Delete the forwarding `_candidate_items()` method.\n# Change the detector base to `{collector.recommended_base_name}` and assign `candidate_collector = {collector.collector_name}`."
+    ),
     metrics=lambda collector: OrchestrationMetrics(
         function_line_count=0,
         branch_site_count=1,
@@ -4845,12 +5245,25 @@ declare_candidate_rule_detector(
         "Detector classes repeatedly accept `candidate: object`, immediately cast it to a nominal candidate type, and then never use the object-typed parameter again. That cast belongs in the generic detector base contract: the implementation hook should receive the typed candidate directly.",
         "generic typed candidate detector base with no per-detector cast prelude",
         "candidate-rendering template method starts with a local cast of its only payload parameter",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}.{candidate.method_name}` casts `{candidate.parameter_name}` to `{candidate.candidate_type_name}` before doing real work; parameterize `{candidate.detector_base_name}` and receive `{candidate.local_name}` as that type.",
-    scaffold=lambda candidate: f"class {candidate.class_name}({candidate.detector_base_name}[{candidate.candidate_type_name}]):\n    def {candidate.method_name}(self, {candidate.local_name}: {candidate.candidate_type_name}) -> RefactorFinding:\n        ...",
-    codemod_patch=lambda candidate: f"# Change the detector base to `{candidate.detector_base_name}[{candidate.candidate_type_name}]`.\n# Rename the hook argument from `{candidate.parameter_name}` to `{candidate.local_name}` and delete the local `cast(...)` prelude.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}.{candidate.method_name}` casts `{candidate.parameter_name}` to `{candidate.candidate_type_name}` before doing real work; parameterize `{candidate.detector_base_name}` and receive `{candidate.local_name}` as that type."
+    ),
+    scaffold=lambda candidate: (
+        f"class {candidate.class_name}({candidate.detector_base_name}[{candidate.candidate_type_name}]):\n    def {candidate.method_name}(self, {candidate.local_name}: {candidate.candidate_type_name}) -> RefactorFinding:\n        ..."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Change the detector base to `{candidate.detector_base_name}[{candidate.candidate_type_name}]`.\n# Rename the hook argument from `{candidate.parameter_name}` to `{candidate.local_name}` and delete the local `cast(...)` prelude."
+    ),
     metrics=lambda candidate: _SINGLE_TEMPLATE_CALL_METRICS,
     detector_priority=-18,
     candidate_collector=_typed_candidate_cast_boilerplate_candidates,
@@ -4865,12 +5278,26 @@ declare_candidate_rule_detector(
         "A detector class whose body only assigns finding metadata and a renderer is not carrying implementation behavior. Its class shell is derivable from the candidate type, detector base, registry key, and declaration line.",
         "one detector-declaration algebra that derives metadata-only detector classes",
         "detector class repeats a nominal class shell around only declarative assignments",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}` is a {candidate.line_count}-line metadata-only detector over `{candidate.candidate_type_name}` with assignments {candidate.assignment_names}.",
-    scaffold=lambda candidate: f"declare_module_detector({candidate.candidate_type_name}, finding_spec, finding_renderer, detector_base={candidate.base_name})",
-    codemod_patch=lambda candidate: f"# Replace `{candidate.class_name}` with `declare_module_detector(...)`.\n# Keep only true detector-specific values: spec, renderer, optional collector, base, and priority.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` is a {candidate.line_count}-line metadata-only detector over `{candidate.candidate_type_name}` with assignments {candidate.assignment_names}."
+    ),
+    scaffold=lambda candidate: (
+        f"declare_module_detector({candidate.candidate_type_name}, finding_spec, finding_renderer, detector_base={candidate.base_name})"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace `{candidate.class_name}` with `declare_module_detector(...)`.\n# Keep only true detector-specific values: spec, renderer, optional collector, base, and priority."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.line_count,
         mapping_name=candidate.class_name,
@@ -4890,12 +5317,25 @@ declare_candidate_rule_detector(
         "A static detector whose evidence method only collects one typed observation family and maps its line/symbol payload into `SourceLocation` is repeating the same module-observation algorithm. The detector should declare the observation family, item type, evidence threshold, and summary template while the ABC owns collection and evidence projection.",
         "typed observation detector algebra with one shared collection/projection algorithm",
         "detector class shell repeats collect/map/summary mechanics for one observation family",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}` repeats a {candidate.line_count}-line static observation shell over `{candidate.observation_family_name}` / `{candidate.observation_type_name}`.",
-    scaffold=lambda candidate: f'declare_typed_observation_detector(\n    "{candidate.class_name}",\n    finding_spec,\n    {candidate.observation_family_name},\n    {candidate.observation_type_name},\n    summary_template,\n)',
-    codemod_patch=lambda candidate: f"# Replace `{candidate.class_name}` with `declare_typed_observation_detector(...)`.\n# Keep detector-specific semantics as declarations: finding spec, observation family/type, minimum evidence, and summary template.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` repeats a {candidate.line_count}-line static observation shell over `{candidate.observation_family_name}` / `{candidate.observation_type_name}`."
+    ),
+    scaffold=lambda candidate: (
+        f'declare_typed_observation_detector(\n    "{candidate.class_name}",\n    finding_spec,\n    {candidate.observation_family_name},\n    {candidate.observation_type_name},\n    summary_template,\n)'
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace `{candidate.class_name}` with `declare_typed_observation_detector(...)`.\n# Keep detector-specific semantics as declarations: finding spec, observation family/type, minimum evidence, and summary template."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.line_count,
         mapping_name=candidate.class_name,
@@ -4921,12 +5361,25 @@ declare_candidate_rule_detector(
         "A detector declaration that embeds `CandidateFindingRenderer[...]` repeats the same rendering-object construction beside every candidate type. The detector algebra already knows the candidate type, finding spec, collector, and priority; it should derive the renderer object from typed summary/evidence/scaffold/patch/metrics hooks.",
         "one detector declaration algebra derives the renderer object and detector class",
         "module detector declaration manually embeds candidate renderer construction",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda renderer: f"`{renderer.qualname}` embeds renderer keywords {renderer.renderer_keyword_names} across {renderer.line_count} lines; declare the detector rule directly and derive the renderer.",
-    scaffold=lambda renderer: "declare_candidate_rule_detector(\n    Candidate,\n    finding_spec,\n    summary=lambda candidate: ...,\n)",
-    codemod_patch=lambda renderer: "# Replace the nested `CandidateFindingRenderer[...]` argument with `declare_candidate_rule_detector(...)` keyword hooks. Omit `evidence=` when it is exactly `lambda candidate: (candidate.evidence,)`.",
+    summary=lambda renderer: (
+        f"`{renderer.qualname}` embeds renderer keywords {renderer.renderer_keyword_names} across {renderer.line_count} lines; declare the detector rule directly and derive the renderer."
+    ),
+    scaffold=lambda renderer: (
+        "declare_candidate_rule_detector(\n    Candidate,\n    finding_spec,\n    summary=lambda candidate: ...,\n)"
+    ),
+    codemod_patch=lambda renderer: (
+        "# Replace the nested `CandidateFindingRenderer[...]` argument with `declare_candidate_rule_detector(...)` keyword hooks. Omit `evidence=` when it is exactly `lambda candidate: (candidate.evidence,)`."
+    ),
     metrics=lambda renderer: MappingMetrics.from_field_names(
         mapping_site_count=renderer.line_count,
         mapping_name=renderer.candidate_type_name,
@@ -4949,12 +5402,25 @@ declare_candidate_rule_detector(
         "A candidate collector that manually initializes `candidates`, walks `_iter_named_functions(module)`, appends candidate records, and returns the accumulator is repeating traversal and accumulator mechanics. The collector should delegate named-function traversal to one typed query helper and keep only the per-function projection as semantic residue.",
         "one named-function collector algebra owns traversal and accumulation",
         "candidate collector repeats named-function traversal with manual append accumulator",
-        _SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda collector: f"`{collector.function_name}` manually accumulates {collector.candidate_type_names} over `_iter_named_functions(module)` across {collector.line_count} lines.",
-    scaffold=lambda collector: "def _candidate_for_function(module, qualname, function):\n    yield Candidate(...)\n\ndef _candidates(module):\n    return _collect_named_function_candidates(module, _candidate_for_function)",
-    codemod_patch=lambda collector: "# Delete the manual `_iter_named_functions(module)` traversal and route collection through `_collect_named_function_candidates(...)`; keep only the per-function projection hook.",
+    summary=lambda collector: (
+        f"`{collector.function_name}` manually accumulates {collector.candidate_type_names} over `_iter_named_functions(module)` across {collector.line_count} lines."
+    ),
+    scaffold=lambda collector: (
+        "def _candidate_for_function(module, qualname, function):\n    yield Candidate(...)\n\ndef _candidates(module):\n    return _collect_named_function_candidates(module, _candidate_for_function)"
+    ),
+    codemod_patch=lambda collector: (
+        "# Delete the manual `_iter_named_functions(module)` traversal and route collection through `_collect_named_function_candidates(...)`; keep only the per-function projection hook."
+    ),
     metrics=lambda collector: OrchestrationMetrics(
         function_line_count=collector.line_count,
         branch_site_count=collector.append_count,
@@ -4975,10 +5441,19 @@ declare_candidate_rule_detector(
         "A function whose complete body is `return Authority(field=field, ...)` and whose forwarded keyword names exactly match its own parameters has no independent invariant, policy, or provenance boundary. The stable object is the callee authority or a typed request record, not the transport shell.",
         "direct authority call or typed request object instead of a same-name keyword relay",
         "single-return wrapper forwards every parameter as an identically named keyword",
-        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda shell: f"`{shell.function_name}` only forwards {shell.forwarded_keyword_names} to `{shell.callee_name}` with identical keyword names.",
+    summary=lambda shell: (
+        f"`{shell.function_name}` only forwards {shell.forwarded_keyword_names} to `{shell.callee_name}` with identical keyword names."
+    ),
     scaffold=lambda shell: (
         f"# Delete `{shell.function_name}` and call `{shell.callee_name}` directly.\n"
         "# If the parameter family is semantically real, replace the parameter list with one typed request record."
@@ -5012,8 +5487,15 @@ declare_candidate_rule_detector(
         "A function that initializes a temporary dict, guards several optional parameters with `is not None`, copies same-name values into that dict, and unpacks it into a call is encoding a constructor/call variant as branch mechanics. The stable semantic object is a named variant factory, policy, or direct call surface that owns those optional coordinates.",
         "named call variant or factory instead of optional keyword bag mutation",
         "empty dict plus repeated non-None guards feeds a call through **kwargs",
-        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda bag: (
         f"`{bag.function_name}` builds `{bag.bag_name}` from optional parameters "
@@ -5053,8 +5535,16 @@ declare_candidate_rule_detector(
         "Several public methods on one class fetch one enum-keyed payload field with `self.required(...)` or `self.optional(...)`, then repeat local runtime guards or coercions before returning the value. That is a hidden field schema spread across methods: the enum member, requiredness, accepted type, coercion, and error policy should be declared once and projected through a typed accessor engine.",
         "single authoritative projection schema for enum-keyed payload fields",
         "same class repeats payload accessor methods over one closed enum/key axis",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda family: (
         f"`{family.class_name}` repeats {len(family.method_names)} accessor methods "
@@ -5098,8 +5588,16 @@ declare_candidate_rule_detector(
         "A literal schema or registry table repeats the field axis already declared by a dataclass. Moving accessor methods into a table is still an SSOT violation when the table restates field names, requiredness, or coercion policy outside the nominal product declaration. The dataclass field declaration should own the projection metadata, and the projector should derive rows from `dataclasses.fields(...)`.",
         "dataclass-owned field metadata with a derived projection engine",
         "literal schema/registry rows mirror a nearby dataclass field axis",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda mirror: (
         f"`{mirror.schema_name}` mirrors {len(mirror.mirrored_field_names)} fields "
@@ -5150,8 +5648,16 @@ declare_candidate_rule_detector(
         "A dataclass field list repeatedly calls the same projection/default helper with per-field coercer or policy arguments. That still makes a parallel schema: the annotation and default value are no longer load-bearing enough, and every new field needs a hand-written projection row. The projector should derive requiredness from dataclass defaults and derive validation/coercion from the annotated type, with only true semantic conversions declared as nominal converter types.",
         "annotation/default-derived dataclass projector with nominal converter exceptions",
         "dataclass fields repeat projection helper calls instead of letting field declarations carry semantics",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` repeats projection helpers {candidate.helper_names} "
@@ -5198,8 +5704,15 @@ declare_candidate_rule_detector(
         "A typed carrier pipeline that accesses context as `pair[0]`, `pair[1]`, or nested numeric tuple paths has collapsed the control-flow smell but introduced a positional data smell. The semantic-compressor normal form is a named product record, authority-owned context object, or step result type whose field names carry the invariant.",
         "named effect context record instead of positional tuple plumbing",
         "effect pipeline stores semantic context in numeric tuple indexes",
-        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda candidate: (
         f"`{candidate.function_name}` uses positional tuple paths "
@@ -5234,10 +5747,7 @@ declare_candidate_rule_detector(
     candidate_collector=_tuple_index_semantic_opacity_candidates,
     source_candidate_collector=lambda module, syntax_index, config: (
         None
-        if any(
-            token in module.source
-            for token in _TUPLE_INDEX_OPACITY_CARRIER_CALLS
-        )
+        if any(token in module.source for token in _TUPLE_INDEX_OPACITY_CARRIER_CALLS)
         and re.search(r"\[[^\]]*\d[^\]]*\]", module.source) is not None
         else ()
     ),
@@ -5253,10 +5763,18 @@ declare_candidate_rule_detector(
         "A parameter annotated as optional, tested with `is None`, and also observed through methods/properties is encoding a behavior axis through absence. If the branch changes behavior, the semantic-compressor normal form is an ABC or nominal strategy family whose concrete variants own the absent/present behavior instead of a nullable signature plus local branch.",
         "ABC or nominal strategy variants for the absent/present case",
         "function signature admits `None`, branches on that parameter, and calls/reads through the same parameter as an object",
-        _NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda branch: f"`{branch.function_name}` accepts `{branch.parameter_name}: {branch.annotation_text}`, branches on `{branch.parameter_name} is None` {branch.none_check_count} time(s), and observes attributes {branch.observed_attribute_names}.",
+    summary=lambda branch: (
+        f"`{branch.function_name}` accepts `{branch.parameter_name}: {branch.annotation_text}`, branches on `{branch.parameter_name} is None` {branch.none_check_count} time(s), and observes attributes {branch.observed_attribute_names}."
+    ),
     scaffold=lambda branch: (
         f"class {branch.parameter_name.title().replace('_', '')}Policy(ABC):\n"
         "    @abstractmethod\n"
@@ -5288,10 +5806,6 @@ declare_candidate_rule_detector(
 )
 
 
-
-
-
-
 declare_candidate_rule_detector(
     AstStreamCollectorBoilerplateCandidate,
     high_confidence_certified_spec(
@@ -5300,12 +5814,25 @@ declare_candidate_rule_detector(
         "A candidate collector that manually creates a list accumulator, walks an AST stream such as `ast.walk(...)` or `_walk_nodes(...)`, appends candidate records, and returns the accumulator is repeating stream traversal and accumulation mechanics. The collector should delegate typed AST stream traversal to one query helper and keep only node-level projection semantics.",
         "one typed AST stream collector algebra owns traversal and accumulation",
         "candidate collector repeats AST stream traversal with manual append accumulator",
-        _SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda collector: f"`{collector.function_name}` manually accumulates {collector.candidate_type_names} from {collector.stream_call_names} via `{collector.accumulator_name}` across {collector.line_count} lines.",
-    scaffold=lambda collector: "def _candidate_for_node(module, node):\n    yield Candidate(...)\n\ndef _candidates(module):\n    return _collect_ast_node_candidates(module, module.module, ast.NodeType, _candidate_for_node)",
-    codemod_patch=lambda collector: "# Delete the manual AST traversal and route collection through `_collect_ast_node_candidates(...)`; keep only the typed node projection hook.",
+    summary=lambda collector: (
+        f"`{collector.function_name}` manually accumulates {collector.candidate_type_names} from {collector.stream_call_names} via `{collector.accumulator_name}` across {collector.line_count} lines."
+    ),
+    scaffold=lambda collector: (
+        "def _candidate_for_node(module, node):\n    yield Candidate(...)\n\ndef _candidates(module):\n    return _collect_ast_node_candidates(module, module.module, ast.NodeType, _candidate_for_node)"
+    ),
+    codemod_patch=lambda collector: (
+        "# Delete the manual AST traversal and route collection through `_collect_ast_node_candidates(...)`; keep only the typed node projection hook."
+    ),
     metrics=lambda collector: OrchestrationMetrics(
         function_line_count=collector.line_count,
         branch_site_count=collector.append_count,
@@ -5328,8 +5855,15 @@ class FindingSpecDefaultFieldBoilerplateDetector(
         "FindingSpec constructors already encode confidence and certification defaults. Restating those semantic fields in every detector is declaration boilerplate; the constructor should carry the shared semantic tier and leave only true local residue.",
         "constructor-level semantic spec defaults with no repeated confidence/certification payload",
         "FindingSpec call repeats semantic default keywords that can be derived from its constructor",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     )
 
     def _finding_for_candidate(
@@ -5381,12 +5915,25 @@ declare_candidate_rule_detector(
         "Concrete detectors repeatedly call `self.finding_spec.build(self.detector_id, ...)`. The detector id is instance-owned template context, not per-finding payload; a shared `build_finding(...)` hook should inject it once.",
         "typed detector template method that injects detector identity into finding construction",
         "finding renderer manually passes detector-owned identity into its own spec builder",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_AUTHORITATIVE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.symbol}` calls `self.finding_spec.build(self.detector_id, ...)`; `build_finding(...)` can derive the detector id from the instance.",
-    scaffold=lambda candidate: "return self.build_finding(\n    summary,\n    evidence,\n    ...\n)",
-    codemod_patch=lambda candidate: "# Replace `self.finding_spec.build(` with `self.build_finding(`.\n# Delete the leading `self.detector_id,` argument.",
+    summary=lambda candidate: (
+        f"`{candidate.symbol}` calls `self.finding_spec.build(self.detector_id, ...)`; `build_finding(...)` can derive the detector id from the instance."
+    ),
+    scaffold=lambda candidate: (
+        "return self.build_finding(\n    summary,\n    evidence,\n    ...\n)"
+    ),
+    codemod_patch=lambda candidate: (
+        "# Replace `self.finding_spec.build(` with `self.build_finding(`.\n# Delete the leading `self.detector_id,` argument."
+    ),
     metrics=lambda candidate: _SINGLE_TEMPLATE_CALL_METRICS,
     detector_name="FindingSpecBuildBoilerplateDetector",
     candidate_collector=_finding_spec_build_boilerplate_candidates,
@@ -5402,8 +5949,16 @@ class DirectBuildFindingRendererDetector(
         "A `_finding_for_candidate` method whose entire body is `return self.build_finding(...)` does not own control flow. It is a data renderer over one candidate type, so the candidate-to-finding algorithm should live once in the ABC and the detector should supply a typed renderer object.",
         "typed candidate finding renderer reused by detector ABC machinery",
         "detector method is only a build_finding payload declaration",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
     )
 
     def _finding_for_candidate(
@@ -5439,12 +5994,26 @@ declare_candidate_rule_detector(
         "A detector class whose explicit `detector_id` is the snake_case projection of its class name is restating identity already available to the metaclass registry. `AutoRegisterMeta` should derive that key through the detector base.",
         "metaclass-derived detector registry key",
         "detector class repeats its own name as a manual registry key",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-        _CLASS_FAMILY_REGISTRY_POPULATION_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.REGISTRY_POPULATION,
+            ObservationTag.REPEATED_METHOD_ROLES,
+        ),
     ),
-    summary=lambda candidate: f'`{candidate.class_name}` declares `detector_id = "{candidate.detector_id_value}"`, which is derivable from the class name.',
-    scaffold=lambda candidate: "class IssueDetector(ABC, metaclass=AutoRegisterMeta):\n    __key_extractor__ = staticmethod(_detector_id_from_class_name)",
-    codemod_patch=lambda candidate: f'# Delete `detector_id = "{candidate.detector_id_value}"` from `{candidate.class_name}` and let the metaclass derive it.',
+    summary=lambda candidate: (
+        f'`{candidate.class_name}` declares `detector_id = "{candidate.detector_id_value}"`, which is derivable from the class name.'
+    ),
+    scaffold=lambda candidate: (
+        "class IssueDetector(ABC, metaclass=AutoRegisterMeta):\n    __key_extractor__ = staticmethod(_detector_id_from_class_name)"
+    ),
+    codemod_patch=lambda candidate: (
+        f'# Delete `detector_id = "{candidate.detector_id_value}"` from `{candidate.class_name}` and let the metaclass derive it.'
+    ),
     metrics=lambda candidate: RegistrationMetrics.from_class_names(
         registration_site_count=1,
         registry_name="IssueDetector",
@@ -5462,12 +6031,26 @@ declare_candidate_rule_detector(
         "A detector whose collector hook is the snake_case projection of its own class name is declaring a mechanical convention. The collector ABC can derive that hook at class creation and leave only non-standard collector aliases explicit.",
         "class-name-derived candidate collector hook",
         "detector class repeats its candidate collector naming convention",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_REGISTRY_POPULATION_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.REGISTRY_POPULATION,
+            ObservationTag.REPEATED_METHOD_ROLES,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}` declares `candidate_collector = {candidate.collector_name}`, which is derivable from the class name.",
-    scaffold=lambda candidate: "class ModuleCollectorCandidateDetector(DerivedCandidateCollectorMixin, ...):\n    ...",
-    codemod_patch=lambda candidate: f"# Delete `candidate_collector = {candidate.collector_name}` from `{candidate.class_name}` and let the collector ABC derive it.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` declares `candidate_collector = {candidate.collector_name}`, which is derivable from the class name."
+    ),
+    scaffold=lambda candidate: (
+        "class ModuleCollectorCandidateDetector(DerivedCandidateCollectorMixin, ...):\n    ..."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Delete `candidate_collector = {candidate.collector_name}` from `{candidate.class_name}` and let the collector ABC derive it."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=1,
         mapping_name=candidate.class_name,
@@ -5485,12 +6068,25 @@ declare_candidate_rule_detector(
         "Detector specs repeatedly enumerate the same semantic coordinate names: pattern, title, why, capability gap, relation context, and tag axes. A typed builder can make that product structure explicit once and leave each detector to provide only its coordinate values.",
         "typed FindingSpec builder with canonical semantic coordinate order",
         "detector repeats FindingSpec keyword schema locally",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}` builds `{candidate.constructor_name}` by spelling {len(candidate.keyword_names)} FindingSpec coordinate keywords; use `{candidate.builder_name}`.",
-    scaffold=lambda candidate: f"finding_spec = {candidate.builder_name}(\n    PatternId.EXAMPLE,\n    title,\n    why,\n    capability_gap,\n    relation_context,\n)",
-    codemod_patch=lambda candidate: f"# Replace `{candidate.constructor_name}(pattern_id=..., title=..., ...)` with `{candidate.builder_name}(...)` and let the builder own coordinate names.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` builds `{candidate.constructor_name}` by spelling {len(candidate.keyword_names)} FindingSpec coordinate keywords; use `{candidate.builder_name}`."
+    ),
+    scaffold=lambda candidate: (
+        f"finding_spec = {candidate.builder_name}(\n    PatternId.EXAMPLE,\n    title,\n    why,\n    capability_gap,\n    relation_context,\n)"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace `{candidate.constructor_name}(pattern_id=..., title=..., ...)` with `{candidate.builder_name}(...)` and let the builder own coordinate names."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=1,
         mapping_name=candidate.class_name,
@@ -5508,12 +6104,25 @@ declare_candidate_rule_detector(
         "`product_record` and `product_record_spec` create classes through runtime calls, which hides the class body, fields, inheritance, and docs from AST-level refactoring analysis. Field-only records should be explicit `@dataclass(frozen=True)` classes unless there is a stronger metaprogramming payoff proof.",
         "explicit frozen dataclass declaration visible to AST analysis",
         "runtime product_record schema hides an otherwise ordinary class declaration",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.callee_name}` in `{candidate.context_qualname}` materializes product record(s) {candidate.declared_names or ('<dynamic>',)} over {candidate.line_count} line(s); spell these as explicit frozen dataclasses.",
-    scaffold=lambda candidate: "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass RecordName:\n    field_name: FieldType",
-    codemod_patch=lambda candidate: "# Replace runtime `product_record` / `product_record_spec` materialization with explicit `@dataclass(frozen=True)` classes so NRA and other AST tooling can see the nominal structure.",
+    summary=lambda candidate: (
+        f"`{candidate.callee_name}` in `{candidate.context_qualname}` materializes product record(s) {candidate.declared_names or ('<dynamic>',)} over {candidate.line_count} line(s); spell these as explicit frozen dataclasses."
+    ),
+    scaffold=lambda candidate: (
+        "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass RecordName:\n    field_name: FieldType"
+    ),
+    codemod_patch=lambda candidate: (
+        "# Replace runtime `product_record` / `product_record_spec` materialization with explicit `@dataclass(frozen=True)` classes so NRA and other AST tooling can see the nominal structure."
+    ),
     metrics=lambda candidate: MappingMetrics(
         mapping_site_count=1,
         field_count=max(1, len(candidate.declared_names)),
@@ -5532,12 +6141,25 @@ declare_candidate_rule_detector(
         "A property whose only behavior is constructing `SourceLocation` from three self attributes is a projection descriptor, not class-specific algorithm. The attribute triple should be data and the evidence-construction mechanics should live in one reusable descriptor.",
         "typed SourceLocation evidence descriptor parameterized by field names",
         "property method repeats evidence projection mechanics from self attributes",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}.{candidate.method_name}` constructs `SourceLocation` from `{candidate.file_attribute_name}`, `{candidate.line_attribute_name}`, `{candidate.symbol_attribute_name}`.",
-    scaffold=lambda candidate: f'evidence = SourceLocationEvidenceProperty("{candidate.file_attribute_name}", "{candidate.line_attribute_name}", "{candidate.symbol_attribute_name}")',
-    codemod_patch=lambda candidate: "# Replace the `@property` evidence method with `SourceLocationEvidenceProperty(...)`; keep only the irreducible attribute names as descriptor data.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}.{candidate.method_name}` constructs `SourceLocation` from `{candidate.file_attribute_name}`, `{candidate.line_attribute_name}`, `{candidate.symbol_attribute_name}`."
+    ),
+    scaffold=lambda candidate: (
+        f'evidence = SourceLocationEvidenceProperty("{candidate.file_attribute_name}", "{candidate.line_attribute_name}", "{candidate.symbol_attribute_name}")'
+    ),
+    codemod_patch=lambda candidate: (
+        "# Replace the `@property` evidence method with `SourceLocationEvidenceProperty(...)`; keep only the irreducible attribute names as descriptor data."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=1,
         mapping_name=f"{candidate.class_name}.{candidate.method_name}",
@@ -5559,12 +6181,25 @@ declare_candidate_rule_detector(
         "A property that zips parallel line and symbol fields only to construct `SourceLocation` tuples is a projection descriptor. The file/line/symbol field names are the semantic residue; the zip and construction mechanics should live in one reusable descriptor.",
         "typed zipped SourceLocation evidence descriptor parameterized by field names",
         "property method repeats zipped evidence projection mechanics from self attributes",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}.{candidate.method_name}` zips `{candidate.line_numbers_attribute_name}` with `{candidate.symbol_names_attribute_name}` to build SourceLocation evidence across {candidate.line_count} lines.",
-    scaffold=lambda candidate: f'{candidate.method_name} = ZippedSourceLocationEvidenceProperty("{candidate.line_numbers_attribute_name}", "{candidate.symbol_names_attribute_name}", "{candidate.file_attribute_name}")',
-    codemod_patch=lambda candidate: "# Replace the zipped evidence `@property` method with `ZippedSourceLocationEvidenceProperty(...)`; keep only the irreducible parallel field names as descriptor data.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}.{candidate.method_name}` zips `{candidate.line_numbers_attribute_name}` with `{candidate.symbol_names_attribute_name}` to build SourceLocation evidence across {candidate.line_count} lines."
+    ),
+    scaffold=lambda candidate: (
+        f'{candidate.method_name} = ZippedSourceLocationEvidenceProperty("{candidate.line_numbers_attribute_name}", "{candidate.symbol_names_attribute_name}", "{candidate.file_attribute_name}")'
+    ),
+    codemod_patch=lambda candidate: (
+        "# Replace the zipped evidence `@property` method with `ZippedSourceLocationEvidenceProperty(...)`; keep only the irreducible parallel field names as descriptor data."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.line_count,
         mapping_name=f"{candidate.class_name}.{candidate.method_name}",
@@ -5586,13 +6221,26 @@ declare_candidate_rule_detector(
         "Several small frozen option/config records in the same module are often projections of one closed format axis. Keeping every record as a hand-written class preserves type names, but repeats product mechanics and default surfaces that can be generated from a typed option schema catalog.",
         "typed option schema catalog that derives concrete option records",
         "field-only option/config record family repeats product-record mechanics across a closed format axis",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"{candidate.file_path} declares option record family {candidate.class_names} over fields {candidate.field_names}; derive the records from one typed option schema catalog.",
+    summary=lambda candidate: (
+        f"{candidate.file_path} declares option record family {candidate.class_names} over fields {candidate.field_names}; derive the records from one typed option schema catalog."
+    ),
     evidence=lambda candidate: candidate.evidence,
-    scaffold=lambda candidate: "OPTION_SCHEMAS = (\n    OptionSchema('csv', CsvOptions, fields=(...)),\n    OptionSchema('json', JsonOptions, fields=(...)),\n)\n\n# Derive concrete frozen records and defaults from the schema catalog.",
-    codemod_patch=lambda candidate: "# Keep the public option record names, but derive their field/default declarations from one schema catalog.\n# The only per-option residue should be semantic field/default differences.",
+    scaffold=lambda candidate: (
+        "OPTION_SCHEMAS = (\n    OptionSchema('csv', CsvOptions, fields=(...)),\n    OptionSchema('json', JsonOptions, fields=(...)),\n)\n\n# Derive concrete frozen records and defaults from the schema catalog."
+    ),
+    codemod_patch=lambda candidate: (
+        "# Keep the public option record names, but derive their field/default declarations from one schema catalog.\n# The only per-option residue should be semantic field/default differences."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.class_names),
         mapping_name="option_schema_catalog",
@@ -5613,12 +6261,25 @@ declare_candidate_rule_detector(
         "Functions named as pairwise conversions encode a product of two closed axes: source representation and target representation. The advisor should collapse the matrix into one dispatcher/table whose cases are derived from the axes instead of hand-maintaining one function per pair.",
         "closed source/target conversion axes with one derived dispatcher",
         "module declares many pairwise conversion functions whose names form a source-by-target matrix",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"{candidate.file_path} declares conversion matrix {candidate.function_names} over sources {candidate.source_axis_values} and targets {candidate.target_axis_values}; factor it into closed axes.",
-    scaffold=lambda candidate: "class SourceMemory(Enum): ...\nclass TargetMemory(Enum): ...\n\nCONVERTERS = {\n    (SourceMemory.CPU, TargetMemory.GPU): convert_cpu_gpu,\n}\n\ndef convert(value, source, target):\n    return CONVERTERS[(source, target)](value)",
-    codemod_patch=lambda candidate: "# Replace pairwise conversion function selection with one source/target axis table.\n# Keep specialized conversion bodies only as private table entries when they carry real backend semantics.",
+    summary=lambda candidate: (
+        f"{candidate.file_path} declares conversion matrix {candidate.function_names} over sources {candidate.source_axis_values} and targets {candidate.target_axis_values}; factor it into closed axes."
+    ),
+    scaffold=lambda candidate: (
+        "class SourceMemory(Enum): ...\nclass TargetMemory(Enum): ...\n\nCONVERTERS = {\n    (SourceMemory.CPU, TargetMemory.GPU): convert_cpu_gpu,\n}\n\ndef convert(value, source, target):\n    return CONVERTERS[(source, target)](value)"
+    ),
+    codemod_patch=lambda candidate: (
+        "# Replace pairwise conversion function selection with one source/target axis table.\n# Keep specialized conversion bodies only as private table entries when they carry real backend semantics."
+    ),
     metrics=lambda candidate: DispatchCountMetrics(
         dispatch_site_count=len(candidate.function_names),
         dispatch_axis="source,target",
@@ -5665,8 +6326,15 @@ declare_candidate_rule_detector(
         "Several operations redispatch the same closed representation axis. The ArrayBridge-style normal form is one ABC bridge family keyed by the representation, with shared lifecycle and operation hooks on the bridge implementations instead of every operation branching again.",
         "ABC bridge authority with one registered implementation per representation and operation hooks for the repeated actions",
         "multiple operations repeat the same backend/type/format dispatch axis",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda candidate: (
         f"Operations {candidate.function_names} all dispatch `{candidate.dispatch_axis_expression}` "
@@ -5699,8 +6367,15 @@ declare_candidate_rule_detector(
         "Several operations probe the same array protocol attributes. The bridge normal form is one nominal array bridge that owns capability discovery and exposes typed operation hooks, rather than every operation rediscovering shape/device/dtype semantics.",
         "array bridge ABC with capability properties and operation hooks",
         "multiple operations repeat the same array protocol capability probes",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda candidate: (
         f"Operations {candidate.function_names} repeat array capability probes "
@@ -5736,8 +6411,15 @@ declare_candidate_rule_detector(
         "Several functions execute the same ordered stage calls. That is a lifecycle skeleton: an ABC should own sequencing, while implementations provide hooks for the irreducible stages or payload residue.",
         "lifecycle ABC template method with stage hooks",
         "multiple operations repeat the same lifecycle stage sequence",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
     summary=lambda candidate: (
         f"Functions {candidate.function_names} repeat lifecycle stages "
@@ -5778,12 +6460,26 @@ declare_candidate_rule_detector(
         "Concrete `ast.NodeVisitor` classes that hand-declare multiple scope stacks and repeat push/pop transitions are reimplementing one traversal skeleton. The stack lifecycle belongs in a nominal ABC; concrete visitors should supply hooks for observation-specific work.",
         "one nominal visitor ABC owns stack lifecycle and concrete visitors provide hooks",
         "same visitor class declares multiple stack fields and push/pop transition hooks",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS,
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.qualname}` hand-declares visitor stacks {candidate.stack_names} across {candidate.transition_method_names}.",
-    scaffold=lambda candidate: "class Visitor(ClassFunctionStackNodeVisitor):\n    def before_visit_function(self, node):\n        ...",
-    codemod_patch=lambda candidate: "# Delete repeated stack lifecycle methods after moving initialization and `visit_ClassDef`/`visit_FunctionDef` push/pop transitions into a nominal ABC such as `ClassFunctionStackNodeVisitor`; keep only visitor-specific hooks and node handlers in the concrete class.",
+    summary=lambda candidate: (
+        f"`{candidate.qualname}` hand-declares visitor stacks {candidate.stack_names} across {candidate.transition_method_names}."
+    ),
+    scaffold=lambda candidate: (
+        "class Visitor(ClassFunctionStackNodeVisitor):\n    def before_visit_function(self, node):\n        ..."
+    ),
+    codemod_patch=lambda candidate: (
+        "# Delete repeated stack lifecycle methods after moving initialization and `visit_ClassDef`/`visit_FunctionDef` push/pop transitions into a nominal ABC such as `ClassFunctionStackNodeVisitor`; keep only visitor-specific hooks and node handlers in the concrete class."
+    ),
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.transition_method_names),
         statement_count=candidate.line_count,
@@ -5807,12 +6503,25 @@ declare_candidate_rule_detector(
         "An enum whose properties only index a module-level table by `self` splits member identity from member metadata. The metadata should move into enum construction so each member carries its own typed semantic record.",
         "enum member construction owns the member metadata",
         "enum properties read a parallel metadata table keyed by the same enum family",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _EXPORT_MAPPING_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            ObservationTag.EXPORT_MAPPING,
+            ObservationTag.NORMALIZED_AST,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}` reads {candidate.property_names} from `{candidate.table_name}` across {candidate.case_count} enum cases.",
-    scaffold=lambda candidate: "class MetadataEnum(StrEnum):\n    def __new__(cls, value: str, label: str):\n        obj = str.__new__(cls, value)\n        obj._value_ = value\n        obj.label = label\n        return obj",
-    codemod_patch=lambda candidate: f"# Move `{candidate.table_name}` values into `{candidate.class_name}` member tuples and delete the table-backed property lookups.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` reads {candidate.property_names} from `{candidate.table_name}` across {candidate.case_count} enum cases."
+    ),
+    scaffold=lambda candidate: (
+        "class MetadataEnum(StrEnum):\n    def __new__(cls, value: str, label: str):\n        obj = str.__new__(cls, value)\n        obj._value_ = value\n        obj.label = label\n        return obj"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Move `{candidate.table_name}` values into `{candidate.class_name}` member tuples and delete the table-backed property lookups."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.case_count,
         mapping_name=candidate.table_name,
@@ -5821,64 +6530,6 @@ declare_candidate_rule_detector(
     ),
     candidate_collector=_enum_metadata_table_candidates,
 )
-
-
-class SemanticTagTupleBoilerplateDetector(
-    ModuleCollectorCandidateDetector[SemanticTagTupleBoilerplateCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Semantic tag tuple literal should become a named authority",
-        "Capability and observation tag tuples are semantic classifications, not local control flow. A named constant should carry that classification so detector specs reference one authority instead of re-declaring enum tuples inline.",
-        "named semantic tag tuple authority reused across detector specs",
-        "FindingSpec carries an inline semantic tag tuple literal",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
-
-    def _finding_for_candidate(
-        self, tag_candidate: SemanticTagTupleBoilerplateCandidate
-    ) -> RefactorFinding:
-        if tag_candidate.source_kind == "derived_constant":
-            sample_names = ", ".join(tag_candidate.tag_names[:4])
-            suffix = (
-                f", and {len(tag_candidate.tag_names) - 4} more"
-                if len(tag_candidate.tag_names) > 4
-                else ""
-            )
-            return self.build_finding(
-                (
-                    f"{len(tag_candidate.tag_names)} {tag_candidate.keyword_name} tag constants "
-                    f"restate enum tuples already encoded by their names: {sample_names}{suffix}."
-                ),
-                tag_candidate.evidence,
-                scaffold="globals().update({name: _semantic_tag_tuple_from_constant_name(name) for name in names})",
-                codemod_patch="# Delete the manual constants; add one typed derivation helper for capability/observation tag constants.",
-                metrics=MappingMetrics.from_field_names(
-                    mapping_site_count=len(tag_candidate.tag_names),
-                    mapping_name=tag_candidate.constant_name,
-                    field_names=tag_candidate.tag_names,
-                ),
-            )
-        return self.build_finding(
-            (
-                f"`{tag_candidate.keyword_name}` repeats tag tuple {tag_candidate.tag_names}; "
-                f"lift it to `{tag_candidate.constant_name}`."
-            ),
-            tag_candidate.evidence,
-            scaffold=(
-                f"{tag_candidate.constant_name} = (\n    ...\n)\n\nfinding_spec = HighConfidenceFindingSpec({tag_candidate.keyword_name}={tag_candidate.constant_name})"
-            ),
-            codemod_patch=(
-                f"# Add `{tag_candidate.constant_name}` for the repeated tag tuple.\n"
-                f"# Replace each repeated `{tag_candidate.keyword_name}=(...)` value with the named constant."
-            ),
-            metrics=MappingMetrics.from_field_names(
-                mapping_site_count=len(tag_candidate.evidence),
-                mapping_name=tag_candidate.constant_name,
-                field_names=tag_candidate.tag_names,
-            ),
-        )
 
 
 class DerivedMetricCountBoilerplateDetector(
@@ -5890,8 +6541,15 @@ class DerivedMetricCountBoilerplateDetector(
         "A metrics object that receives both `*_count=len(values)` and `values=values` is carrying the same fact twice. The count is a deterministic projection of the collection and should be derived by the typed metrics constructor.",
         "typed metrics constructors that derive count fields from authoritative collections",
         "metrics call passes a count keyword computed from the collection keyword in the same call",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
     )
 
     def _finding_for_candidate(
@@ -5944,9 +6602,7 @@ class CompactDataclassNamespaceCliMirrorCandidateBase(
         config: DetectorConfig,
     ) -> Sequence[DataclassNamespaceCliMirrorCandidate]:
         del config
-        return _dataclass_namespace_cli_mirror_candidates_from_projections(
-            projections
-        )
+        return _dataclass_namespace_cli_mirror_candidates_from_projections(projections)
 
 
 declare_candidate_rule_detector(
@@ -5957,10 +6613,20 @@ declare_candidate_rule_detector(
         "A dataclass already owns its field names and defaults. Re-enumerating those fields in a namespace constructor and an argparse specification table creates parallel configuration surfaces that can drift from the typed record.",
         "one dataclass field authority that derives namespace construction and CLI argument rows",
         "dataclass fields are mirrored manually in both from-namespace construction and CLI argument specs",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        (
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
     ),
-    summary=lambda candidate: f"`{candidate.class_name}` mirrors {len(candidate.field_names)} namespace fields and {len(candidate.cli_field_names)} CLI fields through `{candidate.argument_spec_name}` instead of deriving adapters from the dataclass.",
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` mirrors {len(candidate.field_names)} namespace fields and {len(candidate.cli_field_names)} CLI fields through `{candidate.argument_spec_name}` instead of deriving adapters from the dataclass."
+    ),
     evidence=lambda candidate: (
         SourceLocation(candidate.file_path, candidate.line, candidate.class_name),
         SourceLocation(
@@ -5974,8 +6640,12 @@ declare_candidate_rule_detector(
             candidate.argument_spec_name,
         ),
     ),
-    scaffold=lambda candidate: "for field in fields(ConfigRecord):\n    value = namespace_values.get(field.name, field.default)\n    ...\n\nCLI_SPECS = tuple(spec_from_field(field) for field in fields(ConfigRecord) if field.name in HELP)",
-    codemod_patch=lambda candidate: f"# Derive `{candidate.class_name}.from_namespace()` and `{candidate.argument_spec_name}` from dataclass fields/defaults.\n# Keep per-option help text as the only CLI-specific residue.",
+    scaffold=lambda candidate: (
+        "for field in fields(ConfigRecord):\n    value = namespace_values.get(field.name, field.default)\n    ...\n\nCLI_SPECS = tuple(spec_from_field(field) for field in fields(ConfigRecord) if field.name in HELP)"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Derive `{candidate.class_name}.from_namespace()` and `{candidate.argument_spec_name}` from dataclass fields/defaults.\n# Keep per-option help text as the only CLI-specific residue."
+    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.field_names) + len(candidate.cli_field_names),
         mapping_name=candidate.class_name,
@@ -5995,7 +6665,11 @@ class NestedBuilderShellDetector(
         "A builder forwards a substantial semantic parameter family unchanged into a subordinate nominal builder and only adds a small residue locally. The docs treat that as split request authority: one layer should own the forwarded family instead of rebuilding it inside another shell.",
         "single authoritative request/context builder boundary",
         "one builder nests a forwarded subordinate request builder inside a second nominal shell",
-        _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
     )
 
     def _finding_for_candidate(
@@ -6034,9 +6708,15 @@ declare_candidate_rule_detector(
         "A string-valued instance tag is manually selecting behavior while the same instance still carries fields from several incompatible fibers. That leaves the family above the zero-incoherence threshold and admits disagreement states the host type system could rule out.",
         "host-native nominal fiber decomposition with one subclass per behavior fiber",
         "manual instance tag drives behavior while irrelevant coordinates remain constructible on every fiber",
-        _NOMINAL_IDENTITY_PROVENANCE_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+        ),
     ),
-    summary=lambda fiber_candidate: f"`{fiber_candidate.class_name}` branches on manual fiber tag `self.{fiber_candidate.tag_name}` across {fiber_candidate.case_names} while still carrying cross-fiber fields {fiber_candidate.assigned_field_names}.",
+    summary=lambda fiber_candidate: (
+        f"`{fiber_candidate.class_name}` branches on manual fiber tag `self.{fiber_candidate.tag_name}` across {fiber_candidate.case_names} while still carrying cross-fiber fields {fiber_candidate.assigned_field_names}."
+    ),
     evidence=lambda fiber_candidate: (
         SourceLocation(
             fiber_candidate.file_path,
@@ -6067,9 +6747,15 @@ declare_candidate_rule_detector(
         "Several stored fields are derived from one authoritative source field, but mutators resynchronize them manually and incompletely. That raises the degree of freedom above one and makes view disagreement reachable.",
         "descriptor- or property-mediated derived views rooted in one authoritative source",
         "stored derived views must be manually kept coherent with a single source field",
-        _AUTHORITATIVE_UNIT_RATE_COHERENCE_PROVENANCE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.PROVENANCE,
+        ),
     ),
-    summary=lambda view_candidate: f"`{view_candidate.class_name}` stores derived views {view_candidate.derived_field_names} from `{view_candidate.source_attr}`, but `{view_candidate.mutator_name}` only updates {view_candidate.updated_field_names}.",
+    summary=lambda view_candidate: (
+        f"`{view_candidate.class_name}` stores derived views {view_candidate.derived_field_names} from `{view_candidate.source_attr}`, but `{view_candidate.mutator_name}` only updates {view_candidate.updated_field_names}."
+    ),
     evidence=lambda view_candidate: (
         SourceLocation(
             view_candidate.file_path,
@@ -6098,7 +6784,11 @@ class DeferredClassRegistrationDetector(
         "Manual decorator- or helper-based registration leaves a reachable state where a class exists but the registry has not been updated. The host already provides zero-delay registration via `metaclass-registry` or another class-time hook.",
         "zero-delay metaclass-registry class registration with collision checks and runtime provenance",
         "class registration is performed as a separate auxiliary step rather than at class creation time",
-        _CLASS_LEVEL_REGISTRATION_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
     )
 
     def _finding_for_candidate(
@@ -6140,7 +6830,11 @@ class StructuralConfusabilityDetector(
         "A consumer only observes a partial structural view, and several unrelated classes are confusable under that view. Without a nominal witness, the distortion floor stays above zero and the family boundary remains implicit.",
         "ABC-backed nominal witness for a structurally confusable implementation family",
         "consumer depends on a partial structural view shared by several unrelated classes",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
     )
 
     def _finding_for_candidate(
@@ -6171,7 +6865,11 @@ class SemanticWitnessFamilyDetector(
         "Several frozen dataclass carriers repeat the same location and naming roles under different field names. That leaves one semantic family structurally expanded instead of giving it one nominal carrier root.",
         "one authoritative nominal base for a semantic metadata carrier family",
         "same carrier family repeats a renamed semantic-role spine across sibling frozen dataclasses",
-        _NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS,
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
     )
 
     def _finding_for_candidate(

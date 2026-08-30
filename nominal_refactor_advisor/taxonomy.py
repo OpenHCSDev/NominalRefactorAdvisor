@@ -14,10 +14,12 @@ class CertificationLevel(StrEnum):
 
     @classmethod
     def actionable_certification_levels(cls) -> frozenset[str]:
-        return frozenset((
-            cls.CERTIFIED.value,
-            cls.STRONG_HEURISTIC.value,
-        ))
+        return frozenset(
+            (
+                cls.CERTIFIED.value,
+                cls.STRONG_HEURISTIC.value,
+            )
+        )
 
 
 class ConfidenceLevel(StrEnum):
@@ -28,10 +30,12 @@ class ConfidenceLevel(StrEnum):
 
     @classmethod
     def actionable_confidence_levels(cls) -> frozenset[str]:
-        return frozenset((
-            cls.HIGH.value,
-            cls.MEDIUM.value,
-        ))
+        return frozenset(
+            (
+                cls.HIGH.value,
+                cls.MEDIUM.value,
+            )
+        )
 
 
 class LabeledStrEnum(StrEnum):
@@ -45,10 +49,6 @@ class LabeledStrEnum(StrEnum):
         member.label = label
         return member
 
-    @classmethod
-    def name_aliases(cls) -> dict[str, str]:
-        return {}
-
 
 class CapabilityTag(LabeledStrEnum):
     """Capabilities recovered or prescribed by the canonical pattern library."""
@@ -61,10 +61,6 @@ class CapabilityTag(LabeledStrEnum):
         member.label = label
         member.distinction = distinction
         return member
-
-    @classmethod
-    def name_aliases(cls) -> dict[str, str]:
-        return {"AUTHORITATIVE": "AUTHORITATIVE_MAPPING"}
 
     AUTHORITATIVE_DISPATCH = (
         "authoritative_dispatch",
@@ -165,14 +161,6 @@ class CapabilityTag(LabeledStrEnum):
 
 class ObservationTag(LabeledStrEnum):
     """Observation families used to explain evidence and partial views."""
-
-    @classmethod
-    def name_aliases(cls) -> dict[str, str]:
-        return {
-            "EXPORT": "EXPORT_MAPPING",
-            "KEYWORD": "KEYWORD_MAPPING",
-            "LINEAGE": "LINEAGE_MAPPING",
-        }
 
     ACCESSOR_WRAPPER = ("accessor_wrapper", "accessor wrapper methods")
     ATTRIBUTE_PROBE = ("attribute_probe", "attribute probes")

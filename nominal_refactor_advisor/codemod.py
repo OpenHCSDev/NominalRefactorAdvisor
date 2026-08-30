@@ -593,13 +593,9 @@ DETECTOR_ID_FIELD_NAME = "detector_id"
 CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
 DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
 DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
-SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID = "semantic_tag_tuple_boilerplate"
 MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID = "module_authority_reexport_catalog"
 MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
 NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
-DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
-    ("capability_tag_constants", "observation_tag_constants")
-)
 TARGET_TEMPLATE_FIELD_PATTERN = re.compile(r"\$\{target\.([a-z_][a-z0-9_]*)\}")
 UNKNOWN_CONFIDENCE_BASIS = "unknown"
 
@@ -2822,7 +2818,7 @@ class SelectionCountExpectation:
         unknown_fields = tuple(sorted(set(payload) - expected_fields))
         if unknown_fields:
             raise ValueError(
-                "Unsupported selection_count field(s): " f"{', '.join(unknown_fields)}"
+                f"Unsupported selection_count field(s): {', '.join(unknown_fields)}"
             )
         expectation = cls(
             **{
@@ -3214,14 +3210,11 @@ class SetupOperationArrayPayloadValueCodec(
         if not all(isinstance(item, Mapping) for item in value):
             raise ValueError("setup operation entries must be objects")
         operations = tuple(
-            RefactorRecipeOperation.from_dict(
-                cast(Mapping[str, JsonValue], item)
-            )
+            RefactorRecipeOperation.from_dict(cast(Mapping[str, JsonValue], item))
             for item in value
         )
         if any(
-            isinstance(operation, SelectedTargetsOperation)
-            for operation in operations
+            isinstance(operation, SelectedTargetsOperation) for operation in operations
         ):
             raise ValueError(
                 "setup_operations must not include selected-target operations"
@@ -4292,8 +4285,7 @@ class RefactorRecipeOperationTemplate:
             raise ValueError(f"Unsupported recipe operation: {operation_key}")
         if issubclass(operation_type, SelectedTargetsOperation):
             raise ValueError(
-                "Selected-target operation templates must wrap a target-local "
-                "operation"
+                "Selected-target operation templates must wrap a target-local operation"
             )
         target_fields = tuple(
             field_name
@@ -4353,12 +4345,8 @@ class RefactorRecipeOperationPlanTemplate:
     payload_bindings: ClassVar[
         PayloadBindingSet["RefactorRecipeOperationPlanTemplate", object]
     ] = PayloadBindingSet.from_field_codecs(
-        recipe_id=(
-            DefaultedStringPayloadValueCodec(default_recipe_id)
-        ),
-        reason=(
-            DefaultedStringPayloadValueCodec(default_reason)
-        ),
+        recipe_id=(DefaultedStringPayloadValueCodec(default_recipe_id)),
+        reason=(DefaultedStringPayloadValueCodec(default_reason)),
         setup_operations=SetupOperationArrayPayloadValueCodec(),
         operation_templates=OptionalOperationTemplateArrayPayloadValueCodec(),
     )
@@ -4895,8 +4883,7 @@ class SourceLineDiffAuthority:
                         file_path=target.file_path,
                         insertion_line=target.line + source_start,
                         inserted_lines=candidate_lines[
-                            prefix_count
-                            + replacement_start : prefix_count
+                            prefix_count + replacement_start : prefix_count
                             + replacement_end
                         ],
                         rationale=rationale,
@@ -4908,8 +4895,7 @@ class SourceLineDiffAuthority:
                         start_line=target.line + source_start,
                         end_line=target.line + source_end - 1,
                         replacement_lines=candidate_lines[
-                            prefix_count
-                            + replacement_start : prefix_count
+                            prefix_count + replacement_start : prefix_count
                             + replacement_end
                         ],
                         rationale=rationale,
@@ -5439,9 +5425,7 @@ class SourceTargetEditor:
         relative_start = start_offset - target_line_offsets[start_index]
         relative_end = end_offset - target_line_offsets[start_index]
         replacement_source = (
-            f"{span_source[:relative_start]}"
-            f"{new_source}"
-            f"{span_source[relative_end:]}"
+            f"{span_source[:relative_start]}{new_source}{span_source[relative_end:]}"
         )
         return SourceSpanReplacement(
             file_path=self.target.file_path,
@@ -6149,6 +6133,7 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     class_names: tuple[str, ...]
 
     member_role: ClassVar[str] = "member"
+
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         inherited_field_names = frozenset(
@@ -6848,18 +6833,22 @@ class ExtractMethodsToClassOperation(
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return PayloadBindingSet.from_field_codecs(
-            destination_class_name=RequiredStringPayloadValueCodec(),
-        ) + PayloadBindingSet.from_explicit_fields(
-            (
-                METHOD_NAMES_PAYLOAD_FIELD,
-                "extracted_method_names",
-                StringArrayPayloadValueCodec(),
-            ),
-        ) + PayloadBindingSet.from_field_codecs(
-            field_declaration_sources=OptionalStringArrayPayloadValueCodec(),
-            class_base_names=OptionalStringArrayPayloadValueCodec(),
-            class_decorator_sources=OptionalStringArrayPayloadValueCodec(),
+        return (
+            PayloadBindingSet.from_field_codecs(
+                destination_class_name=RequiredStringPayloadValueCodec(),
+            )
+            + PayloadBindingSet.from_explicit_fields(
+                (
+                    METHOD_NAMES_PAYLOAD_FIELD,
+                    "extracted_method_names",
+                    StringArrayPayloadValueCodec(),
+                ),
+            )
+            + PayloadBindingSet.from_field_codecs(
+                field_declaration_sources=OptionalStringArrayPayloadValueCodec(),
+                class_base_names=OptionalStringArrayPayloadValueCodec(),
+                class_decorator_sources=OptionalStringArrayPayloadValueCodec(),
+            )
         )
 
     def source_edits_for_target_node(
@@ -7253,8 +7242,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
             carrier_attribute = carrier_attribute.strip()
             if not source_field.isidentifier() or not carrier_attribute.isidentifier():
                 raise ValueError(
-                    "Field projection pairs must use simple identifiers; "
-                    f"got {pair!r}"
+                    f"Field projection pairs must use simple identifiers; got {pair!r}"
                 )
             pairs[source_field] = carrier_attribute
         if not pairs:
@@ -8124,9 +8112,12 @@ class DeclareAuthorityOperation(
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        return PayloadBindingSet.from_field_codecs(
-            authority_claim=AuthorityClaimPayloadValueCodec(),
-        ) + super().payload_bindings()
+        return (
+            PayloadBindingSet.from_field_codecs(
+                authority_claim=AuthorityClaimPayloadValueCodec(),
+            )
+            + super().payload_bindings()
+        )
 
     def source_edits(
         self,
@@ -8142,7 +8133,7 @@ class DeclareAuthorityOperation(
                 insertion_line=insertion_line,
                 inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
                 rationale=self.rationale
-                or ("Declare authority " f"{self.authority_claim.claimed_symbol!r}."),
+                or (f"Declare authority {self.authority_claim.claimed_symbol!r}."),
             ),
         )
 
@@ -8987,7 +8978,7 @@ class ModuleMoveDependencyReport:
             )
         if self.unresolved_dependency_names:
             parts.append(
-                "unresolved dependencies=" f"{self.unresolved_dependency_names!r}"
+                f"unresolved dependencies={self.unresolved_dependency_names!r}"
             )
         return "; ".join(parts)
 
@@ -9516,9 +9507,12 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        return PayloadBindingSet.from_field_codecs(
-            symbol_qualnames=StringArrayPayloadValueCodec(),
-        ) + super().payload_bindings()
+        return (
+            PayloadBindingSet.from_field_codecs(
+                symbol_qualnames=StringArrayPayloadValueCodec(),
+            )
+            + super().payload_bindings()
+        )
 
     def dependency_report(
         self,
@@ -9881,22 +9875,26 @@ class ExposeGlobalCandidateCacheContextOperation(
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return PayloadBindingSet.from_field_codecs(
-            candidate_type_name=RequiredStringPayloadValueCodec(),
-            candidate_collector_name=RequiredStringPayloadValueCodec(),
-            candidate_collector_scope=OptionalStringPayloadValueCodec(
-                WholeModuleCandidateCollectorScopeSource.scope_key,
-            ),
-            candidate_collector_uses_config=BooleanPayloadValueCodec(),
-            candidate_item_sort_attributes=OptionalStringArrayPayloadValueCodec(),
-        ) + PayloadBindingSet.from_explicit_fields(
-            (
-                BASE_NAME_PAYLOAD_FIELD,
-                "replaced_base_name",
-                OptionalStringPayloadValueCodec("IssueDetector"),
-            ),
-        ) + PayloadBindingSet.from_field_codecs(
-            import_source=OptionalStringPayloadValueCodec(""),
+        return (
+            PayloadBindingSet.from_field_codecs(
+                candidate_type_name=RequiredStringPayloadValueCodec(),
+                candidate_collector_name=RequiredStringPayloadValueCodec(),
+                candidate_collector_scope=OptionalStringPayloadValueCodec(
+                    WholeModuleCandidateCollectorScopeSource.scope_key,
+                ),
+                candidate_collector_uses_config=BooleanPayloadValueCodec(),
+                candidate_item_sort_attributes=OptionalStringArrayPayloadValueCodec(),
+            )
+            + PayloadBindingSet.from_explicit_fields(
+                (
+                    BASE_NAME_PAYLOAD_FIELD,
+                    "replaced_base_name",
+                    OptionalStringPayloadValueCodec("IssueDetector"),
+                ),
+            )
+            + PayloadBindingSet.from_field_codecs(
+                import_source=OptionalStringPayloadValueCodec(""),
+            )
         )
 
     @property
@@ -9916,7 +9914,7 @@ class ExposeGlobalCandidateCacheContextOperation(
         base_name = self.scope_source.collector_base_names.for_config_usage(
             self.candidate_method_spec.collector_uses_config
         )
-        return f"{base_name}" f"[{self.candidate_type_name}]"
+        return f"{base_name}[{self.candidate_type_name}]"
 
     @property
     def required_import_source(self) -> str:
@@ -11680,8 +11678,7 @@ class ProductRecordDataclassDeclaration:
         if not self.class_options.base_sources:
             return f"class {self.record_name}:"
         return (
-            f"class {self.record_name}"
-            f"({', '.join(self.class_options.base_sources)}):"
+            f"class {self.record_name}({', '.join(self.class_options.base_sources)}):"
         )
 
     def _body_lines(self) -> tuple[str, ...]:
@@ -12128,8 +12125,7 @@ class ProductRecordBatchDataclassRewriteAuthority(ProductRecordRewriteAuthorityB
 
     def missing_schema_message(self) -> str:
         return (
-            f"No product_record batch for {self.record_names!r} "
-            f"in {self.file_path!r}"
+            f"No product_record batch for {self.record_names!r} in {self.file_path!r}"
         )
 
 
@@ -14738,7 +14734,7 @@ class FindingRecipeAuthorityClaimGate:
 
     @staticmethod
     def rejection_reason(report: CodemodOperationPreflightReport) -> str:
-        return "generated recipe failed Authority Claim Gate: " f"{report.message}"
+        return f"generated recipe failed Authority Claim Gate: {report.message}"
 
 
 @dataclass(frozen=True)
@@ -15733,6 +15729,7 @@ class MappingBuilderFindingRecipeSynthesizer(
             ((evidence.file_path, f"{mapping_name}->{source_name}"),),
         )
 
+
 class PrefixedRoleBundleRecipeRejection(FindingRecipeRequirementRejection):
     """Typed rejection while resolving a prefixed-role bundle recipe."""
 
@@ -16554,9 +16551,7 @@ class CollectorBoilerplateFindingRecipeSynthesizer(
             )
         extraction = self.extraction_for_finding(finding, context)
         if extraction is None:
-            return FindingRecipeEvaluation(
-                rejection_reason=self.extraction_requirement
-            )
+            return FindingRecipeEvaluation(rejection_reason=self.extraction_requirement)
         recipe = extraction.recipe_for(finding)
         if recipe is None:
             return FindingRecipeEvaluation(
@@ -17721,9 +17716,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
             for argument_source in spec.argument_sources
         )
         arguments_source = "\n".join(argument_lines)
-        return (
-            f"self.{spec.method_name}(\n" f"{arguments_source}\n" f"{closing_indent})"
-        )
+        return f"self.{spec.method_name}(\n{arguments_source}\n{closing_indent})"
 
     @staticmethod
     def method_call_argument_sources(
@@ -17939,10 +17932,12 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
                     matching_calls,
                     field_names,
                 ),
-                lambda templates, source_field_name: cls.source_projection_authority_method(
-                    metrics,
-                    templates,
-                    source_field_name,
+                lambda templates, source_field_name: (
+                    cls.source_projection_authority_method(
+                        metrics,
+                        templates,
+                        source_field_name,
+                    )
                 ),
             )
             .unwrap_or_none()
@@ -19118,10 +19113,12 @@ class DerivedMetricCountBoilerplateFindingRecipeSynthesizer(FindingRecipeSynthes
                     finding,
                     selector_context_and_key[0],
                 ),
-                lambda selector_context_and_key, replacement: self.recipe_from_replacement(
-                    finding,
-                    selector_context_and_key[1],
-                    replacement,
+                lambda selector_context_and_key, replacement: (
+                    self.recipe_from_replacement(
+                        finding,
+                        selector_context_and_key[1],
+                        replacement,
+                    )
                 ),
             )
             .unwrap_or_none()
@@ -19539,40 +19536,6 @@ class ModuleAssignmentDeletionFindingRecipeSynthesizer(
         )
 
 
-class DerivedSemanticTagConstantsFindingRecipeSynthesizer(
-    ModuleAssignmentDeletionFindingRecipeSynthesizer
-):
-    """Build deletion recipes for semantic tag constants derivable from names."""
-
-    detector_id = SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID
-    recipe_id_suffix = "delete-derived-semantic-tag-constants"
-    recipe_reason = (
-        "Delete semantic tag constants whose tuple values are derivable "
-        "from the constant names."
-    )
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        if (
-            finding.metrics.plan_mapping_name
-            not in DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES
-        ):
-            return ()
-        file_paths = frozenset(evidence.file_path for evidence in finding.evidence)
-        if len(file_paths) != 1:
-            return ()
-        source_path = next(iter(file_paths))
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            (
-                (source_path, constant_name)
-                for constant_name in finding.metrics.plan_field_names
-            ),
-        )
-
-
 class ModuleAuthorityReexportCatalogFindingRecipeSynthesizer(
     ModuleAssignmentDeletionFindingRecipeSynthesizer
 ):
@@ -19938,6 +19901,7 @@ class TypedMetricSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrateg
     metric_type: ClassVar[
         type[BranchCountMetrics] | type[MappingMetrics] | type[RegistrationMetrics]
     ]
+
 
 @dataclass(frozen=True)
 class FindingSemanticMirrorLocations:
@@ -20564,7 +20528,6 @@ class ReturnKeyValueSequenceProjectionTarget(FunctionProjectionTarget):
     field_values: tuple[ReturnKeyValueSequenceFieldValue, ...]
 
 
-
 class ReturnDictFieldValueExtractor:
     """Shared extraction of selected string-key fields from return dictionaries."""
 
@@ -20806,10 +20769,12 @@ class DataclassAuthorityMappingRecipeBuilder(
         return (
             Maybe.of(self.finding.metrics.plan_source_name)
             .with_projection(
-                lambda authority_name: MappingSemanticMirrorRecipeStrategy.authority_class_target(
-                    self,
-                    seed.authority_source_location(),
-                    authority_name,
+                lambda authority_name: (
+                    MappingSemanticMirrorRecipeStrategy.authority_class_target(
+                        self,
+                        seed.authority_source_location(),
+                        authority_name,
+                    )
                 )
             )
             .filter(
@@ -21326,9 +21291,6 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         )
 
 
-
-
-
 @dataclass(frozen=True)
 class DataclassConstructorProjectionMethod:
     """Authority-owned method that projects dataclass fields into a constructor."""
@@ -21766,7 +21728,6 @@ class DataclassContextCallProjectionMappingRecipeBuilder(
             for keyword in call_node.keywords
             if keyword.arg in field_names
         }
-
 
 
 class LocalRoleCaseConstructibleItem(ABC, metaclass=AutoRegisterMeta):
@@ -22454,9 +22415,11 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
                 lambda row, authority_stem: (row[0], row[1], authority_stem),
             )
             .filter(
-                lambda row: not self.class_name_conflicts(
-                    f"{row[2]}RoleCaseAuthority",
-                    f"{row[2]}RoleCase",
+                lambda row: (
+                    not self.class_name_conflicts(
+                        f"{row[2]}RoleCaseAuthority",
+                        f"{row[2]}RoleCase",
+                    )
                 )
             )
             .map(
@@ -22569,9 +22532,9 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
         return (
             Maybe.of((parameter_name, prelude_source, default_source, items))
             .filter(
-                lambda row: row[0] is not None
-                and row[1] is not None
-                and row[2] is not None
+                lambda row: (
+                    row[0] is not None and row[1] is not None and row[2] is not None
+                )
             )
             .filter(lambda row: bool(row[3]))
             .filter(lambda row: self.branch_items_cover_finding(row[3]))
@@ -23203,12 +23166,6 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
         )
 
 
-
-
-
-
-
-
 class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrategy):
     """Route class-family semantic mirrors through AutoRegisterMeta recipes."""
 
@@ -23382,9 +23339,9 @@ class ContextualSemanticMirrorRecipeBuilder(
 ):
     """Shared lifecycle for semantic-mirror builders that require selector context."""
 
-    __registry__: ClassVar[dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]] = (
-        {}
-    )
+    __registry__: ClassVar[
+        dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]
+    ] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
@@ -23946,8 +23903,9 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
                 if seed is not None
                 else None
             )
-            if import_boundary is not None and import_boundary.import_would_create_cycle(
-                context
+            if (
+                import_boundary is not None
+                and import_boundary.import_would_create_cycle(context)
             ):
                 return "semantic authority import would create a module cycle"
         return (
@@ -24377,8 +24335,6 @@ class DispatchMetricsFindingRecipeSynthesizer(
         return finding.metrics.plan_dispatch_axis is not None and bool(
             finding.metrics.plan_literal_cases
         )
-
-
 
 
 def autoregister_base_name(
