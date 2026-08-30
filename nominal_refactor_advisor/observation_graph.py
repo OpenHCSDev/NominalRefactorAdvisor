@@ -33,11 +33,8 @@ class ObservationKind(StrEnum):
     DYNAMIC_METHOD_INJECTION = "dynamic_method_injection"
     EXPORT_DICT = "export_dict"
     FIELD = "field"
-    INTERFACE_GENERATION = "interface_generation"
-    LINEAGE_MAPPING = "lineage_mapping"
     LITERAL_DISPATCH = "literal_dispatch"
     PROJECTION_HELPER = "projection_helper"
-    RUNTIME_TYPE_GENERATION = "runtime_type_generation"
     SCOPED_SHAPE_WRAPPER = "scoped_shape_wrapper"
     SENTINEL_TYPE = "sentinel_type"
 

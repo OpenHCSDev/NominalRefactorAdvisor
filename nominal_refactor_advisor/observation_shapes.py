@@ -237,16 +237,6 @@ class ObservedAttributeObservedNameMixin(ABC):
     observed_name = AliasProperty[str]("observed_attribute")
 
 
-class GeneratorNameObservedNameMixin(ABC):
-    generator_name: str
-    observed_name = AliasProperty[str]("generator_name")
-
-
-class GeneratorNameFiberKeyMixin(ABC):
-    generator_name: str
-    fiber_key = AliasProperty[str]("generator_name")
-
-
 @dataclass(frozen=True)
 class FieldObservation(
     ExecutionLevelObservationMixin,
@@ -399,19 +389,6 @@ class ClassMarkerObservation(
 
 
 @dataclass(frozen=True)
-class InterfaceGenerationObservation(
-    FunctionBodyLineSymbolObservationMixin,
-    GeneratorNameObservedNameMixin,
-    GeneratorNameFiberKeyMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.INTERFACE_GENERATION
-    line: int
-    symbol: str
-    generator_name: str
-
-
-@dataclass(frozen=True)
 class SentinelTypeObservation(
     ModuleBodyLineSymbolObservationMixin,
     StructuralObservationTemplate,
@@ -437,33 +414,6 @@ class DynamicMethodInjectionObservation(
 
     observed_name: ClassVar[AliasProperty[str]] = AliasProperty("mutator_name")
     fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("mutator_name")
-
-
-@dataclass(frozen=True)
-class RuntimeTypeGenerationObservation(
-    ModuleBodyLineSymbolObservationMixin,
-    GeneratorNameObservedNameMixin,
-    GeneratorNameFiberKeyMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.RUNTIME_TYPE_GENERATION
-    line: int
-    symbol: str
-    generator_name: str
-
-
-@dataclass(frozen=True)
-class LineageMappingObservation(
-    ModuleBodyLineSymbolObservationMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.LINEAGE_MAPPING
-    line: int
-    symbol: str
-    mapping_name: str
-
-    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("mapping_name")
-    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("mapping_name")
 
 
 @dataclass(frozen=True)

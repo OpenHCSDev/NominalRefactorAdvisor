@@ -57,13 +57,10 @@ from .observation_shapes import (
     ExportDictShape,
     FieldObservation,
     FieldOriginKind,
-    InterfaceGenerationObservation,
-    LineageMappingObservation,
     LiteralDispatchObservation,
     LiteralKind,
     ProjectionHelperShape,
     RegistrationShape,
-    RuntimeTypeGenerationObservation,
     ScopedShapeWrapperFunction,
     ScopedShapeWrapperSpec,
     SentinelTypeObservation,
@@ -83,7 +80,6 @@ from .semantic_match import (
 
 _TYPE_BUILTIN = "type"
 _SETATTR_BUILTIN = "setattr"
-_RUNTIME_TYPE_GENERATORS = frozenset({_TYPE_BUILTIN, "make_dataclass", "new_class"})
 _IGNORED_PYTHON_TREE_DIRS = frozenset(
     {
         ".eggs",
@@ -3720,33 +3716,6 @@ def _class_marker_observations(
     return sorted_tuple(observations, key=lambda item: (item.line, item.marker_name))
 
 
-def _interface_generation_observation(
-    parsed_module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> InterfaceGenerationObservation | None:
-    for node in _walk_nodes(function):
-        if not isinstance(node, ast.Call):
-            continue
-        if _terminal_name(node.func) != "type":
-            continue
-        if len(node.args) < 3:
-            continue
-        bases = node.args[1]
-        namespace = node.args[2]
-        if not isinstance(namespace, ast.Dict) or namespace.keys:
-            continue
-        if not isinstance(bases, ast.Tuple):
-            continue
-        if any((_terminal_name(base) == "ABC" for base in bases.elts)):
-            return InterfaceGenerationObservation(
-                file_path=str(parsed_module.path),
-                line=node.lineno,
-                symbol=function.name,
-                generator_name=_TYPE_BUILTIN,
-            )
-    return None
-
-
 def _sentinel_type_observation(
     parsed_module: ParsedModule,
     node: ast.Assign,
@@ -3827,49 +3796,6 @@ def _dynamic_method_injection_observations(
                 )
             )
     return sorted_tuple(observations, key=lambda item: item.line)
-
-
-def _runtime_type_generation_observation(
-    parsed_module: ParsedModule,
-    node: ast.Call,
-    observation: ScopedAstObservation,
-) -> RuntimeTypeGenerationObservation | None:
-    generator_name = _terminal_name(node.func)
-    if generator_name not in _RUNTIME_TYPE_GENERATORS:
-        return None
-    # `type(obj)` is ordinary type introspection, not runtime type generation.
-    # Only the 3-argument `type(name, bases, namespace)` form constructs a type.
-    if generator_name == _TYPE_BUILTIN and len(node.args) < 3:
-        return None
-    return RuntimeTypeGenerationObservation(
-        file_path=str(parsed_module.path),
-        line=node.lineno,
-        symbol=observation.function_name or generator_name,
-        generator_name=generator_name,
-    )
-
-
-def _lineage_mapping_observation(
-    parsed_module: ParsedModule,
-    node: ast.Assign,
-) -> LineageMappingObservation | None:
-    for target in node.targets:
-        if not isinstance(target, ast.Subscript):
-            continue
-        name = _terminal_name(target.value)
-        if name and any(
-            (
-                token in name.lower()
-                for token in ("lazy", "base", "type", "mapping", "registry")
-            )
-        ):
-            return LineageMappingObservation(
-                file_path=str(parsed_module.path),
-                line=node.lineno,
-                symbol=name,
-                mapping_name=name,
-            )
-    return None
 
 
 def _dual_axis_resolution_observation(
@@ -4208,11 +4134,7 @@ from .observation_families import (
     InlineLiteralDispatchObservationSpec,
     InlineStringLiteralDispatchObservationFamily,
     InlineStringLiteralDispatchObservationSpec,
-    InterfaceGenerationObservationFamily,
-    InterfaceGenerationObservationSpec,
     KnownClassFamilyShapeSpec,
-    LineageMappingObservationFamily,
-    LineageMappingObservationSpec,
     LiteralDispatchObservationSpec,
     NumericLiteralDispatchObservationFamily,
     NumericLiteralDispatchObservationSpec,
@@ -4221,8 +4143,6 @@ from .observation_families import (
     ProjectionHelperObservationSpec,
     RegistrationShapeFamily,
     RegistrationShapeSpec,
-    RuntimeTypeGenerationObservationFamily,
-    RuntimeTypeGenerationObservationSpec,
     ScopedShapeWrapperFunctionFamily,
     ScopedShapeWrapperFunctionObservationSpec,
     ScopedShapeWrapperObservationSpec,
@@ -4237,12 +4157,9 @@ from .observation_families import (
     StandardConfigDispatchObservationSpec,
     StandardDualAxisResolutionObservationSpec,
     StandardDynamicMethodInjectionObservationSpec,
-    StandardInterfaceGenerationObservationSpec,
-    StandardLineageMappingObservationSpec,
     StandardProjectionHelperObservationSpec,
     StringLiteralDispatchObservationFamily,
     StringLiteralDispatchObservationSpec,
-    TypeCallGenerationObservationSpec,
     TypedLiteralObservationFamily,
     TypedLiteralObservationSpec,
 )

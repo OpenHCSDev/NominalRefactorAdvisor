@@ -28,13 +28,10 @@ from .observation_shapes import (
     DynamicMethodInjectionObservation,
     ExportDictShape,
     FieldObservation,
-    InterfaceGenerationObservation,
-    LineageMappingObservation,
     LiteralDispatchObservation,
     LiteralKind,
     ProjectionHelperShape,
     RegistrationShape,
-    RuntimeTypeGenerationObservation,
     ScopedShapeWrapperFunction,
     ScopedShapeWrapperSpec,
     SentinelTypeObservation,
@@ -74,17 +71,14 @@ from .ast_tools import (
     _fingerprint_builder_value,
     _init_field_observations,
     _inline_literal_dispatch_observations_for_kind,
-    _interface_generation_observation,
     _iter_attribute_family_calls,
     _iter_class_decorator_family_calls,
     _known_class_family,
-    _lineage_mapping_observation,
     _literal_dispatch_observations_for_kind,
     _node_display_name,
     _node_matches_family,
     _projection_helper_shape_from_function,
     _registration_key_fingerprint,
-    _runtime_type_generation_observation,
     _scoped_shape_wrapper_function_from_function,
     _scoped_shape_wrapper_spec_from_assign,
     _sentinel_type_observation,
@@ -787,22 +781,6 @@ class ClassNamedFunctionHelperObservationSpec(
         )
 
 
-class HelperBackedAssignObservationSpec(
-    ShapeHelperBackedSpec[GeneratedItemT],
-    AssignObservationSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
-    ABC,
-):
-    def build_from_assign(
-        self,
-        parsed_module: ParsedModule,
-        node: ast.Assign,
-        observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
-        del observation
-        return type(self).shape_helper(parsed_module, node)
-
-
 class HelperBackedScopedAssignObservationSpec(
     ShapeHelperBackedSpec[GeneratedItemT],
     ScopeFilteredAssignObservationSpec[GeneratedItemT],
@@ -817,18 +795,6 @@ class HelperBackedScopedAssignObservationSpec(
     ) -> ShapeEmission[GeneratedItemT] | None:
         del observation
         return type(self).shape_helper(parsed_module, node)
-
-
-class ObservationContextHelperShapeSpec(
-    ShapeHelperBackedSpec[GeneratedItemT],
-    ContextHelperShapeSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
-    ABC,
-):
-    def shape_helper_args(
-        self, node: ast.AST, observation: ScopedAstObservation
-    ) -> tuple[ast.AST, ScopedAstObservation]:
-        return (node, observation)
 
 
 _materialize_class_declarations(
@@ -846,12 +812,6 @@ _materialize_class_declarations(
             GeneratedShapeHelper(_class_marker_observations),
             _TUPLE_FUNCTION_HELPER,
         ),
-        _obs_root("InterfaceGeneration", "FunctionObservationSpec"),
-        _std_obs(
-            "InterfaceGeneration",
-            GeneratedShapeHelper(_interface_generation_observation),
-            _FUNCTION_HELPER,
-        ),
         _obs_root("SentinelType", "ABC"),
         _helper_decl(
             "SentinelTypeAssignmentObservationSpec",
@@ -866,22 +826,6 @@ _materialize_class_declarations(
             "DynamicMethodInjection",
             GeneratedShapeHelper(_dynamic_method_injection_observations),
             _TUPLE_FUNCTION_HELPER,
-        ),
-        _obs_root(
-            "RuntimeTypeGeneration",
-            "ObservationContextHelperShapeSpec ABC",
-        ),
-        _helper_decl(
-            "TypeCallGenerationObservationSpec",
-            GeneratedShapeHelper(_runtime_type_generation_observation),
-            "RuntimeTypeGenerationObservationSpec",
-            node_type=ast.Call,
-        ),
-        _obs_root("LineageMapping", "AssignObservationSpec ABC"),
-        _std_obs(
-            "LineageMapping",
-            GeneratedShapeHelper(_lineage_mapping_observation),
-            "HelperBackedAssignObservationSpec",
         ),
         _obs_root(
             "DualAxisResolution",

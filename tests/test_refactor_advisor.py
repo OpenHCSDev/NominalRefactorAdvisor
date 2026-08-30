@@ -43,12 +43,9 @@ from nominal_refactor_advisor.ast_tools import (
     FieldObservationSpec,
     FieldObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
-    InterfaceGenerationObservationFamily,
-    LineageMappingObservationFamily,
     ProjectionHelperObservationFamily,
     RegistrationShapeSpec,
     RegistrationShapeFamily,
-    RuntimeTypeGenerationObservationFamily,
     ScopedShapeWrapperFunctionFamily,
     ScopedShapeWrapperSpecFamily,
     SentinelTypeObservationFamily,
@@ -9328,46 +9325,6 @@ def test_parameter_thread_detector_ignores_semantic_decorated_entrypoints(
     )
 
 
-def test_detects_generated_type_lineage(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nBASE_TO_LAZY = {}\n\n\nclass Base:\n    pass\n\n\nLazyBase = type("LazyBase", (Base,), {})\nBASE_TO_LAZY[Base] = LazyBase\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 7 for finding in findings))
-
-
-def test_collects_generated_type_lineage_observations_via_spec_family(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nBASE_TO_LAZY = {}\n\n\nclass Base:\n    pass\n\n\nLazyBase = type("LazyBase", (Base,), {})\nBASE_TO_LAZY[Base] = LazyBase\n',
-    )
-    module = parse_python_modules(tmp_path)[0]
-    generation = collect_family_items(module, RuntimeTypeGenerationObservationFamily)
-    lineage = collect_family_items(module, LineageMappingObservationFamily)
-    assert [item.generator_name for item in generation] == ["type"]
-    assert [item.mapping_name for item in lineage] == ["BASE_TO_LAZY"]
-
-
-def test_ignores_type_introspection_for_generated_type_lineage(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Box:\n    def clone(self):\n        return type(self)()\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == "generated_type_lineage" for finding in findings)
-    )
-    module = parse_python_modules(tmp_path)[0]
-    generation = collect_family_items(module, RuntimeTypeGenerationObservationFamily)
-    assert generation == []
-
-
 def test_detects_dual_axis_resolution(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -9426,29 +9383,6 @@ def test_collects_class_marker_observations_via_spec_family(tmp_path: Path) -> N
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, ClassMarkerObservationFamily)
     assert any((item.marker_name == "_is_global_config" for item in observations))
-
-
-def test_detects_dynamic_interface_generation(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\n\n\ndef make_interface(name):\n    return type(name, (ABC,), {})\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 10 for finding in findings))
-
-
-def test_collects_interface_generation_observations_via_spec_family(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\n\n\ndef make_interface(name):\n    return type(name, (ABC,), {})\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-    observations = collect_family_items(module, InterfaceGenerationObservationFamily)
-    assert [item.generator_name for item in observations] == ["type"]
 
 
 def test_detects_sentinel_type_marker(tmp_path: Path) -> None:
@@ -16682,14 +16616,43 @@ def test_observation_graph_auto_includes_registered_observation_families(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nBASE_TO_LAZY = {}\nSENTINEL = type("Sentinel", (), {})()\n\n\nclass Base:\n    pass\n\n\nLazyBase = type("LazyBase", (Base,), {})\nBASE_TO_LAZY[Base] = LazyBase\n\n\ndef resolve(config, obj):\n    if hasattr(config, "kind"):\n        return config.kind\n    for scope in [1]:\n        for mro_type in type(obj).__mro__:\n            if scope and mro_type:\n                return scope, mro_type\n    return SENTINEL\n',
+        '''
+SENTINEL = type("Sentinel", (), {})()
+
+
+class Alpha:
+    def export(self, result):
+        return {
+            "pose_id": result.pose_id,
+            "score": result.score,
+            "label": result.label,
+        }
+
+
+class Beta:
+    def export(self, item):
+        return {
+            "pose_id": item.pose_id,
+            "score": item.score,
+            "label": item.label,
+        }
+
+
+def resolve(config, obj):
+    if hasattr(config, "kind"):
+        return config.kind
+    for scope in [1]:
+        for mro_type in type(obj).__mro__:
+            if scope and mro_type:
+                return scope, mro_type
+    return SENTINEL
+''',
     )
     graph = build_observation_graph(parse_python_modules(tmp_path))
     kinds = {item.observation_kind for item in graph.observations}
     assert ObservationKind.CONFIG_DISPATCH in kinds
-    assert ObservationKind.RUNTIME_TYPE_GENERATION in kinds
-    assert ObservationKind.LINEAGE_MAPPING in kinds
     assert ObservationKind.DUAL_AXIS_RESOLUTION in kinds
+    assert ObservationKind.EXPORT_DICT in kinds
     assert ObservationKind.SENTINEL_TYPE in kinds
 
 

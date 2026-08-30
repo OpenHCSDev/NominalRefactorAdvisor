@@ -4907,59 +4907,6 @@ class ConcreteConfigFieldProbeDetector(
         )
 
 
-class GeneratedTypeLineageDetector(StaticModulePatternDetector):
-    finding_spec = speculative_finding_spec(
-        PatternId.TYPE_LINEAGE,
-        "Generated types need explicit lineage tracking",
-        "The docs say generated and rebuilt types need explicit nominal lineage so normalization, reverse lookup, and provenance remain exact.",
-        "exact generated-type lineage and normalization",
-        "same module combines runtime type generation with lineage-sensitive registries",
-        (
-            CapabilityTag.TYPE_LINEAGE,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
-        ),
-        (
-            ObservationTag.RUNTIME_TYPE_GENERATION,
-            ObservationTag.LINEAGE_MAPPING,
-        ),
-    )
-
-    def _module_evidence(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> tuple[SourceLocation, ...]:
-        generation_observations: tuple[RuntimeTypeGenerationObservation, ...] = (
-            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-                module,
-                RuntimeTypeGenerationObservationFamily,
-                RuntimeTypeGenerationObservation,
-            )
-        )
-        generation_sites = [
-            SourceLocation(item.file_path, item.line, item.symbol)
-            for item in generation_observations
-            if not _is_framework_lineage_symbol(item.symbol)
-        ]
-        lineage_observations: tuple[LineageMappingObservation, ...] = (
-            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-                module, LineageMappingObservationFamily, LineageMappingObservation
-            )
-        )
-        lineage_sites = [
-            SourceLocation(item.file_path, item.line, item.symbol)
-            for item in lineage_observations
-            if not _is_framework_lineage_symbol(item.symbol)
-        ]
-        if not generation_sites or not lineage_sites:
-            return ()
-        return tuple((generation_sites + lineage_sites)[:6])
-
-    def _summary(
-        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
-    ) -> str:
-        return f"{module.path} generates runtime types and also maintains type-lineage state."
-
-
 class DualAxisResolutionDetector(PerModuleIssueDetector):
     finding_spec = finding_spec_template(
         PatternId.DUAL_AXIS_RESOLUTION,
@@ -5477,31 +5424,6 @@ def _looks_like_external_concrete_type_identity(
 
 
 _IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
-
-
-declare_typed_observation_detector(
-    "DynamicInterfaceGenerationDetector",
-    speculative_finding_spec(
-        PatternId.DYNAMIC_INTERFACE,
-        "Dynamic interface generation is present or required",
-        "The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles when structure alone cannot express membership.",
-        "explicit runtime-generated nominal interface identity",
-        "same module generates interface-like nominal types at runtime",
-        (
-            CapabilityTag.GENERATED_INTERFACE_IDENTITY,
-            CapabilityTag.VIRTUAL_MEMBERSHIP,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.RUNTIME_TYPE_GENERATION,
-            ObservationTag.INTERFACE_IDENTITY,
-        ),
-    ),
-    InterfaceGenerationObservationFamily,
-    InterfaceGenerationObservation,
-    "{module_path} contains {evidence_count} runtime-generated interface sites.",
-    evidence_limit=6,
-)
 
 
 declare_typed_observation_detector(

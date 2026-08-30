@@ -5300,18 +5300,6 @@ def _projection_helper_scaffold(shapes: Sequence[ProjectionHelperShape]) -> str:
     return f"def _render_projection(items, projector):\n    return tuple(_dedupe_preserve_order(projector(item) for item in items))\n\n# Replace {function_names} with `_render_projection(..., lambda item: item.<field>)`.\n# Projected fields: {attributes}"
 
 
-def _is_framework_adapter_symbol(symbol: str) -> bool:
-    return symbol.startswith(("build_from_", "build_scoped_", "accepts_"))
-
-
-def _is_framework_lineage_symbol(symbol: str) -> bool:
-    return _is_framework_adapter_symbol(symbol) or symbol in {
-        "__new__",
-        "collect",
-        "registered_specs_for_literal_type",
-    }
-
-
 @dataclass(frozen=True)
 class _FunctionSignatureView:
     function: ast.FunctionDef | ast.AsyncFunctionDef

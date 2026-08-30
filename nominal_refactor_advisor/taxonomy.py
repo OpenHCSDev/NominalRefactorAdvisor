@@ -179,9 +179,8 @@ class ObservationTag(LabeledStrEnum):
     )
     EXPORT_MAPPING = ("export_mapping", "export dict projections")
     FACTORY_DISPATCH = ("factory_dispatch", "predicate factory chains")
-    INTERFACE_IDENTITY = ("interface_identity", "generated interface sites")
+    INTERFACE_IDENTITY = ("interface_identity", "nominal interface surfaces")
     KEYWORD_MAPPING = ("keyword_mapping", "repeated keyword mappings")
-    LINEAGE_MAPPING = ("lineage_mapping", "type-lineage mappings")
     LITERAL_ID_DISPATCH = ("literal_id_dispatch", "literal-ID dispatch")
     LITERAL_BRANCH_DISPATCH = ("literal_branch_dispatch", "literal branch dispatch")
     MANUAL_REGISTRATION = ("manual_registration", "manual registry writes")
@@ -197,7 +196,6 @@ class ObservationTag(LabeledStrEnum):
     REGISTRY_POPULATION = ("registry_population", "registry population sites")
     REPEATED_METHOD_ROLES = ("repeated_method_roles", "repeated method-role groups")
     RUNTIME_MEMBERSHIP = ("runtime_membership", "runtime membership probes")
-    RUNTIME_TYPE_GENERATION = ("runtime_type_generation", "runtime type generation")
     SCOPE_HIERARCHY = ("scope_hierarchy", "scope hierarchy walks")
     SCOPED_SHAPE_WRAPPER = ("scoped_shape_wrapper", "scoped shape wrapper families")
     SEMANTIC_STRING_LITERAL = (
