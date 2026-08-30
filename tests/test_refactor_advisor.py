@@ -17543,129 +17543,37 @@ def test_ignores_pass_through_composition_facade(tmp_path: Path) -> None:
     )
 
 
-def test_detects_facade_only_nominal_authority(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _collect_named(module, projector):\n    return tuple(projector(module))\n\n\ndef _collect_nodes(module, projector):\n    return tuple(projector(module.tree))\n\n\nclass CandidateCollectionAuthority:\n    def named(self, module, projector):\n        return _collect_named(module, projector)\n\n    def nodes(self, module, projector):\n        return _collect_nodes(module, projector)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "facade_only_nominal_authority"
-        )
-    )
-    assert "CandidateCollectionAuthority" in finding.summary
-    assert "_collect_named" in finding.summary
-    assert "Inline private delegate bodies" in (finding.codemod_patch or "")
-
-
-def test_detects_single_method_facade_only_nominal_authority(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _project_name(node):\n    return node.name\n\n\nclass SyntaxProjectionAuthority:\n    def name(self, node):\n        return _project_name(node)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "facade_only_nominal_authority"
-        )
-    )
-    assert "SyntaxProjectionAuthority" in finding.summary
-    assert "_project_name" in finding.summary
-    assert "delete the facade" in finding.summary
-
-
-def test_detects_alias_only_nominal_authority(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _field_names(node):\n    return tuple(node.fields)\n\n\ndef _method_names(node):\n    return tuple(node.methods)\n\n\nclass SyntaxProjectionAuthority:\n    field_names = staticmethod(_field_names)\n    method_names = staticmethod(_method_names)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "alias_only_nominal_authority"
-        )
-    )
-    assert "SyntaxProjectionAuthority" in finding.summary
-    assert "not a rent-paying authority" in finding.summary
-    assert "does_not_pay_rent" in finding.summary
-    assert finding.compression_certificate is not None
-    assert not finding.compression_certificate.pays_rent
-    assert "Do not re-export bound aliases" in (finding.codemod_patch or "")
-
-
-def test_detects_module_authority_reexport_catalog(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "module_authority_reexport_catalog"
-        )
-    )
-    assert "SYNTAX_PROJECTION_AUTHORITY" in finding.summary
-    assert "helper aliases" in finding.summary
-    assert "does_not_pay_rent" in finding.summary
-    assert finding.compression_certificate is not None
-    assert not finding.compression_certificate.pays_rent
-    assert "Delete module-level re-export aliases" in (finding.codemod_patch or "")
-
-
-def test_module_authority_reexport_catalog_remains_advisory_without_recipe(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "module_authority_reexport_catalog"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("module_authority_reexport_catalog",),
-        selector_context=snapshot,
-    )
-
-    assert plan.expected_removed_finding_ids == ()
-    assert plan.document.recipes == ()
-    assert plan.records[0].status.value == "no_synthesizer"
-    assert "field_names = SYNTAX_PROJECTION_AUTHORITY.field_names" in (
-        module_path.read_text()
-    )
-
-
 def test_json_payload_includes_finding_backed_recipe_plan(
     tmp_path: Path,
 ) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
+        '''
+class Alpha:
+    def export(self, result):
+        return {
+            "pose_id": result.pose_id,
+            "score": result.score,
+            "label": result.label,
+        }
+
+
+class Beta:
+    def export(self, item):
+        return {
+            "pose_id": item.pose_id,
+            "score": item.score,
+            "label": item.label,
+        }
+''',
     )
     modules = parse_python_modules(tmp_path)
-    findings = list(
+    findings = [
         finding
         for finding in analyze_modules(modules)
-        if finding.detector_id == "module_authority_reexport_catalog"
-    )
+        if finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID
+    ]
 
     payload = JsonPayloadBuilder(
         findings=findings,
@@ -17679,24 +17587,6 @@ def test_json_payload_includes_finding_backed_recipe_plan(
     assert recipe_plan["synthesis_report"]["records"][0]["status"] == (
         "no_synthesizer"
     )
-
-
-def test_detects_collection_authority_stream_algebra(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass CandidateCollectionAuthority:\n    def named_function_candidates(self, module, projector, *, sort_key=None):\n        projected = (\n            candidate\n            for qualname, function in module.functions\n            for candidate in projector(module, qualname, function)\n        )\n        return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)\n\n    def ast_node_candidates(self, module, root, node_type, projector, *, sort_key=None):\n        nodes = tuple(node for node in walk(root) if isinstance(node, node_type))\n        projected = (\n            candidate\n            for node in nodes\n            for candidate in projector(module, node)\n        )\n        return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "collection_authority_stream_algebra"
-        )
-    )
-    assert "CandidateCollectionAuthority" in finding.summary
-    assert "CandidateStream" in (finding.scaffold or "")
-    assert "projection/materialization" in (finding.codemod_patch or "")
 
 
 def test_detects_inline_ast_predicate_grammar_in_authority_method(

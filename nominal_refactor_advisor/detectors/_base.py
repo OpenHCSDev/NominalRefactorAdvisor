@@ -10899,44 +10899,6 @@ class InlineCandidateRendererDeclarationCandidate(QualnameLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class DelegateAuthorityLineSurface:
-    delegate_names: tuple[str, ...]
-    line_count: int
-
-
-@dataclass(frozen=True)
-class AliasDelegateAuthorityLineSurface(DelegateAuthorityLineSurface):
-    alias_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class FacadeOnlyNominalAuthorityCandidate(
-    DelegateAuthorityLineSurface, ClassLineWitnessCandidate
-):
-    method_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class AliasOnlyNominalAuthorityCandidate(
-    AliasDelegateAuthorityLineSurface, ClassLineWitnessCandidate
-):
-    pass
-
-
-@dataclass(frozen=True)
-class ModuleAuthorityReexportCatalogCandidate(
-    AliasDelegateAuthorityLineSurface, LineWitnessCandidate
-):
-    authority_name: str
-
-
-@dataclass(frozen=True)
-class CollectionAuthorityStreamAlgebraCandidate(ClassLineWitnessCandidate):
-    method_names: tuple[str, ...]
-    line_count: int
-
-
-@dataclass(frozen=True)
 class InlineAstPredicateGrammarCandidate(ClassMethodLineWitnessCandidate):
     ast_type_names: tuple[str, ...]
     predicate_count: int
