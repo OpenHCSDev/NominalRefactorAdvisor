@@ -5450,14 +5450,11 @@ class DeleteClassAssignmentsOperation(
 ):
     """Delete a proven set of class-level assignment statements."""
 
-    def source_edits_for_target_node(
+    def selected_assignments(
         self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        del target_identifier
+    ) -> tuple[ast.stmt, ...]:
         if not isinstance(node, ast.ClassDef):
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a class definition"
@@ -5483,6 +5480,16 @@ class DeleteClassAssignmentsOperation(
                 f"Class {target_digest.qualname!r} has no assignments for "
                 f"{tuple(sorted(pending_names))!r}"
             )
+        return tuple(assignments)
+
+    def source_edits_for_target_node(
+        self,
+        context: CodemodSelectorContext,
+        target_identifier: str,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        del context, target_identifier
         return tuple(
             SourceSpanReplacement(
                 file_path=target_digest.file_path,
@@ -5491,7 +5498,7 @@ class DeleteClassAssignmentsOperation(
                 rationale=self.rationale
                 or f"Delete class assignments {self.assignment_names!r}.",
             )
-            for assignment in assignments
+            for assignment in self.selected_assignments(target_digest, node)
         )
 
 
@@ -14838,30 +14845,10 @@ class SemanticOverlapAbcOptimizationFindingRecipeSynthesizer(
     detector_id = "semantic_overlap_abc_optimization"
 
 
-class SharedRecipeIdSuffixRecipeReasonBase(ABC):
-    @property
-    @abstractmethod
-    def recipe_id_suffix(self):
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def recipe_reason(self):
-        raise NotImplementedError
-
-    recipe_id_suffix: ClassVar[str]
-    recipe_reason: ClassVar[str]
-
-
-class RecipeMetadataAuthority(SharedRecipeIdSuffixRecipeReasonBase, ABC):
-    """Class-level recipe identity metadata shared by recipe synthesizer families."""
-
-
 @dataclass(frozen=True)
-class ClassAssignmentDeletionRecipePlan:
+class ClassAssignmentDeletionPlan:
     """Executable deletion facts for one class-assignment finding."""
 
-    action_keys: tuple[FindingRecipeActionKey, ...]
     assignment_names: tuple[str, ...]
     class_subject: str
     source_path: str
@@ -14872,7 +14859,7 @@ class ClassAssignmentDeletionRecipePlan:
         action_keys: tuple[FindingRecipeActionKey, ...],
         assignment_names: tuple[str, ...],
         class_subject: str | None,
-    ) -> "ClassAssignmentDeletionRecipePlan | None":
+    ) -> "ClassAssignmentDeletionPlan | None":
         if not action_keys or class_subject is None or not assignment_names:
             return None
         source_paths = tuple(
@@ -14881,13 +14868,12 @@ class ClassAssignmentDeletionRecipePlan:
         if len(source_paths) != 1:
             return None
         return cls(
-            action_keys=action_keys,
             assignment_names=assignment_names,
             class_subject=class_subject,
             source_path=source_paths[0],
         )
 
-    def has_assignments(self, context: CodemodSelectorContext) -> bool:
+    def is_applicable_to(self, context: CodemodSelectorContext) -> bool:
         target_ids = SourceIndexTargetSelector(
             node_kinds=(AstTargetNodeKind.CLASS,),
             file_paths=(self.source_path,),
@@ -14895,40 +14881,35 @@ class ClassAssignmentDeletionRecipePlan:
         ).target_ids(context)
         if len(target_ids) != 1:
             return False
-        node = context.ast_target_nodes_by_id[target_ids[0]]
-        if not isinstance(node, ast.ClassDef):
-            return False
-        return set(self.assignment_names) <= {
-            assignment_name
-            for statement in node.body
-            for assignment_name in AssignmentStatementNameProjection(statement).names
-        }
-
-    def to_recipe(
-        self,
-        finding: RefactorFinding,
-        metadata: RecipeMetadataAuthority,
-    ) -> RefactorRecipe:
-        return RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-{metadata.recipe_id_suffix}",
-            reason=metadata.recipe_reason,
-        ).with_operation(
-            DeleteClassAssignmentsOperation(
-                target=SourceRewriteTarget(
-                    qualname=self.class_subject, file_path=self.source_path
-                ),
-                assignment_names=self.assignment_names,
-                rationale="",
+        target_id = target_ids[0]
+        operation = self.deletion_operation()
+        try:
+            operation.selected_assignments(
+                context.source_index.target_by_id[target_id],
+                context.ast_target_nodes_by_id[target_id],
             )
+        except ValueError:
+            return False
+        return True
+
+    def deletion_operation(self) -> DeleteClassAssignmentsOperation:
+        return DeleteClassAssignmentsOperation(
+            target=SourceRewriteTarget(
+                qualname=self.class_subject, file_path=self.source_path
+            ),
+            assignment_names=self.assignment_names,
+            rationale="",
         )
 
 
 class ClassAssignmentDeletionFindingRecipeSynthesizer(
-    RecipeMetadataAuthority,
     FindingRecipeSynthesizer,
     ABC,
 ):
     """Build class-assignment deletion recipes from finding evidence."""
+
+    recipe_id_suffix: ClassVar[str]
+    recipe_reason: ClassVar[str]
 
     def evaluate_recipe_for_finding(
         self,
@@ -14940,17 +14921,21 @@ class ClassAssignmentDeletionFindingRecipeSynthesizer(
             return self.rejected_evaluation(
                 "class-assignment deletion requires one class target and declared assignments"
             )
-        if context is not None and not plan.has_assignments(context):
+        if context is not None and not plan.is_applicable_to(context):
             return self.rejected_evaluation(
                 "class-assignment deletion target does not declare every selected assignment"
             )
-        return self.executable_evaluation(plan.to_recipe(finding, self))
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
+            reason=self.recipe_reason,
+        ).with_operation(plan.deletion_operation())
+        return self.executable_evaluation(recipe)
 
     def deletion_plan_for_finding(
         self,
         finding: RefactorFinding,
-    ) -> ClassAssignmentDeletionRecipePlan | None:
-        return ClassAssignmentDeletionRecipePlan.from_parts(
+    ) -> ClassAssignmentDeletionPlan | None:
+        return ClassAssignmentDeletionPlan.from_parts(
             self.action_keys_for_finding(finding),
             self.assignment_names_for_finding(finding),
             self.class_subject_for_finding(finding),

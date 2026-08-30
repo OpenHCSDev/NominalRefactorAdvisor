@@ -252,6 +252,18 @@ def test_semantic_mirror_strategy_identity_is_metric_type_derived() -> None:
     assert not hasattr(codemod.SemanticMirrorFindingRecipeStrategy, "matches")
 
 
+def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
+    synthesizer_type = (
+        codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer
+    )
+
+    assert synthesizer_type.recipe_id_suffix == "delete-inherited-autoregister-config"
+    assert "already inherited" in synthesizer_type.recipe_reason
+    assert "action_keys" not in codemod.ClassAssignmentDeletionPlan.__dataclass_fields__
+    assert not hasattr(codemod, "RecipeMetadataAuthority")
+    assert not hasattr(codemod, "SharedRecipeIdSuffixRecipeReasonBase")
+
+
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:
     mapping_declarations = (
         codemod.MappingSemanticMirrorRecipeBuilder,
