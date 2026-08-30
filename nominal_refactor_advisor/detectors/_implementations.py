@@ -2,18 +2,6 @@
 
 from __future__ import annotations
 
-from . import (
-    _abstraction_reuse,
-    _environment,
-    _semantic_descent,
-    _systemic,
-    _structural,
-    _runtime,
-    _helpers,
-    _surface,
-    _reflection,
-)
-from ._abstraction_reuse import *
 from ._environment import *
 from ._semantic_descent import *
 from ._systemic import *

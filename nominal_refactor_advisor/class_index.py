@@ -34,7 +34,6 @@ from .ast_tools import (
     named_function_nodes,
 )
 from .collection_algebra import sorted_tuple
-from .constructor_algebra import ConstructorParameterField
 from .native_syntax import NativePythonSyntaxIndex
 
 
@@ -216,9 +215,6 @@ class CompactModuleClassProjection(
     nominal_wrapper_authorities: tuple["CompactNominalWrapperAuthority", ...] = ()
     pass_through_nominal_wrappers: tuple["CompactPassThroughNominalWrapper", ...] = ()
     abc_optimizer_methods: tuple["CompactABCOptimizerMethod", ...] = ()
-    carrier_class_facts: tuple["CompactCarrierClassFact", ...] = ()
-    carrier_base_edges: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    carrier_constructor_assignments: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def header_core(self) -> "CompactModuleClassProjection":
         """Project only the class declarations required by the family index."""
@@ -322,17 +318,6 @@ class CompactABCOptimizerMethod:
     statement_count: int
     skeleton_blob: bytes | None
     coordinates_blob: bytes | None
-
-
-@dataclass(frozen=True)
-class CompactCarrierClassFact:
-    """Sparse class fields needed by the global carrier-reuse detectors."""
-
-    class_name: str
-    line: int
-    base_names: tuple[str, ...]
-    field_type_map: tuple[tuple[str, str], ...]
-    is_dataclass: bool
 
 
 @dataclass(frozen=True)
@@ -1411,25 +1396,13 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             for node in _walk_nodes(parsed_module.module)
             if isinstance(node, ast.ClassDef)
         )
-        class_field_type_maps = {
-            id(node): _compact_class_field_type_maps(node) for node in all_class_nodes
-        }
         nominal_field_type_maps = {
-            node_id: field_type_maps[0]
-            for node_id, field_type_maps in class_field_type_maps.items()
-        }
-        carrier_field_type_maps = {
-            node_id: field_type_maps[1]
-            for node_id, field_type_maps in class_field_type_maps.items()
+            id(node): _compact_class_field_type_map(node) for node in all_class_nodes
         }
         abc_optimizer_methods = _compact_abc_optimizer_methods(
             parsed_module,
             indexed_class_nodes,
             method_names=(None if demand is None else demand.abc_method_names),
-        )
-        carrier_class_facts, carrier_base_edges = _compact_carrier_class_facts(
-            all_class_nodes,
-            carrier_field_type_maps,
         )
         (
             nominal_class_first_line_overrides,
@@ -1493,11 +1466,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 nominal_wrapper_authorities=nominal_wrapper_authorities,
                 pass_through_nominal_wrappers=pass_through_nominal_wrappers,
                 abc_optimizer_methods=abc_optimizer_methods,
-                carrier_class_facts=carrier_class_facts,
-                carrier_base_edges=carrier_base_edges,
-                carrier_constructor_assignments=_compact_carrier_constructor_assignments(
-                    parsed_module
-                ),
             )
         ]
 
@@ -1929,62 +1897,7 @@ def _compact_projection_reference(
     return None
 
 
-def _compact_carrier_base_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Subscript):
-        return _compact_carrier_base_name(node.value)
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _compact_carrier_base_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        base_name
-        for base in node.bases
-        if (base_name := _compact_carrier_base_name(base)) is not None
-    )
-
-
-def _compact_carrier_slot_names(node: ast.ClassDef) -> tuple[str, ...]:
-    for statement in node.body:
-        if not isinstance(statement, ast.Assign):
-            continue
-        if not any(
-            isinstance(target, ast.Name) and target.id == "__slots__"
-            for target in statement.targets
-        ):
-            continue
-        if isinstance(statement.value, ast.Constant) and isinstance(
-            statement.value.value, str
-        ):
-            return (statement.value.value,)
-        if isinstance(statement.value, (ast.Tuple, ast.List)):
-            return tuple(
-                value.value
-                for value in statement.value.elts
-                if isinstance(value, ast.Constant) and isinstance(value.value, str)
-            )
-        return ()
-    return ()
-
-
-def _compact_carrier_parameter_annotations(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> dict[str, str]:
-    return {
-        argument.arg: ast.unparse(argument.annotation)
-        for argument in (
-            *function.args.posonlyargs,
-            *function.args.args,
-            *function.args.kwonlyargs,
-        )
-        if argument.arg not in {"self", "cls"} and argument.annotation is not None
-    }
-
-
-def _compact_carrier_self_assignment(
+def _compact_self_assignment(
     statement: ast.stmt,
 ) -> tuple[str, ast.AST | None] | None:
     target: ast.AST | None = None
@@ -2004,31 +1917,25 @@ def _compact_carrier_self_assignment(
     return target.attr, value
 
 
-def _compact_class_field_type_maps(
+def _compact_class_field_type_map(
     node: ast.ClassDef,
-) -> tuple[
-    tuple[tuple[str, str], ...],
-    tuple[tuple[str, str], ...],
-]:
+) -> tuple[tuple[str, str], ...]:
     nominal_fields: dict[str, str] = {}
-    carrier_extra_fields: dict[str, str] = {}
-    slots = set(_compact_carrier_slot_names(node))
     for statement in node.body:
         if isinstance(statement, ast.AnnAssign) and isinstance(
             statement.target, ast.Name
         ):
-            annotation_text = ast.unparse(statement.annotation)
             if not CLASSVAR_ANNOTATION_AUTHORITY.matches(statement.annotation):
                 nominal_fields.setdefault(
                     statement.target.id,
-                    annotation_text,
+                    ast.unparse(statement.annotation),
                 )
             continue
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if statement.name != "__init__":
             continue
-        nominal_annotations = {
+        parameter_annotations = {
             argument.arg: ast.unparse(argument.annotation)
             for argument in (
                 *statement.args.posonlyargs,
@@ -2037,99 +1944,17 @@ def _compact_class_field_type_maps(
             )
             if argument.annotation is not None
         }
-        carrier_annotations = _compact_carrier_parameter_annotations(statement)
-        parameter_names = tuple(carrier_annotations)
         for inner in statement.body:
-            assignment = _compact_carrier_self_assignment(inner)
+            assignment = _compact_self_assignment(inner)
             if assignment is None:
                 continue
             field_name, value = assignment
-            if isinstance(value, ast.Name) and value.id in nominal_annotations:
+            if isinstance(value, ast.Name) and value.id in parameter_annotations:
                 nominal_fields.setdefault(
                     field_name,
-                    nominal_annotations[value.id],
+                    parameter_annotations[value.id],
                 )
-            if field_name in nominal_fields:
-                continue
-            if slots and field_name not in slots:
-                continue
-            value_references = (
-                frozenset((value.id,))
-                if isinstance(value, ast.Name)
-                else (
-                    frozenset(
-                        current.id
-                        for current in ast.walk(value)
-                        if isinstance(current, ast.Name)
-                    )
-                    if value is not None
-                    else frozenset()
-                )
-            )
-            constructor_field = ConstructorParameterField.from_assignment(
-                field_name=field_name,
-                parameter_names=parameter_names,
-                value_references=value_references,
-            )
-            if constructor_field is None:
-                continue
-            carrier_extra_fields.setdefault(
-                constructor_field.field_name,
-                carrier_annotations[constructor_field.source_name],
-            )
-    carrier_fields = dict(nominal_fields)
-    for field_name, annotation_text in carrier_extra_fields.items():
-        carrier_fields.setdefault(field_name, annotation_text)
-    return (
-        sorted_tuple(nominal_fields.items()),
-        sorted_tuple(carrier_fields.items()),
-    )
-
-
-def _compact_carrier_class_facts(
-    class_nodes: tuple[ast.ClassDef, ...],
-    carrier_field_type_maps: dict[int, tuple[tuple[str, str], ...]],
-) -> tuple[
-    tuple[CompactCarrierClassFact, ...],
-    tuple[tuple[str, tuple[str, ...]], ...],
-]:
-    facts: list[CompactCarrierClassFact] = []
-    base_edges: list[tuple[str, tuple[str, ...]]] = []
-    for node in class_nodes:
-        base_names = _compact_carrier_base_names(node)
-        if base_names:
-            base_edges.append((node.name, base_names))
-        field_type_map = carrier_field_type_maps[id(node)]
-        if not field_type_map:
-            continue
-        facts.append(
-            CompactCarrierClassFact(
-                class_name=node.name,
-                line=node.lineno,
-                base_names=base_names,
-                field_type_map=field_type_map,
-                is_dataclass=_is_dataclass_class(node),
-            )
-        )
-    return tuple(facts), tuple(base_edges)
-
-
-def _compact_carrier_constructor_assignments(
-    parsed_module: ParsedModule,
-) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    assignments: list[tuple[str, tuple[str, ...]]] = []
-    for statement in parsed_module.module.body:
-        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            continue
-        target_name = _single_assignment_target_name(statement)
-        value = statement.value
-        if target_name is None or not isinstance(value, ast.Call):
-            continue
-        reference = ClassSymbolResolutionAuthority.reference_node(value.func)
-        reference_parts = ATTRIBUTE_CHAIN_AUTHORITY.project(reference)
-        if reference_parts is not None:
-            assignments.append((target_name, reference_parts))
-    return tuple(assignments)
+    return sorted_tuple(nominal_fields.items())
 
 
 _COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES = frozenset(

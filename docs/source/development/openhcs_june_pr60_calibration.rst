@@ -326,9 +326,12 @@ High-signal candidates
 - ``distributed_boundary_fanout`` is enriched in both cleanups and matches the
   history's repeated replacement of threaded primitive identity with typed
   carriers.  It needs boundary/projection awareness before being high precision.
-- ``available_carrier_reuse``, ``private_helper_shadow``, and
-  ``trivial_forwarding_wrapper`` have useful examples in the compiler lattice,
-  especially when two independent signals point to the same owner.
+- ``private_helper_shadow`` and ``trivial_forwarding_wrapper`` have useful
+  examples in the compiler lattice, especially when two independent signals
+  point to the same owner.
+- ``available_carrier_reuse`` was initially included in this group but was
+  later retired: field-name overlap, class-name suffixes, and package location
+  do not prove a nominal carrier authority.
 
 Confirmed or likely noise
 ~~~~~~~~~~~~~~~~~~~~~~~~~

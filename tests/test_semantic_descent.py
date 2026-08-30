@@ -1809,7 +1809,7 @@ def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
         )
         if item.detector_id == "semantic_mirror_without_descent"
     )
-    unrelated_finding = replace(finding, detector_id="available_carrier_reuse")
+    unrelated_finding = replace(finding, detector_id="repeated_field_family")
 
     plan = codemod_plan_from_findings(
         (finding, unrelated_finding),

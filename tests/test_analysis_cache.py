@@ -80,9 +80,6 @@ from nominal_refactor_advisor.detectors import (
 )
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
 from nominal_refactor_advisor.detectors import _reflection as reflection_detectors
-from nominal_refactor_advisor.detectors import (
-    _abstraction_reuse as abstraction_reuse_detectors,
-)
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import (
@@ -3169,7 +3166,6 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     assert child.is_final is True
     assert child.direct_assignment_expressions == ()
     assert child.method_names == ()
-    assert actual[0].carrier_class_facts == ()
     assert dict(actual[0].import_aliases)["ImportedParent"] == "support.Parent"
     assert class_index_module.CompactIndexedClass.__mro__[:3] == (
         class_index_module.CompactIndexedClass,
@@ -5754,77 +5750,6 @@ def test_abc_optimizer_detectors_share_one_compact_context(
     assert calls == 1
 
 
-def _write_compact_carrier_reuse_fixture(package_root: Path) -> None:
-    package_root.mkdir()
-    (package_root / "__init__.py").write_text("", encoding="utf-8")
-    (package_root / "models.py").write_text(
-        "from dataclasses import dataclass\n"
-        "from pathlib import Path\n"
-        "@dataclass(frozen=True)\n"
-        "class RequestCarrier:\n"
-        "    request_id: str\n"
-        "    source_path: Path\n"
-        "    workspace_root: Path\n",
-        encoding="utf-8",
-    )
-    (package_root / "local.py").write_text(
-        "from dataclasses import dataclass\n"
-        "from pathlib import Path\n"
-        "from .models import RequestCarrier as RC\n"
-        "@dataclass(frozen=True)\n"
-        "class LocalEnvelope:\n"
-        "    request_id: str\n"
-        "    source_path: Path\n"
-        "    workspace_root: Path\n"
-        "@dataclass(frozen=True)\n"
-        "class ComposedRequest:\n"
-        "    carrier: 'RC'\n",
-        encoding="utf-8",
-    )
-
-
-def test_compact_carrier_reuse_candidates_preserve_semantics_without_ast_shadow(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    _write_compact_carrier_reuse_fixture(package_root)
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    projections = abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_module_projections(
-        modules
-    )
-    detector = abstraction_reuse_detectors.AvailableCarrierReuseDetector()
-    compact_candidates = detector._candidates_from_compact_projections(
-        projections,
-        config,
-    )
-    assert detector._candidate_items(list(modules), config) == compact_candidates
-    assert detector._findings_from_compact_projections(
-        projections, config
-    ) == detector._findings_for_candidates(compact_candidates, config)
-    assert compact_candidates
-    assert "candidate_collector" not in type(detector).__dict__
-    available = compact_candidates[0]
-    assert available.local.class_name == "LocalEnvelope"
-    assert available.authority.class_name == "RequestCarrier"
-    assert available.shared_roles == (
-        "request_id",
-        "source_path",
-        "workspace_root",
-    )
-    for removed_name in (
-        "_compact_carrier_reuse_context",
-        "_available_carrier_reuse_candidates",
-        "_parallel_primitive_carrier_candidates",
-        "_module_carrier_surfaces",
-        "_module_parallel_primitive_bundles",
-        "_exhaustive_available_carrier_reuse_candidates_from_surfaces",
-        "CompactCarrierReuseContext",
-        "_CompactCarrierReuseDetectorBase",
-    ):
-        assert not hasattr(abstraction_reuse_detectors, removed_name)
-
-
 def test_compact_public_private_delegate_context_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
@@ -6590,9 +6515,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert structural_detectors.SemanticOverlapAbcResidueAxisCatalogDetector in (
         partition.compact_global_detector_types
     )
-    assert abstraction_reuse_detectors.AvailableCarrierReuseDetector in (
-        partition.compact_global_detector_types
-    )
     assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
         partition.compact_global_detector_types
     )
@@ -6626,7 +6548,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 54
+    assert len(partition.compact_global_detector_types) == 53
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id
