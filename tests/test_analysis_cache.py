@@ -2644,6 +2644,48 @@ def test_source_local_detector_requests_ast_fallback_for_lexical_binding(
     ]
 
 
+def test_compact_ast_fallback_reuses_local_semantic_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "reflection.py").write_text(
+        "def capture(value):\n    return locals()\n",
+        encoding="utf-8",
+    )
+    hash_call_count = 0
+    semantic_hash = ast_tools_module.semantic_python_source_hash
+
+    def counted_semantic_hash(source: str) -> str:
+        nonlocal hash_call_count
+        hash_call_count += 1
+        return semantic_hash(source)
+
+    monkeypatch.setattr(
+        ast_tools_module,
+        "semantic_python_source_hash",
+        counted_semantic_hash,
+    )
+    monkeypatch.setattr(
+        analysis_module,
+        "semantic_python_source_hash",
+        counted_semantic_hash,
+    )
+
+    result = analyze_compact_roots_with_cache(
+        (package_root,),
+        use_parse_cache=False,
+        parse_workers=1,
+        detector_types=(reflection_detectors.BuiltinLocalsCallDetector,),
+    )
+
+    assert hash_call_count == 1
+    assert [finding.detector_id for finding in result.findings] == [
+        "builtin_locals_call"
+    ]
+
+
 def test_source_local_detector_does_not_switch_mixed_families_to_native(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6305,6 +6347,36 @@ def test_parse_cache_persists_semantic_source_hash(
 
     assert first.semantic_hash == second.semantic_hash
     assert hash_calls == 1
+
+
+def test_single_source_parser_rejects_stale_semantic_hash_identity(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "mod.py"
+    original_source = "VALUE = 1\n"
+    changed_source = "VALUE = 2\n"
+    module_path.write_text(original_source, encoding="utf-8")
+    source_semantic_hash = ast_tools_module.PythonSourceSemanticHash(
+        ast_tools_module.python_source_cache_signature(original_source),
+        ast_tools_module.semantic_python_source_hash(original_source),
+    )
+    module_path.write_text(changed_source, encoding="utf-8")
+    parser = ast_tools_module.PythonModuleRootParser.for_root(
+        package_root,
+        use_parse_cache=False,
+    )
+
+    parsed_module = parser.parsed_source_path(
+        module_path,
+        source_semantic_hash=source_semantic_hash,
+    )
+
+    assert parsed_module.semantic_hash == (
+        ast_tools_module.semantic_python_source_hash(changed_source)
+    )
+    assert parsed_module.semantic_hash != source_semantic_hash.semantic_hash
 
 
 def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(

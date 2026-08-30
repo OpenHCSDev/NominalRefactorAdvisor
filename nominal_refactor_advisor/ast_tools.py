@@ -452,6 +452,19 @@ def semantic_python_source_hash(source: str) -> str:
     return digest.hexdigest()
 
 
+@dataclass(frozen=True)
+class PythonSourceSemanticHash:
+    """Semantic hash paired with the exact raw source identity that proved it."""
+
+    source_signature: str
+    semantic_hash: str
+
+    def for_source_signature(self, source_signature: str) -> str | None:
+        if self.source_signature != source_signature:
+            return None
+        return self.semantic_hash
+
+
 def structural_ast_hash(
     node: ast.AST,
     *,
@@ -606,6 +619,7 @@ def _parse_source_module(
     path: Path,
     *,
     context: PythonModuleParseContext,
+    source_semantic_hash: PythonSourceSemanticHash | None = None,
 ) -> ParsedModule:
     source = path.read_text(encoding="utf-8")
     source_signature = _source_signature(source)
@@ -615,10 +629,12 @@ def _parse_source_module(
         else None
     )
     semantic_hash = (
-        getattr(cached_payload, "semantic_hash", None)
-        if cached_payload is not None
-        else None
+        None
+        if source_semantic_hash is None
+        else source_semantic_hash.for_source_signature(source_signature)
     )
+    if semantic_hash is None and cached_payload is not None:
+        semantic_hash = getattr(cached_payload, "semantic_hash", None)
     if cached_payload is None:
         module = ast.parse(source, filename=str(path))
     else:
@@ -2301,6 +2317,22 @@ class PythonModuleRootParser(PythonModuleParseContext):
     def parsed_modules(self) -> list[ParsedModule]:
         paths = PythonSourcePathDiscovery(self.root, self.source_policy).paths()
         return self.parsed_source_paths(paths)
+
+    def parsed_source_path(
+        self,
+        path: Path,
+        *,
+        source_semantic_hash: PythonSourceSemanticHash | None = None,
+    ) -> ParsedModule:
+        """Parse one admitted source path with an optional derived semantic hash."""
+
+        if not path.is_file() or not self.source_policy.allows_file_path(path):
+            raise ValueError(f"Python source path is not admitted: {path}")
+        return _parse_source_module(
+            path,
+            context=self,
+            source_semantic_hash=source_semantic_hash,
+        )
 
     def source_path_identities(self) -> tuple[PythonModulePathIdentity, ...]:
         paths = PythonSourcePathDiscovery(self.root, self.source_policy).paths()

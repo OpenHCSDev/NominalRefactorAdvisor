@@ -41,6 +41,7 @@ from .ast_tools import (
     ParsedModule,
     PythonModulePathIdentity,
     PythonModuleRootParser,
+    PythonSourceSemanticHash,
     PythonSourcePathDiscovery,
     PythonSourcePathPolicy,
     SourceModule,
@@ -967,14 +968,21 @@ class CompactProjectionCacheSource(CollectedFamilyCacheContext):
     cache_dir: Path | None
     use_parse_cache: bool
     source_policy: PythonSourcePathPolicy
+    source_semantic_hash: PythonSourceSemanticHash | None = None
 
-    def parser(self) -> PythonModuleRootParser:
-        return PythonModuleRootParser.for_root(
+    def parsed_module(self) -> ParsedModule:
+        """Parse this exact source while preserving its derived hash authority."""
+
+        parser = PythonModuleRootParser.for_root(
             self.scan_root,
             cache_dir=self.cache_dir,
             use_parse_cache=self.use_parse_cache,
             parse_workers=1,
             source_policy=self.source_policy,
+        )
+        return parser.parsed_source_path(
+            self.path,
+            source_semantic_hash=self.source_semantic_hash,
         )
 
 
@@ -1011,7 +1019,6 @@ def build_compact_projection_shard(
 
     started = perf_counter()
     source = request.source
-    parser = source.parser()
     runtime_projections: list[tuple[type[CollectedFamily], tuple[object, ...]]] = []
     runtime_projection_signatures: list[tuple[type[CollectedFamily], str]] = []
 
@@ -1147,7 +1154,7 @@ def build_compact_projection_shard(
                     add_runtime_projection(family, projections, projection_signature)
                     ast_families.remove(family)
     if ast_families or fallback_local_detector_types:
-        modules = parser.parsed_source_paths((source.path,))
+        modules = (source.parsed_module(),)
     else:
         modules = ()
     for module in modules:
@@ -1535,16 +1542,15 @@ class BoundedCompactProjectionManifest:
         source: CompactProjectionCacheSource,
         family: type[CollectedFamily],
     ) -> tuple[object, ...]:
-        parser = source.parser()
         repaired: tuple[object, ...] = ()
-        for module in parser.parsed_source_paths((source.path,)):
-            repaired = tuple(collect_family_items(module, family))
-            for projection in repaired:
-                if CompactGlobalProjectionAccumulator._retains_ast(projection):
-                    raise TypeError(
-                        f"{family.__name__} repaired projection retains an AST"
-                    )
-            del module
+        module = source.parsed_module()
+        repaired = tuple(collect_family_items(module, family))
+        for projection in repaired:
+            if CompactGlobalProjectionAccumulator._retains_ast(projection):
+                raise TypeError(
+                    f"{family.__name__} repaired projection retains an AST"
+                )
+        del module
         release_module_analysis_memory(collect_cycles=False)
         return repaired
 
@@ -2021,20 +2027,9 @@ def analyze_compact_roots_with_cache(
                 path,
                 parser.analysis_root,
             )
-            projection_source = CompactProjectionCacheSource(
-                path=path,
-                module_name=module_identity.import_name,
-                source_signature=source_signature,
-                family_cache_dir=parser.collected_family_cache_dir,
-                scan_root=root,
-                cache_dir=cache_dir,
-                use_parse_cache=use_parse_cache,
-                source_policy=active_source_policy,
-            )
-            if projection_manifest.projection_families:
-                projection_manifest.add_source(projection_source)
             local_identity = None
             local_cache_lookup = None
+            local_semantic_hash = None
             if include_local_findings and partition.per_module_detector_types:
                 if source_signature_cache is not None:
                     local_semantic_hash = source_signature_cache.semantic_source_hash(
@@ -2061,6 +2056,27 @@ def analyze_compact_roots_with_cache(
                     if cached_findings is not None:
                         local_cache_hit_count += 1
                         local_findings.extend(cached_findings)
+
+            projection_source = CompactProjectionCacheSource(
+                path=path,
+                module_name=module_identity.import_name,
+                source_signature=source_signature,
+                family_cache_dir=parser.collected_family_cache_dir,
+                scan_root=root,
+                cache_dir=cache_dir,
+                use_parse_cache=use_parse_cache,
+                source_policy=active_source_policy,
+                source_semantic_hash=(
+                    PythonSourceSemanticHash(
+                        source_signature,
+                        local_semantic_hash,
+                    )
+                    if local_semantic_hash is not None
+                    else None
+                ),
+            )
+            if projection_manifest.projection_families:
+                projection_manifest.add_source(projection_source)
 
             missing_families: tuple[type[CollectedFamily], ...] = ()
             if projection_manifest.projection_families and not (
@@ -2170,7 +2186,7 @@ def analyze_compact_roots_with_cache(
         )
 
     source_by_path = {
-        source.path.resolve(): source for source in projection_manifest.sources
+        request.source.path.resolve(): request.source for request in build_requests
     }
     for result in build_results:
         normalized_path = result.path.resolve()
