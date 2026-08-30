@@ -172,6 +172,7 @@ from nominal_refactor_advisor.codemod import (
     RecipeCallReplacement,
     SelectionCountExpectation,
     SemanticCarrierConcept,
+    SourceEditOrigin,
     TupleDictReturnNominalizationConcept,
     SourceRewriteTarget,
     SourceRewriteSimulationPayload,
@@ -825,6 +826,18 @@ def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overl
         run_rewrite,
         stop_rewrite,
     )
+    assert isinstance(first_contributor, SourceEditOrigin)
+    assert first_contributor.to_dict() == {
+        **SourceEditOrigin(
+            "first-recipe",
+            "FirstOperation",
+            0,
+        ).to_dict(),
+        "file_path": module_path.as_posix(),
+        "line": 2,
+        "end_line": 3,
+        "source_hash": first_contributor.source_hash,
+    }
     assert coalesced[0].contributors == (first_contributor, second_contributor)
     simulation = simulate_planned_rewrites(
         source_index,

@@ -760,13 +760,55 @@ class ReplacementSource:
     replacement_source: str
 
 
-@dataclass(frozen=True, kw_only=True)
-class SourceRewriteContributor:
-    """Nominal plan-item provenance plus its executable source precondition."""
+@dataclass(frozen=True)
+class SourceEditOrigin:
+    """Operation identity retained until a semantic edit has physical geometry."""
 
     recipe_id: str
     plan_item_declaration: str
     plan_item_index: int
+
+    @property
+    def identity(self) -> tuple[object, ...]:
+        return self.recipe_id, self.plan_item_declaration, self.plan_item_index
+
+    def contributor_for(
+        self,
+        source_edit: "PhysicalSourceEdit",
+        sources_by_file_path: Mapping[str, str],
+    ) -> "SourceRewriteContributor":
+        return SourceRewriteContributor.from_source_edit(
+            recipe_id=self.recipe_id,
+            plan_item_declaration=self.plan_item_declaration,
+            plan_item_index=self.plan_item_index,
+            source_edit=source_edit,
+            sources_by_file_path=sources_by_file_path,
+        )
+
+    @classmethod
+    def merge(
+        cls,
+        *origin_groups: Iterable[Self],
+    ) -> tuple[Self, ...]:
+        origins_by_identity = {
+            origin.identity: origin
+            for origin_group in origin_groups
+            for origin in origin_group
+        }
+        return tuple(origins_by_identity.values())
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            recipe_id=self.recipe_id,
+            plan_item_declaration=self.plan_item_declaration,
+            plan_item_index=self.plan_item_index,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceRewriteContributor(SourceEditOrigin):
+    """Nominal plan-item provenance plus its executable source precondition."""
+
     file_path: str
     line: int
     end_line: int
@@ -851,34 +893,13 @@ class SourceRewriteContributor:
         )
 
     @property
-    def identity(self) -> tuple[str, str, int, str, int, int]:
+    def identity(self) -> tuple[object, ...]:
         return (
-            self.recipe_id,
-            self.plan_item_declaration,
-            self.plan_item_index,
+            *super().identity,
             self.file_path,
             self.line,
             self.end_line,
         )
-
-    @classmethod
-    def merge(
-        cls,
-        *contributor_groups: Iterable["SourceRewriteContributor"],
-    ) -> tuple["SourceRewriteContributor", ...]:
-        contributor_index = UniqueIdentityIndexAuthority[
-            tuple[str, str, int, str, int, int],
-            SourceRewriteContributor,
-            SourceRewriteContributor,
-        ]()
-        for contributor_group in contributor_groups:
-            for contributor in contributor_group:
-                contributor_index.add(
-                    contributor.identity,
-                    contributor,
-                    contributor,
-                )
-        return tuple(contributor_index.values_by_handle().values())
 
     def require_source(self, sources_by_file_path: Mapping[str, str]) -> None:
         source = sources_by_file_path.get(self.file_path)
@@ -922,15 +943,13 @@ class SourceRewriteContributor:
         return contributor
 
     def to_dict(self) -> JsonObject:
-        return {
-            "recipe_id": self.recipe_id,
-            "plan_item_declaration": self.plan_item_declaration,
-            "plan_item_index": self.plan_item_index,
-            "file_path": self.file_path,
-            "line": self.line,
-            "end_line": self.end_line,
-            "source_hash": self.source_hash,
-        }
+        return JsonObject(
+            **super().to_dict(),
+            file_path=self.file_path,
+            line=self.line,
+            end_line=self.end_line,
+            source_hash=self.source_hash,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4486,44 +4505,6 @@ class AuthorityBoundaryPlan:
             "opportunity_labels": self.opportunity_labels,
             "reason": self.reason,
         }
-
-
-@dataclass(frozen=True)
-class SourceEditOrigin:
-    """Operation identity retained until a semantic edit has physical geometry."""
-
-    recipe_id: str
-    plan_item_declaration: str
-    plan_item_index: int
-
-    @property
-    def identity(self) -> tuple[str, str, int]:
-        return self.recipe_id, self.plan_item_declaration, self.plan_item_index
-
-    def contributor_for(
-        self,
-        source_edit: "PhysicalSourceEdit",
-        sources_by_file_path: Mapping[str, str],
-    ) -> SourceRewriteContributor:
-        return SourceRewriteContributor.from_source_edit(
-            recipe_id=self.recipe_id,
-            plan_item_declaration=self.plan_item_declaration,
-            plan_item_index=self.plan_item_index,
-            source_edit=source_edit,
-            sources_by_file_path=sources_by_file_path,
-        )
-
-    @classmethod
-    def merge(
-        cls,
-        *origin_groups: Iterable["SourceEditOrigin"],
-    ) -> tuple["SourceEditOrigin", ...]:
-        origins_by_identity = {
-            origin.identity: origin
-            for origin_group in origin_groups
-            for origin in origin_group
-        }
-        return tuple(origins_by_identity.values())
 
 
 @dataclass(frozen=True, kw_only=True)
