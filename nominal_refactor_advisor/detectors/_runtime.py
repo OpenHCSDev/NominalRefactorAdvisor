@@ -509,7 +509,7 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
         ):
             field_names = tuple(field_name for _line, field_name in fields)
             evidence = tuple(
-                SourceLocation(str(module.path), line, f"{class_name}.{field_name}")
+                SourceLocation(module.file_path, line, f"{class_name}.{field_name}")
                 for line, field_name in fields
             )
             findings.append(
@@ -681,7 +681,7 @@ def _string_keyed_formula_subclass_family_candidates(
         )
         candidates.append(
             StringKeyedFormulaSubclassFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=base_line,
                 base_class_name=base_name,
                 key_attr_name=key_attr_name,
@@ -943,7 +943,7 @@ class FormalBoundaryPythonStringConstantFamily(
         del cls
         return [
             FormalBoundaryPythonStringConstant(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 target_name=constant.target_name,
                 value=constant.value,
                 line=constant.line,
@@ -1016,7 +1016,7 @@ def _native_formal_boundary_python_string_constants(
             return []
         return [
             FormalBoundaryPythonStringConstant(
-                file_path=str(source_module.path),
+                file_path=source_module.file_path,
                 target_name=constant.target_name,
                 value=constant.value,
                 line=constant.line,
@@ -1374,7 +1374,7 @@ class GeneratedBoundarySemanticConstantAuthority:
     ) -> tuple[GeneratedBoundarySemanticConstantSite, ...]:
         generated_boundary = cls.module_is_generated_boundary(module)
         return cls.sites_from_statements(
-            str(module.path),
+            module.file_path,
             module.module.body,
             generated_boundary,
         )
@@ -1553,7 +1553,7 @@ def _native_generated_boundary_semantic_constant_sites(
         )
         return list(
             GeneratedBoundarySemanticConstantAuthority.sites_from_statements(
-                str(source_module.path),
+                source_module.file_path,
                 statements,
                 generated_boundary,
             )
@@ -1737,7 +1737,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
             return []
         bridge_kinds = sorted_tuple(site.bridge_kind for site in sites)
         evidence = tuple(
-            SourceLocation(str(module.path), site.line, site.symbol)
+            SourceLocation(module.file_path, site.line, site.symbol)
             for site in sites[:12]
         )
         return [
@@ -2046,7 +2046,7 @@ class LoadBearingRelationBranchDetector(PerModuleIssueDetector):
                 )
                 evidence = tuple(
                     SourceLocation(
-                        str(module.path),
+                        module.file_path,
                         line,
                         f"{qualname}:{test_expression}->{result_expression}",
                     )
@@ -2228,7 +2228,7 @@ class SemanticCertificateFallbackDetector(PerModuleIssueDetector):
                             ),
                             (
                                 SourceLocation(
-                                    str(module.path),
+                                    module.file_path,
                                     node.lineno,
                                     f"{owner}:{test_expression}->{return_expression}",
                                 ),
@@ -2331,7 +2331,7 @@ class MirroredConstructorValidationDetector(PerModuleIssueDetector):
                             ),
                             (
                                 SourceLocation(
-                                    str(module.path),
+                                    module.file_path,
                                     node.lineno,
                                     owner,
                                 ),
@@ -2584,7 +2584,7 @@ class MonolithicConstructorInvariantDetector(PerModuleIssueDetector):
                         ),
                         (
                             SourceLocation(
-                                str(module.path),
+                                module.file_path,
                                 node.lineno,
                                 qualname,
                             ),
@@ -3314,7 +3314,7 @@ def _declared_field_extraction_site(
     if callee_name is None or len(node.args) < 2:
         return None
     return DeclaredFieldExtractionSite(
-        file_path=str(module.path),
+        file_path=module.file_path,
         lineno=node.lineno,
         ordinal=ordinal,
         owner_symbol=owner_symbol,
@@ -4814,7 +4814,7 @@ class PredicateFactoryChainDetector(
         return tuple(
             (
                 PredicateFactoryChainCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     function=function,
                     branch_count=branch_count,
                 )
@@ -5025,7 +5025,7 @@ class DynamicRuntimePayloadOwnerDetector(PerModuleIssueDetector):
                             f"{owner} extracts `{method_name}` through `type(...)` at {module.path}:{node.lineno}.",
                             (
                                 SourceLocation(
-                                    str(module.path),
+                                    module.file_path,
                                     node.lineno,
                                     f"{owner}.{method_name}",
                                 ),
@@ -5309,7 +5309,7 @@ def _external_concrete_type_identity_table_candidates(
                 return
             candidates.append(
                 _ExternalConcreteTypeIdentityTableCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=line,
                     symbol=symbol,
                     row_pairs=row_pairs,
@@ -6035,7 +6035,7 @@ class CompactPrivateReferenceModuleProjectionFamily(
             )
             functions.append(
                 CompactPrivateFunctionFact(
-                    file_path=str(parsed_module.path),
+                    file_path=parsed_module.file_path,
                     qualname=indexed_function.qualname,
                     function_name=function.name,
                     line=function.lineno,
@@ -6489,7 +6489,7 @@ def _sibling_small_method_template_candidates(
         line_numbers = tuple(function.lineno for _, function in ordered)
         candidates.append(
             SiblingSmallMethodTemplateCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=line_numbers[0],
                 owner_name=owner_name,
                 method_names=method_names,
@@ -6861,7 +6861,7 @@ def _native_composition_signal(
     function_node: Node,
     function: _RuntimeFunctionNode,
 ) -> CancelableCompositionSignal | None:
-    file_path = source_module.path.as_posix()
+    file_path = source_module.file_path
     qualname = syntax_index.fully_qualified_function_name(function_node)
     node_kind = (
         AstTargetNodeKind.METHOD
@@ -7039,7 +7039,7 @@ def _native_variant_method_surfaces(
             class_header_by_node[class_node] = class_header
         base_names = CLASS_NODE_AUTHORITY.declared_base_names(class_header)
         surface = _variant_method_surface_from_owner_facts(
-            file_path=str(source_module.path),
+            file_path=source_module.file_path,
             owner_class_name=syntax_index.declared_name(class_node),
             owner_line=class_node.start_point.row + 1,
             owner_is_abstract=(
@@ -7074,7 +7074,7 @@ def _native_algebraic_variant_projection(
         return [
             CompactAlgebraicVariantModuleProjection(
                 module_name=source_module.module_name,
-                file_path=str(source_module.path),
+                file_path=source_module.file_path,
                 composition_signals=composition_signals,
                 variant_method_surfaces=_native_variant_method_surfaces(
                     source_module,
@@ -7105,7 +7105,7 @@ class CompactAlgebraicVariantModuleProjectionFamily(
         return [
             CompactAlgebraicVariantModuleProjection(
                 module_name=parsed_module.module_name,
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 composition_signals=_cancelable_composition_signals_for_module(
                     parsed_module
                 ),
@@ -7213,7 +7213,7 @@ def _variant_method_surface(
     method: _RuntimeFunctionNode,
 ) -> _VariantMethodSurface | None:
     return _variant_method_surface_from_owner_facts(
-        file_path=str(module.path),
+        file_path=module.file_path,
         owner_class_name=class_node.name,
         owner_line=class_node.lineno,
         owner_is_abstract=CLASS_NODE_AUTHORITY.is_abstract(class_node),
@@ -7565,7 +7565,7 @@ def _mirrored_import_fallback_candidates(
                 continue
             candidates.append(
                 MirroredImportFallbackCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=statement.lineno,
                     imported_modules=tuple(
                         (module_name for module_name, _, _ in relative_imports)
@@ -7723,7 +7723,7 @@ def _constant_backed_dispatch_axis_candidates(
             evidence_by_function.setdefault(qualname, line)
         candidates.append(
             ConstantBackedDispatchAxisCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=ordered_sites[0][1],
                 axis_name=axis_name,
                 constant_prefix=constant_prefix,
@@ -7873,7 +7873,7 @@ def _manual_process_step_ladder_candidates(
     ordered = sorted_tuple(sites, key=lambda item: (item[2], item[0], item[1]))
     return (
         ManualProcessStepLadderCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=ordered[0][2],
             step_table_names=tuple((table_name for _, table_name, _, _ in ordered)),
             function_names=tuple((qualname for qualname, _, _, _ in ordered)),
@@ -7993,7 +7993,7 @@ def _mirrored_file_rewrite_loop_candidates(
             continue
         candidates.append(
             MirroredFileRewriteLoopCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=loops[0].lineno,
                 function_name=qualname,
                 line_numbers=tuple((loop.lineno for loop in loops)),
@@ -8142,7 +8142,7 @@ def _repeated_local_regex_bundle_candidates(
                 )
                 candidates.append(
                     RepeatedLocalRegexBundleCandidate(
-                        file_path=str(module.path),
+                        file_path=module.file_path,
                         line=min(line_numbers),
                         owner_name=owner_name,
                         function_names=(left_name, right_name),
@@ -8272,12 +8272,12 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
         if len(wrapper_pairs) < 2:
             return []
         evidence_items = [
-            SourceLocation(str(module.path), pair.spec_line, pair.spec_name)
+            SourceLocation(module.file_path, pair.spec_line, pair.spec_name)
             for pair in wrapper_pairs[:6]
         ]
         evidence_items.extend(
             (
-                SourceLocation(str(module.path), pair.function_line, pair.function_name)
+                SourceLocation(module.file_path, pair.function_line, pair.function_name)
                 for pair in wrapper_pairs[:6]
             )
         )
@@ -8329,7 +8329,7 @@ class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
             ordered = sorted(candidates, key=lambda item: item.lineno)
             evidence = tuple(
                 (
-                    SourceLocation(str(module.path), item.lineno, item.function_name)
+                    SourceLocation(module.file_path, item.lineno, item.function_name)
                     for item in ordered[:6]
                 )
             )
@@ -8606,7 +8606,7 @@ def _collect_public_api_private_delegate_source_demand(
             ResolvedExternalCallsite(
                 module_name=source_module.module_name,
                 location=SourceLocation(
-                    str(source_module.path),
+                    source_module.file_path,
                     call.start_point.row + 1,
                     _native_delegate_callsite_symbol(syntax_index, call),
                 ),
@@ -8616,7 +8616,7 @@ def _collect_public_api_private_delegate_source_demand(
         return []
     return [
         PublicApiPrivateDelegateModuleFacts(
-            file_path=str(source_module.path),
+            file_path=source_module.file_path,
             module_name=source_module.module_name,
             top_level_symbol_lines=(),
             wrappers=(),

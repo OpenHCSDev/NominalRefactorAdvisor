@@ -961,7 +961,7 @@ def _environment_boolean_parser_sites(
         )
         sites.append(
             _EnvironmentBooleanParserSite(
-                file_path=str(scope.module.path),
+                file_path=scope.module.file_path,
                 line=node.lineno,
                 symbol=scope.symbol,
                 read_kind=read.kind,
@@ -1036,7 +1036,7 @@ def _declared_environment_flag_authorities(
             selectors = (scope.node.name, f"{scope.class_name}.{scope.node.name}")
         authorities.append(
             _DeclaredEnvironmentFlagAuthority(
-                file_path=str(scope.module.path),
+                file_path=scope.module.file_path,
                 line=scope.node.lineno,
                 symbol=scope.symbol,
                 selectors=selectors,
@@ -1160,7 +1160,7 @@ def _fixed_key_authority_wrapper_facts(
             continue
         facts.append(
             _FixedKeyAuthorityWrapperFact(
-                file_path=str(scope.module.path),
+                file_path=scope.module.file_path,
                 line=scope.node.lineno,
                 symbol=scope.symbol,
                 environment_key=environment_key,

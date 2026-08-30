@@ -1072,7 +1072,7 @@ def _distributed_boundary_declarations(
         seen.add(key)
         declarations.append(
             ClassFieldBoundaryDeclaration(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=line,
                 class_name=class_name,
                 field_name=field_name,
@@ -1090,7 +1090,7 @@ def _distributed_boundary_declarations(
         seen.add(key)
         declarations.append(
             InstanceFieldBoundaryDeclaration(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=line,
                 class_name=class_name,
                 field_name=field_name,
@@ -1320,7 +1320,7 @@ def _distributed_boundary_uses(
             use = projector(
                 node,
                 parents=syntax_index.ancestor_nodes(node_index),
-                file_path=str(module.path),
+                file_path=module.file_path,
                 symbol=".".join((*scope.class_names, *scope.function_names))
                 or "<module>",
                 field_names=field_names,
@@ -1548,7 +1548,7 @@ def _native_distributed_boundary_projection(
         ):
             return [
                 CompactDistributedBoundaryModuleProjection(
-                    file_path=str(source_module.path),
+                    file_path=source_module.file_path,
                     declarations=(),
                     class_base_names=class_base_names_override,
                     possible_uses=(),
@@ -1726,7 +1726,7 @@ def _native_distributed_boundary_projection(
 
         return [
             CompactDistributedBoundaryModuleProjection(
-                file_path=str(source_module.path),
+                file_path=source_module.file_path,
                 declarations=tuple(
                     CompactDistributedBoundaryDeclarationFact(
                         line=line,
@@ -1855,7 +1855,7 @@ def _ast_distributed_boundary_projection(
         if demand is None or demand.includes_field_name(declaration.field_name)
     )
     return CompactDistributedBoundaryModuleProjection(
-        file_path=str(parsed_module.path),
+        file_path=parsed_module.file_path,
         declarations=tuple(
             sorted(
                 (

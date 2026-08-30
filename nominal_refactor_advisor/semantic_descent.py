@@ -73,6 +73,7 @@ from .models import (
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
 from .semantic_identity import SemanticRoleIdentityToken
+from .source_identity import resolved_source_path_text
 
 _NAME_TOKEN_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+|[0-9]+")
 _SEMANTIC_STRING_LITERAL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
@@ -319,7 +320,7 @@ class SemanticDescentGraphCacheReadError(RuntimeError):
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 9
+    version: int = 10
     digest_size: int = 16
 
 
@@ -2364,7 +2365,7 @@ class SemanticDescentGraphModuleOverlay:
         unchanged_projections = tuple(
             projection
             for projection in self.base_graph.projections
-            if self.resolved_path_text(projection.location.file_path)
+            if resolved_source_path_text(projection.location.file_path)
             not in changed_path_texts
         )
         changed_projections = SemanticProjectionCollector(
@@ -2378,13 +2379,7 @@ class SemanticDescentGraphModuleOverlay:
 
     @cached_property
     def changed_path_texts(self) -> frozenset[str]:
-        return frozenset(
-            self.resolved_path_text(str(module.path)) for module in self.changed_modules
-        )
-
-    @staticmethod
-    def resolved_path_text(file_path: str) -> str:
-        return str(Path(file_path).resolve())
+        return frozenset(module.resolved_file_path for module in self.changed_modules)
 
 
 @dataclass(frozen=True)
@@ -4014,7 +4009,7 @@ class CompactSemanticModuleProjectionFamily(
         return [
             CompactSemanticModuleProjection(
                 module_name=parsed_module.module_name,
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 projections=sorted_tuple(
                     (() if visitor is None else visitor.projections),
                     key=lambda item: (
@@ -4692,7 +4687,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
     ) -> None:
         line = node.lineno
         projection_id = (
-            f"{self.parsed_module.path}:{line}:{self.qualname}:{kind.value}:{label}"
+            f"{self.parsed_module.file_path}:{line}:{self.qualname}:{kind.value}:{label}"
         )
         self.projections.append(
             PresentationProjection(
@@ -4700,7 +4695,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 kind=kind,
                 label=label,
                 owner_symbol=self.qualname,
-                location=SourceLocation(str(self.parsed_module.path), line, label),
+                location=SourceLocation(self.parsed_module.file_path, line, label),
                 tokens=sorted_tuple(
                     frozenset(tokens),
                     key=lambda item: (

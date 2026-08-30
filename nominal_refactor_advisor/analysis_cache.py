@@ -170,7 +170,7 @@ class AnalysisExecutionPlanCacheIdentity:
     analysis_cache_token: str
     root: str
     report_filter_roots: tuple[str, ...]
-    projection_schema_version: int = 5
+    projection_schema_version: int = 6
     schema: AnalysisCacheSchema = analysis_cache_schema
 
     @classmethod

@@ -66,6 +66,7 @@ from .observation_shapes import (
     SentinelTypeObservation,
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from .source_identity import SourceFileIdentity
 from .semantic_match import (
     GuardedEffectStep,
     Maybe,
@@ -154,7 +155,7 @@ ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 class CollectedFamilyCacheSchema:
     """Schema identity for persisted collected-family item projections."""
 
-    version: int = 22
+    version: int = 23
     max_payload_bytes: int = 100_000
 
 
@@ -692,7 +693,7 @@ class CompactModuleIdentity:
 
 
 @dataclass(frozen=True)
-class ParsedModule:
+class ParsedModule(SourceFileIdentity):
     """Parsed Python module together with its source text and path."""
 
     path: Path
@@ -714,7 +715,7 @@ class ParsedModule:
 
 
 @dataclass(frozen=True)
-class SourceModule:
+class SourceModule(SourceFileIdentity):
     """Source-only module identity available before Python AST construction."""
 
     path: Path
@@ -2929,7 +2930,7 @@ def _class_body_field_observation(
         if _node_matches_family(stmt.annotation, _CLASSVAR_REFERENCE_FAMILY):
             return None
         return FieldObservation(
-            file_path=str(parsed_module.path),
+            file_path=parsed_module.file_path,
             class_name=class_name,
             field_name=binding.name,
             lineno=binding.line,
@@ -2950,7 +2951,7 @@ def _class_body_field_observation(
         )
     if isinstance(stmt, ast.Assign):
         return FieldObservation(
-            file_path=str(parsed_module.path),
+            file_path=parsed_module.file_path,
             class_name=class_name,
             field_name=binding.name,
             lineno=binding.line,
@@ -3007,7 +3008,7 @@ def _init_field_observations(
             continue
         observations.append(
             FieldObservation(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 class_name=class_name,
                 field_name=target.attr,
                 lineno=stmt.lineno,
@@ -3144,7 +3145,7 @@ def _literal_dispatch_observation_from_if(
         return None
     function_name = SCOPE_PARENTAGE.enclosing_function_name(node, parent_map)
     return LiteralDispatchObservation(
-        file_path=str(parsed_module.path),
+        file_path=parsed_module.file_path,
         line=node.lineno,
         symbol=(function_name or "<module>") + ":literal-dispatch",
         axis_fingerprint=axis_fingerprint,
@@ -3188,7 +3189,7 @@ def _literal_dispatch_observation_from_match(
     function_name = SCOPE_PARENTAGE.enclosing_function_name(node, parent_map)
     dispatch_axis_expression = ast.unparse(node.subject)
     return LiteralDispatchObservation(
-        file_path=str(parsed_module.path),
+        file_path=parsed_module.file_path,
         line=node.lineno,
         symbol=(function_name or "<module>") + ":literal-dispatch",
         axis_fingerprint=ast.dump(node.subject, include_attributes=False),
@@ -3238,7 +3239,7 @@ def _inline_literal_dispatch_groups(
             continue
         observations.append(
             LiteralDispatchObservation(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 line=min((line for line, _, _ in items)),
                 symbol=(owner_name or "<module>") + ":inline-literal-dispatch",
                 axis_fingerprint=axis_fingerprint,
@@ -3442,7 +3443,7 @@ def _projection_helper_shape_from_function(
         .combine(
             lambda call_pair: _projection_inner_shape(call_pair[1]),
             lambda call_pair, inner_shape: ProjectionHelperShape(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 function_name=function.name,
                 lineno=function.lineno,
                 outer_call_name=call_pair[0],
@@ -3507,7 +3508,7 @@ def _scoped_shape_wrapper_function_from_function(
     ):
         return None
     return ScopedShapeWrapperFunction(
-        file_path=str(parsed_module.path),
+        file_path=parsed_module.file_path,
         function_name=function.name,
         lineno=function.lineno,
         node_types=node_types,
@@ -3546,7 +3547,7 @@ def _scoped_shape_wrapper_spec_from_assign(
         .combine(
             lambda spec_call: _scoped_shape_spec_keywords(spec_call.call),
             lambda spec_call, keywords: ScopedShapeWrapperSpec(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 spec_name=spec_call.spec_name,
                 lineno=node.lineno,
                 function_name=keywords.function_name,
@@ -3602,7 +3603,7 @@ def _config_dispatch_observations(
                 seen.add(key)
                 observations.append(
                     ConfigDispatchObservation(
-                        file_path=str(parsed_module.path),
+                        file_path=parsed_module.file_path,
                         line=node.lineno,
                         symbol=function.name,
                         observed_attribute=attr_name,
@@ -3616,7 +3617,7 @@ def _config_dispatch_observations(
                 seen.add(key)
                 observations.append(
                     ConfigDispatchObservation(
-                        file_path=str(parsed_module.path),
+                        file_path=parsed_module.file_path,
                         line=node.lineno,
                         symbol=function.name,
                         observed_attribute=attr_name,
@@ -3691,7 +3692,7 @@ def _class_marker_observations(
                     seen.add(key)
                     observations.append(
                         ClassMarkerObservation(
-                            file_path=str(parsed_module.path),
+                            file_path=parsed_module.file_path,
                             line=node.lineno,
                             symbol=function.name,
                             marker_name=marker_name,
@@ -3707,7 +3708,7 @@ def _class_marker_observations(
                 seen.add(key)
                 observations.append(
                     ClassMarkerObservation(
-                        file_path=str(parsed_module.path),
+                        file_path=parsed_module.file_path,
                         line=node.lineno,
                         symbol=function.name,
                         marker_name=node.attr,
@@ -3724,7 +3725,7 @@ def _sentinel_type_observation(
     if not isinstance(target, ast.Name) or not _is_type_call_constructor(node.value):
         return None
     return SentinelTypeObservation(
-        file_path=str(parsed_module.path),
+        file_path=parsed_module.file_path,
         line=node.lineno,
         symbol=target.id,
         sentinel_name=target.id,
@@ -3764,7 +3765,7 @@ def _sentinel_type_usage_observations(
                 seen.add(key)
                 observations.append(
                     SentinelTypeObservation(
-                        file_path=str(parsed_module.path),
+                        file_path=parsed_module.file_path,
                         line=node.lineno,
                         symbol=f"sentinel:{name}",
                         sentinel_name=name,
@@ -3789,7 +3790,7 @@ def _dynamic_method_injection_observations(
         if isinstance(target, ast.Name) and target.id.endswith("type"):
             observations.append(
                 DynamicMethodInjectionObservation(
-                    file_path=str(parsed_module.path),
+                    file_path=parsed_module.file_path,
                     line=node.lineno,
                     symbol=function.name,
                     mutator_name=_SETATTR_BUILTIN,
@@ -3816,7 +3817,7 @@ def _dual_axis_resolution_observation(
                 (token in outer_name.lower() for token in ("scope", "context", "level"))
             ):
                 return DualAxisResolutionObservation(
-                    file_path=str(parsed_module.path),
+                    file_path=parsed_module.file_path,
                     line=node.lineno,
                     symbol=function.name,
                     outer_axis_name=outer_name,
@@ -3979,7 +3980,7 @@ def _builder_call_shape(
         (name for name, value in context.field_pairs if _terminal_name(value) == name)
     )
     return BuilderCallShape(
-        file_path=str(parsed_module.path),
+        file_path=parsed_module.file_path,
         class_name=class_name,
         function_name=function_name,
         lineno=context.call.lineno,
@@ -4028,7 +4029,7 @@ def _export_dict_shape(
                 export_context.key_pairs
             ),
             lambda export_context, source_roots: ExportDictShape(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 class_name=class_name,
                 function_name=function_name,
                 lineno=export_context.dict_node.lineno,

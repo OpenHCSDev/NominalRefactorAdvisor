@@ -481,7 +481,7 @@ class RegistrationShape:
                 ),
                 derived_fields=(
                     ConstructorDerivedField(
-                        "file_path", lambda bound: str(bound["parsed_module"].path)
+                        "file_path", lambda bound: bound["parsed_module"].file_path
                     ),
                     ConstructorDerivedField(
                         "lineno", lambda bound: bound["node"].lineno
@@ -505,7 +505,7 @@ class RegistrationShape:
                 parameter_fields=("registry_name", "key_fingerprint"),
                 derived_fields=(
                     ConstructorDerivedField(
-                        "file_path", lambda bound: str(bound["parsed_module"].path)
+                        "file_path", lambda bound: bound["parsed_module"].file_path
                     ),
                     ConstructorDerivedField(
                         "lineno", lambda bound: bound["node"].lineno
@@ -535,7 +535,7 @@ class RegistrationShape:
         if not isinstance(node.value, ast.Name):
             raise TypeError("Registration assignment value must be a class name")
         return cls(
-            file_path=str(parsed_module.path),
+            file_path=parsed_module.file_path,
             lineno=node.lineno,
             registry_name=registry_name,
             registered_class=node.value.id,

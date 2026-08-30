@@ -98,6 +98,7 @@ from .semantic_descent import (
     build_compact_semantic_descent_graph,
     build_semantic_descent_graph,
 )
+from .source_identity import resolved_source_path_text, source_path_text
 
 
 @dataclass(frozen=True)
@@ -1272,7 +1273,9 @@ class BoundedCompactProjectionManifest:
             demand is not None
             and self.report_scope is not None
             and self.report_scope.has_report_filter
-            and not self.report_scope.includes_report_file_path(str(source.path))
+            and not self.report_scope.includes_report_file_path(
+                source_path_text(source.path)
+            )
         )
 
     def _demand_signature(self, family: type[CollectedFamily]) -> str:
@@ -2510,7 +2513,7 @@ class EvidenceLocalFindingReuseAuthority:
         paths: frozenset[str],
     ) -> bool:
         return any(
-            str(Path(evidence.file_path).resolve()) in paths
+            resolved_source_path_text(evidence.file_path) in paths
             for evidence in finding.evidence
         )
 

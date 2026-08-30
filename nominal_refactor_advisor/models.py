@@ -20,6 +20,7 @@ from .descriptor_algebra import AliasProperty, ConstantProperty
 from .patterns import PatternId
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_description_length import CompressionCertificate
+from .source_identity import source_path_text
 
 from .taxonomy import (
     HIGH_CONFIDENCE,
@@ -60,7 +61,7 @@ class SourceLineReference:
     line: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "file_path", self.file_path.replace("\\", "/"))
+        object.__setattr__(self, "file_path", source_path_text(self.file_path))
 
 
 @dataclass(frozen=True)

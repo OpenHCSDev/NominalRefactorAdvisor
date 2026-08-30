@@ -5696,7 +5696,7 @@ def test_compact_public_private_delegate_context_preserves_semantics_without_ast
     target_projections = tuple(
         projection
         for projection in projections
-        if projection.file_path == str(target_path)
+        if projection.file_path == target_path.as_posix()
     )
     demand = family.report_demand(target_projections, config)
     demanded_projections = target_projections + family.project_cached_demand(

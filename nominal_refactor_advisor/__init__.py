@@ -78,6 +78,7 @@ from .codemod_workflow import (
     CodemodFindingClassStatus,
     CodemodFindingDelta,
     CodemodFindingIdTransition,
+    CodemodProjectedScanMode,
     CodemodWorkflowScan,
     CodemodProjectedFindingReport,
     CodemodRefactorGoalProgress,

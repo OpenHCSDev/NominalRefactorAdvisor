@@ -102,7 +102,7 @@ def _compact_concrete_type_case_function_facts(
         for subject_expression, checks in sorted(grouped_checks.items()):
             facts.append(
                 CompactConcreteTypeCaseFunctionFact(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     module_name=module.module_name,
                     line=function.lineno,
                     function_name=qualname,
@@ -159,7 +159,7 @@ def _compact_implicit_self_mixin_facts(
         if method_names:
             facts.append(
                 CompactImplicitSelfMixinFact(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     qualname=qualname,
                     line=class_node.lineno,
                     method_names=tuple(method_names),
@@ -184,7 +184,7 @@ class CompactRemainingSystemicModuleProjectionFamily(
         del cls
         return [
             CompactRemainingSystemicModuleProjection(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 module_name=parsed_module.module_name,
                 concrete_type_functions=_compact_concrete_type_case_function_facts(
                     parsed_module
@@ -608,7 +608,7 @@ class _DataclassNamespaceCliModuleProjectionFamily(
         cls, parsed_module: ParsedModule
     ) -> list[_DataclassNamespaceCliModuleProjection]:
         del cls
-        file_path = str(parsed_module.path)
+        file_path = parsed_module.file_path
         dataclasses: list[_DataclassNamespaceProjection] = []
         for node in parsed_module.module.body:
             if not isinstance(node, ast.ClassDef):
@@ -657,7 +657,7 @@ def _native_dataclass_namespace_cli_projections(
 
     if not syntax_index.is_complete:
         return None
-    file_path = str(source_module.path)
+    file_path = source_module.file_path
     try:
         dataclasses: list[_DataclassNamespaceProjection] = []
         for class_node in syntax_index.top_level_declarations("class"):
@@ -905,7 +905,7 @@ def _inline_ast_predicate_grammar_candidates(
                 continue
             candidates.append(
                 InlineAstPredicateGrammarCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=method.lineno,
                     class_name=node.name,
                     method_name=method.name,
@@ -1085,7 +1085,7 @@ def _projection_property_family_candidates(
         ordered = sorted_tuple(properties, key=lambda item: item[0].lineno)
         candidates.append(
             ProjectionPropertyFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=class_node.lineno,
                 class_name=class_node.name,
                 property_names=tuple((function.name for function, _ in ordered)),
@@ -1219,7 +1219,7 @@ def _collection_projection_property_family_candidates(
             ordered = sorted_tuple(grouped_properties, key=lambda item: item[0].lineno)
             candidates.append(
                 CollectionProjectionPropertyFamilyCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=class_node.lineno,
                     class_name=class_node.name,
                     property_names=tuple((statement.name for statement, _ in ordered)),
@@ -2214,7 +2214,7 @@ class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
                         f"`{assignment}` maps `{axis_name}` member names to callable operations "
                         f"{operations}; this is a hardcoded strategy family."
                     ),
-                    (SourceLocation(str(module.path), statement.lineno, assignment),),
+                    (SourceLocation(module.file_path, statement.lineno, assignment),),
                     scaffold=(
                         "from abc import ABC, abstractmethod\n"
                         "from typing import ClassVar\n"
@@ -2910,7 +2910,7 @@ def _enum_constructor_policy_table_from_assignment(
     table_name = _assignment_target_name(node) or "enum_constructor_policy_table"
     enum_name = next(iter(enum_names))
     return EnumConstructorPolicyTable(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=node.lineno,
         owner_symbol=owner_symbol,
         table_name=table_name,

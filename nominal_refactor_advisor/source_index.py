@@ -7,7 +7,6 @@ import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
-from pathlib import Path
 from typing import Generic, Iterable, TypeAlias, TypeVar
 
 from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
@@ -592,7 +591,7 @@ class FileDigestAuthority:
     """Project parsed modules into source-file digest rows."""
 
     def digest(self, module: ParsedModule) -> SourceFileDigest:
-        file_path = Path(module.path).as_posix()
+        file_path = module.file_path
         return SourceFileDigest(
             file_id=STABLE_ID_AUTHORITY.file_id(file_path),
             file_path=file_path,

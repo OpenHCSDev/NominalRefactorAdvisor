@@ -56,6 +56,22 @@ class CodemodWorkflowStopReason(StrEnum):
         return self is type(self).ACHIEVED
 
 
+class CodemodProjectedScanMode(StrEnum):
+    """Completeness contract for a projected post-codemod scan."""
+
+    EXACT = "exact"
+    EVIDENCE_LOCAL_PARTIAL = "evidence_local_partial"
+
+    @classmethod
+    def for_report_roots(
+        cls,
+        report_roots: tuple[Path, ...],
+    ) -> "CodemodProjectedScanMode":
+        if report_roots:
+            return cls.EVIDENCE_LOCAL_PARTIAL
+        return cls.EXACT
+
+
 class CodemodFindingClassStatus(StrEnum):
     """Projected status for one semantic class of advisor findings."""
 
@@ -640,7 +656,7 @@ class CodemodProjectedFindingReport:
     after_scan: "CodemodWorkflowScan"
     source_sequence: CodemodPlanSequence | None = None
     expected_removed_finding_ids: tuple[str, ...] = ()
-    scan_mode: str = "exact"
+    scan_mode: CodemodProjectedScanMode = CodemodProjectedScanMode.EXACT
     include_source_index: bool = False
     include_continuation: bool = False
 
@@ -698,7 +714,7 @@ class CodemodProjectedFindingReport:
     def to_dict(self) -> JsonObject:
         after_findings = self.after_findings
         payload = {
-            "scan_mode": self.scan_mode,
+            "scan_mode": self.scan_mode.value,
             "before_finding_count": self.before_finding_count,
             "after_finding_count": self.after_finding_count,
             "finding_delta": self.finding_delta.to_dict(),
@@ -1030,7 +1046,7 @@ class CodemodSimulationFindingProjection:
             after_scan=after_scan,
             source_sequence=self.source_sequence,
             expected_removed_finding_ids=self.expected_removed_finding_ids,
-            scan_mode=("evidence_local_partial" if self.report_roots else "exact"),
+            scan_mode=CodemodProjectedScanMode.for_report_roots(self.report_roots),
             include_source_index=self.include_source_index,
             include_continuation=self.include_continuation,
         )
@@ -1267,7 +1283,7 @@ class ProjectedScanModuleSet:
             path=module.path,
             module_name=module.module_name,
             is_package_init=module.is_package_init,
-            module=ast.parse(source, filename=str(module.path)),
+            module=ast.parse(source, filename=module.file_path),
             source=source,
         )
 
@@ -1329,7 +1345,7 @@ class ProjectedModuleSource:
 
     @property
     def module_path(self) -> str:
-        return self.module.path.as_posix()
+        return self.module.file_path
 
     @property
     def has_rewrite(self) -> bool:

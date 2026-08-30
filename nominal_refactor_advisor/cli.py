@@ -2387,7 +2387,7 @@ class ArchitectureGuardSourceEvaluator:
         updated_modules = []
         known_file_paths = set()
         for parsed_module in self.modules:
-            file_path = str(parsed_module.path)
+            file_path = parsed_module.file_path
             known_file_paths.add(file_path)
             if file_path in source_by_path:
                 source = source_by_path[file_path]

@@ -100,6 +100,7 @@ from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
 from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
+from nominal_refactor_advisor.codemod_workflow import CodemodProjectedScanMode
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
@@ -1514,7 +1515,8 @@ def test_projected_finding_report_uses_focused_partial_scan(
         expected_removed_finding_ids=(before_finding.stable_id,),
     ).report()
 
-    assert report.scan_mode == "evidence_local_partial"
+    assert report.scan_mode is CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL
+    assert report.to_dict()["scan_mode"] == "evidence_local_partial"
     assert analyzed_module_paths == [changed_path.as_posix()]
     assert tuple(finding.summary for finding in report.after_findings) == (
         "changed file after finding",
@@ -1606,7 +1608,7 @@ def test_projected_finding_report_omits_compact_global_detectors(
         semantic_descent_source=RecordingSemanticDescentSource(),
     ).report()
 
-    assert report.scan_mode == "evidence_local_partial"
+    assert report.scan_mode is CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL
     assert analyzed_module_paths == [changed_path.as_posix()]
     assert graph_source_calls == []
     assert report.after_findings == ()
@@ -5250,9 +5252,9 @@ def test_subsystem_plan_follows_multi_file_evidence_bridge(tmp_path: Path) -> No
 
     assert len(plans) == 1
     assert {location.file_path for location in plans[0].evidence} == {
-        str(tmp_path / "pkg/a.py"),
-        str(shared_path),
-        str(tmp_path / "pkg/b.py"),
+        (tmp_path / "pkg/a.py").as_posix(),
+        shared_path.as_posix(),
+        (tmp_path / "pkg/b.py").as_posix(),
     }
 
 
@@ -14014,6 +14016,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodPlanSequenceStageReport.__name__ == "CodemodPlanSequenceStageReport"
     assert CodemodPlanSequenceSimulation.__name__ == "CodemodPlanSequenceSimulation"
     assert CodemodProjectedFindingReport.__name__ == "CodemodProjectedFindingReport"
+    assert nra.CodemodProjectedScanMode is CodemodProjectedScanMode
     assert (
         CodemodSimulationFindingProjection.__name__
         == "CodemodSimulationFindingProjection"
@@ -15521,7 +15524,7 @@ def test_json_payload_reuses_supplied_source_index(
     source_index = build_source_index(modules, ())
     source_snapshot = CodemodSourceSnapshot(
         source_index=source_index,
-        sources_by_file_path={str(module.path): module.source for module in modules},
+        sources_by_file_path={module.file_path: module.source for module in modules},
     )
 
     def fail_rebuild(*args: object, **kwargs: object) -> SourceIndex:

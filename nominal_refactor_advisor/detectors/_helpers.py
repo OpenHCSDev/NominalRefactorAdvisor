@@ -72,7 +72,7 @@ class SourceSegmentProjectionKey:
         cls, module: ParsedModule, node: ast.expr
     ) -> "SourceSegmentProjectionKey":
         return cls(
-            file_path=str(module.path),
+            file_path=module.file_path,
             source_identity=id(module.source),
             source_length=len(module.source),
             span=(node.lineno, node.col_offset, node.end_lineno, node.end_col_offset),
@@ -492,7 +492,7 @@ def _nominal_authority_shapes_without_ancestors(
             field_type_map = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
             shapes_without_ancestors.append(
                 NominalAuthorityShape(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     class_name=node.name,
                     line=node.lineno,
                     declared_base_names=CLASS_NODE_AUTHORITY.declared_base_names(node),
@@ -632,7 +632,7 @@ def _fragmented_family_authority_candidates(
         ordered_entries = sorted(entries, key=lambda item: item[1])
         candidates.append(
             FragmentedFamilyAuthorityCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 mapping_names=tuple((item[0] for item in ordered_entries)),
                 line_numbers=tuple((item[1] for item in ordered_entries)),
                 key_family_name=family_name,
@@ -746,7 +746,7 @@ def _finding_assembly_pipeline_candidates_for_class(
     ):
         return
     yield FindingAssemblyPipelineCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=method.lineno,
         subject_name=node.name,
         name_family=tuple(
@@ -842,7 +842,7 @@ def _guarded_delegator_candidates_for_class(
         if delegate_name is None:
             continue
         yield GuardedDelegatorCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=statement.lineno,
             subject_name=node.name,
             name_family=(
@@ -1040,7 +1040,7 @@ def _derived_query_index_candidates(
         )
         candidates.append(
             DerivedQueryIndexCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line_numbers=tuple((item[1] for item in ordered)),
                 function_names=tuple((item[0] for item in ordered)),
                 source_expression=source_expression,
@@ -1156,19 +1156,19 @@ def _runtime_adapter_shell_candidates_for_function(
         if len(copied_field_names) < 2 or not resolver_field_names:
             continue
         evidence = [
-            SourceLocation(str(module.path), function.lineno, qualname),
-            SourceLocation(str(module.path), current.lineno, adapter_class_name),
+            SourceLocation(module.file_path, function.lineno, qualname),
+            SourceLocation(module.file_path, current.lineno, adapter_class_name),
         ]
         evidence.extend(
             SourceLocation(
-                str(module.path),
+                module.file_path,
                 table_lines.get(table_name, current.lineno),
                 table_name,
             )
             for table_name in sorted(resolver_table_names)
         )
         yield RuntimeAdapterShellCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=function.lineno,
             function_name=qualname,
             adapter_class_name=adapter_class_name,
@@ -1327,7 +1327,7 @@ def _keyword_bag_adapter_candidates_for_function(
     if invalid_shape or source_name is None or len(key_names) < 3:
         return
     yield KeywordBagAdapterCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=function.lineno,
         function_name=qualname,
         source_name=source_name,
@@ -1372,7 +1372,7 @@ def _structural_observation_property_candidates_for_class(
         if len(keyword_names) < 6:
             continue
         yield StructuralObservationPropertyCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=statement.lineno,
             subject_name=node.name,
             name_family=keyword_names,
@@ -1530,7 +1530,7 @@ def _property_alias_hook_groups(
     return tuple(
         (
             PropertyAliasHookGroup(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 base_name=base_name,
                 property_name=property_name,
                 returned_attribute=returned_attribute,
@@ -1620,7 +1620,7 @@ def _constant_property_hook_groups(
     return tuple(
         (
             ConstantPropertyHookGroup(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 base_name=base_name,
                 property_name=property_name,
                 class_names=tuple((class_name for class_name, _, _ in ordered)),
@@ -1691,7 +1691,7 @@ def _constant_property_default_bundle_candidates_for_class(
     if len(defaults) < 4:
         return
     yield ConstantPropertyDefaultBundleCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=defaults[0][1],
         class_name=node.name,
         property_names=tuple((name for name, _, _, _ in defaults)),
@@ -1734,7 +1734,7 @@ def _reflective_self_attribute_candidates_for_class(
             ):
                 continue
             yield ReflectiveSelfAttributeCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=subnode.lineno,
                 subject_name=node.name,
                 name_family=(attribute_name,),
@@ -1860,7 +1860,7 @@ def _guarded_wrapper_spec_pairs(
             continue
         pairs.append(
             GuardedWrapperSpecPair(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 spec_name=target.id,
                 spec_line=lineno,
                 function_name=function_name,
@@ -1898,7 +1898,7 @@ def _dynamic_self_field_selection_candidates_for_class(
             ):
                 continue
             yield DynamicSelfFieldSelectionCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=subnode.lineno,
                 subject_name=node.name,
                 name_family=(selector_expression,),
@@ -2091,7 +2091,7 @@ def _all_missing_axis_predicate_for_if(
     append_target_name, signal_name = append_shape
     return (
         AllMissingAxisPredicateCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=node.lineno,
             function_name=function_name,
             predicate_names=predicate_names,
@@ -2197,7 +2197,7 @@ def _string_backed_reflective_nominal_lookup_candidates(
                 if len(selector_values) < config.min_reflective_selector_values:
                     continue
                 candidate = StringBackedReflectiveNominalLookupCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=subnode.lineno,
                     class_name=class_name,
                     method_name=method.name,
@@ -2356,7 +2356,7 @@ def _concrete_config_field_probe_candidates(
                     continue
                 candidates.append(
                     ConcreteConfigFieldProbeCandidate(
-                        file_path=str(module.path),
+                        file_path=module.file_path,
                         line=grouped_lines[config_attr_name, config_type_name],
                         class_name=class_name,
                         method_name=method.name,
@@ -2547,7 +2547,7 @@ def _metadata_only_class_family_candidates(
         )
         candidates.append(
             MetadataOnlyClassFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 family_suffix=suffix,
                 class_names=class_names,
                 line_numbers=line_numbers,
@@ -2596,7 +2596,7 @@ def _self_naming_builder_catalog_candidates(
     return tuple(
         (
             SelfNamingBuilderCatalogCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 class_names=tuple((item[0] for item in ordered)),
                 line_numbers=tuple((item[1] for item in ordered)),
                 builder_name=builder_name,
@@ -2706,7 +2706,7 @@ def _repeated_base_bundle_candidates(
         line_numbers = tuple((node.lineno for node in nodes))
         candidates.append(
             RepeatedBaseBundleCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 class_names=tuple((node.name for node in nodes)),
                 line_numbers=line_numbers,
                 base_names=bundle,
@@ -2768,7 +2768,7 @@ def _classvar_only_sibling_leaf_candidates_for_class(
     if len(_trim_docstring_body(node.body)) != len(assigned_names):
         return
     yield DeclarativeFamilyLeafCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=node.lineno,
         subject_name=node.name,
         name_family=assigned_names,
@@ -2804,7 +2804,7 @@ def _classvar_only_sibling_leaf_groups(
     return tuple(
         (
             DeclarativeFamilyBoilerplateGroup(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 base_names=base_names,
                 assigned_names=assigned_names,
                 class_names=tuple((item.subject_name for item in items)),
@@ -2862,7 +2862,7 @@ def _type_indexed_definition_boilerplate_groups(
     return tuple(
         (
             TypeIndexedDefinitionBoilerplateGroup(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 base_names=base_names,
                 definition_class_names=tuple((item[0] for item in ordered)),
                 alias_names=tuple((item[1] for item in ordered)),
@@ -2890,7 +2890,7 @@ def _derived_export_surface_candidates(
             shapes[0]
             for exported_name in exported_names
             if (shapes := index.shapes_named(exported_name))
-            and shapes[0].file_path == str(module.path)
+            and shapes[0].file_path == module.file_path
         ]
         if len(local_shapes) < 6 or len(local_shapes) * 5 < len(exported_names) * 4:
             continue
@@ -2901,7 +2901,7 @@ def _derived_export_surface_candidates(
             continue
         candidates.append(
             DerivedExportSurfaceCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 export_symbol=export_symbol,
                 line=line,
                 exported_names=exported_names,
@@ -2952,7 +2952,7 @@ class ManualPublicApiSurfaceBuilder:
                 continue
             candidates.append(
                 ManualPublicApiSurfaceCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     export_symbol=export_symbol,
                     line=line,
                     exported_names=exported_names,
@@ -3012,7 +3012,7 @@ def _derived_indexed_surface_candidates(
                 for item in value.values
                 if isinstance(item, ast.Name)
                 and (shapes := index.shapes_named(item.id))
-                and (shapes[0].file_path == str(module.path))
+                and (shapes[0].file_path == module.file_path)
             )
         )
         if len(value_names) != len(value.values):
@@ -3025,7 +3025,7 @@ def _derived_indexed_surface_candidates(
             continue
         candidates.append(
             DerivedIndexedSurfaceCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 surface_name=target_name,
                 line=statement.lineno,
                 key_kind=next(iter(key_kinds)),
@@ -3125,7 +3125,7 @@ def _registered_union_surface_candidates_for_node(
     ):
         return
     yield RegisteredUnionSurfaceCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=source.line,
         owner_name=source.owner_name,
         accessor_name=accessor_name,
@@ -3366,7 +3366,7 @@ def _concrete_type_union_contract_candidates_for_function(
             observed_attribute_names,
         )
         yield ConcreteTypeUnionContractCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=argument.lineno,
             function_name=function_name,
             parameter_name=argument.arg,
@@ -3531,7 +3531,7 @@ def _module_export_policy_predicate_candidate(
         .filter(lambda context: len(context[2]) >= 2)
         .map(
             lambda context: ExportPolicyPredicateCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=context[1].lineno,
                 subject_name=context[0],
                 name_family=context[2],
@@ -3731,7 +3731,7 @@ class SubclassTraversalSiteFamily(CollectedFamily[SubclassTraversalSite]):
         if len(append_arguments) != 1:
             return None
         return SubclassTraversalSite(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=node.lineno,
             symbol=qualname,
             root_expression=seed[1],
@@ -3842,7 +3842,7 @@ def _alternate_constructor_family_groups(
             continue
         groups.append(
             AlternateConstructorFamilyGroup(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 class_name=node.name,
                 method_names=tuple(
                     (method.name for method, _, _ in constructor_methods)
@@ -5124,13 +5124,13 @@ def _attribute_branch_evidence(
         if isinstance(node, ast.If):
             if _test_compares_attribute(node.test, attr_name):
                 evidence.append(
-                    SourceLocation(str(module.path), node.lineno, f"if-{attr_name}")
+                    SourceLocation(module.file_path, node.lineno, f"if-{attr_name}")
                 )
         if isinstance(node, ast.Match):
             subject = node.subject
             if isinstance(subject, ast.Attribute) and subject.attr == attr_name:
                 evidence.append(
-                    SourceLocation(str(module.path), node.lineno, f"match-{attr_name}")
+                    SourceLocation(module.file_path, node.lineno, f"match-{attr_name}")
                 )
     return evidence
 
@@ -5436,7 +5436,7 @@ def _external_callsites_by_target_cached(
                         ResolvedExternalCallsite(
                             module_name=module.module_name,
                             location=SourceLocation(
-                                str(module.path), node.lineno, self._symbol("call")
+                                module.file_path, node.lineno, self._symbol("call")
                             ),
                         )
                     )
@@ -5495,7 +5495,7 @@ def _trivial_forwarding_wrapper_candidate(
         chain, class_name=class_name
     )
     return TrivialForwardingWrapperCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=function.lineno,
         qualname=qualname,
         delegate_symbol=delegate_symbol,
@@ -5513,7 +5513,7 @@ def _implements_abstract_hook(
     class_qualname = qualname.rsplit(".", maxsplit=1)[0]
     class_index = build_class_family_index([module])
     class_symbol = class_index.symbol_for(
-        file_path=str(module.path),
+        file_path=module.file_path,
         qualname=class_qualname,
     )
     if class_symbol is None:
@@ -5554,7 +5554,7 @@ def _public_api_private_delegate_module_facts(
     module: ParsedModule,
 ) -> PublicApiPrivateDelegateModuleFacts:
     return PublicApiPrivateDelegateModuleFacts(
-        file_path=str(module.path),
+        file_path=module.file_path,
         module_name=module.module_name,
         top_level_symbol_lines=tuple(sorted(_top_level_symbol_lines(module).items())),
         wrappers=_trivial_forwarding_wrapper_candidates(module),
@@ -5801,7 +5801,7 @@ def _nominal_policy_surface_method_candidate(
         .combine(
             lambda context: _policy_selector_match(context.chain[1]),
             lambda context, selector_match: NominalPolicySurfaceMethodCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=function.lineno,
                 qualname=qualname,
                 owner_class_name=context.method_header[0],
@@ -5997,7 +5997,7 @@ def _declarative_detector_class_candidates(
             continue
         candidates.append(
             DeclarativeDetectorClassCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=node.lineno,
                 class_name=node.name,
                 base_name=base_part[0],
@@ -6123,7 +6123,7 @@ def _static_typed_observation_detector_candidates(
         family_name, observation_type_name = collection
         candidates.append(
             StaticTypedObservationDetectorCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=node.lineno,
                 class_name=node.name,
                 observation_family_name=family_name,
@@ -6180,7 +6180,7 @@ def _inline_candidate_renderer_declaration_candidate(
     candidate_type_name = _source_segment(module, node.args[0])
     return (
         InlineCandidateRendererDeclarationCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=node.lineno,
             qualname=f"{_DECLARE_MODULE_DETECTOR_NAME}[{candidate_type_name}]",
             candidate_type_name=candidate_type_name,
@@ -6284,7 +6284,7 @@ def _candidate_collector_boilerplate_candidates(
         collector_name, uses_config = collector_call
         candidates.append(
             CandidateCollectorBoilerplateCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=method.lineno,
                 class_name=node.name,
                 method_name=method.name,
@@ -6382,7 +6382,7 @@ def _typed_candidate_cast_boilerplate_candidates(
             parameter_name, local_name, candidate_type_name = cast_assignment
             candidates.append(
                 TypedCandidateCastBoilerplateCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=statement.lineno,
                     class_name=node.name,
                     method_name=statement.name,
@@ -6499,7 +6499,7 @@ def _finding_spec_default_field_candidate(
         return ()
     return (
         FindingSpecDefaultFieldCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=node.lineno,
             constructor_name=constructor_name,
             recommended_constructor_name=recommended_constructor_name,
@@ -6572,7 +6572,7 @@ def _finding_spec_build_boilerplate_class_candidates(
     return tuple(
         (
             ClassMethodLineWitnessCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=child.lineno,
                 class_name=node.name,
                 method_name=statement.name,
@@ -6638,7 +6638,7 @@ def _direct_build_finding_renderer_candidates(
                 continue
             candidates.append(
                 DirectBuildFindingRendererCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=statement.lineno,
                     class_name=node.name,
                     method_name=statement.name,
@@ -6697,7 +6697,7 @@ def _canonical_finding_spec_builder_candidates(
                 continue
             candidates.append(
                 CanonicalFindingSpecBuilderCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=statement.lineno,
                     class_name=node.name,
                     constructor_name=constructor_name,
@@ -7103,7 +7103,7 @@ def _closed_axis_conversion_matrix_candidates(
     line_numbers = tuple((item[1] for item in conversion_functions))
     return (
         ClosedAxisConversionMatrixCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=min(line_numbers),
             function_names=function_names,
             source_axis_values=source_values,
@@ -7149,7 +7149,7 @@ def _option_record_quotient_candidates(
     line_numbers = tuple((record.line for record in option_records))
     return (
         OptionRecordQuotientCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=min(line_numbers),
             class_names=tuple((record.class_name for record in option_records)),
             line_numbers=line_numbers,
@@ -7331,7 +7331,7 @@ def _node_visitor_stack_boilerplate_candidates(
             continue
         candidates.append(
             NodeVisitorStackBoilerplateCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=node.lineno,
                 qualname=qualname,
                 stack_names=transition_stack_names,
@@ -7396,7 +7396,7 @@ def _enum_metadata_table_candidates(
             if enum_name == statement.name:
                 candidates.append(
                     EnumMetadataTableCandidate(
-                        file_path=str(module.path),
+                        file_path=module.file_path,
                         line=statement.lineno,
                         class_name=statement.name,
                         table_name=table_name,
@@ -7474,7 +7474,7 @@ def _tuple_index_semantic_opacity_candidate_for_function(
         return ()
     return (
         TupleIndexSemanticOpacityCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=function.lineno,
             function_name=qualname,
             index_expressions=index_paths,
@@ -7600,7 +7600,7 @@ def _result_assembly_pipeline_functions(
             continue
         functions.append(
             ResultAssemblyPipelineFunction(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 qualname=qualname,
                 lineno=function.lineno,
                 stages=stages,
@@ -7662,7 +7662,7 @@ def _repeated_result_assembly_pipeline_candidates(
 
     candidates = [
         RepeatedResultAssemblyPipelineCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             shared_tail=shared_tail,
             functions=sorted_tuple(
                 grouped, key=lambda item: (item.lineno, item.qualname)
@@ -7759,7 +7759,7 @@ def _nested_builder_shell_candidates_for_function(
     if not residue_source_names:
         return
     yield NestedBuilderShellCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         qualname=qualname,
         lineno=function.lineno,
         outer_callee_name=outer_callee_name,
@@ -7813,7 +7813,7 @@ def _identity_keyword_forwarding_shell_candidate(
     if set(forwarded_keyword_names) != parameter_names:
         return
     yield IdentityKeywordForwardingShellCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=function.lineno,
         function_name=qualname,
         callee_name=_qualified_call_display_name(returned),
@@ -8082,7 +8082,7 @@ def _schema_accessor_family_candidates(
                 continue
             candidates.append(
                 SchemaAccessorFamilyCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=class_node.lineno,
                     class_name=class_node.name,
                     enum_name=enum_name,
@@ -8223,7 +8223,7 @@ def _dataclass_field_projection_boilerplate_candidates(
             continue
         candidates.append(
             DataclassFieldProjectionBoilerplateCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=class_node.lineno,
                 class_name=class_node.name,
                 field_names=field_names,
@@ -8419,7 +8419,7 @@ def _dataclass_schema_registry_mirror_candidates(
                 continue
             candidates.append(
                 DataclassSchemaRegistryMirrorCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=schema_line,
                     class_name=class_node.name,
                     schema_name=schema_name,
@@ -8555,7 +8555,7 @@ def _optional_keyword_bag_assembly_candidate(
         if unpack_call is None:
             continue
         yield OptionalKeywordBagAssemblyCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=statement.lineno,
             function_name=qualname,
             bag_name=bag_name,
@@ -8634,7 +8634,7 @@ def _optional_parameter_branch_candidates_for_function(
             )
         )
         yield OptionalParameterBranchCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=function.lineno,
             function_name=qualname,
             parameter_name=argument.arg,

@@ -243,7 +243,7 @@ def _accumulator_fold_family_candidates(
             continue
         candidates.append(
             AccumulatorFoldFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 class_name=class_node.name,
                 accumulator_type_name=ordered[0].accumulator_type_name,
                 result_method_name=ordered[0].result_method_name,
@@ -350,7 +350,7 @@ def _regex_group_extractor_family_candidates(
             )
             candidates.append(
                 RegexGroupExtractorFamilyCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     class_name=class_node.name,
                     method_names=tuple((method.method_name for method in ordered)),
                     line_numbers=tuple((method.line for method in ordered)),

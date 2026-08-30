@@ -2688,7 +2688,7 @@ def _suffix_axis_surface_methods(
         owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else "<module>"
         methods.append(
             SuffixAxisSurfaceMethod(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 qualname=qualname,
                 line=function.lineno,
                 owner_name=owner_name,
@@ -2741,7 +2741,7 @@ def _suffix_axis_surface_candidates(
         )
         candidates.append(
             SuffixAxisSurfaceCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 owner_name=owner_name,
                 axis_names=axis_names,
                 operation_names=tuple(
@@ -2887,7 +2887,7 @@ def _sibling_role_helper_symmetry_candidates(
                 control_shape=control_shape,
             )
             grouped[key][qualname] = SiblingRoleHelperMethod(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=function.lineno,
                 qualname=qualname,
                 owner_name=owner_name,
@@ -2912,7 +2912,7 @@ def _sibling_role_helper_symmetry_candidates(
             continue
         candidates.append(
             SiblingRoleHelperSymmetryCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 owner_name=key.owner_name,
                 shared_tokens=key.shared_tokens,
                 methods=methods,
@@ -3024,7 +3024,7 @@ def _enum_projection_tables(
                 continue
             tables.append(
                 EnumProjectionTableCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     table_name=target_name,
                     line=statement.lineno,
                     enum_name=enum_name,
@@ -3094,7 +3094,7 @@ def _residual_closed_axis_indirection_candidates_for_function(
             if not shared_cases:
                 continue
             yield ResidualClosedAxisIndirectionCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 qualname=qualname,
                 line=function.lineno,
                 table_name=table.table_name,
@@ -3306,7 +3306,7 @@ class CandidateCollectionAuthority:
                 continue
             candidates.append(
                 WitnessCarrierClassCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=node.lineno,
                     subject_name=node.name,
                     name_family=field_names,
@@ -3658,7 +3658,7 @@ def _inline_enum_subset_guard_candidates_for_function(
             continue
         seen.add(key)
         yield InlineEnumSubsetGuardCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=node.lineno,
             function_name=qualname,
             dispatch_axis_expression=dispatch_axis_expression,
@@ -4078,7 +4078,7 @@ def _split_dispatch_authority_candidates_for_function(
                     else "<call>"
                 )
                 yield SplitDispatchAuthorityCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     qualname=qualname,
                     line=function.lineno,
                     strategy_root_name=selector_assignment.selector_spec.root_name,
@@ -4273,7 +4273,7 @@ def _empty_leaf_product_family_candidates(
             )
             candidates.append(
                 EmptyLeafProductFamilyCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     left_axis_base_names=left_axis,
                     right_axis_base_names=right_axis,
                     leaf_class_names=tuple(
@@ -4543,7 +4543,7 @@ def _transport_shell_template_candidates(
         )
         candidates.append(
             TransportShellTemplateCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=driver_method.lineno,
                 class_name=class_name,
                 driver_method_name=driver_method.name,
@@ -4872,7 +4872,7 @@ def _spec_axis_family_from_source(
     return tuple(
         (
             SpecAxisFamily(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=source.line,
                 family_name=source.family_name,
                 constructor_name=source.constructor_name,
@@ -5072,7 +5072,7 @@ def _registered_catalog_projection_candidates_for_function(
     ):
         return
     yield RegisteredCatalogProjectionCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=function.lineno,
         qualname=qualname,
         catalog_type_name=ast.unparse(returned.func),
@@ -5244,15 +5244,15 @@ def _closed_constant_selector_candidates_for_function(
     if family_suffix is None and common_constructor_name is None:
         return
     evidence: list[SourceLocation] = [
-        SourceLocation(str(module.path), function.lineno, qualname)
+        SourceLocation(module.file_path, function.lineno, qualname)
     ]
     for constant_name in constant_names:
         binding = constant_bindings.get(constant_name)
         if binding is None:
             continue
-        evidence.append(SourceLocation(str(module.path), binding.line, constant_name))
+        evidence.append(SourceLocation(module.file_path, binding.line, constant_name))
     yield ClosedConstantSelectorCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         qualname=qualname,
         line=function.lineno,
         guard_expressions=tuple(
@@ -5409,18 +5409,18 @@ def _derived_wrapper_spec_shadow_candidates(
                 (name for name in common_keyword_names if name != link_field_name)
             )
             evidence: list[SourceLocation] = [
-                SourceLocation(str(module.path), family_line, family_name)
+                SourceLocation(module.file_path, family_line, family_name)
             ]
             evidence.extend(
                 (
-                    SourceLocation(str(module.path), constant_bindings[name].line, name)
+                    SourceLocation(module.file_path, constant_bindings[name].line, name)
                     for name in primary_constant_names[:3]
                     if name in constant_bindings
                 )
             )
             candidates.append(
                 DerivedWrapperSpecShadowCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=family_line,
                     derived_family_name=family_name,
                     derived_constructor_name=next(iter(constructor_names)),
@@ -5601,7 +5601,7 @@ def _manual_companion_dataclass_surface_candidate_for_pair(
     if not certificate.pays_rent:
         return None
     return ManualCompanionDataclassSurfaceCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=companion_node.lineno,
         authority_class_name=authority_node.name,
         companion_class_name=companion_node.name,
@@ -5616,10 +5616,10 @@ def _manual_companion_dataclass_surface_candidate_for_pair(
         compression_certificate=certificate,
         evidence_locations=(
             SourceLocation(
-                str(module.path), authority_node.lineno, authority_node.name
+                module.file_path, authority_node.lineno, authority_node.name
             ),
             SourceLocation(
-                str(module.path), companion_node.lineno, companion_node.name
+                module.file_path, companion_node.lineno, companion_node.name
             ),
         ),
     )
@@ -5740,7 +5740,7 @@ def _bridge_axis_dispatch_family_candidates(
             continue
         candidates.append(
             BridgeAxisDispatchFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=line_numbers[0],
                 dispatch_axis_expression=dispatch_axis_expression,
                 literal_cases=literal_cases,
@@ -5864,7 +5864,7 @@ def _array_protocol_probe_bridge_candidates(
         return ()
     return (
         ArrayProtocolProbeBridgeCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=line_numbers[0],
             function_names=operation_symbols,
             attribute_names=shared_attributes,
@@ -5954,7 +5954,7 @@ def _lifecycle_stage_sequence_candidates(
             continue
         candidates.append(
             LifecycleStageSequenceCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=line_numbers[0],
                 function_names=function_names,
                 stage_names=stage_sequence,
@@ -6105,7 +6105,7 @@ def _module_keyed_selection_helper_candidates(
         rule_table_names: list[str] = []
         indexed_table_names: list[str] = []
         evidence: list[SourceLocation] = [
-            SourceLocation(str(module.path), node.lineno, node.name)
+            SourceLocation(module.file_path, node.lineno, node.name)
         ]
         for family_name, (line, elements) in sorted(named_sequences.items()):
             if len(elements) < 2:
@@ -6134,7 +6134,7 @@ def _module_keyed_selection_helper_candidates(
             ):
                 continue
             rule_table_names.append(family_name)
-            evidence.append(SourceLocation(str(module.path), line, family_name))
+            evidence.append(SourceLocation(module.file_path, line, family_name))
         if len(rule_table_names) < 2:
             continue
         helper_names = {helper.function_name for helper in matching_helpers}
@@ -6144,12 +6144,12 @@ def _module_keyed_selection_helper_candidates(
             argument = call.args[0]
             if isinstance(argument, ast.Name) and argument.id in rule_table_names:
                 indexed_table_names.append(call_name)
-                evidence.append(SourceLocation(str(module.path), line, call_name))
+                evidence.append(SourceLocation(module.file_path, line, call_name))
         if len(indexed_table_names) < 2:
             continue
         candidates.append(
             ModuleKeyedSelectionHelperCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=node.lineno,
                 rule_class_name=node.name,
                 selected_field_name=selected_field_name,
@@ -6333,7 +6333,7 @@ def _module_class_assigned_enum_axis_specs(
                 continue
             specs.append(
                 _ClassAssignedEnumAxisSpec(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=statement.lineno,
                     class_name=statement.name,
                     key_attr_name=key_attr_name,
@@ -6406,13 +6406,13 @@ def _enum_keyed_table_class_axis_shadow_candidates(
             )
             if case_overlap_score < 0.8:
                 continue
-            key = (str(module.path), table_name, key_attr_name)
+            key = (module.file_path, table_name, key_attr_name)
             if key in seen:
                 continue
             seen.add(key)
             candidates.append(
                 EnumKeyedTableClassAxisShadowCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=line,
                     table_name=table_name,
                     key_type_name=key_type_name,
@@ -6767,7 +6767,7 @@ def _parallel_registry_projection_family_candidates(
     return tuple(
         (
             ParallelRegistryProjectionFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 collector_name=collector_name,
                 registry_accessor_name=registry_accessor_name,
                 return_keyword_names=return_keyword_names,
@@ -7326,7 +7326,7 @@ def _manual_keyed_record_table_group_candidates(
         lookup_method, lookup_shape = lookup_methods[0]
         classes.append(
             ManualKeyedRecordTableClassCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=node.lineno,
                 class_name=node.name,
                 register_method_name="register",
@@ -7349,7 +7349,7 @@ def _manual_keyed_record_table_group_candidates(
     return tuple(
         (
             ManualKeyedRecordTableGroupCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 classes=sorted_tuple(
                     items, key=lambda item: (item.line, item.class_name)
                 ),
@@ -7492,7 +7492,7 @@ def _manual_structural_record_mechanics_group_candidates(
             continue
         classes.append(
             ManualStructuralRecordMechanicsClassCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 line=node.lineno,
                 class_name=node.name,
                 base_names=base_names,
@@ -7512,7 +7512,7 @@ def _manual_structural_record_mechanics_group_candidates(
     return tuple(
         (
             ManualStructuralRecordMechanicsGroupCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 base_names=base_names,
                 classes=sorted_tuple(
                     items, key=lambda item: (item.line, item.class_name)
@@ -7745,7 +7745,7 @@ def _concrete_type_case_function_candidates_for_function(
             if set(concrete_class_names) <= set(member_names)
         )
         yield ConcreteTypeCaseFunctionCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=function.lineno,
             function_name=qualname,
             subject_expression=subject_expression,
@@ -7824,7 +7824,7 @@ def _repeated_concrete_type_case_analysis_candidates(
                 continue
             candidates.append(
                 RepeatedConcreteTypeCaseAnalysisCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     functions=sorted_tuple(
                         functions, key=lambda item: (item.line, item.function_name)
                     ),
@@ -7975,7 +7975,7 @@ class GuardValidatorPipeline:
                     min_guard_count=min_guard_count,
                 ),
                 lambda context, access_profile: GuardValidatorFunctionCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=function.lineno,
                     function_name=qualname,
                     subject_param_name=context.subject_param_name,
@@ -8124,7 +8124,7 @@ def _repeated_guard_validator_family_candidates(
         ordered = sorted_tuple(items, key=lambda item: (item.line, item.function_name))
         families.append(
             RepeatedGuardValidatorFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 subject_param_name=subject_axis.subject_param_name,
                 alias_source_attr=subject_axis.alias_source_attr,
                 functions=ordered,
@@ -8219,7 +8219,7 @@ def _validate_shape_guard_method_candidate(
     if len(set(shape_guard_signatures)) < min_guard_count:
         return None
     return ValidateShapeGuardMethodCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         line=method.lineno,
         class_name=class_node.name,
         method_name=method.name,
@@ -8445,7 +8445,7 @@ def _manual_fiber_tag_candidates(
                     continue
                 candidates.append(
                     ManualFiberTagCandidate(
-                        file_path=str(module.path),
+                        file_path=module.file_path,
                         line=method.lineno,
                         subject_name=node.name,
                         name_family=case_names,
@@ -8545,7 +8545,7 @@ def _manual_registry_candidates(
             )
             candidates.append(
                 ManualRegistryCandidate(
-                    file_path=str(module.path),
+                    file_path=module.file_path,
                     line=node.lineno,
                     subject_name=registry_name,
                     name_family=decorated_class_names,
@@ -8625,7 +8625,7 @@ def _structural_confusability_candidates_for_function(
         ):
             continue
         yield StructuralConfusabilityCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=function.lineno,
             subject_name=qualname,
             name_family=tuple((node.name for node in confusable_classes)),
@@ -8755,7 +8755,7 @@ def _witness_carrier_family_candidates(
         seen_class_names.add(class_names)
         findings.append(
             WitnessCarrierFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 class_names=class_names,
                 line_numbers=tuple((candidate.line for candidate in ordered_items)),
                 shared_role_names=shared_role_names,
@@ -10971,7 +10971,7 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
         if not product_fields:
             return None
         return cls(
-            file_path=str(module.path),
+            file_path=module.file_path,
             line=node.lineno,
             class_name=node.name,
             base_names=tuple(ast.unparse(base) for base in node.bases),

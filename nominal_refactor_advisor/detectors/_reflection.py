@@ -85,7 +85,7 @@ def _builtin_locals_call_candidates(
                     BuiltinLocalsCallCandidate(
                         owner=owner,
                         evidence=(
-                            SourceLocation(str(module.path), node.lineno, f"{owner}:locals"),
+                            SourceLocation(module.file_path, node.lineno, f"{owner}:locals"),
                         ),
                     )
                 )
@@ -178,7 +178,7 @@ def _direct_reflective_attribute_hook_candidates(
                 owner=owner,
                 hook_names=tuple(sorted({name for _line, name in sites})),
                 evidence=tuple(
-                    SourceLocation(str(module.path), line, f"{owner}:{hook_name}")
+                    SourceLocation(module.file_path, line, f"{owner}:{hook_name}")
                     for line, hook_name in sites
                 ),
             )
@@ -221,7 +221,7 @@ def _source_direct_reflective_attribute_hook_candidates(
             owner=owner,
             hook_names=tuple(sorted({name for _line, name in sites})),
             evidence=tuple(
-                SourceLocation(str(module.path), line, f"{owner}:{hook_name}")
+                SourceLocation(module.file_path, line, f"{owner}:{hook_name}")
                 for line, hook_name in sites
             ),
         )

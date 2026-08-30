@@ -19,6 +19,7 @@ from ..class_index import (
 from ..ast_tools import SourceModule
 from ..native_syntax import NativePythonSyntaxIndex
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from ..source_identity import source_path_text
 from ..semantic_match import (
     Maybe,
     attribute_call_match,
@@ -246,7 +247,7 @@ def _witness_mixin_enforcement_candidate(
         }
     )
     return WitnessMixinEnforcementCandidate(
-        file_path=str(module.path),
+        file_path=module.file_path,
         class_names=class_names,
         line_numbers=tuple((line_by_class[class_name] for class_name in class_names)),
         role_field_names=role_field_names,
@@ -1002,7 +1003,7 @@ class DynamicClassMaterializationDetector(EvidenceOnlyPerModuleDetector):
         for node in _walk_nodes(module.module):
             if _materializes_class_with_type(node):
                 evidence.append(
-                    SourceLocation(str(module.path), node.lineno, node.name)
+                    SourceLocation(module.file_path, node.lineno, node.name)
                 )
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 if _assignment_targets_public_classes(
@@ -1010,7 +1011,7 @@ class DynamicClassMaterializationDetector(EvidenceOnlyPerModuleDetector):
                 ) and _value_calls_materialize(node.value):
                     evidence.append(
                         SourceLocation(
-                            str(module.path),
+                            module.file_path,
                             node.lineno,
                             "class-materialization-assignment",
                         )
@@ -1140,7 +1141,7 @@ class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
                 continue
             if not _autoregister_family_is_metadata_only(module, node):
                 continue
-            evidence.append(SourceLocation(str(module.path), node.lineno, node.name))
+            evidence.append(SourceLocation(module.file_path, node.lineno, node.name))
         return tuple(evidence)
 
     def _build_finding(
@@ -1801,9 +1802,9 @@ class SupportPreludeModuleFact:
         if _module_has_family_catalog(support_path):
             return None
         return cls(
-            parent_path=str(module_path.parent),
+            parent_path=source_path_text(module_path.parent),
             support_module_name=support_module_name,
-            file_path=str(module_path),
+            file_path=source_path_text(module_path),
             class_name=class_name,
             line=line,
         )
@@ -1963,7 +1964,7 @@ def _catalog_installing_mixin_family_candidates(
     ordered = sorted_tuple(items, key=lambda item: (item[2], item[0]))
     return (
         CatalogInstallingMixinFamilyCandidate(
-            file_path=str(module.path),
+            file_path=module.file_path,
             class_names=tuple((item[0] for item in ordered)),
             catalog_attribute_names=tuple((item[1] for item in ordered)),
             line_numbers=tuple((item[2] for item in ordered)),
@@ -2072,7 +2073,7 @@ def _module_constructor_policy_family_candidates(
         ordered = sorted_tuple(rows, key=lambda item: (item[1], item[0]))
         candidates.append(
             ModuleConstructorPolicyFamilyCandidate(
-                file_path=str(module.path),
+                file_path=module.file_path,
                 constructor_name=constructor_name,
                 row_names=tuple((row_name for row_name, _line in ordered)),
                 line_numbers=tuple((line for _row_name, line in ordered)),

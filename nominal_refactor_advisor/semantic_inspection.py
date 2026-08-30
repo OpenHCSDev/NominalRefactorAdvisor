@@ -330,7 +330,7 @@ class _SemanticInspectionProjection:
         assignments: tuple[AssignmentSummary, ...],
         findings: tuple[RefactorFinding, ...],
     ) -> ModuleSummary:
-        file_path = module.path.as_posix()
+        file_path = module.file_path
         file_digest = self._file_digest(file_path)
         if file_path in self.source_index.targets_by_file:
             targets = self.source_index.targets_by_file[file_path]
@@ -427,7 +427,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         targets_by_key: dict[_TargetKey, AstTargetDigest],
     ) -> None:
         self.module = module
-        self.file_path = module.path.as_posix()
+        self.file_path = module.file_path
         self.source_index = source_index
         self.targets_by_key = targets_by_key
         self.class_stack: list[str] = []

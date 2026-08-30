@@ -18,7 +18,6 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from heapq import merge
-from pathlib import Path
 from typing import ClassVar, Self
 
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
@@ -35,6 +34,7 @@ from .ast_tools import (
 )
 from .collection_algebra import sorted_tuple
 from .native_syntax import NativePythonSyntaxIndex
+from .source_identity import resolved_source_path_text
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ class IndexedClass(ClassDeclaration):
             module_name=parsed_module.module_name,
             qualname=qualname,
             simple_name=qualname.rsplit(".", 1)[-1],
-            file_path=str(parsed_module.path),
+            file_path=parsed_module.file_path,
             line=node.lineno,
             node=node,
             declared_base_names=tuple(
@@ -478,7 +478,7 @@ class LatentRosterObservation:
         member_names: tuple[str, ...],
     ) -> "LatentRosterObservation":
         return cls(
-            file_path=str(parsed_module.path),
+            file_path=parsed_module.file_path,
             roster_name=roster_name,
             line=statement.lineno,
             roster_kind=type(value).__name__,
@@ -904,7 +904,7 @@ class ClassFamilyIndex:
         return tuple(
             indexed_class
             for indexed_class in self.classes_by_symbol.values()
-            if _resolved_path_text(indexed_class.file_path) not in file_paths
+            if resolved_source_path_text(indexed_class.file_path) not in file_paths
         )
 
 
@@ -1190,7 +1190,7 @@ def _compact_indexed_classes(
     *,
     include_body_facets: bool,
 ) -> tuple[CompactIndexedClass, ...]:
-    file_path = str(parsed_module.path)
+    file_path = parsed_module.file_path
     return tuple(
         CompactIndexedClass(
             symbol=f"{parsed_module.module_name}.{qualname}",
@@ -1338,7 +1338,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         return [
             CompactModuleClassProjection(
                 module_name=parsed_module.module_name,
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 import_aliases=tuple(
                     sorted(_module_import_aliases(parsed_module).items())
                 ),
@@ -1357,7 +1357,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         demand: CompactClassProjectionDemand | None,
     ) -> list[CompactModuleClassProjection]:
         del cls
-        file_path = str(parsed_module.path)
+        file_path = parsed_module.file_path
         syntax_facets = _compact_class_syntax_facets(
             parsed_module,
             collect_autoregister=(
@@ -1554,7 +1554,7 @@ def _compact_manual_subclass_roster_roots(
     parsed_module: ParsedModule,
 ) -> tuple[CompactManualSubclassRosterRoot, ...]:
     roots: list[CompactManualSubclassRosterRoot] = []
-    file_path = str(parsed_module.path)
+    file_path = parsed_module.file_path
     for qualname, node in _iter_class_defs(list(parsed_module.module.body)):
         registry_names = _compact_class_list_registry_names(node)
         if not registry_names:
@@ -1818,7 +1818,7 @@ def _compact_named_projection_surfaces(
     for surface_name, (line, value) in named_sequences.items():
         surfaces.append(
             CompactNamedProjectionSurface(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 surface_name=surface_name,
                 line=line,
                 sequence_references=tuple(
@@ -1832,7 +1832,7 @@ def _compact_named_projection_surfaces(
         if isinstance(value, ast.Dict):
             surfaces.append(
                 CompactNamedProjectionSurface(
-                    file_path=str(parsed_module.path),
+                    file_path=parsed_module.file_path,
                     surface_name=surface_name,
                     line=line,
                     dict_key_references=tuple(
@@ -2119,7 +2119,7 @@ def _compact_manual_family_rosters(
         )
         observations.append(
             CompactManualFamilyRosterObservation(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 line=statement.lineno,
                 owner_name=owner_name,
                 member_names=member_names,
@@ -2154,7 +2154,7 @@ def _compact_nominal_class_scope_facts(
         if _compact_is_reusable_nominal_wrapper_authority(node):
             nominal_wrapper_authorities.append(
                 CompactNominalWrapperAuthority(
-                    file_path=str(parsed_module.path),
+                    file_path=parsed_module.file_path,
                     class_name=node.name,
                     line=node.lineno,
                     method_names=sorted_tuple(
@@ -2328,7 +2328,7 @@ def _compact_pass_through_nominal_wrapper(
     if len(forwarded_member_names) < 2:
         return None
     return CompactPassThroughNominalWrapper(
-        file_path=str(parsed_module.path),
+        file_path=parsed_module.file_path,
         class_name=node.name,
         line=node.lineno,
         delegate_field_name=delegate_field_name,
@@ -2434,7 +2434,7 @@ def _compact_keyed_table_axes(
             value_shape_name = next(iter(value_constructor_names))
         axes.append(
             CompactKeyedTableAxis(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 line=statement.lineno,
                 table_name=table_name,
                 key_type_name=next(iter(key_type_names)),
@@ -2518,7 +2518,7 @@ def _compact_manual_selector_axes(
                 continue
             axes.append(
                 CompactManualSelectorAxis(
-                    file_path=str(parsed_module.path),
+                    file_path=parsed_module.file_path,
                     line=method.lineno,
                     family_name=node.name,
                     selector_method_name=method.name,
@@ -2860,7 +2860,7 @@ def _compact_repeated_keyed_family_roots(
         lookup_method, lookup_shape = lookup_methods[0]
         roots.append(
             CompactRepeatedKeyedFamilyRoot(
-                file_path=str(parsed_module.path),
+                file_path=parsed_module.file_path,
                 line=node.lineno,
                 class_name=node.name,
                 family_base_name="AutoRegisterByClassVar",
@@ -2956,7 +2956,7 @@ def _compact_class_syntax_facets(
     collect_autoregister: bool = True,
 ) -> CompactClassSyntaxFacets:
     syntax_index = module_syntax_index(parsed_module.module)
-    file_path = str(parsed_module.path)
+    file_path = parsed_module.file_path
     collect_autoregister = (
         collect_autoregister
         and not PythonSourcePathPolicy.is_test_path(parsed_module.path)
@@ -3346,7 +3346,7 @@ def _compact_sorted_key_calls(
         if key_attribute_names:
             calls.append(
                 CompactSortedKeyCall(
-                    file_path=str(parsed_module.path),
+                    file_path=parsed_module.file_path,
                     line=node.lineno,
                     registry_owner_names=registry_owner_names,
                     key_attribute_names=sorted_tuple(key_attribute_names),
@@ -3933,8 +3933,4 @@ class ClassFamilyIndexBuilder:
 
 
 def _resolved_module_path_texts(modules: tuple[ParsedModule, ...]) -> frozenset[str]:
-    return frozenset(_resolved_path_text(str(module.path)) for module in modules)
-
-
-def _resolved_path_text(file_path: str) -> str:
-    return str(Path(file_path).resolve())
+    return frozenset(module.resolved_file_path for module in modules)

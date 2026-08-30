@@ -111,6 +111,11 @@ from .source_index import (
     build_source_index_artifacts,
     iter_statement_definition_nodes,
 )
+from .source_identity import (
+    canonical_source_mapping,
+    resolved_source_path_text,
+    source_path_text,
+)
 from .taxonomy import CertificationLevel, ConfidenceLevel
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -1369,7 +1374,7 @@ class NormalizedSourcePathResolution(ExactSourcePathResolution):
         exact_matches = super().matching_paths(requested_path, projection)
         if exact_matches:
             return exact_matches
-        requested_posix = Path(requested_path).as_posix()
+        requested_posix = source_path_text(requested_path)
         return tuple(
             candidate
             for candidate, candidate_posix in projection.normalized_rows
@@ -1389,7 +1394,7 @@ class ResolvedSourcePathResolution(NormalizedSourcePathResolution):
         textual_matches = super().matching_paths(requested_path, projection)
         if textual_matches:
             return textual_matches
-        requested_resolved = _resolved_source_path_text(requested_path)
+        requested_resolved = resolved_source_path_text(requested_path)
         return tuple(
             candidate
             for candidate, candidate_resolved in projection.resolved_rows
@@ -1435,13 +1440,13 @@ class SourcePathCandidateSet:
     @cached_property
     def normalized_rows(self) -> tuple[tuple[str, str], ...]:
         return tuple(
-            (candidate, Path(candidate).as_posix()) for candidate in self.paths
+            (candidate, source_path_text(candidate)) for candidate in self.paths
         )
 
     @cached_property
     def resolved_rows(self) -> tuple[tuple[str, str], ...]:
         return tuple(
-            (candidate, _resolved_source_path_text(candidate))
+            (candidate, resolved_source_path_text(candidate))
             for candidate in self.paths
         )
 
@@ -1451,10 +1456,6 @@ def _source_path_candidate_set(
     candidate_paths: tuple[str, ...],
 ) -> SourcePathCandidateSet:
     return SourcePathCandidateSet(candidate_paths)
-
-
-def _resolved_source_path_text(path: str) -> str:
-    return Path(path).expanduser().resolve().as_posix()
 
 
 @dataclass(frozen=True)
@@ -1709,7 +1710,7 @@ class CodemodSourceContext:
             tuple(findings),
         )
         module_nodes_by_file_path = {
-            Path(module.path).as_posix(): module.module for module in module_tuple
+            module.file_path: module.module for module in module_tuple
         }
         import_graph = SourceModuleImportGraph(
             source_index=source_index_artifacts.source_index,
@@ -1718,7 +1719,7 @@ class CodemodSourceContext:
         return cls(
             source_index=source_index_artifacts.source_index,
             sources_by_file_path={
-                Path(module.path).as_posix(): module.source for module in module_tuple
+                module.file_path: module.source for module in module_tuple
             },
             class_family_index=build_class_family_index(module_tuple),
             imported_modules_by_module=import_graph.import_edges_by_module,
@@ -1741,7 +1742,7 @@ class CodemodSourceContext:
             sources_by_file_path=dict(self.sources_by_file_path),
             class_family_index=self.class_family_index,
             module_node_cache={
-                Path(module.path).as_posix(): module.module for module in module_tuple
+                module.file_path: module.module for module in module_tuple
             },
             ast_target_node_cache=(
                 AstTargetNodeIndex.nodes_by_target_identifier_from_modules(
@@ -2339,14 +2340,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         cls,
         source_by_path: Mapping[str, str],
     ) -> "CodemodSourceSnapshot":
-        modules = tuple(_parsed_modules_from_source_mapping(source_by_path))
+        canonical_sources = canonical_source_mapping(source_by_path)
+        modules = tuple(_parsed_modules_from_source_mapping(canonical_sources))
         source_index_artifacts = build_source_index_artifacts(modules, ())
         module_node_cache = {
-            Path(module.path).as_posix(): module.module for module in modules
+            module.file_path: module.module for module in modules
         }
         return cls(
             source_index=source_index_artifacts.source_index,
-            sources_by_file_path=dict(source_by_path),
+            sources_by_file_path=canonical_sources,
             class_family_index=build_class_family_index(modules),
             module_node_cache=module_node_cache,
             ast_target_node_cache=(
@@ -2371,12 +2373,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             finding_tuple,
         )
         module_node_cache = {
-            Path(module.path).as_posix(): module.module for module in module_tuple
+            module.file_path: module.module for module in module_tuple
         }
         return cls(
             source_index=source_index_artifacts.source_index,
             sources_by_file_path={
-                Path(module.path).as_posix(): module.source for module in module_tuple
+                module.file_path: module.source for module in module_tuple
             },
             class_family_index=build_class_family_index(module_tuple),
             module_node_cache=module_node_cache,
@@ -21026,7 +21028,7 @@ class AstTargetNodeGeometryIndexBuilder:
     )
 
     def add_module(self, module: ParsedModule) -> None:
-        self.add_tree(Path(module.path).as_posix(), module.module)
+        self.add_tree(module.file_path, module.module)
 
     def add_source(self, file_path: str, source: str) -> None:
         self.add_tree(file_path, ast.parse(source, filename=file_path))
