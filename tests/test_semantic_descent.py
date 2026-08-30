@@ -1115,7 +1115,8 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert record.detector_id == "semantic_mirror_without_descent"
     assert record.status.value == "planned"
     assert (
-        record.executable_declaration_name == "RegistrationSemanticMirrorRecipeStrategy"
+        record.executable_declaration_name
+        == "ManualClassRegistrationFindingRecipeSynthesizer"
     )
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert operation["registry_name"] == "STEP_TABLE"

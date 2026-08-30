@@ -2445,13 +2445,13 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
                 ((module_path.as_posix(), "Alpha"),),
             )
 
-        def recipe_for_finding(
+        def evaluate_recipe_for_finding(
             self,
             finding: RefactorFinding,
             context: CodemodSelectorContext | None = None,
-        ) -> RefactorRecipe | None:
+        ):
             del finding, context
-            return RefactorRecipe("empty-generated-recipe")
+            return self.executable_evaluation(RefactorRecipe("empty-generated-recipe"))
 
     try:
         plan = codemod_plan_from_findings(
@@ -14271,20 +14271,22 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
                 ((module_path.as_posix(), "Alpha.run"),),
             )
 
-        def recipe_for_finding(
+        def evaluate_recipe_for_finding(
             self,
             finding: RefactorFinding,
             context: CodemodSelectorContext | None = None,
-        ) -> RefactorRecipe | None:
+        ):
             del finding, context
-            return RefactorRecipe("extract-alpha-semantic-fact").with_operation(
-                ReplaceTextOperation(
-                    target=SourceRewriteTarget(
-                        qualname="Alpha.run",
-                        file_path=module_path.as_posix(),
-                    ),
-                    old_source="return 'old'",
-                    new_source="return 'new'",
+            return self.executable_evaluation(
+                RefactorRecipe("extract-alpha-semantic-fact").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(
+                            qualname="Alpha.run",
+                            file_path=module_path.as_posix(),
+                        ),
+                        old_source="return 'old'",
+                        new_source="return 'new'",
+                    )
                 )
             )
 
@@ -14400,20 +14402,22 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
                 ((report_path.as_posix(), "Report.run"),),
             )
 
-        def recipe_for_finding(
+        def evaluate_recipe_for_finding(
             self,
             finding: RefactorFinding,
             context: CodemodSelectorContext | None = None,
-        ) -> RefactorRecipe | None:
+        ):
             del finding, context
-            return RefactorRecipe("extract-report-semantic-fact").with_operation(
-                ReplaceTextOperation(
-                    target=SourceRewriteTarget(
-                        qualname="Report.run",
-                        file_path=report_path.as_posix(),
-                    ),
-                    old_source="return 'old'",
-                    new_source="return 'new'",
+            return self.executable_evaluation(
+                RefactorRecipe("extract-report-semantic-fact").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(
+                            qualname="Report.run",
+                            file_path=report_path.as_posix(),
+                        ),
+                        old_source="return 'old'",
+                        new_source="return 'new'",
+                    )
                 )
             )
 
