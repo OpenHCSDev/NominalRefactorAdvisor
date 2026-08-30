@@ -122,7 +122,6 @@ from nominal_refactor_advisor.codemod import (
     CodemodSimulationStatus,
     CodemodSourceSnapshot,
     CodemodStrategy,
-    ConstructorKwargCollapseConcept,
     ConvertManualRegistryToAutoregisterOperation,
     CreateFileOperation,
     FindingRecipeAuthorityClaimGate,
@@ -136,7 +135,6 @@ from nominal_refactor_advisor.codemod import (
     SemanticDescentRecipeEvaluation,
     UnevaluatedRecipeEvaluation,
     DeclareAuthorityOperation,
-    DeadCompatibilityErasureConcept,
     DeleteClassAssignmentOperation,
     DeleteTargetOperation,
     DispatchToPolymorphismOperation,
@@ -9472,6 +9470,34 @@ def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
     )
 
 
+_REPEATED_SOURCE_CONSTRUCTOR_PROJECTION = """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RuntimePlan:
+    pose_id: str
+    score: float
+    theorem_handles: tuple[str, ...]
+
+
+def alpha(candidate):
+    return RuntimePlan(
+        pose_id=candidate.pose_id,
+        score=candidate.score,
+        theorem_handles=tuple(candidate.theorem_handles),
+    )
+
+
+def beta(entry):
+    return RuntimePlan(
+        pose_id=entry.pose_id,
+        score=entry.score,
+        theorem_handles=tuple(entry.theorem_handles),
+    )
+"""
+
+
 def test_repeated_builder_synthesizes_single_source_constructor_projection(
     tmp_path: Path,
 ) -> None:
@@ -9479,24 +9505,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n"
-        "@dataclass(frozen=True)\n"
-        "class RuntimePlan:\n"
-        "    pose_id: str\n"
-        "    score: float\n"
-        "    theorem_handles: tuple[str, ...]\n\n\n"
-        "def alpha(candidate):\n"
-        "    return RuntimePlan(\n"
-        "        pose_id=candidate.pose_id,\n"
-        "        score=candidate.score,\n"
-        "        theorem_handles=tuple(candidate.theorem_handles),\n"
-        "    )\n\n\n"
-        "def beta(entry):\n"
-        "    return RuntimePlan(\n"
-        "        pose_id=entry.pose_id,\n"
-        "        score=entry.score,\n"
-        "        theorem_handles=tuple(entry.theorem_handles),\n"
-        "    )\n",
+        _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION,
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -11967,18 +11976,24 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
 def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers(
     tmp_path: Path,
 ) -> None:
-    module_path = tmp_path / "pkg/mod.py"
+    module_path = tmp_path / "pkg/legacy.py"
     _write_module(
         tmp_path,
-        "pkg/mod.py",
-        "\ndef legacy_helper(value):\n"
-        "    return value\n\n\n"
+        "pkg/legacy.py",
+        "\ndef legacy_helper(value):\n    return value\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "\nfrom .legacy import legacy_helper\n\n\n"
         "def caller(value):\n"
         "    return legacy_helper(value)\n",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    source_by_path = {
+        module.path.as_posix(): module.path.read_text() for module in modules
+    }
     document = CodemodPlanDocument.dead_compatibility_eraser(
         source_path=module_path.as_posix(),
         target_qualname="legacy_helper",
@@ -13084,82 +13099,31 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     assert "synthesis_records" not in terminal_class_plan["classes"][0]
 
 
-def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro() -> None:
-    def finding(
-        detector_id: str,
-        *,
-        mapping_name: str | None = None,
-        symbol: str,
-        authority_symbol: str | None = None,
-    ) -> RefactorFinding:
-        keyword_arguments = {}
-        if mapping_name is not None:
-            keyword_arguments["metrics"] = MappingMetrics.from_field_names(
-                mapping_site_count=1,
-                field_names=("alpha", "beta"),
-                mapping_name=mapping_name,
-            )
-        evidence = (SourceLocation("pkg/mod.py", 1, symbol),)
-        if authority_symbol is not None:
-            evidence = (
-                SourceLocation("pkg/mod.py", 1, symbol),
-                SourceLocation("pkg/model.py", 10, authority_symbol),
-            )
-        return _finding_spec(
-            PatternId.AUTHORITATIVE_SCHEMA,
-            f"{symbol} structural carrier target",
-            "The same semantic fact is mirrored outside its nominal owner.",
-            "one nominal authority for the semantic fact",
-            "same source fact encoded in parallel projections",
-        ).build(
-            detector_id,
-            f"{symbol} mirrors a semantic carrier fact.",
-            evidence,
-            **keyword_arguments,
-        )
-
-    constructor = finding(
-        "semantic_mirror_without_descent",
-        mapping_name="dataclass_constructor_projection",
-        symbol="ConstructorKwargs",
+def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION,
     )
-    return_record = finding(
-        "semantic_mirror_without_descent",
-        mapping_name="unknown_return_record_projection",
-        symbol="TupleReturn",
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    payload_projection = finding(
-        "semantic_mirror_without_descent",
-        mapping_name="ActionReport.to_dict:return@15",
-        symbol="ActionReport.to_dict:return@15",
-        authority_symbol="RefactorAction",
-    )
-    dead_compat = finding("flattened_projection_property", symbol="DeadCompat")
-    unrelated = finding("random_detector", symbol="Unrelated")
-    findings = (
-        dead_compat,
-        unrelated,
-        return_record,
-        payload_projection,
-        constructor,
-    )
-
-    snapshot = CodemodSourceSnapshot.from_modules((), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     with pytest.raises(ValueError, match="requires source context"):
         SemanticCarrierConcept.target_findings(findings)
-    selected = SemanticCarrierConcept.target_findings(findings, snapshot)
-    assert selected == (dead_compat,)
+    assert SemanticCarrierConcept.target_findings(findings, snapshot) == findings
     assert RefactorConcept.leaf_concept_for_declaration(
         SemanticCarrierConcept
     ).concept_key() == ("semantic_carrier")
     assert (
         TupleDictReturnNominalizationConcept.target_findings(findings, snapshot) == ()
     )
-    assert DeadCompatibilityErasureConcept.target_findings(findings, snapshot) == (
-        dead_compat,
-    )
-    assert ConstructorKwargCollapseConcept.concept_key() == "constructor_kwarg_collapse"
 
 
 def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
@@ -17553,91 +17517,6 @@ def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
         )
     )
     assert "_render_projection" in (finding.scaffold or "")
-
-
-def test_detects_flattened_projection_property_local_minimum(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass AtomSet:\n    coords: object\n    radii: object\n    elements: object\n\n\n@dataclass(frozen=True)\nclass PreparedComplex:\n    ligand: AtomSet\n    pocket: AtomSet\n\n    @property\n    def ligand_coords(self):\n        return self.ligand.coords\n\n    @property\n    def ligand_radii(self):\n        return self.ligand.radii\n\n    @property\n    def pocket_coords(self):\n        return self.pocket.coords\n\n    @property\n    def pocket_elements(self):\n        return self.pocket.elements\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "flattened_projection_property"
-        )
-    )
-    assert "PreparedComplex" in finding.summary
-    assert "ligand_coords" in finding.summary
-    assert "pocket_elements" in finding.summary
-    assert "obj.ligand.coords" in (finding.scaffold or "")
-    assert "obj.pocket.elements" in (finding.scaffold or "")
-
-
-def test_flattened_projection_property_findings_synthesize_dead_compatibility_eraser(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass AtomSet:\n"
-        "    coords: object\n"
-        "    radii: object\n"
-        "    elements: object\n\n\n"
-        "@dataclass(frozen=True)\nclass PreparedComplex:\n"
-        "    ligand: AtomSet\n"
-        "    pocket: AtomSet\n\n"
-        "    @property\n"
-        "    def ligand_coords(self):\n"
-        "        return self.ligand.coords\n\n"
-        "    @property\n"
-        "    def ligand_radii(self):\n"
-        "        return self.ligand.radii\n\n"
-        "    @property\n"
-        "    def pocket_coords(self):\n"
-        "        return self.pocket.coords\n\n"
-        "    @property\n"
-        "    def pocket_elements(self):\n"
-        "        return self.pocket.elements\n\n\n"
-        "def caller(complex):\n"
-        "    return complex.ligand_coords\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "flattened_projection_property"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("flattened_projection_property",),
-        selector_context=snapshot,
-    )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    recipe = plan.document.recipes[0]
-
-    assert plan.expected_removed_finding_count == 1
-    assert plan.records[0].executable_declaration_name == (
-        "FlattenedProjectionPropertyFindingRecipeSynthesizer"
-    )
-    assert plan.records[0].refactor_concept == "dead_compatibility_erasure"
-    assert recipe.guard_suite.rules[0].forbidden_attribute_names == (
-        "ligand_coords",
-        "ligand_radii",
-        "pocket_coords",
-        "pocket_elements",
-    )
-    assert simulation.simulation.applied_rewrite_count == 1
-    assert simulation.is_clean is False
-    assert any(
-        violation.violation_kind is ArchitectureGuardViolationKind.FORBIDDEN_ATTRIBUTE
-        and violation.location.symbol == "ligand_coords"
-        for violation in simulation.architecture_guard_report.violations
-    )
 
 
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:

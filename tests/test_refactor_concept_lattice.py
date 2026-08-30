@@ -21,7 +21,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.ConstructorKwargCarrierProjectionConcept,
         codemod.TupleDictReturnNominalizationConcept,
         codemod.DataclassPayloadProjectionConcept,
-        codemod.DeadCompatibilityErasureConcept,
         codemod.DerivedProjectionConcept,
         codemod.ClassFamilyAuthorityConcept,
         codemod.AutoRegisterConcept,
@@ -32,9 +31,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
 )
 
 EXPECTED_EXECUTABLE_CONCEPTS = {
-    codemod.FlattenedProjectionPropertyFindingRecipeSynthesizer: (
-        codemod.DeadCompatibilityErasureConcept
-    ),
     codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
@@ -122,7 +118,6 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                     codemod.ConstructorKwargCollapseConcept,
                     codemod.ConstructorKwargCarrierProjectionConcept,
                     codemod.DataclassPayloadProjectionConcept,
-                    codemod.DeadCompatibilityErasureConcept,
                     codemod.DerivedProjectionConcept,
                     codemod.ClassFamilyAuthorityConcept,
                     codemod.AutoRegisterConcept,

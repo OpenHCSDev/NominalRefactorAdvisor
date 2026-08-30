@@ -519,10 +519,6 @@ class DataclassPayloadProjectionConcept(TupleDictReturnNominalizationConcept):
     """Derive payload items from a dataclass declaration."""
 
 
-class DeadCompatibilityErasureConcept(SemanticCarrierConcept):
-    """Erase compatibility projections after their authority is established."""
-
-
 class DerivedProjectionConcept(NominalBoundaryConcept):
     """Derive a repeated projection from its existing nominal authority."""
 
@@ -11295,7 +11291,6 @@ class CodemodPlanDocument:
             rule_id=rule_id or f"{target_qualname}-no-residual-compat-calls",
             forbidden_attribute_names=tuple(forbidden_attribute_names),
             forbidden_call_names=call_names,
-            file_path_suffixes=(source_path,),
             reason=eraser_reason,
         )
         return cls(
@@ -12992,107 +12987,6 @@ class SharedActionKeysForFindingMixin:
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
             ((evidence.file_path, EvidenceSymbol(evidence.symbol).subject),),
-        )
-
-
-class FlattenedProjectionPropertyFindingRecipeSynthesizer(
-    SingleSourcePathFindingMixin,
-    FindingRecipeSynthesizer,
-    DeadCompatibilityErasureConcept,
-):
-    """Delete flattened compatibility properties after nested records are authoritative."""
-
-    detector_id = "flattened_projection_property"
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        del context
-        source_path = self.source_path(finding)
-        property_symbols = self.property_symbols(finding)
-        property_names = self.property_names(finding)
-        if source_path is None:
-            return self.rejected_evaluation(
-                "flattened projection erasure requires one source file"
-            )
-        if not property_symbols or not property_names:
-            return self.rejected_evaluation(
-                "flattened projection erasure requires property symbols"
-            )
-        reason = (
-            "Delete flattened compatibility projection properties and fail if callers "
-            "still use the shadow flattened API."
-        )
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-dead-compatibility-eraser",
-            reason=reason,
-        ).with_architecture_guard(
-            ArchitectureGuardRule(
-                rule_id=f"{finding.stable_id}-no-flattened-projection-callers",
-                forbidden_attribute_names=property_names,
-                file_path_suffixes=(source_path,),
-                reason=reason,
-            )
-        )
-        for property_symbol in property_symbols:
-            recipe = recipe.with_operation(
-                DeleteTargetOperation(
-                    target=SourceRewriteTarget(
-                        qualname=property_symbol,
-                        file_path=source_path,
-                    ),
-                    rationale=reason,
-                )
-            )
-        return self.executable_evaluation(recipe)
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        source_path = self.source_path(finding)
-        if source_path is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            ((source_path, symbol) for symbol in self.property_symbols(finding)),
-        )
-
-    @staticmethod
-    def property_symbols(finding: RefactorFinding) -> tuple[str, ...]:
-        evidence_symbols = tuple(
-            dict.fromkeys(
-                evidence.symbol
-                for evidence in finding.evidence
-                if "." in evidence.symbol
-            )
-        )
-        class_names = tuple(
-            dict.fromkeys(
-                symbol.rsplit(".", maxsplit=1)[0] for symbol in evidence_symbols
-            )
-        )
-        if len(class_names) == 1 and finding.metrics.plan_field_names:
-            class_name = class_names[0]
-            return tuple(
-                f"{class_name}.{field_name}"
-                for field_name in finding.metrics.plan_field_names
-            )
-        return evidence_symbols
-
-    @staticmethod
-    def property_names(finding: RefactorFinding) -> tuple[str, ...]:
-        if finding.metrics.plan_field_names:
-            return finding.metrics.plan_field_names
-        return tuple(
-            dict.fromkeys(
-                symbol.rsplit(".", maxsplit=1)[-1]
-                for symbol in FlattenedProjectionPropertyFindingRecipeSynthesizer.property_symbols(
-                    finding
-                )
-            )
         )
 
 
