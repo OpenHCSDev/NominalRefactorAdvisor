@@ -4774,7 +4774,6 @@ EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID = "available_abstraction_reuse"
 AVAILABLE_CARRIER_REUSE_DETECTOR_ID = "available_carrier_reuse"
-PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID = "parallel_primitive_carrier"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
@@ -6691,73 +6690,6 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
-
-
-def test_detects_parallel_primitive_identity_carrier(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/requests.py",
-        """
-from dataclasses import dataclass
-from pathlib import Path
-
-@dataclass(frozen=True)
-class PlatePipelineRequest:
-    plate_path: str
-    execution_plate_path: str
-    selected_pipeline_path: str | None
-    payload: object
-
-@dataclass(frozen=True)
-class OpenHCSExecutionSubmission:
-    plate_id: str
-    execution_plate_id: str | None
-    selected_pipeline_path: str | None
-    payload: object
-
-@dataclass(frozen=True)
-class ZMQExecutionRequestPayload:
-    plate_id: str
-    execution_plate_id: str | None
-    selected_pipeline_path: str | None
-    payload: object
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    finding = next(
-        item
-        for item in findings
-        if item.detector_id == PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID
-    )
-
-    assert "plate, execution_plate, selected_pipeline" in finding.summary
-    assert "NominalIdentityCarrier" in (finding.scaffold or "")
-
-
-def test_parallel_primitive_carrier_dedupes_repeated_roles_in_one_record(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/identity.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class ProjectionAuthorityRoute:
-    projection_path: str
-    authority_path: str
-    authority_name: str
-    assignment_name: str
-""",
-    )
-
-    assert not any(
-        item.detector_id == PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID
-        for item in analyze_path(tmp_path)
-    )
 
 
 def test_detects_available_nominal_carrier_reuse(tmp_path: Path) -> None:
@@ -19436,22 +19368,8 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
     payload = json.loads(result.stdout)
     source_index = cast(dict[str, object], payload["source_index"])
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
-    findings = cast(list[dict[str, object]], payload["supporting_raw_findings"])
-    parallel_carrier_findings = [
-        finding
-        for finding in findings
-        if finding["detector_id"] == "parallel_primitive_carrier"
-    ]
-    evidence_paths = {
-        evidence["file_path"]
-        for finding in parallel_carrier_findings
-        for evidence in cast(tuple[dict[str, object], ...], finding["evidence"])
-    }
 
     assert result.returncode == 0, result.stderr
-    assert parallel_carrier_findings
-    assert focused_path.as_posix() in evidence_paths
-    assert (package_root / "models.py").as_posix() in evidence_paths
     assert {target["qualname"] for target in ast_targets} >= {
         "LocalEnvelope",
         "RequestCarrier",
@@ -19623,18 +19541,11 @@ def test_module_cli_can_disable_auto_context_root_for_file_scope(
     payload = json.loads(result.stdout)
     source_index = cast(dict[str, object], payload["source_index"])
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
-    findings = cast(
-        list[dict[str, object]], payload.get("supporting_raw_findings", [])
-    )
 
     assert result.returncode == 0, result.stderr
     assert {
         target["qualname"] for target in ast_targets if target["node_type"] == "class"
     } == {"ComposedRequest", "LocalEnvelope"}
-    assert not any(
-        finding["detector_id"] == "parallel_primitive_carrier"
-        for finding in findings
-    )
     assert any(default_parse_cache_dir(focused_path).glob("*.pickle"))
 
 

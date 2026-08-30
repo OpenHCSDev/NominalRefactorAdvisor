@@ -48,9 +48,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.PrefixedRoleBundleFindingRecipeSynthesizer: (
         codemod.PrefixBundleCarrierConcept
     ),
-    codemod.ParallelPrimitiveCarrierFindingRecipeSynthesizer: (
-        codemod.PrefixBundleCarrierConcept
-    ),
     codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),

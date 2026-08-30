@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
-from typing import Generic, Iterable, Sequence, TypeVar
+from typing import Iterable, Sequence
 
 from tree_sitter import Node
 
@@ -22,7 +22,6 @@ from ..collection_algebra import sorted_tuple
 from ..models import MappingMetrics
 from ..native_syntax import NativePythonSyntaxIndex
 from ..patterns import PatternId
-from ..semantic_identity import SemanticRoleIdentityToken
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     DetectorConfig,
@@ -30,8 +29,6 @@ from ._base import (
     RefactorFinding,
     SourceLocation,
     high_confidence_spec,
-    CompactClassRepositoryContext,
-    CompactContextCandidateDetector,
     CompactProjectionCandidateDetector,
 )
 from ._helpers import _semantic_role_names_for_fields
@@ -81,17 +78,6 @@ _AUTHORITY_NAME_SUFFIXES = (
 )
 _HIGH_SIGNAL_ATOM_PREFIXES = ("construct:", "method:", "signal:", "store:", "control:")
 _STRUCTURAL_ATOM_PREFIXES = ("construct:", "method:", "signal:", "store:", "control:")
-_IDENTITY_FIELD_TERMINALS = frozenset(
-    (
-        *SemanticRoleIdentityToken.pluralized_string_identifier_values(),
-        "path",
-        "paths",
-        "root",
-        "roots",
-    )
-)
-_MIN_PARALLEL_PRIMITIVE_FIELDS = 3
-_MIN_PARALLEL_PRIMITIVE_RECORDS = 2
 _MIN_CARRIER_REUSE_FIELDS = 3
 _MIN_CARRIER_REUSE_ROLES = 3
 _MIN_CARRIER_SHARED_FIELD_MATCHES = 2
@@ -130,18 +116,6 @@ class SharedFieldsBase(FilePathLineModuleNameBase):
 
 
 @dataclass(frozen=True, slots=True)
-class ParallelPrimitiveFieldBundle(SharedFieldsBase):
-    field_names: tuple[str, ...]
-    semantic_roles: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ParallelPrimitiveCarrierCandidate:
-    semantic_roles: tuple[str, ...]
-    bundles: tuple[ParallelPrimitiveFieldBundle, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class CarrierBase(SharedFieldsBase):
     base_names: tuple[str, ...]
     nominal_ancestor_names: tuple[str, ...]
@@ -174,78 +148,8 @@ class CapabilitySignature:
         )
 
 
-def _snake_tokens(name: str) -> tuple[str, ...]:
-    tokens: list[str] = []
-    for chunk in name.replace("-", "_").split("_"):
-        if chunk:
-            tokens.append(chunk.lower())
-    return tuple(tokens)
-
-
-def _semantic_role_for_identity_field(name: str) -> str | None:
-    tokens = _snake_tokens(name)
-    if len(tokens) < 2 or tokens[-1] not in _IDENTITY_FIELD_TERMINALS:
-        return None
-    role_tokens = tokens[:-1]
-    if not role_tokens:
-        return None
-    return "_".join(role_tokens)
-
-
-def _annotation_text_is_primitive_carrier(text: str) -> bool:
-    return any(
-        token in text
-        for token in (
-            "str",
-            "Path",
-            "Any",
-            "Optional",
-            "None",
-            "Union",
-        )
-    )
-
-
 def _looks_like_reusable_carrier_name(name: str) -> bool:
     return name.endswith(_CARRIER_NAME_SUFFIXES)
-
-
-def _compact_parallel_primitive_bundle(
-    projection: CompactModuleClassProjection,
-    fact: CompactCarrierClassFact,
-) -> ParallelPrimitiveFieldBundle | None:
-    field_names = tuple(
-        field_name
-        for field_name, annotation_text in fact.direct_annotated_field_types
-        if _semantic_role_for_identity_field(field_name) is not None
-        and _annotation_text_is_primitive_carrier(annotation_text)
-    )
-    semantic_roles = tuple(
-        role
-        for field_name in field_names
-        if (role := _semantic_role_for_identity_field(field_name)) is not None
-    )
-    if len(semantic_roles) < _MIN_PARALLEL_PRIMITIVE_FIELDS:
-        return None
-    return ParallelPrimitiveFieldBundle(
-        file_path=projection.file_path,
-        module_name=projection.module_name,
-        line=fact.line,
-        class_name=fact.class_name,
-        field_names=field_names,
-        semantic_roles=semantic_roles,
-    )
-
-
-def _compact_parallel_primitive_bundles(
-    projections: tuple[CompactModuleClassProjection, ...],
-) -> tuple[ParallelPrimitiveFieldBundle, ...]:
-    return tuple(
-        bundle
-        for projection in projections
-        for fact in projection.carrier_class_facts
-        if (bundle := _compact_parallel_primitive_bundle(projection, fact)) is not None
-    )
 
 
 def _compact_carrier_surface(
@@ -555,65 +459,6 @@ def _compact_available_carrier_reuse_candidates(
 ) -> tuple[AvailableCarrierReuseCandidate, ...]:
     return _available_carrier_reuse_candidates_from_surfaces(
         _carrier_surfaces_with_ancestors(_compact_carrier_surfaces(projections))
-    )
-
-
-def _parallel_primitive_carrier_candidates_from_bundles(
-    bundles: tuple[ParallelPrimitiveFieldBundle, ...],
-) -> tuple[ParallelPrimitiveCarrierCandidate, ...]:
-    grouped: dict[tuple[str, ...], list[ParallelPrimitiveFieldBundle]] = defaultdict(
-        list
-    )
-    for bundle in bundles:
-        for role_count in range(
-            _MIN_PARALLEL_PRIMITIVE_FIELDS, len(bundle.semantic_roles) + 1
-        ):
-            for semantic_roles in set(combinations(bundle.semantic_roles, role_count)):
-                grouped[semantic_roles].append(bundle)
-    candidates: list[ParallelPrimitiveCarrierCandidate] = []
-    for semantic_roles, bundles in grouped.items():
-        ordered = sorted_tuple(
-            bundles, key=lambda item: (item.file_path, item.line, item.class_name)
-        )
-        if len(ordered) < _MIN_PARALLEL_PRIMITIVE_RECORDS:
-            continue
-        candidates.append(
-            ParallelPrimitiveCarrierCandidate(
-                semantic_roles=semantic_roles,
-                bundles=ordered,
-            )
-        )
-    ordered_candidates = sorted_tuple(
-        candidates,
-        key=lambda item: (
-            -len(item.bundles),
-            -len(item.semantic_roles),
-            item.semantic_roles,
-            item.bundles[0].file_path,
-        ),
-    )
-    selected: list[ParallelPrimitiveCarrierCandidate] = []
-    selected_bundle_sets: list[frozenset[tuple[str, int, str]]] = []
-    for candidate in ordered_candidates:
-        candidate_bundle_set = frozenset(
-            (bundle.file_path, bundle.line, bundle.class_name)
-            for bundle in candidate.bundles
-        )
-        if any(
-            candidate_bundle_set <= selected_bundle_set
-            for selected_bundle_set in selected_bundle_sets
-        ):
-            continue
-        selected.append(candidate)
-        selected_bundle_sets.append(candidate_bundle_set)
-    return tuple(selected)
-
-
-def _compact_parallel_primitive_carrier_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-) -> tuple[ParallelPrimitiveCarrierCandidate, ...]:
-    return _parallel_primitive_carrier_candidates_from_bundles(
-        _compact_parallel_primitive_bundles(projections)
     )
 
 
@@ -1661,92 +1506,13 @@ class AvailableAbstractionReuseDetector(
         return findings
 
 
-@dataclass(frozen=True)
-class CompactCarrierReuseContext:
-    available_candidates: tuple[AvailableCarrierReuseCandidate, ...]
-    parallel_candidates: tuple[ParallelPrimitiveCarrierCandidate, ...]
-
-    @classmethod
-    def from_projections(
-        cls,
-        projections: tuple[CompactModuleClassProjection, ...],
-    ) -> "CompactCarrierReuseContext":
-        return cls(
-            available_candidates=_compact_available_carrier_reuse_candidates(
-                projections
-            ),
-            parallel_candidates=_compact_parallel_primitive_carrier_candidates(
-                projections
-            ),
-        )
-
-
-CarrierReuseCandidateT = TypeVar("CarrierReuseCandidateT")
-
-
-class _CompactCarrierReuseDetectorBase(
-    CompactContextCandidateDetector[
+class AvailableCarrierReuseDetector(
+    CompactProjectionCandidateDetector[
         CompactModuleClassProjection,
-        CompactCarrierReuseContext,
-        CarrierReuseCandidateT,
-    ],
-    Generic[CarrierReuseCandidateT],
+        AvailableCarrierReuseCandidate,
+    ]
 ):
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
-
-    @classmethod
-    def _compact_context_from_projections(
-        cls,
-        projections: tuple[CompactModuleClassProjection, ...],
-        config: DetectorConfig,
-    ) -> CompactCarrierReuseContext:
-        del config
-        return CompactCarrierReuseContext.from_projections(projections)
-
-    @classmethod
-    def _compact_context_from_shared(
-        cls,
-        context: object | None,
-    ) -> CompactCarrierReuseContext:
-        if isinstance(context, CompactCarrierReuseContext):
-            return context
-        repository = CompactClassRepositoryContext.require(context)
-        return repository.cached(
-            CompactCarrierReuseContext,
-            lambda: CompactCarrierReuseContext.from_projections(
-                repository.projections
-            ),
-        )
-
-
-class _CompactAvailableCarrierReuseDetectorBase(
-    _CompactCarrierReuseDetectorBase[AvailableCarrierReuseCandidate]
-):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactCarrierReuseContext,
-        config: DetectorConfig,
-    ) -> Sequence[AvailableCarrierReuseCandidate]:
-        del config
-        return context.available_candidates
-
-
-class _CompactParallelPrimitiveCarrierDetectorBase(
-    _CompactCarrierReuseDetectorBase[ParallelPrimitiveCarrierCandidate]
-):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactCarrierReuseContext,
-        config: DetectorConfig,
-    ) -> Sequence[ParallelPrimitiveCarrierCandidate]:
-        del config
-        return context.parallel_candidates
-
-
-class AvailableCarrierReuseDetector(_CompactAvailableCarrierReuseDetectorBase):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Local carrier should reuse an available nominal carrier",
@@ -1763,6 +1529,14 @@ class AvailableCarrierReuseDetector(_CompactAvailableCarrierReuseDetectorBase):
             ObservationTag.NORMALIZED_AST,
         ),
     )
+
+    def _candidates_from_compact_projections(
+        self,
+        projections: tuple[CompactModuleClassProjection, ...],
+        config: DetectorConfig,
+    ) -> Sequence[AvailableCarrierReuseCandidate]:
+        del config
+        return _compact_available_carrier_reuse_candidates(projections)
 
     def _findings_for_candidates(
         self,
@@ -1812,75 +1586,6 @@ class AvailableCarrierReuseDetector(_CompactAvailableCarrierReuseDetectorBase):
                         identity_field_names=tuple(
                             candidate.shared_field_names or candidate.shared_roles
                         ),
-                    ),
-                )
-            )
-        return findings
-
-
-class ParallelPrimitiveCarrierDetector(_CompactParallelPrimitiveCarrierDetectorBase):
-    ssot_authority_boundary = True
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Parallel primitive fields should become a nominal carrier",
-        "Several record/request classes carry the same correlated primitive identity fields. The docs prefer one nominal carrier with local invariants over repeatedly threading adjacent strings or paths that must describe one semantic object.",
-        "single nominal carrier for correlated identity/path roles",
-        "same primitive identity role bundle is repeated across record classes",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.KEYWORD_MAPPING,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    )
-
-    def _findings_for_candidates(
-        self,
-        candidates: Sequence[ParallelPrimitiveCarrierCandidate],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        findings: list[RefactorFinding] = []
-        for candidate in candidates:
-            bundles = candidate.bundles
-            role_summary = ", ".join(candidate.semantic_roles)
-            class_summary = ", ".join(bundle.class_name for bundle in bundles[:5])
-            field_summary = ", ".join(bundles[0].field_names)
-            findings.append(
-                self.build_finding(
-                    (
-                        f"Primitive identity roles ({role_summary}) are repeated "
-                        f"across records {class_summary}."
-                    ),
-                    tuple(
-                        SourceLocation(
-                            bundle.file_path,
-                            bundle.line,
-                            bundle.class_name,
-                        )
-                        for bundle in bundles[:6]
-                    ),
-                    scaffold=(
-                        "@dataclass(frozen=True)\n"
-                        "class NominalIdentityCarrier:\n"
-                        f"    # roles: {role_summary}\n"
-                        "    ...\n\n"
-                        f"# Replace parallel primitive fields ({field_summary}) "
-                        "with one nominal carrier and project it at the transport boundary."
-                    ),
-                    codemod_patch=(
-                        "# Introduce one dataclass/record for the repeated role bundle.\n"
-                        "# Store invariants on that record; pass the carrier internally; "
-                        "serialize primitive fields only at external protocol boundaries."
-                    ),
-                    metrics=MappingMetrics.from_field_names(
-                        mapping_site_count=len(bundles),
-                        mapping_name="parallel_primitive_carrier",
-                        field_names=bundles[0].field_names,
-                        identity_field_names=candidate.semantic_roles,
                     ),
                 )
             )

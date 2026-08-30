@@ -332,7 +332,6 @@ class CompactCarrierClassFact:
     line: int
     base_names: tuple[str, ...]
     field_type_map: tuple[tuple[str, str], ...]
-    direct_annotated_field_types: tuple[tuple[str, str], ...]
     is_dataclass: bool
 
 
@@ -1423,10 +1422,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             node_id: field_type_maps[1]
             for node_id, field_type_maps in class_field_type_maps.items()
         }
-        direct_annotated_field_type_maps = {
-            node_id: field_type_maps[2]
-            for node_id, field_type_maps in class_field_type_maps.items()
-        }
         abc_optimizer_methods = _compact_abc_optimizer_methods(
             parsed_module,
             indexed_class_nodes,
@@ -1435,7 +1430,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         carrier_class_facts, carrier_base_edges = _compact_carrier_class_facts(
             all_class_nodes,
             carrier_field_type_maps,
-            direct_annotated_field_type_maps,
         )
         (
             nominal_class_first_line_overrides,
@@ -2015,18 +2009,15 @@ def _compact_class_field_type_maps(
 ) -> tuple[
     tuple[tuple[str, str], ...],
     tuple[tuple[str, str], ...],
-    tuple[tuple[str, str], ...],
 ]:
     nominal_fields: dict[str, str] = {}
     carrier_extra_fields: dict[str, str] = {}
-    direct_annotated_field_types: list[tuple[str, str]] = []
     slots = set(_compact_carrier_slot_names(node))
     for statement in node.body:
         if isinstance(statement, ast.AnnAssign) and isinstance(
             statement.target, ast.Name
         ):
             annotation_text = ast.unparse(statement.annotation)
-            direct_annotated_field_types.append((statement.target.id, annotation_text))
             if not CLASSVAR_ANNOTATION_AUTHORITY.matches(statement.annotation):
                 nominal_fields.setdefault(
                     statement.target.id,
@@ -2092,14 +2083,12 @@ def _compact_class_field_type_maps(
     return (
         sorted_tuple(nominal_fields.items()),
         sorted_tuple(carrier_fields.items()),
-        tuple(direct_annotated_field_types),
     )
 
 
 def _compact_carrier_class_facts(
     class_nodes: tuple[ast.ClassDef, ...],
     carrier_field_type_maps: dict[int, tuple[tuple[str, str], ...]],
-    direct_annotated_field_type_maps: dict[int, tuple[tuple[str, str], ...]],
 ) -> tuple[
     tuple[CompactCarrierClassFact, ...],
     tuple[tuple[str, tuple[str, ...]], ...],
@@ -2111,8 +2100,7 @@ def _compact_carrier_class_facts(
         if base_names:
             base_edges.append((node.name, base_names))
         field_type_map = carrier_field_type_maps[id(node)]
-        direct_annotated_field_types = direct_annotated_field_type_maps[id(node)]
-        if not field_type_map and not direct_annotated_field_types:
+        if not field_type_map:
             continue
         facts.append(
             CompactCarrierClassFact(
@@ -2120,7 +2108,6 @@ def _compact_carrier_class_facts(
                 line=node.lineno,
                 base_names=base_names,
                 field_type_map=field_type_map,
-                direct_annotated_field_types=direct_annotated_field_types,
                 is_dataclass=_is_dataclass_class(node),
             )
         )

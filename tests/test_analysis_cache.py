@@ -5845,41 +5845,24 @@ def test_compact_carrier_reuse_candidates_preserve_semantics_without_ast_shadow(
     projections = abstraction_reuse_detectors.AvailableCarrierReuseDetector.compact_module_projections(
         modules
     )
-    context = abstraction_reuse_detectors.CompactCarrierReuseContext.from_projections(
-        projections
+    detector = abstraction_reuse_detectors.AvailableCarrierReuseDetector()
+    compact_candidates = detector._candidates_from_compact_projections(
+        projections,
+        config,
     )
-    detector_candidate_pairs = (
-        (
-            abstraction_reuse_detectors.AvailableCarrierReuseDetector,
-            context.available_candidates,
-        ),
-        (
-            abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector,
-            context.parallel_candidates,
-        ),
-    )
-
-    for detector_type, compact_candidates in detector_candidate_pairs:
-        detector = detector_type()
-        assert detector._candidate_items(list(modules), config) == compact_candidates
-        assert detector._findings_from_compact_context(
-            projections, context, config
-        ) == detector._findings_for_candidates(compact_candidates, config)
-        assert compact_candidates
-        assert "candidate_collector" not in detector_type.__dict__
-    available = context.available_candidates[0]
+    assert detector._candidate_items(list(modules), config) == compact_candidates
+    assert detector._findings_from_compact_projections(
+        projections, config
+    ) == detector._findings_for_candidates(compact_candidates, config)
+    assert compact_candidates
+    assert "candidate_collector" not in type(detector).__dict__
+    available = compact_candidates[0]
     assert available.local.class_name == "LocalEnvelope"
     assert available.authority.class_name == "RequestCarrier"
     assert available.shared_roles == (
         "request_id",
         "source_path",
         "workspace_root",
-    )
-    parallel = context.parallel_candidates[0]
-    assert parallel.semantic_roles == ("request", "source", "workspace")
-    assert tuple(bundle.class_name for bundle in parallel.bundles) == (
-        "LocalEnvelope",
-        "RequestCarrier",
     )
     for removed_name in (
         "_compact_carrier_reuse_context",
@@ -5888,12 +5871,10 @@ def test_compact_carrier_reuse_candidates_preserve_semantics_without_ast_shadow(
         "_module_carrier_surfaces",
         "_module_parallel_primitive_bundles",
         "_exhaustive_available_carrier_reuse_candidates_from_surfaces",
+        "CompactCarrierReuseContext",
+        "_CompactCarrierReuseDetectorBase",
     ):
         assert not hasattr(abstraction_reuse_detectors, removed_name)
-    assert not hasattr(
-        abstraction_reuse_detectors._CompactCarrierReuseDetectorBase,
-        "compact_candidate_attribute",
-    )
 
 
 def test_compact_available_abstraction_reuse_preserves_semantics_without_ast_shadow(
@@ -6158,44 +6139,6 @@ def test_compact_public_private_delegate_context_preserves_semantics_without_ast
         + len(item.callsites_by_target)
         for item in projections
     )
-
-
-def test_carrier_reuse_detectors_share_one_compact_context(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    _write_compact_carrier_reuse_fixture(package_root)
-    detector_types = (
-        abstraction_reuse_detectors.AvailableCarrierReuseDetector,
-        abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector,
-    )
-    calls = 0
-    original_builder = (
-        abstraction_reuse_detectors.CompactCarrierReuseContext.from_projections
-    )
-
-    def counting_builder(projections, config):
-        nonlocal calls
-        del config
-        calls += 1
-        return original_builder(projections)
-
-    for detector_type in detector_types:
-        monkeypatch.setattr(
-            detector_type,
-            "compact_shared_context_builder",
-            staticmethod(counting_builder),
-        )
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (package_root,), detector_types, use_parse_cache=False
-    )
-
-    accumulator.findings_by_detector(DetectorConfig())
-
-    assert calls == 1
-
-
 
 
 def test_compact_boundary_wrapper_graph_preserves_semantics_without_ast_shadow(
@@ -6844,9 +6787,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert abstraction_reuse_detectors.AvailableCarrierReuseDetector in (
         partition.compact_global_detector_types
     )
-    assert abstraction_reuse_detectors.ParallelPrimitiveCarrierDetector in (
-        partition.compact_global_detector_types
-    )
     assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
         partition.compact_global_detector_types
     )
@@ -6883,7 +6823,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 56
+    assert len(partition.compact_global_detector_types) == 55
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id
