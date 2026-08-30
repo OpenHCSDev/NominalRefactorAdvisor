@@ -135,6 +135,7 @@ from nominal_refactor_advisor.codemod import (
     ExecutableRecipeEvaluation,
     MappingSemanticMirrorRecipeStrategy,
     SemanticDescentRecipeEvaluation,
+    UnevaluatedRecipeEvaluation,
     DeclareAuthorityOperation,
     DeadCompatibilityErasureConcept,
     DeleteClassAssignmentOperation,
@@ -1194,11 +1195,10 @@ def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() ->
         reason="route through authority",
     )
 
-    evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
-        ExecutableRecipeEvaluation(
-            executable_recipe=recipe,
-            executable_declaration_type=FindingRecipeAuthorityClaimGate,
-        ),
+    evaluation = ExecutableRecipeEvaluation(
+        executable_recipe=recipe,
+        executable_declaration_type=FindingRecipeAuthorityClaimGate,
+    ).gated_by_authority_claim(
         None,
         RefactorFinding(
             detector_id="authority_gate_fixture",
@@ -1211,7 +1211,7 @@ def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() ->
         ),
     )
 
-    assert evaluation.recipe is None
+    assert evaluation.planned_recipes == ()
     assert "Authority Claim Gate" in evaluation.rejection_reason
     assert "AuthorityClaim" in evaluation.rejection_reason
 
@@ -1226,25 +1226,25 @@ def test_authority_gate_rejection_removes_semantic_repair_plan() -> None:
         capability_gap="resolved authority claim",
         relation_context="generated recipe text mentions authority",
     )
-    evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
-        SemanticDescentRecipeEvaluation(
-            executable_recipe=RefactorRecipe(
-                recipe_id="unsafe-semantic-plan",
-                reason="route through authority",
-            ),
-            executable_declaration_type=FindingRecipeAuthorityClaimGate,
-            strategy_type=MappingSemanticMirrorRecipeStrategy,
+    evaluation = SemanticDescentRecipeEvaluation(
+        executable_recipe=RefactorRecipe(
+            recipe_id="unsafe-semantic-plan",
+            reason="route through authority",
         ),
-        None,
-        finding,
-    )
+        executable_declaration_type=FindingRecipeAuthorityClaimGate,
+        strategy_type=MappingSemanticMirrorRecipeStrategy,
+    ).gated_by_authority_claim(None, finding)
     record = FindingRecipeSynthesisRecord(
         finding=finding,
-        status=FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
         evaluation=evaluation,
     )
 
     assert record.semantic_repair_plan is None
+
+
+def test_unevaluated_recipe_cannot_claim_an_evaluated_status() -> None:
+    with pytest.raises(ValueError, match="requires a declaration-owned evaluation"):
+        UnevaluatedRecipeEvaluation(status=FindingRecipeSynthesisStatus.PLANNED)
 
 
 def test_authority_inference_updates_the_recipe_used_by_semantic_repair(
@@ -1271,18 +1271,13 @@ def test_authority_inference_updates_the_recipe_used_by_semantic_repair(
         recipe_id="inferred-semantic-plan",
         reason="derive the projection from its authority",
     )
-    evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
-        SemanticDescentRecipeEvaluation(
-            executable_recipe=original_recipe,
-            executable_declaration_type=FindingRecipeAuthorityClaimGate,
-            strategy_type=MappingSemanticMirrorRecipeStrategy,
-        ),
-        snapshot,
-        finding,
-    )
+    evaluation = SemanticDescentRecipeEvaluation(
+        executable_recipe=original_recipe,
+        executable_declaration_type=FindingRecipeAuthorityClaimGate,
+        strategy_type=MappingSemanticMirrorRecipeStrategy,
+    ).gated_by_authority_claim(snapshot, finding)
     record = FindingRecipeSynthesisRecord(
         finding=finding,
-        status=FindingRecipeSynthesisStatus.PLANNED,
         evaluation=evaluation,
     )
 
@@ -14919,7 +14914,6 @@ def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
     )
     record = FindingRecipeSynthesisRecord(
         finding=finding,
-        status=FindingRecipeSynthesisStatus.PLANNED,
         evaluation=ExecutableRecipeEvaluation(
             executable_recipe=RefactorRecipe(
                 recipe_id="manual-registry-repair",

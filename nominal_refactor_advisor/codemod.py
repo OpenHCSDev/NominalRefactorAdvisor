@@ -59,6 +59,7 @@ from .detectors._base import (
     CandidateCollectorScope,
     DerivedCandidateCollectorMixin,
 )
+from .descriptor_algebra import ConstantProperty
 from .impact_ranking import (
     RefactorImpactKey,
     RefactorImpactOpportunity,
@@ -13609,9 +13610,12 @@ class FindingRecipeSynthesisRecord:
     """Recipe-synthesis outcome for one finding."""
 
     finding: RefactorFinding
-    status: FindingRecipeSynthesisStatus
     evaluation: "FindingRecipeEvaluation"
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
+
+    @property
+    def status(self) -> FindingRecipeSynthesisStatus:
+        return self.evaluation.status
 
     @property
     def finding_id(self) -> str:
@@ -13651,17 +13655,15 @@ class FindingRecipeSynthesisRecord:
 
     @property
     def recipe_id(self) -> str:
-        recipe = self.evaluation.recipe
-        if recipe is None:
-            return ""
-        return recipe.recipe_id
+        return self.evaluation.recipe_id
 
     @property
     def recipe_payload(self) -> JsonObject | None:
-        recipe = self.evaluation.recipe
-        if recipe is None:
-            return None
-        return recipe.to_dict()
+        return self.evaluation.recipe_payload
+
+    @property
+    def planned_recipes(self) -> tuple[RefactorRecipe, ...]:
+        return self.evaluation.planned_recipes
 
     @property
     def executable_declaration_name(self) -> str:
@@ -13786,27 +13788,28 @@ class FindingRecipeSynthesisBoundary(CodemodJsonReport):
 class FindingRecipeEvaluation(ABC):
     """Closed nominal outcome of one finding-backed recipe safety pass."""
 
-    @property
-    def recipe(self) -> RefactorRecipe | None:
-        return self.recipe_or_none()
-
-    @abstractmethod
-    def recipe_or_none(self) -> RefactorRecipe | None:
-        """Return the executable recipe owned by this outcome, when present."""
-
-    @property
-    def rejection_reason(self) -> str:
-        return ""
+    status: ClassVar[FindingRecipeSynthesisStatus]
+    rejection_reason = ConstantProperty[str]("")
+    recipe_id = ConstantProperty[str]("")
+    recipe_payload = ConstantProperty[JsonObject | None](None)
+    planned_recipes = ConstantProperty[tuple[RefactorRecipe, ...]](())
+    refactor_concept_type = ConstantProperty[type[RefactorConcept] | None](None)
+    executable_declaration_name = ConstantProperty[str]("")
 
     @property
     def required_recipe(self) -> RefactorRecipe:
-        recipe = self.recipe
-        if recipe is None:
-            raise TypeError("Finding recipe evaluation has no executable recipe")
-        return recipe
+        raise TypeError("Finding recipe evaluation has no executable recipe")
 
     def with_recipe(self, recipe: RefactorRecipe) -> Self:
         raise TypeError(f"{type(self).__name__} cannot own an executable recipe")
+
+    def gated_by_authority_claim(
+        self,
+        context: CodemodSelectorContext | None,
+        finding: RefactorFinding,
+    ) -> "FindingRecipeEvaluation":
+        del context, finding
+        return self
 
     def semantic_repair_plan_for(
         self,
@@ -13815,13 +13818,12 @@ class FindingRecipeEvaluation(ABC):
         del record
         return None
 
-    @property
-    def refactor_concept_type(self) -> type[RefactorConcept] | None:
-        return None
-
-    @property
-    def executable_declaration_name(self) -> str:
-        return ""
+    def terminal_evaluation(
+        self,
+        context: CodemodSelectorContext | None,
+    ) -> "FindingRecipeEvaluation":
+        del context
+        return self
 
     @property
     def required_executable_declaration_type(self) -> type[object]:
@@ -13829,17 +13831,20 @@ class FindingRecipeEvaluation(ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class UnevaluatedRecipeOutcome(FindingRecipeEvaluation):
+class UnevaluatedRecipeEvaluation(FindingRecipeEvaluation):
     """Terminal synthesis outcome reached before declaration evaluation."""
 
-    reason: str
+    status: FindingRecipeSynthesisStatus
 
-    def recipe_or_none(self) -> None:
-        return None
+    def __post_init__(self) -> None:
+        if self.status.planned or self.status.rejected:
+            raise ValueError(
+                f"{self.status.value} requires a declaration-owned evaluation"
+            )
 
     @property
     def rejection_reason(self) -> str:
-        return self.reason
+        return self.status.default_reason
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -13869,10 +13874,8 @@ class DeclaredRecipeEvaluation(FindingRecipeEvaluation, ABC):
 class RejectedRecipeEvaluation(DeclaredRecipeEvaluation):
     """Declaration-owned safety outcome without an executable recipe."""
 
+    status = FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     reason: str
-
-    def recipe_or_none(self) -> None:
-        return None
 
     @property
     def rejection_reason(self) -> str:
@@ -13883,13 +13886,83 @@ class RejectedRecipeEvaluation(DeclaredRecipeEvaluation):
 class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
     """Declaration-owned safety outcome with exactly one executable recipe."""
 
+    status = FindingRecipeSynthesisStatus.PLANNED
     executable_recipe: RefactorRecipe
 
-    def recipe_or_none(self) -> RefactorRecipe:
+    @property
+    def required_recipe(self) -> RefactorRecipe:
         return self.executable_recipe
+
+    @property
+    def recipe_id(self) -> str:
+        return self.executable_recipe.recipe_id
+
+    @property
+    def recipe_payload(self) -> JsonObject:
+        return self.executable_recipe.to_dict()
+
+    @property
+    def planned_recipes(self) -> tuple[RefactorRecipe, ...]:
+        return (self.executable_recipe,)
 
     def with_recipe(self, recipe: RefactorRecipe) -> Self:
         return replace(self, executable_recipe=recipe)
+
+    def gated_by_authority_claim(
+        self,
+        context: CodemodSelectorContext | None,
+        finding: RefactorFinding,
+    ) -> FindingRecipeEvaluation:
+        evaluation = self
+        if context is not None:
+            inferred_recipe = FindingAuthorityClaimInference(
+                finding=finding,
+                context=context,
+            ).recipe_with_inferred_claims(evaluation.executable_recipe)
+            if inferred_recipe is not evaluation.executable_recipe:
+                evaluation = evaluation.with_recipe(inferred_recipe)
+        authority_report = FindingRecipeAuthorityClaimGate.authority_report_for_recipe(
+            evaluation.executable_recipe,
+            context,
+        )
+        if (
+            authority_report is None
+            or authority_report.status is CodemodPreflightStatus.PASSED
+        ):
+            return evaluation
+        return RejectedRecipeEvaluation(
+            reason=FindingRecipeAuthorityClaimGate.rejection_reason(authority_report),
+            executable_declaration_type=self.executable_declaration_type,
+        )
+
+    def terminal_evaluation(
+        self,
+        context: CodemodSelectorContext | None,
+    ) -> FindingRecipeEvaluation:
+        if self.executable_recipe.has_effective_rewrites(context):
+            return self
+        return IneffectiveRecipeEvaluation(
+            executable_recipe=self.executable_recipe,
+            executable_declaration_type=self.executable_declaration_type,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class IneffectiveRecipeEvaluation(ExecutableRecipeEvaluation):
+    """Executable declaration whose recipe changes no source semantics."""
+
+    status = FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
+
+    @property
+    def planned_recipes(self) -> tuple[RefactorRecipe, ...]:
+        return ()
+
+    def terminal_evaluation(
+        self,
+        context: CodemodSelectorContext | None,
+    ) -> FindingRecipeEvaluation:
+        del context
+        return self
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -13992,36 +14065,6 @@ class FindingAuthorityClaimInference:
 class FindingRecipeAuthorityClaimGate:
     """Fail generated recipes that mention authorities without proof claims."""
 
-    @classmethod
-    def gated_evaluation(
-        cls,
-        evaluation: FindingRecipeEvaluation,
-        context: CodemodSelectorContext | None,
-        finding: RefactorFinding,
-    ) -> FindingRecipeEvaluation:
-        recipe = evaluation.recipe
-        if recipe is None:
-            return evaluation
-        if context is not None:
-            inferred_recipe = FindingAuthorityClaimInference(
-                finding=finding,
-                context=context,
-            ).recipe_with_inferred_claims(recipe)
-            if inferred_recipe is not recipe:
-                evaluation = evaluation.with_recipe(inferred_recipe)
-                recipe = inferred_recipe
-        authority_report = cls.authority_report_for_recipe(recipe, context)
-        if authority_report is None:
-            return evaluation
-        if authority_report.status is CodemodPreflightStatus.PASSED:
-            return evaluation
-        return RejectedRecipeEvaluation(
-            reason=cls.rejection_reason(authority_report),
-            executable_declaration_type=(
-                evaluation.required_executable_declaration_type
-            ),
-        )
-
     @staticmethod
     def authority_report_for_recipe(
         recipe: RefactorRecipe,
@@ -14046,10 +14089,12 @@ class FindingRecipeSynthesisAttempt:
 
     def evaluate(self) -> FindingRecipeSynthesisRecord:
         synthesizer = FindingRecipeSynthesizer.for_finding(self.finding)
-        result_status = FindingRecipeSynthesisStatus.NO_SYNTHESIZER
-        result_action_keys: tuple[FindingRecipeActionKey, ...] = ()
-        result_evaluation: FindingRecipeEvaluation | None = None
-        if synthesizer is not None:
+        if synthesizer is None:
+            evaluation: FindingRecipeEvaluation = UnevaluatedRecipeEvaluation(
+                status=FindingRecipeSynthesisStatus.NO_SYNTHESIZER,
+            )
+            action_keys: tuple[FindingRecipeActionKey, ...] = ()
+        else:
             raw_action_keys = synthesizer.action_keys_for_finding(self.finding)
             action_keys = tuple(
                 key
@@ -14059,43 +14104,27 @@ class FindingRecipeSynthesisAttempt:
                 )
             )
             if not raw_action_keys:
-                result_status = FindingRecipeSynthesisStatus.NO_ACTION_KEYS
+                evaluation = UnevaluatedRecipeEvaluation(
+                    status=FindingRecipeSynthesisStatus.NO_ACTION_KEYS,
+                )
             elif len(action_keys) != len(raw_action_keys):
-                result_status = FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS
-                result_action_keys = raw_action_keys
+                evaluation = UnevaluatedRecipeEvaluation(
+                    status=FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS,
+                )
+                action_keys = raw_action_keys
             else:
                 evaluation = synthesizer.evaluate_recipe_for_finding(
                     self.finding,
                     self.selector_context,
                 )
-                evaluation = FindingRecipeAuthorityClaimGate.gated_evaluation(
-                    evaluation,
+                evaluation = evaluation.gated_by_authority_claim(
                     self.selector_context,
                     self.finding,
-                )
-                result_evaluation = evaluation
-                result_action_keys = action_keys
-                if evaluation.recipe is None:
-                    result_status = (
-                        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-                    )
-                elif not evaluation.recipe.has_effective_rewrites(
-                    self.selector_context
-                ):
-                    result_status = FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
-                    result_evaluation = evaluation
-                else:
-                    result_status = FindingRecipeSynthesisStatus.PLANNED
-                    result_evaluation = evaluation
-        if result_evaluation is None:
-            result_evaluation = UnevaluatedRecipeOutcome(
-                reason=result_status.default_reason
-            )
+                ).terminal_evaluation(self.selector_context)
         return FindingRecipeSynthesisRecord(
             finding=self.finding,
-            status=result_status,
-            action_keys=result_action_keys,
-            evaluation=result_evaluation,
+            action_keys=action_keys,
+            evaluation=evaluation,
         )
 
 
@@ -14108,7 +14137,7 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
         return tuple(
-            record.finding_id for record in self.records if record.status.planned
+            record.finding_id for record in self.records if record.planned_recipes
         )
 
     @property
@@ -14262,7 +14291,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         return tuple(
             record.finding_id
             for record in self.synthesis_records
-            if record.status.planned
+            if record.planned_recipes
         )
 
     @classmethod
@@ -14291,9 +14320,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         records: Iterable[FindingRecipeSynthesisRecord],
     ) -> CodemodPlanDocument:
         recipes = tuple(
-            record.evaluation.recipe
-            for record in records
-            if record.status.planned and record.evaluation.recipe is not None
+            recipe for record in records for recipe in record.planned_recipes
         )
         if not recipes:
             return CodemodPlanDocument()
@@ -23506,12 +23533,10 @@ class FindingRecipePlanBuilder:
                 seen_action_keys=frozenset(seen_action_keys),
             )
             result = attempt.evaluate()
-            if not result.status.planned:
+            if not result.planned_recipes:
                 synthesis_records.append(result)
                 continue
-            recipe = result.evaluation.recipe
-            if recipe is None:
-                raise RuntimeError("planned synthesis result must include a recipe")
+            (recipe,) = result.planned_recipes
             overlap_reason = self.overlap_rejection_reason(
                 recipe,
                 recipes,
@@ -23520,10 +23545,8 @@ class FindingRecipePlanBuilder:
             )
             if overlap_reason:
                 synthesis_records.append(
-                    FindingRecipeSynthesisRecord(
-                        finding=finding,
-                        status=FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
-                        action_keys=result.action_keys,
+                    replace(
+                        result,
                         evaluation=RejectedRecipeEvaluation(
                             reason=overlap_reason,
                             executable_declaration_type=(
