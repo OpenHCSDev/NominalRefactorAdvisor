@@ -4911,7 +4911,6 @@ PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
 SMELLY_TYPE_ALIAS_DETECTOR_ID = "smelly_type_alias"
 UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID = "under_amortized_infrastructure"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
-PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
 REPEATED_BUILDER_CALLS_DETECTOR_ID = "repeated_builder_calls"
 REPEATED_EXPORT_DICTS_DETECTOR_ID = "repeated_export_dicts"
 REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID = (
@@ -8731,33 +8730,6 @@ def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
     )
 
 
-def test_detects_private_cohort_should_be_module(tmp_path: Path) -> None:
-    filler = "# filler\n" * 240
-    repeated_lines = "\n".join(
-        (f"    detail_{index} = selection['winner']" for index in range(60))
-    )
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        f"{filler}\nclass _ReturnedPoseSelection:\n    def __init__(self, winner, support):\n        self.winner = winner\n        self.support = support\n\nclass _ReturnedPoseProofContext:\n    def __init__(self, scores):\n        self.scores = scores\n\ndef _returned_pose_support_indices(context):\n    support = []\n    for index, _score in enumerate(context.scores):\n        if index < 2:\n            support.append(index)\n    return tuple(support)\n\ndef _returned_pose_selection(context):\n    support = _returned_pose_support_indices(context)\n    winner = support[0] if support else 0\n    return _ReturnedPoseSelection(winner, support)\n\ndef _returned_pose_proof_plan(context):\n    selection = _returned_pose_selection(context)\n{repeated_lines}\n    return {{'winner': selection.winner, 'support': selection.support}}\n\ndef _returned_pose_certification(context):\n    plan = _returned_pose_proof_plan(context)\n    return plan['winner'], plan['support']\n\ndef run_pipeline(scores):\n    context = _ReturnedPoseProofContext(scores)\n    return _returned_pose_certification(context)\n",
-    )
-
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(min_orchestration_function_lines=20, min_registration_sites=2),
-    )
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
-        )
-    )
-
-    assert "returned, pose" in finding.summary
-    assert "_returned_pose_proof_plan" in finding.summary
-    assert "pipeline_returned_pose" in (finding.codemod_patch or "")
-
 
 def test_detects_public_bare_support_functions_in_private_modules(
     tmp_path: Path,
@@ -8815,51 +8787,6 @@ def test_detects_latent_nominal_function_family_without_name_axis(
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
 
-
-def test_ignores_private_helpers_without_cohesive_cohort(tmp_path: Path) -> None:
-    filler = "# filler\n" * 240
-    _write_module(
-        tmp_path,
-        "pkg/helpers.py",
-        f"{filler}\ndef _build_payload(value):\n    return {{'value': value}}\n\ndef _load_registry(name):\n    return {{'name': name}}\n\ndef _write_audit(event):\n    return event\n\ndef run_helpers(value):\n    return _write_audit(_build_payload(value))\n",
-    )
-
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(min_orchestration_function_lines=20, min_registration_sites=2),
-    )
-
-    assert not any(
-        (
-            finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
-            for finding in findings
-        )
-    )
-
-
-def test_private_cohort_ignores_generic_analyzer_vocabulary(tmp_path: Path) -> None:
-    filler = "# filler\n" * 240
-    helper_blocks = "\n\n".join(
-        (
-            f"def _parallel_keyed_family_candidate_{name}(value):\n"
-            + "\n".join((f"    step_{index} = value" for index in range(30)))
-            + "\n    return value\n"
-            for name in ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot")
-        )
-    )
-    _write_module(tmp_path, "pkg/analyzer_helpers.py", f"{filler}\n{helper_blocks}\n")
-
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(min_orchestration_function_lines=20, min_registration_sites=2),
-    )
-
-    assert not any(
-        (
-            finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
-            for finding in findings
-        )
-    )
 
 
 def test_detects_repeated_threaded_parameter_family(tmp_path: Path) -> None:

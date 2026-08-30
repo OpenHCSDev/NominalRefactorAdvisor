@@ -2042,47 +2042,6 @@ declare_candidate_rule_detector(
 )
 
 
-class PrivateCohortShouldBeModuleDetector(
-    ConfiguredModuleCollectorCandidateDetector[PrivateCohortShouldBeModuleCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.STAGED_ORCHESTRATION,
-        "Private subsystem cohort wants its own module",
-        "One module is carrying a tightly-coupled private subsystem cohort as if it were a whole package. The architecture wants a dedicated module for that bounded context, with the original file reduced to orchestration or public entry points.",
-        "explicit module-level subsystem boundaries with extracted private cohorts",
-        "one file contains a dense private context/result/helper family that should move together",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-    )
-
-    def _finding_for_candidate(
-        self, cohort: PrivateCohortShouldBeModuleCandidate
-    ) -> RefactorFinding:
-        shared_tokens = ", ".join(cohort.shared_tokens[:3]) or "subsystem"
-        sample_symbols = ", ".join(
-            (
-                symbol.symbol
-                for symbol in sorted(
-                    cohort.symbols,
-                    key=lambda item: (-item.line_count, item.line, item.symbol),
-                )[:3]
-            )
-        )
-        target_module = _suggest_private_cohort_module_name(cohort)
-        return self.build_finding(
-            (
-                f"`{cohort.module_name}` carries a private {shared_tokens} cohort across "
-                f"{len(cohort.symbols)} top-level symbols / {cohort.total_cohort_lines} lines "
-                f"inside a {cohort.module_line_count}-line module; extract `{sample_symbols}` "
-                f"into a dedicated `{target_module}.py` module."
-            ),
-            cohort.evidence,
-            scaffold=(
-                f"# {target_module}.py\n@dataclass(frozen=True)\nclass {_camel_case('_'.join(cohort.shared_tokens[:2]) or 'subsystem')}Context:\n    ...\n\ndef run_{'_'.join(cohort.shared_tokens[:2]) or 'subsystem'}(...):\n    ...\n\n# Move the private context/result carriers and worker helpers here.\n# Leave only public orchestration entry points in the original module."
-            ),
-            codemod_patch=(
-                f"# Extract the private {shared_tokens} cohort into `{target_module}.py`.\n# Move the cohort's private dataclasses, helper functions, and result carriers together.\n# Import the extracted helpers back into the original module only where public entry points still need them.\n# Keep sequencing, public APIs, and thin phase boundaries in the original file."
-            ),
-        )
 
 
 class ParameterThreadFamilyDetector(
