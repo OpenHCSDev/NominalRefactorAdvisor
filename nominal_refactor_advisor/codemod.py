@@ -14163,8 +14163,8 @@ class FindingRecipeClassSitePlan(CodemodJsonReport):
     def to_dict(self) -> JsonObject:
         return JsonObject(
             {
+                "finding_id": self.synthesis_record.finding_id,
                 "replacement_scaffold": self.replacement_scaffold.to_dict(),
-                "synthesis_record": self.synthesis_record.to_dict(),
             }
         )
 
@@ -14178,20 +14178,12 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     site_plans: tuple[FindingRecipeClassSitePlan, ...]
 
     @property
-    def selector(self) -> FindingEvidenceTargetSelector:
-        return FindingEvidenceTargetSelector(self.execution_class.finding_ids)
-
-    @property
     def document(self) -> CodemodPlanDocument:
         return self.document_from_records(self.synthesis_records)
 
     @property
     def finding_ids(self) -> tuple[str, ...]:
         return self.execution_class.finding_ids
-
-    @property
-    def finding_count(self) -> int:
-        return self.execution_class.finding_count
 
     @property
     def synthesis_records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
@@ -14203,47 +14195,6 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             record.finding_id
             for record in self.synthesis_records
             if record.status.planned
-        )
-
-    @property
-    def expected_removed_finding_count(self) -> int:
-        return len(self.expected_removed_finding_ids)
-
-    @property
-    def finding_plan(self) -> FindingRecipePlan:
-        return FindingRecipePlan(
-            document=self.document,
-            report=FindingRecipeSynthesisReport(self.synthesis_records),
-        )
-
-    @property
-    def status_counts(self) -> JsonObject:
-        counts: dict[str, int] = {}
-        for record in self.synthesis_records:
-            key = record.status.value
-            counts[key] = counts.get(key, 0) + 1
-        return counts
-
-    @property
-    def sequence(self) -> CodemodPlanSequence:
-        return CodemodPlanSequence.from_document(self.document)
-
-    @property
-    def executable(self) -> bool:
-        return self.document.has_recipes
-
-    @property
-    def site_count(self) -> int:
-        return len(self.site_plans)
-
-    @property
-    def refactor_concepts(self) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                record.refactor_concept
-                for record in self.synthesis_records
-                if record.status.planned and record.refactor_concept
-            )
         )
 
     @classmethod
@@ -14291,31 +14242,9 @@ class FindingRecipeClassPlan(CodemodJsonReport):
     def to_dict(self) -> JsonObject:
         return {
             "class_id": self.execution_class.class_id,
-            "execution_class": self.execution_class.to_dict(),
-            "subsystem": self.execution_class.subsystem,
-            "executable": self.executable,
-            "refactor_concepts": self.refactor_concepts,
-            "finding_ids": self.finding_ids,
-            "finding_count": self.finding_count,
-            **self.finding_plan.to_dict(),
-            "batch_priority": self.execution_class.batch_priority,
-            "parallel_group": self.execution_class.parallel_group,
-            "pattern_sequence": self.execution_class.pattern_sequence.to_dict(),
-            "first_batch_move": self.execution_class.first_batch_move,
-            "first_codemod_hint": self.execution_class.first_codemod_hint,
-            "selector": self.selector.to_dict(),
-            "selector_resolution": (
-                self.replacement_scaffold.selector_resolution.to_dict()
-            ),
             "replacement_scaffold": self.replacement_scaffold.to_dict(),
             "document": self.document.to_dict(),
-            "sequence": self.sequence.to_dict(),
-            "synthesis_status_counts": self.status_counts,
-            "site_count": self.site_count,
             "site_plans": tuple(site_plan.to_dict() for site_plan in self.site_plans),
-            "synthesis_records": tuple(
-                record.to_dict() for record in self.synthesis_records
-            ),
         }
 
 
@@ -14326,22 +14255,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
     execution_plan: RefactorExecutionPlanReport
     finding_plan: FindingRecipePlan
     classes: tuple[FindingRecipeClassPlan, ...]
-
-    @property
-    def class_count(self) -> int:
-        return len(self.classes)
-
-    @property
-    def executable_class_count(self) -> int:
-        return sum(1 for class_plan in self.classes if class_plan.document.has_recipes)
-
-    @property
-    def expected_removed_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_plan.expected_removed_finding_ids
-
-    @property
-    def expected_removed_finding_count(self) -> int:
-        return len(self.expected_removed_finding_ids)
 
     @classmethod
     def from_findings(
@@ -14481,10 +14394,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
 
     def to_dict(self) -> JsonObject:
         return {
-            "class_count": self.class_count,
-            "executable_class_count": self.executable_class_count,
-            "expected_removed_finding_ids": self.expected_removed_finding_ids,
-            "expected_removed_finding_count": self.expected_removed_finding_count,
             "execution_plan": self.execution_plan.to_dict(),
             "finding_recipe_plan": self.finding_plan.to_dict(),
             "classes": tuple(class_plan.to_dict() for class_plan in self.classes),

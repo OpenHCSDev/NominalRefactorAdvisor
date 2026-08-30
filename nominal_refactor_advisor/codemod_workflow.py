@@ -1000,13 +1000,6 @@ class CodemodClassPlanProjectedDelta:
     def to_dict(self) -> JsonObject:
         return {
             "class_id": self.class_plan.execution_class.class_id,
-            "finding_ids": self.class_plan.finding_ids,
-            "expected_removed_finding_ids": (
-                self.class_plan.expected_removed_finding_ids
-            ),
-            "expected_removed_finding_count": (
-                self.class_plan.expected_removed_finding_count
-            ),
             "projected_result_status": self.projected_result_status,
             "fulfilled_expected_removals": self.fulfilled_expected_removals,
             "status_counts": self.status_counts,
@@ -1014,7 +1007,6 @@ class CodemodClassPlanProjectedDelta:
             "site_deltas": tuple(
                 site_delta.to_dict() for site_delta in self.site_deltas
             ),
-            "class_plan": self.class_plan.to_dict(),
         }
 
 
@@ -1067,14 +1059,9 @@ class CodemodClassPlanSiteProjectedDelta:
         synthesis_record = self.site_plan.synthesis_record
         return {
             "finding_id": synthesis_record.finding_id,
-            "detector_id": synthesis_record.detector_id,
-            "title": synthesis_record.title,
-            "synthesis_status": synthesis_record.status.value,
-            "expected_removed_finding_ids": self.expected_removed_finding_ids,
             "fulfilled_expected_removal": self.fulfilled_expected_removal,
             "status_counts": self.status_counts,
             "changes": tuple(change.to_dict() for change in self.changes),
-            "site_plan": self.site_plan.to_dict(),
         }
 
 
@@ -1101,7 +1088,6 @@ class CodemodClassPlanProjectedDeltaReport(CodemodJsonReport):
 
     def to_dict(self) -> JsonObject:
         return {
-            "class_count": len(self.class_deltas),
             "classes": tuple(
                 class_delta.to_dict() for class_delta in self.class_deltas
             ),

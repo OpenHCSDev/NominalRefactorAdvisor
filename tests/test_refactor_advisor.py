@@ -14250,8 +14250,8 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         stage.expected_removed_finding_ids
     ) == (finding.stable_id,)
     assert stage.class_plan_report is not None
-    assert stage.class_plan_report.class_count == 1
-    assert stage.class_plan_report.classes[0].site_count == 1
+    assert len(stage.class_plan_report.classes) == 1
+    assert len(stage.class_plan_report.classes[0].site_plans) == 1
     assert (
         report.replay_sequence.documents[0]
         .recipes[0]
@@ -14260,8 +14260,8 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         == "replace_text"
     )
     stage_payload = report.to_dict()["stages"][0]
-    assert stage_payload["class_plan_report"]["class_count"] == 1
-    assert stage_payload["class_plan_report"]["classes"][0]["site_count"] == 1
+    assert len(stage_payload["class_plan_report"]["classes"]) == 1
+    assert len(stage_payload["class_plan_report"]["classes"][0]["site_plans"]) == 1
     replay_payload = report.replay_sequence.to_dict()
     assert len(replay_payload["stages"]) == 1
     assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
@@ -14427,8 +14427,8 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     assert report.terminal_synthesis_report.unsupported_count == 1
     assert report.terminal_synthesis_report.records[0].detector_id == detector_id
     assert report.terminal_class_plan_report is not None
-    assert report.terminal_class_plan_report.class_count == 1
-    assert report.terminal_class_plan_report.classes[0].site_count == 1
+    assert len(report.terminal_class_plan_report.classes) == 1
+    assert len(report.terminal_class_plan_report.classes[0].site_plans) == 1
     payload = report.to_dict()
     assert payload["terminal_synthesis_report"]["records"][0]["status"] == (
         "no_synthesizer"
@@ -14437,9 +14437,10 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         "no_synthesizer": 1
     }
     terminal_class_plan = payload["terminal_class_plan_report"]
-    assert terminal_class_plan["class_count"] == 1
     assert (
-        terminal_class_plan["classes"][0]["site_plans"][0]["synthesis_record"]["status"]
+        terminal_class_plan["finding_recipe_plan"]["synthesis_report"]["records"][
+            0
+        ]["status"]
         == "no_synthesizer"
     )
     assert (
@@ -14780,39 +14781,34 @@ def test_codemod_class_plan_groups_synthesis_records_with_selector_scaffold(
     )
     payload = report.to_dict()
     class_payload = payload["classes"][0]
+    execution_class = payload["execution_plan"]["classes"][0]
+    finding_plan = payload["finding_recipe_plan"]
+    synthesis_record = finding_plan["synthesis_report"]["records"][0]
     recipe = class_payload["document"]["recipes"][0]
     operation = recipe["operations"][0]
     site_plan = class_payload["site_plans"][0]
 
     assert isinstance(report, FindingRecipeClassPlanReport)
     assert isinstance(report.classes[0], FindingRecipeClassPlan)
-    assert payload["class_count"] == 1
-    assert payload["executable_class_count"] == 1
-    assert payload["expected_removed_finding_count"] == 1
-    assert class_payload["execution_class"]["evidence_site_count"] >= 1
-    assert class_payload["execution_class"]["evidence"]
-    assert class_payload["selector"]["selector"] == "finding_evidence_target"
+    assert len(payload["classes"]) == 1
+    assert finding_plan["expected_removed_finding_count"] == 1
+    assert class_payload["class_id"] == execution_class["class_id"]
+    assert execution_class["evidence_site_count"] >= 1
+    assert execution_class["evidence"]
     assert class_payload["replacement_scaffold"]["selected_count"] >= 1
-    assert class_payload["synthesis_status_counts"]["planned"] == 1
     assert len(class_payload["site_plans"]) == 1
-    assert class_payload["executable"] is True
-    assert class_payload["refactor_concepts"] == ("auto_register_class_registry",)
-    assert class_payload["sequence"]["stages"][0] == class_payload["document"]
-    assert class_payload["site_count"] == 1
-    assert site_plan["synthesis_record"]["finding_id"] == class_payload["finding_ids"][0]
+    assert synthesis_record["status"] == "planned"
+    assert synthesis_record["refactor_concept"] == "auto_register_class_registry"
+    assert site_plan["finding_id"] == execution_class["finding_ids"][0]
     assert site_plan["replacement_scaffold"]["selector"]["selector"] == (
         "finding_evidence_target"
     )
     assert site_plan["replacement_scaffold"]["selected_count"] >= 1
-    assert site_plan["synthesis_record"]["status"] == "planned"
-    assert site_plan["synthesis_record"]["recipe"]["operations"][0]["operation"] == (
+    assert synthesis_record["recipe"]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
-    assert site_plan["synthesis_record"]["executable_declaration"] == (
+    assert synthesis_record["executable_declaration"] == (
         "ManualClassRegistrationFindingRecipeSynthesizer"
-    )
-    assert site_plan["synthesis_record"]["refactor_concept"] == (
-        "auto_register_class_registry"
     )
     assert recipe["recipe_id"] == "finding-class-codemod-plan"
     assert "target_shape" not in recipe
@@ -14891,9 +14887,10 @@ def test_module_cli_synthesizes_class_plan_with_scaffolds(
     class_payload = payload["classes"][0]
 
     assert result.returncode == 0, result.stderr
-    assert payload["class_count"] == 1
-    assert payload["executable_class_count"] == 1
-    assert class_payload["selector"]["selector"] == "finding_evidence_target"
+    assert len(payload["classes"]) == 1
+    assert class_payload["class_id"] == payload["execution_plan"]["classes"][0][
+        "class_id"
+    ]
     assert class_payload["replacement_scaffold"]["selected_count"] >= 1
     assert len(class_payload["site_plans"]) == 1
     assert class_payload["site_plans"][0]["replacement_scaffold"]["selector"][
@@ -14946,36 +14943,34 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     class_projection = payload["class_plan_projected_deltas"]
     class_delta = class_projection["classes"][0]
     site_delta = class_delta["site_deltas"][0]
+    class_plan = payload["classes"][0]
+    synthesis_record = payload["finding_recipe_plan"]["synthesis_report"][
+        "records"
+    ][0]
 
     assert result.returncode == 0, result.stderr
-    assert payload["class_count"] == 1
+    assert len(payload["classes"]) == 1
     assert payload["simulation_result"]["simulation"]["parse_validation"]["parse_valid"]
     assert "finding_class_delta" in projected
     assert projected["finding_delta"]["fulfilled_expected_removals"]
     assert projected["finding_class_delta"]["eliminated_class_count"] >= 1
-    assert class_projection["class_count"] == 1
+    assert len(class_projection["classes"]) == 1
     assert class_delta["fulfilled_expected_removals"] is True
     assert class_delta["status_counts"]["eliminated"] >= 1
     assert class_delta["changes"][0]["status"] == "eliminated"
     assert class_delta["projected_result_status"] == "eliminated"
-    assert class_delta["class_plan"]["site_count"] == 1
-    assert class_delta["class_plan"]["refactor_concepts"] == [
-        "auto_register_class_registry"
-    ]
-    assert site_delta["finding_id"] == payload["classes"][0]["finding_ids"][0]
+    assert class_delta["class_id"] == class_plan["class_id"]
+    assert len(class_plan["site_plans"]) == 1
+    assert synthesis_record["refactor_concept"] == "auto_register_class_registry"
+    assert site_delta["finding_id"] == class_plan["site_plans"][0]["finding_id"]
     assert site_delta["status_counts"]["eliminated"] >= 1
     assert site_delta["fulfilled_expected_removal"] is True
-    assert site_delta["site_plan"]["replacement_scaffold"]["selector"][
+    assert class_plan["site_plans"][0]["replacement_scaffold"]["selector"][
         "selector"
     ] == "finding_evidence_target"
     assert (
-        site_delta["site_plan"]["synthesis_record"]["recipe"]["operations"][0][
-            "operation"
-        ]
+        synthesis_record["recipe"]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"
-    )
-    assert site_delta["site_plan"]["synthesis_record"]["refactor_concept"] == (
-        "auto_register_class_registry"
     )
 
 
