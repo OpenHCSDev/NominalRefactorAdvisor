@@ -3,9 +3,13 @@ from __future__ import annotations
 import pytest
 
 from nominal_refactor_advisor.codemod import (
+    CodemodPayloadRecord,
+    CodemodPlanDocument,
+    CodemodPlanSequence,
     CodemodTargetSelector,
     PayloadBinding,
     PayloadBindingSet,
+    RefactorRecipe,
     RefactorRecipeOperation,
     RequiredStringPayloadValueCodec,
 )
@@ -95,3 +99,28 @@ def test_registered_selector_payload_bindings_are_unique() -> None:
         assert len(
             {binding.constructor_argument_name for binding in binding_set}
         ) == len(binding_set)
+
+
+def test_plan_records_own_their_wire_schema() -> None:
+    expected_binding_names = {
+        RefactorRecipe: (
+            ("recipe_id", "recipe_id"),
+            ("operations", "operations"),
+            ("architecture_guards", "guard_suite"),
+            ("reason", "reason"),
+            ("authority_claims", "authority_claims"),
+        ),
+        CodemodPlanDocument: (
+            ("recipes", "recipes"),
+            ("architecture_guards", "guard_suite"),
+        ),
+        CodemodPlanSequence: (("stages", "documents"),),
+    }
+
+    assert issubclass(RefactorRecipeOperation, CodemodPayloadRecord)
+    for record_type, binding_names in expected_binding_names.items():
+        assert issubclass(record_type, CodemodPayloadRecord)
+        assert tuple(
+            (binding.field_name, binding.constructor_argument_name)
+            for binding in record_type.payload_bindings()
+        ) == binding_names

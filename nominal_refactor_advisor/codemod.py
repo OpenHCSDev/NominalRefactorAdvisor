@@ -131,6 +131,7 @@ JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
 JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
 PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadValueT = TypeVar("PayloadValueT")
+PayloadRecordT = TypeVar("PayloadRecordT", bound="CodemodPayloadRecord")
 StrEnumT = TypeVar("StrEnumT", bound=StrEnum)
 DataclassRecordT = TypeVar("DataclassRecordT")
 SourceTargetIdentityValueT = TypeVar(
@@ -157,6 +158,15 @@ class CodemodJsonReport(ABC):
 
     @abstractmethod
     def to_dict(self) -> JsonObject:
+        raise NotImplementedError
+
+
+class CodemodPayloadRecord(CodemodJsonReport, ABC):
+    """Nominal JSON record that owns both decoding and encoding semantics."""
+
+    @classmethod
+    @abstractmethod
+    def from_json_value(cls, value: JsonValue) -> Self:
         raise NotImplementedError
 
 
@@ -555,9 +565,7 @@ class SourceNodeDecoratorPolicy(StrEnum):
     INCLUDE = "include"
 
 
-RECIPES_PAYLOAD_FIELD = "recipes"
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
-STAGES_PAYLOAD_FIELD = "stages"
 DETECTOR_ID_FIELD_NAME = "detector_id"
 MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
 NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
@@ -3142,6 +3150,94 @@ class SourceRewriteContributorArrayPayloadValueCodec(
 
 
 @dataclass(frozen=True)
+class PayloadRecordArrayValueCodec(
+    PayloadValueCodec[tuple[PayloadRecordT, ...]],
+    Generic[PayloadRecordT],
+):
+    """Optional array whose nominal record type owns each JSON object."""
+
+    record_type: type[PayloadRecordT]
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[PayloadRecordT, ...]:
+        value = payload.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected record array field {field_name!r}")
+        return tuple(self.record_type.from_json_value(item) for item in value)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, self.record_type) for item in value
+        ):
+            raise TypeError(
+                f"record-array payload codec requires {self.record_type.__name__} "
+                "values"
+            )
+        return tuple(item.to_dict() for item in value)
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardSuitePayloadValueCodec(
+    PayloadValueCodec[ArchitectureGuardSuite]
+):
+    """Optional architecture-guard array owned by its nominal suite."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> ArchitectureGuardSuite:
+        return ArchitectureGuardSuite.from_json_value(payload.get(field_name))
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, ArchitectureGuardSuite):
+            raise TypeError(
+                "architecture-guard payload codec requires ArchitectureGuardSuite"
+            )
+        return value.to_dict()
+
+
+@dataclass(frozen=True)
+class AuthorityClaimArrayPayloadValueCodec(
+    PayloadValueCodec[tuple[AuthorityClaim, ...]]
+):
+    """Optional array of proof-carrying authority claims."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[AuthorityClaim, ...]:
+        value = payload.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected authority-claim array field {field_name!r}")
+        claims: list[AuthorityClaim] = []
+        for item in value:
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    f"Expected authority-claim objects in field {field_name!r}"
+                )
+            claims.append(AuthorityClaim.from_mapping(item))
+        return tuple(claims)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, AuthorityClaim) for item in value
+        ):
+            raise TypeError(
+                "authority-claim array payload codec requires AuthorityClaim values"
+            )
+        return tuple(item.to_dict() for item in value)
+
+
+@dataclass(frozen=True)
 class AuthorityClaimPayloadValueCodec(PayloadValueCodec[AuthorityClaim]):
     """Proof-carrying authority-claim object payload semantics."""
 
@@ -3303,6 +3399,9 @@ class PayloadBindingSet(
             if not omit_none or value is not None
         }
         return JsonObject(payload)
+
+    def has_field_in(self, payload: Mapping[str, JsonValue]) -> bool:
+        return any(binding.field_name in payload for binding in self)
 
     @staticmethod
     def require_unique_binding_names(
@@ -4988,6 +5087,7 @@ class SourceTargetEditor:
 @dataclass(frozen=True, kw_only=True)
 class RefactorRecipeOperation(
     SourceRewritePlanItem,
+    CodemodPayloadRecord,
     ABC,
     metaclass=AutoRegisterMeta,
 ):
@@ -10840,7 +10940,7 @@ def _joined_rationales(rationales: Iterable[str]) -> str:
 
 
 @dataclass(frozen=True)
-class RefactorRecipe:
+class RefactorRecipe(CodemodPayloadRecord):
     """Executable batch of source rewrites and post-refactor invariants."""
 
     recipe_id: str
@@ -10850,28 +10950,30 @@ class RefactorRecipe:
     authority_claims: tuple[AuthorityClaim, ...] = ()
 
     @classmethod
+    def payload_bindings(cls) -> PayloadBindingSet["RefactorRecipe", object]:
+        del cls
+        return (
+            PayloadBindingSet.from_field_codecs(
+                recipe_id=RequiredStringPayloadValueCodec(),
+                operations=PayloadRecordArrayValueCodec(RefactorRecipeOperation),
+            )
+            + PayloadBindingSet.from_explicit_fields(
+                (
+                    ARCHITECTURE_GUARDS_PAYLOAD_FIELD,
+                    "guard_suite",
+                    ArchitectureGuardSuitePayloadValueCodec(),
+                ),
+            )
+            + PayloadBindingSet.from_field_codecs(
+                reason=OptionalStringPayloadValueCodec(""),
+                authority_claims=AuthorityClaimArrayPayloadValueCodec(),
+            )
+        )
+
+    @classmethod
     def from_json_value(cls, value: JsonValue) -> "RefactorRecipe":
         payload = CodemodPayload.from_json_value(value, role="refactor recipe")
-        recipe = cls(
-            recipe_id=payload.required_string("recipe_id"),
-            operations=tuple(
-                RefactorRecipeOperation.from_json_value(row)
-                for row in payload.array("operations")
-            ),
-            guard_suite=ArchitectureGuardSuite.from_json_value(
-                payload.fields.get(ARCHITECTURE_GUARDS_PAYLOAD_FIELD)
-            ),
-            reason=payload.string_or_empty("reason"),
-            authority_claims=tuple(
-                AuthorityClaim.from_mapping(
-                    CodemodPayload.from_json_value(
-                        row,
-                        role="authority claim",
-                    ).fields
-                )
-                for row in payload.array(AuthorityClaimPayload.field_name)
-            ),
-        )
+        recipe = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
         payload.require_supported_fields(recipe.to_dict(), role="refactor recipe")
         return recipe
 
@@ -11176,24 +11278,28 @@ class RefactorRecipe:
         )
 
     def to_dict(self) -> JsonObject:
-        payload: JsonObject = {
-            "recipe_id": self.recipe_id,
-            "operations": tuple(operation.to_dict() for operation in self.operations),
-            ARCHITECTURE_GUARDS_PAYLOAD_FIELD: self.guard_suite.to_dict(),
-            "reason": self.reason,
-            AuthorityClaimPayload.field_name: tuple(
-                claim.to_dict() for claim in self.authority_claims
-            ),
-        }
-        return payload
+        return self.payload_bindings().payload(self)
 
 
 @dataclass(frozen=True)
-class CodemodPlanDocument:
+class CodemodPlanDocument(CodemodPayloadRecord):
     """Caller-supplied codemod plan plus post-refactor guard invariants."""
 
     recipes: tuple[RefactorRecipe, ...] = ()
     guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
+
+    @classmethod
+    def payload_bindings(cls) -> PayloadBindingSet["CodemodPlanDocument", object]:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            recipes=PayloadRecordArrayValueCodec(RefactorRecipe),
+        ) + PayloadBindingSet.from_explicit_fields(
+            (
+                ARCHITECTURE_GUARDS_PAYLOAD_FIELD,
+                "guard_suite",
+                ArchitectureGuardSuitePayloadValueCodec(),
+            ),
+        )
 
     @classmethod
     def compose(
@@ -11261,15 +11367,7 @@ class CodemodPlanDocument:
         value: JsonValue,
     ) -> "CodemodPlanDocument":
         payload = CodemodPayload.from_json_value(value, role="plan document")
-        document = cls(
-            recipes=tuple(
-                RefactorRecipe.from_json_value(row)
-                for row in payload.array(RECIPES_PAYLOAD_FIELD)
-            ),
-            guard_suite=ArchitectureGuardSuite.from_json_value(
-                payload.fields.get(ARCHITECTURE_GUARDS_PAYLOAD_FIELD)
-            ),
-        )
+        document = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
         payload.require_supported_fields(document.to_dict(), role="plan document")
         return document
 
@@ -11379,33 +11477,36 @@ class CodemodPlanDocument:
         )
 
     def to_dict(self) -> JsonObject:
-        return {
-            RECIPES_PAYLOAD_FIELD: tuple(recipe.to_dict() for recipe in self.recipes),
-            ARCHITECTURE_GUARDS_PAYLOAD_FIELD: self.guard_suite.to_dict(),
-        }
+        return self.payload_bindings().payload(self)
 
 
 @dataclass(frozen=True)
-class CodemodPlanSequence:
+class CodemodPlanSequence(CodemodPayloadRecord):
     """Ordered codemod documents resolved against each prior simulated stage."""
 
     documents: tuple[CodemodPlanDocument, ...] = ()
 
-    @staticmethod
-    def is_sequence_payload(value: JsonValue) -> bool:
-        return isinstance(value, Mapping) and STAGES_PAYLOAD_FIELD in value
+    @classmethod
+    def payload_bindings(cls) -> PayloadBindingSet["CodemodPlanSequence", object]:
+        del cls
+        return PayloadBindingSet.from_explicit_fields(
+            (
+                "stages",
+                "documents",
+                PayloadRecordArrayValueCodec(CodemodPlanDocument),
+            ),
+        )
+
+    @classmethod
+    def is_sequence_payload(cls, value: JsonValue) -> bool:
+        return isinstance(value, Mapping) and cls.payload_bindings().has_field_in(value)
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "CodemodPlanSequence":
         if not cls.is_sequence_payload(value):
             return cls.from_document(CodemodPlanDocument.from_json_value(value))
         payload = CodemodPayload.from_json_value(value, role="plan sequence")
-        sequence = cls(
-            documents=tuple(
-                CodemodPlanDocument.from_json_value(row)
-                for row in payload.array(STAGES_PAYLOAD_FIELD)
-            )
-        )
+        sequence = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
         payload.require_supported_fields(sequence.to_dict(), role="plan sequence")
         return sequence
 
@@ -11539,11 +11640,7 @@ class CodemodPlanSequence:
         )
 
     def to_dict(self) -> JsonObject:
-        return {
-            STAGES_PAYLOAD_FIELD: tuple(
-                document.to_dict() for document in self.documents
-            ),
-        }
+        return self.payload_bindings().payload(self)
 
 
 @dataclass(frozen=True)
