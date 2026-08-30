@@ -3154,7 +3154,6 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     family = class_index_module.CompactModuleClassProjectionFamily
     demand = class_index_module.CompactClassProjectionDemand(
         abc_method_names=frozenset(),
-        abc_declaration_signatures=frozenset(),
         header_core_only=True,
     )
     full_items = tuple(family.collect(parsed_module))
@@ -4820,7 +4819,6 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
         encoding="utf-8",
     )
     detector_types = (
-        structural_detectors.ClassLevelInheritanceOptimizationDetector,
         runtime_detectors.ManualConcreteSubclassRosterDetector,
         runtime_detectors.LatentImplementationRosterDetector,
         runtime_detectors.AutoRegisterMetaUnderRentedDetector,
@@ -5700,17 +5698,13 @@ def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
     _write_compact_abc_optimizer_fixture(package_root)
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
-    projections = structural_detectors.ClassLevelInheritanceOptimizationDetector.compact_module_projections(
+    projections = structural_detectors.SemanticOverlapAbcOptimizationDetector.compact_module_projections(
         modules
     )
     context = structural_detectors.CompactABCOptimizerContext.from_projections(
         projections
     )
     detector_candidate_pairs = (
-        (
-            structural_detectors.ClassLevelInheritanceOptimizationDetector,
-            context.class_level_candidates,
-        ),
         (
             structural_detectors.SemanticOverlapAbcOptimizationDetector,
             context.method_candidates,
@@ -5736,15 +5730,6 @@ def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
             projections, context, config
         ) == detector._findings_for_candidates(compact_candidates, config)
         assert "candidate_collector" not in detector_type.__dict__
-    assert context.class_level_candidates[0].class_names == (
-        "CsvWorker",
-        "JsonWorker",
-        "XmlWorker",
-    )
-    assert context.class_level_candidates[0].declaration_names == (
-        "FORMAT_VERSION",
-        "SHARED_MODE",
-    )
     assert tuple(candidate.method_name for candidate in context.method_candidates) == (
         "emit",
         "validate",
@@ -5763,7 +5748,6 @@ def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
         "constant",
     )
     for removed_name in (
-        "_class_level_inheritance_optimization_candidates_from_modules",
         "_semantic_overlap_abc_optimization_candidates",
         "_semantic_overlap_abc_optimization_candidates_from_modules",
         "_semantic_overlap_abc_family_optimization_candidates",
@@ -5793,7 +5777,6 @@ def test_abc_optimizer_detectors_share_one_compact_context(
     package_root = tmp_path / "pkg"
     _write_compact_abc_optimizer_fixture(package_root)
     detector_types = (
-        structural_detectors.ClassLevelInheritanceOptimizationDetector,
         structural_detectors.SemanticOverlapAbcOptimizationDetector,
         structural_detectors.SemanticOverlapAbcFamilyOptimizationDetector,
         structural_detectors.GlobalInheritanceOptimizationDetector,
@@ -6846,9 +6829,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert surface_detectors.PassThroughNominalWrapperDetector in (
         partition.compact_global_detector_types
     )
-    assert structural_detectors.ClassLevelInheritanceOptimizationDetector in (
-        partition.compact_global_detector_types
-    )
     assert structural_detectors.SemanticOverlapAbcOptimizationDetector in (
         partition.compact_global_detector_types
     )
@@ -6903,7 +6883,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 57
+    assert len(partition.compact_global_detector_types) == 56
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

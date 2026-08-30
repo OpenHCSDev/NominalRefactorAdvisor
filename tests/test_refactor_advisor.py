@@ -2458,19 +2458,32 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
         "    return value\n",
     )
     modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "class_level_inheritance_optimization"
+    class_lines = {
+        node.name: node.lineno
+        for node in modules[0].module.body
+        if isinstance(node, ast.ClassDef)
+    }
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Class evidence selector fixture",
+        "Class evidence should resolve to source targets.",
+        "source-indexed class evidence",
+        "unresolved class evidence",
+    ).build(
+        "class_evidence_selector_fixture",
+        "Alpha and Beta are the selected class evidence.",
+        (
+            SourceLocation(module_path.as_posix(), class_lines["Alpha"], "Alpha"),
+            SourceLocation(module_path.as_posix(), class_lines["Beta"], "Beta"),
+        ),
     )
+    findings = (finding,)
     source_index = build_source_index(modules, findings)
     context = CodemodSelectorContext(
         source_index=source_index,
         sources_by_file_path={module_path.as_posix(): module_path.read_text()},
         class_family_index=build_class_family_index(modules),
     )
-    finding = findings[0]
-
     evidence_targets = FindingEvidenceTargetSelector.from_findings((finding,)).select(
         context
     )
@@ -2572,25 +2585,29 @@ def test_synthesis_records_expose_evidence_selectors(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "from typing import ClassVar\n\n\n"
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
         "class Alpha:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n\n\n"
+        "    shared: str\n"
+        "    count: int\n"
+        "    alpha_only: bool\n\n\n"
+        "@dataclass(frozen=True)\n"
         "class Beta:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n",
+        "    shared: str\n"
+        "    count: int\n"
+        "    beta_only: bool\n",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
         for finding in analyze_modules(modules)
-        if finding.detector_id == "class_level_inheritance_optimization"
+        if finding.detector_id == "repeated_field_family"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
-        detector_ids=("class_level_inheritance_optimization",),
+        detector_ids=("repeated_field_family",),
     )
     record = plan.records[0]
     selector_payload = record.evidence_selector.to_dict()
@@ -2764,111 +2781,6 @@ def test_target_set_expression_selector_composes_union_intersection_and_exclusio
         source_index.target_by_id[target_id].qualname
         for target_id in selected.target_ids
     ) == ("Alpha.run",)
-
-
-def test_class_level_inheritance_findings_synthesize_promotion_recipe(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from typing import ClassVar\n\n\n"
-        "class Alpha:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n\n\n"
-        "class Beta:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "class_level_inheritance_optimization"
-    )
-    source_index = build_source_index(modules, findings)
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    context = CodemodSelectorContext(
-        source_index=source_index,
-        sources_by_file_path=source_by_path,
-        class_family_index=build_class_family_index(modules),
-    )
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("class_level_inheritance_optimization",),
-        selector_context=context,
-    )
-    simulation = plan.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = simulation.document_simulation.unified_diff(source_by_path)
-
-    assert plan.expected_removed_finding_count == 1
-    assert len(plan.document.recipes) == 1
-    operation = plan.document.recipes[0].operations[0].to_dict()
-    assert operation["operation"] == "promote_class_declarations"
-    assert simulation.is_clean is True
-    assert "+class SharedKindFlagBase:" in diff
-    assert "+class Alpha(SharedKindFlagBase):" in diff
-    assert "+class Beta(SharedKindFlagBase):" in diff
-    simulation.document_simulation.apply()
-    rewritten = module_path.read_text()
-    assert "class SharedKindFlagBase:" in rewritten
-    assert rewritten.count("KIND: ClassVar[str] = 'shared'") == 1
-    assert rewritten.count("FLAG = 'enabled'") == 1
-    remaining = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "class_level_inheritance_optimization"
-    ]
-    assert remaining == []
-
-
-def test_class_level_inheritance_bridge_rewrites_multiline_class_headers(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from typing import ClassVar\n\n\n"
-        "class Marker:\n"
-        "    pass\n\n\n"
-        "class Alpha(\n"
-        "    Marker\n"
-        "):\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n\n\n"
-        "class Beta:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "class_level_inheritance_optimization"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = snapshot.plan_from_findings(
-        findings,
-        detector_ids=("class_level_inheritance_optimization",),
-    )
-    record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    diff = snapshot.unified_diff(simulation.simulation)
-
-    assert len(plan.document.recipes) == 1
-    assert plan.rejected_count == 0
-    assert record.status.value == "planned"
-    assert simulation.is_clean is True
-    assert "+class SharedKindFlagBase:" in diff
-    assert "+class Alpha(SharedKindFlagBase, Marker):" in diff
-    assert "+class Beta(SharedKindFlagBase):" in diff
 
 
 def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
@@ -3194,47 +3106,6 @@ def test_semantic_overlap_method_promotion_bridge_refuses_residue_methods(
     plan = codemod_plan_from_findings(
         findings,
         detector_ids=(_SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID,),
-        selector_context=context,
-    )
-
-    assert findings
-    assert plan.expected_removed_finding_count == 0
-    assert plan.document.recipes == ()
-
-
-def test_class_level_promotion_bridge_refuses_enum_member_promotion(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from enum import StrEnum\n\n\n"
-        "class FirstMode(StrEnum):\n"
-        "    SHARED = 'shared'\n"
-        "    COMMON = 'common'\n"
-        "    OTHER = 'first'\n\n\n"
-        "class SecondMode(StrEnum):\n"
-        "    SHARED = 'shared'\n"
-        "    COMMON = 'common'\n"
-        "    OTHER = 'second'\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "class_level_inheritance_optimization"
-    )
-    source_index = build_source_index(modules, findings)
-    context = CodemodSelectorContext(
-        source_index=source_index,
-        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
-        class_family_index=build_class_family_index(modules),
-    )
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("class_level_inheritance_optimization",),
         selector_context=context,
     )
 
@@ -19516,22 +19387,32 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
     package_root = tmp_path / "pkg"
     monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
     cache_env = os.environ.copy()
-    focused_path = package_root / "alpha.py"
+    focused_path = package_root / "local.py"
     _write_module(
         tmp_path,
-        "pkg/alpha.py",
-        "from typing import ClassVar\n\n\n"
-        "class Alpha:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n",
+        "pkg/models.py",
+        "from dataclasses import dataclass\n"
+        "from pathlib import Path\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RequestCarrier:\n"
+        "    request_id: str\n"
+        "    source_path: Path\n"
+        "    workspace_root: Path\n",
     )
     _write_module(
         tmp_path,
-        "pkg/beta.py",
-        "from typing import ClassVar\n\n\n"
-        "class Beta:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n",
+        "pkg/local.py",
+        "from dataclasses import dataclass\n"
+        "from pathlib import Path\n"
+        "from .models import RequestCarrier as RC\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class LocalEnvelope:\n"
+        "    request_id: str\n"
+        "    source_path: Path\n"
+        "    workspace_root: Path\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class ComposedRequest:\n"
+        "    carrier: 'RC'\n",
     )
 
     result = subprocess.run(
@@ -19555,23 +19436,26 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
     payload = json.loads(result.stdout)
     source_index = cast(dict[str, object], payload["source_index"])
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
-    findings = cast(list[dict[str, object]], payload["findings"])
-    class_family_findings = [
+    findings = cast(list[dict[str, object]], payload["supporting_raw_findings"])
+    parallel_carrier_findings = [
         finding
         for finding in findings
-        if finding["detector_id"] == "class_level_inheritance_optimization"
+        if finding["detector_id"] == "parallel_primitive_carrier"
     ]
     evidence_paths = {
         evidence["file_path"]
-        for finding in class_family_findings
+        for finding in parallel_carrier_findings
         for evidence in cast(tuple[dict[str, object], ...], finding["evidence"])
     }
 
     assert result.returncode == 0, result.stderr
-    assert class_family_findings
+    assert parallel_carrier_findings
     assert focused_path.as_posix() in evidence_paths
-    assert (package_root / "beta.py").as_posix() in evidence_paths
-    assert {target["qualname"] for target in ast_targets} >= {"Alpha", "Beta"}
+    assert (package_root / "models.py").as_posix() in evidence_paths
+    assert {target["qualname"] for target in ast_targets} >= {
+        "LocalEnvelope",
+        "RequestCarrier",
+    }
     assert any(default_parse_cache_dir(package_root).glob("*.pickle"))
 
 
@@ -19689,22 +19573,32 @@ def test_module_cli_can_disable_auto_context_root_for_file_scope(
     package_root = tmp_path / "pkg"
     monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
     cache_env = os.environ.copy()
-    focused_path = package_root / "alpha.py"
+    focused_path = package_root / "local.py"
     _write_module(
         tmp_path,
-        "pkg/alpha.py",
-        "from typing import ClassVar\n\n\n"
-        "class Alpha:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n",
+        "pkg/models.py",
+        "from dataclasses import dataclass\n"
+        "from pathlib import Path\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RequestCarrier:\n"
+        "    request_id: str\n"
+        "    source_path: Path\n"
+        "    workspace_root: Path\n",
     )
     _write_module(
         tmp_path,
-        "pkg/beta.py",
-        "from typing import ClassVar\n\n\n"
-        "class Beta:\n"
-        "    KIND: ClassVar[str] = 'shared'\n"
-        "    FLAG = 'enabled'\n",
+        "pkg/local.py",
+        "from dataclasses import dataclass\n"
+        "from pathlib import Path\n"
+        "from .models import RequestCarrier as RC\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class LocalEnvelope:\n"
+        "    request_id: str\n"
+        "    source_path: Path\n"
+        "    workspace_root: Path\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class ComposedRequest:\n"
+        "    carrier: 'RC'\n",
     )
 
     result = subprocess.run(
@@ -19729,14 +19623,16 @@ def test_module_cli_can_disable_auto_context_root_for_file_scope(
     payload = json.loads(result.stdout)
     source_index = cast(dict[str, object], payload["source_index"])
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
-    findings = cast(list[dict[str, object]], payload["findings"])
+    findings = cast(
+        list[dict[str, object]], payload.get("supporting_raw_findings", [])
+    )
 
     assert result.returncode == 0, result.stderr
     assert {
         target["qualname"] for target in ast_targets if target["node_type"] == "class"
-    } == {"Alpha"}
+    } == {"ComposedRequest", "LocalEnvelope"}
     assert not any(
-        finding["detector_id"] == "class_level_inheritance_optimization"
+        finding["detector_id"] == "parallel_primitive_carrier"
         for finding in findings
     )
     assert any(default_parse_cache_dir(focused_path).glob("*.pickle"))
@@ -22482,56 +22378,6 @@ def test_abc_optimizer_groups_subclasses_of_unresolved_external_base(
     assert "CsvExporter" in finding.summary
     assert "JsonExporter" in finding.summary
     assert "XmlExporter" in finding.summary
-
-
-def test_inheritance_optimizer_detects_repeated_class_level_declarations(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom typing import ClassVar\n\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass PortTypeCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "lean_kind"\n    __skip_if_no_key__ = True\n    lean_kind: ClassVar[str]\n\n    @classmethod\n    @abstractmethod\n    def parse(cls, payload):\n        raise NotImplementedError\n\n\nclass TerminatorCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "lean_kind"\n    __skip_if_no_key__ = True\n    lean_kind: ClassVar[str]\n\n    @classmethod\n    @abstractmethod\n    def parse(cls, payload):\n        raise NotImplementedError\n\n\nclass ShapeConstraintCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "lean_kind"\n    __skip_if_no_key__ = True\n    lean_kind: ClassVar[str]\n\n    @classmethod\n    @abstractmethod\n    def parse(cls, payload):\n        raise NotImplementedError\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "class_level_inheritance_optimization"
-        )
-    )
-    assert "PortTypeCase" in finding.summary
-    assert "TerminatorCase" in finding.summary
-    assert "ShapeConstraintCase" in finding.summary
-    assert "__registry_key__" in finding.summary
-    assert "__skip_if_no_key__" in finding.summary
-    assert "lean_kind" in finding.summary
-    assert "ABC" in (finding.scaffold or "")
-    assert "Protocol" not in (finding.scaffold or "")
-    assert "shared declaration surface" in (finding.codemod_patch or "")
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
-def test_inheritance_optimizer_ignores_unrelated_autoregister_registry_controls(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC\n\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass ExecutionPipelineDefinitionProvider(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "provider_key"\n    __skip_if_no_key__ = True\n\n    def provide(self):\n        raise NotImplementedError\n\n\nclass ZMQPipelineConfigCodePolicy(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "policy_key"\n    __skip_if_no_key__ = True\n\n    def render(self):\n        raise NotImplementedError\n',
-    )
-
-    findings = analyze_path(tmp_path)
-
-    assert not any(
-        (
-            finding.detector_id == "class_level_inheritance_optimization"
-            and "ExecutionPipelineDefinitionProvider" in finding.summary
-            and "ZMQPipelineConfigCodePolicy" in finding.summary
-        )
-        for finding in findings
-    )
 
 
 def test_abc_optimizer_derives_subset_mixin_axes(tmp_path: Path) -> None:

@@ -200,38 +200,6 @@ def _semantic_overlap_abc_residue_axis_scaffold(
     return f"ResidueAxisCatalog(\n{rows}\n)"
 
 
-def _class_level_inheritance_declaration_block(
-    candidate: ClassLevelInheritanceOptimizationCandidate,
-) -> str:
-    return "\n".join(
-        (
-            "    " + source.replace("\n", "\n    ")
-            for source in candidate.declaration_sources
-        )
-    )
-
-
-def _class_level_inheritance_optimization_scaffold(
-    candidate: ClassLevelInheritanceOptimizationCandidate,
-) -> str:
-    return (
-        f"class {candidate.base_name}(ABC):\n"
-        f"{_class_level_inheritance_declaration_block(candidate)}\n\n"
-        f"# Then make {', '.join(candidate.class_names)} inherit `{candidate.base_name}`\n"
-        "# and delete those declarations from the concrete classes."
-    )
-
-
-def _class_level_inheritance_optimization_patch(
-    candidate: ClassLevelInheritanceOptimizationCandidate,
-) -> str:
-    return (
-        f"# Extract repeated class-level declarations {candidate.declaration_names} "
-        f"from {candidate.class_names} into `{candidate.base_name}`.\n"
-        "# Leaves should inherit the shared declaration surface and keep only irreducible class-specific residue."
-    )
-
-
 from ._substrate_support import *
 
 
@@ -1004,18 +972,6 @@ class _CompactABCOptimizerDetectorBase(
         )
 
 
-class _CompactClassLevelInheritanceOptimizationDetectorBase(
-    _CompactABCOptimizerDetectorBase[ClassLevelInheritanceOptimizationCandidate]
-):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactABCOptimizerContext,
-        config: DetectorConfig,
-    ) -> Sequence[ClassLevelInheritanceOptimizationCandidate]:
-        del config
-        return context.class_level_candidates
-
-
 class _CompactSemanticOverlapABCOptimizationDetectorBase(
     _CompactABCOptimizerDetectorBase[SemanticOverlapABCOptimizationCandidate]
 ):
@@ -1062,37 +1018,6 @@ class _CompactSemanticOverlapABCResidueAxisCatalogDetectorBase(
     ) -> Sequence[SemanticOverlapABCResidueAxisCatalogCandidate]:
         del config
         return context.residue_axis_candidates
-
-
-declare_candidate_rule_detector(
-    ClassLevelInheritanceOptimizationCandidate,
-    high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Repeated class declarations should move to an inherited base",
-        "Several classes repeat the same inheritable class-level declarations. That is class metadata surface area expressed at every leaf or sibling instead of being owned once by a nominal base in the MRO.",
-        "one inherited base owns the shared class declaration surface",
-        "same class-level declarations repeat across multiple nominal classes",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-    ),
-    summary=lambda candidate: (
-        f"Classes {candidate.class_names} repeat class-level declarations "
-        f"{candidate.declaration_names}; introduce `{candidate.base_name}` so the MRO owns "
-        f"the shared declaration surface once ({candidate.line_count} repeated line(s))."
-    ),
-    evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=_class_level_inheritance_optimization_scaffold,
-    codemod_patch=_class_level_inheritance_optimization_patch,
-    compression_certificate=lambda candidate: candidate.compression_certificate,
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=len(candidate.class_names),
-        mapping_name=candidate.base_name,
-        field_names=candidate.declaration_names,
-    ),
-    detector_priority=-9,
-    detector_name="ClassLevelInheritanceOptimizationDetector",
-    detector_base=_CompactClassLevelInheritanceOptimizationDetectorBase,
-)
 
 
 declare_candidate_rule_detector(

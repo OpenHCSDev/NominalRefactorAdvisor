@@ -46,7 +46,6 @@ from ._base import *
 from ._substrate_support import *
 from ._substrate_support import _class_ancestor_name_map
 from ..class_index import (
-    CompactABCOptimizerClassDeclaration,
     CompactABCOptimizerMethod,
     CompactClassFamilyIndex,
     CompactIndexedClass,
@@ -4506,18 +4505,6 @@ _ABCOptimizerLatticeEdgesByFamily: TypeAlias = dict[
     _ABCOptimizerFamilyKey, set[tuple[tuple[str, ...], tuple[str, ...]]]
 ]
 _ABCOptimizerMethodPlanKey: TypeAlias = tuple[str, tuple[str, ...]]
-_ABCOptimizerClassDeclarationFamiliesBySignature: TypeAlias = dict[
-    str,
-    dict[
-        str,
-        tuple[CompactIndexedClass, CompactABCOptimizerClassDeclaration],
-    ],
-]
-_ABCOptimizerClassDeclarationSignaturesByFamily: TypeAlias = dict[
-    tuple[str, ...], set[str]
-]
-
-
 @dataclass(frozen=True)
 class _ABCOptimizerMethodGroupProfile(ResidueHookNamesCarrier):
     shared_statement_count: int
@@ -4587,147 +4574,6 @@ def _abc_optimizer_residue_names(
         tuple(dict.fromkeys(classvar_names)),
         tuple(dict.fromkeys(property_hook_names)),
         tuple(dict.fromkeys(behavior_hook_names)),
-    )
-
-
-def _abc_optimizer_class_declaration_signatures_by_family(
-    families_by_signature: _ABCOptimizerClassDeclarationFamiliesBySignature,
-) -> _ABCOptimizerClassDeclarationSignaturesByFamily:
-    signatures_by_family: _ABCOptimizerClassDeclarationSignaturesByFamily = defaultdict(
-        set
-    )
-    for signature, family in families_by_signature.items():
-        if len(family) < 2:
-            continue
-        class_symbols = sorted_tuple(family)
-        signatures_by_family[class_symbols].add(signature)
-    return dict(signatures_by_family)
-
-
-def _abc_optimizer_class_declaration_candidate_base_name(
-    class_names: tuple[str, ...], declaration_names: tuple[str, ...]
-) -> str:
-    family_prefix = (
-        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(class_names) or "Shared"
-    )
-    semantic_names = tuple(
-        name.strip("_")
-        for name in declaration_names
-        if name.strip("_") and not name.startswith("__")
-    )
-    semantic_suffix = (
-        "".join((_camel_case(name) for name in semantic_names[:2]))
-        if semantic_names
-        else "ClassDeclaration"
-    )
-    return f"{family_prefix}{semantic_suffix}Base"
-
-
-_AUTOREGISTER_REGISTRY_CONTROL_DECLARATIONS = frozenset(
-    ("__registry_key__", "__skip_if_no_key__")
-)
-
-
-def _abc_optimizer_unrelated_autoregister_registry_controls(
-    class_symbols: tuple[str, ...],
-    declaration_names: tuple[str, ...],
-    class_index: CompactClassFamilyIndex,
-) -> bool:
-    if frozenset(declaration_names) - _AUTOREGISTER_REGISTRY_CONTROL_DECLARATIONS:
-        return False
-    if len(declaration_names) != len(frozenset(declaration_names)):
-        return False
-    indexed_classes = tuple(
-        class_index.classes_by_symbol[symbol] for symbol in class_symbols
-    )
-    if not all(
-        _abc_optimizer_indexed_class_declares_autoregister(indexed_class)
-        for indexed_class in indexed_classes
-    ):
-        return False
-    for symbol in class_symbols:
-        family_symbols = frozenset((*class_index.ancestor_symbols(symbol), symbol))
-        if family_symbols.intersection(
-            (other_symbol for other_symbol in class_symbols if other_symbol != symbol)
-        ):
-            return False
-    return True
-
-
-def _abc_optimizer_indexed_class_declares_autoregister(
-    indexed_class: CompactIndexedClass,
-) -> bool:
-    return any(
-        name == "AutoRegisterMeta" or name.endswith("AutoRegisterMeta")
-        for name in indexed_class.metaclass_names
-    )
-
-
-def _abc_optimizer_class_declaration_certificate(
-    *,
-    class_names: tuple[str, ...],
-    declaration_names: tuple[str, ...],
-    file_paths: tuple[str, ...],
-) -> CompressionCertificate | None:
-    certificate = CompressionCertificate.from_object_family(
-        manual_object_count=len(class_names) * len(declaration_names),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("inherited_base", "class_declaration_surface"),
-        ),
-        semantic_axes=(*class_names, *declaration_names),
-        independent_source_count=len(frozenset(file_paths)),
-    )
-    return certificate if certificate.pays_rent else None
-
-
-def _abc_optimizer_class_level_declaration_candidate(
-    class_symbols: tuple[str, ...],
-    declaration_signatures: tuple[str, ...],
-    families_by_signature: _ABCOptimizerClassDeclarationFamiliesBySignature,
-    class_index: CompactClassFamilyIndex,
-) -> ClassLevelInheritanceOptimizationCandidate | None:
-    if len(class_symbols) < 2 or len(declaration_signatures) < 2:
-        return None
-    indexed_classes = tuple(
-        families_by_signature[declaration_signatures[0]][symbol][0]
-        for symbol in class_symbols
-    )
-    declarations = tuple(
-        families_by_signature[signature][class_symbols[0]][1]
-        for signature in declaration_signatures
-    )
-    class_names = tuple(
-        (indexed_class.simple_name for indexed_class in indexed_classes)
-    )
-    file_paths = tuple((indexed_class.file_path for indexed_class in indexed_classes))
-    line_numbers = tuple((indexed_class.line for indexed_class in indexed_classes))
-    declaration_names = tuple((declaration.name for declaration in declarations))
-    if _abc_optimizer_unrelated_autoregister_registry_controls(
-        class_symbols, declaration_names, class_index
-    ):
-        return None
-    certificate = _abc_optimizer_class_declaration_certificate(
-        class_names=class_names,
-        declaration_names=declaration_names,
-        file_paths=file_paths,
-    )
-    if certificate is None:
-        return None
-    return ClassLevelInheritanceOptimizationCandidate(
-        file_path=file_paths[0],
-        line=min(line_numbers),
-        base_name=_abc_optimizer_class_declaration_candidate_base_name(
-            class_names, declaration_names
-        ),
-        class_names=class_names,
-        file_paths=file_paths,
-        line_numbers=line_numbers,
-        declaration_names=declaration_names,
-        declaration_signatures=declaration_signatures,
-        declaration_sources=tuple((declaration.source for declaration in declarations)),
-        line_count=sum((declaration.line_count for declaration in declarations))
-        * len(class_names),
-        compression_certificate=certificate,
     )
 
 
@@ -5660,64 +5506,6 @@ def _compact_abc_optimizer_specific_method_plans(
     return _abc_optimizer_more_specific_method_plans(method_plans, class_index)
 
 
-def _compact_abc_optimizer_class_level_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-    class_index: CompactClassFamilyIndex,
-) -> tuple[ClassLevelInheritanceOptimizationCandidate, ...]:
-    declarations_by_symbol: dict[str, list[CompactABCOptimizerClassDeclaration]] = (
-        defaultdict(list)
-    )
-    for projection in projections:
-        for declaration in projection.abc_optimizer_class_declarations:
-            declarations_by_symbol[declaration.class_symbol].append(declaration)
-    families_by_signature: dict[
-        str,
-        dict[
-            str,
-            tuple[CompactIndexedClass, CompactABCOptimizerClassDeclaration],
-        ],
-    ] = defaultdict(dict)
-    for indexed_class in sorted_tuple(
-        class_index.classes_by_symbol.values(),
-        key=lambda item: (item.file_path, item.line, item.symbol),
-    ):
-        for declaration in declarations_by_symbol.get(indexed_class.symbol, ()):
-            families_by_signature[declaration.signature][indexed_class.symbol] = (
-                indexed_class,
-                declaration,
-            )
-    signatures_by_family = _abc_optimizer_class_declaration_signatures_by_family(
-        families_by_signature
-    )
-    candidates = tuple(
-        candidate
-        for class_symbols, signatures in signatures_by_family.items()
-        if (
-            candidate := _abc_optimizer_class_level_declaration_candidate(
-                class_symbols,
-                sorted_tuple(
-                    signatures,
-                    key=lambda signature: families_by_signature[signature][
-                        class_symbols[0]
-                    ][1].line,
-                ),
-                families_by_signature,
-                class_index,
-            )
-        )
-        is not None
-    )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.base_name,
-            candidate.class_names,
-        ),
-    )
-
-
 def _compact_semantic_overlap_method_candidates(
     method_plans: tuple[_ABCOptimizerMethodPlan, ...],
     family_plans: dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan],
@@ -5803,7 +5591,6 @@ def _compact_global_inheritance_candidates(
 
 @dataclass(frozen=True)
 class CompactABCOptimizerContext:
-    class_level_candidates: tuple[ClassLevelInheritanceOptimizationCandidate, ...]
     method_candidates: tuple[SemanticOverlapABCOptimizationCandidate, ...]
     family_candidates: tuple[SemanticOverlapABCFamilyOptimizationCandidate, ...]
     global_candidates: tuple[GlobalInheritanceOptimizationCandidate, ...]
@@ -5823,9 +5610,6 @@ class CompactABCOptimizerContext:
         )
         family_plans = _abc_optimizer_family_plans(method_plans)
         return cls(
-            class_level_candidates=_compact_abc_optimizer_class_level_candidates(
-                projections, class_index
-            ),
             method_candidates=_compact_semantic_overlap_method_candidates(
                 method_plans, family_plans
             ),

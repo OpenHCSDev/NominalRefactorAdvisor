@@ -1346,68 +1346,48 @@ def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
 def test_finding_recipe_synthesis_dedupes_cross_detector_class_actions(
     tmp_path: Path,
 ) -> None:
-    module_path = _write_module(
+    _write_module(
         tmp_path,
         "from dataclasses import dataclass\n"
-        "from typing import ClassVar\n"
+        "from pathlib import Path\n"
         "\n"
-        "class AliasProperty:\n"
-        "    def __init__(self, name):\n"
-        "        self.name = name\n"
-        "\n"
-        "@dataclass(frozen=True)\n"
+        "@dataclass(frozen=True, kw_only=True)\n"
         "class AlphaMetric:\n"
-        "    shared_axis: str | None\n"
-        "    literal_cases: tuple[str, ...]\n"
+        "    request_id: str\n"
+        "    source_path: Path\n"
+        "    workspace_root: Path\n"
         "    alpha_only: int\n"
-        "    plan_shared_axis: ClassVar[AliasProperty] = AliasProperty('shared_axis')\n"
-        "    plan_literal_cases: ClassVar[AliasProperty] = AliasProperty('literal_cases')\n"
         "\n"
-        "@dataclass(frozen=True)\n"
+        "@dataclass(frozen=True, kw_only=True)\n"
         "class BetaMetric:\n"
-        "    shared_axis: str | None\n"
-        "    literal_cases: tuple[str, ...]\n"
-        "    beta_only: int\n"
-        "    plan_shared_axis: ClassVar[AliasProperty] = AliasProperty('shared_axis')\n"
-        "    plan_literal_cases: ClassVar[AliasProperty] = AliasProperty('literal_cases')\n",
+        "    request_id: str\n"
+        "    source_path: Path\n"
+        "    workspace_root: Path\n"
+        "    beta_only: int\n",
     )
     modules = parse_python_modules(tmp_path)
-    repeated_field_finding = next(
+    findings = tuple(
         item
-        for item in RepeatedFieldFamilyDetector().detect(modules, DetectorConfig())
-        if item.detector_id == "repeated_field_family"
-    )
-    class_level_finding = RefactorFinding(
-        detector_id="class_level_inheritance_optimization",
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Repeated class declarations should move to an inherited base",
-        summary="Classes repeat class-level declarations.",
-        why="class metadata is repeated at leaves instead of inherited once",
-        capability_gap="one inherited base owns the shared class declaration surface",
-        relation_context="same class-level declarations repeat across classes",
-        evidence=(
-            SourceLocation(module_path.as_posix(), 8, "AlphaMetric"),
-            SourceLocation(module_path.as_posix(), 16, "BetaMetric"),
-        ),
-        metrics=MappingMetrics.from_field_names(
-            mapping_site_count=2,
-            mapping_name="SharedPlanMetricBase",
-            field_names=("plan_shared_axis", "plan_literal_cases"),
-        ),
+        for item in analyze_modules(modules)
+        if item.detector_id in {"parallel_primitive_carrier", "repeated_field_family"}
     )
     snapshot = CodemodSourceSnapshot.from_modules(
         modules,
-        (class_level_finding, repeated_field_finding),
+        findings,
     )
 
     plan = codemod_plan_from_findings(
-        (class_level_finding, repeated_field_finding),
+        findings,
         selector_context=snapshot,
     )
     statuses = tuple(record.status.value for record in plan.records)
     simulation = plan.simulate_snapshot(snapshot)
 
-    assert statuses == ("planned", "duplicate_action_keys")
+    assert {item.detector_id for item in findings} == {
+        "parallel_primitive_carrier",
+        "repeated_field_family",
+    }
+    assert sorted(statuses) == ["duplicate_action_keys", "planned"]
     assert len(plan.document.recipes) == 1
     assert simulation.is_clean is True
 

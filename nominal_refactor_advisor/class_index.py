@@ -216,9 +216,6 @@ class CompactModuleClassProjection(
     nominal_wrapper_authorities: tuple["CompactNominalWrapperAuthority", ...] = ()
     pass_through_nominal_wrappers: tuple["CompactPassThroughNominalWrapper", ...] = ()
     abc_optimizer_methods: tuple["CompactABCOptimizerMethod", ...] = ()
-    abc_optimizer_class_declarations: tuple[
-        "CompactABCOptimizerClassDeclaration", ...
-    ] = ()
     carrier_class_facts: tuple["CompactCarrierClassFact", ...] = ()
     carrier_base_edges: tuple[tuple[str, tuple[str, ...]], ...] = ()
     carrier_constructor_assignments: tuple[tuple[str, tuple[str, ...]], ...] = ()
@@ -325,18 +322,6 @@ class CompactABCOptimizerMethod:
     statement_count: int
     skeleton_blob: bytes | None
     coordinates_blob: bytes | None
-
-
-@dataclass(frozen=True)
-class CompactABCOptimizerClassDeclaration:
-    """Sparse inheritable class metadata used by the ABC optimizer."""
-
-    class_symbol: str
-    name: str
-    signature: str
-    source: str
-    line: int
-    line_count: int
 
 
 @dataclass(frozen=True)
@@ -1099,7 +1084,6 @@ class CompactClassProjectionDemand:
     """Target-correlated filters for expensive class-family facets."""
 
     abc_method_names: frozenset[str]
-    abc_declaration_signatures: frozenset[str]
     include_autoregister_references: bool = True
     header_core_only: bool = False
 
@@ -1117,11 +1101,6 @@ def _class_report_demand(
             method.method_name
             for projection in projections
             for method in projection.abc_optimizer_methods
-        ),
-        abc_declaration_signatures=frozenset(
-            declaration.signature
-            for projection in projections
-            for declaration in projection.abc_optimizer_class_declarations
         ),
         include_autoregister_references=any(
             projection.named_projection_surfaces
@@ -1151,11 +1130,6 @@ def _cached_class_demand_projection(
                 method
                 for method in item.abc_optimizer_methods
                 if method.method_name in demand.abc_method_names
-            ),
-            abc_optimizer_class_declarations=tuple(
-                declaration
-                for declaration in item.abc_optimizer_class_declarations
-                if declaration.signature in demand.abc_declaration_signatures
             ),
             autoregister_function_references=(
                 item.autoregister_function_references
@@ -1453,16 +1427,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             node_id: field_type_maps[2]
             for node_id, field_type_maps in class_field_type_maps.items()
         }
-        (
-            abc_optimizer_methods,
-            abc_optimizer_class_declarations,
-        ) = _compact_abc_optimizer_facts(
+        abc_optimizer_methods = _compact_abc_optimizer_methods(
             parsed_module,
             indexed_class_nodes,
             method_names=(None if demand is None else demand.abc_method_names),
-            declaration_signatures=(
-                None if demand is None else demand.abc_declaration_signatures
-            ),
         )
         carrier_class_facts, carrier_base_edges = _compact_carrier_class_facts(
             all_class_nodes,
@@ -1531,7 +1499,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 nominal_wrapper_authorities=nominal_wrapper_authorities,
                 pass_through_nominal_wrappers=pass_through_nominal_wrappers,
                 abc_optimizer_methods=abc_optimizer_methods,
-                abc_optimizer_class_declarations=abc_optimizer_class_declarations,
                 carrier_class_facts=carrier_class_facts,
                 carrier_base_edges=carrier_base_edges,
                 carrier_constructor_assignments=_compact_carrier_constructor_assignments(
@@ -2308,75 +2275,13 @@ def _compact_abc_optimizer_method(
     )
 
 
-def _compact_abc_optimizer_class_declaration_metadata(
-    statement: ast.stmt,
-) -> tuple[str, ast.AST | None] | None:
-    if (
-        isinstance(statement, ast.Assign)
-        and len(statement.targets) == 1
-        and isinstance(statement.targets[0], ast.Name)
-    ):
-        return statement.targets[0].id, None
-    if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
-        return statement.target.id, statement.annotation
-    return None
-
-
-def _compact_abc_optimizer_class_declaration(
-    class_symbol: str,
-    statement: ast.stmt,
-) -> CompactABCOptimizerClassDeclaration | None:
-    metadata = _compact_abc_optimizer_class_declaration_metadata(statement)
-    if metadata is None:
-        return None
-    name, annotation = metadata
-    if not (
-        (name.startswith("__") and name.endswith("__") and len(name) > 4)
-        or name.isupper()
-        or (
-            annotation is not None and CLASSVAR_ANNOTATION_AUTHORITY.matches(annotation)
-        )
-    ):
-        return None
-    if isinstance(statement, ast.Assign):
-        signature = (
-            f"assign:{name}:{ast.dump(statement.value, include_attributes=False)}"
-        )
-    elif isinstance(statement, ast.AnnAssign):
-        annotation_signature = ast.dump(statement.annotation, include_attributes=False)
-        value_signature = (
-            ""
-            if statement.value is None
-            else ast.dump(statement.value, include_attributes=False)
-        )
-        signature = f"annassign:{name}:{annotation_signature}:{value_signature}"
-    else:
-        return None
-    return CompactABCOptimizerClassDeclaration(
-        class_symbol=class_symbol,
-        name=name,
-        signature=signature,
-        source=ast.unparse(statement),
-        line=statement.lineno,
-        line_count=max(
-            1,
-            (statement.end_lineno or statement.lineno) - statement.lineno + 1,
-        ),
-    )
-
-
-def _compact_abc_optimizer_facts(
+def _compact_abc_optimizer_methods(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
     *,
     method_names: frozenset[str] | None = None,
-    declaration_signatures: frozenset[str] | None = None,
-) -> tuple[
-    tuple[CompactABCOptimizerMethod, ...],
-    tuple[CompactABCOptimizerClassDeclaration, ...],
-]:
+) -> tuple[CompactABCOptimizerMethod, ...]:
     methods: list[CompactABCOptimizerMethod] = []
-    declarations: list[CompactABCOptimizerClassDeclaration] = []
     for qualname, node in indexed_class_nodes:
         class_symbol = f"{parsed_module.module_name}.{qualname}"
         if _compact_abc_optimizer_class_is_eligible(node):
@@ -2386,24 +2291,7 @@ def _compact_abc_optimizer_facts(
                 if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and (method_names is None or statement.name in method_names)
             )
-        seen_signatures: set[str] = set()
-        for statement in _trim_leading_docstring(list(node.body)):
-            declaration = _compact_abc_optimizer_class_declaration(
-                class_symbol,
-                statement,
-            )
-            if (
-                declaration is None
-                or declaration.signature in seen_signatures
-                or (
-                    declaration_signatures is not None
-                    and declaration.signature not in declaration_signatures
-                )
-            ):
-                continue
-            seen_signatures.add(declaration.signature)
-            declarations.append(declaration)
-    return tuple(methods), tuple(declarations)
+    return tuple(methods)
 
 
 def _compact_manual_family_rosters(

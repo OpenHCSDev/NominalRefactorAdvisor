@@ -12712,22 +12712,6 @@ class SemanticOverlapABCResidueAxisCatalogCandidate(
 
 
 @dataclass(frozen=True)
-class ClassLevelInheritanceOptimizationCandidate(
-    ABCOptimizerLineCompressionSurface, LineWitnessCandidate, ClassFamilyWitnessCarrier
-):
-    declaration_names: tuple[str, ...]
-    declaration_signatures: tuple[str, ...]
-    declaration_sources: tuple[str, ...]
-    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
-        MultiFileZippedSourceLocationEvidenceProperty(
-            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
-            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
-            symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE,
-        )
-    )
-
-
-@dataclass(frozen=True)
 class SemanticTagTupleBoilerplateCandidate(EvidenceLocationsWitnessCandidate):
     keyword_name: str
     constant_name: str
