@@ -12611,7 +12611,7 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
+        "\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY['alpha'] = AlphaHandler\nREGISTRY['beta'] = BetaHandler\n",
     )
     plan_path = tmp_path / "synthesized-plan.json"
     plan_result = subprocess.run(
@@ -12647,14 +12647,19 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
         check=False,
     )
     validation_payload = json.loads(validation_result.stdout)
-    operations = validation_payload["recipes"][0]["operations"]
+    operations = tuple(
+        operation
+        for recipe in validation_payload["recipes"]
+        for operation in recipe["operations"]
+    )
 
     assert plan_result.returncode == 0, plan_result.stderr
     assert validation_result.returncode == 0, validation_result.stderr
     assert emitted_plan_payload == plan_payload["document"]
     assert any(
-        operation["operation"] == "delete_module_assignments"
-        and operation["assignment_names"] == ["field_names", "method_names"]
+        operation["operation"] == "convert_manual_registry_to_autoregister"
+        and operation["class_key_pairs"]
+        == ["AlphaHandler='alpha'", "BetaHandler='beta'"]
         for operation in operations
     )
 
@@ -18757,7 +18762,7 @@ def test_detects_module_authority_reexport_catalog(tmp_path: Path) -> None:
     assert "Delete module-level re-export aliases" in (finding.codemod_patch or "")
 
 
-def test_module_authority_reexport_catalog_findings_synthesize_recipe_plan(
+def test_module_authority_reexport_catalog_remains_advisory_without_recipe(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -18779,25 +18784,13 @@ def test_module_authority_reexport_catalog_findings_synthesize_recipe_plan(
         detector_ids=("module_authority_reexport_catalog",),
         selector_context=snapshot,
     )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
 
-    assert plan.expected_removed_finding_count == 1
-    assert len(plan.document.recipes) == 1
-    operation = plan.document.recipes[0].operations[0].to_dict()
-    assert operation["operation"] == "delete_module_assignments"
-    assert operation["assignment_names"] == ("field_names", "method_names")
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-    simulation.document_simulation.apply()
-    rewritten = module_path.read_text()
-    assert "field_names = SYNTAX_PROJECTION_AUTHORITY.field_names" not in rewritten
-    assert "method_names = SYNTAX_PROJECTION_AUTHORITY.method_names" not in rewritten
-    remaining = tuple(
-        finding
-        for finding in analyze_modules(parse_python_modules(tmp_path))
-        if finding.detector_id == "module_authority_reexport_catalog"
+    assert plan.expected_removed_finding_ids == ()
+    assert plan.document.recipes == ()
+    assert plan.records[0].status.value == "no_synthesizer"
+    assert "field_names = SYNTAX_PROJECTION_AUTHORITY.field_names" in (
+        module_path.read_text()
     )
-    assert remaining == ()
 
 
 def test_json_payload_includes_finding_backed_recipe_plan(
@@ -18822,10 +18815,11 @@ def test_json_payload_includes_finding_backed_recipe_plan(
     ).to_dict()
 
     recipe_plan = payload["finding_recipe_plan"]
-    assert recipe_plan["expected_removed_finding_count"] == 1
-    operation = recipe_plan["document"]["recipes"][0]["operations"][0]
-    assert operation["operation"] == "delete_module_assignments"
-    assert operation["assignment_names"] == ("field_names", "method_names")
+    assert recipe_plan["expected_removed_finding_count"] == 0
+    assert recipe_plan["document"]["recipes"] == ()
+    assert recipe_plan["synthesis_report"]["records"][0]["status"] == (
+        "no_synthesizer"
+    )
 
 
 def test_detects_collection_authority_stream_algebra(tmp_path: Path) -> None:

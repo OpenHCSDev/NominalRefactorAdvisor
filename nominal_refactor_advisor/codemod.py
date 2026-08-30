@@ -4513,6 +4513,33 @@ class SourceTextGeometry:
         end_offset = self.line_offsets[span.end_line_index] + span.end_byte
         return start_offset, end_offset
 
+    def required_node_offsets(self, node: ast.AST) -> tuple[int, int]:
+        if not isinstance(node, ast.expr | ast.stmt):
+            raise ValueError("AST node lacks source offsets")
+        offsets = self.node_offsets(node)
+        if offsets is None:
+            raise ValueError("AST node lacks source offsets")
+        return offsets
+
+    def target_span_offsets(self, target: AstTargetDigest) -> tuple[int, int]:
+        start_offset = self.line_offsets[target.line - 1]
+        end_offset = (
+            self.line_offsets[target.end_line]
+            if target.end_line < len(self.line_offsets)
+            else self.end_offset
+        )
+        return start_offset, end_offset
+
+    def target_source_with_replacements(
+        self,
+        target: AstTargetDigest,
+        replacements: Iterable[SourceTextSpanReplacement],
+    ) -> str:
+        return self.source_with_replacements_in_span(
+            *self.target_span_offsets(target),
+            replacements,
+        )
+
     def line_indent(self, offset: int) -> str:
         line_start = self.source.rfind("\n", 0, offset) + 1
         line_end = self.source.find("\n", offset)
@@ -14928,38 +14955,6 @@ class PrefixedRoleBundleFindingRecipeSynthesizer(
         return "\n\n".join((base_source, *role_sources))
 
 
-@dataclass(frozen=True)
-class IdentityKeywordForwardingCallRewrite(ReplacementSource):
-    """One same-name forwarding shell call site rewritten to the callee authority."""
-
-    target: AstTargetDigest
-
-
-@dataclass(frozen=True)
-class IdentityKeywordForwardingShellRecipeParts(AuthorityClaimCarrier):
-    """Executable facts for one identity keyword forwarding shell collapse."""
-
-    call_rewrites: tuple[IdentityKeywordForwardingCallRewrite, ...]
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-collapse-identity-keyword-forwarding",
-            reason=(
-                "Inline identity keyword forwarding shell calls into the "
-                "callee authority."
-            ),
-        ).with_authority_claim(self.authority_claim)
-        for call_rewrite in self.call_rewrites:
-            recipe = recipe.with_operation(
-                ReplaceTargetOperation(
-                    target=SourceRewriteTarget(target_id=call_rewrite.target.target_id),
-                    replacement_source=call_rewrite.replacement_source,
-                    rationale="Inline identity keyword forwarding shell call.",
-                )
-            )
-        return recipe
-
-
 def _statement_is_empty_list_assignment(
     statement: ast.stmt,
 ) -> str | None:
@@ -15560,414 +15555,6 @@ class AstStreamCollectorBoilerplateFindingRecipeSynthesizer(
         node: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> CollectorExtraction | None:
         return CollectorExtraction.from_registered_target(target, node)
-
-
-class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
-    SharedActionKeysForFindingMixin,
-    FindingRecipeSynthesizer,
-):
-    """Build recipes that inline same-name keyword forwarding shells."""
-
-    detector_id = "identity_keyword_forwarding_shell"
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        if context is None:
-            return RejectedRecipeEvaluation(
-                reason=(
-                    "identity keyword forwarding collapse requires a source selector context"
-                ),
-                executable_declaration_type=type(self),
-            )
-        parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
-        if rejection_reason:
-            return RejectedRecipeEvaluation(
-                reason=rejection_reason,
-                executable_declaration_type=type(self),
-            )
-        if parts is None:
-            return RejectedRecipeEvaluation(
-                reason="identity keyword forwarding collapse found no recipe parts",
-                executable_declaration_type=type(self),
-            )
-        return ExecutableRecipeEvaluation(
-            executable_recipe=parts.recipe_for(finding),
-            executable_declaration_type=type(self),
-        )
-
-    def recipe_parts_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext,
-    ) -> tuple[IdentityKeywordForwardingShellRecipeParts | None, str]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return None, "identity keyword forwarding collapse requires source evidence"
-        resolved_paths = context.resolve_source_paths((evidence.file_path,))
-        if len(resolved_paths) != 1:
-            return None, "identity keyword forwarding collapse requires one source file"
-        source_path = next(iter(resolved_paths))
-        wrapper_qualname = EvidenceSymbol(evidence.symbol).subject
-        wrapper = self.wrapper_target(context, source_path, wrapper_qualname)
-        if wrapper is None:
-            return None, "identity keyword forwarding collapse cannot resolve wrapper"
-        wrapper_target, wrapper_node = wrapper
-        source = context.sources_by_file_path.get(source_path)
-        if source is None:
-            return None, "identity keyword forwarding collapse requires source text"
-        call_shape = self.wrapper_call_shape(wrapper_node)
-        if call_shape is None:
-            return (
-                None,
-                "identity keyword forwarding collapse requires a pure return call",
-            )
-        callee_source, parameter_names = call_shape
-        callee_authority = self.callee_authority_target(
-            context,
-            source_path,
-            callee_source,
-        )
-        if callee_authority is None:
-            return (
-                None,
-                "identity keyword forwarding collapse cannot resolve callee authority",
-            )
-        call_rewrites = self.call_rewrites(
-            context,
-            source_path=source_path,
-            source=source,
-            wrapper_target=wrapper_target,
-            wrapper_node=wrapper_node,
-            wrapper_method_name=wrapper_node.name,
-            callee_source=callee_source,
-            parameter_names=parameter_names,
-        )
-        if not call_rewrites:
-            return None, "identity keyword forwarding collapse found no safe call sites"
-        return (
-            IdentityKeywordForwardingShellRecipeParts(
-                call_rewrites=call_rewrites,
-                authority_claim=AstTargetAuthorityClaim.from_target(callee_authority),
-            ),
-            "",
-        )
-
-    @staticmethod
-    def wrapper_target(
-        context: CodemodSelectorContext,
-        source_path: str,
-        wrapper_qualname: str,
-    ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef] | None:
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=source_path, qualname=wrapper_qualname
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id[target.target_id]
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return None
-        return target, node
-
-    @classmethod
-    def wrapper_call_shape(
-        cls,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> tuple[str, tuple[str, ...]] | None:
-        if len(node.body) != 1:
-            return None
-        statement = node.body[0]
-        if not isinstance(statement, ast.Return):
-            return None
-        if not isinstance(statement.value, ast.Call):
-            return None
-        call = statement.value
-        if call.args:
-            return None
-        parameter_names = cls.forwarded_parameter_names(node)
-        if not parameter_names:
-            return None
-        if tuple(keyword.arg for keyword in call.keywords) != parameter_names:
-            return None
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                return None
-            if not isinstance(keyword.value, ast.Name):
-                return None
-            if keyword.value.id != keyword.arg:
-                return None
-        return ast.unparse(call.func), parameter_names
-
-    @staticmethod
-    def callee_authority_target(
-        context: CodemodSelectorContext,
-        source_path: str,
-        callee_source: str,
-    ) -> AstTargetDigest | None:
-        target_ids = SourceIndexTargetSelector(
-            file_paths=(source_path,),
-            qualnames=(callee_source,),
-            node_kinds=(
-                AstTargetNodeKind.CLASS,
-                AstTargetNodeKind.FUNCTION,
-                AstTargetNodeKind.METHOD,
-            ),
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        return context.source_index.target_by_id[target_ids[0]]
-
-    @staticmethod
-    def forwarded_parameter_names(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> tuple[str, ...]:
-        if node.args.vararg is not None or node.args.kwarg is not None:
-            return ()
-        positional_arguments = tuple((*node.args.posonlyargs, *node.args.args))
-        if positional_arguments and positional_arguments[0].arg in {"self", "cls"}:
-            positional_arguments = positional_arguments[1:]
-        arguments = (*positional_arguments, *node.args.kwonlyargs)
-        return tuple(argument.arg for argument in arguments)
-
-    def call_rewrites(
-        self,
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        source: str,
-        wrapper_target: AstTargetDigest,
-        wrapper_node: ast.FunctionDef | ast.AsyncFunctionDef,
-        wrapper_method_name: str,
-        callee_source: str,
-        parameter_names: tuple[str, ...],
-    ) -> tuple[IdentityKeywordForwardingCallRewrite, ...]:
-        owner_qualname = wrapper_target.qualname.rpartition(".")[0]
-        replacement_scope = self.replacement_scope(
-            context,
-            source_path=source_path,
-            owner_qualname=owner_qualname,
-        )
-        if replacement_scope is None:
-            return ()
-        target, _node = replacement_scope
-        call_replacements = tuple(
-            replacement
-            for caller_target in self.caller_targets(
-                context,
-                source_path,
-                wrapper_target,
-                owner_qualname=owner_qualname,
-            )
-            for caller_node in (
-                context.ast_target_nodes_by_id[caller_target.target_id],
-            )
-            if isinstance(caller_node, ast.FunctionDef | ast.AsyncFunctionDef)
-            for call in ast.walk(caller_node)
-            for replacement in (
-                self.call_replacement(
-                    source,
-                    call,
-                    wrapper_method_name=wrapper_method_name,
-                    owner_qualname=owner_qualname,
-                    caller_qualname=caller_target.qualname,
-                    callee_source=callee_source,
-                    parameter_names=parameter_names,
-                ),
-            )
-            if replacement is not None
-        )
-        if not call_replacements:
-            return ()
-        wrapper_delete_replacement = self.delete_node_replacement(source, wrapper_node)
-        return (
-            IdentityKeywordForwardingCallRewrite(
-                target=target,
-                replacement_source=self.replacement_source_for_target(
-                    source,
-                    target,
-                    (*call_replacements, wrapper_delete_replacement),
-                ),
-            ),
-        )
-
-    @staticmethod
-    def replacement_scope(
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        owner_qualname: str,
-    ) -> tuple[AstTargetDigest, ast.AST] | None:
-        if not owner_qualname:
-            module_targets = tuple(
-                target
-                for target in context.source_index.ast_targets
-                if target.file_path == source_path and target.is_module
-            )
-            if len(module_targets) != 1:
-                return None
-            source = context.sources_by_file_path.get(source_path)
-            if source is None:
-                return None
-            return module_targets[0], ast.parse(source, filename=source_path)
-        target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.CLASS,),
-            file_paths=(source_path,),
-            qualnames=(owner_qualname,),
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        return target, context.ast_target_nodes_by_id[target.target_id]
-
-    @staticmethod
-    def caller_targets(
-        context: CodemodSelectorContext,
-        source_path: str,
-        wrapper_target: AstTargetDigest,
-        *,
-        owner_qualname: str,
-    ) -> tuple[AstTargetDigest, ...]:
-        return tuple(
-            target
-            for target in context.source_index.ast_targets
-            if target.file_path == source_path
-            and target.target_id != wrapper_target.target_id
-            and target.node_kind
-            in {AstTargetNodeKind.FUNCTION.value, AstTargetNodeKind.METHOD.value}
-            and (not owner_qualname or target.qualname.startswith(f"{owner_qualname}."))
-        )
-
-    def call_replacement(
-        self,
-        source: str,
-        node: ast.AST,
-        *,
-        wrapper_method_name: str,
-        owner_qualname: str,
-        caller_qualname: str,
-        callee_source: str,
-        parameter_names: tuple[str, ...],
-    ) -> SourceTextSpanReplacement | None:
-        if not isinstance(node, ast.Call):
-            return None
-        if not self.is_wrapper_call(
-            node,
-            wrapper_method_name=wrapper_method_name,
-            owner_qualname=owner_qualname,
-            caller_qualname=caller_qualname,
-        ):
-            return None
-        argument_sources = self.argument_sources(source, node, parameter_names)
-        if argument_sources is None:
-            return None
-        start_offset, end_offset = self.node_offsets(source, node)
-        return SourceTextSpanReplacement.from_offsets(
-            start_offset=start_offset,
-            end_offset=end_offset,
-            replacement_source=(
-                f"{callee_source}("
-                f"{', '.join(f'{name}={argument_sources[name]}' for name in parameter_names)}"
-                ")"
-            ),
-        )
-
-    @staticmethod
-    def is_wrapper_call(
-        node: ast.Call,
-        *,
-        wrapper_method_name: str,
-        owner_qualname: str,
-        caller_qualname: str,
-    ) -> bool:
-        if isinstance(node.func, ast.Attribute):
-            if node.func.attr != wrapper_method_name:
-                return False
-            if not isinstance(node.func.value, ast.Name):
-                return False
-            if node.func.value.id not in {"self", "cls"}:
-                return False
-            return bool(owner_qualname) and caller_qualname.startswith(
-                f"{owner_qualname}."
-            )
-        if isinstance(node.func, ast.Name):
-            return not owner_qualname and node.func.id == wrapper_method_name
-        return False
-
-    @staticmethod
-    def argument_sources(
-        source: str,
-        node: ast.Call,
-        parameter_names: tuple[str, ...],
-    ) -> dict[str, str] | None:
-        if any(keyword.arg is None for keyword in node.keywords):
-            return None
-        if len(node.args) + len(node.keywords) != len(parameter_names):
-            return None
-        argument_by_name: dict[str, ast.AST] = {}
-        for parameter_name, argument in zip(parameter_names, node.args, strict=False):
-            argument_by_name[parameter_name] = argument
-        for keyword in node.keywords:
-            if keyword.arg not in parameter_names:
-                return None
-            if keyword.arg in argument_by_name:
-                return None
-            argument_by_name[keyword.arg] = keyword.value
-        if frozenset(argument_by_name) != frozenset(parameter_names):
-            return None
-        source_by_name = {
-            name: ast.get_source_segment(source, argument_by_name[name])
-            for name in parameter_names
-        }
-        if any(value is None for value in source_by_name.values()):
-            return None
-        return {name: value or "" for name, value in source_by_name.items()}
-
-    @staticmethod
-    def node_offsets(source: str, node: ast.AST) -> tuple[int, int]:
-        if not isinstance(node, ast.expr | ast.stmt):
-            raise ValueError("AST node lacks source offsets")
-        offsets = SourceTextGeometry(source).node_offsets(node)
-        if offsets is None:
-            raise ValueError("AST node lacks source offsets")
-        return offsets
-
-    @classmethod
-    def delete_node_replacement(
-        cls,
-        source: str,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> SourceTextSpanReplacement:
-        geometry = SourceTextGeometry(source)
-        start_offset, end_offset = geometry.node_span_offsets(
-            SourceNodeSpan(node, SourceNodeDecoratorPolicy.INCLUDE)
-        )
-        return SourceTextSpanReplacement.from_offsets(
-            start_offset=start_offset,
-            end_offset=end_offset,
-            replacement_source="",
-        )
-
-    @staticmethod
-    def replacement_source_for_target(
-        source: str,
-        target: AstTargetDigest,
-        replacements: tuple[SourceTextSpanReplacement, ...],
-    ) -> str:
-        geometry = SourceTextGeometry(source)
-        start_offset = geometry.line_offsets[target.line - 1]
-        end_offset = (
-            geometry.line_offsets[target.end_line]
-            if target.end_line < len(geometry.line_offsets)
-            else geometry.end_offset
-        )
-        return geometry.source_with_replacements_in_span(
-            start_offset,
-            end_offset,
-            replacements,
-        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -16641,12 +16228,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             )
             if argument_sources is None:
                 return ()
-            start_offset, end_offset = (
-                IdentityKeywordForwardingShellFindingRecipeSynthesizer.node_offsets(
-                    source,
-                    call,
-                )
-            )
+            start_offset, end_offset = SourceTextGeometry(
+                source
+            ).required_node_offsets(call)
             replacements.append(
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=start_offset,
@@ -17368,8 +16952,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             method=method,
         )
         insertion_offset = self.class_method_insertion_offset(source, node)
-        return self.replacement_source_for_target(
-            source,
+        return SourceTextGeometry(source).target_source_with_replacements(
             target,
             (
                 SourceTextSpanReplacement.from_offsets(
@@ -17455,8 +17038,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             rewrites.append(
                 RepeatedAuthorityTargetRewrite(
                     target=target_digest,
-                    replacement_source=self.replacement_source_for_target(
-                        source,
+                    replacement_source=SourceTextGeometry(
+                        source
+                    ).target_source_with_replacements(
                         target_digest,
                         replacements,
                     ),
@@ -17509,11 +17093,8 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         }
         if any(argument_sources[name] is None for name in argument_sources):
             return None
-        start_offset, end_offset = (
-            IdentityKeywordForwardingShellFindingRecipeSynthesizer.node_offsets(
-                source,
-                node,
-            )
+        start_offset, end_offset = SourceTextGeometry(source).required_node_offsets(
+            node
         )
         return SourceTextSpanReplacement.from_offsets(
             start_offset=start_offset,
@@ -17596,19 +17177,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 return None
             return next(iter(roots))
         return ast.get_source_segment(source, value)
-
-    @staticmethod
-    def replacement_source_for_target(
-        source: str,
-        target: AstTargetDigest,
-        replacements: tuple[SourceTextSpanReplacement, ...],
-    ) -> str:
-        return IdentityKeywordForwardingShellFindingRecipeSynthesizer.replacement_source_for_target(
-            source,
-            target,
-            replacements,
-        )
-
 
 class RepeatedMethodPromotionFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
@@ -18061,81 +17629,6 @@ class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
         finding: RefactorFinding,
     ) -> tuple[str, ...]:
         return finding.metrics.plan_field_names
-
-
-class ModuleAssignmentDeletionFindingRecipeSynthesizer(
-    RecipeMetadataAuthority,
-    FindingRecipeSynthesizer,
-    ABC,
-):
-    """Shared recipe shape for findings that delete module assignments."""
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        del context
-        action_keys = self.action_keys_for_finding(finding)
-        if not action_keys:
-            return self.rejected_evaluation(
-                "module-assignment deletion requires declared assignment targets"
-            )
-        file_paths = frozenset(action_key.file_path for action_key in action_keys)
-        if len(file_paths) != 1:
-            return self.rejected_evaluation(
-                "module-assignment deletion requires one source file"
-            )
-        source_path = next(iter(file_paths))
-        return self.executable_evaluation(
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
-                reason=self.recipe_reason,
-            ).with_operation(
-                DeleteModuleAssignmentsOperation(
-                    target=SourceRewriteTarget(file_path=source_path),
-                    assignment_names=tuple(
-                        action_key.subject_name for action_key in action_keys
-                    ),
-                    rationale="",
-                )
-            )
-        )
-
-
-class ModuleAuthorityReexportCatalogFindingRecipeSynthesizer(
-    ModuleAssignmentDeletionFindingRecipeSynthesizer
-):
-    """Build deletion recipes for non-paying authority re-export catalogs."""
-
-    detector_id = MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID
-    recipe_id_suffix = "delete-authority-reexport-catalog"
-    recipe_reason = (
-        "Delete module-level authority re-export aliases that the rent "
-        "proof marks as redundant abstraction."
-    )
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        if not self.has_nonpaying_rent_proof(finding):
-            return ()
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            (
-                (evidence.file_path, alias_name)
-                for alias_name in finding.metrics.plan_field_names
-            ),
-        )
-
-    @staticmethod
-    def has_nonpaying_rent_proof(finding: RefactorFinding) -> bool:
-        certificate = finding.compression_certificate
-        return certificate is not None and not certificate.pays_rent
 
 
 @dataclass(frozen=True)
@@ -19362,15 +18855,8 @@ class DataclassAuthorityMappingRecipeBuilder(
                 authority.node,
             )
         )
-        target_start = geometry.line_offsets[authority.target.line - 1]
-        target_end = (
-            geometry.line_offsets[authority.target.end_line]
-            if authority.target.end_line < len(geometry.line_offsets)
-            else geometry.end_offset
-        )
-        return geometry.source_with_replacements_in_span(
-            target_start,
-            target_end,
+        return geometry.target_source_with_replacements(
+            authority.target,
             (
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=insertion_offset,
