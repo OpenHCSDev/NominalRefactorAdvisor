@@ -76,6 +76,14 @@ def test_registered_operation_payload_bindings_are_unique() -> None:
         ) == len(binding_set)
 
 
+def test_registered_operation_payloads_are_owned_by_constructor_fields() -> None:
+    for operation_key, operation_type in RefactorRecipeOperation.__registry__.items():
+        assert all(
+            binding.field_name == binding.constructor_argument_name
+            for binding in operation_type.payload_bindings()
+        ), operation_key
+
+
 def test_registered_selector_payload_bindings_are_unique() -> None:
     for selector_key, selector_type in CodemodTargetSelector.__registry__.items():
         binding_set = selector_type.payload_bindings

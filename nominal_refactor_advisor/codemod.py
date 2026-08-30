@@ -555,8 +555,6 @@ class SourceNodeDecoratorPolicy(StrEnum):
     INCLUDE = "include"
 
 
-BASE_NAME_PAYLOAD_FIELD = "base_name"
-METHOD_NAMES_PAYLOAD_FIELD = "method_names"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
 RECIPES_PAYLOAD_FIELD = "recipes"
@@ -6287,7 +6285,7 @@ class ExtractMethodsToClassOperation(
     """Extract selected methods from one class into a generated peer authority class."""
 
     destination_class_name: str
-    extracted_method_names: tuple[str, ...]
+    method_names: tuple[str, ...]
     field_declaration_sources: tuple[str, ...] = ()
     class_base_names: tuple[str, ...] = ()
     class_decorator_sources: tuple[str, ...] = ()
@@ -6298,13 +6296,7 @@ class ExtractMethodsToClassOperation(
         return (
             PayloadBindingSet.from_field_codecs(
                 destination_class_name=RequiredStringPayloadValueCodec(),
-            )
-            + PayloadBindingSet.from_explicit_fields(
-                (
-                    METHOD_NAMES_PAYLOAD_FIELD,
-                    "extracted_method_names",
-                    StringArrayPayloadValueCodec(),
-                ),
+                method_names=StringArrayPayloadValueCodec(),
             )
             + PayloadBindingSet.from_field_codecs(
                 field_declaration_sources=OptionalStringArrayPayloadValueCodec(),
@@ -6352,14 +6344,14 @@ class ExtractMethodsToClassOperation(
             )
         duplicate_method_names = tuple(
             name
-            for name in self.extracted_method_names
-            if self.extracted_method_names.count(name) > 1
+            for name in self.method_names
+            if self.method_names.count(name) > 1
         )
         if duplicate_method_names:
             raise ValueError(
                 f"Method extraction names are duplicated: {duplicate_method_names!r}"
             )
-        for method_name in self.extracted_method_names:
+        for method_name in self.method_names:
             if not method_name.isidentifier():
                 raise ValueError(f"Method name must be an identifier: {method_name!r}")
         self.validate_generated_class_header()
@@ -6406,13 +6398,13 @@ class ExtractMethodsToClassOperation(
         }
         missing_names = tuple(
             method_name
-            for method_name in self.extracted_method_names
+            for method_name in self.method_names
             if method_name not in methods_by_name
         )
         if missing_names:
             raise ValueError(f"Source class does not define methods {missing_names!r}")
         return tuple(
-            methods_by_name[method_name] for method_name in self.extracted_method_names
+            methods_by_name[method_name] for method_name in self.method_names
         )
 
     def destination_class_insertion(
@@ -6431,7 +6423,7 @@ class ExtractMethodsToClassOperation(
             ),
             rationale=self.rationale
             or (
-                f"Extract methods {self.extracted_method_names!r} from "
+                f"Extract methods {self.method_names!r} from "
                 f"{target_digest.qualname!r} into {self.destination_class_name!r}."
             ),
         )
@@ -8776,7 +8768,7 @@ class ExposeGlobalCandidateCacheContextOperation(
     )
     candidate_collector_uses_config: bool = False
     candidate_item_sort_attributes: tuple[str, ...] = ()
-    replaced_base_name: str = "IssueDetector"
+    base_name: str = "IssueDetector"
     import_source: str = ""
 
     @classmethod
@@ -8792,13 +8784,7 @@ class ExposeGlobalCandidateCacheContextOperation(
                 ),
                 candidate_collector_uses_config=BooleanPayloadValueCodec(),
                 candidate_item_sort_attributes=OptionalStringArrayPayloadValueCodec(),
-            )
-            + PayloadBindingSet.from_explicit_fields(
-                (
-                    BASE_NAME_PAYLOAD_FIELD,
-                    "replaced_base_name",
-                    OptionalStringPayloadValueCodec("IssueDetector"),
-                ),
+                base_name=OptionalStringPayloadValueCodec("IssueDetector"),
             )
             + PayloadBindingSet.from_field_codecs(
                 import_source=OptionalStringPayloadValueCodec(""),
@@ -8897,9 +8883,9 @@ class ExposeGlobalCandidateCacheContextOperation(
         )
 
     def should_replace_base_item(self, base_item: str) -> bool:
-        if base_item == self.replaced_base_name:
+        if base_item == self.base_name:
             return True
-        if base_item.startswith(f"{self.replaced_base_name}["):
+        if base_item.startswith(f"{self.base_name}["):
             return True
         return CandidateCacheDetectorProtocolSource.is_contextual_candidate_base_source(
             base_item

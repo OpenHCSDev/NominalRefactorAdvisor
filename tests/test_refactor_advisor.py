@@ -12404,7 +12404,7 @@ def test_extract_methods_to_class_builder_simulates_method_owner_extraction(
                 file_path=module_path.as_posix(),
             ),
             destination_class_name="ResolutionAuthority",
-            extracted_method_names=("resolve",),
+            method_names=("resolve",),
         )
     )
 
