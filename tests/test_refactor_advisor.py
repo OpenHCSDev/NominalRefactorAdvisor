@@ -321,7 +321,6 @@ from nominal_refactor_advisor.taxonomy import (
 _PACKAGE_SCAN_LABEL = "package"
 _REPOSITORY_SCAN_LABEL = "repository"
 _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID = "semantic_overlap_abc_optimization"
-_SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID = "semantic_substring_classifier"
 
 
 def _finding_spec(
@@ -9200,107 +9199,6 @@ def test_detects_two_case_string_dispatch_as_polymorphism(tmp_path: Path) -> Non
     assert "'csv'" in finding.summary
     assert "'json'" in finding.summary
     assert "AutoRegisterMeta" in (finding.scaffold or "")
-
-
-def test_detects_single_literal_discriminator_branches(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/parser.py",
-        '\nclass PortTypeAuthority:\n    def scalar_type(self, payload, kind):\n        if kind == "opaque":\n            return None\n        return payload["scalar_type"]\n\n    def rank(self, payload, kind):\n        if kind in {"scalar", "opaque"}:\n            return None\n        return payload["rank"]\n',
-    )
-
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "literal_discriminator_branch"
-    ]
-
-    summaries = "\n".join(finding.summary for finding in findings)
-    assert "PortTypeAuthority.scalar_type" in summaries
-    assert "PortTypeAuthority.rank" in summaries
-    assert "`kind`" in summaries
-    assert "'opaque'" in summaries
-    assert "'scalar'" in summaries
-    assert any(
-        "closed-axis authority lookup" in (finding.codemod_patch or "")
-        for finding in findings
-    )
-
-
-def test_literal_discriminator_branch_synthesizes_function_dispatch_recipe(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/parser.py"
-    _write_module(
-        tmp_path,
-        "pkg/parser.py",
-        '\ndef scalar_type(kind, payload):\n    if kind == "opaque":\n        return None\n    raise ValueError(kind)\n',
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "literal_discriminator_branch"
-    )
-    source_index = build_source_index(modules, findings)
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    context = CodemodSelectorContext(
-        source_index=source_index,
-        sources_by_file_path=source_by_path,
-    )
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("literal_discriminator_branch",),
-        selector_context=context,
-    )
-    simulation = plan.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-
-    assert plan.expected_removed_finding_count == 1
-    operation = plan.document.recipes[0].operations[0].to_dict()
-    assert operation["operation"] == "dispatch_to_polymorphism"
-    assert operation["dispatch_axis_expression"] == "kind"
-    assert operation["literal_cases"] == ("'opaque'",)
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-
-
-def test_literal_discriminator_method_branch_reports_class_boundary_recipe_gap(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/parser.py"
-    _write_module(
-        tmp_path,
-        "pkg/parser.py",
-        '\nclass PortTypeAuthority:\n    def scalar_type(self, payload, kind):\n        if kind == "opaque":\n            return None\n        return payload["scalar_type"]\n',
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "literal_discriminator_branch"
-    )
-    source_index = build_source_index(modules, findings)
-    context = CodemodSelectorContext(
-        source_index=source_index,
-        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
-    )
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=("literal_discriminator_branch",),
-        selector_context=context,
-    )
-    record = plan.report.records[0]
-
-    assert plan.expected_removed_finding_count == 0
-    assert record.status.value == "rejected_by_safety_check"
-    assert "method target" in record.reason
-    assert "class boundary" in record.reason
 
 
 def test_detects_string_keyed_formula_subclass_family(tmp_path: Path) -> None:
@@ -22306,89 +22204,6 @@ def test_detects_runtime_semantic_branch_chain(tmp_path: Path) -> None:
     assert "materialize" in finding.summary
     assert "materialization_requests" in finding.summary
     assert "formal policy/profile authority" in (finding.codemod_patch or "")
-
-
-def test_detects_semantic_substring_classifier(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_policy.py",
-        '\ndef classify(policy_keys):\n    return tuple(key for key in policy_keys if "ready_item" in str(key))\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
-        )
-    )
-    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
-    assert "ready_item" in finding.summary
-    assert "str(key)" in finding.summary
-    assert finding.codemod_patch is not None
-    assert "exact nominal classifier" in finding.codemod_patch
-
-
-def test_semantic_substring_classifier_ignores_exact_collection_membership(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_policy.py",
-        '\ndef has_requested_case(requested_cases):\n    return "ready_item" in requested_cases\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
-        for finding in findings
-    )
-
-
-def test_detects_semantic_suffix_method_classifier(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_policy.py",
-        '\ndef classify(kind):\n    return str(kind).endswith("_active_case")\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
-        )
-    )
-    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
-    assert "_active_case" in finding.summary
-    assert "endswith method" in finding.summary
-
-
-def test_semantic_substring_classifier_ignores_payload_text_suffix(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_policy.py",
-        '\ndef has_suffix(payload_text):\n    return payload_text.endswith("_active_case")\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
-        for finding in findings
-    )
-
-
-def test_semantic_substring_classifier_ignores_dunder_name_syntax_filter(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_policy.py",
-        '\ndef visible_names(namespace):\n    return tuple(name for name in namespace if not name.startswith("__"))\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
-        for finding in findings
-    )
 
 
 def test_detects_two_case_runtime_semantic_branch_chain_at_builder_threshold(

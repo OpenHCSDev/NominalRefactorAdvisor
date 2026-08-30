@@ -107,20 +107,6 @@ class SemanticRoleIdentityToken(StrEnum):
         )
 
     @classmethod
-    def literal_discriminator_axis_values(cls) -> frozenset[str]:
-        return frozenset(
-            token.value
-            for token in (
-                cls.FAMILY_TOKEN,
-                cls.FORMAT_TOKEN,
-                cls.KEY_TOKEN,
-                cls.KIND_TOKEN,
-                cls.MODE_TOKEN,
-                cls.TYPE_TOKEN,
-            )
-        )
-
-    @classmethod
     def relation_comparison_axis_values(cls) -> frozenset[str]:
         return frozenset(
             token.value for token in (cls.FAMILY_TOKEN, cls.KEY_TOKEN, cls.TYPE_TOKEN)
