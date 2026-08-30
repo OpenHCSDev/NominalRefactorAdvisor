@@ -28,7 +28,7 @@ import tempfile
 import textwrap
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from enum import StrEnum
@@ -70,7 +70,6 @@ from .models import (
     RegistrationMetrics,
     RepeatedMethodMetrics,
     SourceLocation,
-    SourceLocationZipDescriptorShape,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .patterns import PatternId
@@ -2621,16 +2620,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         selector: "CodemodTargetSelector",
     ) -> "CodemodTargetSourceReport":
         return CodemodTargetSourceReport.from_selector_context(selector, self)
-
-    def candidates_with_automated_rewrites(
-        self,
-        candidates: Iterable["CodemodCandidate"],
-    ) -> tuple["CodemodCandidate", ...]:
-        return codemod_candidates_with_automated_rewrites(
-            candidates,
-            self.source_index,
-            self.sources_by_file_path,
-        )
 
     def simulate_candidates(
         self,
@@ -12944,6 +12933,10 @@ class CodemodPlanSequence:
         return not self.guard_suite.is_empty
 
     @property
+    def requires_source_snapshot(self) -> bool:
+        return self.has_recipes or self.has_architecture_guards
+
+    @property
     def has_multiple_stages(self) -> bool:
         return len(self.documents) > 1
 
@@ -22199,11 +22192,6 @@ class CodemodCandidate:
         return snapshot.simulate_rewrites(self.planned_rewrites, backend=backend)
 
 
-_DescriptorAssignmentBuilder = Callable[
-    [ast.FunctionDef | ast.AsyncFunctionDef], str | None
-]
-
-
 @dataclass(frozen=True)
 class AstExpressionProjection:
     """Nominal projections from an AST expression into source-level names."""
@@ -22219,15 +22207,6 @@ class AstExpressionProjection:
             return AstExpressionProjection(self.node.value).base_name()
         return None
 
-    def self_attribute_name(self) -> str | None:
-        if (
-            isinstance(self.node, ast.Attribute)
-            and isinstance(self.node.value, ast.Name)
-            and self.node.value.id == "self"
-        ):
-            return self.node.attr
-        return None
-
     def attribute_projection(self) -> tuple[str, str] | None:
         if not isinstance(self.node, ast.Attribute):
             return None
@@ -22241,457 +22220,6 @@ class AstExpressionProjection:
         if source_name != carrier_variable_name:
             return None
         return field_name
-
-
-def _source_location_descriptor_assignment(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> str | None:
-    if not PlainPropertyMethodAuthority(node).matches:
-        return None
-    returned = _single_return_value(node)
-    if (
-        not isinstance(returned, ast.Call)
-        or _call_name(returned.func) != "SourceLocation"
-    ):
-        return None
-    if len(returned.args) != 3 or returned.keywords:
-        return None
-    attribute_names = tuple(
-        AstExpressionProjection(argument).self_attribute_name()
-        for argument in returned.args
-    )
-    if any(name is None for name in attribute_names):
-        return None
-    file_attribute_name, line_attribute_name, symbol_attribute_name = attribute_names
-    return (
-        f"{node.name} = SourceLocationEvidenceProperty("
-        f'"{file_attribute_name}", "{line_attribute_name}", "{symbol_attribute_name}")'
-    )
-
-
-@dataclass(frozen=True)
-class ZippedSourceLocationDescriptorParts(SourceLocationZipDescriptorShape):
-    file_attribute_name: str
-
-    @classmethod
-    def from_parallel_bindings(
-        cls,
-        *,
-        file_attribute_name: str,
-        line_variable_name: str,
-        symbol_variable_name: str,
-        zipped_attribute_names_by_variable: dict[str | None, str | None],
-    ) -> "ZippedSourceLocationDescriptorParts | None":
-        line_numbers_attribute_name = zipped_attribute_names_by_variable.get(
-            line_variable_name
-        )
-        symbol_names_attribute_name = zipped_attribute_names_by_variable.get(
-            symbol_variable_name
-        )
-        if line_numbers_attribute_name is None or symbol_names_attribute_name is None:
-            return None
-        return cls(
-            file_attribute_name=file_attribute_name,
-            line_numbers_attribute_name=line_numbers_attribute_name,
-            symbol_names_attribute_name=symbol_names_attribute_name,
-        )
-
-    def assignment_source(self, method_name: str) -> str:
-        return (
-            f"{method_name} = ZippedSourceLocationEvidenceProperty("
-            f'"{self.line_numbers_attribute_name}", '
-            f'"{self.symbol_names_attribute_name}", '
-            f'"{self.file_attribute_name}")'
-        )
-
-
-def _zipped_source_location_descriptor_assignment(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> str | None:
-    if not PlainPropertyMethodAuthority(node).matches:
-        return None
-    returned = _single_return_value(node)
-    if not isinstance(returned, ast.Call) or _call_name(returned.func) != "tuple":
-        return None
-    if len(returned.args) != 1 or returned.keywords:
-        return None
-    generator = returned.args[0]
-    if not isinstance(generator, ast.GeneratorExp):
-        return None
-    source_location_call = generator.elt
-    if (
-        not isinstance(source_location_call, ast.Call)
-        or _call_name(source_location_call.func) != "SourceLocation"
-        or len(source_location_call.args) != 3
-        or source_location_call.keywords
-    ):
-        return None
-    file_attribute_name = AstExpressionProjection(
-        source_location_call.args[0]
-    ).self_attribute_name()
-    line_variable_name = _name_id(source_location_call.args[1])
-    symbol_variable_name = _name_id(source_location_call.args[2])
-    if (
-        file_attribute_name is None
-        or line_variable_name is None
-        or symbol_variable_name is None
-    ):
-        return None
-    if len(generator.generators) != 1:
-        return None
-    comprehension = generator.generators[0]
-    if (
-        comprehension.ifs
-        or comprehension.is_async
-        or not isinstance(comprehension.target, ast.Tuple)
-    ):
-        return None
-    target_names = tuple(_name_id(item) for item in comprehension.target.elts)
-    zip_call = comprehension.iter
-    if not isinstance(zip_call, ast.Call) or _call_name(zip_call.func) != "zip":
-        return None
-    if len(zip_call.args) != 2 or not _has_strict_true_keyword(zip_call):
-        return None
-    zipped_attribute_names = tuple(
-        AstExpressionProjection(argument).self_attribute_name()
-        for argument in zip_call.args
-    )
-    if any(name is None for name in (*target_names, *zipped_attribute_names)):
-        return None
-    descriptor_parts = ZippedSourceLocationDescriptorParts.from_parallel_bindings(
-        file_attribute_name=file_attribute_name,
-        line_variable_name=line_variable_name,
-        symbol_variable_name=symbol_variable_name,
-        zipped_attribute_names_by_variable=dict(
-            zip(target_names, zipped_attribute_names, strict=True)
-        ),
-    )
-    if descriptor_parts is None:
-        return None
-    return descriptor_parts.assignment_source(node.name)
-
-
-class DescriptorAssignmentAuthority(ABC, metaclass=AutoRegisterMeta):
-    """Registered authority for turning descriptor-like methods into assignments."""
-
-    __registry__: ClassVar[dict[str, type["DescriptorAssignmentAuthority"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
-    assignment_builder: ClassVar[_DescriptorAssignmentBuilder]
-
-    @classmethod
-    def assignment(cls, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
-        return cls.assignment_builder(node)
-
-
-class SourceLocationDescriptorAssignmentAuthority(DescriptorAssignmentAuthority):
-    """Projection authority for exact SourceLocation evidence properties."""
-
-    assignment_builder = staticmethod(_source_location_descriptor_assignment)
-
-
-class ZippedSourceLocationDescriptorAssignmentAuthority(
-    DescriptorAssignmentAuthority,
-):
-    """Projection authority for exact zipped SourceLocation evidence properties."""
-
-    assignment_builder = staticmethod(_zipped_source_location_descriptor_assignment)
-
-
-class DescriptorPropertyFindingRecipeSynthesizer(
-    SharedRecipeIdSuffixRecipeReasonBase,
-    FindingRecipeSynthesizer,
-    ABC,
-):
-    """Bridge descriptor-property findings into finding-backed recipe synthesis."""
-
-    descriptor_assignment_authority: ClassVar[type[DescriptorAssignmentAuthority]]
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        if context is None:
-            return RejectedRecipeEvaluation(
-                reason="descriptor property rewrite requires source context",
-                executable_declaration_type=type(self),
-            )
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return RejectedRecipeEvaluation(
-                reason="descriptor property finding has no primary evidence",
-                executable_declaration_type=type(self),
-            )
-        target_id = SourceRewriteTarget(
-            qualname=evidence.symbol,
-            file_path=evidence.file_path,
-        ).optional_target_id(context.source_index)
-        if target_id is None:
-            return RejectedRecipeEvaluation(
-                reason="descriptor property evidence did not resolve to one target",
-                executable_declaration_type=type(self),
-            )
-        node = context.ast_target_nodes_by_id[target_id]
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return RejectedRecipeEvaluation(
-                reason="descriptor property target is not a function",
-                executable_declaration_type=type(self),
-            )
-        assignment = type(self).descriptor_assignment_authority.assignment(node)
-        if assignment is None:
-            return RejectedRecipeEvaluation(
-                reason="descriptor assignment authority rejected target shape",
-                executable_declaration_type=type(self),
-            )
-        class_target = ContainingClassTargetBoundaryPolicy(
-            context.source_index
-        ).target_for(target_id)
-        if class_target is None:
-            return RejectedRecipeEvaluation(
-                reason="descriptor property target has no containing class",
-                executable_declaration_type=type(self),
-            )
-        source = context.sources_by_file_path.get(class_target.file_path)
-        if source is None:
-            return RejectedRecipeEvaluation(
-                reason="descriptor property source text is unavailable",
-                executable_declaration_type=type(self),
-            )
-        geometry = SourceTextGeometry(source)
-        start, end = geometry.node_span_offsets(
-            SourceNodeSpan(
-                node,
-                decorator_policy=SourceNodeDecoratorPolicy.INCLUDE,
-            )
-        )
-        old_source = source[start:end]
-        new_source = f"{geometry.line_indent(start)}{assignment}\n"
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
-            reason=self.recipe_reason,
-        ).with_operation(
-            ReplaceTextOperation(
-                target=SourceRewriteTarget(
-                    qualname=class_target.qualname, file_path=class_target.file_path
-                ),
-                old_source=old_source,
-                new_source=new_source,
-                rationale=self.recipe_reason,
-            )
-        )
-        return ExecutableRecipeEvaluation(
-            executable_recipe=recipe,
-            executable_declaration_type=type(self),
-        )
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            ((evidence.file_path, evidence.symbol),),
-        )
-
-
-class SourceLocationEvidencePropertyFindingRecipeSynthesizer(
-    DescriptorPropertyFindingRecipeSynthesizer
-):
-    """Synthesize descriptor assignments for SourceLocation evidence properties."""
-
-    detector_id = "source_location_evidence_property"
-    descriptor_assignment_authority = SourceLocationDescriptorAssignmentAuthority
-    recipe_id_suffix = "replace-source-location-evidence-property"
-    recipe_reason = (
-        "Replace boilerplate SourceLocation evidence property with descriptor data."
-    )
-
-
-class ZippedSourceLocationEvidencePropertyFindingRecipeSynthesizer(
-    DescriptorPropertyFindingRecipeSynthesizer
-):
-    """Synthesize descriptor assignments for zipped SourceLocation evidence."""
-
-    detector_id = "zipped_source_location_evidence_property"
-    descriptor_assignment_authority = ZippedSourceLocationDescriptorAssignmentAuthority
-    recipe_id_suffix = "replace-zipped-source-location-evidence-property"
-    recipe_reason = "Replace boilerplate zipped SourceLocation evidence property with descriptor data."
-
-
-class CodemodRewriteBuilder(ABC, metaclass=AutoRegisterMeta):
-    """Build planned source rewrites for candidates with mechanical semantics."""
-
-    __registry__: ClassVar[dict[str, type["CodemodRewriteBuilder"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
-    registry_key_suffix: ClassVar[str] = "CodemodBuilder"
-    strategy_id: ClassVar[str]
-    strategy_reason: ClassVar[str]
-    automation_level: ClassVar[CodemodAutomationLevel]
-
-    @classmethod
-    def default_builders(cls) -> tuple["CodemodRewriteBuilder", ...]:
-        return tuple(
-            builder_type()
-            for builder_type in sorted(
-                cls.__registry__.values(),
-                key=lambda item: item.__name__,
-            )
-            if issubclass(builder_type, DefaultCodemodRewriteBuilder)
-        )
-
-    @property
-    def strategy(self) -> CodemodStrategy:
-        return CodemodStrategy(
-            strategy_id=type(self).strategy_id,
-            automation_level=type(self).automation_level,
-            reason=type(self).strategy_reason,
-        )
-
-    @abstractmethod
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        raise NotImplementedError
-
-
-class DefaultCodemodRewriteBuilder(CodemodRewriteBuilder, ABC):
-    """Nominal family of rewrite builders enabled in the automatic pass."""
-
-    automation_level = CodemodAutomationLevel.SAFE_MECHANICAL
-
-
-class DescriptorPropertyCodemodBuilder(ABC):
-    """Shared rewrite algorithm for descriptor-backed evidence properties."""
-
-    detector_id: ClassVar[str]
-    descriptor_assignment_authority: ClassVar[type[DescriptorAssignmentAuthority]]
-
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if candidate.opportunity_key.kind != "ast-target":
-            return ()
-        if self.detector_id not in candidate.opportunity.detector_ids:
-            return ()
-        return _descriptor_property_rewrites(
-            candidate,
-            source_index,
-            source_by_path,
-            descriptor_assignment_builder=type(
-                self
-            ).descriptor_assignment_authority.assignment,
-            rationale=self.strategy_reason,
-        )
-
-
-class SourceLocationEvidencePropertyCodemodBuilder(
-    DescriptorPropertyCodemodBuilder,
-    DefaultCodemodRewriteBuilder,
-):
-    """Plan descriptor replacements for exact SourceLocation evidence properties."""
-
-    strategy_id = "source-location-evidence-property-mechanical"
-    detector_id = "source_location_evidence_property"
-    descriptor_assignment_authority = SourceLocationDescriptorAssignmentAuthority
-    strategy_reason = (
-        "Replace boilerplate SourceLocation evidence property with "
-        "SourceLocationEvidenceProperty descriptor data."
-    )
-
-
-class ZippedSourceLocationEvidencePropertyCodemodBuilder(
-    DescriptorPropertyCodemodBuilder,
-    DefaultCodemodRewriteBuilder,
-):
-    """Plan descriptor replacements for exact zipped SourceLocation properties."""
-
-    strategy_id = "zipped-source-location-evidence-property-mechanical"
-    detector_id = "zipped_source_location_evidence_property"
-    descriptor_assignment_authority = ZippedSourceLocationDescriptorAssignmentAuthority
-    strategy_reason = (
-        "Replace boilerplate zipped SourceLocation evidence property with "
-        "ZippedSourceLocationEvidenceProperty descriptor data."
-    )
-
-
-def codemod_candidates_with_automated_rewrites(
-    candidates: Iterable[CodemodCandidate],
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-) -> tuple[CodemodCandidate, ...]:
-    """Attach available safe mechanical rewrites to advisor candidates."""
-
-    return _codemod_candidates_with_rewrite_builders(
-        candidates,
-        source_index,
-        source_by_path,
-        CodemodRewriteBuilder.default_builders(),
-    )
-
-
-def _codemod_candidates_with_rewrite_builders(
-    candidates: Iterable[CodemodCandidate],
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-    builders: Iterable[CodemodRewriteBuilder],
-) -> tuple[CodemodCandidate, ...]:
-    rewrite_builders = tuple(builders)
-    automated_candidates = []
-    for candidate in candidates:
-        rewrite_options = tuple(
-            (builder, rewrites)
-            for builder in rewrite_builders
-            if (
-                rewrites := builder.build_rewrites(
-                    candidate,
-                    source_index,
-                    source_by_path,
-                )
-            )
-        )
-        if len(rewrite_options) > 1:
-            strategy_ids = ", ".join(
-                builder.strategy.strategy_id for builder, _ in rewrite_options
-            )
-            raise ValueError(
-                f"Codemod candidate {candidate.candidate_id} matched multiple rewrite "
-                f"strategies: {strategy_ids}"
-            )
-        if not rewrite_options:
-            automated_candidates.append(candidate)
-            continue
-        builder, rewrites = rewrite_options[0]
-        automated_candidates.append(
-            replace(
-                candidate,
-                planned_rewrites=(*candidate.planned_rewrites, *rewrites),
-                strategy=builder.strategy,
-            )
-        )
-    return sorted_tuple(
-        automated_candidates,
-        key=lambda item: (
-            -item.load_bearing_score,
-            -item.predicted_removed_finding_count,
-            item.opportunity_key.kind,
-            item.opportunity_key.value,
-            item.target_ids,
-        ),
-    )
 
 
 def simulate_codemod_candidates(
@@ -23317,117 +22845,6 @@ def _candidate_id(
     return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
 
 
-def _descriptor_property_rewrites(
-    candidate: CodemodCandidate,
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-    *,
-    descriptor_assignment_builder: _DescriptorAssignmentBuilder,
-    rationale: str,
-) -> tuple[PlannedSourceRewrite, ...]:
-    nodes_by_target_id = AstTargetNodeIndex(
-        source_index,
-        source_by_path,
-    ).nodes_by_target_identifier()
-    replacements_by_class_target_id: dict[str, list[SourceTextSpanReplacement]] = {}
-    for target_id in candidate.target_ids:
-        target = source_index.target_by_id.get(target_id)
-        node = nodes_by_target_id.get(target_id)
-        if target is None or not isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            continue
-        assignment = descriptor_assignment_builder(node)
-        if assignment is None:
-            continue
-        class_target = ContainingClassTargetBoundaryPolicy(source_index).target_for(
-            target_id
-        )
-        if class_target is None:
-            continue
-        source = source_by_path.get(target.file_path)
-        if source is None:
-            continue
-        geometry = SourceTextGeometry(source)
-        start, end = geometry.node_span_offsets(
-            SourceNodeSpan(
-                node,
-                decorator_policy=SourceNodeDecoratorPolicy.INCLUDE,
-            )
-        )
-        if class_target.target_id not in replacements_by_class_target_id:
-            replacements_by_class_target_id[class_target.target_id] = []
-        replacements_by_class_target_id[class_target.target_id].append(
-            SourceTextSpanReplacement.from_offsets(
-                start_offset=start,
-                end_offset=end,
-                replacement_source=f"{geometry.line_indent(start)}{assignment}\n",
-            )
-        )
-
-    rewrites = []
-    for class_target_id, replacements in replacements_by_class_target_id.items():
-        class_target = source_index.target_by_id[class_target_id]
-        class_node = nodes_by_target_id.get(class_target_id)
-        source = source_by_path.get(class_target.file_path)
-        if source is None or not isinstance(class_node, ast.ClassDef):
-            continue
-        geometry = SourceTextGeometry(source)
-        class_start, class_end = geometry.node_span_offsets(SourceNodeSpan(class_node))
-        rewrites.append(
-            PlannedSourceRewrite(
-                target_id=class_target_id,
-                replacement_source=geometry.source_with_replacements_in_span(
-                    class_start,
-                    class_end,
-                    replacements,
-                ),
-                rationale=rationale,
-            )
-        )
-    return PlannedRewriteSelectionAuthority(source_index).select(rewrites)
-
-
-@dataclass(frozen=True)
-class PlainPropertyMethodAuthority:
-    """Recognize simple @property accessors that return derived descriptors."""
-
-    node: ast.FunctionDef | ast.AsyncFunctionDef
-
-    @property
-    def matches(self) -> bool:
-        return (
-            len(self.node.decorator_list) == 1
-            and _call_name(self.node.decorator_list[0]) == "property"
-            and len(self.node.args.args) == 1
-            and self.node.args.args[0].arg == "self"
-            and not self.node.args.posonlyargs
-            and not self.node.args.vararg
-            and not self.node.args.kwonlyargs
-            and not self.node.args.kwarg
-        )
-
-
-def _single_return_value(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> ast.expr | None:
-    body = _trim_docstring_body(node.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return):
-        return None
-    return body[0].value
-
-
-def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        return body[1:]
-    return body
-
-
 def _name_id(node: ast.expr) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
 
@@ -23438,15 +22855,6 @@ def _terminal_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Attribute):
         return node.attr
     return None
-
-
-def _has_strict_true_keyword(call: ast.Call) -> bool:
-    return (
-        len(call.keywords) == 1
-        and call.keywords[0].arg == "strict"
-        and isinstance(call.keywords[0].value, ast.Constant)
-        and call.keywords[0].value.value is True
-    )
 
 
 @dataclass(frozen=True)

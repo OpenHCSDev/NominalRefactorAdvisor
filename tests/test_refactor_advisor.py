@@ -114,7 +114,6 @@ from nominal_refactor_advisor.codemod import (
     ClassFamilyAuthorityConcept,
     ClassFamilyTargetSelector,
     CodemodSelectorContext,
-    CodemodRewriteBuilder,
     CodemodSimulationReport,
     CodemodSimulationWriter,
     CodemodSourceRevision,
@@ -126,7 +125,6 @@ from nominal_refactor_advisor.codemod import (
     ConstructorKwargCollapseConcept,
     ConvertManualRegistryToAutoregisterOperation,
     CreateFileOperation,
-    DefaultCodemodRewriteBuilder,
     FindingRecipeAuthorityClaimGate,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
@@ -181,7 +179,6 @@ from nominal_refactor_advisor.codemod import (
     TargetSetExpressionSelector,
     codemod_class_plan_from_findings,
     codemod_candidates_from_impact_ranking,
-    codemod_candidates_with_automated_rewrites,
     codemod_plan_from_findings,
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
@@ -3961,27 +3958,6 @@ def test_codemod_plan_document_simulates_and_applies_recipes(
     assert "HelperAuthority.normalize(value)" in rewritten
 
 
-def test_default_codemod_rewrite_builders_derive_from_registry() -> None:
-    builders = CodemodRewriteBuilder.default_builders()
-    builder_names = tuple(type(builder).__name__ for builder in builders)
-    default_registry_names = tuple(
-        builder_type.__name__
-        for builder_type in sorted(
-            (
-                builder_type
-                for builder_type in CodemodRewriteBuilder.__registry__.values()
-                if issubclass(builder_type, DefaultCodemodRewriteBuilder)
-            ),
-            key=lambda item: item.__name__,
-        )
-    )
-
-    assert builder_names == default_registry_names
-    assert all(
-        isinstance(builder, DefaultCodemodRewriteBuilder) for builder in builders
-    )
-
-
 def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
     tmp_path: Path,
 ) -> None:
@@ -4033,224 +4009,6 @@ def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
     )
     assert all(item.target_context.target_id is not None for item in report.violations)
     assert report.to_dict()["violation_count"] == 4
-
-
-def test_source_location_descriptor_codemod_builder_replaces_property(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass LocalRecord:\n"
-        "    @property\n"
-        "    def evidence(self):\n"
-        "        return SourceLocation(self.file_path, self.lineno, self.qualname)\n\n"
-        "    def keep_behavior(self):\n"
-        "        return self.qualname\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = [
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "source_location_evidence_property"
-    ]
-    source_index = build_source_index(modules, findings)
-    impact_ranking = build_refactor_impact_ranking(
-        findings,
-        source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=10,
-            minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
-        ),
-    )
-    automated_candidates = codemod_candidates_with_automated_rewrites(
-        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-    )
-
-    candidate = next(
-        item
-        for item in automated_candidates
-        if item.applicability.strategy.strategy_id
-        == "source-location-evidence-property-mechanical"
-    )
-    simulation = candidate.simulate(
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-        backend=CodemodBackend.AST_SPAN,
-    )
-    rewritten = simulation.rewritten_sources[module_path.as_posix()]
-
-    assert (
-        candidate.applicability.strategy.automation_level
-        == CodemodAutomationLevel.SAFE_MECHANICAL
-    )
-    assert candidate.applicability.planned_rewrite_count == 1
-    assert (
-        '    evidence = SourceLocationEvidenceProperty("file_path", "lineno", "qualname")'
-        in rewritten
-    )
-    assert "@property" not in rewritten
-    assert "def evidence" not in rewritten
-    assert "def keep_behavior" in rewritten
-
-
-def test_zipped_source_location_descriptor_codemod_builder_replaces_property(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass LocalRecord:\n"
-        "    @property\n"
-        "    def evidence_locations(self):\n"
-        "        return tuple(\n"
-        "            SourceLocation(self.file_path, line, function_name)\n"
-        "            for line, function_name in zip(\n"
-        "                self.line_numbers, self.function_names, strict=True\n"
-        "            )\n"
-        "        )\n\n"
-        "    def keep_behavior(self):\n"
-        "        return self.function_names\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = [
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "zipped_source_location_evidence_property"
-    ]
-    source_index = build_source_index(modules, findings)
-    impact_ranking = build_refactor_impact_ranking(
-        findings,
-        source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=10,
-            minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
-        ),
-    )
-    automated_candidates = codemod_candidates_with_automated_rewrites(
-        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-    )
-
-    candidate = next(
-        item
-        for item in automated_candidates
-        if item.applicability.strategy.strategy_id
-        == "zipped-source-location-evidence-property-mechanical"
-    )
-    simulation = candidate.simulate(
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-        backend=CodemodBackend.AST_SPAN,
-    )
-    rewritten = simulation.rewritten_sources[module_path.as_posix()]
-
-    assert (
-        candidate.applicability.strategy.automation_level
-        == CodemodAutomationLevel.SAFE_MECHANICAL
-    )
-    assert candidate.applicability.planned_rewrite_count == 1
-    assert (
-        '    evidence_locations = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names", "file_path")'
-        in rewritten
-    )
-    assert "@property" not in rewritten
-    assert "def evidence_locations" not in rewritten
-    assert "def keep_behavior" in rewritten
-
-
-def test_source_location_descriptor_finding_recipe_replaces_property(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass LocalRecord:\n"
-        "    @property\n"
-        "    def evidence(self):\n"
-        "        return SourceLocation(self.file_path, self.lineno, self.qualname)\n\n"
-        "    def keep_behavior(self):\n"
-        "        return self.qualname\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "source_location_evidence_property"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-
-    assert plan.records[0].status.value == "planned"
-    assert (
-        plan.records[0].executable_declaration_name
-        == "SourceLocationEvidencePropertyFindingRecipeSynthesizer"
-    )
-    assert (
-        '    evidence = SourceLocationEvidenceProperty("file_path", "lineno", "qualname")'
-        in rewritten
-    )
-    assert "@property" not in rewritten
-    assert "def evidence" not in rewritten
-    assert "def keep_behavior" in rewritten
-
-
-def test_zipped_source_location_descriptor_finding_recipe_replaces_property(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass LocalRecord:\n"
-        "    @property\n"
-        "    def evidence_locations(self):\n"
-        "        return tuple(\n"
-        "            SourceLocation(self.file_path, line, function_name)\n"
-        "            for line, function_name in zip(\n"
-        "                self.line_numbers, self.function_names, strict=True\n"
-        "            )\n"
-        "        )\n\n"
-        "    def keep_behavior(self):\n"
-        "        return self.function_names\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "zipped_source_location_evidence_property"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-
-    assert plan.records[0].status.value == "planned"
-    assert (
-        plan.records[0].executable_declaration_name
-        == "ZippedSourceLocationEvidencePropertyFindingRecipeSynthesizer"
-    )
-    assert (
-        '    evidence_locations = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names", "file_path")'
-        in rewritten
-    )
-    assert "@property" not in rewritten
-    assert "def evidence_locations" not in rewritten
-    assert "def keep_behavior" in rewritten
 
 
 def test_detects_generic_cancelable_product_composition_signal(
@@ -9480,56 +9238,6 @@ def test_disabled_simple_property_alias_detector_family_is_removed() -> None:
         }
         & detector_ids
     )
-
-
-def test_detects_source_location_evidence_property(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass LocalRecord:\n    @property\n    def evidence(self):\n        return SourceLocation(self.file_path, self.lineno, self.qualname)\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "source_location_evidence_property"
-    ]
-    assert len(findings) == 1
-    assert "LocalRecord.evidence" in findings[0].summary
-    assert "SourceLocationEvidenceProperty" in (findings[0].scaffold or "")
-
-
-def test_detects_zipped_source_location_evidence_property(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass LocalRecord:\n    @property\n    def evidence_locations(self):\n        return tuple(\n            SourceLocation(self.file_path, line, function_name)\n            for line, function_name in zip(\n                self.line_numbers, self.function_names, strict=True\n            )\n        )\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "zipped_source_location_evidence_property"
-    ]
-    assert len(findings) == 1
-    assert "LocalRecord.evidence_locations" in findings[0].summary
-    assert "ZippedSourceLocationEvidenceProperty" in (findings[0].scaffold or "")
-    removed_names = (
-        "_SourceLocationEvidenceShapeStep",
-        "SharedProjectMixin",
-        "_EvidencePropertyReturnStep",
-        "_SourceLocationReturnCallStep",
-        "_SourceLocationSelfAttributeArgsStep",
-        "_source_location_evidence_shape",
-        "_ZippedSourceLocationGeneratorCall",
-        "_ZippedSourceLocationVariableArgs",
-        "_ZippedSourceLocationEvidenceShapeStep",
-        "_ZippedEvidencePropertyReturnStep",
-        "_ZippedTupleGeneratorReturnStep",
-        "_ZippedSourceLocationGeneratorCallStep",
-        "_ZippedSourceLocationCallArgsStep",
-        "_ZippedSelfAttributeBindingsStep",
-        "_zipped_source_location_evidence_shape",
-    )
-    assert all(not hasattr(helper_detectors, name) for name in removed_names)
 
 
 def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:

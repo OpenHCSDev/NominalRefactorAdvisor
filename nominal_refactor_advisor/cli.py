@@ -82,7 +82,6 @@ from .codemod import (
     FindingRecipeSynthesizer,
     JsonObject,
     JsonValue,
-    PlannedSourceRewrite,
     RefactorConcept,
     SourcePathCandidateAuthority,
     SourcePathCandidateSet,
@@ -1005,7 +1004,7 @@ class SourceSnapshotCacheEligibility:
     """Decide whether source-snapshot demand can use cached source context."""
 
     include_impact_ranking: bool
-    codemod_plan_sequence_has_recipes: bool
+    codemod_plan_sequence_requires_source_snapshot: bool
     codemod_scan_query_needs_source_snapshot: bool
     codemod_refactor_goal_requested: bool
 
@@ -1013,7 +1012,7 @@ class SourceSnapshotCacheEligibility:
     def needs_source_snapshot(self) -> bool:
         return (
             self.include_impact_ranking
-            or self.codemod_plan_sequence_has_recipes
+            or self.codemod_plan_sequence_requires_source_snapshot
             or self.codemod_scan_query_needs_source_snapshot
         )
 
@@ -1021,7 +1020,7 @@ class SourceSnapshotCacheEligibility:
     def requires_parsed_modules(self) -> bool:
         return (
             self.codemod_refactor_goal_requested
-            or self.codemod_plan_sequence_has_recipes
+            or self.codemod_plan_sequence_requires_source_snapshot
         )
 
     @property
@@ -1278,9 +1277,6 @@ class JsonPayloadBuilder:
                 codemod_candidates = codemod_candidates_from_impact_ranking(
                     self.impact_ranking,
                     source_index,
-                )
-                codemod_candidates = source_snapshot.candidates_with_automated_rewrites(
-                    codemod_candidates,
                 )
         semantic_refactor_gate_seconds = 0.0
         semantic_gate_report = SemanticRefactorGateReport.inactive()
@@ -2401,11 +2397,9 @@ class CodemodCliExecution(
     command_id = "codemod_execution"
     source_snapshot_error_message: ClassVar[str] = (
         "--codemod-diff/--codemod-preflight/--codemod-simulate/"
-        "--codemod-apply require codemod candidates or recipe rewrites"
+        "--codemod-apply require a codemod plan"
     )
-    impact_candidates: CodemodCandidateSelection
     execution_request: "CodemodPlanExecutionRequest"
-    architecture_guard_evaluator: ArchitectureGuardSourceEvaluator
     modules: list[ParsedModule]
     findings: list[RefactorFinding]
     config: DetectorConfig
@@ -2458,35 +2452,13 @@ class CodemodCliExecution(
         ArchitectureGuardReport | None,
         CodemodPlanSequenceSimulation | None,
     ]:
-        if not self.impact_candidates and self.execution_request.sequence.has_recipes:
-            plan_sequence_simulation = (
-                self.execution_request.sequence.simulate_snapshot(snapshot)
-            )
-            return (
-                plan_sequence_simulation.simulation,
-                self.plan_sequence_guard_report(plan_sequence_simulation),
-                plan_sequence_simulation,
-            )
-        candidate_simulation = snapshot.simulate_rewrites(
-            self.candidate_rewrite_batch()
+        plan_sequence_simulation = self.execution_request.sequence.simulate_snapshot(
+            snapshot
         )
-        active_snapshot = snapshot.with_simulation(candidate_simulation)
-        if self.execution_request.sequence.has_recipes:
-            plan_sequence_simulation = (
-                self.execution_request.sequence.simulate_snapshot(active_snapshot)
-            )
-            simulation = CodemodSimulationReport.from_sequential_reports(
-                (candidate_simulation, plan_sequence_simulation.simulation),
-            )
-        else:
-            plan_sequence_simulation = None
-            simulation = candidate_simulation
         return (
-            simulation,
-            self.architecture_guard_evaluator.report_for_snapshot(
-                snapshot.with_simulation(simulation),
-            ),
-            None,
+            plan_sequence_simulation.simulation,
+            self.plan_sequence_guard_report(plan_sequence_simulation),
+            plan_sequence_simulation,
         )
 
     def emit_preflight_failure(
@@ -2520,15 +2492,6 @@ class CodemodCliExecution(
         if report.is_clean:
             return 0
         return 1
-
-    def candidate_rewrite_batch(self) -> tuple[PlannedSourceRewrite, ...]:
-        if self.impact_candidates is None:
-            return ()
-        return tuple(
-            rewrite
-            for candidate in self.impact_candidates
-            for rewrite in candidate.planned_rewrites
-        )
 
     def plan_sequence_guard_report(
         self,
@@ -3213,7 +3176,6 @@ def _main_without_deadline() -> int:
         json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
     except ValueError as error:
         parser.error(str(error))
-    explicit_impact_ranking_request = args.include_impact_ranking is not None
     impact_ranking_policy = JsonPayloadImpactRankingPolicy(
         explicit_request=args.include_impact_ranking,
         json_enabled=args.json,
@@ -3255,21 +3217,11 @@ def _main_without_deadline() -> int:
         project_findings=args.codemod_project_findings,
     )
     if (
-        codemod_requested
-        and not explicit_impact_ranking_request
-        and args.codemod_refactor_goal is None
+        codemod_execution_mode.requested
         and not codemod_scan_query_mode.requested
-        and not codemod_plan_sequence.has_recipes
+        and not codemod_plan_sequence.requires_source_snapshot
     ):
-        args.include_impact_ranking = True
-    if (
-        codemod_requested
-        and args.codemod_refactor_goal is None
-        and not codemod_scan_query_mode.requested
-        and not args.include_impact_ranking
-        and not codemod_plan_sequence.has_recipes
-    ):
-        parser.error("--codemod-* options require impact ranking or recipe rewrites")
+        parser.error("codemod execution requires --codemod-plan")
     if codemod_requested and args.import_lean_export is not None:
         parser.error("--codemod-* options require parsed Python source paths")
 
@@ -3403,9 +3355,7 @@ def _main_without_deadline() -> int:
             parser=parser,
             args=args,
             source_snapshot=fast_codemod_source_snapshot,
-            impact_candidates=None,
             execution_request=codemod_execution_request,
-            architecture_guard_evaluator=ArchitectureGuardSourceEvaluator([], ()),
             modules=[],
             findings=[],
             config=config,
@@ -3418,7 +3368,9 @@ def _main_without_deadline() -> int:
 
     source_snapshot_cache_eligibility = SourceSnapshotCacheEligibility(
         include_impact_ranking=args.include_impact_ranking,
-        codemod_plan_sequence_has_recipes=codemod_plan_sequence.has_recipes,
+        codemod_plan_sequence_requires_source_snapshot=(
+            codemod_plan_sequence.requires_source_snapshot
+        ),
         codemod_scan_query_needs_source_snapshot=(
             codemod_scan_query_mode.needs_source_snapshot
         ),
@@ -3432,7 +3384,7 @@ def _main_without_deadline() -> int:
             load_bearing_ranking_enabled=args.include_impact_ranking,
             parsed_modules_required=(
                 args.codemod_refactor_goal is not None
-                or codemod_plan_sequence.has_recipes
+                or codemod_plan_sequence.requires_source_snapshot
                 or (
                     codemod_scan_query_mode.needs_source_snapshot
                     and not source_snapshot_cache_eligibility.can_use_cached_source_context
@@ -3836,7 +3788,7 @@ def _main_without_deadline() -> int:
     source_snapshot = None
     if (
         args.include_impact_ranking
-        or codemod_plan_sequence.has_recipes
+        or codemod_plan_sequence.requires_source_snapshot
         or codemod_scan_query_mode.needs_source_snapshot
     ):
         started = perf_counter()
@@ -3896,15 +3848,12 @@ def _main_without_deadline() -> int:
             impact_ranking,
             source_index,
         )
-        codemod_candidates = source_snapshot.candidates_with_automated_rewrites(
-            codemod_candidates,
-        )
         architecture_guard_report = architecture_guard_evaluator.report_for_snapshot(
             source_snapshot
         )
     else:
         codemod_candidates = None
-        if not codemod_plan_sequence.has_recipes:
+        if not codemod_plan_sequence.requires_source_snapshot:
             source_snapshot = None
     timing = ScanTiming(
         parse_seconds=parse_seconds,
@@ -3918,9 +3867,7 @@ def _main_without_deadline() -> int:
         parser=parser,
         args=args,
         source_snapshot=source_snapshot,
-        impact_candidates=codemod_candidates,
         execution_request=codemod_execution_request,
-        architecture_guard_evaluator=architecture_guard_evaluator,
         modules=modules,
         findings=findings,
         config=config,

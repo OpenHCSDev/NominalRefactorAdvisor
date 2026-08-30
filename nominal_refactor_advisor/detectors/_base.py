@@ -11111,21 +11111,6 @@ class CollectionProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class SourceLocationEvidencePropertyCandidate(ClassMethodLineWitnessCandidate):
-    file_attribute_name: str
-    line_attribute_name: str
-    symbol_attribute_name: str
-
-
-@dataclass(frozen=True)
-class ZippedSourceLocationEvidencePropertyCandidate(ClassMethodLineWitnessCandidate):
-    file_attribute_name: str
-    line_numbers_attribute_name: str
-    symbol_names_attribute_name: str
-    line_count: int
-
-
-@dataclass(frozen=True)
 class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
     base_names: tuple[str, ...]
     field_specs: tuple[tuple[str, str], ...]
