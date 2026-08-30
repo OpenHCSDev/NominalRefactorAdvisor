@@ -11284,26 +11284,6 @@ def test_detects_zipped_source_location_evidence_property(tmp_path: Path) -> Non
     assert all(not hasattr(helper_detectors, name) for name in removed_names)
 
 
-def test_detects_private_helper_shadow(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/shared.py",
-        "\ndef materialize_schema(spec):\n    return spec.build()\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/local.py",
-        "\ndef _materialize_schema(spec):\n    return spec.build()\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "private_helper_shadow"
-    ]
-    assert len(findings) == 1
-    assert "_materialize_schema" in findings[0].summary
-    assert "materialize_schema" in (findings[0].codemod_patch or "")
-
 
 def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
     _write_module(
@@ -16852,12 +16832,13 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
     _write_module(
         tmp_path,
         "pkg/existing.py",
-        "\ndef materialize_schema(spec):\n    return spec.build()\n",
+        "VALUE = 1\n",
     )
     created_path = tmp_path / "pkg/generated.py"
     created_source = (
-        "def _materialize_schema(spec):\n"
-        "    return spec.build()\n\n\n"
+        "from typing import Protocol\n\n\n"
+        "class GeneratedContract(Protocol):\n"
+        "    def run(self): ...\n\n\n"
         "class GeneratedAlpha:\n"
         "    pass\n"
         "\n\n"
@@ -16896,7 +16877,7 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
     assert projected_module.module_name == "pkg.generated"
     assert any(
         (
-            finding.detector_id == "private_helper_shadow"
+            finding.detector_id == "typing_protocol_contract"
             and any(
                 evidence.file_path == created_path.as_posix()
                 for evidence in finding.evidence
@@ -17370,7 +17351,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     _write_module(
         tmp_path,
         "pkg/existing.py",
-        "\ndef materialize_schema(spec):\n    return spec.build()\n",
+        "VALUE = 1\n",
     )
     created_path = tmp_path / "pkg/generated.py"
     plan_path = tmp_path / "codemod-plan.json"
@@ -17385,8 +17366,9 @@ def test_module_cli_simulates_projected_findings_for_created_files(
                                 "operation": "create_file",
                                 "file_path": created_path.as_posix(),
                                 "source": (
-                                    "def _materialize_schema(spec):\n"
-                                    "    return spec.build()\n\n\n"
+                                    "from typing import Protocol\n\n\n"
+                                    "class GeneratedContract(Protocol):\n"
+                                    "    def run(self): ...\n\n\n"
                                     "class GeneratedAlpha:\n"
                                     "    pass\n"
                                     "\n\n"
@@ -17441,7 +17423,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     assert "projected_finding_recipe_plan" not in projected_findings
     assert "projected_finding_continuation" not in projected_findings
     assert any(
-        finding["detector_id"] == "private_helper_shadow"
+        finding["detector_id"] == "typing_protocol_contract"
         and any(
             evidence["file_path"] == created_path.as_posix()
             for evidence in finding["evidence"]

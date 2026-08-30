@@ -4536,52 +4536,6 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     )
 
 
-def test_compact_top_level_definitions_preserve_private_helper_shadow_semantics(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "authority.py").write_text(
-        "def normalize(value):\n    return value\n\nclass Catalog:\n    pass\n",
-        encoding="utf-8",
-    )
-    (package_root / "consumer.py").write_text(
-        "def _normalize(value):\n    return value\n\nclass _Catalog:\n    pass\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    projections = (
-        systemic_detectors.PrivateHelperShadowDetector.compact_module_projections(
-            modules
-        )
-    )
-
-    compact_candidates = (
-        systemic_detectors._private_helper_shadow_candidates_from_definition_facts(
-            tuple(
-                (projection.file_path, projection.top_level_definitions)
-                for projection in projections
-            )
-        )
-    )
-
-    assert len(compact_candidates) == 2
-    assert {
-        (candidate.private_name, candidate.public_name)
-        for candidate in compact_candidates
-    } == {("_Catalog", "Catalog"), ("_normalize", "normalize")}
-    assert (
-        systemic_detectors.PrivateHelperShadowDetector()._candidate_items(
-            modules,
-            DetectorConfig(),
-        )
-        == compact_candidates
-    )
-    assert not hasattr(systemic_detectors, "_private_helper_shadow_candidates")
-    assert "candidate_collector" not in (
-        systemic_detectors.PrivateHelperShadowDetector.__dict__
-    )
-
 
 def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
@@ -7063,9 +7017,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.CrossModuleAxisShadowFamilyDetector in (
         partition.compact_global_detector_types
     )
-    assert systemic_detectors.PrivateHelperShadowDetector in (
-        partition.compact_global_detector_types
-    )
     assert systemic_detectors.DataclassNamespaceCliMirrorDetector in (
         partition.compact_global_detector_types
     )
@@ -7183,7 +7134,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 61
+    assert len(partition.compact_global_detector_types) == 60
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

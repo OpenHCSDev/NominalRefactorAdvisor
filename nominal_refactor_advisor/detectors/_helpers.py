@@ -11099,56 +11099,6 @@ def _zipped_source_location_evidence_property_candidates(
     )
 
 
-def _private_helper_shadow_candidates_from_definition_facts(
-    definitions_by_file: Sequence[tuple[str, tuple[tuple[str, int], ...]]],
-) -> tuple[PrivateHelperShadowCandidate, ...]:
-    public_definitions: dict[str, list[tuple[str, int]]] = defaultdict(list)
-    private_definitions: list[tuple[str, str, int]] = []
-    for file_path, definitions in definitions_by_file:
-        for name, line in definitions:
-            if name.startswith("__"):
-                continue
-            if name.startswith("_"):
-                private_definitions.append((file_path, name, line))
-            else:
-                public_definitions[name].append((file_path, line))
-
-    candidates: list[PrivateHelperShadowCandidate] = []
-    for private_file_path, private_name, private_line in private_definitions:
-        public_name = private_name.lstrip("_")
-        public_sites = tuple(
-            (file_path, line)
-            for file_path, line in public_definitions.get(public_name, ())
-            if file_path != private_file_path
-        )
-        public_site = single_item(public_sites)
-        if public_site is None:
-            continue
-        public_file_path, public_line = public_site
-        candidates.append(
-            PrivateHelperShadowCandidate(
-                file_path=private_file_path,
-                line=private_line,
-                private_name=private_name,
-                public_name=public_name,
-                public_file_path=public_file_path,
-                public_line=public_line,
-                evidence_locations=(
-                    SourceLocation(private_file_path, private_line, private_name),
-                    SourceLocation(public_file_path, public_line, public_name),
-                ),
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.private_name,
-        ),
-    )
-
-
 def _field_only_frozen_dataclass_candidates(
     module: ParsedModule,
 ) -> tuple[FieldOnlyFrozenDataclassCandidate, ...]:

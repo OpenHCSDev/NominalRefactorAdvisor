@@ -12831,14 +12831,6 @@ class ZippedSourceLocationEvidencePropertyCandidate(ClassMethodLineWitnessCandid
 
 
 @dataclass(frozen=True)
-class PrivateHelperShadowCandidate(EvidenceLocationsWitnessCandidate):
-    private_name: str
-    public_name: str
-    public_file_path: str
-    public_line: int
-
-
-@dataclass(frozen=True)
 class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
     base_names: tuple[str, ...]
     field_specs: tuple[tuple[str, str], ...]

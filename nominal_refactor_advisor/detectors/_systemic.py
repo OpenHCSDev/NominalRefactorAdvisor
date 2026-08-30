@@ -6797,54 +6797,6 @@ declare_candidate_rule_detector(
 )
 
 
-class CompactPrivateHelperShadowCandidateBase(
-    CompactProjectionCandidateDetector[
-        CompactModuleClassProjection,
-        PrivateHelperShadowCandidate,
-    ],
-):
-    module_projection_family = CompactModuleClassProjectionFamily
-
-    def _candidates_from_compact_projections(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        config: DetectorConfig,
-    ) -> Sequence[PrivateHelperShadowCandidate]:
-        del config
-        return _private_helper_shadow_candidates_from_definition_facts(
-            tuple(
-                (projection.file_path, projection.top_level_definitions)
-                for projection in projections
-            )
-        )
-
-
-declare_candidate_rule_detector(
-    PrivateHelperShadowCandidate,
-    high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Private helper should reuse public package authority",
-        "A private top-level helper whose name is only an underscore-prefixed version of a public helper in another package module is a local shadow of an existing authority. The private spelling should be removed or turned into an import alias so the shared helper owns the algorithm once.",
-        "one public package helper authority reused by private call sites",
-        "private helper repeats a public helper identity under an underscore-prefixed name",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
-    ),
-    summary=lambda candidate: f"`{candidate.private_name}` shadows public helper `{candidate.public_name}` from `{candidate.public_file_path}`.",
-    evidence=lambda candidate: candidate.evidence,
-    scaffold=lambda candidate: f"from package.module import {candidate.public_name} as {candidate.private_name}",
-    codemod_patch=lambda candidate: f"# Delete local helper `{candidate.private_name}` and import `{candidate.public_name}` as the private compatibility name if call sites still use it.",
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=1,
-        mapping_name=candidate.private_name,
-        field_names=(candidate.public_name,),
-        source_name=candidate.public_file_path,
-    ),
-    detector_base=CompactPrivateHelperShadowCandidateBase,
-    detector_name="PrivateHelperShadowDetector",
-)
-
-
 declare_candidate_rule_detector(
     OptionRecordQuotientCandidate,
     high_confidence_certified_spec(
