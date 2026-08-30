@@ -3609,7 +3609,7 @@ def _concrete_config_field_probe_candidates(
             for (config_attr_name, config_type_name), missing_fields in sorted(
                 grouped_missing_fields.items()
             ):
-                if len(missing_fields) < config.min_attribute_probes:
+                if len(missing_fields) < 2:
                     continue
                 candidates.append(
                     ConcreteConfigFieldProbeCandidate(
@@ -6806,18 +6806,6 @@ def _is_framework_lineage_symbol(symbol: str) -> bool:
     }
 
 
-def _is_framework_attribute_probe(observation: AttributeProbeObservation) -> bool:
-    return observation.observed_attribute in {
-        "lineno",
-        "col_offset",
-        "end_lineno",
-        "end_col_offset",
-        # Standard array protocol compatibility checks are not semantic-role recovery.
-        "shape",
-        "ndim",
-        "dtype",
-        "size",
-    }
 
 
 def _accessor_replacement_example(candidate: AccessorWrapperCandidate) -> str:

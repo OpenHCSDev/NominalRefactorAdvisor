@@ -37,7 +37,6 @@ from nominal_refactor_advisor.analysis import (
 )
 from nominal_refactor_advisor.ast_tools import (
     AccessorWrapperObservationFamily,
-    AttributeProbeObservationFamily,
     BuiltinCallName,
     ClassMarkerObservationFamily,
     ConfigDispatchObservationFamily,
@@ -12105,40 +12104,6 @@ def test_observation_graph_caches_derived_groupings() -> None:
     )
 
 
-def test_detects_attribute_probe_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef resolve(widget):\n    if hasattr(widget, "isChecked"):\n        return widget.isChecked()\n    return getattr(widget, "value", None)\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.detector_id == "attribute_probes" for finding in findings))
-
-
-def test_collects_attribute_probe_observations_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef resolve(widget):\n    if hasattr(widget, "checked"):\n        return widget.checked\n    try:\n        return getattr(widget, "value", None)\n    except AttributeError:\n        return None\n',
-    )
-    module = parse_python_modules(tmp_path)[0]
-    observations = collect_family_items(module, AttributeProbeObservationFamily)
-    assert {item.probe_kind for item in observations} == {
-        "hasattr",
-        "getattr",
-        "attribute_error",
-    }
-    assert any((item.observed_attribute == "checked" for item in observations))
-
-
-def test_ignores_array_protocol_attribute_probes(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef validate(value):\n    shape = getattr(value, "shape", None)\n    ndim = getattr(value, "ndim", None)\n    dtype = getattr(value, "dtype", None)\n    return shape, ndim, dtype\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any((finding.detector_id == "attribute_probes" for finding in findings))
 
 
 def test_collects_literal_dispatch_observations_via_spec_family(tmp_path: Path) -> None:

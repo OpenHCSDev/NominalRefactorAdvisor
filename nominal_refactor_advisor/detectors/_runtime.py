@@ -6415,45 +6415,6 @@ declare_typed_observation_detector(
 )
 
 
-class AttributeProbeDetector(PerModuleIssueDetector):
-    detector_id = "attribute_probes"
-    finding_spec = finding_spec_template(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Semantic role recovered from attribute probing",
-        "Repeated hasattr/getattr/AttributeError logic means the code is recovering identity from a partial structural view. The documented fix is to migrate this region toward an ABC contract with direct method calls and fail-loud guarantees.",
-        "declared semantic role identity and import-time enforcement",
-        "same module-level probing layer across multiple call sites",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
-        _ATTRIBUTE_PROBE_PARTIAL_VIEW_OBSERVATION_TAGS,
-    )
-
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        observations: tuple[AttributeProbeObservation, ...] = (
-            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-                module, AttributeProbeObservationFamily, AttributeProbeObservation
-            )
-        )
-        observations = tuple(
-            (item for item in observations if not _is_framework_attribute_probe(item))
-        )
-        total = len(observations)
-        if total < config.min_attribute_probes:
-            return []
-        evidence = tuple(
-            (
-                SourceLocation(item.file_path, item.line, item.symbol)
-                for item in observations[:6]
-            )
-        )
-        return [
-            self.build_finding(
-                f"{module.path} contains {total} attribute-probe sites.",
-                evidence,
-                metrics=ProbeCountMetrics(probe_site_count=total),
-            )
-        ]
 
 
 class InlineLiteralDispatchDetector(PerModuleIssueDetector):
@@ -6480,7 +6441,7 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
         )
         for observation in observations:
             branch_count = len(observation.branch_lines)
-            if branch_count < config.min_attribute_probes:
+            if branch_count < config.min_string_cases:
                 continue
             evidence = tuple(
                 (

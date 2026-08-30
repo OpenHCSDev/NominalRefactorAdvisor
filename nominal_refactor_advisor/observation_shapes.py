@@ -274,27 +274,6 @@ class FieldObservation(
     fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("field_name")
 
 
-@dataclass(frozen=True)
-class AttributeProbeObservation(
-    ExecutionLevelObservationMixin,
-    LineSymbolObservationMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.ATTRIBUTE_PROBE
-    line: int
-    symbol: str
-    probe_kind: str
-    observed_attribute: str | None
-    execution_level: StructuralExecutionLevel
-
-    @property
-    def observed_name(self) -> str:
-        return self.observed_attribute or self.probe_kind
-
-    @property
-    def fiber_key(self) -> str:
-        return f"{self.probe_kind}:{self.observed_name}"
-
 
 @dataclass(frozen=True)
 class LiteralDispatchObservation(

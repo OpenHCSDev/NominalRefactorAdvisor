@@ -50,7 +50,6 @@ from .observation_graph import (
 )
 from .observation_shapes import (
     AccessorWrapperCandidate,
-    AttributeProbeObservation,
     BuilderCallShape,
     ClassMarkerObservation,
     ConfigDispatchObservation,
@@ -2571,7 +2570,6 @@ def _subscript_base_name(node: ast.AST) -> str | None:
 
 _CLASSVAR_REFERENCE_FAMILY = AstNameFamily(frozenset({"ClassVar"}))
 _DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
-_ATTRIBUTE_ERROR_FAMILY = AstNameFamily(frozenset({"AttributeError"}))
 _HASATTR_CALL_FAMILY = AstNameFamily(frozenset({"hasattr"}))
 _GETATTR_CALL_FAMILY = AstNameFamily(frozenset({"getattr"}))
 _REGISTRATION_CALL_FAMILY = AstNameFamily(
@@ -4387,12 +4385,8 @@ from .observation_families import (
     AccessorWrapperObservationFamily,
     AccessorWrapperObservationSpec,
     AssignmentRegistrationShapeSpec,
-    AttributeErrorProbeObservationSpec,
-    AttributeProbeObservationFamily,
-    AttributeProbeObservationSpec,
     BuilderCallShapeFamily,
     BuilderCallShapeSpec,
-    CallAttributeProbeObservationSpec,
     CallRegistrationShapeSpec,
     ClassMarkerObservationFamily,
     ClassMarkerObservationSpec,
@@ -4409,8 +4403,6 @@ from .observation_families import (
     ExportDictShapeSpec,
     FieldObservationFamily,
     FieldObservationSpec,
-    GetAttrProbeObservationSpec,
-    HasAttrProbeObservationSpec,
     InitAssignmentFieldObservationSpec,
     InlineLiteralDispatchObservationSpec,
     InlineStringLiteralDispatchObservationFamily,

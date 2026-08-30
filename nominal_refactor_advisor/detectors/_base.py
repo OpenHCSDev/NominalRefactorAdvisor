@@ -93,8 +93,6 @@ if TYPE_CHECKING:
 from ..ast_tools import (
     AccessorWrapperCandidate,
     AccessorWrapperObservationFamily,
-    AttributeProbeObservation,
-    AttributeProbeObservationFamily,
     BuilderCallShape,
     BuilderCallShapeFamily,
     BuiltinCallName,
@@ -522,9 +520,6 @@ class DetectorConfig:
     min_nested_builder_forwarded_params: int = 4
     min_string_cases: int = detector_config_option(
         2, "Minimum string cases for closed-family dispatch detection."
-    )
-    min_attribute_probes: int = detector_config_option(
-        2, "Minimum attribute probes before surfacing a finding."
     )
     min_builder_keywords: int = detector_config_option(
         3, "Minimum keyword count for repeated record-builder detection."

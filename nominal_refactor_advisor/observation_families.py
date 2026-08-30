@@ -21,7 +21,6 @@ from .native_syntax import NativePythonSyntaxIndex
 
 from .observation_shapes import (
     AccessorWrapperCandidate,
-    AttributeProbeObservation,
     BuilderCallShape,
     ClassMarkerObservation,
     ConfigDispatchObservation,
@@ -62,9 +61,6 @@ from .ast_tools import (
     ShapeEmission,
     SingleSpecCollectedFamily,
     SourceModule,
-    _ATTRIBUTE_ERROR_FAMILY,
-    _GETATTR_CALL_FAMILY,
-    _HASATTR_CALL_FAMILY,
     _REGISTRATION_CALL_FAMILY,
     _REGISTRATION_DECORATOR_FAMILY,
     _accessor_wrapper_candidate_from_function,
@@ -459,22 +455,6 @@ def _literal_spec(
     )
 
 
-def _probe_spec(
-    stem: str,
-    call_family: AstNameFamily,
-    probe_kind: str,
-    minimum_args: int,
-    *,
-    attribute_arg_index: int | None = 1,
-) -> _GeneratedClassDeclaration:
-    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
-        f"{stem}ProbeObservationSpec",
-        "CallAttributeProbeObservationSpec",
-        call_family=call_family,
-        probe_kind=probe_kind,
-        minimum_args=minimum_args,
-        attribute_arg_index=attribute_arg_index,
-    )
 
 
 
@@ -914,7 +894,6 @@ _materialize_class_declarations(
             GeneratedShapeHelper(_dual_axis_resolution_observation),
             _FUNCTION_HELPER,
         ),
-        _obs_root("AttributeProbe", "ABC"),
     )
 )
 
@@ -924,89 +903,6 @@ class SentinelTypeUsageObservationSpec(SentinelTypeObservationSpec):
         return list(_sentinel_type_usage_observations(parsed_module))
 
 
-class CallAttributeProbeObservationSpec(
-    AttributeProbeObservationSpec, ContextForwardingShapeSpec, ABC
-):
-    node_type = ast.Call
-    _registry_skip = True
-    call_family: ClassVar[AstNameFamily]
-    probe_kind: ClassVar[str]
-    minimum_args: ClassVar[int]
-    attribute_arg_index: ClassVar[int | None] = None
-
-    def build_from_context(
-        self,
-        parsed_module: ParsedModule,
-        node: ast.AST,
-        observation: ScopedAstObservation,
-    ) -> AttributeProbeObservation | None:
-        if not isinstance(node, ast.Call):
-            return None
-        if _terminal_name_in_family(node.func, type(self).call_family) is None:
-            return None
-        if len(node.args) < type(self).minimum_args:
-            return None
-        observed_attribute = None
-        attribute_arg_index = type(self).attribute_arg_index
-        if attribute_arg_index is not None and len(node.args) > attribute_arg_index:
-            arg = node.args[attribute_arg_index]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                observed_attribute = arg.value
-        return AttributeProbeObservation(
-            file_path=str(parsed_module.path),
-            line=node.lineno,
-            symbol=type(self).probe_kind,
-            probe_kind=type(self).probe_kind,
-            observed_attribute=observed_attribute,
-            execution_level=_execution_level_for_scope(observation.function_name),
-        )
-
-
-_materialize_class_declarations(
-    (
-        _probe_spec(
-            "HasAttr",
-            _HASATTR_CALL_FAMILY,
-            "hasattr",
-            2,
-        ),
-        _probe_spec(
-            "GetAttr",
-            _GETATTR_CALL_FAMILY,
-            "getattr",
-            3,
-        ),
-    )
-)
-
-
-class AttributeErrorProbeObservationSpec(
-    AttributeProbeObservationSpec, ObservationShapeSpec
-):
-    @property
-    def node_types(self) -> tuple[type[ast.AST], ...]:
-        return (ast.Try,)
-
-    def build_from_observation(
-        self, parsed_module: ParsedModule, observation: ScopedAstObservation
-    ) -> AttributeProbeObservation | None:
-        node = observation.node
-        if not isinstance(node, ast.Try):
-            return None
-        for handler in node.handlers:
-            if handler.type is None:
-                continue
-            if not _node_matches_family(handler.type, _ATTRIBUTE_ERROR_FAMILY):
-                continue
-            return AttributeProbeObservation(
-                file_path=str(parsed_module.path),
-                line=handler.lineno,
-                symbol="attribute-error-fallback",
-                probe_kind="attribute_error",
-                observed_attribute=None,
-                execution_level=_execution_level_for_scope(observation.function_name),
-            )
-        return None
 
 
 class TypedLiteralObservationSpec(
