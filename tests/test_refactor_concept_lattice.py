@@ -270,17 +270,14 @@ def test_class_base_operations_own_the_base_name_payload() -> None:
         codemod.RemoveClassBaseOperation,
     ):
         assert issubclass(operation_type, codemod.BaseNamePayloadOperation)
-        assert not issubclass(operation_type, codemod.StringPayloadOperation)
+        assert "payload_value" not in operation_type.__dataclass_fields__
         assert tuple(
             binding.field_name for binding in operation_type.payload_bindings()
         ) == ("base_name",)
 
 
 def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
-    assert not issubclass(
-        codemod.AuthoritySourceOperation,
-        codemod.StringPayloadOperation,
-    )
+    assert "payload_value" not in codemod.AuthoritySourceOperation.__dataclass_fields__
     assert tuple(
         binding.field_name
         for binding in codemod.AuthoritySourceOperation.payload_bindings()
@@ -293,10 +290,27 @@ def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
         (codemod.ReplaceFunctionSignatureOperation, "signature_source"),
         (codemod.ReplaceFunctionBodyOperation, "body_source"),
     ):
-        assert not issubclass(operation_type, codemod.StringPayloadOperation)
+        assert "payload_value" not in operation_type.__dataclass_fields__
         assert tuple(
             binding.field_name for binding in operation_type.payload_bindings()
         ) == (field_name,)
+
+
+def test_source_payload_operations_share_the_source_declaration() -> None:
+    expected_bindings = {
+        codemod.CreateFileOperation: ("source",),
+        codemod.ReplaceModuleAssignmentOperation: ("assignment_name", "source"),
+        codemod.InsertBeforeTargetOperation: ("source",),
+        codemod.InsertAfterTargetOperation: ("source",),
+        codemod.InsertAfterImportsOperation: ("source",),
+    }
+
+    assert not hasattr(codemod, "StringPayloadOperation")
+    for operation_type, field_names in expected_bindings.items():
+        assert issubclass(operation_type, codemod.SourcePayloadOperation)
+        assert tuple(
+            binding.field_name for binding in operation_type.payload_bindings()
+        ) == field_names
 
 
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:

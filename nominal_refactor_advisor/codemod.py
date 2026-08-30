@@ -555,7 +555,6 @@ class SourceNodeDecoratorPolicy(StrEnum):
     INCLUDE = "include"
 
 
-SOURCE_PAYLOAD_FIELD = "source"
 BASE_NAME_PAYLOAD_FIELD = "base_name"
 METHOD_NAMES_PAYLOAD_FIELD = "method_names"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
@@ -5312,20 +5311,16 @@ class TargetNodeRecipeOperationMixin(ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class StringPayloadOperation(RefactorRecipeOperation, ABC):
-    """Recipe operation whose JSON payload has one semantic string operand."""
+class SourcePayloadOperation(RefactorRecipeOperation, ABC):
+    """Recipe operation whose declaration owns required Python source text."""
 
-    payload_field_name: ClassVar[str]
-    payload_value: str
+    source: str
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
-        return PayloadBindingSet.from_explicit_fields(
-            (
-                cls.payload_field_name,
-                "payload_value",
-                RequiredStringPayloadValueCodec(),
-            ),
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            source=RequiredStringPayloadValueCodec(),
         )
 
 
@@ -5398,21 +5393,16 @@ class ReplaceTextOperation(RefactorRecipeOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class CreateFileOperation(StringPayloadOperation):
+class CreateFileOperation(SourcePayloadOperation):
     """Create a Python source file for later operations in the same plan."""
 
-    payload_field_name = SOURCE_PAYLOAD_FIELD
     contributes_source_overlay = True
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return PayloadBindingSet.from_explicit_fields(
-            (
-                SOURCE_PAYLOAD_FIELD,
-                "payload_value",
-                OptionalStringPayloadValueCodec(""),
-            ),
+        return PayloadBindingSet.from_field_codecs(
+            source=OptionalStringPayloadValueCodec(""),
         )
 
     def created_source_paths(
@@ -5436,7 +5426,7 @@ class CreateFileOperation(StringPayloadOperation):
         return (
             SourceFileCreation(
                 file_path=source_path,
-                source=self.payload_value,
+                source=self.source,
                 rationale=self.rationale or f"Create source file {source_path!r}.",
             ),
         )
@@ -5551,10 +5541,9 @@ class DeleteModuleAssignmentsOperation(AssignmentNamesPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceModuleAssignmentOperation(StringPayloadOperation):
+class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
     """Replace one named module-level assignment statement."""
 
-    payload_field_name = SOURCE_PAYLOAD_FIELD
     assignment_name: str
 
     @classmethod
@@ -5562,12 +5551,7 @@ class ReplaceModuleAssignmentOperation(StringPayloadOperation):
         del cls
         return PayloadBindingSet.from_field_codecs(
             assignment_name=RequiredStringPayloadValueCodec(),
-        ) + PayloadBindingSet.from_explicit_fields(
-            (
-                SOURCE_PAYLOAD_FIELD,
-                "payload_value",
-                OptionalStringPayloadValueCodec(""),
-            ),
+            source=OptionalStringPayloadValueCodec(""),
         )
 
     def source_edits(
@@ -5597,7 +5581,7 @@ class ReplaceModuleAssignmentOperation(StringPayloadOperation):
                 file_path=source_path,
                 start_line=statement.lineno,
                 end_line=statement.end_lineno or statement.lineno,
-                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                replacement_lines=SourceTargetEditor.source_lines(self.source),
                 rationale=self.rationale
                 or f"Replace module assignment {self.assignment_name!r}.",
             ),
@@ -7152,11 +7136,9 @@ class DeclareAuthorityOperation(
 @dataclass(frozen=True, kw_only=True)
 class InsertBeforeTargetOperation(
     TargetNodeRecipeOperationMixin,
-    StringPayloadOperation,
+    SourcePayloadOperation,
 ):
     """Insert source immediately before a source-index target."""
-
-    payload_field_name = SOURCE_PAYLOAD_FIELD
 
     def source_edits_for_target_node(
         self,
@@ -7170,7 +7152,7 @@ class InsertBeforeTargetOperation(
             SourceInsertion(
                 file_path=target_digest.file_path,
                 insertion_line=target_digest.line,
-                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
+                inserted_lines=SourceTargetEditor.source_lines(self.source),
                 rationale=self.rationale
                 or f"Insert source before {target_digest.qualname!r}.",
             ),
@@ -7180,11 +7162,9 @@ class InsertBeforeTargetOperation(
 @dataclass(frozen=True, kw_only=True)
 class InsertAfterTargetOperation(
     TargetNodeRecipeOperationMixin,
-    StringPayloadOperation,
+    SourcePayloadOperation,
 ):
     """Insert source immediately after a source-index target."""
-
-    payload_field_name = SOURCE_PAYLOAD_FIELD
 
     def source_edits_for_target_node(
         self,
@@ -7198,7 +7178,7 @@ class InsertAfterTargetOperation(
             SourceInsertion(
                 file_path=target_digest.file_path,
                 insertion_line=target_digest.end_line + 1,
-                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
+                inserted_lines=SourceTargetEditor.source_lines(self.source),
                 rationale=self.rationale
                 or f"Insert source after {target_digest.qualname!r}.",
             ),
@@ -7206,10 +7186,8 @@ class InsertAfterTargetOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class InsertAfterImportsOperation(StringPayloadOperation):
+class InsertAfterImportsOperation(SourcePayloadOperation):
     """Insert source after a module docstring and leading import block."""
-
-    payload_field_name = SOURCE_PAYLOAD_FIELD
 
     def source_edits(
         self,
@@ -7226,7 +7204,7 @@ class InsertAfterImportsOperation(StringPayloadOperation):
             SourceInsertion(
                 file_path=source_path,
                 insertion_line=insertion_line,
-                inserted_lines=SourceTargetEditor.source_lines(self.payload_value),
+                inserted_lines=SourceTargetEditor.source_lines(self.source),
                 rationale=self.rationale
                 or f"Insert source imports into {source_path!r}.",
             ),
@@ -15641,7 +15619,7 @@ class EnumSubsetSemanticMirrorRecipeParts:
             ReplaceModuleAssignmentOperation(
                 target=SourceRewriteTarget(file_path=self.projection.projection_path),
                 assignment_name=self.projection.mapping_name,
-                payload_value=source_bundle.mapping_replacement_source,
+                source=source_bundle.mapping_replacement_source,
                 rationale="",
             )
         )
@@ -17490,7 +17468,7 @@ class LocalRoleCaseLogicRecipeParts:
                     target=SourceRewriteTarget(
                         qualname=self.insertion_qualname, file_path=self.source_path
                     ),
-                    payload_value=authority_source,
+                    source=authority_source,
                     rationale="",
                 )
             )
@@ -18714,7 +18692,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
             ReplaceModuleAssignmentOperation(
                 target=SourceRewriteTarget(file_path=self.projection_path),
                 assignment_name=self.assignment_name,
-                payload_value=self.assignment_source,
+                source=self.assignment_source,
                 rationale="",
             )
         )

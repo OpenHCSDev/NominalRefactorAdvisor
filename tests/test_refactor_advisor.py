@@ -780,7 +780,7 @@ def test_codemod_apply_rejects_create_path_that_appeared_after_simulation(
             RefactorRecipe("create-generated").with_operation(
                 CreateFileOperation(
                     target=SourceRewriteTarget(file_path=generated_path.as_posix()),
-                    payload_value="GENERATED = 1\n",
+                    source="GENERATED = 1\n",
                 )
             ),
         )
@@ -1026,7 +1026,7 @@ def test_codemod_create_file_rejects_existing_source_without_mutation(
             RefactorRecipe("replace-existing-with-create").with_operation(
                 CreateFileOperation(
                     target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                    payload_value="LOST = 2\n",
+                    source="LOST = 2\n",
                 )
             ),
         )
@@ -1053,13 +1053,13 @@ def test_codemod_create_file_rejects_duplicate_source_authorities(
             RefactorRecipe("first-create").with_operation(
                 CreateFileOperation(
                     target=SourceRewriteTarget(file_path=generated_path.as_posix()),
-                    payload_value="FIRST = 1\n",
+                    source="FIRST = 1\n",
                 )
             ),
             RefactorRecipe("second-create").with_operation(
                 CreateFileOperation(
                     target=SourceRewriteTarget(file_path=generated_path.as_posix()),
-                    payload_value="SECOND = 2\n",
+                    source="SECOND = 2\n",
                 )
             ),
         )
@@ -1385,7 +1385,7 @@ def test_recipe_operation_target_nodes_reuse_snapshot_cache(
                     qualname="Detector",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value=(
+                source=(
                     "class DetectorAuthority:\n"
                     "    @staticmethod\n"
                     "    def normalize(value):\n"
@@ -1746,7 +1746,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
                     qualname="Parser",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="class ParseContext:\n    pass\n\n",
+                source="class ParseContext:\n    pass\n\n",
             )
         )
         .with_operation(
@@ -1782,7 +1782,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
                     qualname="Parser",
                     file_path=module_path.as_posix(),
                 ),
-                payload_value="\n\nclass ParserAuthority:\n    pass\n",
+                source="\n\nclass ParserAuthority:\n    pass\n",
             )
         )
         .with_operation(
@@ -2623,7 +2623,7 @@ def test_refactor_recipe_inserts_after_module_imports(
     recipe = RefactorRecipe(recipe_id="add-context-import").with_operation(
         InsertAfterImportsOperation(
             target=SourceRewriteTarget(file_path=module_path.as_posix()),
-            payload_value="from parser_context import ParseContext\n",
+            source="from parser_context import ParseContext\n",
         )
     )
 
@@ -3186,7 +3186,7 @@ def test_refactor_recipe_replaces_module_assignment(
         ReplaceModuleAssignmentOperation(
             target=SourceRewriteTarget(file_path=module_path.as_posix()),
             assignment_name="ACTIVE_MODES",
-            payload_value="ACTIVE_MODES = Mode.active_modes()",
+            source="ACTIVE_MODES = Mode.active_modes()",
         )
     )
 
@@ -10701,7 +10701,7 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
                             target=SourceRewriteTarget(
                                 file_path=generated_path.as_posix()
                             ),
-                            payload_value=(
+                            source=(
                                 "class Generated:\n"
                                 "    def run(self):\n"
                                 "        return 1\n"
@@ -11021,7 +11021,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
                             target=SourceRewriteTarget(
                                 file_path=generated_path.as_posix()
                             ),
-                            payload_value=_manual_class_registration_source(),
+                            source=_manual_class_registration_source(),
                         )
                     ),
                 )
