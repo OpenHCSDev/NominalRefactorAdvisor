@@ -503,19 +503,8 @@ class RefactorConcept(ABC):
 class NominalBoundaryConcept(RefactorConcept):
     """Select SSOT authority-boundary findings for nominal extraction."""
 
-    @classmethod
-    def matches_finding(
-        cls,
-        finding: RefactorFinding,
-        selector_context: "CodemodSelectorContext | None" = None,
-    ) -> bool:
-        del cls, selector_context
-        from .detectors import IssueDetector
 
-        return finding.detector_id in IssueDetector.ssot_authority_detector_ids()
-
-
-class SemanticCarrierConcept(RefactorConcept):
+class SemanticCarrierConcept(NominalBoundaryConcept):
     """Replace structurally repeated data movement with nominal ownership."""
 
 
@@ -547,7 +536,7 @@ class DeadCompatibilityErasureConcept(SemanticCarrierConcept):
     """Erase compatibility projections after their authority is established."""
 
 
-class ClassFamilyAuthorityConcept(RefactorConcept):
+class ClassFamilyAuthorityConcept(NominalBoundaryConcept):
     """Establish a class-family authority and derive its collection views."""
 
 
@@ -563,7 +552,7 @@ class AutoRegisterStrategyFamilyConcept(AutoRegisterConcept):
     """Replace closed dispatch with an automatically registered strategy family."""
 
 
-class RoleCaseAuthorityConcept(RefactorConcept):
+class RoleCaseAuthorityConcept(NominalBoundaryConcept):
     """Move repeated role-case semantics behind a nominal authority."""
 
 
@@ -13559,60 +13548,6 @@ class FindingRecipeActionKey:
 
 
 @dataclass(frozen=True)
-class SemanticDescentRepairPlan:
-    """Finding-backed semantic repair intent compiled into DSL operations."""
-
-    record: "FindingRecipeSynthesisRecord"
-    repair_kind: str
-
-    @property
-    def finding(self) -> RefactorFinding:
-        return self.record.finding
-
-    @property
-    def action_keys(self) -> tuple[FindingRecipeActionKey, ...]:
-        return self.record.action_keys
-
-    @property
-    def recipe(self) -> RefactorRecipe:
-        return self.record.evaluation.required_recipe
-
-    @property
-    def finding_id(self) -> str:
-        return self.finding.stable_id
-
-    @property
-    def detector_id(self) -> str:
-        return self.finding.detector_id
-
-    @property
-    def missing_derivation_path(self) -> str:
-        return self.finding.relation_context
-
-    @property
-    def plan_id(self) -> str:
-        return f"{self.finding_id}-{self.repair_kind}"
-
-    @property
-    def operation_kinds(self) -> tuple[str, ...]:
-        return tuple(operation.operation_key() for operation in self.recipe.operations)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "plan_id": self.plan_id,
-            "finding_id": self.finding_id,
-            "detector_id": self.detector_id,
-            "repair_kind": self.repair_kind,
-            "missing_derivation_path": self.missing_derivation_path,
-            "action_keys": tuple(
-                action_key.to_dict() for action_key in self.action_keys
-            ),
-            "operation_kinds": self.operation_kinds,
-            "recipe_id": self.recipe.recipe_id,
-        }
-
-
-@dataclass(frozen=True)
 class FindingRecipeSynthesisRecord:
     """Recipe-synthesis outcome for one finding."""
 
@@ -13683,10 +13618,6 @@ class FindingRecipeSynthesisRecord:
             return ""
         return concept_type.concept_key()
 
-    @property
-    def semantic_repair_plan(self) -> SemanticDescentRepairPlan | None:
-        return self.evaluation.semantic_repair_plan_for(self)
-
     def to_dict(self) -> JsonObject:
         return {
             "finding_id": self.finding_id,
@@ -13702,11 +13633,6 @@ class FindingRecipeSynthesisRecord:
             "recipe_id": self.recipe_id,
             "recipe": self.recipe_payload,
             "refactor_concept": self.refactor_concept,
-            "semantic_repair_plan": (
-                None
-                if self.semantic_repair_plan is None
-                else self.semantic_repair_plan.to_dict()
-            ),
             "reason": self.reason,
             "scaffold": self.scaffold,
             "codemod_patch": self.codemod_patch,
@@ -13718,7 +13644,6 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
     """Coverage report for finding-backed DSL recipe synthesis."""
 
     payload_key: ClassVar[str] = "synthesis_report"
-    class_plan_payload_key: ClassVar[str] = "class_plan_report"
     records: tuple[FindingRecipeSynthesisRecord, ...] = ()
 
     @property
@@ -13749,15 +13674,6 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
             },
         }
 
-    def projection_payload(
-        self,
-        class_plan_report: "FindingRecipeClassPlanReport | None" = None,
-    ) -> JsonObject:
-        payload = {self.payload_key: self.to_dict()}
-        if class_plan_report is not None:
-            payload[self.class_plan_payload_key] = class_plan_report.to_dict()
-        return payload
-
 
 @dataclass(frozen=True, kw_only=True)
 class FindingRecipeSynthesisBoundary(CodemodJsonReport):
@@ -13766,7 +13682,6 @@ class FindingRecipeSynthesisBoundary(CodemodJsonReport):
     report: FindingRecipeSynthesisReport = field(
         default_factory=FindingRecipeSynthesisReport
     )
-    class_plan_report: "FindingRecipeClassPlanReport | None" = None
 
     @property
     def records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
@@ -13785,7 +13700,7 @@ class FindingRecipeSynthesisBoundary(CodemodJsonReport):
         return self.report.unsupported_count
 
     def synthesis_payload(self) -> JsonObject:
-        return self.report.projection_payload(self.class_plan_report)
+        return {self.report.payload_key: self.report.to_dict()}
 
     def to_dict(self) -> JsonObject:
         return self.synthesis_payload()
@@ -13817,13 +13732,6 @@ class FindingRecipeEvaluation(ABC):
     ) -> "FindingRecipeEvaluation":
         del context, finding
         return self
-
-    def semantic_repair_plan_for(
-        self,
-        record: FindingRecipeSynthesisRecord,
-    ) -> SemanticDescentRepairPlan | None:
-        del record
-        return None
 
     def terminal_evaluation(
         self,
@@ -13977,15 +13885,6 @@ class SemanticDescentRecipeEvaluation(ExecutableRecipeEvaluation):
     """Executable outcome declared by one semantic-mirror strategy leaf."""
 
     strategy_type: type["SemanticMirrorFindingRecipeStrategy"]
-
-    def semantic_repair_plan_for(
-        self,
-        record: FindingRecipeSynthesisRecord,
-    ) -> SemanticDescentRepairPlan:
-        return SemanticDescentRepairPlan(
-            record=record,
-            repair_kind=self.strategy_type.repair_kind(),
-        )
 
 
 @dataclass(frozen=True)
@@ -19023,13 +18922,6 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
         raise NotImplementedError
-
-    @classmethod
-    def repair_kind(cls) -> str:
-        return class_name_registry_key(
-            cls.__name__.removesuffix("SemanticMirrorRecipeStrategy"),
-            cls,
-        )
 
     def evaluation_from_recipe(
         self,

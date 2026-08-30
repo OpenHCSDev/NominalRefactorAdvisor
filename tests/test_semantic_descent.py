@@ -12,7 +12,6 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
-    NominalBoundaryConcept,
     codemod_plan_from_findings,
 )
 from nominal_refactor_advisor.detectors import (
@@ -20,7 +19,6 @@ from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     DerivedMetricCountBoilerplateDetector,
     InheritedAutoRegisterConfigBoilerplateDetector,
-    IssueDetector,
     SemanticMirrorWithoutDescentDetector,
 )
 from nominal_refactor_advisor.models import (
@@ -55,19 +53,6 @@ def _write_module(root: Path, source: str) -> Path:
     path.parent.mkdir(parents=True)
     path.write_text(source, encoding="utf-8")
     return path
-
-
-def _goal_policy_finding(detector_id: str) -> RefactorFinding:
-    return RefactorFinding(
-        detector_id=detector_id,
-        pattern_id=PatternId.NOMINAL_BOUNDARY,
-        title="Finding",
-        summary=f"{detector_id} summary",
-        why="semantic fact is mirrored outside its nominal authority",
-        capability_gap="derive the projection from the authority instead",
-        relation_context="projection lacks a semantic-descent certificate",
-        evidence=(SourceLocation("pkg/mod.py", 1, detector_id),),
-    )
 
 
 def test_class_name_algebra_uses_tokens_for_common_suffixes() -> None:
@@ -931,25 +916,6 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
     assert work_item.projection_kinds == ("detector_finding",)
 
 
-def test_nominal_boundary_goal_targets_all_ssot_authority_findings_by_default() -> None:
-    mirror_finding = _goal_policy_finding("semantic_mirror_without_descent")
-    non_mirror_ssot_finding = _goal_policy_finding("repeated_builder_calls")
-    ordinary_finding = _goal_policy_finding("typing_protocol_contract")
-    findings = (mirror_finding, non_mirror_ssot_finding, ordinary_finding)
-    assert (
-        non_mirror_ssot_finding.detector_id
-        in IssueDetector.ssot_authority_detector_ids()
-    )
-    assert (
-        non_mirror_ssot_finding.detector_id
-        not in IssueDetector.semantic_mirror_detector_ids()
-    )
-    assert tuple(
-        finding.detector_id
-        for finding in NominalBoundaryConcept.target_findings(findings)
-    ) == ("semantic_mirror_without_descent", "repeated_builder_calls")
-
-
 def test_dataclass_template_materializer_certifies_projection_descent(
     tmp_path: Path,
 ) -> None:
@@ -1103,7 +1069,6 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     simulation = plan.simulate_snapshot(snapshot)
     operation = plan.document.to_dict()["recipes"][0]["operations"][0]
     record = plan.records[0]
-    repair_plan = record.semantic_repair_plan
 
     assert plan.expected_removed_finding_count == 1
     assert record.detector_id == "semantic_mirror_without_descent"
@@ -1115,18 +1080,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert operation["registry_name"] == "STEP_TABLE"
     assert operation["class_key_pairs"] == ("LoadStep='load'", "SaveStep='save'")
-    assert repair_plan is not None
-    assert repair_plan.repair_kind == "registration"
-    assert repair_plan.action_keys == record.action_keys
-    assert repair_plan.operation_kinds == ("convert_manual_registry_to_autoregister",)
-    repaired_finding = next(
-        finding for finding in findings if finding.stable_id == repair_plan.finding_id
-    )
-    assert repair_plan.missing_derivation_path == repaired_finding.relation_context
-    assert (
-        repair_plan.to_dict()["missing_derivation_path"]
-        == repaired_finding.relation_context
-    )
+    assert record.action_keys
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
 
@@ -2013,8 +1967,6 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
         record.executable_declaration_name
         == "DataclassPayloadProjectionMappingRecipeBuilder"
     )
-    assert record.semantic_repair_plan is not None
-    assert record.semantic_repair_plan.repair_kind == "mapping"
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
         "replace_text",
         "replace_target",

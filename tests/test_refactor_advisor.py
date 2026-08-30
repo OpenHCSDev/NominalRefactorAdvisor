@@ -1217,38 +1217,12 @@ def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() ->
     assert "AuthorityClaim" in evaluation.rejection_reason
 
 
-def test_authority_gate_rejection_removes_semantic_repair_plan() -> None:
-    finding = RefactorFinding(
-        detector_id="authority_gate_fixture",
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Authority gate fixture",
-        summary="recipe uses authority language without a claim",
-        why="authority claims must be proof-carrying",
-        capability_gap="resolved authority claim",
-        relation_context="generated recipe text mentions authority",
-    )
-    evaluation = SemanticDescentRecipeEvaluation(
-        executable_recipe=RefactorRecipe(
-            recipe_id="unsafe-semantic-plan",
-            reason="route through authority",
-        ),
-        executable_declaration_type=FindingRecipeAuthorityClaimGate,
-        strategy_type=MappingSemanticMirrorRecipeStrategy,
-    ).gated_by_authority_claim(None, finding)
-    record = FindingRecipeSynthesisRecord(
-        finding=finding,
-        evaluation=evaluation,
-    )
-
-    assert record.semantic_repair_plan is None
-
-
 def test_unevaluated_recipe_cannot_claim_an_evaluated_status() -> None:
     with pytest.raises(ValueError, match="requires a declaration-owned evaluation"):
         UnevaluatedRecipeEvaluation(status=FindingRecipeSynthesisStatus.PLANNED)
 
 
-def test_authority_inference_updates_the_recipe_used_by_semantic_repair(
+def test_authority_inference_updates_the_terminal_evaluation_recipe(
     tmp_path: Path,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "class HandlerAuthority:\n    pass\n")
@@ -1277,15 +1251,8 @@ def test_authority_inference_updates_the_recipe_used_by_semantic_repair(
         executable_declaration_type=FindingRecipeAuthorityClaimGate,
         strategy_type=MappingSemanticMirrorRecipeStrategy,
     ).gated_by_authority_claim(snapshot, finding)
-    record = FindingRecipeSynthesisRecord(
-        finding=finding,
-        evaluation=evaluation,
-    )
-
     assert original_recipe.authority_claims == ()
     assert evaluation.required_recipe.authority_claims
-    assert record.semantic_repair_plan is not None
-    assert record.semantic_repair_plan.recipe is evaluation.required_recipe
 
 
 def test_refactor_recipe_dsl_operations_compile_to_rewrites(
@@ -14309,7 +14276,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
 
     assert report.completed is True
     assert report.achieved is True
-    assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.stage_count == 1
     assert report.total_rewrite_count == 1
     assert report.final_target_finding_ids == ()
@@ -14321,7 +14288,6 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     assert stage.finding_delta.confirmed_expected_removed_finding_ids(
         stage.expected_removed_finding_ids
     ) == (finding.stable_id,)
-    assert stage.class_plan_report is not None
     assert len(stage.class_plan_report.classes) == 1
     assert len(stage.class_plan_report.classes[0].site_plans) == 1
     assert (
@@ -14332,13 +14298,126 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         == "replace_text"
     )
     stage_payload = report.to_dict()["stages"][0]
+    assert "synthesis_report" not in stage_payload
     assert len(stage_payload["class_plan_report"]["classes"]) == 1
+    assert (
+        stage_payload["class_plan_report"]["finding_recipe_plan"]["synthesis_report"][
+            "planned_count"
+        ]
+        == 1
+    )
     assert len(stage_payload["class_plan_report"]["classes"][0]["site_plans"]) == 1
     replay_payload = report.replay_sequence.to_dict()
     assert len(replay_payload["stages"]) == 1
     assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
         "finding-backed-codemod-plan"
     )
+
+
+def test_applied_migration_termination_uses_actual_rescan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    detector_id = "applied_migration_rescan_test"
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n    def run(self):\n        return 'old'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Semantic fact repeats outside nominal boundary",
+        "Duplicated encoding should move behind the named owner.",
+        "one nominal authority for the semantic fact",
+        "same source fact encoded in parallel branches",
+    ).build(
+        detector_id,
+        "Alpha.run encodes the semantic fact outside its boundary.",
+        (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
+    )
+    initial_scan = CodemodFixpointScan(modules=modules, findings=[finding])
+
+    class AppliedMigrationSynthesizer(
+        FindingRecipeSynthesizer,
+        SemanticCarrierConcept,
+    ):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "Alpha.run"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe("applied-rescan-test").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(
+                            qualname="Alpha.run",
+                            file_path=module_path.as_posix(),
+                        ),
+                        old_source="return 'old'",
+                        new_source="return 'new'",
+                    )
+                )
+            )
+
+    def divergent_scan(
+        self: object,
+        iteration_index: int,
+    ) -> CodemodFixpointScan:
+        del self
+        if iteration_index == 0:
+            return initial_scan
+        return CodemodFixpointScan(
+            modules=parse_python_modules(tmp_path),
+            findings=[finding],
+        )
+
+    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
+    FindingRecipeSynthesizer.__registry__[detector_id] = AppliedMigrationSynthesizer
+    monkeypatch.setattr(CodemodRefactorGoalRunner, "scan", divergent_scan)
+    try:
+        report = CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=False,
+            migration_type=SemanticCarrierConcept,
+            max_stages=2,
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=initial_scan,
+        ).run()
+    finally:
+        if previous_synthesizer is None:
+            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+        else:
+            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
+
+    assert report.completed is False
+    assert report.achieved is False
+    assert report.stop_reason is CodemodWorkflowStopReason.NO_PROGRESS
+    assert report.final_target_finding_ids == (finding.stable_id,)
+    stage = report.stages[0]
+    assert stage.applied is True
+    assert stage.progress.achieved is False
+    assert stage.progress.made_progress is False
+    assert stage.progress.after_target_finding_ids == (finding.stable_id,)
 
 
 def test_class_family_migration_derives_serial_stages_from_one_concept(
@@ -14379,7 +14458,7 @@ def test_class_family_migration_derives_serial_stages_from_one_concept(
 
     assert report.completed is True
     assert report.achieved is True
-    assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.stage_count == 2
     assert report.final_target_finding_ids == ()
     first_stage, second_stage = report.stages
@@ -14505,7 +14584,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
 
     assert report.completed is True
     assert report.achieved is True
-    assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.final_target_finding_ids == ()
     assert report.stages[0].progress.before_target_finding_ids == (
         report_finding.stable_id,
@@ -14589,20 +14668,21 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
     assert report.completed is False
-    assert report.terminal_reason is CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES
-    assert report.terminal_synthesis_report.rejected_count == 1
-    assert report.terminal_synthesis_report.records[0].detector_id == detector_id
-    assert report.terminal_class_plan_report is not None
-    assert len(report.terminal_class_plan_report.classes) == 1
-    assert len(report.terminal_class_plan_report.classes[0].site_plans) == 1
+    assert report.stop_reason is CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES
+    assert report.stage_count == 1
+    terminal_stage = report.stages[0]
+    terminal_synthesis = terminal_stage.report
+    assert terminal_synthesis.rejected_count == 1
+    assert terminal_synthesis.records[0].detector_id == detector_id
+    assert len(terminal_stage.class_plan_report.classes) == 1
+    assert len(terminal_stage.class_plan_report.classes[0].site_plans) == 1
+    assert terminal_stage.rewrite_count == 0
+    assert terminal_stage.document.has_recipes is False
+    assert report.replay_sequence.documents == ()
     payload = report.to_dict()
-    assert payload["terminal_synthesis_report"]["records"][0]["status"] == (
-        "rejected_by_safety_check"
-    )
-    assert payload["terminal_synthesis_report"]["status_counts"] == {
-        "rejected_by_safety_check": 1
-    }
-    terminal_class_plan = payload["terminal_class_plan_report"]
+    assert "terminal_synthesis_report" not in payload
+    assert "terminal_class_plan_report" not in payload
+    terminal_class_plan = payload["stages"][0]["class_plan_report"]
     assert (
         terminal_class_plan["finding_recipe_plan"]["synthesis_report"]["records"][0][
             "status"
@@ -14748,7 +14828,7 @@ def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
     assert result.returncode == 0, result.stderr
     assert payload["completed"] is True
     assert payload["achieved"] is True
-    assert payload["terminal_reason"] == "achieved"
+    assert payload["stop_reason"] == "achieved"
     assert payload["stage_count"] == 1
     assert payload["total_rewrite_count"] == 1
     assert payload["stages"][0]["applied"] is False

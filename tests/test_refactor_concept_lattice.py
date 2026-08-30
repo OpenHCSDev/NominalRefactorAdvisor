@@ -87,6 +87,11 @@ def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
     )
     assert not hasattr(codemod_workflow, "CodemodRefactorGoal")
     assert not hasattr(codemod_workflow, "CodemodRefactorGoalStageAttempt")
+    assert "matches_finding" not in vars(codemod.NominalBoundaryConcept)
+    assert (
+        codemod.NominalBoundaryConcept.matches_finding.__func__
+        is codemod.RefactorConcept.matches_finding.__func__
+    )
 
 
 def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
@@ -101,6 +106,22 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
 @pytest.mark.parametrize(
     ("parent_concept", "expected_leaves"),
     (
+        (
+            codemod.NominalBoundaryConcept,
+            frozenset(
+                {
+                    codemod.PrefixBundleCarrierConcept,
+                    codemod.ConstructorKwargCarrierProjectionConcept,
+                    codemod.DataclassPayloadProjectionConcept,
+                    codemod.TupleDictReturnRecordConcept,
+                    codemod.DeadCompatibilityErasureConcept,
+                    codemod.ClassFamilyAuthorityConcept,
+                    codemod.AutoRegisterClassRegistryConcept,
+                    codemod.AutoRegisterStrategyFamilyConcept,
+                    codemod.RoleCaseAuthorityConcept,
+                }
+            ),
+        ),
         (
             codemod.ConstructorKwargCollapseConcept,
             frozenset({codemod.ConstructorKwargCarrierProjectionConcept}),
