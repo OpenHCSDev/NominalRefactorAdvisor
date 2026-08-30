@@ -66,9 +66,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.NumericLiteralDispatchFindingRecipeSynthesizer: (
         codemod.AutoRegisterStrategyFamilyConcept
     ),
-    codemod.InlineLiteralDispatchFindingRecipeSynthesizer: (
-        codemod.AutoRegisterStrategyFamilyConcept
-    ),
 }
 
 EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(

@@ -535,14 +535,6 @@ class DetectorConfig:
     min_prefixed_role_shared_fields: int = 2
     min_prefixed_role_bundle_fields: int = 3
     min_reflective_selector_values: int = 2
-    min_literal_schema_field_count: int = detector_config_option(
-        2,
-        "Minimum distinct literal mapping fields in an owner before surfacing schema-dispatch duplication.",
-    )
-    min_literal_schema_owner_count: int = detector_config_option(
-        2,
-        "Minimum owners sharing a literal mapping-field signature before surfacing schema-dispatch duplication.",
-    )
     min_static_payload_function_lines: int = detector_config_option(
         60,
         "Minimum function length for unreferenced embedded static-payload emitter detection.",

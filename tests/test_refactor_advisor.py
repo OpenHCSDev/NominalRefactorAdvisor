@@ -3605,6 +3605,42 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     build_source_index(parse_python_modules(tmp_path), ())
 
 
+def test_refactor_recipe_rejects_attribute_literal_dispatch_axis(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef walk(node):\n    if node.kind == "alpha":\n        return node.alpha()\n    if node.kind == "beta":\n        return node.beta()\n    return None\n',
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    recipe = RefactorRecipe(
+        recipe_id="attribute-dispatch-must-remain-unplanned"
+    ).with_operation(
+        DispatchToPolymorphismOperation(
+            target=SourceRewriteTarget(
+                qualname="walk",
+                file_path=module_path.as_posix(),
+            ),
+            dispatch_axis_expression="node.kind",
+            literal_cases=("'alpha'", "'beta'"),
+            base_name="WalkDispatchCase",
+            case_key_attribute="case",
+            method_name="apply",
+        )
+    )
+
+    with pytest.raises(ValueError, match="not a supported literal dispatch"):
+        recipe.simulate(
+            source_index,
+            source_by_path,
+            backend=CodemodBackend.AST_SPAN,
+        )
+
+
 def test_refactor_recipe_moves_decorated_symbol_between_modules(
     tmp_path: Path,
 ) -> None:
@@ -6596,52 +6632,6 @@ class DynamicSource:
     assert "explicit value()/set_value()" in (finding.codemod_patch or "")
 
 
-def test_detects_repeated_literal_schema_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/runtime_schema.py",
-        """
-def required_field(payload, name, owner):
-    return payload[name]
-
-
-def optional_field(payload, name, owner):
-    return payload.get(name)
-
-
-def dependency_fields(raw_spec, owner):
-    kind = required_field(raw_spec, "kind", owner)
-    scope = optional_field(raw_spec, "scope", owner)
-    coordinate = required_field(raw_spec, "coordinate", owner)
-    return kind, scope, coordinate
-
-
-def projection_fields(raw_spec, owner):
-    if "kind" in raw_spec:
-        scope = optional_field(raw_spec, "scope", owner)
-    else:
-        scope = None
-    coordinate = raw_spec["coordinate"]
-    return scope, coordinate
-""",
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "literal_schema_dispatch"
-        )
-    )
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "dependency_fields" in finding.summary
-    assert "projection_fields" in finding.summary
-    assert "kind" in finding.summary
-    assert "scope" in finding.summary
-    assert "coordinate" in finding.summary
-    assert "nominal schema authority" in (finding.codemod_patch or "")
-
-
 _REPEATED_BUILDER_SOURCE = """
 def main(builder):
     builder.register("--json", action="store_true", help="Emit JSON output")
@@ -7791,45 +7781,12 @@ def caller():
 def test_parallel_analyze_modules_matches_sequential_stable_ids(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/alpha.py",
-        """
-class AlphaRunner:
-    def run(self, value):
-        if value == "one":
-            return "alpha-one"
-        if value == "two":
-            return "alpha-two"
-        return "alpha-default"
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/beta.py",
-        """
-class BetaRunner:
-    def run(self, value):
-        if value == "one":
-            return "beta-one"
-        if value == "two":
-            return "beta-two"
-        return "beta-default"
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/gamma.py",
-        """
-class GammaRunner:
-    def run(self, value):
-        if value == "one":
-            return "gamma-one"
-        if value == "two":
-            return "gamma-two"
-        return "gamma-default"
-""",
-    )
+    for module_name in ("alpha", "beta", "gamma"):
+        _write_module(
+            tmp_path,
+            f"pkg/{module_name}.py",
+            f'''\ndef render_{module_name}(kind):\n    if kind == "one":\n        return "{module_name}-one"\n    elif kind == "two":\n        return "{module_name}-two"\n    elif kind == "three":\n        return "{module_name}-three"\n    return "{module_name}-default"\n''',
+        )
 
     modules = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)
     sequential_findings = analyze_modules(
@@ -11336,28 +11293,6 @@ def test_string_dispatch_detects_behavioral_string_key_tables(tmp_path: Path) ->
     assert any(
         finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings
     )
-
-
-def test_detects_inline_literal_dispatch_registry_smell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef walk(node):\n    if node.kind == "alpha":\n        return 1\n    if node.kind == "beta":\n        return 2\n    return 0\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "inline_literal_dispatch"
-        )
-    )
-    assert finding.scaffold is not None
-    assert "DispatchCase(ABC, metaclass=AutoRegisterMeta)" in finding.scaffold
-    assert "dispatch_node_kind" in finding.scaffold
-    assert "DispatchCase.for_case" in finding.scaffold
-    assert finding.codemod_patch is not None
-    assert "AutoRegisterMeta-backed case family" in finding.codemod_patch
 
 
 def test_detects_bidirectional_registry(tmp_path: Path) -> None:
@@ -21847,21 +21782,13 @@ def test_detects_abc_base_dispatch_over_child_helper_sentinel(
     matching = [
         finding
         for finding in findings
-        if finding.detector_id
-        in {"sentinel_attribute_simulation", "inline_literal_dispatch"}
+        if finding.detector_id == "sentinel_attribute_simulation"
     ]
 
     assert any(
         (
             finding.detector_id == "sentinel_attribute_simulation"
             and "helper" in finding.summary
-        )
-        for finding in matching
-    )
-    assert any(
-        (
-            finding.detector_id == "inline_literal_dispatch"
-            and "self.helper" in finding.summary
         )
         for finding in matching
     )

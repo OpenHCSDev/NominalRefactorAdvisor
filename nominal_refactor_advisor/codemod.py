@@ -598,7 +598,6 @@ MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID = "module_authority_reexport_catalo
 MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
 STRING_DISPATCH_FINDING_ID = "string_dispatch"
 NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
-INLINE_LITERAL_DISPATCH_FINDING_ID = "inline_literal_dispatch"
 DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
     ("capability_tag_constants", "observation_tag_constants")
 )
@@ -11034,6 +11033,7 @@ class DispatchPolymorphismFunction(
             or self.node.args.kwonlyargs
             or self.node.args.posonlyargs
             or "." in self.node.name
+            or self.dispatch_axis_expression not in self.parameter_names
         )
 
     @property
@@ -11042,8 +11042,6 @@ class DispatchPolymorphismFunction(
 
     @property
     def apply_argument_names(self) -> tuple[str, ...]:
-        if self.dispatch_axis_expression not in self.parameter_names:
-            return ()
         return tuple(
             name
             for name in self.parameter_names
@@ -24388,14 +24386,6 @@ class NumericLiteralDispatchFindingRecipeSynthesizer(
     """Build recipes for closed numeric-literal dispatch functions."""
 
     detector_id = NUMERIC_LITERAL_DISPATCH_FINDING_ID
-
-
-class InlineLiteralDispatchFindingRecipeSynthesizer(
-    LiteralDispatchFindingRecipeSynthesizer
-):
-    """Build recipes for inline literal dispatch functions."""
-
-    detector_id = INLINE_LITERAL_DISPATCH_FINDING_ID
 
 
 class DispatchMetricsFindingRecipeSynthesizer(
