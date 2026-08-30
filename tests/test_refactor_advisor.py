@@ -12325,7 +12325,7 @@ def test_ignores_single_generic_name_sentinel_branch(tmp_path: Path) -> None:
     assert not any((finding.pattern_id == 1 for finding in findings))
 
 
-def test_forwarding_detectors_ignore_semantic_decorated_entrypoints(
+def test_identity_forwarding_detector_ignores_semantic_decorated_entrypoints(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -12338,32 +12338,8 @@ def test_forwarding_detectors_ignore_semantic_decorated_entrypoints(
 
     assert not any(
         finding.title
-        == "Trivial forwarding wrapper should be deleted in favor of the delegate authority"
-        and "remove_holes" in finding.summary
-        for finding in findings
-    )
-    assert not any(
-        finding.title
         == "Identity keyword forwarding shell should collapse into the semantic authority"
         and "morph" in finding.summary
-        for finding in findings
-    )
-
-
-def test_detects_field_delegate_forwarding_method(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Schedule:\n    def __init__(self, step_scale):\n        self.step_scale = step_scale\n\n    def pose_translation_steps(self, pose_count):\n        return self.step_scale.pose_translation_steps(pose_count, self.per_pose_translation_steps)\n",
-    )
-
-    findings = analyze_path(tmp_path)
-
-    assert any(
-        finding.title
-        == "Trivial forwarding wrapper should be deleted in favor of the delegate authority"
-        and "Schedule.pose_translation_steps" in finding.summary
-        and "self.step_scale.pose_translation_steps" in finding.summary
         for finding in findings
     )
 
@@ -21126,43 +21102,6 @@ def test_json_and_markdown_expose_codemod_applicability(
     assert gate_payload["raw_findings_default"] == "suppressed_when_active"
 
 
-def test_semantic_gate_promotes_ssot_findings_over_wrapper_cleanup_without_candidates() -> (
-    None
-):
-    spec = _finding_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Authority boundary",
-        "source of truth drift must be collapsed",
-        "single authority boundary",
-        "same fact family has multiple writable surfaces",
-    )
-    critical = spec.build(
-        "generic_role_case_table",
-        "`payload` declares one role but is used as another authority surface.",
-        (SourceLocation("module.py", 10, "Scope.payload"),),
-    )
-    cleanup = spec.build(
-        "trivial_forwarding_wrapper",
-        "`Scope.port` forwards to `request.port`.",
-        (SourceLocation("module.py", 20, "Scope.port"),),
-    )
-
-    markdown = MARKDOWN_RENDERER.report(
-        [cleanup, critical],
-        codemod_candidates=(),
-    )
-
-    assert markdown.startswith("Semantic refactor gate:")
-    assert (
-        "SSOT/authority-boundary findings outrank cleanup-only wrapper findings"
-        in markdown
-    )
-    assert "SSOT-critical signals: 1" in markdown
-    assert "Cleanup-only signals: 1; defer" in markdown
-    assert "No impact-ranked target was generated" in markdown
-    assert "Raw finding evidence suppressed:" in markdown
-
-
 def test_semantic_gate_ranks_larger_boundary_groups_before_label_order() -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -21367,7 +21306,6 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
         semantic_agent_refactor_count=1,
         semantic_uncertainty_review_count=0,
         ssot_authority_finding_count=0,
-        cleanup_followup_finding_count=0,
         first_trajectory=None,
         authority_targets=(target,),
         work_queue=(work_item,),
@@ -23981,47 +23919,6 @@ def test_detects_pass_through_nominal_wrapper(tmp_path: Path) -> None:
     assert "ProbeRouteWitness" in finding.summary
     assert "ProbeRoute" in finding.summary
     assert "type consumers against `ProbeRoute` directly" in (finding.scaffold or "")
-
-
-def test_detects_trivial_forwarding_wrapper(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass ModeRunner:\n    @classmethod\n    def for_mode(cls, mode):\n        return cls()\n\n    def attempt_modes(self):\n        return ("fast", "safe")\n\n\nclass Owner:\n    def __init__(self, mode):\n        self.mode = mode\n\n    def attempt_modes(self):\n        return ModeRunner.for_mode(self.mode).attempt_modes()\n\n\ndef refinement_mode_attempt_chain(mode):\n    return ModeRunner.for_mode(mode).attempt_modes()\n',
-    )
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "trivial_forwarding_wrapper"
-    ]
-    assert len(findings) == 2
-    assert any(("Owner.attempt_modes" in finding.summary for finding in findings))
-    assert any(
-        ("refinement_mode_attempt_chain" in finding.summary for finding in findings)
-    )
-    assert all(
-        (
-            "call `ModeRunner.for_mode.attempt_modes` directly"
-            in (finding.scaffold or "")
-            for finding in findings
-        )
-    )
-
-
-def test_ignores_abstract_hook_forwarding_implementations(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC, abstractmethod\n\n\nclass HelperBackedStrategy(ABC):\n    def run(self, request):\n        return self._run_with_helper(request)\n\n    @abstractmethod\n    def _run_with_helper(self, request):\n        raise NotImplementedError\n\n\nclass ConcreteStrategy(HelperBackedStrategy):\n    def _run_with_helper(self, request):\n        return Helper.for_mode(request.mode).run(request.value)\n",
-    )
-
-    assert not any(
-        finding.detector_id == "trivial_forwarding_wrapper"
-        and "ConcreteStrategy._run_with_helper" in finding.summary
-        for finding in analyze_path(tmp_path)
-    )
 
 
 def test_detects_public_api_private_delegate_shell(tmp_path: Path) -> None:

@@ -44,9 +44,7 @@ class SemanticRefactorGateModeError(ValueError):
 
 
 SSOT_AUTHORITY_BOUNDARY_TIER = "ssot_authority_boundary"
-CLEANUP_FOLLOWUP_TIER = "cleanup_followup"
 ORDINARY_SEMANTIC_TIER = "ordinary_semantic"
-DEFERRED_CLEANUP_DETECTOR_IDS = frozenset(("trivial_forwarding_wrapper",))
 UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID = "unresolved_authority_claim"
 
 
@@ -56,8 +54,6 @@ def priority_tier_for_detector_ids(detector_ids: tuple[str, ...]) -> str:
     detector_id_set = frozenset(detector_ids)
     if detector_id_set & IssueDetector.ssot_authority_detector_ids():
         return SSOT_AUTHORITY_BOUNDARY_TIER
-    if detector_id_set and detector_id_set <= DEFERRED_CLEANUP_DETECTOR_IDS:
-        return CLEANUP_FOLLOWUP_TIER
     return ORDINARY_SEMANTIC_TIER
 
 
@@ -78,18 +74,6 @@ def ssot_authority_findings(
         finding
         for finding in findings
         if finding.detector_id in IssueDetector.ssot_authority_detector_ids()
-    )
-
-
-def cleanup_followup_findings(
-    findings: tuple[RefactorFinding, ...],
-) -> tuple[RefactorFinding, ...]:
-    """Findings that should not displace SSOT/authority-boundary work."""
-
-    return tuple(
-        finding
-        for finding in findings
-        if finding.detector_id in DEFERRED_CLEANUP_DETECTOR_IDS
     )
 
 
@@ -801,7 +785,6 @@ class SemanticRefactorGateReport(SemanticRecord):
     semantic_agent_refactor_count: int
     semantic_uncertainty_review_count: int
     ssot_authority_finding_count: int
-    cleanup_followup_finding_count: int
     first_trajectory: SemanticRefactorGateTrajectory | None
     authority_targets: tuple[SemanticRefactorAuthorityTarget, ...]
     work_queue: tuple[SemanticRefactorGateWorkItem, ...]
@@ -817,7 +800,6 @@ class SemanticRefactorGateReport(SemanticRecord):
     ) -> "SemanticRefactorGateReport":
         semantic_candidates = cls._semantic_candidates(candidates)
         ssot_findings = ssot_authority_findings(findings)
-        cleanup_findings = cleanup_followup_findings(findings)
         finding_descent_graph = build_finding_backed_semantic_descent_graph(
             ssot_findings,
             semantic_mirror_detector_ids=IssueDetector.semantic_mirror_detector_ids(),
@@ -848,7 +830,6 @@ class SemanticRefactorGateReport(SemanticRecord):
                 CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW,
             ),
             ssot_authority_finding_count=len(ssot_findings),
-            cleanup_followup_finding_count=len(cleanup_findings),
             first_trajectory=SemanticRefactorGateTrajectory.from_impact_ranking(
                 impact_ranking
             ),
@@ -887,7 +868,6 @@ class SemanticRefactorGateReport(SemanticRecord):
             semantic_agent_refactor_count=0,
             semantic_uncertainty_review_count=0,
             ssot_authority_finding_count=0,
-            cleanup_followup_finding_count=0,
             first_trajectory=None,
             authority_targets=(),
             work_queue=(),
@@ -906,7 +886,6 @@ class SemanticRefactorGateReport(SemanticRecord):
                     self.semantic_uncertainty_review_count
                 ),
                 "ssot_authority_finding_count": self.ssot_authority_finding_count,
-                "cleanup_followup_finding_count": self.cleanup_followup_finding_count,
                 "first_trajectory": (
                     self.first_trajectory.to_dict()
                     if self.first_trajectory is not None
@@ -1037,10 +1016,7 @@ class SemanticRefactorGateReport(SemanticRecord):
                 "   - Forbidden mode: do not patch individual findings "
                 "independently or rerun until the first finding disappears."
             ),
-            (
-                "   - Priority: SSOT/authority-boundary findings outrank "
-                "cleanup-only wrapper findings."
-            ),
+            "   - Priority: collapse the SSOT/authority boundary first.",
             self.count_line,
             *self._priority_lines(),
         )
@@ -1052,12 +1028,6 @@ class SemanticRefactorGateReport(SemanticRecord):
                 "   - SSOT-critical signals: "
                 f"{self.ssot_authority_finding_count}; collapse the single "
                 "source of truth before cosmetic cleanup."
-            )
-        if self.cleanup_followup_finding_count:
-            lines.append(
-                "   - Cleanup-only signals: "
-                f"{self.cleanup_followup_finding_count}; defer unless no "
-                "SSOT-critical signal is present."
             )
         if self.ssot_authority_finding_count and not self.authority_targets:
             lines.append(

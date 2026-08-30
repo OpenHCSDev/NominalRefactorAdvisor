@@ -12380,53 +12380,6 @@ class WrapperChainDetector(ModuleCollectorCandidateDetector[WrapperChainCandidat
         )
 
 
-class TrivialForwardingWrapperDetector(
-    ModuleCollectorCandidateDetector[TrivialForwardingWrapperCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Trivial forwarding wrapper should be deleted in favor of the delegate authority",
-        "A one-line wrapper that only transports inputs into `for_*().method()` or a similar nested delegate call adds no stable semantics. The docs treat that as zero-information indirection: call the authority directly at the use site instead of naming a transport shell.",
-        "direct delegate authority call instead of a trivial forwarding shell",
-        "wrapper symbol only transports existing inputs into a nested delegate call chain",
-        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        _ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
-
-    def _finding_for_candidate(
-        self, wrapper_candidate: TrivialForwardingWrapperCandidate
-    ) -> RefactorFinding:
-        transported_inputs = ", ".join(wrapper_candidate.transported_value_sources[:4])
-        input_summary = (
-            f" It only transports {transported_inputs}." if transported_inputs else ""
-        )
-        private_delegate_root = _delegate_root_symbol(wrapper_candidate.delegate_symbol)
-        private_delegate_summary = _is_private_symbol_name(private_delegate_root)
-        scaffold = (
-            f"# Delete `{wrapper_candidate.qualname}` and call `{wrapper_candidate.delegate_symbol}` directly at the use site.\n"
-            "# Keep the wrapper only if it owns a new invariant, provenance boundary, or semantic rename."
-        )
-        codemod_patch = (
-            f"# Inline `{wrapper_candidate.qualname}` into its callers.\n"
-            f"# Replace the wrapper with direct calls to `{wrapper_candidate.delegate_symbol}`."
-        )
-        if private_delegate_summary:
-            scaffold = (
-                f"# `{wrapper_candidate.qualname}` is trivial, but its delegate root `{private_delegate_root}` is private.\n"
-                "# Promote a public facade/ABC/policy authority instead of routing callers directly to the private delegate."
-            )
-            codemod_patch = (
-                f"# Do not inline callers of `{wrapper_candidate.qualname}` directly onto private `{private_delegate_root}`.\n"
-                "# Promote one public authority that owns the delegate contract, then route callers through that authority."
-            )
-        return self.build_finding(
-            f"`{wrapper_candidate.qualname}` is a {wrapper_candidate.call_depth}-step forwarding wrapper over `{wrapper_candidate.delegate_symbol}`.{input_summary}",
-            (wrapper_candidate.evidence,),
-            scaffold=scaffold,
-            codemod_patch=codemod_patch,
-        )
-
-
 class CompactPublicApiPrivateDelegateModuleProjectionFamily(
     CollectedFamily[PublicApiPrivateDelegateModuleFacts]
 ):
