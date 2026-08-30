@@ -1272,62 +1272,8 @@ class BoundaryLocalWrapperCollapseCandidate:
         )
 
 
-_BOUNDARY_PROJECTION_CONTEXT_TOKENS = frozenset(
-    {
-        "axis",
-        "index",
-        "offset",
-        "offsets",
-        "project",
-        "projected",
-        "projection",
-        "route",
-        "viewer",
-    }
-)
-
-
 def _boundary_pascal_name(field_name: str) -> str:
     return "".join(part.title() for part in field_name.split("_"))
-
-
-def _distributed_boundary_scaffold(
-    candidate: DistributedBoundaryFanoutCandidate,
-) -> str:
-    boundary_name = _boundary_pascal_name(candidate.field_name)
-    if _BOUNDARY_PROJECTION_CONTEXT_TOKENS & set(candidate.context_tokens):
-        return (
-            "@dataclass(frozen=True)\n"
-            f"class {boundary_name}ProjectionRequest:\n"
-            "    ...\n\n"
-            "@dataclass(frozen=True)\n"
-            f"class {boundary_name}ProjectionStep:\n"
-            "    ...\n\n"
-            "# Collapse the forwarded scalar field into the request, then let each\n"
-            "# projection step consume the request and return the projected carrier.\n"
-            "# Do not mirror the field through kwargs or recompute offsets at call sites."
-        )
-    return (
-        "@dataclass(frozen=True)\n"
-        f"class {boundary_name}Boundary:\n"
-        "    ...\n\n"
-        "# Thread this carrier directly; do not mirror its fields through request kwargs."
-    )
-
-
-def _distributed_boundary_codemod_patch(
-    candidate: DistributedBoundaryFanoutCandidate,
-) -> str:
-    if _BOUNDARY_PROJECTION_CONTEXT_TOKENS & set(candidate.context_tokens):
-        return (
-            f"# Collapse `{candidate.field_name}` fanout into one typed projection request.\n"
-            "# Move per-item projection/offset logic into a nominal projection-step object,\n"
-            "# and pass the projection carrier instead of mirrored kwargs."
-        )
-    return (
-        f"# Collapse `{candidate.field_name}` fanout into one nominal carrier boundary.\n"
-        "# Replace pass-through kwargs/request fields with direct carrier consumption at the execution authority."
-    )
 
 
 def _boundary_identifier_tokens(name: str) -> tuple[str, ...]:
@@ -2574,18 +2520,6 @@ class _CompactDistributedBoundaryDetectorBase(
         return context
 
 
-class _CompactDistributedBoundaryFanoutDetectorBase(
-    _CompactDistributedBoundaryDetectorBase[DistributedBoundaryFanoutCandidate]
-):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactDistributedBoundaryContext,
-        config: DetectorConfig,
-    ) -> Sequence[DistributedBoundaryFanoutCandidate]:
-        del config
-        return context.fanout_candidates
-
-
 class _CompactBoundaryLocalWrapperCollapseDetectorBase(
     _CompactDistributedBoundaryDetectorBase[BoundaryLocalWrapperCollapseCandidate]
 ):
@@ -2595,42 +2529,6 @@ class _CompactBoundaryLocalWrapperCollapseDetectorBase(
         config: DetectorConfig,
     ) -> Sequence[BoundaryLocalWrapperCollapseCandidate]:
         return _boundary_local_wrapper_pairs(context.fanout_candidates, config)
-
-
-class DistributedBoundaryFanoutDetector(_CompactDistributedBoundaryFanoutDetectorBase):
-    ssot_authority_boundary = True
-    finding_spec = high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_CONTEXT,
-        "Distributed boundary fanout should collapse behind one nominal carrier",
-        "A same-named boundary is declared on multiple nominal records, forwarded through keyword calls, and projected or destructured elsewhere. That makes one conceptual refactor require edits at many sites and lets support semantics drift across transport shells.",
-        "single authoritative nominal carrier consumed directly at the execution boundary",
-        "same boundary field is redeclared, forwarded, and re-projected across several API surfaces",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-    )
-    def _finding_for_candidate(
-        self, candidate: DistributedBoundaryFanoutCandidate
-    ) -> RefactorFinding:
-        classes = ", ".join(candidate.class_names)
-        context = ", ".join(candidate.context_tokens[:8])
-        return self.build_finding(
-            (
-                f"`{candidate.field_name}` is declared on {classes}, forwarded at "
-                f"{len(candidate.forwarding_sites)} call sites, and projected at "
-                f"{len(candidate.projection_sites)} site(s) over roles {context}."
-            ),
-            candidate.evidence[:8],
-            scaffold=_distributed_boundary_scaffold(candidate),
-            codemod_patch=_distributed_boundary_codemod_patch(candidate),
-            metrics=MappingMetrics.from_field_names(
-                mapping_site_count=(
-                    len(candidate.forwarding_sites) + len(candidate.projection_sites)
-                ),
-                mapping_name=candidate.field_name,
-                field_names=candidate.context_tokens,
-                source_name="distributed_boundary_fanout",
-            ),
-        )
 
 
 @dataclass(frozen=True)

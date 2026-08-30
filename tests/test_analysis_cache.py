@@ -3754,14 +3754,17 @@ def test_cold_focused_compact_scan_derives_context_demand_from_report_target(
         "from dataclasses import dataclass\n"
         "@dataclass(frozen=True)\n"
         "class TargetRequest:\n"
-        "    shared_boundary_support: object\n"
+        "    axis_id: str\n"
+        "    axis_scope: object\n"
         "def forward_target(request):\n"
         "    return TargetRequest(\n"
-        "        shared_boundary_support=request.shared_boundary_support,\n"
+        "        axis_id=request.axis_id,\n"
+        "        axis_scope=request.axis_scope,\n"
         "    )\n"
         "def project_target(request):\n"
-        "    header, payload = request.shared_boundary_support\n"
-        "    return header, payload\n",
+        "    axis_id = request.axis_id\n"
+        "    axis_scope = request.axis_scope\n"
+        "    return axis_id, axis_scope\n",
         encoding="utf-8",
     )
     context_path.write_text(
@@ -3769,19 +3772,20 @@ def test_cold_focused_compact_scan_derives_context_demand_from_report_target(
         "from target import TargetRequest\n"
         "@dataclass(frozen=True)\n"
         "class ContextRequest:\n"
-        "    shared_boundary_support: object\n"
-        "def forward_context(value):\n"
-        "    return TargetRequest(shared_boundary_support=value)\n",
+        "    axis_id: str\n"
+        "    axis_scope: object\n"
+        "def forward_context(request):\n"
+        "    return TargetRequest(\n"
+        "        axis_id=request.axis_id,\n"
+        "        axis_scope=request.axis_scope,\n"
+        "    )\n",
         encoding="utf-8",
     )
     report_scope = AnalysisPathScope(
         analysis_roots=(package_root,),
         report_roots=(target_path,),
     )
-    detector_types = (
-        surface_detectors.DistributedBoundaryFanoutDetector,
-        surface_detectors.BoundaryLocalWrapperCollapseDetector,
-    )
+    detector_types = (surface_detectors.BoundaryLocalWrapperCollapseDetector,)
     eager = analyze_compact_roots_with_cache(
         (package_root,),
         cache_dir=tmp_path / "eager-parse-cache",
@@ -3819,7 +3823,7 @@ def test_cold_focused_compact_scan_derives_context_demand_from_report_target(
         finding.to_dict() for finding in eager.findings
     ]
     assert {finding.detector_id for finding in demanded.findings} == {
-        "distributed_boundary_fanout"
+        "boundary_local_wrapper_collapse"
     }
     assert demanded_paths == [context_path.resolve()]
 
@@ -6983,7 +6987,7 @@ def test_compact_private_helper_cluster_preserves_semantics_without_ast_shadow(
     ).__dict__
 
 
-def test_compact_distributed_boundary_graph_preserves_semantics_without_ast_shadow(
+def test_compact_boundary_wrapper_graph_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7023,7 +7027,6 @@ def test_compact_distributed_boundary_graph_preserves_semantics_without_ast_shad
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
-    fanout_detector = surface_detectors.DistributedBoundaryFanoutDetector()
     wrapper_detector = surface_detectors.BoundaryLocalWrapperCollapseDetector()
     original_walk = ast.walk
     walked_roots: list[ast.AST] = []
@@ -7033,7 +7036,7 @@ def test_compact_distributed_boundary_graph_preserves_semantics_without_ast_shad
         return original_walk(root)
 
     monkeypatch.setattr(ast, "walk", tracked_walk)
-    projections = fanout_detector.compact_module_projections(modules)
+    projections = wrapper_detector.compact_module_projections(modules)
     assert not any(
         isinstance(root, (ast.Assign, ast.AnnAssign, ast.Subscript))
         for root in walked_roots
@@ -7058,7 +7061,6 @@ def test_compact_distributed_boundary_graph_preserves_semantics_without_ast_shad
         "axis_scope",
     }
     assert compact_wrappers
-    assert fanout_detector._candidate_items(list(modules), config) == compact_fanout
     assert wrapper_detector._candidate_items(list(modules), config) == compact_wrappers
     for removed_name in (
         "_distributed_boundary_fanout_candidates",
@@ -7067,12 +7069,7 @@ def test_compact_distributed_boundary_graph_preserves_semantics_without_ast_shad
         "_compact_boundary_local_wrapper_collapse_candidates",
     ):
         assert not hasattr(surface_detectors, removed_name)
-    assert "candidate_collector" not in type(fanout_detector).__dict__
     assert "candidate_collector" not in type(wrapper_detector).__dict__
-    assert fanout_detector._findings_from_compact_projections(
-        projections,
-        config,
-    ) == fanout_detector._findings_for_candidates(compact_fanout, config)
     assert wrapper_detector._findings_from_compact_projections(
         projections,
         config,
@@ -7080,17 +7077,11 @@ def test_compact_distributed_boundary_graph_preserves_semantics_without_ast_shad
 
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,),
-        (
-            surface_detectors.DistributedBoundaryFanoutDetector,
-            surface_detectors.BoundaryLocalWrapperCollapseDetector,
-        ),
+        (surface_detectors.BoundaryLocalWrapperCollapseDetector,),
         use_parse_cache=False,
     )
     assert accumulator.projection_count == len(modules)
     findings_by_detector = accumulator.findings_by_detector(config)
-    assert findings_by_detector[
-        surface_detectors.DistributedBoundaryFanoutDetector
-    ] == fanout_detector._findings_for_candidates(compact_fanout, config)
     assert findings_by_detector[
         surface_detectors.BoundaryLocalWrapperCollapseDetector
     ] == wrapper_detector._findings_for_candidates(compact_wrappers, config)
@@ -7841,9 +7832,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.RoleGuardedSurfaceAccessDetector in (
         partition.compact_global_detector_types
     )
-    assert surface_detectors.DistributedBoundaryFanoutDetector in (
-        partition.compact_global_detector_types
-    )
     assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
         partition.compact_global_detector_types
     )
@@ -7889,7 +7877,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 67
+    assert len(partition.compact_global_detector_types) == 66
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

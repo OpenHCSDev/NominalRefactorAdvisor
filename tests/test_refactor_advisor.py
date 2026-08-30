@@ -10396,69 +10396,6 @@ def test_detects_role_surface_drift_without_project_specific_tokens(
     assert "csv" in finding.summary
 
 
-def test_detects_distributed_boundary_fanout_without_project_specific_tokens(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/boundary.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ArchiveReadRequest:\n    shared_boundary_support: object\n\n\n@dataclass(frozen=True)\nclass ArchiveWriteRequest:\n    shared_boundary_support: object\n\n\ndef forward_read(request):\n    return ArchiveWriteRequest(\n        shared_boundary_support=request.shared_boundary_support,\n    )\n\n\ndef forward_write(shared_boundary_support):\n    return ArchiveReadRequest(\n        shared_boundary_support=shared_boundary_support,\n    )\n\n\ndef execute_archive(request):\n    header, payload = request.shared_boundary_support\n    return header, payload\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "distributed_boundary_fanout"
-        )
-    )
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT
-    assert "shared_boundary_support" in finding.summary
-    assert "ArchiveReadRequest" in finding.summary
-    assert "ArchiveWriteRequest" in finding.summary
-    assert "forwarded at 2 call sites" in finding.summary
-    assert "projected at 1 site" in finding.summary
-    assert "one nominal carrier" in (finding.title or "")
-    assert "ProjectionRequest" not in (finding.scaffold or "")
-
-
-def test_distributed_boundary_fanout_suggests_projection_request_for_axis_roles(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/axis_projection.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass AxisProjection:\n    axis_offsets: tuple[int, ...]\n\n\n@dataclass(frozen=True)\nclass AxisPresentation:\n    axis_offsets: tuple[int, ...]\n\n\ndef present_projection(projection):\n    return AxisPresentation(\n        axis_offsets=projection.axis_offsets,\n    )\n\n\ndef rebuild_projection(axis_offsets):\n    return AxisProjection(\n        axis_offsets=axis_offsets,\n    )\n\n\ndef axis_offset_for_viewer(projection, axis_index):\n    return projection.axis_offsets[axis_index]\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "distributed_boundary_fanout"
-            and "axis_offsets" in finding.summary
-        )
-    )
-    assert "ProjectionRequest" in (finding.scaffold or "")
-    assert "ProjectionStep" in (finding.scaffold or "")
-    assert "typed projection request" in (finding.codemod_patch or "")
-    assert "projection-step object" in (finding.codemod_patch or "")
-
-
-def test_distributed_boundary_fanout_ignores_inherited_class_strategy_fields(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/inherited_strategy.py",
-        "\nfrom typing import ClassVar\n\n\nclass StrategyBase:\n    candidate_collector: ClassVar[object]\n\n\nclass MiddleStrategy(StrategyBase):\n    pass\n\n\nclass LocalStrategy(MiddleStrategy):\n    candidate_collector = local_candidates\n\n\nclass RemoteStrategy(StrategyBase):\n    candidate_collector = remote_candidates\n\n\ndef install_local():\n    return DetectorDeclaration(\n        candidate_collector=LocalStrategy.candidate_collector,\n    )\n\n\ndef install_remote():\n    return DetectorDeclaration(\n        candidate_collector=RemoteStrategy.candidate_collector,\n    )\n\n\ndef namespace_entry():\n    namespace = LocalStrategy.candidate_collector\n    return namespace\n",
-    )
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "distributed_boundary_fanout"
-    ]
-    assert not any("candidate_collector" in finding.summary for finding in findings)
-
-
 def test_boundary_local_wrapper_collapse_detects_renamed_scope_fanout(
     tmp_path: Path,
 ) -> None:
