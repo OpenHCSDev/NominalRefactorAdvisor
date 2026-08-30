@@ -5912,11 +5912,6 @@ def test_nominal_bypass_ast_demand_skips_context_without_dispatch_facts(
 
     monkeypatch.setattr(
         runtime_detectors,
-        "_wrapper_chain_candidates",
-        unexpected_collection,
-    )
-    monkeypatch.setattr(
-        runtime_detectors,
         "_cancelable_composition_signals_for_module",
         unexpected_collection,
     )

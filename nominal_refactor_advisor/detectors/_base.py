@@ -11547,24 +11547,6 @@ class EmptyLeafProductFamilyCandidate:
     evidence = ZippedSourceLocationEvidenceProperty("leaf_lines", "leaf_class_names")
 
 
-class FunctionWrapperKind(StrEnum):
-    DIRECT = "direct"
-    PROJECTION = "projection"
-
-
-@dataclass(frozen=True)
-class FunctionWrapperCandidate:
-    file_path: str
-    qualname: str
-    lineno: int
-    delegate_symbol: str
-    wrapper_kind: FunctionWrapperKind
-    statement_count: int
-    projected_attributes: tuple[str, ...] = ()
-
-    evidence = _LINENO_QUALNAME_EVIDENCE
-
-
 @dataclass(frozen=True)
 class TrivialForwardingWrapperCandidate(LineWitnessCandidate):
     qualname: str
@@ -11693,13 +11675,6 @@ class NominalPolicySurfaceFamilyCandidate:
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple((method.evidence for method in self.methods[:6]))
-
-
-@dataclass(frozen=True)
-class WrapperChainCandidate:
-    file_path: str
-    wrappers: tuple[FunctionWrapperCandidate, ...]
-    leaf_delegate_symbol: str
 
 
 @dataclass(frozen=True)

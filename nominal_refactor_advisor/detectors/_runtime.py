@@ -75,10 +75,8 @@ from ._base import *
 from ._base import high_confidence_certified_spec
 from ._helpers import *
 from ._helpers import (
-    _FunctionWrapperContext,
     _accessor_wrapper_groups,
     _projection_helper_groups,
-    _wrapper_chain_candidates_from_function_candidates,
 )
 
 
@@ -7188,7 +7186,6 @@ class _NominalAuthorityBypassSeed:
 class _NominalAuthorityBypassCandidate:
     seed: _NominalAuthorityBypassSeed
     repeated_templates: tuple[CrossClassSmallMethodTemplateCandidate, ...]
-    wrapper_chains: tuple[WrapperChainCandidate, ...]
     composition_signals: tuple[CancelableCompositionSignal, ...]
 
 
@@ -7217,7 +7214,6 @@ class CompactNominalBypassModuleProjection(CompactModuleIdentity):
 
     isinstance_scatters: tuple[IsinstanceFamilyScatterCandidate, ...]
     repeated_templates: tuple[CrossClassSmallMethodTemplateCandidate, ...]
-    wrapper_chains: tuple[WrapperChainCandidate, ...]
     composition_signals: tuple[CancelableCompositionSignal, ...]
     variant_method_surfaces: tuple[_VariantMethodSurface, ...]
 
@@ -7251,7 +7247,6 @@ class _VariantMethodFamilySeed:
 @dataclass(frozen=True)
 class _VariantMethodFamilyCandidate:
     seed: _VariantMethodFamilySeed
-    wrapper_chains: tuple[WrapperChainCandidate, ...]
     composition_signals: tuple[CancelableCompositionSignal, ...]
 
     @property
@@ -7261,11 +7256,6 @@ class _VariantMethodFamilyCandidate:
             *(
                 SourceLocation(signal.file_path, signal.line, signal.qualname)
                 for signal in self.composition_signals[:2]
-            ),
-            *(
-                wrapper.evidence
-                for chain in self.wrapper_chains[:2]
-                for wrapper in chain.wrappers[:1]
             ),
         ]
         return tuple(evidence[:8])
@@ -7557,23 +7547,15 @@ def _native_cross_class_template_candidates(
     )
 
 
-def _native_wrapper_or_composition_body(
+def _native_composition_body(
     syntax_index: NativePythonSyntaxIndex,
     function_node: Node,
-    *,
-    trim_docstring: bool,
 ) -> tuple[ast.stmt, ...] | None:
     body = function_node.child_by_field_name("body")
     statements = (
-        _native_trimmed_function_statements(syntax_index, function_node)
-        if trim_docstring
-        else (
-            ()
-            if body is None
-            else tuple(
-                child for child in body.named_children if child.type != "comment"
-            )
-        )
+        ()
+        if body is None
+        else tuple(child for child in body.named_children if child.type != "comment")
     )
     if len(statements) == 1 and statements[0].type == "return_statement":
         returned = statements[0].named_children
@@ -7644,22 +7626,16 @@ def _native_composition_signal(
     ).signal()
 
 
-def _native_wrapper_chains_and_composition_signals(
+def _native_composition_signals(
     source_module: SourceModule,
-    module: ParsedModule,
     syntax_index: NativePythonSyntaxIndex,
     function_nodes: tuple[Node, ...],
-) -> tuple[
-    tuple[WrapperChainCandidate, ...],
-    tuple[CancelableCompositionSignal, ...],
-]:
-    wrappers: list[FunctionWrapperCandidate] = []
+) -> tuple[CancelableCompositionSignal, ...]:
     signals: list[CancelableCompositionSignal] = []
     for function_node in function_nodes:
-        composition_body = _native_wrapper_or_composition_body(
+        composition_body = _native_composition_body(
             syntax_index,
             function_node,
-            trim_docstring=False,
         )
         if composition_body is not None:
             composition_function = _native_function_stub(
@@ -7675,42 +7651,13 @@ def _native_wrapper_chains_and_composition_signals(
             )
             if signal is not None:
                 signals.append(signal)
-        if _native_surface_function(syntax_index, function_node):
-            wrapper_body = _native_wrapper_or_composition_body(
-                syntax_index,
-                function_node,
-                trim_docstring=True,
-            )
-            if wrapper_body is not None:
-                wrapper_function = _native_function_stub(
-                    syntax_index,
-                    function_node,
-                    wrapper_body,
-                )
-                wrapper = _FunctionWrapperContext.candidate_from_function(
-                    module,
-                    syntax_index.class_qualified_function_name(function_node),
-                    wrapper_function,
-                )
-                if wrapper is not None:
-                    wrappers.append(wrapper)
-    wrapper_candidates = sorted_tuple(
-        wrappers,
-        key=lambda item: (item.file_path, item.lineno, item.qualname),
-    )
-    return (
-        _wrapper_chain_candidates_from_function_candidates(
-            str(source_module.path),
-            wrapper_candidates,
-        ),
-        sorted_tuple(
-            signals,
-            key=lambda item: (
-                -item.load_bearing_score,
-                item.file_path,
-                item.line,
-                item.qualname,
-            ),
+    return sorted_tuple(
+        signals,
+        key=lambda item: (
+            -item.load_bearing_score,
+            item.file_path,
+            item.line,
+            item.qualname,
         ),
     )
 
@@ -7850,13 +7797,10 @@ def _native_nominal_bypass_projection(
         module = _native_nominal_bypass_module_identity(source_module)
         function_nodes = syntax_index.common_captures().get("function", ())
         decorators_by_function: dict[Node, tuple[ast.expr, ...]] = {}
-        wrapper_chains, composition_signals = (
-            _native_wrapper_chains_and_composition_signals(
-                source_module,
-                module,
-                syntax_index,
-                function_nodes,
-            )
+        composition_signals = _native_composition_signals(
+            source_module,
+            syntax_index,
+            function_nodes,
         )
         return [
             CompactNominalBypassModuleProjection(
@@ -7873,7 +7817,6 @@ def _native_nominal_bypass_projection(
                     function_nodes,
                     decorators_by_function,
                 ),
-                wrapper_chains=wrapper_chains,
                 composition_signals=composition_signals,
                 variant_method_surfaces=_native_variant_method_surfaces(
                     source_module,
@@ -7911,7 +7854,6 @@ class CompactNominalBypassModuleProjectionFamily(
                 repeated_templates=_cross_class_small_method_template_candidates(
                     parsed_module
                 ),
-                wrapper_chains=_wrapper_chain_candidates(parsed_module),
                 composition_signals=_cancelable_composition_signals_for_module(
                     parsed_module
                 ),
@@ -7987,7 +7929,6 @@ def _collect_nominal_bypass_ast_demand(
             file_path=str(parsed_module.path),
             isinstance_scatters=isinstance_scatters,
             repeated_templates=repeated_templates,
-            wrapper_chains=_wrapper_chain_candidates(parsed_module),
             composition_signals=_cancelable_composition_signals_for_module(
                 parsed_module
             ),
@@ -8044,42 +7985,6 @@ class RelatedCompositionSignalsAuthority:
                 item.file_path,
                 item.line,
                 item.qualname,
-            ),
-        )
-
-
-class RelatedWrapperChainsAuthority:
-    """Select wrapper chains relevant to one candidate token surface."""
-
-    @staticmethod
-    def related(
-        chains: tuple[WrapperChainCandidate, ...],
-        *,
-        file_path: str,
-        token_sources: tuple[str, ...],
-    ) -> tuple[WrapperChainCandidate, ...]:
-        source_tokens = SemanticTokenAuthority.tokens(*token_sources)
-        related = []
-        for chain in chains:
-            if chain.file_path != file_path:
-                continue
-            chain_tokens = SemanticTokenAuthority.tokens(
-                chain.leaf_delegate_symbol,
-                *(wrapper.qualname for wrapper in chain.wrappers),
-                *(
-                    attr
-                    for wrapper in chain.wrappers
-                    for attr in wrapper.projected_attributes
-                ),
-            )
-            if source_tokens & chain_tokens:
-                related.append(chain)
-        return sorted_tuple(
-            related,
-            key=lambda item: (
-                -len(item.wrappers),
-                item.file_path,
-                item.wrappers[0].lineno,
             ),
         )
 
@@ -8179,9 +8084,6 @@ def _nominal_authority_bypass_candidates_from_compact_projections(
         for projection in projections
         for template in projection.repeated_templates
     )
-    wrapper_chains = tuple(
-        chain for projection in projections for chain in projection.wrapper_chains
-    )
     composition_signals = tuple(
         signal
         for projection in projections
@@ -8205,11 +8107,6 @@ def _nominal_authority_bypass_candidates_from_compact_projections(
             _NominalAuthorityBypassCandidate(
                 seed=seed,
                 repeated_templates=related_templates,
-                wrapper_chains=RelatedWrapperChainsAuthority.related(
-                    wrapper_chains,
-                    file_path=seed.scatter.file_path,
-                    token_sources=token_sources,
-                ),
                 composition_signals=RelatedCompositionSignalsAuthority.related(
                     composition_signals,
                     file_path=seed.scatter.file_path,
@@ -8304,10 +8201,6 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
         composition_summary = ", ".join(
             signal.qualname for signal in candidate.composition_signals[:3]
         )
-        wrapper_summary = ", ".join(
-            " -> ".join(wrapper.qualname for wrapper in chain.wrappers)
-            for chain in candidate.wrapper_chains[:2]
-        )
         extra_context = []
         if template_summary:
             extra_context.append(f"duplicate leaf template(s): {template_summary}")
@@ -8315,8 +8208,6 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
             extra_context.append(
                 f"cancelable product composition(s): {composition_summary}"
             )
-        if wrapper_summary:
-            extra_context.append(f"wrapper chain(s): {wrapper_summary}")
         context_suffix = (
             f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
         )
@@ -8344,11 +8235,6 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
                     SourceLocation(signal.file_path, signal.line, signal.qualname)
                     for signal in candidate.composition_signals[:2]
                 ),
-                *(
-                    wrapper.evidence
-                    for chain in candidate.wrapper_chains[:2]
-                    for wrapper in chain.wrappers[:1]
-                ),
             ][:8]
         )
         method_symbols = tuple(
@@ -8363,11 +8249,6 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
                     for method_name in template.method_names
                 ),
                 *(signal.qualname for signal in candidate.composition_signals),
-                *(
-                    wrapper.qualname
-                    for chain in candidate.wrapper_chains
-                    for wrapper in chain.wrappers
-                ),
             )
         )
         return self.build_finding(
@@ -8400,7 +8281,6 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(
                     scatter.site_count
                     + len(candidate.repeated_templates)
                     + len(candidate.composition_signals)
-                    + len(candidate.wrapper_chains),
                 ),
                 statement_count=max(
                     2,
@@ -8582,7 +8462,6 @@ def _variant_method_family_seed(
 def _variant_method_family_candidate(
     seed: _VariantMethodFamilySeed,
     *,
-    wrapper_chains: tuple[WrapperChainCandidate, ...],
     composition_signals: tuple[CancelableCompositionSignal, ...],
 ) -> _VariantMethodFamilyCandidate:
     exemplar = seed.methods[0]
@@ -8601,14 +8480,8 @@ def _variant_method_family_candidate(
         token_sources=token_sources,
         field_names=seed.shared_field_names,
     )
-    related_wrappers = RelatedWrapperChainsAuthority.related(
-        wrapper_chains,
-        file_path=exemplar.file_path,
-        token_sources=token_sources,
-    )
     return _VariantMethodFamilyCandidate(
         seed=seed,
-        wrapper_chains=related_wrappers,
         composition_signals=related_compositions,
     )
 
@@ -8640,9 +8513,6 @@ def _variant_method_family_candidates_from_compact_projections(
     if not seeds:
         return ()
 
-    wrapper_chains = tuple(
-        chain for projection in projections for chain in projection.wrapper_chains
-    )
     composition_signals = tuple(
         signal
         for projection in projections
@@ -8651,7 +8521,6 @@ def _variant_method_family_candidates_from_compact_projections(
     candidates = [
         _variant_method_family_candidate(
             seed,
-            wrapper_chains=wrapper_chains,
             composition_signals=composition_signals,
         )
         for seed in seeds
@@ -8709,17 +8578,11 @@ class AlgebraicVariantMethodFamilyDetector(
         composition_summary = ", ".join(
             signal.qualname for signal in candidate.composition_signals[:3]
         )
-        wrapper_summary = ", ".join(
-            " -> ".join(wrapper.qualname for wrapper in chain.wrappers)
-            for chain in candidate.wrapper_chains[:2]
-        )
         extra_context = []
         if composition_summary:
             extra_context.append(
                 f"cancelable product composition(s): {composition_summary}"
             )
-        if wrapper_summary:
-            extra_context.append(f"wrapper chain(s): {wrapper_summary}")
         context_suffix = (
             f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
         )
@@ -8754,7 +8617,6 @@ class AlgebraicVariantMethodFamilyDetector(
                     2,
                     len(seed.methods)
                     + len(candidate.composition_signals)
-                    + len(candidate.wrapper_chains),
                 ),
                 statement_count=max(method.statement_count for method in seed.methods),
                 class_count=1,
@@ -9743,56 +9605,6 @@ class FlattenedProjectionPropertyDetector(
                 field_count=len({item.nested_access for item in ordered}),
                 mapping_name=f"{class_name} flattened projection properties",
                 field_names=tuple(item.property_name for item in ordered),
-            ),
-        )
-
-
-class WrapperChainDetector(ModuleCollectorCandidateDetector[WrapperChainCandidate]):
-    ssot_authority_boundary = True
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Transport wrapper chain should collapse to one authoritative view",
-        "The docs treat stacked pass-through helpers and projection wrappers as a coherence failure: once the same facts are rewrapped across multiple helper layers, the code should keep one authoritative carrier and derive smaller views directly from it.",
-        "direct authoritative projection/view instead of a stacked transport wrapper chain",
-        "same fact family is transported through multiple wrapper layers before reaching the real owner",
-        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-    )
-
-    def _finding_for_candidate(
-        self, chain_candidate: WrapperChainCandidate
-    ) -> RefactorFinding:
-        wrapper_symbols = tuple(item.qualname for item in chain_candidate.wrappers)
-        evidence = tuple(item.evidence for item in chain_candidate.wrappers[:6])
-        projected_attributes = sorted_tuple(
-            {
-                attr
-                for item in chain_candidate.wrappers
-                for attr in item.projected_attributes
-            }
-        )
-        scaffold = f"Keep one authoritative view/carrier and derive the smaller wrapper views directly from it.\n\nWrapper chain: {' -> '.join(wrapper_symbols)} -> {chain_candidate.leaf_delegate_symbol}"
-        if projected_attributes:
-            scaffold += f"\nProjected attributes observed in the chain: {', '.join(projected_attributes)}"
-        return self.build_finding(
-            f"Wrappers {', '.join(wrapper_symbols)} form a stacked transport chain over `{chain_candidate.leaf_delegate_symbol}`.",
-            evidence,
-            scaffold=scaffold,
-            metrics=RepeatedMethodMetrics.from_duplicate_family(
-                duplicate_site_count=len(chain_candidate.wrappers),
-                statement_count=max(
-                    (item.statement_count for item in chain_candidate.wrappers)
-                ),
-                class_count=len(
-                    {
-                        (
-                            item.qualname.split(".", 1)[0]
-                            if "." in item.qualname
-                            else "<module>"
-                        )
-                        for item in chain_candidate.wrappers
-                    }
-                ),
-                method_symbols=wrapper_symbols,
             ),
         )
 

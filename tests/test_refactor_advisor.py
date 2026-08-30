@@ -21067,46 +21067,6 @@ def test_flattened_projection_property_findings_synthesize_dead_compatibility_er
     )
 
 
-def test_detects_transport_wrapper_chain(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PocketRegion:\n    coords: object\n    elements: object\n\n\ndef extract_local_pocket_region_view(protein_coords, receptor_elements, box_center, box_size):\n    return PocketRegion(coords=protein_coords, elements=receptor_elements)\n\n\ndef extract_local_pocket_region(protein_coords, receptor_elements, box_center, box_size):\n    region = extract_local_pocket_region_view(\n        protein_coords,\n        receptor_elements,\n        box_center,\n        box_size,\n    )\n    return region.coords, region.elements\n\n\ndef _extract_local_pocket_coords_and_elements(\n    *,\n    protein_coords,\n    receptor_elements,\n    box_center,\n    box_size,\n):\n    return extract_local_pocket_region(\n        protein_coords=protein_coords,\n        receptor_elements=receptor_elements,\n        box_center=box_center,\n        box_size=box_size,\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (finding for finding in findings if finding.detector_id == "wrapper_chain")
-    )
-    assert "extract_local_pocket_region" in finding.summary
-    assert "_extract_local_pocket_coords_and_elements" in finding.summary
-    assert "extract_local_pocket_region_view" in (finding.scaffold or "")
-    module = parse_python_modules(tmp_path)[0]
-    wrappers = {
-        candidate.qualname: candidate
-        for candidate in helper_detectors._function_wrapper_candidates(module)
-    }
-    assert wrappers["extract_local_pocket_region"].wrapper_kind is (
-        base_detectors.FunctionWrapperKind.PROJECTION
-    )
-    assert wrappers["_extract_local_pocket_coords_and_elements"].wrapper_kind is (
-        base_detectors.FunctionWrapperKind.DIRECT
-    )
-    removed_names = (
-        "_FunctionWrapperStep",
-        "_DirectFunctionWrapperStep",
-        "_ProjectionFunctionWrapperStep",
-        "_ProjectionDelegateContext",
-        "_ProjectionWrapperCall",
-        "_function_wrapper_context",
-        "_function_wrapper_candidate",
-    )
-    assert all(not hasattr(helper_detectors, name) for name in removed_names)
-    assert not hasattr(
-        helper_detectors.HelperSupportProjectionAuthority,
-        "function_wrapper_candidate_from_context",
-    )
-
-
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

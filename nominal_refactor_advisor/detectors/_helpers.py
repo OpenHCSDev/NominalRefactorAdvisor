@@ -5819,10 +5819,6 @@ def _is_transport_expression(node: ast.AST, *, allowed_roots: set[str]) -> bool:
     )
 
 
-def _call_transport_values(call: ast.Call) -> tuple[ast.AST, ...]:
-    return (*call.args, *(keyword.value for keyword in call.keywords if keyword.arg))
-
-
 class TransportProjectionAuthority:
     def attribute_path(self, node: ast.AST) -> tuple[str, ...] | None:
         parts: list[str] = []
@@ -5833,34 +5829,6 @@ class TransportProjectionAuthority:
         if not isinstance(current, ast.Name):
             return None
         return (current.id, *reversed(parts))
-
-    def transported_delegate_symbol(
-        self,
-        call: ast.Call,
-        *,
-        class_name: str | None,
-        allowed_roots: set[str],
-    ) -> str | None:
-        return (
-            Maybe.of(
-                HELPER_SUPPORT_PROJECTION_AUTHORITY.wrapper_delegate_symbol(
-                    call.func, class_name=class_name
-                )
-            )
-            .project(
-                lambda delegate_symbol: (
-                    delegate_symbol
-                    if all(
-                        (
-                            _is_transport_expression(value, allowed_roots=allowed_roots)
-                            for value in _call_transport_values(call)
-                        )
-                    )
-                    else None
-                )
-            )
-            .unwrap_or_none()
-        )
 
     def call_chain_from_outer_call(self, call: ast.Call) -> tuple[ast.Call, ...]:
         chain = [call]
@@ -5962,37 +5930,6 @@ class TransportProjectionAuthority:
 
 
 TRANSPORT_PROJECTION_AUTHORITY = TransportProjectionAuthority()
-
-
-def _projected_attribute_names(
-    node: ast.AST, *, bound_name: str
-) -> tuple[str, ...] | None:
-    return _single_projected_attribute_name(
-        node, bound_name=bound_name
-    ) or _tuple_projected_attribute_names(node, bound_name=bound_name)
-
-
-def _single_projected_attribute_name(
-    node: ast.AST, *, bound_name: str
-) -> tuple[str, ...] | None:
-    projected_name = attribute_name(node, owner_name=bound_name)
-    return None if projected_name is None else (projected_name,)
-
-
-def _tuple_projected_attribute_names(
-    node: ast.AST,
-    *,
-    bound_name: str,
-) -> tuple[str, ...] | None:
-    tuple_node = as_ast(node, ast.Tuple)
-    if tuple_node is None:
-        return None
-    projected_names = tuple(
-        (attribute_name(item, owner_name=bound_name) for item in tuple_node.elts)
-    )
-    if any((projected_name is None for projected_name in projected_names)):
-        return None
-    return cast(tuple[str, ...], projected_names)
 
 
 def _call_chain_transport_values(chain: tuple[ast.Call, ...]) -> tuple[ast.AST, ...]:
@@ -6493,163 +6430,6 @@ class _NominalPolicySurfaceContext:
     method_header: tuple[str, str]
     chain: tuple[ast.Call, ...]
     transported_values: tuple[ast.AST, ...]
-
-
-@dataclass(frozen=True)
-class _FunctionWrapperContext:
-    module: ParsedModule
-    qualname: str
-    function: ast.FunctionDef | ast.AsyncFunctionDef
-    body: list[ast.stmt]
-    class_name: str | None
-    allowed_roots: set[str]
-
-    @classmethod
-    def from_function(
-        cls,
-        module: ParsedModule,
-        qualname: str,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> "_FunctionWrapperContext | None":
-        body = _trim_docstring_body(function.body)
-        if not body:
-            return None
-        return cls(
-            module=module,
-            qualname=qualname,
-            function=function,
-            body=body,
-            class_name=qualname.rsplit(".", 1)[0] if "." in qualname else None,
-            allowed_roots=(
-                _FunctionSignatureView(function).parameter_names
-                | _IMPLICIT_METHOD_PARAMETER_NAMES
-            ),
-        )
-
-    @classmethod
-    def candidate_from_function(
-        cls,
-        module: ParsedModule,
-        qualname: str,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> FunctionWrapperCandidate | None:
-        context = cls.from_function(module, qualname, function)
-        return None if context is None else context.candidate()
-
-    def candidate(self) -> FunctionWrapperCandidate | None:
-        if len(self.body) == 1 and isinstance(self.body[0], ast.Return):
-            delegate_call = as_ast(self.body[0].value, ast.Call)
-            projected_attributes: tuple[str, ...] = ()
-            wrapper_kind = FunctionWrapperKind.DIRECT
-        else:
-            statements = ast_sequence(self.body, ast.Assign, ast.Return)
-            if statements is None:
-                return None
-            assignment = named_call_assignment(statements[0])
-            returned_value = statements[1].value
-            if assignment is None or returned_value is None:
-                return None
-            delegate_call = assignment.call
-            projected_attributes = _projected_attribute_names(
-                returned_value,
-                bound_name=assignment.target_name,
-            )
-            if projected_attributes is None:
-                return None
-            wrapper_kind = FunctionWrapperKind.PROJECTION
-        if delegate_call is None:
-            return None
-        delegate_symbol = (
-            TRANSPORT_PROJECTION_AUTHORITY.transported_delegate_symbol(
-                delegate_call,
-                class_name=self.class_name,
-                allowed_roots=self.allowed_roots,
-            )
-        )
-        if delegate_symbol is None:
-            return None
-        return FunctionWrapperCandidate(
-            file_path=str(self.module.path),
-            qualname=self.qualname,
-            lineno=self.function.lineno,
-            delegate_symbol=delegate_symbol,
-            wrapper_kind=wrapper_kind,
-            statement_count=len(self.body),
-            projected_attributes=projected_attributes,
-        )
-
-
-def _function_wrapper_candidates(
-    module: ParsedModule,
-) -> tuple[FunctionWrapperCandidate, ...]:
-    candidates = [
-        candidate
-        for qualname, function in _iter_named_functions(module)
-        for candidate in (
-            _FunctionWrapperContext.candidate_from_function(
-                module,
-                qualname,
-                function,
-            ),
-        )
-        if candidate is not None
-    ]
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.lineno, item.qualname)
-    )
-
-
-def _wrapper_chain_candidates(
-    module: ParsedModule,
-) -> tuple[WrapperChainCandidate, ...]:
-    return _wrapper_chain_candidates_from_function_candidates(
-        str(module.path),
-        _function_wrapper_candidates(module),
-    )
-
-
-def _wrapper_chain_candidates_from_function_candidates(
-    file_path: str,
-    candidates: tuple[FunctionWrapperCandidate, ...],
-) -> tuple[WrapperChainCandidate, ...]:
-    """Join already-projected wrapper facts into the canonical local chains."""
-
-    if len(candidates) < 2:
-        return ()
-    by_symbol = {candidate.qualname: candidate for candidate in candidates}
-    inbound = Counter(
-        (
-            candidate.delegate_symbol
-            for candidate in candidates
-            if candidate.delegate_symbol in by_symbol
-        )
-    )
-    chains: list[WrapperChainCandidate] = []
-    for candidate in candidates:
-        if inbound[candidate.qualname] > 0:
-            continue
-        current = candidate
-        chain = [candidate]
-        seen = {candidate.qualname}
-        while current.delegate_symbol in by_symbol:
-            next_candidate = by_symbol[current.delegate_symbol]
-            if next_candidate.qualname in seen:
-                break
-            chain.append(next_candidate)
-            seen.add(next_candidate.qualname)
-            current = next_candidate
-        if len(chain) < 2:
-            continue
-        chains.append(
-            WrapperChainCandidate(
-                file_path=file_path,
-                wrappers=tuple(chain),
-                leaf_delegate_symbol=current.delegate_symbol,
-            )
-        )
-    return sorted_tuple(
-        chains, key=lambda item: (-len(item.wrappers), item.wrappers[0].lineno)
-    )
 
 
 def _pipeline_body_stages(
