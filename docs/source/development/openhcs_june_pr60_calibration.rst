@@ -354,9 +354,10 @@ Confirmed or likely noise
   icon tables, process environment mappings, and launcher template
   substitutions. A dictionary is not a nominal record merely because its
   literal keys are stable.
-- ``typing_protocol_contract`` assumes every ``Protocol`` should be an ABC.
-  Structural protocols can be the correct typed dependency boundary; nominal
-  replacement requires identity, lifecycle, or shared implementation evidence.
+- ``typing_protocol_contract`` was retired because ``Protocol`` syntax alone
+  does not prove a nominal relation. Structural protocols can be the correct
+  typed dependency boundary; nominal replacement requires identity, lifecycle,
+  or shared implementation evidence.
 - Unconstrained ``semantic_mirror_without_descent`` contained real mirrors but
   also produced unrelated cross-family matches.  The correlated-family policy
   removes the demonstrated runtime-testing and generic-mixin cases; the 573

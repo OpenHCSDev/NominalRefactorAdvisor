@@ -5703,6 +5703,25 @@ def _manual_class_registration_source() -> str:
     )
 
 
+def _generated_repeated_export_dict_source() -> str:
+    return (
+        "class GeneratedAlpha:\n"
+        "    def export(self, result):\n"
+        "        return {\n"
+        "            'pose_id': result.pose_id,\n"
+        "            'score': result.score,\n"
+        "            'label': result.label,\n"
+        "        }\n\n\n"
+        "class GeneratedBeta:\n"
+        "    def export(self, item):\n"
+        "        return {\n"
+        "            'pose_id': item.pose_id,\n"
+        "            'score': item.score,\n"
+        "            'label': item.label,\n"
+        "        }\n"
+    )
+
+
 def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:
     detector_root = (
         Path(__file__).resolve().parents[1] / "nominal_refactor_advisor" / "detectors"
@@ -7084,26 +7103,6 @@ def test_detects_sibling_role_helper_symmetry(tmp_path: Path) -> None:
     assert "_output_dir_for_step" in finding.summary
     assert "one local authority" in finding.title
     assert "record only if this result crosses a boundary" in (finding.scaffold or "")
-
-
-def test_detects_typing_protocol_contracts(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom typing import Protocol, runtime_checkable\n\n\n@runtime_checkable\nclass ColumnarRows(Protocol):\n    @property\n    def columns(self):\n        ...\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "typing_protocol_contract"
-        )
-    )
-    assert finding.pattern_id == PatternId.ABC_TEMPLATE_METHOD
-    assert "ColumnarRows" in finding.summary
-    assert "ABC" in finding.title
-    assert "ContractName.register" in (finding.scaffold or "")
 
 
 def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
@@ -12728,16 +12727,7 @@ def test_codemod_projected_scan_analyzes_created_modules(
         "VALUE = 1\n",
     )
     created_path = tmp_path / "pkg/generated.py"
-    created_source = (
-        "from typing import Protocol\n\n\n"
-        "class GeneratedContract(Protocol):\n"
-        "    def run(self): ...\n\n\n"
-        "class GeneratedAlpha:\n"
-        "    pass\n"
-        "\n\n"
-        "class GeneratedBeta:\n"
-        "    pass\n"
-    )
+    created_source = _generated_repeated_export_dict_source()
     modules = parse_python_modules(tmp_path)
     simulation = CodemodSimulationReport(
         rewrites=(),
@@ -12765,7 +12755,7 @@ def test_codemod_projected_scan_analyzes_created_modules(
     assert projected_module.module_name == "pkg.generated"
     assert any(
         (
-            finding.detector_id == "typing_protocol_contract"
+            finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID
             and any(
                 evidence.file_path == created_path.as_posix()
                 for evidence in finding.evidence
@@ -13432,16 +13422,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
                             {
                                 "operation": "create_file",
                                 "file_path": created_path.as_posix(),
-                                "source": (
-                                    "from typing import Protocol\n\n\n"
-                                    "class GeneratedContract(Protocol):\n"
-                                    "    def run(self): ...\n\n\n"
-                                    "class GeneratedAlpha:\n"
-                                    "    pass\n"
-                                    "\n\n"
-                                    "class GeneratedBeta:\n"
-                                    "    pass\n"
-                                ),
+                                "source": _generated_repeated_export_dict_source(),
                             }
                         ],
                     }
@@ -13490,7 +13471,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     assert "projected_finding_recipe_plan" not in projected_findings
     assert "projected_finding_continuation" not in projected_findings
     assert any(
-        finding["detector_id"] == "typing_protocol_contract"
+        finding["detector_id"] == REPEATED_EXPORT_DICTS_DETECTOR_ID
         and any(
             evidence["file_path"] == created_path.as_posix()
             for evidence in finding["evidence"]

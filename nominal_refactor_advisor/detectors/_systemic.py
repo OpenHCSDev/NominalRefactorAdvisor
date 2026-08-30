@@ -16,10 +16,7 @@ import re
 from typing import Generic, TypeVar
 
 from ..semantic_algebra import ObjectFamilyShape
-from ..semantic_description_length import (
-    ClassFamilyCompressionProfile,
-    CompressionCertificate,
-)
+from ..semantic_description_length import CompressionCertificate
 from ..ast_tools import (
     CompactModuleIdentity,
     PythonSourcePathPolicy,
@@ -803,48 +800,6 @@ def _option_record_quotient_compression_certificate(
     )
 
 
-def _imported_name_aliases(
-    module: ast.Module,
-    *,
-    module_names: frozenset[str],
-    imported_name: str,
-) -> frozenset[str]:
-    aliases: set[str] = {imported_name}
-    for node in module.body:
-        if not isinstance(node, ast.ImportFrom) or node.module not in module_names:
-            continue
-        for alias in node.names:
-            if alias.name == imported_name:
-                aliases.add(alias.asname or alias.name)
-    return frozenset(aliases)
-
-
-def _module_aliases(module: ast.Module, module_names: frozenset[str]) -> frozenset[str]:
-    aliases: set[str] = set()
-    for node in module.body:
-        if not isinstance(node, ast.Import):
-            continue
-        for alias in node.names:
-            if alias.name in module_names:
-                aliases.add(alias.asname or alias.name.split(".", maxsplit=1)[0])
-    return frozenset(aliases)
-
-
-def _is_imported_name(expr: ast.AST, aliases: frozenset[str]) -> bool:
-    return isinstance(expr, ast.Name) and expr.id in aliases
-
-
-def _is_qualified_name(
-    expr: ast.AST, *, module_aliases: frozenset[str], attr_name: str
-) -> bool:
-    return (
-        isinstance(expr, ast.Attribute)
-        and expr.attr == attr_name
-        and isinstance(expr.value, ast.Name)
-        and (expr.value.id in module_aliases)
-    )
-
-
 _SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(
     function_line_count=0,
     branch_site_count=0,
@@ -852,107 +807,6 @@ _SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(
     parameter_count=1,
     callee_family_count=1,
 )
-
-
-class TypingProtocolContractDetector(
-    SourceSignalGatedIssueDetectorMixin,
-    PerModuleIssueDetector,
-):
-    detector_priority = -20
-    finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Structural Protocol contract should be a nominal ABC",
-        "`typing.Protocol` is structural: it lets values claim membership by shape rather than by a declared nominal contract. The advisor's nominal architecture rules should route those interfaces through ABCs, explicit subclassing, or ABC virtual registration instead.",
-        "nominal runtime contract instead of structural shape membership",
-        "class declares interface identity through structural typing",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.VIRTUAL_MEMBERSHIP,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.RUNTIME_MEMBERSHIP,
-        ),
-    )
-
-    @classmethod
-    def source_may_contain_finding(
-        cls,
-        module: SourceModule,
-        syntax_index: NativePythonSyntaxIndex,
-        config: DetectorConfig,
-    ) -> bool:
-        del cls, syntax_index, config
-        return "Protocol" in module.source or "runtime_checkable" in module.source
-
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        del config
-        typing_modules = frozenset({"typing", "typing_extensions"})
-        protocol_aliases = _imported_name_aliases(
-            module.module, module_names=typing_modules, imported_name="Protocol"
-        )
-        runtime_checkable_aliases = _imported_name_aliases(
-            module.module,
-            module_names=typing_modules,
-            imported_name="runtime_checkable",
-        )
-        typing_aliases = _module_aliases(module.module, typing_modules)
-        evidence: list[SourceLocation] = []
-        protocol_class_names: list[str] = []
-        for node in _walk_nodes(module.module):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            inherits_protocol = any(
-                (
-                    _is_imported_name(base, protocol_aliases)
-                    or _is_qualified_name(
-                        base, module_aliases=typing_aliases, attr_name="Protocol"
-                    )
-                    for base in node.bases
-                )
-            )
-            runtime_checkable = any(
-                (
-                    _is_imported_name(decorator, runtime_checkable_aliases)
-                    or _is_qualified_name(
-                        decorator,
-                        module_aliases=typing_aliases,
-                        attr_name="runtime_checkable",
-                    )
-                    for decorator in node.decorator_list
-                )
-            )
-            if inherits_protocol:
-                protocol_class_names.append(node.name)
-                evidence.append(
-                    SourceLocation(str(module.path), node.lineno, node.name)
-                )
-            elif runtime_checkable:
-                evidence.append(
-                    SourceLocation(
-                        str(module.path),
-                        node.lineno,
-                        f"{node.name}.runtime_checkable",
-                    )
-                )
-        if not evidence:
-            return []
-        class_summary = ", ".join(protocol_class_names) or "runtime-checkable class"
-        return [
-            self.build_finding(
-                (
-                    f"{module.path} declares structural typing interfaces "
-                    f"({class_summary}); replace them with ABC-backed nominal contracts."
-                ),
-                tuple(evidence[:8]),
-                scaffold=(
-                    "from abc import ABC, abstractmethod\n\nclass ContractName(ABC):\n    @abstractmethod\n    def required_method(self, request): ...\n\n# Use direct subclassing for owned implementations, or `ContractName.register(ExternalType)` for explicit virtual membership."
-                ),
-            )
-        ]
 
 
 _PREDICATE_GRAMMAR_AUTHORITY_SUFFIXES = (
