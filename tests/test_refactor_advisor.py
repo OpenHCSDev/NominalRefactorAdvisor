@@ -736,6 +736,45 @@ def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overl
         authority.select((class_rewrite, run_rewrite))
 
 
+def test_replace_target_payload_schema_round_trips_contributors() -> None:
+    contributor = SourceRewriteContributor(
+        recipe_id="source-recipe",
+        plan_item_declaration="SourceOperation",
+        plan_item_index=1,
+        file_path="pkg/mod.py",
+        line=2,
+        end_line=3,
+        source_hash="source-hash",
+    )
+    operation = ReplaceTargetOperation(
+        target=SourceRewriteTarget(
+            qualname="Alpha.run",
+            file_path="pkg/mod.py",
+        ),
+        replacement_source="    def run(self):\n        return 1\n",
+        contributors=(contributor,),
+    )
+
+    payload = operation.to_dict()
+
+    assert ReplaceTargetOperation.from_dict(payload) == operation
+    assert RefactorRecipeOperation.from_dict(payload) == operation
+    assert payload["contributors"] == (contributor.to_dict(),)
+    assert "from_dict" not in ReplaceTargetOperation.__dict__
+    assert "from_operation_payload" not in ReplaceTargetOperation.__dict__
+    assert "operation_payload" not in ReplaceTargetOperation.__dict__
+
+    with pytest.raises(ValueError, match="Unsupported recipe operation"):
+        ReplaceTargetOperation.from_dict(
+            DeleteTargetOperation(
+                target=SourceRewriteTarget(
+                    qualname="Alpha.run",
+                    file_path="pkg/mod.py",
+                )
+            ).to_dict()
+        )
+
+
 def test_codemod_apply_rejects_source_changed_after_simulation(
     tmp_path: Path,
 ) -> None:

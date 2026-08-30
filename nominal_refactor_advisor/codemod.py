@@ -3125,6 +3125,42 @@ class CallReplacementArrayPayloadValueCodec(
 
 
 @dataclass(frozen=True)
+class SourceRewriteContributorArrayPayloadValueCodec(
+    PayloadValueCodec[tuple[SourceRewriteContributor, ...]]
+):
+    """Optional array of source-revision-checked rewrite contributors."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[SourceRewriteContributor, ...]:
+        value = payload.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected contributor array field {field_name!r}")
+        contributors: list[SourceRewriteContributor] = []
+        for item in value:
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    f"Expected contributor objects in field {field_name!r}"
+                )
+            contributors.append(SourceRewriteContributor.from_mapping(item))
+        return tuple(contributors)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, SourceRewriteContributor) for item in value
+        ):
+            raise TypeError(
+                "contributor-array payload codec requires "
+                "SourceRewriteContributor values"
+            )
+        return tuple(item.to_dict() for item in value)
+
+
+@dataclass(frozen=True)
 class AuthorityClaimPayloadValueCodec(PayloadValueCodec[AuthorityClaim]):
     """Proof-carrying authority-claim object payload semantics."""
 
@@ -4987,7 +5023,7 @@ class RefactorRecipeOperation(
         plan_payload = CodemodPayload(payload)
         operation_key = plan_payload.required_string("operation")
         operation_type = cls.__registry__.get(operation_key)
-        if operation_type is None:
+        if operation_type is None or not issubclass(operation_type, cls):
             raise ValueError(f"Unsupported recipe operation: {operation_key}")
         operation = operation_type.from_operation_payload(
             plan_payload.source_target(),
@@ -5160,61 +5196,12 @@ class ReplaceTargetOperation(RefactorRecipeOperation):
     contributors: tuple[SourceRewriteContributor, ...] = ()
 
     @classmethod
-    def from_dict(
-        cls,
-        payload: Mapping[str, JsonValue],
-    ) -> "ReplaceTargetOperation":
-        plan_payload = CodemodPayload(payload)
-        operation_key = plan_payload.required_string("operation")
-        if operation_key != cls.operation_key():
-            raise ValueError(
-                f"Expected {cls.operation_key()!r} operation, got {operation_key!r}"
-            )
-        operation = cls.from_operation_payload(
-            plan_payload.source_target(),
-            plan_payload,
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            replacement_source=RequiredStringPayloadValueCodec(),
+            contributors=SourceRewriteContributorArrayPayloadValueCodec(),
         )
-        plan_payload.require_supported_fields(
-            operation.to_dict(),
-            role=f"{operation_key} operation",
-        )
-        return operation
-
-    @classmethod
-    def from_operation_payload(
-        cls,
-        target: SourceRewriteTarget,
-        payload: CodemodPayload,
-    ) -> "ReplaceTargetOperation":
-        contributor_rows = payload.fields.get("contributors", ())
-        if contributor_rows is None:
-            contributor_rows = ()
-        if not isinstance(contributor_rows, (list, tuple)):
-            raise ValueError("replace_target contributors must be an array")
-        return cls(
-            target=target,
-            replacement_source=payload.required_string("replacement_source"),
-            rationale=payload.string_or_empty("rationale"),
-            contributors=tuple(
-                cls.contributor_from_json_value(row) for row in contributor_rows
-            ),
-        )
-
-    @staticmethod
-    def contributor_from_json_value(
-        value: JsonValue,
-    ) -> SourceRewriteContributor:
-        if not isinstance(value, Mapping):
-            raise ValueError("replace_target contributors must be objects")
-        return SourceRewriteContributor.from_mapping(value)
-
-    def operation_payload(self) -> JsonObject:
-        return {
-            "replacement_source": self.replacement_source,
-            "contributors": tuple(
-                contributor.to_dict() for contributor in self.contributors
-            ),
-        }
 
     def source_edits(
         self,
