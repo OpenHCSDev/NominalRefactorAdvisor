@@ -1719,35 +1719,6 @@ declare_candidate_rule_detector(
 
 
 
-class ParameterThreadFamilyDetector(
-    ConfiguredModuleCollectorCandidateDetector[ParameterThreadFamilyCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_CONTEXT,
-        "Repeated threaded semantic parameter family",
-        "Several helpers keep re-threading the same semantic parameter bundle instead of carrying one nominal context. That weakens provenance and makes each helper signature a partially duplicated view of the same authority.",
-        "one authoritative context/request record for a shared semantic parameter family",
-        "the same semantic parameter bundle is threaded through several sibling helpers",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-    )
-
-    def _finding_for_candidate(
-        self, parameter_family: ParameterThreadFamilyCandidate
-    ) -> RefactorFinding:
-        function_names = tuple((item.qualname for item in parameter_family.functions))
-        return self.build_finding(
-            f"Functions {', '.join(function_names[:4])} thread the same semantic parameter family `{', '.join(parameter_family.shared_parameter_names)}` across {len(parameter_family.functions)} helpers.",
-            tuple((item.evidence for item in parameter_family.functions[:6])),
-            scaffold=_authoritative_context_scaffold(parameter_family),
-            codemod_patch=_authoritative_context_patch(parameter_family),
-            metrics=ParameterThreadMetrics(
-                function_count=len(parameter_family.functions),
-                shared_parameter_count=len(parameter_family.shared_parameter_names),
-                shared_parameter_names=parameter_family.shared_parameter_names,
-            ),
-        )
-
-
 class SuffixAxisCompatibilitySurfaceDetector(
     ConfiguredModuleCollectorCandidateDetector[SuffixAxisSurfaceCandidate]
 ):

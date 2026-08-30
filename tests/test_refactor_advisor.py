@@ -478,7 +478,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=30,
             ),
             _impact_ranking_finding(
-                detector_id="parameter_thread_family",
+                detector_id="accessor_wrapper",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=40,
@@ -528,7 +528,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=30,
             ),
             _impact_ranking_finding(
-                detector_id="parameter_thread_family",
+                detector_id="accessor_wrapper",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=40,
@@ -8001,21 +8001,6 @@ def test_detects_typing_protocol_contracts(tmp_path: Path) -> None:
 
 
 
-
-
-def test_detects_repeated_threaded_parameter_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef score_exact(\n    request,\n    scoring_context,\n    electrostatics,\n    receptor_coords,\n    receptor_radii,\n    quaternion,\n    translation,\n    candidate_coords,\n):\n    posed = rigid(candidate_coords, quaternion, translation)\n    audited = audit_pose(posed, receptor_coords)\n    return compute_exact(\n        request,\n        scoring_context,\n        electrostatics,\n        receptor_coords,\n        receptor_radii,\n        audited,\n    )\n\n\ndef score_softened(\n    request,\n    scoring_context,\n    electrostatics,\n    receptor_coords,\n    receptor_radii,\n    quaternion,\n    translation,\n    candidate_coords,\n):\n    posed = rigid(candidate_coords, quaternion, translation)\n    audited = audit_pose(posed, receptor_coords)\n    return compute_softened(\n        request,\n        scoring_context,\n        electrostatics,\n        receptor_coords,\n        receptor_radii,\n        audited,\n    )\n\n\ndef certify_pose(\n    request,\n    scoring_context,\n    electrostatics,\n    receptor_coords,\n    receptor_radii,\n    quaternion,\n    translation,\n    pose_index,\n):\n    posed = derive_pose(pose_index, quaternion, translation)\n    audited = audit_pose(posed, receptor_coords)\n    return certify(\n        request,\n        scoring_context,\n        electrostatics,\n        receptor_coords,\n        receptor_radii,\n        audited,\n    )\n",
-    )
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(min_shared_parameters=5, min_parameter_family_function_lines=8),
-    )
-    assert any(
-        (finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT for finding in findings)
-    )
 
 
 def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
