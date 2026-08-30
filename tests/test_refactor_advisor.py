@@ -24148,46 +24148,6 @@ def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
     assert "@singledispatchmethod" in (finding.scaffold or "")
 
 
-def test_detects_constructor_variant_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass ArchiveSpec:\n    @classmethod\n    def alpha(cls, root, package, prefix):\n        return cls(root, package, f"{prefix}_alpha", prefix)\n\n    @classmethod\n    def beta(cls, root, package, prefix):\n        return cls(root, package, f"{prefix}_beta", prefix)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "constructor_variant_family"
-        )
-    )
-    assert "ArchiveSpec" in finding.summary
-    assert "alpha" in finding.summary
-    assert "ConstructorVariantMixin" in (finding.scaffold or "")
-
-
-def test_constructor_variant_family_ignores_helper_classmethod_calls(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Detector:\n"
-        "    @classmethod\n"
-        "    def primary_ids(cls):\n"
-        "        return cls._ids_for_role(lambda item: item.primary)\n"
-        "\n"
-        "    @classmethod\n"
-        "    def secondary_ids(cls):\n"
-        "        return cls._ids_for_role(lambda item: item.secondary)\n",
-    )
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "constructor_variant_family"
-    ]
-    assert findings == []
 
 
 def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
@@ -24391,22 +24351,6 @@ def test_regex_group_extractor_method_rejects_nonmatching_shapes(
     )
 
 
-def test_detects_sparse_constructor_variant_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ParsePolicy:\n    verbose_prefix: str = ""\n    collect_unknown: bool = False\n    count_unknown: bool = False\n\n    @classmethod\n    def primary(cls):\n        return cls(collect_unknown=True)\n\n    @classmethod\n    def retry(cls):\n        return cls(verbose_prefix="(retry) ", count_unknown=True)\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "sparse_constructor_variant_family"
-        )
-    )
-    assert "ParsePolicy" in finding.summary
-    assert "collect_unknown" in finding.summary
-    assert "ConstructorVariantCatalog" in (finding.scaffold or "")
 
 
 def test_detects_support_prelude_module_family_without_manifest(tmp_path: Path) -> None:

@@ -2646,29 +2646,6 @@ class AlternateConstructorFamilyDetector(
         )
 
 
-declare_candidate_rule_detector(
-    ConstructorVariantFamilyCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Constructor variants should derive from one constructor algebra",
-        "Several classmethods on one class are pure constructor vectors over the same target. The varying coordinates are data, not independent algorithms, so the family should be derived from one typed variant catalog.",
-        "single constructor-variant catalog that derives named class constructors",
-        "same class has sibling classmethods that return the same constructor target with a shared coordinate schema",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-    ),
-    summary=lambda variant_candidate: f"`{variant_candidate.class_name}` repeats constructor target `{variant_candidate.callee_name}` across methods {variant_candidate.method_names}; varying coordinates are {variant_candidate.varying_coordinate_names}.",
-    evidence=lambda variant_candidate: variant_candidate.evidence,
-    scaffold=lambda variant_candidate: "@dataclass(frozen=True)\nclass ConstructorVariantSpec:\n    name: str\n    args: tuple[ConstructorArg, ...]\n\nclass ConstructorVariantMixin:\n    __constructor_variants__: ClassVar[ConstructorVariantCatalog]\n    def __init_subclass__(cls):\n        cls.__constructor_variants__.install(cls)",
-    codemod_patch=lambda variant_candidate: f"# Replace classmethods {variant_candidate.method_names} on `{variant_candidate.class_name}` with one typed constructor-variant catalog.\n# Each method name becomes data; one mixin derives the bound classmethods from the catalog.",
-    metrics=lambda variant_candidate: MappingMetrics(
-        mapping_site_count=len(variant_candidate.method_names),
-        field_count=variant_candidate.coordinate_count,
-        mapping_name=variant_candidate.class_name,
-        field_names=variant_candidate.varying_coordinate_names,
-    ),
-    candidate_collector=_constructor_variant_family_candidates,
-)
 
 
 declare_candidate_rule_detector(
@@ -2755,24 +2732,6 @@ declare_candidate_rule_detector(
 )
 
 
-declare_candidate_rule_detector(
-    SparseConstructorVariantFamilyCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Sparse dataclass constructor variants should derive from one variant catalog",
-        "Several classmethods on one dataclass construct the same record while overriding sparse subsets of defaulted fields. Those sparse overrides are rows in the constructor algebra, not independent methods.",
-        "single sparse constructor-variant catalog over dataclass defaults",
-        "same dataclass repeats classmethod constructors that override different keyword subsets",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-    ),
-    summary=lambda sparse_candidate: f"`{sparse_candidate.class_name}` repeats sparse constructor variants {sparse_candidate.method_names} over defaulted fields {sparse_candidate.keyword_names}.",
-    evidence=lambda sparse_candidate: sparse_candidate.evidence,
-    scaffold=lambda sparse_candidate: "ConstructorVariantCatalog(\n    (ConstructorVariantSpec(name='...', parameters=(), args=(), kwargs=(...)),)\n)",
-    codemod_patch=lambda sparse_candidate: f"# Replace sparse classmethods {sparse_candidate.method_names} on `{sparse_candidate.class_name}` with constructor-variant rows.\n# Delete the classmethod bodies; keep dataclass defaults as the base point.",
-    metrics=lambda sparse_candidate: sparse_candidate.mapping_metrics,
-    candidate_collector=_sparse_constructor_variant_family_candidates,
-)
 
 
 class SupportPreludeModuleFamilyDetector(
