@@ -10819,13 +10819,6 @@ class RepeatedResultAssemblyPipelineCandidate:
 
 
 @dataclass(frozen=True)
-class EffectStepImplementationLeakCandidate(ClassMethodLineWitnessCandidate):
-    none_return_count: int
-    raw_guard_count: int
-    suggested_base_name: str
-
-
-@dataclass(frozen=True)
 class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
     collector_name: str
     scope_kind: str
@@ -10862,14 +10855,6 @@ class CanonicalFindingSpecBuilderCandidate(
     BuilderKeywordSurface, ClassLineWitnessCandidate
 ):
     constructor_name: str
-
-
-@dataclass(frozen=True)
-class DetectorBackendPayoffGuardCandidate(QualnameLineWitnessCandidate):
-    candidate_type_name: str
-    abstraction_terms: tuple[str, ...]
-    missing_guard_names: tuple[str, ...]
-    declaration_line_count: int
 
 
 @dataclass(frozen=True)

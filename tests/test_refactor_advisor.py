@@ -3759,8 +3759,6 @@ def test_detects_generic_cancelable_product_composition_signal(
 
 
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
-DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID = "detector_backend_payoff_guard"
-EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
@@ -3793,27 +3791,6 @@ def test_maybe_binds_nominal_effect_steps() -> None:
     assert (
         Maybe.of(2).bind_all((_IncrementStep(), _EvenOnlyStep())).unwrap_or_none()
         is None
-    )
-
-
-def test_effect_step_declaration_derives_loaded_family_names() -> None:
-    assert {member.__name__ for member in EffectStep.family_types()} >= {
-        "EffectStep",
-        "GuardedEffectStep",
-        "AstTypedEffectStep",
-        "SingleCompareEffectStep",
-    }
-    assert EffectStep.declares_source_member(
-        class_name="CallProjection",
-        declared_base_names=("GuardedEffectStep",),
-    )
-    assert EffectStep.declares_source_member(
-        class_name="ExternalNamedStep",
-        declared_base_names=(),
-    )
-    assert not EffectStep.declares_source_member(
-        class_name="ProjectionPolicy",
-        declared_base_names=("ABC",),
     )
 
 
@@ -8590,29 +8567,6 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     assert "protocol" not in (finding.codemod_patch or "").lower()
 
 
-def test_flags_abstraction_detector_without_backend_loc_payoff_guard(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/detectors.py",
-        '\ndeclare_candidate_rule_detector(\n    ManualHelperCandidate,\n    high_confidence_spec(\n        PatternId.STAGED_ORCHESTRATION,\n        "Collector should share helper machinery",\n        "A detector that asks users to move repeated work into a shared helper must not just reshuffle code.",\n        "shared helper machinery owns the collector traversal",\n        "collector repeats helper-shaped mechanics",\n    ),\n    summary=lambda item: "move this collector into a shared helper",\n    scaffold=lambda item: "def helper(item):\\n    return item",\n    codemod_patch=lambda item: "# Move the repeated body into the helper.",\n    candidate_collector=_manual_helper_candidates,\n)\n\ndeclare_candidate_rule_detector(\n    PayingHelperCandidate,\n    high_confidence_spec(\n        PatternId.STAGED_ORCHESTRATION,\n        "Collector helper should prove its payoff",\n        "The detector includes a structured metrics budget and deletes manual code before adding shared helper infrastructure.",\n        "structured detector payoff metrics",\n        "manual collector code can be deleted through shared helper metrics",\n    ),\n    summary=lambda item: "delete manual collector lines",\n    scaffold=lambda item: "def helper(item):\\n    return item",\n    codemod_patch=lambda item: "# Delete the repeated body.",\n    metrics=lambda item: OrchestrationMetrics(\n        function_line_count=item.line_count,\n        branch_site_count=1,\n        call_site_count=1,\n        parameter_count=1,\n        callee_family_count=1,\n    ),\n    candidate_collector=_paying_helper_candidates,\n)\n',
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID
-    ]
-    assert [finding.evidence[0].symbol for finding in findings] == [
-        "ManualHelperDetector"
-    ]
-    assert "structured_payoff_metrics" in findings[0].summary
-    assert "backend_loc_budget" in findings[0].summary
-    assert "net_reduction_action" in findings[0].summary
-    assert "amortization_or_fanout_gate" in findings[0].summary
-    assert "compression_certificate_or_explicit_fanout" in findings[0].summary
-
-
 def test_source_segment_projection_reuses_cached_geometry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -8875,71 +8829,6 @@ def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
     assert len(findings) == 1
     assert "collect.Visitor" in findings[0].summary
     assert "ClassFunctionStackNodeVisitor" in (findings[0].scaffold or "")
-
-
-def test_detects_effect_step_implementation_leak(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nimport ast\n\nclass CallStep(EffectStep):\n    step_id = "call"\n\n    def apply(self, value):\n        if not isinstance(value, ast.Call):\n            return None\n        if len(value.args) != 1:\n            return None\n        return value\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
-        )
-    )
-    assert "CallStep.apply" in finding.summary
-    assert "attrs/properties" in finding.summary
-    assert "Delete the concrete mechanics-heavy leaf method" in (
-        finding.codemod_patch or ""
-    )
-
-
-def test_ignores_effect_step_template_method_base(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass GoodStep(GuardedEffectStep):\n    step_id = "good"\n\n    def accepts(self, value):\n        return bool(value)\n\n    def project(self, value):\n        return value\n',
-    )
-    assert not any(
-        (
-            finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
-            for finding in analyze_path(tmp_path)
-        )
-    )
-
-
-def test_detects_effect_step_boolean_guard_leak(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nimport ast\n\nclass TargetStep(IdentityGuardEffectStep):\n    step_id = "target"\n\n    def accepts(self, value):\n        return (\n            not value.comprehension.is_async\n            and not value.comprehension.ifs\n            and isinstance(value.comprehension.target, ast.Name)\n        )\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
-        )
-    )
-    assert "TargetStep.accepts" in finding.summary
-    assert "raw guard mechanics" in finding.summary
-
-
-def test_ignores_abstract_effect_step_template_base(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import abstractmethod\nimport ast\n\nclass TargetBaseStep(IdentityGuardEffectStep):\n    def accepts(self, value):\n        return (\n            not value.comprehension.is_async\n            and not value.comprehension.ifs\n            and isinstance(value.comprehension.target, ast.Name)\n        )\n\n    @abstractmethod\n    def comprehension_from(self, value):\n        raise NotImplementedError\n",
-    )
-    assert not any(
-        (
-            finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
-            for finding in analyze_path(tmp_path)
-        )
-    )
 
 
 def test_detects_nested_builder_shell(tmp_path: Path) -> None:

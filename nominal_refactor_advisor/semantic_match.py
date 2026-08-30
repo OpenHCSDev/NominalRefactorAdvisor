@@ -53,31 +53,9 @@ def loaded_concrete_nominal_descendants(
 class EffectStep(ABC, Generic[T, U]):
     """Nominal stage in a typed semantic matching effect pipeline."""
 
-    source_name_suffix: ClassVar[str] = "Step"
-
     @abstractmethod
     def apply(self, value: T) -> U | None:
         raise NotImplementedError
-
-    @classmethod
-    def family_types(cls) -> tuple[type["EffectStep[Any, Any]"], ...]:
-        """Return the loaded nominal family rooted at this declaration."""
-
-        return (cls, *loaded_nominal_descendants(cls))
-
-    @classmethod
-    def declares_source_member(
-        cls,
-        *,
-        class_name: str,
-        declared_base_names: Sequence[str],
-    ) -> bool:
-        """Recognize source declarations belonging to this nominal family."""
-
-        family_type_names = frozenset(member.__name__ for member in cls.family_types())
-        return class_name.endswith(cls.source_name_suffix) or bool(
-            family_type_names.intersection(declared_base_names)
-        )
 
 
 class EffectCarrier(ABC, Generic[T]):
