@@ -1,4 +1,4 @@
-name: Combined Coverage Report
+name: Combined Coverage Artifact
 
 on:
   workflow_run:
@@ -10,20 +10,15 @@ on:
 permissions:
   actions: read
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: "pages"
+  group: "combined-coverage"
   cancel-in-progress: true
 
 jobs:
-  combine-and-deploy:
+  combine-and-publish:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure' || github.event_name == 'workflow_dispatch' }}
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout
@@ -158,15 +153,9 @@ jobs:
           - [Coverage Report](./coverage/)
           EOF
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Upload combined coverage report
+        uses: actions/upload-artifact@v4
         with:
+          name: combined-coverage-report
           path: site
-          retention-days: 1
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          retention-days: 14
