@@ -549,10 +549,6 @@ class DetectorConfig:
         3,
         "Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",
     )
-    min_effect_step_payoff_score: int = detector_config_option(
-        8,
-        "Minimum AST matcher/effect-stage score before surfacing an EffectStep amortization finding.",
-    )
     min_boundary_fanout_sites: int = detector_config_option(
         4,
         "Minimum declaration/forward/projection sites before surfacing distributed boundary fanout.",
@@ -11121,26 +11117,6 @@ class RepeatedResultAssemblyPipelineCandidate:
     shared_tail: tuple[PipelineAssemblyStage, ...]
     functions: tuple[ResultAssemblyPipelineFunction, ...]
 
-
-
-@dataclass(frozen=True)
-class EffectStepAmortizationCandidate(FunctionLineWitnessCandidate):
-    line_count: int
-    payoff_score: int
-    none_return_count: int
-    ast_type_guard_count: int
-    cardinality_guard_count: int
-    semantic_helper_count: int
-    ast_type_names: tuple[str, ...]
-    semantic_helper_names: tuple[str, ...]
-    normal_form: str
-    estimated_step_count: int
-    generated_object_budget: int
-    net_object_savings: int
-    description_length_before: int
-    description_length_after: int
-    description_length_savings: int
-    compression_certificate: CompressionCertificate
 
 
 @dataclass(frozen=True)

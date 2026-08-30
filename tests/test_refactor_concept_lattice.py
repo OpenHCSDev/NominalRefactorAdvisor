@@ -60,9 +60,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
         codemod.DataclassContextCallProjectionConcept
     ),
     codemod.LocalRoleCaseLogicMappingRecipeBuilder: (codemod.RoleCaseAuthorityConcept),
-    codemod.StringDispatchFindingRecipeSynthesizer: (
-        codemod.AutoRegisterStrategyFamilyConcept
-    ),
     codemod.NumericLiteralDispatchFindingRecipeSynthesizer: (
         codemod.AutoRegisterStrategyFamilyConcept
     ),
@@ -151,7 +148,7 @@ def test_unrelated_concepts_do_not_match() -> None:
         codemod.AutoRegisterConcept,
     )
     assert not issubclass(
-        codemod.StringDispatchFindingRecipeSynthesizer,
+        codemod.NumericLiteralDispatchFindingRecipeSynthesizer,
         codemod.SemanticCarrierConcept,
     )
     assert not issubclass(

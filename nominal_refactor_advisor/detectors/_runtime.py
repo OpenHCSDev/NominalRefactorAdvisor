@@ -212,7 +212,6 @@ class ReplacementShapeProjector:
             )
         )
 
-
 _REPLACEMENT_SHAPE_PROJECTOR = ReplacementShapeProjector(_REPLACEMENT_SHAPE_ROWS)
 
 
@@ -5530,51 +5529,6 @@ declare_typed_observation_detector(
 )
 
 
-class StringDispatchDetector(PerModuleIssueDetector):
-    finding_spec = certified_spec(
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        "Closed-family dispatch expressed through strings",
-        "The docs prefer enum- or type-keyed O(1) dispatch for closed families. Repeated string branches suggest the code is using a weaker representation than the domain requires. If those strings select implementations, the stronger form is an auto-registered family keyed by the stable nominal axis.",
-        "closed-family dispatch with stable nominal keys and auto-registered type authority for behavioral cases",
-        "same dispatch role repeated through string comparisons or string-key registries",
-        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
-        _STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
-    )
-
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings = LITERAL_DISPATCH_FINDING_FACTORY.findings(
-            self,
-            module,
-            config,
-            StringLiteralDispatchObservationFamily,
-            case_summary_label="cases",
-            relation_case_label="literal string cases",
-        )
-        dict_evidence = _dispatch_dict_locations(module, config.min_string_cases)
-        if dict_evidence:
-            findings.append(
-                self.build_finding(
-                    (
-                        f"{module.path} contains {len(dict_evidence)} string-key dispatch table site(s) that encode a closed family."
-                    ),
-                    tuple(dict_evidence[:6]),
-                    certification=STRONG_HEURISTIC,
-                    relation_context=(
-                        "same closed family encoded in string-key dispatch tables rather than one nominal dispatch boundary"
-                    ),
-                    codemod_patch=(
-                        "# Replace handwritten string-key dispatch tables with one authoritative nominal family and dispatch through `Family.for_key(...)` / `Family.__registry__`. # Keep any string-key projection as a derived view of the auto-registered family."
-                    ),
-                    metrics=DispatchCountMetrics(
-                        dispatch_site_count=len(dict_evidence)
-                    ),
-                )
-            )
-        return findings
-
-
 class NumericLiteralDispatchDetector(PerModuleIssueDetector):
     finding_spec = certified_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
@@ -9725,70 +9679,5 @@ class NominalPolicySurfaceDetector(
             codemod_patch=(
                 f"# Collapse `{family_candidate.owner_class_name}` surface shells into one explicit policy accessor or owner-owned contract.\n"
                 f"# Do not keep separate pass-through methods over `{family_candidate.policy_root_symbol}` for {method_summary}."
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class BidirectionalRegistryCandidate:
-    file_path: str
-    class_name: str
-    mirrored_pairs: tuple[tuple[int, str], ...]
-
-
-def _bidirectional_registry_candidates(
-    module: ParsedModule,
-) -> tuple[BidirectionalRegistryCandidate, ...]:
-    return tuple(
-        (
-            BidirectionalRegistryCandidate(
-                file_path=file_path,
-                class_name=class_name,
-                mirrored_pairs=mirrored_pairs,
-            )
-            for file_path, class_name, mirrored_pairs in _mirrored_registry_candidates(
-                module
-            )
-        )
-    )
-
-
-class BidirectionalRegistryDetector(
-    ModuleCollectorCandidateDetector[BidirectionalRegistryCandidate]
-):
-    finding_spec = finding_spec_template(
-        PatternId.BIDIRECTIONAL_LOOKUP,
-        "Bidirectional registry maintained manually",
-        "The docs prescribe a single authoritative bidirectional type registry when exact companion normalization and reverse lookup matter. Manual mirrored assignments are drift-prone and should be centralized.",
-        "exact bijection and O(1) reverse lookup on nominal keys",
-        "same class maintains forward and reverse registry state",
-        _BIDIRECTIONAL_NORMALIZATION_EXACT_LOOKUP_PROVENANCE_CAPABILITY_TAGS,
-        _MIRRORED_REGISTRY_CLASS_LEVEL_POSITION_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-    )
-
-    def _finding_for_candidate(
-        self, candidate: BidirectionalRegistryCandidate
-    ) -> RefactorFinding:
-        evidence = tuple(
-            (
-                SourceLocation(
-                    candidate.file_path, lineno, f"{candidate.class_name}.{label}"
-                )
-                for lineno, label in candidate.mirrored_pairs[:6]
-            )
-        )
-        return self.build_finding(
-            f"Class {candidate.class_name} appears to maintain mirrored forward/reverse registry assignments.",
-            evidence,
-            observation_tags=_MIRRORED_REGISTRY_CLASS_LEVEL_POSITION_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-            metrics=RegistrationMetrics(
-                registration_site_count=len(candidate.mirrored_pairs),
-                registry_name=candidate.class_name,
-                class_key_pairs=tuple(
-                    (
-                        f"{candidate.class_name}.{label}"
-                        for _, label in candidate.mirrored_pairs
-                    )
-                ),
             ),
         )

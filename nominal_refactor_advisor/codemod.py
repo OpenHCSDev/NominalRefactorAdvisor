@@ -596,7 +596,6 @@ DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
 SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID = "semantic_tag_tuple_boilerplate"
 MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID = "module_authority_reexport_catalog"
 MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
-STRING_DISPATCH_FINDING_ID = "string_dispatch"
 NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
 DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
     ("capability_tag_constants", "observation_tag_constants")
@@ -24363,12 +24362,6 @@ class LiteralDispatchFindingRecipeSynthesizer(
                 "the closed-axis authority at the class boundary first."
             )
         return f"dispatch target {target.qualname!r} is not a module function"
-
-
-class StringDispatchFindingRecipeSynthesizer(LiteralDispatchFindingRecipeSynthesizer):
-    """Build recipes for closed string-literal dispatch functions."""
-
-    detector_id = STRING_DISPATCH_FINDING_ID
 
 
 class NumericLiteralDispatchFindingRecipeSynthesizer(

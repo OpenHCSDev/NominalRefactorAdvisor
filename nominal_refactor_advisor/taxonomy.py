@@ -199,7 +199,6 @@ class ObservationTag(LabeledStrEnum):
     MANUAL_REGISTRATION = ("manual_registration", "manual registry writes")
     MANUAL_SYNCHRONIZATION = ("manual_synchronization", "mirrored state updates")
     METHOD_ROLE = ("method_role", "normalized method skeletons")
-    MIRRORED_REGISTRY = ("mirrored_registry", "forward/reverse registry pairs")
     MRO_HIERARCHY = ("mro_hierarchy", "MRO walks")
     NESTED_PRECEDENCE_WALK = ("nested_precedence_walk", "nested precedence walks")
     NORMALIZED_AST = ("normalized_ast", "normalized AST shape")

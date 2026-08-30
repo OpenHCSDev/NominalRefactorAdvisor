@@ -4630,7 +4630,6 @@ def test_detects_generic_cancelable_product_composition_signal(
 
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
 DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID = "detector_backend_payoff_guard"
-EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
@@ -6538,7 +6537,6 @@ def test_strict_economics_proof_exit_code_is_ci_enforceable(
 STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID = (
     "string_backed_reflective_nominal_lookup"
 )
-STRING_DISPATCH_DETECTOR_ID = "string_dispatch"
 UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID = "unreferenced_private_function"
 
 
@@ -7783,7 +7781,7 @@ def test_parallel_analyze_modules_matches_sequential_stable_ids(
         _write_module(
             tmp_path,
             f"pkg/{module_name}.py",
-            f'''\ndef render_{module_name}(kind):\n    if kind == "one":\n        return "{module_name}-one"\n    elif kind == "two":\n        return "{module_name}-two"\n    elif kind == "three":\n        return "{module_name}-three"\n    return "{module_name}-default"\n''',
+            f'''\ndef render_{module_name}(kind):\n    if kind == 1:\n        return "{module_name}-one"\n    elif kind == 2:\n        return "{module_name}-two"\n    elif kind == 3:\n        return "{module_name}-three"\n    return "{module_name}-default"\n''',
         )
 
     modules = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)
@@ -7977,52 +7975,6 @@ def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
     assert "declare" in finding.summary
     assert "validate" in finding.summary
     assert "OperationContext" in (finding.scaffold or "")
-
-
-def test_detects_literal_match_dispatch_with_autoregistermeta_guidance(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef run_backend(kind, request):\n    match kind:\n        case "csv":\n            return run_csv(request)\n        case "json":\n            return run_json(request)\n        case "xml":\n            return run_xml(request)\n        case _:\n            raise ValueError(kind)\n',
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
-        )
-    )
-
-    assert "match" in (finding.codemod_patch or "") or "case family" in (
-        finding.scaffold or ""
-    )
-    assert "kind" in finding.summary
-    assert "'csv'" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "DispatchCase.for_case" in (finding.scaffold or "")
-
-
-def test_detects_two_case_string_dispatch_as_polymorphism(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef render(kind, value):\n    if kind == "csv":\n        return render_csv(value)\n    elif kind == "json":\n        return render_json(value)\n    raise ValueError(kind)\n',
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
-        )
-    )
-
-    assert "'csv'" in finding.summary
-    assert "'json'" in finding.summary
-    assert "AutoRegisterMeta" in (finding.scaffold or "")
 
 
 def test_detects_string_keyed_formula_subclass_family(tmp_path: Path) -> None:
@@ -9640,35 +9592,6 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
 
 
 
-def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nimport ast\n\ndef match_projected_attribute(node):\n    call = as_ast(node, ast.Call)\n    if call is None:\n        return None\n    if len(call.args) != 1:\n        return None\n    inner = single_item(tuple(call.args))\n    if inner is None:\n        return None\n    attribute = as_ast(inner, ast.Attribute)\n    if attribute is None:\n        return None\n    owner = as_ast(attribute.value, ast.Name)\n    if owner is None:\n        return None\n    owner_name = name_id(owner)\n    if owner_name is None:\n        return None\n    wrapper_name = name_id(call.func)\n    if wrapper_name is None:\n        return None\n    pair = ast_sequence(call.args, ast.Attribute)\n    if pair is None:\n        return None\n    if len(call.keywords) != 0:\n        return None\n    if attribute.attr not in {"name", "kind", "value"}:\n        return None\n    return owner_name, wrapper_name, attribute.attr\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID
-        )
-    )
-    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
-    assert "payoff score" in finding.summary
-    assert "generated budget" in finding.summary
-    assert "net object savings" in finding.summary
-    assert "semantic description length" in finding.summary
-    assert "certified savings" in finding.summary
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-    assert "AST type guards" in finding.summary
-    assert "EffectStep" in (finding.scaffold or "")
-    assert "refinement_path" in (finding.scaffold or "")
-    assert "__mro__" in (finding.scaffold or "")
-    assert "AutoRegisterMeta" not in (finding.scaffold or "")
-    assert "bind_all" in (finding.codemod_patch or "")
-
-
 def test_flags_abstraction_detector_without_backend_loc_payoff_guard(
     tmp_path: Path,
 ) -> None:
@@ -10334,20 +10257,6 @@ def test_detects_derived_metric_count_boilerplate(tmp_path: Path) -> None:
     assert len(findings) == 1
     assert "field_count=len(field_names)" in findings[0].summary
     assert "from_field_names" in findings[0].summary
-
-
-def test_ignores_existing_effect_step_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef match_projected_attribute(node, steps):\n    return Maybe.of(node).bind_all(steps).unwrap_or_none()\n",
-    )
-    assert not any(
-        (
-            finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID
-            for finding in analyze_path(tmp_path)
-        )
-    )
 
 
 def test_detects_effect_step_implementation_leak(tmp_path: Path) -> None:
@@ -11122,128 +11031,6 @@ def test_collects_literal_dispatch_observations_via_spec_family(tmp_path: Path) 
     )
     assert any((item.dispatch_axis_expression == "kind" for item in chains))
     assert any((item.dispatch_axis_expression == "node.kind" for item in inline_groups))
-
-
-def test_detects_string_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef convert(kind, value):\n    if kind == "numpy":\n        return value\n    elif kind == "cupy":\n        return value\n    elif kind == "torch":\n        return value\n    return value\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
-        )
-    )
-    assert finding.pattern_id == 3
-    assert "`kind`" in finding.summary
-    assert "'numpy'" in finding.summary
-    assert finding.scaffold is not None
-    assert "from metaclass_registry import AutoRegisterMeta" in finding.scaffold
-    assert "DispatchCase.for_case" in finding.scaffold
-    assert finding.codemod_patch is not None
-    assert "instead of if/elif or match/case" in finding.codemod_patch
-    assert finding.certification == "certified"
-
-
-def test_string_dispatch_findings_synthesize_polymorphism_recipe_plan(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef render(kind, value):\n    if kind == "csv":\n        return render_csv(value)\n    elif kind == "json":\n        return render_json(value)\n    raise ValueError(kind)\n',
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
-    )
-    source_index = build_source_index(modules, findings)
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    context = CodemodSelectorContext(
-        source_index=source_index,
-        sources_by_file_path=source_by_path,
-    )
-
-    plan = codemod_plan_from_findings(
-        findings,
-        detector_ids=(STRING_DISPATCH_DETECTOR_ID,),
-        selector_context=context,
-    )
-    simulation = plan.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-
-    assert plan.expected_removed_finding_count == 1
-    operation = plan.document.recipes[0].operations[0].to_dict()
-    assert operation["operation"] == "dispatch_to_polymorphism"
-    assert operation["base_name"] == "RenderDispatchCase"
-    assert operation["dispatch_axis_expression"] == "kind"
-    assert operation["literal_cases"] == ("'csv'", "'json'")
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-    simulation.document_simulation.apply()
-    remaining = tuple(
-        finding
-        for finding in analyze_modules(parse_python_modules(tmp_path))
-        if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
-    )
-    assert remaining == ()
-
-
-def test_string_dispatch_ignores_literal_fallback_tables(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nDEFAULT_PIXEL_SIZE = 0.65\n\n\nclass MetadataHandler:\n    FALLBACK_VALUES = {\n        "pixel_size": DEFAULT_PIXEL_SIZE,\n        "grid_dimensions": (1, 1),\n    }\n\n    def get(self, key):\n        return self.FALLBACK_VALUES[key]\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings
-    )
-
-
-
-def test_string_dispatch_detects_behavioral_string_key_tables(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef alpha(value):\n    return value\n\n\ndef beta(value):\n    return value\n\n\ndef gamma(value):\n    return value\n\nHANDLERS = {\n    "alpha": alpha,\n    "beta": beta,\n    "gamma": gamma,\n}\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings
-    )
-
-
-def test_detects_bidirectional_registry(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Registry:\n    def __init__(self):\n        self._forward = {}\n        self._reverse = {}\n\n    def register(self, left, right):\n        self._forward[left] = right\n        self._reverse[right] = left\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 13 for finding in findings))
-
-
-def test_ignores_single_resource_ownership_map_as_bidirectional_registry(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass StreamingBackend:\n    def __init__(self):\n        self._publishers = {}\n        self._shared_memory_blocks = {}\n\n    def remember(self, shm_name, shm):\n        self._shared_memory_blocks[shm_name] = shm\n\n    def cleanup(self, image):\n        shm_name = image.get('shm_name')\n        if shm_name and shm_name in self._shared_memory_blocks:\n            shm = self._shared_memory_blocks.pop(shm_name)\n            shm.close()\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any((finding.pattern_id == 13 for finding in findings))
 
 
 def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
@@ -19452,32 +19239,6 @@ def test_observation_graph_auto_includes_registered_observation_families(
     assert ObservationKind.SENTINEL_TYPE in kinds
 
 
-def test_ignores_constant_string_maps_for_pattern_three(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nLOOKUP = {\n    "alpha": 1,\n    "beta": 2,\n    "gamma": 3,\n}\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings)
-    )
-
-
-def test_detects_module_level_dispatch_dict_with_callable_targets(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef alpha():\n    return 1\n\n\ndef beta():\n    return 2\n\n\ndef gamma():\n    return 3\n\n\nDISPATCH = {\n    "alpha": alpha,\n    "beta": beta,\n    "gamma": gamma,\n}\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        (finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings)
-    )
-
-
 def test_ignores_non_branch_config_reads(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -20609,34 +20370,6 @@ def test_json_payload_includes_finding_backed_recipe_plan(
     assert operation["assignment_names"] == ("field_names", "method_names")
 
 
-def test_json_payload_uses_selector_context_for_dispatch_recipe_plan(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef render(kind, value):\n    if kind == "csv":\n        return render_csv(value)\n    elif kind == "json":\n        return render_json(value)\n    raise ValueError(kind)\n',
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = list(
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
-    )
-
-    payload = JsonPayloadBuilder(
-        findings=findings,
-        plans=[],
-        modules=modules,
-    ).to_dict()
-
-    recipe_plan = payload["finding_recipe_plan"]
-    assert recipe_plan["expected_removed_finding_count"] == 1
-    operation = recipe_plan["document"]["recipes"][0]["operations"][0]
-    assert operation["operation"] == "dispatch_to_polymorphism"
-    assert operation["base_name"] == "RenderDispatchCase"
-
-
 def test_detects_collection_authority_stream_algebra(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -20713,37 +20446,6 @@ def test_detects_collection_projection_property_family(tmp_path: Path) -> None:
     assert "ModuleFamilyCatalog" in finding.summary
     assert "self.members" in finding.summary
     assert "CollectionAttributeProjection" in (finding.scaffold or "")
-
-
-def test_detects_live_template_payload_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Templates:
-    def title(self, name):
-        return f"# {name}\\n"
-
-    def readme(self, name):
-        return f"README for {name}\\n"
-
-    def footer(self):
-        return "Generated by the tool.\\n"
-""",
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "live_template_payload_family"
-        )
-    )
-
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "Templates" in finding.summary
-    assert "TextTemplateMethod" in (finding.scaffold or "")
-
 
 
 def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
