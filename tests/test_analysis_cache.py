@@ -92,9 +92,6 @@ from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import (
     _semantic_descent as semantic_descent_detectors,
 )
-from nominal_refactor_advisor.detectors import (
-    _role_surface_drift as role_surface_detectors,
-)
 from nominal_refactor_advisor.detectors import _surface as surface_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
@@ -2371,7 +2368,7 @@ def test_native_distributed_boundary_projection_matches_ast_family(
     assert native == collect_family_items(parsed_module, family)
 
 
-def test_native_report_demand_role_case_and_boundary_facts_match_ast_family(
+def test_native_report_demand_boundary_facts_match_ast_family(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -2409,40 +2406,6 @@ def test_native_report_demand_role_case_and_boundary_facts_match_ast_family(
         source=parsed_module.source,
     )
     syntax_index = NativePythonSyntaxIndex.from_source(source_module.source)
-
-    full_role = collect_family_items(
-        parsed_module,
-        role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily,
-    )[0]
-    assert isinstance(
-        role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily.report_demand(
-            (full_role,),
-            DetectorConfig(),
-        ),
-        role_surface_detectors.CompactRoleSurfaceProjectionDemand,
-    )
-    assert full_role.generic_role_case_table_sites
-    axes = frozenset(
-        token
-        for site in full_role.generic_role_case_table_sites
-        for token in site.broad_semantic_axis_tokens
-    )
-    cases = frozenset(
-        token
-        for site in full_role.generic_role_case_table_sites
-        for token in site.case_tokens
-    )
-    native_role = role_surface_detectors._native_demanded_role_surface_projection(
-        source_module,
-        syntax_index,
-        generic_axis_tokens=axes,
-        generic_case_tokens=cases,
-    )
-
-    assert native_role is not None
-    assert set(native_role.generic_role_case_table_sites) == set(
-        full_role.generic_role_case_table_sites
-    )
 
     full_boundary = collect_family_items(
         parsed_module,
@@ -2824,21 +2787,11 @@ def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
         use_parse_cache=False,
         source_policy=ast_tools_module.PythonSourcePathPolicy(),
     )
-    role_family = role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily
     boundary_family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
-    role_demand = role_surface_detectors.CompactRoleSurfaceProjectionDemand(
-        generic_axis_tokens=frozenset(),
-        generic_case_tokens=frozenset(),
-        minimum_generic_case_count=2,
-    )
     boundary_demand = surface_detectors.CompactDistributedBoundaryProjectionDemand(
         frozenset({"projected_axis_offsets"})
     )
     demand_signatures = (
-        (
-            role_family,
-            ast_tools_module.collected_family_demand_cache_signature(role_demand),
-        ),
         (
             boundary_family,
             ast_tools_module.collected_family_demand_cache_signature(boundary_demand),
@@ -2868,10 +2821,9 @@ def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
     result = analysis_module.build_compact_projection_shard(
         analysis_module.CompactProjectionBuildRequest(
             source=projection_source,
-            missing_families=(role_family, boundary_family),
+            missing_families=(boundary_family,),
             config=DetectorConfig(),
             family_demands=(
-                (role_family, role_demand),
                 (boundary_family, boundary_demand),
             ),
             family_demand_signatures=demand_signatures,
@@ -2879,8 +2831,6 @@ def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
     )
 
     projections = dict(result.runtime_projections)
-    role_projection = projections[role_family][0]
-    assert role_projection.generic_role_case_table_sites == ()
     boundary_projection = projections[boundary_family][0]
     assert {item.field_name for item in boundary_projection.declarations} == {
         "projected_axis_offsets"
@@ -2890,8 +2840,7 @@ def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
     }
     assert family_cache_dir.exists()
     assert list(family_cache_dir.glob("*.pickle"))
-    for family in (role_family, boundary_family):
-        assert not projection_source.entry_exists(family)
+    assert not projection_source.entry_exists(boundary_family)
 
 
 def test_report_presence_demand_skips_context_only_single_family_facts(
@@ -4296,11 +4245,9 @@ def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
     source = "VALUE = 1\n"
     source_path.write_text(source, encoding="utf-8")
     family_cache_dir = tmp_path / "collected-family"
-    family = role_surface_detectors.CompactRoleSurfaceModuleProjectionFamily
-    demand = role_surface_detectors.CompactRoleSurfaceProjectionDemand(
-        generic_axis_tokens=frozenset(),
-        generic_case_tokens=frozenset(),
-        minimum_generic_case_count=2,
+    family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
+    demand = surface_detectors.CompactDistributedBoundaryProjectionDemand(
+        frozenset({"projected_axis_offsets"})
     )
     demand_signature = ast_tools_module.collected_family_demand_cache_signature(demand)
     source_signature = ast_tools_module.python_source_cache_signature(source)
@@ -5613,7 +5560,6 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
         counting_builder,
     )
     for module in (
-        role_surface_detectors,
         runtime_detectors,
         semantic_descent_module,
         systemic_detectors,
@@ -7060,105 +7006,6 @@ def test_compact_boundary_wrapper_graph_preserves_semantics_without_ast_shadow(
     ] == wrapper_detector._findings_for_candidates(compact_wrappers, config)
 
 
-def test_compact_role_case_projection_owns_global_join(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    for module_name, class_name in (
-        ("display", "FieldDisplayPolicy"),
-        ("labels", "WidgetFieldLabelAuthority"),
-        ("report", "ReportFieldLabelPresenter"),
-    ):
-        (package_root / f"{module_name}.py").write_text(
-            f"class {class_name}:\n"
-            "    LABELS = {\n"
-            "        'alpha': 'A', 'beta': 'B', 'gamma': 'G',\n"
-            "        'delta': 'D', 'epsilon': 'E',\n"
-            "    }\n\n"
-            "    def field_label(self, field, value):\n"
-            "        return self.LABELS.get(field, value)\n",
-            encoding="utf-8",
-        )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    case_detector = role_surface_detectors.GenericRoleCaseTableDetector()
-    role_projections = case_detector.compact_module_projections(modules)
-    case_candidates = case_detector._candidates_from_compact_projections(
-        role_projections,
-        config,
-    )
-
-    assert case_candidates
-    strict_case_config = DetectorConfig(min_generic_role_case_table_cases=6)
-    assert not case_detector._candidates_from_compact_projections(
-        role_projections,
-        strict_case_config,
-    )
-    for removed_name in (
-        "_generic_role_case_table_sites",
-        "_generic_role_case_table_candidates",
-        "_compact_generic_role_case_table_candidates",
-    ):
-        assert not hasattr(role_surface_detectors, removed_name)
-    assert "candidate_collector" not in type(case_detector).__dict__
-    assert case_detector._candidate_items(list(modules), config) == case_candidates
-    assert case_detector._findings_from_compact_projections(
-        role_projections,
-        config,
-    ) == case_detector._findings_for_candidates(case_candidates, config)
-
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (package_root,),
-        (role_surface_detectors.GenericRoleCaseTableDetector,),
-        use_parse_cache=False,
-    )
-    assert accumulator.projection_count == len(modules)
-    findings_by_detector = accumulator.findings_by_detector(config)
-    assert findings_by_detector[
-        role_surface_detectors.GenericRoleCaseTableDetector
-    ] == case_detector._findings_for_candidates(case_candidates, config)
-
-
-def test_role_case_projection_avoids_generic_ast_walk(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    source_path = package_root / "roles.py"
-    source_path.write_text(
-        "class FieldDisplayPolicy:\n"
-        "    LABELS = {'alpha': 'A', 'beta': 'B'}\n\n"
-        "    def field_label(self, field, value):\n"
-        "        return self.LABELS.get(field, value)\n",
-        encoding="utf-8",
-    )
-    module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    class_node = next(
-        node for node in module.module.body if isinstance(node, ast.ClassDef)
-    )
-    original_walk = ast.walk
-    walked_roots: list[ast.AST] = []
-
-    def tracked_walk(root: ast.AST):
-        walked_roots.append(root)
-        return original_walk(root)
-
-    monkeypatch.setattr(ast, "walk", tracked_walk)
-    site = role_surface_detectors._generic_role_case_table_site(
-        module=module,
-        owner_symbol=class_node.name,
-        owner_name=class_node.name,
-        line=class_node.lineno,
-        root=class_node,
-        minimum_case_count=1,
-    )
-
-    assert site is not None
-    assert walked_roots == []
-
-
 def test_nominal_bypass_ast_demand_skips_context_without_dispatch_facts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -7733,9 +7580,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
         partition.compact_global_detector_types
     )
-    assert role_surface_detectors.GenericRoleCaseTableDetector in (
-        partition.compact_global_detector_types
-    )
     assert runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector in (
         partition.compact_global_detector_types
     )
@@ -7772,7 +7616,7 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert runtime_detectors.MonolithicConstructorInvariantDetector in (
         partition.per_module_detector_types
     )
-    assert len(partition.compact_global_detector_types) == 65
+    assert len(partition.compact_global_detector_types) == 64
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

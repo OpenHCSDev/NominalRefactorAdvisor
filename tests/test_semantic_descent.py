@@ -23,7 +23,6 @@ from nominal_refactor_advisor.detectors import (
     DuplicateVisitorMethodBodyDetector,
     InheritedAutoRegisterConfigBoilerplateDetector,
     IssueDetector,
-    LocalRoleCaseLogicDetector,
     RepeatedFieldFamilyDetector,
     SemanticMirrorWithoutDescentDetector,
 )
@@ -1178,107 +1177,6 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
     assert snapshot.module_import_graph.import_would_create_cycle(
         importing_file_path=beta_path.as_posix(),
         imported_file_path=alpha_path.as_posix(),
-    )
-
-
-def test_semantic_mirror_role_finding_uses_shared_synthesis_route(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "class ProjectionSurfaceAuthority:\n"
-        "    def materialization_rule(self, projection_surface):\n"
-        "        cases = {'module_all_tuple': 1, 'mapping_literal': 2}\n"
-        "        return cases.get(projection_surface)\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = next(
-        item
-        for item in LocalRoleCaseLogicDetector().detect(modules, DetectorConfig())
-        if item.detector_id == "local_role_case_logic"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
-    operation_kinds = tuple(
-        operation["operation"]
-        for recipe in plan.document.to_dict()["recipes"]
-        for operation in recipe["operations"]
-    )
-
-    assert record.detector_id == "local_role_case_logic"
-    assert record.status.value == "planned"
-    assert (
-        record.executable_declaration_name == "LocalRoleCaseLogicMappingRecipeBuilder"
-    )
-    assert record.action_keys
-    assert operation_kinds == ("insert_before_target", "replace_function_body")
-    assert plan.expected_removed_finding_count == 1
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-
-
-def test_semantic_mirror_role_branch_chain_synthesizes_authority_recipe(
-    tmp_path: Path,
-) -> None:
-    module_path = _write_module(
-        tmp_path,
-        "MAPPING_KINDS = frozenset(('key_to_type', 'type_to_key'))\n"
-        "\n"
-        "class ProjectionSurfaceAuthority:\n"
-        "    def materialization_rule(self, surface_name, surface_kind, projection_role):\n"
-        "        normalized_name = surface_name.lower()\n"
-        "        subject_text = f'{normalized_name}:{surface_kind}'\n"
-        "        if surface_kind in MAPPING_KINDS:\n"
-        "            return 'mapping_literal'\n"
-        "        if projection_role == 'test_params':\n"
-        "            return 'pytest_param_tuple'\n"
-        "        if projection_role in {'cli_choices', 'ui_options'}:\n"
-        "            return 'choices_tuple'\n"
-        "        return 'sorted_tuple'\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = next(
-        item
-        for item in LocalRoleCaseLogicDetector().detect(modules, DetectorConfig())
-        if item.detector_id == "local_role_case_logic"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
-    operation_kinds = tuple(
-        operation["operation"]
-        for recipe in plan.document.to_dict()["recipes"]
-        for operation in recipe["operations"]
-    )
-    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
-
-    assert record.detector_id == "local_role_case_logic"
-    assert record.status.value == "planned"
-    assert operation_kinds == ("insert_before_target", "replace_function_body")
-    assert "ProjectionSurfaceRoleCaseAuthority" in rewritten_source
-    assert plan.expected_removed_finding_count == 1
-    assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-
-    namespace: dict[str, object] = {}
-    exec(rewritten_source, namespace)
-    authority = namespace["ProjectionSurfaceAuthority"]()
-    assert authority.materialization_rule("name", "key_to_type", "unused") == (
-        "mapping_literal"
-    )
-    assert authority.materialization_rule("name", "other", "test_params") == (
-        "pytest_param_tuple"
-    )
-    assert authority.materialization_rule("name", "other", "cli_choices") == (
-        "choices_tuple"
-    )
-    assert authority.materialization_rule("name", "other", "unmatched") == (
-        "sorted_tuple"
     )
 
 

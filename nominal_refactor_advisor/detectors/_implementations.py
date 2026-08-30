@@ -5,7 +5,6 @@ from __future__ import annotations
 from . import (
     _abstraction_reuse,
     _environment,
-    _role_surface_drift,
     _semantic_descent,
     _systemic,
     _structural,
@@ -16,7 +15,6 @@ from . import (
 )
 from ._abstraction_reuse import *
 from ._environment import *
-from ._role_surface_drift import *
 from ._semantic_descent import *
 from ._systemic import *
 from ._structural import *

@@ -75,9 +75,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.DataclassContextCallProjectionMappingRecipeBuilder: (
         codemod.DataclassContextCallProjectionConcept
     ),
-    codemod.GenericRoleCaseTableMappingRecipeBuilder: (
-        codemod.RoleCaseAuthorityConcept
-    ),
     codemod.LocalRoleCaseLogicMappingRecipeBuilder: (codemod.RoleCaseAuthorityConcept),
     codemod.StringDispatchFindingRecipeSynthesizer: (
         codemod.AutoRegisterStrategyFamilyConcept
@@ -103,12 +100,6 @@ EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
 )
 
 EXPECTED_DECLARED_MAPPING_BRIDGES = {
-    codemod.GenericRoleCaseTableFindingRecipeSynthesizer: (
-        codemod.GenericRoleCaseTableMappingRecipeBuilder
-    ),
-    codemod.LocalRoleCaseLogicFindingRecipeSynthesizer: (
-        codemod.LocalRoleCaseLogicMappingRecipeBuilder
-    ),
     codemod.SemanticDictBagFindingRecipeSynthesizer: (
         codemod.SemanticDictBagReturnRecordMappingRecipeBuilder
     ),

@@ -36,11 +36,8 @@ def test_semantic_mirror_detector_role_is_inherited_by_mirror_families() -> None
     assert "per_module_semantic_mirror_issue" not in role_ids
     assert {
         "formal_boundary_external_string_registry_mirror",
-        "generic_role_case_table",
-        "local_role_case_logic",
         "runtime_authority_branch_semantics",
         "runtime_semantic_branch_chain",
         "semantic_mirror_without_descent",
     } <= role_ids
     assert authority_evidence_indices["semantic_mirror_without_descent"] == 1
-    assert authority_evidence_indices["generic_role_case_table"] is None
