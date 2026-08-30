@@ -930,10 +930,6 @@ class BuiltinCallName(StrEnum):
         return frozenset((cls.ABS, cls.ALL, cls.ANY, cls.MAX, cls.MIN, cls.SUM))
 
     @classmethod
-    def smelly_type_alias_builtin_tokens(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset((cls.DICT, cls.LIST, cls.MAP, cls.SET, cls.TUPLE))
-
-    @classmethod
     def isinstance_scatter_builtin_type_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset(
             (
