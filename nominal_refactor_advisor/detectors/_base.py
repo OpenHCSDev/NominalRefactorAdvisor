@@ -10171,13 +10171,6 @@ class SemanticDictBagCandidate:
     recommendation: SemanticDataclassRecommendation
 
 
-@dataclass(frozen=True)
-class SemanticTupleReturnRecordCandidate:
-    file_path: str
-    line: int
-    function_name: str
-    field_names: tuple[str, ...]
-    record_class_name: str
 
 
 class FieldFamilyRelationLevel(StrEnum):

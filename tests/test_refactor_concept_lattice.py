@@ -66,9 +66,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.SemanticDictBagReturnRecordMappingRecipeBuilder: (
         codemod.TupleDictReturnRecordConcept
     ),
-    codemod.SemanticTupleReturnRecordMappingRecipeBuilder: (
-        codemod.TupleDictReturnRecordConcept
-    ),
     codemod.DataclassConstructorProjectionMappingRecipeBuilder: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
@@ -99,9 +96,6 @@ EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
 EXPECTED_DECLARED_MAPPING_BRIDGES = {
     codemod.SemanticDictBagFindingRecipeSynthesizer: (
         codemod.SemanticDictBagReturnRecordMappingRecipeBuilder
-    ),
-    codemod.SemanticTupleReturnRecordFindingRecipeSynthesizer: (
-        codemod.SemanticTupleReturnRecordMappingRecipeBuilder
     ),
 }
 
@@ -225,14 +219,10 @@ def test_semantic_mirror_strategy_identity_is_metric_type_derived() -> None:
     )
 
 
-def test_registered_mapping_and_unpack_cases_publish_no_numeric_precedence() -> None:
+def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:
     mapping_declarations = (
         codemod.MappingSemanticMirrorRecipeBuilder,
         *EXPECTED_MAPPING_DECLARATIONS,
-    )
-    unpack_declarations = (
-        codemod.TupleReturnUnpackValueMatcher,
-        *codemod.TupleReturnUnpackValueMatcher.__registry__.values(),
     )
     contextual_registration_declarations = (
         codemod.ContextualSemanticMirrorRecipeBuilder,
@@ -242,10 +232,6 @@ def test_registered_mapping_and_unpack_cases_publish_no_numeric_precedence() -> 
     assert all(
         not hasattr(declaration, "registration_order")
         for declaration in mapping_declarations
-    )
-    assert all(
-        not hasattr(declaration, "registry_order")
-        for declaration in unpack_declarations
     )
     assert all(
         not hasattr(declaration, "registry_order")
