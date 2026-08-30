@@ -80,8 +80,12 @@ from nominal_refactor_advisor.class_index import (
     build_class_family_index,
 )
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
+from nominal_refactor_advisor.cli import CliCommand
 from nominal_refactor_advisor.cli import CodemodExecutionMode
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
+from nominal_refactor_advisor.cli import CodemodScanQueryCliCommand
+from nominal_refactor_advisor.cli import CodemodSourceIndexCliCommand
+from nominal_refactor_advisor.cli import CodemodSynthesizePlanCliCommand
 from nominal_refactor_advisor.cli import FastPreparseSemanticDescentSourceAuthority
 from nominal_refactor_advisor.cli import FocusedLoopColdAnalysisPolicy
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
@@ -10378,6 +10382,39 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
     assert args.paths == ["nominal_refactor_advisor", "tests"]
+
+
+def test_codemod_scan_query_selection_returns_declaration_owner() -> None:
+    parser = argparse.ArgumentParser()
+    for spec in _CLI_ARGUMENT_SPECS:
+        spec.add_to_parser(parser)
+
+    source_index_type = CodemodScanQueryCliCommand.selected_type(
+        parser,
+        parser.parse_args(["--codemod-source-index"]),
+    )
+    synthesis_type = CodemodScanQueryCliCommand.selected_type(
+        parser,
+        parser.parse_args(["--codemod-synthesize-plan"]),
+    )
+
+    assert source_index_type is CodemodSourceIndexCliCommand
+    assert source_index_type.requires_analysis() is False
+    assert synthesis_type is CodemodSynthesizePlanCliCommand
+    assert synthesis_type.requires_analysis() is True
+    assert "codemod_execution" not in CliCommand.__registry__
+
+
+def test_codemod_scan_query_selection_rejects_multiple_declarations() -> None:
+    parser = argparse.ArgumentParser()
+    for spec in _CLI_ARGUMENT_SPECS:
+        spec.add_to_parser(parser)
+    args = parser.parse_args(
+        ["--codemod-source-index", "--codemod-synthesize-plan"]
+    )
+
+    with pytest.raises(SystemExit):
+        CodemodScanQueryCliCommand.selected_type(parser, args)
 
 
 def test_codemod_execution_mode_owns_flag_selection_and_constraints() -> None:

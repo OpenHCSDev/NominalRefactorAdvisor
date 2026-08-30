@@ -79,7 +79,6 @@ from .codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
     FindingRecipePlanSimulation,
-    FindingRecipeSynthesizer,
     JsonObject,
     JsonValue,
     RefactorConcept,
@@ -87,7 +86,6 @@ from .codemod import (
     SourcePathCandidateSet,
     apply_codemod_simulation,
     codemod_class_plan_from_findings,
-    codemod_plan_from_findings,
     codemod_candidates_from_impact_ranking,
     evaluate_architecture_guards,
     module_name_from_source_path,
@@ -1005,7 +1003,7 @@ class SourceSnapshotCacheEligibility:
 
     include_impact_ranking: bool
     codemod_plan_sequence_requires_source_snapshot: bool
-    codemod_scan_query_needs_source_snapshot: bool
+    codemod_scan_query_type: type[CodemodScanQueryCliCommand] | None
     codemod_refactor_goal_requested: bool
 
     @property
@@ -1013,7 +1011,7 @@ class SourceSnapshotCacheEligibility:
         return (
             self.include_impact_ranking
             or self.codemod_plan_sequence_requires_source_snapshot
-            or self.codemod_scan_query_needs_source_snapshot
+            or self.codemod_scan_query_type is not None
         )
 
     @property
@@ -1026,29 +1024,6 @@ class SourceSnapshotCacheEligibility:
     @property
     def can_use_cached_source_context(self) -> bool:
         return self.needs_source_snapshot and not self.requires_parsed_modules
-
-
-@dataclass(frozen=True)
-class SourceSnapshotSeedFindingSelection:
-    """Choose the findings whose source files need parsed nodes for a query."""
-
-    findings: list[RefactorFinding]
-    codemod_synthesize_plan: bool
-    detector_ids: tuple[str, ...] = ()
-
-    def selected(self) -> list[RefactorFinding]:
-        if not self.codemod_synthesize_plan:
-            return self.findings
-        selected_findings = self.findings
-        if self.detector_ids:
-            detector_id_set = frozenset(self.detector_ids)
-            selected_findings = [
-                finding
-                for finding in selected_findings
-                if finding.detector_id in detector_id_set
-            ]
-        return selected_findings
-
 
 @dataclass(frozen=True)
 class JsonPayloadBuildTiming:
@@ -1440,15 +1415,10 @@ def write_cli_json_artifact(path: Path | None, payload: JsonObject) -> None:
 def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
     """Return whether the selected command can produce reusable plan JSON."""
 
-    return any(
-        (
-            args.codemod_validate_plan,
-            args.codemod_compose_plans is not None,
-            args.codemod_compose_sequence is not None,
-            args.codemod_synthesize_plan,
-            args.codemod_synthesize_class_plan,
-            args.codemod_refactor_goal is not None,
-        )
+    return args.codemod_refactor_goal is not None or any(
+        issubclass(command_type, CodemodPlanProducingCliCommand)
+        and command_type.requested(args)
+        for command_type in CliCommand.__registry__.values()
     )
 
 
@@ -2179,9 +2149,9 @@ class CliCommand(ABC, metaclass=AutoRegisterMeta):
     args: argparse.Namespace
     command_id: ClassVar[str | None] = None
 
-    @property
+    @classmethod
     @abstractmethod
-    def requested(self) -> bool:
+    def requested(cls, args: argparse.Namespace) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -2202,20 +2172,26 @@ class CliEarlyExitCommand(CliCommand, ABC):
         for command_type in CliCommand.__registry__.values():
             if not issubclass(command_type, cls):
                 continue
-            command = command_type(parser, args)
-            if command.requested:
-                return command.run()
+            if command_type.requested(args):
+                return command_type(parser, args).run()
         return None
 
 
-class CodemodValidatePlanCliCommand(CliEarlyExitCommand):
+class CodemodPlanProducingCliCommand(ABC):
+    """Nominal family of CLI commands that emit reusable codemod plans."""
+
+
+class CodemodValidatePlanCliCommand(
+    CliEarlyExitCommand,
+    CodemodPlanProducingCliCommand,
+):
     """Validate a supplied codemod DSL plan and emit its normalized form."""
 
     command_id = "codemod_validate_plan"
 
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_validate_plan
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.codemod_validate_plan
 
     def run(self) -> int:
         payload = load_codemod_plan_validation_payload(self.plan_path)
@@ -2235,14 +2211,17 @@ class CodemodValidatePlanCliCommand(CliEarlyExitCommand):
         return self.args.codemod_plan
 
 
-class CodemodComposePlansCliCommand(CliEarlyExitCommand):
+class CodemodComposePlansCliCommand(
+    CliEarlyExitCommand,
+    CodemodPlanProducingCliCommand,
+):
     """Compose normalized codemod DSL plan documents."""
 
     command_id = "codemod_compose_plans"
 
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_compose_plans is not None
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.codemod_compose_plans is not None
 
     def run(self) -> int:
         if self.args.codemod_compose_sequence is not None:
@@ -2266,14 +2245,17 @@ class CodemodComposePlansCliCommand(CliEarlyExitCommand):
         return 0
 
 
-class CodemodComposeSequenceCliCommand(CliEarlyExitCommand):
+class CodemodComposeSequenceCliCommand(
+    CliEarlyExitCommand,
+    CodemodPlanProducingCliCommand,
+):
     """Compose normalized codemod DSL plans as ordered replay stages."""
 
     command_id = "codemod_compose_sequence"
 
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_compose_sequence is not None
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.codemod_compose_sequence is not None
 
     def run(self) -> int:
         paths = tuple(self.args.codemod_compose_sequence)
@@ -2372,10 +2354,10 @@ class ArchitectureGuardSourceEvaluator:
         return tuple(updated_modules)
 
 
-@dataclass(frozen=True)
-class CodemodSourceSnapshotRequiredCommand(CliCommand, ABC):
-    """CLI command that requires a prepared codemod source snapshot."""
+class CodemodSourceSnapshotRequired(ABC):
+    """Behavior shared by execution surfaces that require a source snapshot."""
 
+    parser: argparse.ArgumentParser
     source_snapshot: CodemodSourceSnapshot | None
     source_snapshot_error_message: ClassVar[str] = (
         "codemod command requires a source snapshot"
@@ -2390,15 +2372,17 @@ class CodemodSourceSnapshotRequiredCommand(CliCommand, ABC):
 
 @dataclass(frozen=True)
 class CodemodCliExecution(
-    CodemodSourceSnapshotRequiredCommand, CodemodProjectedFindingReporter
+    CodemodSourceSnapshotRequired, CodemodProjectedFindingReporter
 ):
     """Run the CLI codemod simulation/apply phase through plan-level DSL APIs."""
 
-    command_id = "codemod_execution"
     source_snapshot_error_message: ClassVar[str] = (
         "--codemod-diff/--codemod-preflight/--codemod-simulate/"
         "--codemod-apply require a codemod plan"
     )
+    parser: argparse.ArgumentParser
+    args: argparse.Namespace
+    source_snapshot: CodemodSourceSnapshot | None
     execution_request: "CodemodPlanExecutionRequest"
     modules: list[ParsedModule]
     findings: list[RefactorFinding]
@@ -2407,12 +2391,8 @@ class CodemodCliExecution(
     report_roots: tuple[Path, ...]
     semantic_descent_source: SemanticDescentGraphAnalysisSource
 
-    @property
-    def requested(self) -> bool:
-        return self.execution_request.mode.requested
-
     def run(self) -> int | None:
-        if not self.requested:
+        if not self.execution_request.mode.requested:
             return None
         snapshot = self.required_source_snapshot()
         if self.execution_request.mode.is_preflight:
@@ -2704,80 +2684,6 @@ class CodemodPlanExecutionRequest:
 
 
 @dataclass(frozen=True)
-class CodemodScanQueryMode:
-    """Validated family of scan-backed codemod DSL query modes."""
-
-    synthesize_plan: bool
-    synthesize_class_plan: bool
-    source_index: bool
-    selector_path: Path | None
-    target_source_selector_path: Path | None
-    synthesis_has_registered_detector: bool
-    synthesis_execution_mode: CodemodExecutionMode
-
-    @classmethod
-    def from_namespace(
-        cls,
-        args: argparse.Namespace,
-        execution_mode: CodemodExecutionMode,
-    ) -> "CodemodScanQueryMode":
-        return cls(
-            synthesize_plan=args.codemod_synthesize_plan,
-            synthesize_class_plan=args.codemod_synthesize_class_plan,
-            source_index=args.codemod_source_index,
-            selector_path=args.codemod_resolve_selector,
-            target_source_selector_path=args.codemod_target_source,
-            synthesis_has_registered_detector=(
-                FindingRecipeSynthesizer.has_registered_detector(
-                    args.codemod_goal_detectors
-                )
-            ),
-            synthesis_execution_mode=execution_mode,
-        )
-
-    @property
-    def requested(self) -> bool:
-        return self.mode_count > 0
-
-    @property
-    def needs_analysis(self) -> bool:
-        return not self.source_index
-
-    @property
-    def needs_source_snapshot(self) -> bool:
-        if not self.requested:
-            return False
-        if not self.synthesize_plan:
-            return True
-        return (
-            self.synthesis_execution_mode.requested
-            or self.synthesis_has_registered_detector
-        )
-
-    @property
-    def mode_count(self) -> int:
-        return sum(
-            (
-                self.synthesize_plan,
-                self.synthesize_class_plan,
-                self.source_index,
-                self.selector_path is not None,
-                self.target_source_selector_path is not None,
-            )
-        )
-
-    def require_valid(self, parser: argparse.ArgumentParser) -> None:
-        if self.mode_count <= 1:
-            return
-        parser.error(
-            "--codemod-synthesize-plan, --codemod-synthesize-class-plan, "
-            "--codemod-source-index, "
-            "--codemod-resolve-selector, and --codemod-target-source "
-            "are mutually exclusive"
-        )
-
-
-@dataclass(frozen=True)
 class CodemodRecipePlanSourceFile(SourcePathCandidateAuthority):
     """Resolve one explicit recipe source path to a readable Python file."""
 
@@ -2871,7 +2777,8 @@ class CodemodRecipePlanFastSourceSnapshot:
 
 @dataclass(frozen=True)
 class CodemodScanQueryCliCommand(
-    CodemodSourceSnapshotRequiredCommand,
+    CliCommand,
+    CodemodSourceSnapshotRequired,
     CodemodProjectedFindingReporter,
     ABC,
 ):
@@ -2880,6 +2787,7 @@ class CodemodScanQueryCliCommand(
     source_snapshot_error_message: ClassVar[str] = (
         "codemod scan query requires a source snapshot"
     )
+    source_snapshot: CodemodSourceSnapshot | None
     findings: list[RefactorFinding]
     modules: list[ParsedModule]
     config: DetectorConfig
@@ -2889,40 +2797,32 @@ class CodemodScanQueryCliCommand(
     execution_mode: CodemodExecutionMode
 
     @classmethod
-    def run_first(
+    def selected_type(
         cls,
         parser: argparse.ArgumentParser,
         args: argparse.Namespace,
-        source_snapshot: CodemodSourceSnapshot | None,
-        findings: list[RefactorFinding],
-        modules: list[ParsedModule],
-        config: DetectorConfig,
-        roots: tuple[Path, ...],
-        report_roots: tuple[Path, ...],
-        semantic_descent_source: SemanticDescentGraphAnalysisSource,
-        execution_mode: CodemodExecutionMode,
-    ) -> int | None:
-        for command_type in CliCommand.__registry__.values():
-            if not issubclass(command_type, cls):
-                continue
-            command = command_type(
-                parser,
-                args,
-                source_snapshot,
-                findings,
-                modules,
-                config,
-                roots,
-                report_roots,
-                semantic_descent_source,
-                execution_mode,
-            )
-            if command.requested:
-                return command.run()
-        return None
+    ) -> type[CodemodScanQueryCliCommand] | None:
+        selected_types = tuple(
+            cast(type[CodemodScanQueryCliCommand], command_type)
+            for command_type in CliCommand.__registry__.values()
+            if issubclass(command_type, cls) and command_type.requested(args)
+        )
+        if len(selected_types) > 1:
+            parser.error("scan-backed codemod query commands are mutually exclusive")
+        return selected_types[0] if selected_types else None
+
+    @classmethod
+    def requires_analysis(cls) -> bool:
+        """Return whether this query consumes refactor findings."""
+
+        return True
 
 
-class CodemodSynthesisExecutionCliCommand(CodemodScanQueryCliCommand, ABC):
+class CodemodSynthesisExecutionCliCommand(
+    CodemodScanQueryCliCommand,
+    CodemodPlanProducingCliCommand,
+    ABC,
+):
     """Shared execution surface for finding-backed synthesis commands."""
 
     def apply_synthesized_plan(
@@ -2940,23 +2840,17 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
 
     command_id = "codemod_synthesize_plan"
 
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_synthesize_plan
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.codemod_synthesize_plan
 
     def run(self) -> int:
         detector_ids = tuple(self.args.codemod_goal_detectors)
-        snapshot = self.source_snapshot
-        if snapshot is None:
-            finding_recipe_plan = codemod_plan_from_findings(
-                self.findings,
-                detector_ids=detector_ids,
-            )
-        else:
-            finding_recipe_plan = snapshot.plan_from_findings(
-                self.findings,
-                detector_ids=detector_ids,
-            )
+        snapshot = self.required_source_snapshot()
+        finding_recipe_plan = snapshot.plan_from_findings(
+            self.findings,
+            detector_ids=detector_ids,
+        )
         write_cli_json_artifact(
             self.args.codemod_plan_out,
             finding_recipe_plan.document.to_dict(),
@@ -3000,9 +2894,9 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
 
     command_id = "codemod_synthesize_class_plan"
 
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_synthesize_class_plan
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.codemod_synthesize_class_plan
 
     def run(self) -> int:
         snapshot = self.required_source_snapshot()
@@ -3064,9 +2958,13 @@ class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
 
     command_id = "codemod_source_index"
 
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_source_index
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.codemod_source_index
+
+    @classmethod
+    def requires_analysis(cls) -> bool:
+        return False
 
     def run(self) -> int:
         print(
@@ -3122,9 +3020,9 @@ class CodemodResolveSelectorCliCommand(CodemodSelectorQueryCliCommand):
     command_id = "codemod_resolve_selector"
     report_factory = staticmethod(CodemodSourceSnapshot.resolve_selector)
 
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_resolve_selector is not None
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.codemod_resolve_selector is not None
 
     @property
     def selector_path(self) -> Path:
@@ -3137,9 +3035,9 @@ class CodemodTargetSourceCliCommand(CodemodSelectorQueryCliCommand):
     command_id = "codemod_target_source"
     report_factory = staticmethod(CodemodSourceSnapshot.target_source_report)
 
-    @property
-    def requested(self) -> bool:
-        return self.args.codemod_target_source is not None
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.codemod_target_source is not None
 
     @property
     def selector_path(self) -> Path:
@@ -3155,6 +3053,11 @@ def _main_without_deadline() -> int:
         spec.add_to_parser(parser)
     args = parser.parse_args()
 
+    codemod_scan_query_type = CodemodScanQueryCliCommand.selected_type(parser, args)
+    scan_analysis_required = (
+        codemod_scan_query_type is None
+        or codemod_scan_query_type.requires_analysis()
+    )
     if args.codemod_plan_out is not None and not codemod_plan_output_supported(args):
         parser.error("--codemod-plan-out requires a plan-producing codemod command")
     early_exit_code = CliEarlyExitCommand.run_first(parser, args)
@@ -3167,11 +3070,6 @@ def _main_without_deadline() -> int:
         parser,
         project_findings=args.codemod_project_findings,
     )
-    codemod_scan_query_mode = CodemodScanQueryMode.from_namespace(
-        args,
-        codemod_execution_mode,
-    )
-    codemod_scan_query_mode.require_valid(parser)
     try:
         json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
     except ValueError as error:
@@ -3193,7 +3091,7 @@ def _main_without_deadline() -> int:
         args.codemod_plan is not None
         or codemod_execution_mode.requested
         or args.codemod_refactor_goal is not None
-        or codemod_scan_query_mode.requested
+        or codemod_scan_query_type is not None
     )
     if (
         args.codemod_continuation_plan_out is not None
@@ -3218,7 +3116,7 @@ def _main_without_deadline() -> int:
     )
     if (
         codemod_execution_mode.requested
-        and not codemod_scan_query_mode.requested
+        and codemod_scan_query_type is None
         and not codemod_plan_sequence.requires_source_snapshot
     ):
         parser.error("codemod execution requires --codemod-plan")
@@ -3327,7 +3225,7 @@ def _main_without_deadline() -> int:
     try:
         SemanticRefactorGateMode.from_flags(
             include_impact_ranking=args.include_impact_ranking
-            or codemod_scan_query_mode.requested,
+            or codemod_scan_query_type is not None,
             semantic_refactor_gate=emitted_semantic_refactor_gate,
             raw_findings=(
                 args.raw_findings
@@ -3343,7 +3241,7 @@ def _main_without_deadline() -> int:
         and not args.include_impact_ranking
         and args.codemod_refactor_goal is None
         and args.import_lean_export is None
-        and not codemod_scan_query_mode.requested
+        and codemod_scan_query_type is None
     ):
         fast_codemod_source_snapshot = CodemodRecipePlanFastSourceSnapshot(
             sequence=codemod_execution_request.sequence,
@@ -3371,9 +3269,7 @@ def _main_without_deadline() -> int:
         codemod_plan_sequence_requires_source_snapshot=(
             codemod_plan_sequence.requires_source_snapshot
         ),
-        codemod_scan_query_needs_source_snapshot=(
-            codemod_scan_query_mode.needs_source_snapshot
-        ),
+        codemod_scan_query_type=codemod_scan_query_type,
         codemod_refactor_goal_requested=args.codemod_refactor_goal is not None,
     )
     cached_source_context = None
@@ -3386,7 +3282,7 @@ def _main_without_deadline() -> int:
                 args.codemod_refactor_goal is not None
                 or codemod_plan_sequence.requires_source_snapshot
                 or (
-                    codemod_scan_query_mode.needs_source_snapshot
+                    codemod_scan_query_type is not None
                     and not source_snapshot_cache_eligibility.can_use_cached_source_context
                 )
             ),
@@ -3411,7 +3307,6 @@ def _main_without_deadline() -> int:
                 or args.include_plans
                 or args.plans_only
                 or codemod_requested
-                or codemod_scan_query_mode.requested
             ),
         )
         source_context_cache_lookup_enabled = (
@@ -3423,7 +3318,7 @@ def _main_without_deadline() -> int:
         cache_lookup_enabled = (
             preparse_cache_policy.cache_lookup_enabled and preparse_cache_mode.enabled
         ) or source_context_cache_lookup_enabled
-        if codemod_scan_query_mode.needs_analysis and cache_lookup_enabled:
+        if scan_analysis_required and cache_lookup_enabled:
             started = perf_counter()
             fast_semantic_descent_context = FastPreparseSemanticDescentSourceAuthority(
                 preparse_cache_policy=preparse_cache_policy,
@@ -3605,7 +3500,7 @@ def _main_without_deadline() -> int:
             args.json
             and json_payload_profile.sections.compact_analysis_compatible
             and not preparse_cache_policy.parsed_modules_required
-            and codemod_scan_query_mode.needs_analysis
+            and scan_analysis_required
             and not codemod_requested
             and not DetectorTypePartition.from_detector_types(
                 default_detector_types_for_analysis()
@@ -3662,7 +3557,7 @@ def _main_without_deadline() -> int:
                 source_policy=source_policy,
             )
             parse_seconds = round(perf_counter() - started, 3)
-            if not codemod_scan_query_mode.needs_analysis:
+            if not scan_analysis_required:
                 findings = []
                 analysis_seconds = 0.0
                 analysis_cache_status = None
@@ -3789,20 +3684,15 @@ def _main_without_deadline() -> int:
     if (
         args.include_impact_ranking
         or codemod_plan_sequence.requires_source_snapshot
-        or codemod_scan_query_mode.needs_source_snapshot
+        or codemod_scan_query_type is not None
     ):
         started = perf_counter()
-        source_snapshot_seed_findings = SourceSnapshotSeedFindingSelection(
-            findings=findings,
-            codemod_synthesize_plan=codemod_scan_query_mode.synthesize_plan,
-            detector_ids=tuple(args.codemod_goal_detectors),
-        ).selected()
         if (
             cached_source_context is not None
             and source_snapshot_cache_eligibility.can_use_cached_source_context
         ):
             source_snapshot = cached_source_context.snapshot_for_findings(
-                source_snapshot_seed_findings
+                findings
             )
         elif source_snapshot_cache_eligibility.can_use_cached_source_context:
             source_context = CodemodSourceContext.from_modules(modules, findings)
@@ -3811,26 +3701,25 @@ def _main_without_deadline() -> int:
                 source_context,
             )
             source_snapshot = source_context.snapshot_for_findings(
-                source_snapshot_seed_findings
+                findings
             )
         else:
             source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
         source_index_seconds = round(perf_counter() - started, 3)
 
-    scan_query_result = CodemodScanQueryCliCommand.run_first(
-        parser,
-        args,
-        source_snapshot,
-        findings,
-        modules,
-        config,
-        roots,
-        path_scope.report_roots,
-        semantic_descent_analysis_source,
-        codemod_execution_mode,
-    )
-    if scan_query_result is not None:
-        return scan_query_result
+    if codemod_scan_query_type is not None:
+        return codemod_scan_query_type(
+            parser,
+            args,
+            source_snapshot,
+            findings,
+            modules,
+            config,
+            roots,
+            path_scope.report_roots,
+            semantic_descent_analysis_source,
+            codemod_execution_mode,
+        ).run()
 
     if args.include_impact_ranking:
         source_index = source_snapshot.source_index
