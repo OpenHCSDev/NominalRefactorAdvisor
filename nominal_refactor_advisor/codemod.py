@@ -158,13 +158,8 @@ def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str
     return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
 
 
-class CodemodJsonReport(ABC, metaclass=AutoRegisterMeta):
+class CodemodJsonReport(ABC):
     """Nominal boundary for codemod reports that serialize to JSON."""
-
-    __registry__: ClassVar[dict[str, type["CodemodJsonReport"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = _suffix_trimmed_class_name_registry_key
-    registry_key_suffix: ClassVar[str] = "Report"
 
     @abstractmethod
     def to_dict(self) -> JsonObject:
@@ -13194,7 +13189,6 @@ class CodemodSourceRevisionError(ValueError):
 class CodemodSimulationReport:
     """Result of simulating planned rewrites without writing files."""
 
-    backend: CodemodBackend
     rewrites: tuple[SimulatedSourceRewrite, ...]
     rewritten_sources: dict[str, str]
     parse_validation: CodemodParseValidationReport
@@ -13220,7 +13214,6 @@ class CodemodSimulationReport:
         if not report_tuple:
             backend = select_codemod_backend()
             return cls(
-                backend=backend,
                 rewrites=(),
                 rewritten_sources={},
                 parse_validation=CodemodParseValidationReport(
@@ -13257,7 +13250,6 @@ class CodemodSimulationReport:
             validated_file_paths.update(report.validated_file_paths)
         backend = report_tuple[0].backend
         return cls(
-            backend=backend,
             rewrites=tuple(
                 rewrite for report in report_tuple for rewrite in report.rewrites
             ),
@@ -13288,6 +13280,10 @@ class CodemodSimulationReport:
         )
 
     @property
+    def backend(self) -> CodemodBackend:
+        return self.parse_validation.backend
+
+    @property
     def base_revision_by_file_path(self) -> Mapping[str, CodemodSourceRevision]:
         return {revision.file_path: revision for revision in self.base_revisions}
 
@@ -13313,7 +13309,6 @@ class CodemodSimulationReport:
 
     def to_dict(self) -> JsonObject:
         return {
-            **self.parse_validation.to_dict(),
             "applied_rewrite_count": self.applied_rewrite_count,
             "changed_file_paths": self.changed_file_paths,
             "parse_validation": self.parse_validation.to_dict(),
@@ -13337,20 +13332,14 @@ class CodemodAfterSnapshotProjection:
 
 
 @dataclass(frozen=True)
-class SourceRewriteSimulationResult(ABC, metaclass=AutoRegisterMeta):
+class SourceRewriteSimulationResult:
     """Shared result envelope for executable source rewrite simulations."""
-
-    __registry__: ClassVar[dict[str, type["SourceRewriteSimulationResult"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __skip_if_no_key__ = True
-
-    registry_key: ClassVar[str]
     simulation: CodemodSimulationReport
     architecture_guard_report: ArchitectureGuardReport
 
     @property
     def guard_subject(self) -> str:
-        return f"Codemod {self.registry_key.replace('_', ' ')}"
+        return "Codemod simulation"
 
     @property
     def is_clean(self) -> bool:
@@ -13379,22 +13368,7 @@ class SourceRewriteSimulationResult(ABC, metaclass=AutoRegisterMeta):
             )
         return apply_codemod_simulation(self.simulation)
 
-    def simulation_payload(self) -> SourceRewriteSimulationPayload:
-        return SourceRewriteSimulationPayload(
-            simulation=self.simulation,
-            architecture_guard_report=self.architecture_guard_report,
-        )
-
-
-@dataclass(frozen=True)
-class SourceRewriteSimulationPayload(SourceRewriteSimulationResult):
-    """Nominal JSON payload for guarded source rewrite simulation results."""
-
-    @property
-    def guard_subject(self) -> str:
-        return "Codemod simulation payload"
-
-    def to_dict(self) -> JsonObject:
+    def simulation_payload(self) -> JsonObject:
         return {
             "simulation": self.simulation.to_dict(),
             "architecture_guard_report": self.architecture_guard_report.to_dict(),
@@ -13406,7 +13380,6 @@ class SourceRewriteSimulationPayload(SourceRewriteSimulationResult):
 class RefactorRecipeSimulation(SourceRewriteSimulationResult):
     """Simulation result for one refactor recipe."""
 
-    registry_key = "recipe"
     recipe: RefactorRecipe
 
     @property
@@ -13416,7 +13389,7 @@ class RefactorRecipeSimulation(SourceRewriteSimulationResult):
     def to_dict(self) -> JsonObject:
         return {
             "recipe": self.recipe.to_dict(),
-            **self.simulation_payload().to_dict(),
+            **self.simulation_payload(),
         }
 
 
@@ -13424,7 +13397,6 @@ class RefactorRecipeSimulation(SourceRewriteSimulationResult):
 class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
     """Simulation result for an entire codemod plan document."""
 
-    registry_key = "plan_document"
     document: CodemodPlanDocument
     after_snapshot_projection: CodemodAfterSnapshotProjection
 
@@ -13435,7 +13407,7 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
     def to_dict(self) -> JsonObject:
         return {
             "document": self.document.to_dict(),
-            **self.simulation_payload().to_dict(),
+            **self.simulation_payload(),
         }
 
 
@@ -13458,11 +13430,7 @@ class CodemodPlanSequenceStageReport(CodemodDocumentSimulationCarrier):
         return {
             "stage_index": self.stage_index,
             "document": self.document_simulation.document.to_dict(),
-            "simulation": self.document_simulation.simulation.to_dict(),
-            "architecture_guard_report": (
-                self.document_simulation.architecture_guard_report.to_dict()
-            ),
-            "is_clean": self.document_simulation.is_clean,
+            **self.document_simulation.simulation_payload(),
             "before_source_index": self.before_source_index.to_dict(),
             "after_source_index": self.after_source_index.to_dict(),
         }
@@ -13472,7 +13440,6 @@ class CodemodPlanSequenceStageReport(CodemodDocumentSimulationCarrier):
 class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
     """Simulation result for an ordered codemod plan sequence."""
 
-    registry_key = "plan_sequence"
     sequence: CodemodPlanSequence
     stage_reports: tuple[CodemodPlanSequenceStageReport, ...] = ()
     final_snapshot: CodemodSourceSnapshot | None = None
@@ -13513,7 +13480,7 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
             "stage_count": len(self.stage_reports),
             "stages": tuple(stage.to_dict() for stage in self.stage_reports),
             "final_source_index": final_snapshot.source_index.to_dict(),
-            **self.simulation_payload().to_dict(),
+            **self.simulation_payload(),
         }
 
 
@@ -14229,9 +14196,7 @@ class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
     def to_dict(self) -> JsonObject:
         return {
             **self.plan.to_dict(),
-            "simulation": self.simulation.to_dict(),
-            "architecture_guard_report": self.architecture_guard_report.to_dict(),
-            "is_clean": self.is_clean,
+            **self.document_simulation.simulation_payload(),
         }
 
 
@@ -25251,7 +25216,6 @@ class SourceRewriteSimulationAuthority:
             for file_path in sorted({item.target.file_path for item in resolved})
         }
         return CodemodSimulationReport(
-            backend=self.backend,
             rewrites=sorted_tuple(
                 simulated,
                 key=lambda item: (

@@ -61,7 +61,6 @@ from .codemod import (
     SourceLocationEvidencePropertyCodemodBuilder,
     SourceRewritePlanItem,
     SourceRewriteSimulationAuthority,
-    SourceRewriteSimulationPayload,
     SourceRewriteTarget,
     ZippedSourceLocationEvidencePropertyCodemodBuilder,
     apply_codemod_simulation,

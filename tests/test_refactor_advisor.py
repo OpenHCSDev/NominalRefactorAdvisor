@@ -170,7 +170,6 @@ from nominal_refactor_advisor.codemod import (
     SourceEditOrigin,
     TupleDictReturnNominalizationConcept,
     SourceRewriteTarget,
-    SourceRewriteSimulationPayload,
     SourceRewriteContributor,
     SourceTextSpanReplacement,
     SourceTextGeometry,
@@ -643,7 +642,7 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     assert simulation.changed_file_paths == (module_path.as_posix(),)
     assert simulation.validated_file_paths == (module_path.as_posix(),)
     assert simulation.parse_valid is True
-    assert simulation.to_dict()["parse_valid"] is True
+    assert simulation.to_dict()["parse_validation"]["parse_valid"] is True
     assert simulation.parse_validation.to_dict()["backend"] == "ast_span"
     assert "return value + 1" in simulation.rewritten_sources[module_path.as_posix()]
 
@@ -971,10 +970,9 @@ def test_codemod_source_snapshot_executes_recipe_document(
 
     assert simulation.is_clean is True
     simulation_payload = simulation.simulation_payload()
-    assert isinstance(simulation_payload, SourceRewriteSimulationPayload)
-    assert simulation_payload.simulation is simulation.simulation
-    assert simulation_payload.architecture_guard_report is (
-        simulation.architecture_guard_report
+    assert simulation_payload["simulation"] == simulation.simulation.to_dict()
+    assert simulation_payload["architecture_guard_report"] == (
+        simulation.architecture_guard_report.to_dict()
     )
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+        return AlphaAuthority.run(value)" in diff
@@ -11587,7 +11585,7 @@ def test_module_cli_simulates_codemod_plan_from_stdin(
     assert result.returncode == 0, result.stderr
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 1
-    assert payload["parse_valid"] is True
+    assert payload["parse_validation"]["parse_valid"] is True
     assert "+        return value + 1" in payload["unified_diff"]
     assert "return value + 1" not in module_path.read_text()
 
@@ -12195,7 +12193,7 @@ def test_module_cli_simulates_stdin_plan_with_relative_file_paths(
     assert result.returncode == 0, result.stderr
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 1
-    assert payload["parse_valid"] is True
+    assert payload["parse_validation"]["parse_valid"] is True
     assert f"+++ b{module_path.as_posix()}" in payload["unified_diff"]
     assert "+from pkg.modern import modern" in payload["unified_diff"]
     assert "+        return value + 1" in payload["unified_diff"]
@@ -12256,7 +12254,7 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
     assert result.returncode == 0, result.stderr
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 2
-    assert payload["parse_valid"] is True
+    assert payload["parse_validation"]["parse_valid"] is True
     assert f"+++ b{source_path.as_posix()}" in payload["unified_diff"]
     assert f"+++ b{destination_path.as_posix()}" in payload["unified_diff"]
     assert "+from dataclasses import dataclass" in payload["unified_diff"]
@@ -12411,7 +12409,7 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
     assert simulation.returncode == 0, simulation.stderr
     assert simulation_payload["applied"] is False
     assert simulation_payload["applied_rewrite_count"] == 2
-    assert simulation_payload["parse_valid"] is True
+    assert simulation_payload["parse_validation"]["parse_valid"] is True
     assert f"+++ b{destination_path.as_posix()}" in simulation_payload["unified_diff"]
     assert "+class Helper(LocalBase):" in simulation_payload["unified_diff"]
     assert destination_path.exists() is False
@@ -12679,7 +12677,7 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert result.returncode == 0, result.stderr
     assert payload["applied"] is False
     assert payload["is_clean"] is True
-    assert payload["simulation"]["parse_valid"] is True
+    assert payload["simulation"]["parse_validation"]["parse_valid"] is True
     assert payload["expected_removed_finding_count"] == 1
     assert payload["synthesis_report"]["planned_count"] == 1
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
@@ -12771,7 +12769,7 @@ def test_module_cli_synthesizes_and_applies_finding_backed_plan(
     assert result.returncode == 0, result.stderr
     assert payload["applied"] is True
     assert payload["is_clean"] is True
-    assert payload["simulation"]["parse_valid"] is True
+    assert payload["simulation"]["parse_validation"]["parse_valid"] is True
     rewritten = module_path.read_text()
     assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in rewritten
     assert "REGISTRY[" not in rewritten
@@ -13041,7 +13039,7 @@ def test_module_cli_scaffolds_editable_replacement_plan(
 
     assert simulate_result.returncode == 0, simulate_result.stderr
     assert simulate_payload["applied"] is False
-    assert simulate_payload["parse_valid"] is True
+    assert simulate_payload["parse_validation"]["parse_valid"] is True
     assert "+        return prepared + 1" in simulate_payload["unified_diff"]
     assert "return prepared + 1" not in module_path.read_text()
 
@@ -13770,8 +13768,8 @@ def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
     assert apply_result.returncode == 0, apply_result.stderr
     assert payload["applied"] is True
     assert payload["applied_rewrite_count"] == 1
-    assert payload["parse_valid"] is True
-    assert payload["validated_file_paths"] == [module_path.as_posix()]
+    assert payload["parse_validation"]["parse_valid"] is True
+    assert payload["parse_validation"]["validated_file_paths"] == [module_path.as_posix()]
     assert payload["parse_validation"]["parse_valid"] is True
     assert 'detector_id = "local_rule"' not in module_path.read_text()
     assert "finding_spec = HighConfidenceFindingSpec(" in module_path.read_text()
@@ -13829,7 +13827,7 @@ def test_module_cli_codemod_simulate_reports_diff_without_applying(
     assert result.returncode == 0, result.stderr
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 1
-    assert payload["parse_valid"] is True
+    assert payload["parse_validation"]["parse_valid"] is True
     assert "+        return value + 1" in payload["unified_diff"]
     assert "return value + 1" not in module_path.read_text()
 
@@ -13874,7 +13872,7 @@ def test_module_cli_codemod_fixpoint_applies_and_rescans(
     first_iteration, terminal_iteration = payload["iterations"]
     assert first_iteration["applied"] is True
     assert first_iteration["expected_removed_finding_count"] == 1
-    assert first_iteration["simulation"]["parse_valid"] is True
+    assert first_iteration["simulation"]["parse_validation"]["parse_valid"] is True
     assert (
         first_iteration["finding_delta"]["confirmed_expected_removed_finding_count"]
         == 1
@@ -13954,7 +13952,7 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
         "BetaHandler='beta'",
     ]
     assert iteration["simulation"]["applied_rewrite_count"] == 1
-    assert iteration["simulation"]["parse_valid"] is True
+    assert iteration["simulation"]["parse_validation"]["parse_valid"] is True
     assert iteration["finding_delta"]["confirmed_expected_removed_finding_count"] == 1
     assert iteration["finding_delta"]["surviving_expected_removed_finding_count"] == 0
     assert iteration["finding_delta"]["fulfilled_expected_removals"] is True
@@ -14058,7 +14056,6 @@ def test_codemod_fixpoint_projected_scan_reuses_unchanged_modules(
     modules = parse_python_modules(tmp_path)
     scan = CodemodFixpointScan(modules=modules, findings=[])
     simulation = CodemodSimulationReport(
-        backend=CodemodBackend.AST_SPAN,
         rewrites=(),
         rewritten_sources={
             beta_path.as_posix(): "\nclass Beta:\n    pass\n\nclass BetaTwo:\n    pass\n"
@@ -14118,7 +14115,6 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
     modules = parse_python_modules(tmp_path)
     scan = CodemodFixpointScan(modules=modules, findings=[])
     simulation = CodemodSimulationReport(
-        backend=CodemodBackend.AST_SPAN,
         rewrites=(),
         rewritten_sources={created_path.as_posix(): created_source},
         parse_validation=CodemodParseValidationReport(
@@ -14947,7 +14943,7 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
 
     assert result.returncode == 0, result.stderr
     assert payload["class_count"] == 1
-    assert payload["simulation_result"]["simulation"]["parse_valid"]
+    assert payload["simulation_result"]["simulation"]["parse_validation"]["parse_valid"]
     assert "finding_class_delta" in projected
     assert projected["finding_delta"]["fulfilled_expected_removals"]
     assert projected["finding_class_delta"]["eliminated_class_count"] >= 1
@@ -15111,7 +15107,6 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
     from nominal_refactor_advisor import ReplaceTargetOperation
-    from nominal_refactor_advisor import SourceRewriteSimulationPayload
 
     delta = CodemodFindingDelta(
         finding_ids=CodemodFindingIdTransition(
@@ -15193,7 +15188,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         ReplaceFieldsWithCarrierOperation.__name__
         == "ReplaceFieldsWithCarrierOperation"
     )
-    assert SourceRewriteSimulationPayload.__name__ == "SourceRewriteSimulationPayload"
+    assert not hasattr(nra, "SourceRewriteSimulationPayload")
     assert delta.removed_finding_ids == ("a",)
     assert delta.added_finding_ids == ("c",)
     assert delta.fulfilled_expected_removals(("a",)) is True
@@ -15478,8 +15473,8 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
     assert simulation.to_dict()["expected_removed_finding_count"] == 1
-    assert simulation.to_dict()["simulation"]["parse_valid"] is True
-    assert simulation.to_dict()["simulation"]["validated_file_paths"] == (
+    assert simulation.to_dict()["simulation"]["parse_validation"]["parse_valid"] is True
+    assert simulation.to_dict()["simulation"]["parse_validation"]["validated_file_paths"] == (
         module_path.as_posix(),
     )
     simulation.document_simulation.apply()
