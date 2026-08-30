@@ -113,29 +113,6 @@ class RefactorExecutionPlanReport(SemanticRecord):
     parallel_group_count: int
 
 
-@dataclass(frozen=True)
-class RefactorExecutionPlanLoopProjection(RefactorExecutionPlanReport):
-    """Compact execution-plan projection for tight-loop JSON payloads."""
-
-    edge_payload_mode: str
-    edge_count: int
-
-    @classmethod
-    def from_report(
-        cls,
-        report: RefactorExecutionPlanReport,
-    ) -> "RefactorExecutionPlanLoopProjection":
-        return cls(
-            classes=report.classes,
-            edges=(),
-            total_finding_count=report.total_finding_count,
-            connected_component_count=report.connected_component_count,
-            parallel_group_count=report.parallel_group_count,
-            edge_payload_mode="count_only",
-            edge_count=len(report.edges),
-        )
-
-
 _MetricValueT = TypeVar("_MetricValueT")
 
 

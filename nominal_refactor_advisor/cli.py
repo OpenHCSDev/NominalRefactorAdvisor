@@ -118,7 +118,6 @@ from .models import RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PatternId
 from .planner import (
-    RefactorExecutionPlanLoopProjection,
     RefactorExecutionPlanReport,
     build_refactor_execution_plan,
     build_refactor_plans,
@@ -641,44 +640,42 @@ class JsonFindingPayloadProjection:
         return []
 
 
-def _full_execution_plan_projection(
-    report: RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection,
-) -> RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection:
-    return report
+def _full_execution_plan_payload(report: RefactorExecutionPlanReport) -> JsonObject:
+    return report.to_dict()
 
 
-def _count_only_execution_plan_projection(
-    report: RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection,
-) -> RefactorExecutionPlanLoopProjection:
-    if isinstance(report, RefactorExecutionPlanLoopProjection):
-        return report
-    return RefactorExecutionPlanLoopProjection.from_report(report)
+def _count_only_execution_plan_payload(
+    report: RefactorExecutionPlanReport,
+) -> JsonObject:
+    return {
+        **report.to_dict(),
+        "edges": (),
+        "edge_payload_mode": "count_only",
+        "edge_count": len(report.edges),
+    }
 
 
 class JsonExecutionPlanPayloadMode(Enum):
     """Declaration-owned execution-plan projection for one JSON profile."""
 
-    FULL = ("full", _full_execution_plan_projection)
-    COUNT_ONLY = ("count_only", _count_only_execution_plan_projection)
+    FULL = ("full", _full_execution_plan_payload)
+    COUNT_ONLY = ("count_only", _count_only_execution_plan_payload)
 
     def __new__(
         cls,
         value: str,
-        projector: Callable[
-            [RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection],
-            RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection,
-        ],
+        payload_builder: Callable[[RefactorExecutionPlanReport], JsonObject],
     ) -> "JsonExecutionPlanPayloadMode":
         member = object.__new__(cls)
         member._value_ = value
-        member._projector = projector
+        member._payload_builder = payload_builder
         return member
 
-    def project(
+    def payload(
         self,
-        report: RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection,
-    ) -> RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection:
-        return self._projector(report)
+        report: RefactorExecutionPlanReport,
+    ) -> JsonObject:
+        return self._payload_builder(report)
 
 
 @dataclass(frozen=True)
@@ -1138,9 +1135,7 @@ class JsonPayloadBuilder:
     timing: ScanTiming | None = None
     impact_ranking: RefactorImpactRankingReport | None = None
     codemod_candidates: CodemodCandidateSelection = None
-    execution_plan: (
-        RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection | None
-    ) = None
+    execution_plan: RefactorExecutionPlanReport | None = None
     scan_guard_report: ArchitectureGuardReport | None = None
     source_snapshot: CodemodSourceSnapshot | None = None
     semantic_descent_source: JsonSemanticDescentPayloadSource | None = None
@@ -1234,9 +1229,9 @@ class JsonPayloadBuilder:
         if self.change_budget is not None:
             payload["change_budget"] = self.change_budget.to_dict()
         if self.execution_plan is not None:
-            payload["execution_plan"] = sections.execution_plan_payload_mode.project(
+            payload["execution_plan"] = sections.execution_plan_payload_mode.payload(
                 self.execution_plan
-            ).to_dict()
+            )
         codemod_candidates = self.codemod_candidates
         if self.impact_ranking is not None:
             payload["impact_ranking"] = self.impact_ranking.to_dict()
@@ -3688,17 +3683,11 @@ def _main_without_deadline() -> int:
             plans = build_refactor_plans(findings, root)
         if args.include_execution_plan or args.plans_only:
             execution_plan_cache = AnalysisFindingCache(analysis_cache_dir)
-            execution_plan_payload_mode = (
-                json_payload_profile.sections.execution_plan_payload_mode
-                if args.json
-                else JsonExecutionPlanPayloadMode.FULL
-            )
             execution_plan_cache_identity = (
                 AnalysisExecutionPlanCacheIdentity.from_analysis_identity(
                     analysis_cache_identity,
                     root,
                     path_scope.report_roots,
-                    projection_kind=execution_plan_payload_mode.value,
                 )
                 if analysis_cache_identity is not None
                 else None
@@ -3714,10 +3703,7 @@ def _main_without_deadline() -> int:
             ):
                 execution_plan = execution_plan_lookup.plan
             else:
-                execution_plan_report = build_refactor_execution_plan(findings, root)
-                execution_plan = execution_plan_payload_mode.project(
-                    execution_plan_report
-                )
+                execution_plan = build_refactor_execution_plan(findings, root)
                 if execution_plan_cache_identity is not None:
                     execution_plan_cache.store_execution_plan(
                         execution_plan_cache_identity,

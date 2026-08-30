@@ -35,7 +35,7 @@ from .cache_checkout import (
 from .detectors import DetectorConfig, IssueDetector
 from .finding_counts import FindingSummary
 from .models import RefactorFinding, SourceLocation
-from .planner import RefactorExecutionPlanLoopProjection, RefactorExecutionPlanReport
+from .planner import RefactorExecutionPlanReport
 
 DetectorConfigSignatureValue: TypeAlias = int | tuple[int, ...]
 DetectorConfigSignature: TypeAlias = tuple[
@@ -165,13 +165,12 @@ class AnalysisFindingSummaryLookup:
 
 @dataclass(frozen=True)
 class AnalysisExecutionPlanCacheIdentity:
-    """Invalidation identity for an execution-plan projection."""
+    """Invalidation identity for one authoritative execution plan."""
 
     analysis_cache_token: str
     root: str
     report_filter_roots: tuple[str, ...]
-    projection_kind: str
-    projection_schema_version: int = 4
+    projection_schema_version: int = 5
     schema: AnalysisCacheSchema = analysis_cache_schema
 
     @classmethod
@@ -180,8 +179,6 @@ class AnalysisExecutionPlanCacheIdentity:
         identity: "AnalysisCacheIdentity",
         root: Path,
         report_roots: tuple[Path, ...] = (),
-        *,
-        projection_kind: str = "full",
     ) -> "AnalysisExecutionPlanCacheIdentity":
         return cls(
             analysis_cache_token=identity.cache_token,
@@ -189,7 +186,6 @@ class AnalysisExecutionPlanCacheIdentity:
             report_filter_roots=tuple(
                 str(report_root.resolve()) for report_root in report_roots
             ),
-            projection_kind=projection_kind,
         )
 
     @property
@@ -200,12 +196,10 @@ class AnalysisExecutionPlanCacheIdentity:
 
 @dataclass(frozen=True)
 class AnalysisExecutionPlanLookup:
-    """Result of consulting the execution-plan projection cache."""
+    """Result of consulting the execution-plan cache."""
 
     status: AnalysisCacheStatus
-    plan: RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection | None = (
-        None
-    )
+    plan: RefactorExecutionPlanReport | None = None
 
 
 @dataclass(frozen=True)
@@ -990,7 +984,6 @@ AnalysisCachePayloadValue: TypeAlias = (
     | AnalysisExecutionPlanCacheIdentity
     | AnalysisCacheFamilyIdentity
     | FindingSummary
-    | RefactorExecutionPlanLoopProjection
     | RefactorExecutionPlanReport
     | SourceFileSignatureCachePayload
     | list[RefactorFinding]
@@ -1947,10 +1940,7 @@ class AnalysisFindingCache:
         if payload.get("identity") != identity:
             return AnalysisExecutionPlanLookup(AnalysisCacheStatus.MISS)
         execution_plan = payload.get("execution_plan")
-        if not isinstance(
-            execution_plan,
-            (RefactorExecutionPlanReport, RefactorExecutionPlanLoopProjection),
-        ):
+        if not isinstance(execution_plan, RefactorExecutionPlanReport):
             return AnalysisExecutionPlanLookup(AnalysisCacheStatus.MISS)
         return AnalysisExecutionPlanLookup(
             AnalysisCacheStatus.HIT,
@@ -1960,9 +1950,7 @@ class AnalysisFindingCache:
     def store_execution_plan(
         self,
         identity: AnalysisExecutionPlanCacheIdentity,
-        execution_plan: (
-            RefactorExecutionPlanReport | RefactorExecutionPlanLoopProjection
-        ),
+        execution_plan: RefactorExecutionPlanReport,
     ) -> None:
         storage = self.storage()
         if storage is None:
