@@ -432,14 +432,6 @@ class DetectorConfig:
         3,
         "Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",
     )
-    min_boundary_fanout_sites: int = detector_config_option(
-        4,
-        "Minimum declaration/forward/projection sites before surfacing distributed boundary fanout.",
-    )
-    min_local_wrapper_fanout_sites: int = detector_config_option(
-        4,
-        "Minimum live carrier-boundary sites before surfacing a local-wrapper containment failure.",
-    )
     excluded_pattern_ids: tuple = ()
 
     @classmethod

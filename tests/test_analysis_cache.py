@@ -2311,108 +2311,6 @@ def test_native_sparse_systemic_projection_matches_ast_family(
     assert native == collect_family_items(parsed_module, family)
 
 
-def test_native_distributed_boundary_projection_matches_ast_family(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    module_path = package_root / "boundary.py"
-    module_path.write_text(
-        "class Base: pass\n"
-        "class Request(Base):\n"
-        "    axis_offsets: tuple[int, ...]\n"
-        "    def __init__(self, value):\n"
-        "        self.shared_boundary_support = value\n"
-        "def present(request, axis_index):\n"
-        "    projected_offsets = request.axis_offsets\n"
-        "    selected = request.axis_offsets[axis_index]\n"
-        "    return Request(\n"
-        "        axis_offsets=projected_offsets,\n"
-        "        shared_boundary_support=request.shared_boundary_support,\n"
-        "    )\n",
-        encoding="utf-8",
-    )
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    source_module = SourceModule(
-        path=parsed_module.path,
-        module_name=parsed_module.module_name,
-        source=parsed_module.source,
-    )
-    family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
-
-    native = family.collect_source(
-        source_module,
-        NativePythonSyntaxIndex.from_source(source_module.source),
-    )
-
-    assert native == collect_family_items(parsed_module, family)
-
-
-def test_native_report_demand_boundary_facts_match_ast_family(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    module_path = package_root / "demanded.py"
-    module_path.write_text(
-        "class Base: pass\n"
-        "class ScorePayload(Base):\n"
-        "    selected_values: tuple[int, ...]\n"
-        "    projected_axis_offsets: tuple[int, ...]\n"
-        "class RuntimePayload:\n"
-        "    projected_axis_offsets: tuple[int, ...]\n"
-        "class ScoreDebugAuthority:\n"
-        "    @staticmethod\n"
-        "    def write_counts():\n"
-        "        score_payload = 1\n"
-        "        consume({\n"
-        "            'action_count': 1,\n"
-        "            'evaluated_pair_count': 2,\n"
-        "            'identity_reuse_count': score_payload,\n"
-        "        })\n"
-        "def present(payload, index):\n"
-        "    selected = payload.selected_values\n"
-        "    projected = payload.projected_axis_offsets[index]\n"
-        "    return ScorePayload(\n"
-        "        selected_values=payload.selected_values,\n"
-        "        projected_axis_offsets=projected,\n"
-        "    )\n",
-        encoding="utf-8",
-    )
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    source_module = SourceModule(
-        path=parsed_module.path,
-        module_name=parsed_module.module_name,
-        source=parsed_module.source,
-    )
-    syntax_index = NativePythonSyntaxIndex.from_source(source_module.source)
-
-    full_boundary = collect_family_items(
-        parsed_module,
-        surface_detectors.CompactDistributedBoundaryModuleProjectionFamily,
-    )[0]
-    native_boundary_items = surface_detectors._native_distributed_boundary_projection(
-        source_module,
-        syntax_index,
-        field_names=frozenset({"projected_axis_offsets"}),
-        class_base_names_override=full_boundary.class_base_names,
-    )
-    assert native_boundary_items is not None
-    native_boundary = native_boundary_items[0]
-    assert native_boundary.class_base_names == full_boundary.class_base_names
-    assert native_boundary.declarations == tuple(
-        item
-        for item in full_boundary.declarations
-        if item.field_name == "projected_axis_offsets"
-    )
-    assert native_boundary.possible_uses == tuple(
-        item
-        for item in full_boundary.possible_uses
-        if item.field_name == "projected_axis_offsets"
-    )
-
-
-
 def test_native_grouped_report_demands_match_ast_views(tmp_path: Path) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -2543,7 +2441,6 @@ def test_source_native_projection_shard_skips_python_ast_construction(
                 RegistrationShapeFamily,
                 ExportDictShapeFamily,
                 runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
-                surface_detectors.CompactDistributedBoundaryModuleProjectionFamily,
                 environment_detectors._EnvironmentBooleanModuleProjectionFamily,
                 runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily,
             ),
@@ -2557,7 +2454,6 @@ def test_source_native_projection_shard_skips_python_ast_construction(
         (RegistrationShapeFamily, 2),
         (ExportDictShapeFamily, 1),
         (runtime_detectors.RepeatedBuilderCallShapeProjectionFamily, 1),
-        (surface_detectors.CompactDistributedBoundaryModuleProjectionFamily, 1),
         (environment_detectors._EnvironmentBooleanModuleProjectionFamily, 1),
         (runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily, 1),
     ]
@@ -2777,95 +2673,6 @@ def test_source_local_detector_does_not_switch_mixed_families_to_native(
         systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
     ]
     assert result.local_findings == ()
-
-
-def test_source_demand_projection_shard_is_filtered_and_not_cached_as_full(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    module_path = package_root / "demanded.py"
-    source = (
-        "class Request:\n"
-        "    selected_values: tuple[int, ...]\n"
-        "    projected_axis_offsets: tuple[int, ...]\n"
-        "    ignored_values: tuple[int, ...]\n"
-        "def present(request):\n"
-        "    return consume(\n"
-        "        selected_values=request.selected_values,\n"
-        "        projected_axis_offsets=request.projected_axis_offsets,\n"
-        "        ignored_values=request.ignored_values,\n"
-        "    )\n"
-    )
-    module_path.write_text(source, encoding="utf-8")
-    family_cache_dir = tmp_path / "family-cache"
-    projection_source = analysis_module.CompactProjectionCacheSource(
-        path=module_path,
-        module_name="demanded",
-        source_signature=ast_tools_module.python_source_cache_signature(source),
-        family_cache_dir=family_cache_dir,
-        scan_root=package_root,
-        cache_dir=None,
-        use_parse_cache=False,
-        source_policy=ast_tools_module.PythonSourcePathPolicy(),
-    )
-    boundary_family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
-    boundary_demand = surface_detectors.CompactDistributedBoundaryProjectionDemand(
-        frozenset({"projected_axis_offsets"})
-    )
-    demand_signatures = (
-        (
-            boundary_family,
-            ast_tools_module.collected_family_demand_cache_signature(boundary_demand),
-        ),
-    )
-
-    def unexpected_ast_parse(self, paths):
-        del self, paths
-        raise AssertionError(
-            "source demand collectors should bypass Python AST parsing"
-        )
-
-    monkeypatch.setattr(
-        ast_tools_module.PythonModuleRootParser,
-        "parsed_source_paths",
-        unexpected_ast_parse,
-    )
-
-    def unexpected_demand_signature(_demand: object) -> str:
-        raise AssertionError("worker must reuse the staged demand signature")
-
-    monkeypatch.setattr(
-        ast_tools_module,
-        "collected_family_demand_cache_signature",
-        unexpected_demand_signature,
-    )
-    result = analysis_module.build_compact_projection_shard(
-        analysis_module.CompactProjectionBuildRequest(
-            source=projection_source,
-            missing_families=(boundary_family,),
-            config=DetectorConfig(),
-            family_demands=(
-                (boundary_family, boundary_demand),
-            ),
-            family_demand_signatures=demand_signatures,
-        )
-    )
-
-    projections = {
-        batch.family: batch.items for batch in result.projection_batches
-    }
-    boundary_projection = projections[boundary_family][0]
-    assert {item.field_name for item in boundary_projection.declarations} == {
-        "projected_axis_offsets"
-    }
-    assert {item.field_name for item in boundary_projection.possible_uses} == {
-        "projected_axis_offsets"
-    }
-    assert family_cache_dir.exists()
-    assert list(family_cache_dir.glob("*.pickle"))
-    assert not projection_source.entry_exists(boundary_family)
 
 
 def test_report_presence_demand_skips_context_only_single_family_facts(
@@ -3351,92 +3158,6 @@ def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
         assert len(demanded_items) < len(full_items)
 
 
-def test_cold_focused_compact_scan_derives_context_demand_from_report_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    target_path = package_root / "target.py"
-    context_path = package_root / "context.py"
-    target_path.write_text(
-        "from dataclasses import dataclass\n"
-        "@dataclass(frozen=True)\n"
-        "class TargetRequest:\n"
-        "    axis_id: str\n"
-        "    axis_scope: object\n"
-        "def forward_target(request):\n"
-        "    return TargetRequest(\n"
-        "        axis_id=request.axis_id,\n"
-        "        axis_scope=request.axis_scope,\n"
-        "    )\n"
-        "def project_target(request):\n"
-        "    axis_id = request.axis_id\n"
-        "    axis_scope = request.axis_scope\n"
-        "    return axis_id, axis_scope\n",
-        encoding="utf-8",
-    )
-    context_path.write_text(
-        "from dataclasses import dataclass\n"
-        "from target import TargetRequest\n"
-        "@dataclass(frozen=True)\n"
-        "class ContextRequest:\n"
-        "    axis_id: str\n"
-        "    axis_scope: object\n"
-        "def forward_context(request):\n"
-        "    return TargetRequest(\n"
-        "        axis_id=request.axis_id,\n"
-        "        axis_scope=request.axis_scope,\n"
-        "    )\n",
-        encoding="utf-8",
-    )
-    report_scope = AnalysisPathScope(
-        analysis_roots=(package_root,),
-        report_roots=(target_path,),
-    )
-    detector_types = (surface_detectors.BoundaryLocalWrapperCollapseDetector,)
-    eager = analyze_compact_roots_with_cache(
-        (package_root,),
-        cache_dir=tmp_path / "eager-parse-cache",
-        analysis_cache_dir=tmp_path / "eager-analysis-cache",
-        use_parse_cache=True,
-        parse_workers=1,
-        report_scope=report_scope,
-        detector_types=detector_types,
-    )
-    family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
-    original_collector = family.source_demand_collector
-    demanded_paths = []
-
-    def observed_demand_collector(source_module, syntax_index, demand):
-        demanded_paths.append(source_module.path.resolve())
-        assert original_collector is not None
-        return original_collector(source_module, syntax_index, demand)
-
-    monkeypatch.setattr(
-        family,
-        "source_demand_collector",
-        staticmethod(observed_demand_collector),
-    )
-    demanded = analyze_compact_roots_with_cache(
-        (package_root,),
-        cache_dir=None,
-        analysis_cache_dir=None,
-        use_parse_cache=False,
-        parse_workers=1,
-        report_scope=report_scope,
-        detector_types=detector_types,
-    )
-
-    assert [finding.to_dict() for finding in demanded.findings] == [
-        finding.to_dict() for finding in eager.findings
-    ]
-    assert {finding.detector_id for finding in demanded.findings} == {
-        "boundary_local_wrapper_collapse"
-    }
-    assert demanded_paths == [context_path.resolve()]
-
-
 def test_cold_focused_semantic_scan_omits_only_context_presentations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3793,9 +3514,10 @@ def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
     source = "VALUE = 1\n"
     source_path.write_text(source, encoding="utf-8")
     family_cache_dir = tmp_path / "collected-family"
-    family = surface_detectors.CompactDistributedBoundaryModuleProjectionFamily
-    demand = surface_detectors.CompactDistributedBoundaryProjectionDemand(
-        frozenset({"projected_axis_offsets"})
+    family = runtime_detectors.RepeatedBuilderCallShapeProjectionFamily
+    demand = runtime_detectors.RepeatedBuilderCallProjectionDemand(
+        exact_mapping_keys=frozenset(),
+        owner_family_keys=frozenset(),
     )
     demand_signature = ast_tools_module.collected_family_demand_cache_signature(demand)
     source_signature = ast_tools_module.python_source_cache_signature(source)
@@ -5509,106 +5231,6 @@ def test_abc_optimizer_detectors_share_one_compact_context(
     assert calls == 1
 
 
-def test_compact_boundary_wrapper_graph_preserves_semantics_without_ast_shadow(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "models_a.py").write_text(
-        "class RuntimeAdapter:\n"
-        "    axis_id: str\n"
-        "    axis_scope: object\n\n"
-        "class ArtifactQuery:\n"
-        "    axis_scope: object\n",
-        encoding="utf-8",
-    )
-    (package_root / "models_b.py").write_text(
-        "class PlaneResolution:\n"
-        "    axis_id: str\n\n"
-        "class CacheKey:\n"
-        "    axis_scope: object\n",
-        encoding="utf-8",
-    )
-    (package_root / "uses.py").write_text(
-        "def resolve(adapter):\n"
-        "    return PlaneResolution(axis_id=adapter.axis_id)\n\n"
-        "def rebuild(adapter):\n"
-        "    return RuntimeAdapter(axis_id=adapter.axis_id)\n\n"
-        "def project(adapter):\n"
-        "    axis_key = adapter.axis_id\n"
-        "    return axis_key\n\n"
-        "def artifact(adapter):\n"
-        "    return ArtifactQuery(axis_scope=adapter.axis_scope)\n\n"
-        "def cache(adapter):\n"
-        "    return CacheKey(axis_scope=adapter.axis_scope)\n\n"
-        "def project_scope(query):\n"
-        "    runtime_scope = query.axis_scope\n"
-        "    return runtime_scope\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    wrapper_detector = surface_detectors.BoundaryLocalWrapperCollapseDetector()
-    original_walk = ast.walk
-    walked_roots: list[ast.AST] = []
-
-    def tracked_walk(root: ast.AST):
-        walked_roots.append(root)
-        return original_walk(root)
-
-    monkeypatch.setattr(ast, "walk", tracked_walk)
-    projections = wrapper_detector.compact_module_projections(modules)
-    assert not any(
-        isinstance(root, (ast.Assign, ast.AnnAssign, ast.Subscript))
-        for root in walked_roots
-    )
-    monkeypatch.setattr(ast, "walk", original_walk)
-    compact_fanout = surface_detectors._compact_distributed_boundary_fanout_candidates(
-        projections,
-        config,
-    )
-    compact_context = surface_detectors.CompactDistributedBoundaryContext.from_projections(
-        projections,
-        config,
-    )
-    compact_wrappers = surface_detectors._boundary_local_wrapper_pairs(
-        compact_fanout,
-        config,
-    )
-
-    assert compact_context.fanout_candidates == compact_fanout
-    assert {candidate.field_name for candidate in compact_fanout} == {
-        "axis_id",
-        "axis_scope",
-    }
-    assert compact_wrappers
-    assert wrapper_detector._candidate_items(list(modules), config) == compact_wrappers
-    for removed_name in (
-        "_distributed_boundary_fanout_candidates",
-        "_distributed_boundary_fanout_candidates_cached",
-        "_boundary_local_wrapper_collapse_candidates",
-        "_compact_boundary_local_wrapper_collapse_candidates",
-    ):
-        assert not hasattr(surface_detectors, removed_name)
-    assert "candidate_collector" not in type(wrapper_detector).__dict__
-    assert wrapper_detector._findings_from_compact_projections(
-        projections,
-        config,
-    ) == wrapper_detector._findings_for_candidates(compact_wrappers, config)
-
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (package_root,),
-        (surface_detectors.BoundaryLocalWrapperCollapseDetector,),
-        use_parse_cache=False,
-    )
-    assert accumulator.projection_count == len(modules)
-    findings_by_detector = accumulator.findings_by_detector(config)
-    assert findings_by_detector[
-        surface_detectors.BoundaryLocalWrapperCollapseDetector
-    ] == wrapper_detector._findings_for_candidates(compact_wrappers, config)
-
-
 def test_compact_algebraic_variant_candidates_own_global_analysis(
     tmp_path: Path,
 ) -> None:
@@ -6006,9 +5628,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert structural_detectors.SemanticOverlapAbcResidueAxisCatalogDetector in (
-        partition.compact_global_detector_types
-    )
-    assert surface_detectors.BoundaryLocalWrapperCollapseDetector in (
         partition.compact_global_detector_types
     )
     assert runtime_detectors.AlgebraicVariantMethodFamilyDetector in (
