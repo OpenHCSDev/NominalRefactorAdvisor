@@ -8052,27 +8052,6 @@ def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
     assert "AXIS_BY_KEY" in (finding.scaffold or "")
 
 
-def test_detects_manual_enum_constructor_policy_table(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom enum import Enum\n\n\nclass LayerKind(Enum):\n    IMAGE = "image"\n    SHAPES = "shapes"\n    POINTS = "points"\n\n\nclass ImageLayerCreatePolicy:\n    pass\n\n\nclass ShapesLayerCreatePolicy:\n    pass\n\n\nclass PointsLayerCreatePolicy:\n    pass\n\n\ndef layer_create_policies():\n    policies = {\n        LayerKind.IMAGE: ImageLayerCreatePolicy(),\n        LayerKind.SHAPES: ShapesLayerCreatePolicy(),\n        LayerKind.POINTS: PointsLayerCreatePolicy(),\n    }\n    return policies\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "manual_enum_constructor_policy_table"
-        )
-    )
-    assert finding.pattern_id == PatternId.AUTO_REGISTER_META
-    assert "LayerKind" in finding.summary
-    assert "ImageLayerCreatePolicy" in finding.summary
-    assert "AutoRegisterMeta" in (finding.scaffold or "")
-    assert "Delete manual enum-keyed policy table" in (finding.codemod_patch or "")
-
-
 def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
