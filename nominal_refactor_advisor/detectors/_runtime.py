@@ -7,7 +7,6 @@ selection, wrapper surfaces, and dynamic dispatch residue.
 from __future__ import annotations
 
 import ast
-from abc import ABC, abstractmethod
 import copy
 import hashlib
 import os
@@ -56,11 +55,10 @@ from ..factorization import (
     FactorizationEngine,
     FactorizationLattice,
     FactorizationPlan,
-    ResidueHookNamesCarrier,
 )
 from ..models import HierarchyCandidateMetrics, RefactorFinding, SourceLocation
 from ..patterns import PatternId
-from ..semantic_algebra import DispatchAxisExpression, ObjectFamilyShape
+from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..semantic_identity import SemanticRoleIdentityToken
 from ..source_index import build_source_index_artifacts
@@ -540,174 +538,6 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
                 )
             )
         return findings
-
-
-@dataclass(frozen=True)
-class StringKeyedFormulaSubclassFamilyCandidate(LineWitnessCandidate):
-    base_class_name: str
-    key_attr_name: str
-    subclass_names: tuple[str, ...]
-    key_values: tuple[str, ...]
-    method_names: tuple[str, ...]
-    expression_snippets: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.base_class_name
-
-
-_STRING_KEYED_FORMULA_ATTR_RE = re.compile(r"^(?:kind|mode|.+_(?:kind|mode))$")
-_FORMULA_LIBRARY_CALLEE_NAMES = frozenset(
-    (
-        "argmax",
-        "argmin",
-        "array",
-        "asarray",
-        "clip",
-        "concatenate",
-        "count_nonzero",
-        "flatnonzero",
-        "mean",
-        "ones",
-        "prod",
-        "where",
-        "zeros",
-    )
-)
-_FORMULA_CALLEE_NAMES = (
-    _FORMULA_LIBRARY_CALLEE_NAMES | BuiltinCallName.formula_builtin_callee_names()
-)
-
-
-def _literal_string_key_assignments(node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
-    rows: list[tuple[str, str]] = []
-    for statement in node.body:
-        targets: tuple[ast.expr, ...]
-        value: ast.expr | None
-        if isinstance(statement, ast.Assign):
-            targets = tuple(statement.targets)
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            targets = (statement.target,)
-            value = statement.value
-        else:
-            continue
-        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
-            continue
-        for target in targets:
-            if not isinstance(target, ast.Name):
-                continue
-            if _STRING_KEYED_FORMULA_ATTR_RE.match(target.id) is None:
-                continue
-            rows.append((target.id, value.value))
-    return tuple(rows)
-
-
-def _formula_callee_name(call: ast.Call) -> str | None:
-    name = _ast_terminal_name(call.func)
-    if name is not None:
-        return name
-    if isinstance(call.func, ast.Attribute):
-        return call.func.attr
-    return None
-
-
-def _function_contains_formula_semantics(function: ast.FunctionDef) -> bool:
-    for node in ast.walk(function):
-        if isinstance(node, (ast.BinOp, ast.BoolOp, ast.Compare)):
-            return True
-        if isinstance(node, ast.Call):
-            callee_name = _formula_callee_name(node)
-            if callee_name in _FORMULA_CALLEE_NAMES:
-                return True
-    return False
-
-
-def _string_keyed_formula_methods(
-    node: ast.ClassDef,
-) -> tuple[tuple[str, str], ...]:
-    rows: list[tuple[str, str]] = []
-    for statement in node.body:
-        if not isinstance(statement, ast.FunctionDef):
-            continue
-        if statement.name.startswith("__"):
-            continue
-        if not _function_contains_formula_semantics(statement):
-            continue
-        rows.append((statement.name, ast.unparse(statement)))
-    return tuple(rows)
-
-
-def _string_keyed_formula_subclass_family_candidates(
-    module: ParsedModule,
-) -> tuple[StringKeyedFormulaSubclassFamilyCandidate, ...]:
-    classes = {
-        node.name: node
-        for node in ast.walk(module.module)
-        if isinstance(node, ast.ClassDef)
-    }
-    grouped: dict[
-        tuple[str, str],
-        list[tuple[ast.ClassDef, str, tuple[tuple[str, str], ...]]],
-    ] = defaultdict(list)
-    for class_node in classes.values():
-        key_assignments = _literal_string_key_assignments(class_node)
-        method_rows = _string_keyed_formula_methods(class_node)
-        if not key_assignments or not method_rows:
-            continue
-        for base in class_node.bases:
-            base_name = _ast_terminal_name(base)
-            if base_name is None:
-                continue
-            for key_attr_name, key_value in key_assignments:
-                grouped[(base_name, key_attr_name)].append(
-                    (class_node, key_value, method_rows)
-                )
-    candidates: list[StringKeyedFormulaSubclassFamilyCandidate] = []
-    for (base_name, key_attr_name), rows in grouped.items():
-        if len(rows) < 2:
-            continue
-        method_names = sorted_tuple(
-            {
-                method_name
-                for _class_node, _key_value, method_rows in rows
-                for method_name, _method_source in method_rows
-            }
-        )
-        if method_names == ("eval",):
-            continue
-        base_line = (
-            classes.get(base_name).lineno if base_name in classes else rows[0][0].lineno
-        )
-        candidates.append(
-            StringKeyedFormulaSubclassFamilyCandidate(
-                file_path=module.file_path,
-                line=base_line,
-                base_class_name=base_name,
-                key_attr_name=key_attr_name,
-                subclass_names=tuple(
-                    class_node.name for class_node, _key, _methods in rows
-                ),
-                key_values=tuple(
-                    key_value for _class_node, key_value, _methods in rows
-                ),
-                method_names=method_names,
-                expression_snippets=tuple(
-                    method_source
-                    for _class_node, _key_value, method_rows in rows
-                    for _method_name, method_source in method_rows
-                )[:4],
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.base_class_name,
-            candidate.key_attr_name,
-        ),
-    )
 
 
 _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS = frozenset(
@@ -1800,58 +1630,6 @@ def _runtime_semantic_axis_is_interesting(dispatch_axis_expression: str) -> bool
 
 def _stable_text_digest(value: str) -> str:
     return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
-
-
-declare_candidate_rule_detector(
-    StringKeyedFormulaSubclassFamilyCandidate,
-    high_confidence_spec(
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        "String-keyed formula subclasses should be derived from a typed policy algebra",
-        "A subclass family that assigns string `kind`/`mode` keys and implements formulas on the subclasses is a split semantic authority: the key registry owns case identity while method bodies own case semantics. The formulas should be represented by a typed/generated policy algebra or nominal proof-backed carrier so runtime code interprets one schema instead of maintaining per-string behavior.",
-        "typed/generated policy algebra owns case formulas with fail-loud validation",
-        "subclasses repeat formula semantics behind literal kind/mode keys",
-        (
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-        ),
-        (
-            ObservationTag.STRING_DISPATCH,
-            ObservationTag.CLOSED_FAMILY_CASES,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"`{candidate.base_class_name}` has string-keyed subclasses "
-        f"{candidate.subclass_names} on `{candidate.key_attr_name}` with formulas "
-        f"in methods {candidate.method_names}; keys={candidate.key_values}."
-    ),
-    scaffold=lambda candidate: (
-        "class PolicyExprAuthority:\n"
-        "    def evaluate(self, expr: PolicyExpr, sources: SourceValues) -> int: ...\n\n"
-        "# Export case-specific formulas as typed data (Enum/dataclass/generated artifact),\n"
-        "# then route all cases through one interpreter/authority."
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Replace literal `{candidate.key_attr_name}` subclasses under "
-        f"`{candidate.base_class_name}` with a typed formula schema or generated "
-        "policy artifact.\n"
-        "# Keep runtime behavior in one generic interpreter; derive case formulas "
-        "from the typed policy source so missing or unknown cases fail loudly."
-    ),
-    metrics=lambda candidate: DispatchCountMetrics.from_literal_family(
-        candidate.key_attr_name,
-        candidate.key_values,
-    ),
-    compression_certificate=lambda candidate: CompressionCertificate.from_object_family(
-        manual_object_count=len(candidate.subclass_names)
-        * max(1, len(candidate.method_names)),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("policy_expr_authority",),
-            per_axis_objects=("typed_expr_variant",),
-        ),
-        semantic_axes=candidate.key_values,
-    ),
-    candidate_collector=_string_keyed_formula_subclass_family_candidates,
-)
 
 
 def _direct_terminal_return(

@@ -7220,27 +7220,6 @@ def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
     assert "OperationContext" in (finding.scaffold or "")
 
 
-def test_detects_string_keyed_formula_subclass_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/policy.py",
-        '\nclass FrontierMode:\n    kind = None\n\n    def bound(self, *, width, count):\n        raise NotImplementedError\n\n\nclass WidthCountMode(FrontierMode):\n    kind = "width_count"\n\n    def bound(self, *, width, count):\n        return max(1, width * count)\n\n\nclass PairCountMode(FrontierMode):\n    kind = "pair_count"\n\n    def bound(self, *, width, count):\n        return max(1, count * count)\n',
-    )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "string_keyed_formula_subclass_family"
-        )
-    )
-
-    assert "FrontierMode" in finding.summary
-    assert "width_count" in finding.summary
-    assert "pair_count" in finding.summary
-    assert "typed formula schema" in (finding.codemod_patch or "")
-
-
 def test_detects_inline_enum_subset_guard_policy(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
