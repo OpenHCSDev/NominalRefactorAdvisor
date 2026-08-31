@@ -112,6 +112,7 @@ from .source_index import (
     build_source_index_artifacts,
     iter_statement_definition_nodes,
 )
+from .source_geometry import SourceByteSpan, SourceLineSegmentAuthority
 from .source_identity import (
     canonical_source_mapping,
     resolved_source_path_text,
@@ -2190,93 +2191,6 @@ class ResolvedClassTarget:
 
 
 @dataclass(frozen=True)
-class SourceByteSpan:
-    """Validated UTF-8 byte span over one parsed source buffer."""
-
-    start_line_index: int
-    end_line_index: int
-    start_byte: int
-    end_byte: int
-
-    @classmethod
-    def from_node(
-        cls,
-        node: ast.expr | ast.stmt,
-    ) -> "SourceByteSpan | None":
-        if node.end_lineno is None or node.end_col_offset is None:
-            return None
-        return cls(
-            start_line_index=node.lineno - 1,
-            end_line_index=node.end_lineno - 1,
-            start_byte=node.col_offset,
-            end_byte=node.end_col_offset,
-        )
-
-    def fits_lines(self, lines: tuple[str, ...]) -> bool:
-        return (
-            self.start_line_index >= 0
-            and self.end_line_index >= self.start_line_index
-            and self.end_line_index < len(lines)
-        )
-
-    @property
-    def single_line(self) -> bool:
-        return self.start_line_index == self.end_line_index
-
-    def segment(self, lines: tuple[str, ...]) -> str:
-        if self.single_line:
-            return self.line_segment(
-                lines[self.start_line_index],
-                start_byte=self.start_byte,
-                end_byte=self.end_byte,
-            )
-        return "".join(
-            (
-                self.line_segment(
-                    lines[self.start_line_index],
-                    start_byte=self.start_byte,
-                    end_byte=None,
-                ),
-                *lines[self.start_line_index + 1 : self.end_line_index],
-                self.line_segment(
-                    lines[self.end_line_index],
-                    start_byte=0,
-                    end_byte=self.end_byte,
-                ),
-            )
-        )
-
-    @staticmethod
-    def line_segment(
-        line: str,
-        *,
-        start_byte: int,
-        end_byte: int | None,
-    ) -> str:
-        return line.encode("utf-8")[start_byte:end_byte].decode("utf-8")
-
-
-@dataclass(frozen=True)
-class SourceLineSegmentAuthority:
-    """Project parsed AST statement spans into exact source text."""
-
-    source: str
-
-    @cached_property
-    def lines(self) -> tuple[str, ...]:
-        return tuple(self.source.splitlines(keepends=True))
-
-    def segment_for_node(self, node: ast.expr | ast.stmt) -> str | None:
-        span = SourceByteSpan.from_node(node)
-        if span is None or not span.fits_lines(self.lines):
-            return None
-        return span.segment(self.lines)
-
-    def segment_for_statement(self, node: ast.stmt) -> str | None:
-        return self.segment_for_node(node)
-
-
-@dataclass(frozen=True)
 class DirectClassDeclarationAuthority:
     """Project direct annotated class fields to exact source declarations."""
 
@@ -2290,7 +2204,7 @@ class DirectClassDeclarationAuthority:
                 continue
             if not isinstance(statement.target, ast.Name):
                 continue
-            source_segment = self.source_segments.segment_for_statement(statement)
+            source_segment = self.source_segments.segment_for_node(statement)
             if source_segment is None:
                 return {}
             declaration_by_name[statement.target.id] = source_segment.strip()
@@ -4533,14 +4447,8 @@ class SourceNodeSpan:
 
 
 @dataclass(frozen=True)
-class SourceTextGeometry:
+class SourceTextGeometry(SourceLineSegmentAuthority):
     """Line and offset geometry for source-index anchored rewrites."""
-
-    source: str
-
-    @cached_property
-    def lines(self) -> tuple[str, ...]:
-        return tuple(self.source.splitlines(keepends=True))
 
     @cached_property
     def line_offsets(self) -> tuple[int, ...]:
@@ -4564,9 +4472,7 @@ class SourceTextGeometry:
         span = SourceByteSpan.from_node(node)
         if span is None or not span.fits_lines(self.lines):
             return None
-        start_offset = self.line_offsets[span.start_line_index] + span.start_byte
-        end_offset = self.line_offsets[span.end_line_index] + span.end_byte
-        return start_offset, end_offset
+        return span.character_offsets(self.lines, self.line_offsets)
 
     def required_node_offsets(self, node: ast.AST) -> tuple[int, int]:
         if not isinstance(node, ast.expr | ast.stmt):
@@ -6664,7 +6570,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         root = ast.parse(source, filename=source_path)
         replacements = [
             *self.class_field_replacements(root, geometry),
-            *self.constructor_projection_replacements(root, source, geometry),
+            *self.constructor_projection_replacements(root, geometry),
         ]
         covered_lines = tuple(
             SourceLineSpan.from_offsets(geometry, item.start_offset, item.end_offset)
@@ -6673,7 +6579,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         replacements.extend(
             self.attribute_projection_replacements(
                 root,
-                source,
+                geometry,
                 covered_lines=covered_lines,
             )
         )
@@ -6730,7 +6636,6 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
     def constructor_projection_replacements(
         self,
         root: ast.Module,
-        source: str,
         geometry: SourceTextGeometry,
     ) -> tuple[SourceTextSpanReplacement, ...]:
         replacements: list[SourceTextSpanReplacement] = []
@@ -6748,7 +6653,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
                 continue
             carrier_source = self.projected_keyword_carrier_source(
                 projected_keywords,
-                source,
+                geometry,
             )
             if carrier_source is None:
                 continue
@@ -6772,7 +6677,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
     def projected_keyword_carrier_source(
         self,
         projected_keywords: tuple[ast.keyword, ...],
-        source: str,
+        geometry: SourceTextGeometry,
     ) -> str | None:
         carrier_sources: set[str] = set()
         projection_map = self.field_projection_map
@@ -6785,7 +6690,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
                 return None
             if value.attr != expected_attribute:
                 return None
-            carrier_source = ast.get_source_segment(source, value.value)
+            carrier_source = geometry.segment_for_node(value.value)
             if carrier_source is None:
                 return None
             carrier_sources.add(carrier_source)
@@ -6796,7 +6701,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
     def attribute_projection_replacements(
         self,
         root: ast.Module,
-        source: str,
+        geometry: SourceTextGeometry,
         *,
         covered_lines: tuple["SourceLineSpan", ...],
     ) -> tuple[SourceTextSpanReplacement, ...]:
@@ -6814,15 +6719,16 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
                 continue
             if SourceNodeSpan(attribute).line_span.overlaps_any(covered_lines):
                 continue
-            value_source = ast.get_source_segment(source, attribute.value)
+            value_source = geometry.segment_for_node(attribute.value)
             if value_source is None:
                 continue
             if value_source not in allowed_owner_sources:
                 continue
+            start_offset, end_offset = geometry.required_node_offsets(attribute)
             replacements.append(
                 SourceTextSpanReplacement.from_offsets(
-                    start_offset=self.node_start_offset_for_source(source, attribute),
-                    end_offset=self.node_end_offset_for_source(source, attribute),
+                    start_offset=start_offset,
+                    end_offset=end_offset,
                     replacement_source=(
                         f"{value_source}.{carrier_field_name}.{carrier_attribute}"
                     ),
@@ -6880,23 +6786,7 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         geometry: SourceTextGeometry,
         node: ast.stmt | ast.expr,
     ) -> int:
-        return geometry.line_offsets[node.lineno - 1] + node.col_offset
-
-    @staticmethod
-    def node_start_offset_for_source(source: str, node: ast.stmt | ast.expr) -> int:
-        return ReplaceFieldsWithCarrierOperation.node_start_offset(
-            SourceTextGeometry(source),
-            node,
-        )
-
-    @staticmethod
-    def node_end_offset_for_source(source: str, node: ast.stmt | ast.expr) -> int:
-        geometry = SourceTextGeometry(source)
-        end_lineno = node.end_lineno or node.lineno
-        end_col_offset = node.end_col_offset
-        if end_col_offset is None:
-            raise ValueError(f"Node has no source end column: {node!r}")
-        return geometry.line_offsets[end_lineno - 1] + end_col_offset
+        return geometry.required_node_offsets(node)[0]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -13741,18 +13631,17 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         call_spec: RepeatedMethodCallAuthorityCallSpec,
         parameters: tuple[RepeatedMethodCallAuthorityParameter, ...],
     ) -> tuple[SourceTextSpanReplacement, ...]:
+        geometry = SourceTextGeometry(source)
         replacements: list[SourceTextSpanReplacement] = []
         for call in calls:
             argument_sources = cls.method_call_argument_sources(
-                source,
+                geometry,
                 call,
                 parameters,
             )
             if argument_sources is None:
                 return ()
-            start_offset, end_offset = SourceTextGeometry(
-                source
-            ).required_node_offsets(call)
+            start_offset, end_offset = geometry.required_node_offsets(call)
             replacements.append(
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=start_offset,
@@ -13785,7 +13674,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
 
     @staticmethod
     def method_call_argument_sources(
-        source: str,
+        geometry: SourceTextGeometry,
         call: ast.Call,
         parameters: tuple[RepeatedMethodCallAuthorityParameter, ...],
     ) -> tuple[str, ...] | None:
@@ -13802,7 +13691,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                     return None
                 argument_sources.append(parameter.default_source)
                 continue
-            source_segment = ast.get_source_segment(source, value)
+            source_segment = geometry.segment_for_node(value)
             if source_segment is None:
                 return None
             argument_sources.append(source_segment)
@@ -14533,6 +14422,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         method: RepeatedBuilderAuthorityMethod,
         evidence_symbols: tuple[str, ...],
     ) -> tuple[RepeatedAuthorityTargetRewrite, ...]:
+        geometry = SourceTextGeometry(source)
         target_qualnames = sorted_tuple(
             {EvidenceSymbol(symbol).subject for symbol in evidence_symbols}
         )
@@ -14547,7 +14437,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 for call in ast.walk(target_node)
                 for replacement in (
                     self.call_replacement(
-                        source,
+                        geometry,
                         call,
                         constructor_name=constructor_name,
                         method=method,
@@ -14560,9 +14450,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             rewrites.append(
                 RepeatedAuthorityTargetRewrite(
                     target=target_digest,
-                    replacement_source=SourceTextGeometry(
-                        source
-                    ).target_source_with_replacements(
+                    replacement_source=geometry.target_source_with_replacements(
                         target_digest,
                         replacements,
                     ),
@@ -14593,7 +14481,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     @classmethod
     def call_replacement(
         cls,
-        source: str,
+        geometry: SourceTextGeometry,
         node: ast.AST,
         *,
         constructor_name: str,
@@ -14610,14 +14498,12 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         ):
             return None
         argument_sources = {
-            parameter.name: cls.parameter_source(source, node, parameter)
+            parameter.name: cls.parameter_source(geometry, node, parameter)
             for parameter in method.parameters
         }
         if any(argument_sources[name] is None for name in argument_sources):
             return None
-        start_offset, end_offset = SourceTextGeometry(source).required_node_offsets(
-            node
-        )
+        start_offset, end_offset = geometry.required_node_offsets(node)
         return SourceTextSpanReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
@@ -14677,7 +14563,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     @classmethod
     def parameter_source(
         cls,
-        source: str,
+        geometry: SourceTextGeometry,
         node: ast.Call,
         parameter: RepeatedBuilderAuthorityParameter,
     ) -> str | None:
@@ -14698,7 +14584,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             if len(roots) != 1:
                 return None
             return next(iter(roots))
-        return ast.get_source_segment(source, value)
+        return geometry.segment_for_node(value)
 
 class RepeatedMethodPromotionFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
@@ -18408,7 +18294,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
         source_segments: SourceLineSegmentAuthority,
         node: ast.stmt,
     ) -> str | None:
-        node_source = source_segments.segment_for_statement(node)
+        node_source = source_segments.segment_for_node(node)
         if node_source is None:
             return None
         source_lines = textwrap.dedent(node_source).splitlines()

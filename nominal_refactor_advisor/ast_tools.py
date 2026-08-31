@@ -65,6 +65,7 @@ from .observation_shapes import (
     SentinelTypeObservation,
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from .source_geometry import SourceLineSegmentAuthority
 from .source_identity import SourceFileIdentity
 from .semantic_match import (
     GuardedEffectStep,
@@ -728,6 +729,12 @@ class ParsedModule(SourceFileIdentity):
             source=self.source,
             family_cache_dir=self.family_cache_dir,
         )
+
+    @cached_property
+    def source_segments(self) -> SourceLineSegmentAuthority:
+        """Return the exact source-span projector owned by this parsed module."""
+
+        return SourceLineSegmentAuthority(self.source)
 
 
 @dataclass(frozen=True)

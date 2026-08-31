@@ -2973,6 +2973,18 @@ def test_source_text_geometry_coalesces_identical_offset_replacements() -> None:
     assert rewritten == "alpha delta gamma"
 
 
+def test_source_text_geometry_projects_utf8_ast_offsets_to_characters() -> None:
+    source = "café = 1; result = café\n"
+    module = ast.parse(source)
+    assignment = module.body[1]
+    assert isinstance(assignment, ast.Assign)
+
+    offsets = SourceTextGeometry(source).required_node_offsets(assignment)
+
+    assert offsets == (10, 23)
+    assert source[slice(*offsets)] == "result = café"
+
+
 def test_source_text_geometry_rejects_same_span_replacement_conflict() -> None:
     geometry = SourceTextGeometry("alpha beta gamma")
 
@@ -8632,7 +8644,6 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
 
 def test_source_segment_projection_reuses_cached_geometry(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_module(
         tmp_path,
@@ -8646,27 +8657,15 @@ def test_source_segment_projection_reuses_cached_geometry(
         if isinstance(node, ast.Constant)
         and node.value == "move this collector into a shared helper"
     )
-    source_segment_calls = 0
-    real_get_source_segment = helper_detectors.ast.get_source_segment
-
-    def counted_get_source_segment(
-        source: str, node: ast.AST, *args: object, **kwargs: object
-    ) -> str | None:
-        nonlocal source_segment_calls
-        source_segment_calls += 1
-        return real_get_source_segment(source, node, *args, **kwargs)
-
-    monkeypatch.setattr(
-        helper_detectors.ast,
-        "get_source_segment",
-        counted_get_source_segment,
-    )
+    source_segments = module.source_segments
+    source_lines = source_segments.lines
 
     first_segment = helper_detectors._source_segment(module, summary_value)
     second_segment = helper_detectors._source_segment(module, summary_value)
 
     assert first_segment == second_segment
-    assert source_segment_calls == 1
+    assert module.source_segments is source_segments
+    assert source_segments.lines is source_lines
 
 
 def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:

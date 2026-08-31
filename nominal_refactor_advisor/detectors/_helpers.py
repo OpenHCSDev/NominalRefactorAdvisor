@@ -56,27 +56,6 @@ DerivedQuerySpecsBySignature: TypeAlias = dict[
 _APPEND_METHOD_NAME = "append"
 
 
-@dataclass(frozen=True)
-class SourceSegmentProjectionKey:
-    """Process-local identity for one source-backed AST segment projection."""
-
-    file_path: str
-    source_identity: int
-    source_length: int
-    span: tuple[int, int, int | None, int | None]
-
-    @classmethod
-    def from_module_node(
-        cls, module: ParsedModule, node: ast.expr
-    ) -> "SourceSegmentProjectionKey":
-        return cls(
-            file_path=module.file_path,
-            source_identity=id(module.source),
-            source_length=len(module.source),
-            span=(node.lineno, node.col_offset, node.end_lineno, node.end_col_offset),
-        )
-
-
 _IMPLICIT_METHOD_PARAMETER_NAMES = frozenset({"self", "cls"})
 _SEQUENCE_WRAPPER_CALL_NAMES = BuiltinCallName.sequence_wrapper_names()
 _OPTIONAL_VARIANT_TYPE_SUFFIXES = frozenset(
@@ -117,17 +96,6 @@ _OPTIONAL_VARIANT_PARAMETER_NAMES = frozenset(
 
 
 class HelperSupportProjectionAuthority:
-    def __init__(self) -> None:
-        self._source_segments_by_key: dict[SourceSegmentProjectionKey, str] = {}
-
-    def source_segment(self, module: ParsedModule, node: ast.expr) -> str:
-        key = SourceSegmentProjectionKey.from_module_node(module, node)
-        if key not in self._source_segments_by_key:
-            self._source_segments_by_key[key] = ast.get_source_segment(
-                module.source, node
-            ) or ast.unparse(node)
-        return self._source_segments_by_key[key]
-
     def declares_autoregister_meta(self, node: ast.ClassDef) -> bool:
         return any(
             (
@@ -6356,7 +6324,7 @@ def _canonical_finding_spec_builder_candidates(
 
 
 def _source_segment(module: ParsedModule, node: ast.expr) -> str:
-    return HELPER_SUPPORT_PROJECTION_AUTHORITY.source_segment(module, node)
+    return module.source_segments.segment_for_node(node) or ast.unparse(node)
 
 
 ClassShapeT = TypeVar("ClassShapeT")
