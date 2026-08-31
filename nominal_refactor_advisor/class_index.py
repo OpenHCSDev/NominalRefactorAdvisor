@@ -2705,6 +2705,20 @@ def _registry_family_key_attr_name(node: ast.AST | None) -> str | None:
     return None
 
 
+def _registry_config_keyword(
+    node: ast.AST | None,
+    keyword_name: str,
+) -> ast.AST | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if _terminal_reference_name(node.func) != "RegistryConfig":
+        return None
+    values = tuple(
+        keyword.value for keyword in node.keywords if keyword.arg == keyword_name
+    )
+    return values[0] if len(values) == 1 else None
+
+
 def _autoregister_registry_key_attr_name(
     parsed_module: ParsedModule,
     node: ast.ClassDef,
@@ -2715,6 +2729,15 @@ def _autoregister_registry_key_attr_name(
     )
     if explicit_key is not None:
         return explicit_key
+    configured_key = _autoregister_constant_name(
+        _registry_config_keyword(
+            assignments.get("__registry_config__"),
+            "key_attribute",
+        ),
+        parsed_module,
+    )
+    if configured_key is not None:
+        return configured_key
     stable_key_axis = assignments.get("stable_key_axis")
     if (
         isinstance(stable_key_axis, ast.Name)
@@ -2728,7 +2751,15 @@ def _autoregister_registry_key_attr_name(
 
 
 def _autoregister_key_extractor_name(node: ast.ClassDef) -> str | None:
-    extractor = _direct_class_assignments(node).get("__key_extractor__")
+    assignments = _direct_class_assignments(node)
+    extractor = assignments.get("__key_extractor__")
+    if extractor is None:
+        extractor = _registry_config_keyword(
+            assignments.get("__registry_config__"),
+            "key_extractor",
+        )
+    if isinstance(extractor, ast.Constant) and extractor.value is None:
+        return None
     return ast.unparse(extractor) if extractor is not None else None
 
 
@@ -3180,8 +3211,6 @@ def _declares_autoregister_meta(node: ast.ClassDef) -> bool:
     return any(
         terminal_name == "AutoRegisterMeta"
         or terminal_name.endswith("AutoRegisterMeta")
-        or _registration_authority_base_name(terminal_name)
-        or ("Registered" in terminal_name and terminal_name.endswith("Meta"))
         for keyword in node.keywords
         if keyword.arg == "metaclass"
         if (terminal_name := _terminal_reference_name(keyword.value)) is not None

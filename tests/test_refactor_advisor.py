@@ -14719,6 +14719,36 @@ def test_detects_autoregister_meta_family_without_rent_proof(
     assert finding.compression_certificate is not None
 
 
+def test_autoregister_rent_ignores_unrelated_registry_metaclass(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass ServiceRegistryMeta(type):\n    pass\n\n\nclass ManagerServices(metaclass=ServiceRegistryMeta):\n    pass\n",
+    )
+
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_autoregister_rent_derives_key_axis_from_registry_config(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta, RegistryConfig\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_config__ = RegistryConfig(\n        key_attribute="format_name",\n        skip_if_no_key=True,\n    )\n\n    @classmethod\n    def loaded_types(cls):\n        return tuple(cls.__registry__.values())\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format_name = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format_name = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_ignores_autoregister_meta_family_with_computed_rent_proof(
     tmp_path: Path,
 ) -> None:
