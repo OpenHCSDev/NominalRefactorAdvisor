@@ -6152,9 +6152,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.ImplicitSelfContractMixinDetector in (
         partition.compact_global_detector_types
     )
-    assert runtime_detectors.MonolithicConstructorInvariantDetector in (
-        partition.per_module_detector_types
-    )
     assert len(partition.ast_retaining_context_detector_types) == 0
     assert all(
         detector_type.detector_id

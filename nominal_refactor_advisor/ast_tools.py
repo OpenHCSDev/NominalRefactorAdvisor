@@ -882,24 +882,6 @@ class BuiltinCallName(StrEnum):
         )
 
     @classmethod
-    def non_value_reference_names(cls) -> frozenset["BuiltinCallName"]:
-        return cls.structural_alias_leaf_names() | frozenset(
-            (cls.ALL, cls.ANY, cls.LEN, cls.TYPE)
-        )
-
-    @classmethod
-    def invariant_refinement_call_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset((cls.ISINSTANCE, cls.ISSUBCLASS, cls.TYPE))
-
-    @classmethod
-    def invariant_cardinality_call_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset((cls.LEN, cls.SET))
-
-    @classmethod
-    def invariant_quantifier_call_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset((cls.ALL, cls.ANY))
-
-    @classmethod
     def schema_accessor_copy_call_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset((cls.DICT, cls.LIST, cls.SET, cls.TUPLE))
 
