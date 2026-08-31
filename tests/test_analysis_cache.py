@@ -79,7 +79,6 @@ from nominal_refactor_advisor.detectors import (
     SemanticDescentGraphIssueDetector,
 )
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
-from nominal_refactor_advisor.detectors import _reflection as reflection_detectors
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
@@ -2507,19 +2506,22 @@ def test_uncached_compact_analysis_skips_persistent_content_identities(
     assert result.cache_status is AnalysisCacheStatus.DISABLED
 
 
-def test_source_local_detector_requests_ast_fallback_for_lexical_binding(
+def test_source_local_detector_requests_ast_fallback_for_carrier_syntax(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    module_path = package_root / "reflection.py"
-    source = "def capture(value):\n    return locals()\n"
+    module_path = package_root / "carrier.py"
+    source = (
+        "def capture(pair):\n"
+        "    return Maybe.of(pair).map(lambda current: pair[0][1])\n"
+    )
     module_path.write_text(source, encoding="utf-8")
     result = analysis_module.build_compact_projection_shard(
         analysis_module.CompactProjectionBuildRequest(
             source=analysis_module.CompactProjectionCacheSource(
                 path=module_path,
-                module_name="reflection",
+                module_name="carrier",
                 source_signature=ast_tools_module.python_source_cache_signature(source),
                 family_cache_dir=None,
                 scan_root=package_root,
@@ -2529,12 +2531,12 @@ def test_source_local_detector_requests_ast_fallback_for_lexical_binding(
             ),
             missing_families=(),
             config=DetectorConfig(),
-            local_detector_types=(reflection_detectors.BuiltinLocalsCallDetector,),
+            local_detector_types=(systemic_detectors.TupleIndexSemanticOpacityDetector,),
         )
     )
 
     assert [finding.detector_id for finding in result.local_findings] == [
-        "builtin_locals_call"
+        "tuple_index_semantic_opacity"
     ]
 
 
@@ -2544,8 +2546,9 @@ def test_uncached_compact_ast_fallback_skips_semantic_hash(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "reflection.py").write_text(
-        "def capture(value):\n    return locals()\n",
+    (package_root / "carrier.py").write_text(
+        "def capture(pair):\n"
+        "    return Maybe.of(pair).map(lambda current: pair[0][1])\n",
         encoding="utf-8",
     )
     hash_call_count = 0
@@ -2571,12 +2574,12 @@ def test_uncached_compact_ast_fallback_skips_semantic_hash(
         (package_root,),
         use_parse_cache=False,
         parse_workers=1,
-        detector_types=(reflection_detectors.BuiltinLocalsCallDetector,),
+        detector_types=(systemic_detectors.TupleIndexSemanticOpacityDetector,),
     )
 
     assert hash_call_count == 0
     assert [finding.detector_id for finding in result.findings] == [
-        "builtin_locals_call"
+        "tuple_index_semantic_opacity"
     ]
 
 
@@ -2616,7 +2619,7 @@ def test_source_local_detector_does_not_switch_mixed_families_to_native(
                 systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
             ),
             config=DetectorConfig(),
-            local_detector_types=(reflection_detectors.BuiltinLocalsCallDetector,),
+            local_detector_types=(systemic_detectors.TupleIndexSemanticOpacityDetector,),
         )
     )
 

@@ -5918,41 +5918,6 @@ def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:
     assert violations == []
 
 
-def test_detects_builtin_locals_calls(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/lexical_capture.py",
-        """
-def capture(value):
-    return locals()
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == "builtin_locals_call"
-    )
-    assert "lexical dependencies" in finding.summary
-    assert "explicitly" in (finding.codemod_patch or "")
-
-
-def test_ignores_shadowed_locals_name(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/shadowed.py",
-        """
-locals = make_namespace
-
-
-def capture(locals):
-    return locals()
-""",
-    )
-
-    findings = analyze_path(tmp_path)
-    assert not any(finding.detector_id == "builtin_locals_call" for finding in findings)
-
-
 def test_declared_proxy_attribute_hook_is_not_a_nominal_boundary_violation(
     tmp_path: Path,
 ) -> None:
