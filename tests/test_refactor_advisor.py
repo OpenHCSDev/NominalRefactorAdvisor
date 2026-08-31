@@ -10936,6 +10936,8 @@ def test_codemod_source_snapshot_reuses_source_index_target_nodes(
 
     assert "Alpha" in target_ids_by_qualname
     assert "Alpha.run" in target_ids_by_qualname
+    assert snapshot.ast_target_nodes_by_id is snapshot.ast_target_node_cache
+    assert snapshot.module_nodes_by_file_path is snapshot.module_node_cache
     assert isinstance(
         snapshot.ast_target_nodes_by_id[target_ids_by_qualname["Alpha"]],
         ast.ClassDef,
@@ -10944,6 +10946,45 @@ def test_codemod_source_snapshot_reuses_source_index_target_nodes(
         snapshot.ast_target_nodes_by_id[target_ids_by_qualname["Alpha.run"]],
         ast.FunctionDef,
     )
+
+
+def test_finding_recipe_rewrite_cache_owns_recipe_declarations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nominal_refactor_advisor.codemod as codemod_module
+
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    pass\n\n\nclass Beta:\n    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    targets = {
+        target.qualname: target.target_id
+        for target in snapshot.source_index.ast_targets
+    }
+    alpha_recipe = RefactorRecipe("alpha").with_operation(
+        ReplaceTargetOperation(
+            target=SourceRewriteTarget(target_id=targets["Alpha"]),
+            replacement_source="class Alpha:\n    value = 1\n",
+        )
+    )
+    beta_recipe = RefactorRecipe("beta").with_operation(
+        ReplaceTargetOperation(
+            target=SourceRewriteTarget(target_id=targets["Beta"]),
+            replacement_source="class Beta:\n    value = 2\n",
+        )
+    )
+    builder = codemod_module.FindingRecipePlanBuilder(())
+    monkeypatch.setattr(codemod_module, "id", lambda _value: 1, raising=False)
+
+    alpha_rewrites = builder.planned_rewrites_for_recipe(alpha_recipe, snapshot)
+    beta_rewrites = builder.planned_rewrites_for_recipe(beta_recipe, snapshot)
+
+    assert alpha_rewrites[0].target_id == targets["Alpha"]
+    assert beta_rewrites[0].target_id == targets["Beta"]
+    assert tuple(builder.planned_rewrite_cache) == (alpha_recipe, beta_recipe)
 
 
 def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(

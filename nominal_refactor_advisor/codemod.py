@@ -1303,7 +1303,7 @@ class AuthorityClaimSourceIndexResolver:
                 if claim.matches_file_qualname(target.file_path, target.qualname)
                 else ()
             )
-        symbols = frozenset(claim.searched_symbols)
+        symbols = claim.searched_symbols
         indexed_candidates = {
             target.target_id: target
             for symbol in symbols
@@ -1480,7 +1480,7 @@ class SourcePathCandidateSet:
         candidate_paths: tuple[str, ...],
     ) -> "SourcePathCandidateSet":
         del cls
-        return _source_path_candidate_set(tuple(sorted(set(candidate_paths))))
+        return _source_path_candidate_set(candidate_paths)
 
     @cached_property
     def normalized_rows(self) -> tuple[tuple[str, str], ...]:
@@ -1500,7 +1500,7 @@ class SourcePathCandidateSet:
 def _source_path_candidate_set(
     candidate_paths: tuple[str, ...],
 ) -> SourcePathCandidateSet:
-    return SourcePathCandidateSet(candidate_paths)
+    return SourcePathCandidateSet(tuple(sorted(set(candidate_paths))))
 
 
 @dataclass(frozen=True)
@@ -2138,9 +2138,7 @@ class CodemodSelectorContext:
 
     @cached_property
     def source_file_paths(self) -> tuple[str, ...]:
-        return tuple(
-            sorted({target.file_path for target in self.source_index.ast_targets})
-        )
+        return self.source_index.target_file_paths
 
     def resolve_source_paths(self, file_paths: Iterable[str]) -> frozenset[str]:
         return frozenset(
@@ -2160,18 +2158,18 @@ class CodemodSelectorContext:
     @cached_property
     def ast_target_nodes_by_id(
         self,
-    ) -> dict[str, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
+    ) -> Mapping[str, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
         if self.ast_target_node_cache is not None:
-            return dict(self.ast_target_node_cache)
+            return self.ast_target_node_cache
         return AstTargetNodeIndex(
             self.source_index,
             self.sources_by_file_path,
         ).nodes_by_target_identifier()
 
     @cached_property
-    def module_nodes_by_file_path(self) -> dict[str, ast.Module]:
+    def module_nodes_by_file_path(self) -> Mapping[str, ast.Module]:
         if self.module_node_cache is not None:
-            return dict(self.module_node_cache)
+            return self.module_node_cache
         return {
             file_path: ast.parse(source, filename=file_path)
             for file_path, source in self.sources_by_file_path.items()
@@ -19762,7 +19760,10 @@ class FindingRecipePlanBuilder:
         PlannedSourceRewrite,
         tuple[PhysicalSourceEdit, ...],
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
-    planned_rewrite_cache: dict[int, tuple[PlannedSourceRewrite, ...]] = field(
+    planned_rewrite_cache: dict[
+        RefactorRecipe,
+        tuple[PlannedSourceRewrite, ...],
+    ] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -19871,8 +19872,7 @@ class FindingRecipePlanBuilder:
     ) -> tuple[PlannedSourceRewrite, ...]:
         if selector_context is None:
             return ()
-        cache_key = id(recipe)
-        cached_rewrites = self.planned_rewrite_cache.get(cache_key)
+        cached_rewrites = self.planned_rewrite_cache.get(recipe)
         if cached_rewrites is not None:
             return cached_rewrites
         planned_rewrites = recipe.source_rewrite_batch(
@@ -19880,7 +19880,7 @@ class FindingRecipePlanBuilder:
             selector_context.sources_by_file_path,
             selector_context=selector_context,
         )
-        self.planned_rewrite_cache[cache_key] = planned_rewrites
+        self.planned_rewrite_cache[recipe] = planned_rewrites
         return planned_rewrites
 
     def planned_rewrites_for_recipes(
