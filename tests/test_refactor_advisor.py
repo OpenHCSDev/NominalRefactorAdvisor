@@ -13819,6 +13819,9 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert payload["simulation_result"]["simulation"]["parse_validation"]["parse_valid"]
     assert "finding_class_delta" in projected
     assert projected["finding_delta"]["fulfilled_expected_removals"]
+    assert projected["finding_delta"]["expected_removed_finding_count"] == 1
+    assert projected["finding_delta"]["confirmed_expected_removed_finding_count"] == 1
+    assert projected["finding_delta"]["surviving_expected_removed_finding_count"] == 0
     assert projected["finding_class_delta"]["eliminated_class_count"] >= 1
     assert len(class_projection["classes"]) == 1
     assert class_delta["fulfilled_expected_removals"] is True

@@ -248,6 +248,7 @@ class CodemodFindingDelta:
         return JsonObject(
             **self.finding_ids.to_dict(),
             expected_removed_finding_ids=expected_removed_finding_ids,
+            expected_removed_finding_count=len(expected_removed_finding_ids),
             confirmed_expected_removed_finding_ids=(
                 self.confirmed_expected_removed_finding_ids(
                     expected_removed_finding_ids
@@ -712,7 +713,9 @@ class CodemodProjectedFindingReport:
             "scan_mode": self.scan_mode.value,
             "before_finding_count": self.before_finding_count,
             "after_finding_count": self.after_finding_count,
-            "finding_delta": self.finding_delta.to_dict(),
+            "finding_delta": self.finding_delta.to_dict(
+                self.expected_removed_finding_ids
+            ),
             "finding_class_delta": self.finding_class_delta.to_dict(),
             "after_findings": tuple(finding.to_dict() for finding in after_findings),
         }
