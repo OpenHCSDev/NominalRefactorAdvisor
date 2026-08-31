@@ -3778,16 +3778,18 @@ def _is_type_call_constructor(node: ast.AST) -> bool:
 def _sentinel_type_usage_observations(
     parsed_module: ParsedModule,
 ) -> tuple[SentinelTypeObservation, ...]:
+    syntax_index = module_syntax_index(parsed_module.module)
     sentinel_names = {
         item.sentinel_name
-        for node in _walk_nodes(parsed_module.module)
-        if isinstance(node, ast.Assign)
+        for _node_index, node in syntax_index.indexed_nodes_of_type(ast.Assign)
         if (item := _sentinel_type_observation(parsed_module, node)) is not None
     }
+    if not sentinel_names:
+        return ()
     observations: list[SentinelTypeObservation] = []
     seen: set[tuple[int, str]] = set()
-    for node in _walk_nodes(parsed_module.module):
-        if isinstance(node, (ast.Compare, ast.Subscript)):
+    for node_type in (ast.Compare, ast.Subscript):
+        for _node_index, node in syntax_index.indexed_nodes_of_type(node_type):
             names = {
                 subnode.id
                 for subnode in _walk_nodes(node)

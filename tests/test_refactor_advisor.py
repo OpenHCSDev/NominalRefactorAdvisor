@@ -9229,6 +9229,25 @@ def test_collects_sentinel_type_observations_via_spec_family(tmp_path: Path) -> 
     assert len(observations) >= 2
 
 
+def test_sentinel_usage_projection_stops_without_a_declaration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef ordinary(value):\n    return value is None\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+
+    def unexpected_walk(_node: ast.AST) -> object:
+        raise AssertionError("modules without sentinels need no usage traversal")
+
+    monkeypatch.setattr(ast_tools_module, "_walk_nodes", unexpected_walk)
+
+    assert ast_tools_module._sentinel_type_usage_observations(module) == ()
+
+
 def test_detects_dynamic_method_injection(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
