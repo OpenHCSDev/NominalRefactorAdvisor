@@ -639,7 +639,8 @@ def _parse_source_module(
         module = ast.parse(source, filename=str(path))
     else:
         module = cached_payload.module
-    if semantic_hash is None:
+    semantic_hash_required = context.use_parse_cache or source_semantic_hash is not None
+    if semantic_hash is None and semantic_hash_required:
         semantic_hash = semantic_python_source_hash(source)
         if context.use_parse_cache:
             _write_cached_ast(

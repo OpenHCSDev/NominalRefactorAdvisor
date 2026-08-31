@@ -2690,7 +2690,7 @@ def test_source_local_detector_requests_ast_fallback_for_lexical_binding(
     ]
 
 
-def test_compact_ast_fallback_reuses_local_semantic_hash(
+def test_uncached_compact_ast_fallback_skips_semantic_hash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2726,7 +2726,7 @@ def test_compact_ast_fallback_reuses_local_semantic_hash(
         detector_types=(reflection_detectors.BuiltinLocalsCallDetector,),
     )
 
-    assert hash_call_count == 1
+    assert hash_call_count == 0
     assert [finding.detector_id for finding in result.findings] == [
         "builtin_locals_call"
     ]

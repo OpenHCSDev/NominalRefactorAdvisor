@@ -2057,7 +2057,13 @@ def analyze_compact_roots_with_cache(
             local_identity = None
             local_cache_lookup = None
             local_semantic_hash = None
-            if include_local_findings and partition.per_module_detector_types:
+            local_analysis_required = bool(
+                include_local_findings and partition.per_module_detector_types
+            )
+            if (
+                local_analysis_required
+                and aggregate_lookup.status.can_reuse_findings
+            ):
                 if source_signature_cache is not None:
                     local_semantic_hash = source_signature_cache.semantic_source_hash(
                         path,
@@ -2118,17 +2124,20 @@ def analyze_compact_roots_with_cache(
                     )
                 )
 
-            local_cache_miss = bool(
-                include_local_findings
-                and partition.per_module_detector_types
-                and local_cache_lookup is not None
-                and local_cache_lookup.status is not AnalysisCacheStatus.HIT
+            local_detector_types = (
+                partition.per_module_detector_types
+                if local_analysis_required
+                else ()
             )
-            if not missing_families and not local_cache_miss:
+            if local_cache_lookup is not None:
+                local_detector_types = detector_bundle_plan.missing_detector_types(
+                    local_cache_lookup.findings_by_bundle
+                )
+            if not missing_families and not local_detector_types:
                 continue
-            if local_cache_miss:
-                if local_identity is None:
-                    raise RuntimeError("local cache identity disappeared")
+            if local_identity is not None and local_detector_types:
+                if local_cache_lookup is None:
+                    raise RuntimeError("local cache lookup disappeared")
                 normalized_local_path = path.resolve()
                 local_identity_by_path[normalized_local_path] = local_identity
                 local_cached_findings_by_path[normalized_local_path] = (
@@ -2139,13 +2148,7 @@ def analyze_compact_roots_with_cache(
                     source=projection_source,
                     missing_families=missing_families,
                     config=config,
-                    local_detector_types=(
-                        detector_bundle_plan.missing_detector_types(
-                            local_cache_lookup.findings_by_bundle
-                        )
-                        if local_cache_miss
-                        else ()
-                    ),
+                    local_detector_types=local_detector_types,
                     family_demands=(
                         ()
                         if include_local_findings
@@ -2219,9 +2222,9 @@ def analyze_compact_roots_with_cache(
         normalized_path = result.path.resolve()
         projection_source = source_by_path[normalized_path]
         local_identity = local_identity_by_path.get(normalized_path)
+        module_findings = list(result.local_findings)
+        local_findings.extend(module_findings)
         if local_identity is not None:
-            module_findings = list(result.local_findings)
-            local_findings.extend(module_findings)
             cached_findings_by_bundle = local_cached_findings_by_path[normalized_path]
             analysis_cache.store_per_module_detector_bundles(
                 local_identity,

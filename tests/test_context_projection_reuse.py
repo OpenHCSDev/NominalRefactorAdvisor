@@ -172,9 +172,6 @@ class Owner:
     ).functions:
         indexed_function = indexed_functions[id(function)]
         assert index.function_counts_by_id[id(function)] == symbol_counts(function)
-        assert indexed_function.body_digest == runtime_detectors._stable_text_digest(
-            f"{module.semantic_hash}\0{indexed_function.qualname}"
-        )
 
     legacy_named_functions = systemic_detectors._iter_named_functions(module)
     assert len(index.named_functions) == len(legacy_named_functions)

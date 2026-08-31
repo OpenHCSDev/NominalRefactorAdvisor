@@ -5447,7 +5447,6 @@ class PrivateReferenceIndexedFunction:
     qualname: str
     function: _RuntimeFunctionNode
     symbol_references: frozenset[str]
-    body_digest: str
 
 
 @dataclass(frozen=True)
@@ -5473,7 +5472,6 @@ class PrivateReferenceModuleIndex:
         return _private_reference_module_index(
             module.module,
             module.module_name,
-            module.semantic_hash,
         )
 
 
@@ -5481,7 +5479,6 @@ class PrivateReferenceModuleIndex:
 def _private_reference_module_index(
     module_node: ast.Module,
     module_name: str,
-    semantic_hash: str | None,
 ) -> PrivateReferenceModuleIndex:
     surface_functions = SurfaceFunctionIndex.from_module(module_node).functions
     surface_qualnames_by_id = {
@@ -5589,9 +5586,6 @@ def _private_reference_module_index(
                         node,
                     )
                 )
-    module_semantic_digest = semantic_hash or _stable_text_digest(
-        ast.dump(module_node, include_attributes=False)
-    )
     return PrivateReferenceModuleIndex(
         total_counts=total_counts,
         function_counts_by_id=function_counts_by_id,
@@ -5602,9 +5596,6 @@ def _private_reference_module_index(
                 function=function,
                 symbol_references=frozenset(
                     symbol_references_by_function_id[id(function)]
-                ),
-                body_digest=_stable_text_digest(
-                    f"{module_semantic_digest}\0{qualname}"
                 ),
             )
             for qualname, function in surface_functions
