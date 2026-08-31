@@ -12927,7 +12927,7 @@ class InferredFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
     ) -> FindingRecipeSynthesizer | None:
         matching_types = tuple(
             synthesizer_type
-            for synthesizer_type in cls.__subclasses__()
+            for synthesizer_type in loaded_concrete_nominal_descendants(cls)
             if synthesizer_type.supports_finding(finding)
         )
         if not matching_types:

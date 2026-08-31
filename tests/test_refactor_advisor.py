@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from abc import ABC
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -2208,6 +2209,49 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
     assert plan.report.planned_count == 0
     assert plan.report.rejected_count == 1
     assert payload["synthesis_report"]["status_counts"] == {"no_effective_rewrites": 1}
+
+
+def test_inferred_recipe_synthesis_discovers_concrete_nested_family_leaf() -> None:
+    from nominal_refactor_advisor.codemod import (
+        FindingRecipeSynthesizer,
+        InferredFindingRecipeSynthesizer,
+    )
+
+    detector_id = "nested_inferred_recipe_family_test"
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Nested inferred recipe family fixture",
+        "A concrete leaf owns the inference predicate.",
+        "one complete nominal inference family",
+        "direct-subclass discovery stops at the abstract family",
+    ).build(
+        detector_id,
+        "A nested inferred synthesizer should remain discoverable.",
+        (SourceLocation("pkg/mod.py", 1, "Alpha"),),
+    )
+
+    class NestedInferredSynthesizerFamily(
+        InferredFindingRecipeSynthesizer,
+        ABC,
+    ):
+        pass
+
+    class NestedInferredSynthesizer(NestedInferredSynthesizerFamily):
+        @classmethod
+        def supports_finding(cls, candidate: RefactorFinding) -> bool:
+            return candidate.detector_id == detector_id
+
+        def evaluate_recipe_for_finding(
+            self,
+            candidate: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del candidate, context
+            return self.rejected_evaluation("nested inference fixture")
+
+    synthesizer = FindingRecipeSynthesizer.for_finding(finding)
+
+    assert isinstance(synthesizer, NestedInferredSynthesizer)
 
 
 def test_source_index_target_selector_supports_regex_patterns(
