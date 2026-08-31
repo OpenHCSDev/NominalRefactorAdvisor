@@ -12,7 +12,6 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
-    NominalBoundaryConcept,
     codemod_plan_from_findings,
 )
 from nominal_refactor_advisor.detectors import (
@@ -2056,17 +2055,15 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
         "\n"
         "@dataclass(frozen=True)\n"
         "class WorkflowDefinition:\n"
-        "    workflow_id: str\n"
         "    description: str\n"
-        "    command_action_ids: tuple[str, ...]\n"
-        "    default_next_action_id: str\n"
+        "    model: WorkflowModel\n"
         "\n"
         "    def definition_items(self):\n"
         "        return (\n"
-        "            ('workflow_id', self.workflow_id),\n"
         "            ('description', self.description),\n"
-        "            ('command_action_ids', self.command_action_ids),\n"
-        "            ('default_next_action_id', self.default_next_action_id),\n"
+        "            ('workflow_id', self.model.workflow_id),\n"
+        "            ('command_action_ids', self.model.command_action_ids),\n"
+        "            ('default_next_action_id', self.model.default_next_action_id)\n"
         "        )\n",
     )
     modules = parse_python_modules(tmp_path)
@@ -2090,15 +2087,25 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert record.refactor_concept == "dataclass_payload_projection"
-    assert "def payload_items_from_field_values(cls, **values)" in rewritten_source
-    assert "*WorkflowModel.payload_items_from_field_values(" in rewritten_source
-    assert "workflow_id=self.workflow_id" in rewritten_source
-    assert "command_action_ids=self.command_action_ids" in rewritten_source
-    assert "default_next_action_id=self.default_next_action_id" in rewritten_source
-    assert (
-        rewritten_source.index("workflow_id=self.workflow_id")
-        < rewritten_source.index("('description', self.description)")
-        < rewritten_source.index("command_action_ids=self.command_action_ids")
+    assert "import dataclasses" in rewritten_source
+    assert "for field in dataclasses.fields(" in rewritten_source
+    assert "getattr(\n                        self.model," in rewritten_source
+    assert "payload_items_from_field_values" not in rewritten_source
+    assert "('description', self.description)" in rewritten_source
+    assert "('workflow_id', self.workflow_id)" not in rewritten_source
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    model = namespace["WorkflowModel"](
+        "workflow",
+        ("prepare", "run"),
+        "run",
+    )
+    definition = namespace["WorkflowDefinition"]("Workflow", model)
+    assert definition.definition_items() == (
+        ("description", "Workflow"),
+        ("workflow_id", "workflow"),
+        ("command_action_ids", ("prepare", "run")),
+        ("default_next_action_id", "run"),
     )
     module_path.write_text(rewritten_source, encoding="utf-8")
     migrated_graph = build_semantic_descent_graph(
@@ -2110,22 +2117,72 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
         for authority in migrated_graph.authorities
         if authority.name == "WorkflowModel"
     )
-    migrated_derivation = next(
-        certificate
-        for certificate in migrated_graph.certificates
-        if certificate.status
-        is semantic_descent_module.DescentStatus.DESCENDS_TO_AUTHORITY
-        and certificate.edge.authority_id == workflow_authority.authority_id
-    )
-
     assert all(
         certificate.edge.authority_id != workflow_authority.authority_id
         for certificate in migrated_graph.missing_descent_certificates
     )
-    assert migrated_derivation.status.value == "descends_to_authority"
-    assert migrated_derivation.proof_edges[0].edge_kind is (
-        AuthorityProofEdgeKind.PROVIDES_QUERY_METHOD
+    assert all(
+        "definition_items" not in projection.label
+        for projection in migrated_graph.projections
     )
+
+
+def test_key_value_sequence_recipe_rejects_interleaving_and_comments(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class WorkflowModel:\n"
+        "    workflow_id: str\n"
+        "    command_action_ids: tuple[str, ...]\n"
+        "    default_next_action_id: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class WorkflowDefinition:\n"
+        "    description: str\n"
+        "    model: WorkflowModel\n"
+        "\n"
+        "    def definition_items(self):\n"
+        "        return (\n"
+        "            ('description', self.description),\n"
+        "            ('workflow_id', self.model.workflow_id),\n"
+        "            ('command_action_ids', self.model.command_action_ids),\n"
+        "            ('default_next_action_id', self.model.default_next_action_id),\n"
+        "        )\n"
+    )
+    unsafe_sources = {
+        "interleaved": source.replace(
+            "            ('description', self.description),\n"
+            "            ('workflow_id', self.model.workflow_id),\n",
+            "            ('workflow_id', self.model.workflow_id),\n"
+            "            ('description', self.description),\n",
+        ),
+        "commented": source.replace(
+            "            ('command_action_ids', self.model.command_action_ids),\n",
+            "            # This explanation must survive any migration.\n"
+            "            ('command_action_ids', self.model.command_action_ids),\n",
+        ),
+    }
+
+    for case_name, unsafe_source in unsafe_sources.items():
+        case_root = tmp_path / case_name
+        _write_module(case_root, unsafe_source)
+        modules = parse_python_modules(case_root)
+        finding = next(
+            item
+            for item in SemanticMirrorWithoutDescentDetector().detect(
+                modules,
+                DetectorConfig(),
+            )
+            if item.metrics.plan_source_name == "WorkflowModel"
+        )
+        snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+        plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+        assert plan.records[0].status.value == "rejected_by_safety_check"
+        assert not plan.records[0].recipe_id
 
 
 def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_recipe(
@@ -2236,6 +2293,34 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         == "import dataclasses"
     )
 
+    report_path.write_text(
+        report_path.read_text(encoding="utf-8").replace(
+            "from .model import RefactorAction\n",
+            "from .model import RefactorAction\nRefactorAction = object\n",
+        ),
+        encoding="utf-8",
+    )
+    shadowed_modules = parse_python_modules(tmp_path)
+    shadowed_finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            shadowed_modules,
+            DetectorConfig(),
+        )
+        if item.metrics.plan_source_name == "RefactorAction"
+    )
+    shadowed_snapshot = CodemodSourceSnapshot.from_modules(
+        shadowed_modules,
+        (shadowed_finding,),
+    )
+    shadowed_plan = codemod_plan_from_findings(
+        (shadowed_finding,),
+        selector_context=shadowed_snapshot,
+    )
+
+    assert shadowed_plan.records[0].status.value == "rejected_by_safety_check"
+    assert not shadowed_plan.records[0].recipe_id
+
 
 def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
     tmp_path: Path,
@@ -2331,6 +2416,11 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
             "        'unrelated': 1,\n"
             "        'description': action.description,\n",
         ),
+        "commented": source.replace(
+            "        'description': action.description,\n",
+            "        # This explanation must survive any migration.\n"
+            "        'description': action.description,\n",
+        ),
         "shadowed_dataclasses": source.replace(
             "def project(action: RefactorAction):",
             "def project(action: RefactorAction, dataclasses):",
@@ -2342,6 +2432,12 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         "nested_authority_annotation": source.replace(
             "def project(action: RefactorAction):",
             "def project(action: list[RefactorAction]):",
+        ),
+        "shadowed_constructor": source.replace(
+            "def project(action: RefactorAction):\n",
+            "def project():\n"
+            "    RefactorAction = lambda: object()\n"
+            "    action = RefactorAction()\n",
         ),
         "inherited": source.replace(
             "@dataclass(frozen=True)\nclass RefactorAction:\n",
