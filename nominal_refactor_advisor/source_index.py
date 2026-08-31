@@ -237,6 +237,30 @@ class TargetsByFileIndex:
     def contains_file(self, file_path: str) -> bool:
         return file_path in self.targets_by_file_path
 
+    def smallest_enclosing_target(
+        self,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+    ) -> AstTargetDigest | None:
+        """Return the narrowest indexed declaration containing one source span."""
+
+        candidates = tuple(
+            target
+            for target in self.targets_by_file_path.tuple_for_key(file_path)
+            if target.contains_span(start_line, end_line)
+        )
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda target: (
+                target.end_line - target.line,
+                target.line,
+                target.qualname,
+            ),
+        )
+
     def to_dict(self) -> dict[str, tuple[AstTargetDigest, ...]]:
         return self.targets_by_file_path.to_dict()
 
@@ -368,6 +392,17 @@ class SourceIndex:
     @cached_property
     def targets_by_file(self) -> TargetsByFileIndex:
         return self.target_index_by_file
+
+    @cached_property
+    def target_file_paths(self) -> tuple[str, ...]:
+        return tuple(file_path for file_path, _targets in self.targets_by_file.items())
+
+    @cached_property
+    def targets_by_qualname(self) -> TupleIndex[str, AstTargetDigest]:
+        builder = TupleListIndexBuilder[str, AstTargetDigest]()
+        for target in self.ast_targets:
+            builder.append(target.qualname, target)
+        return builder.to_tuple_index()
 
     @cached_property
     def evidence_target_relation(self) -> EvidenceTargetRelation:

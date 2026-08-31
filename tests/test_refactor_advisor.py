@@ -16119,6 +16119,8 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
     assert source_index.evidence_by_id is source_index.evidence_by_id
     assert source_index.target_by_id is source_index.target_by_id
     assert source_index.targets_by_file is source_index.targets_by_file
+    assert source_index.targets_by_qualname is source_index.targets_by_qualname
+    assert source_index.target_file_paths is source_index.target_file_paths
     assert (
         source_index.target_ids_by_finding_id is source_index.target_ids_by_finding_id
     )
@@ -16128,7 +16130,52 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
     assert target_keys
     assert source_index.target_by_id[target_keys[0][0]].qualname == "Alpha.run"
     assert target_keys[0][1] == f"{module_path.as_posix()}:Alpha.run"
+    assert source_index.targets_by_qualname["Alpha.run"][0].target_id == target_keys[0][0]
+    assert (
+        source_index.targets_by_file.smallest_enclosing_target(
+            module_path.as_posix(),
+            3,
+            3,
+        ).target_id
+        == target_keys[0][0]
+    )
     assert set(source_index.to_dict()) == {"files", "ast_targets", "evidence"}
+
+
+def test_source_rewrite_target_uses_indexed_file_and_qualname_candidates(
+    tmp_path: Path,
+) -> None:
+    alpha_path = tmp_path / "pkg/alpha.py"
+    beta_path = tmp_path / "pkg/beta.py"
+    _write_module(tmp_path, "pkg/alpha.py", "def run():\n    return 'alpha'\n")
+    _write_module(tmp_path, "pkg/beta.py", "def run():\n    return 'beta'\n")
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    run_targets = source_index.targets_by_qualname["run"]
+    alpha_target = next(
+        target for target in run_targets if target.file_path == alpha_path.as_posix()
+    )
+    beta_target = next(
+        target for target in run_targets if target.file_path == beta_path.as_posix()
+    )
+
+    assert (
+        SourceRewriteTarget(
+            qualname="run",
+            file_path=alpha_path.as_posix(),
+        ).required_target_id(source_index)
+        == alpha_target.target_id
+    )
+    assert (
+        SourceRewriteTarget(qualname="run").required_target_id(
+            source_index,
+            eligible_target_ids=(beta_target.target_id,),
+        )
+        == beta_target.target_id
+    )
+    assert (
+        SourceRewriteTarget(target_id="unknown").optional_target_id(source_index)
+        is None
+    )
 
 
 def test_source_index_retains_all_matching_evidence_targets(tmp_path: Path) -> None:

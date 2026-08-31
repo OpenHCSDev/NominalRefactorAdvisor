@@ -1518,7 +1518,7 @@ class SourcePathCandidateAuthority:
         return cls(
             requested_path=requested_path,
             candidate_set=SourcePathCandidateSet.from_paths(
-                tuple(target.file_path for target in source_index.ast_targets)
+                source_index.target_file_paths
             ),
         )
 
@@ -1899,10 +1899,12 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
         eligible_ids = (
             set(eligible_target_ids)
             if eligible_target_ids is not None
-            else set(source_index.target_by_id)
+            else None
         )
         if self.target_id is not None:
-            if self.target_id in eligible_ids:
+            if self.target_id in source_index.target_by_id and (
+                eligible_ids is None or self.target_id in eligible_ids
+            ):
                 return self.target_id
             return None
         file_path = self.optional_file_path(source_index)
@@ -1913,12 +1915,9 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
                 file_path,
             )
         matching_target_ids = [
-            target_id
-            for target_id in sorted(eligible_ids)
-            if self.matches_target(
-                source_index.target_by_id.get(target_id),
-                file_path,
-            )
+            target.target_id
+            for target in self.candidate_targets(source_index, file_path)
+            if eligible_ids is None or target.target_id in eligible_ids
         ]
         if len(matching_target_ids) != 1:
             return None
@@ -1927,20 +1926,40 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
     def _optional_module_target_id(
         self,
         source_index: SourceIndex,
-        eligible_target_ids: set[str],
+        eligible_target_ids: set[str] | None,
         file_path: str | None,
     ) -> str | None:
         if file_path is None:
             return None
         matching_target_ids = [
-            target_id
-            for target_id in sorted(eligible_target_ids)
-            for target in (source_index.target_by_id.get(target_id),)
-            if target is not None and target.is_module and target.file_path == file_path
+            target.target_id
+            for target in source_index.targets_by_file[file_path]
+            if target.is_module
+            and (
+                eligible_target_ids is None
+                or target.target_id in eligible_target_ids
+            )
         ]
         if len(matching_target_ids) != 1:
             return None
         return matching_target_ids[0]
+
+    def candidate_targets(
+        self,
+        source_index: SourceIndex,
+        file_path: str | None,
+    ) -> tuple[AstTargetDigest, ...]:
+        if self.qualname is None:
+            return ()
+        if file_path is not None:
+            if file_path not in source_index.targets_by_file:
+                return ()
+            return tuple(
+                target
+                for target in source_index.targets_by_file[file_path]
+                if target.qualname == self.qualname
+            )
+        return source_index.targets_by_qualname.tuple_for_key(self.qualname)
 
     def required_target_id(
         self,
@@ -1957,17 +1976,6 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
         raise ValueError(
             "Source rewrite target did not resolve to exactly one eligible "
             "source-index target"
-        )
-
-    def matches_target(
-        self,
-        target: AstTargetDigest | None,
-        file_path: str | None,
-    ) -> bool:
-        return (
-            target is not None
-            and target.qualname == self.qualname
-            and (file_path is None or target.file_path == file_path)
         )
 
     def to_dict(self) -> JsonObject:
@@ -10728,26 +10736,17 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         file_path = next(iter(file_paths))
         start_line = min(replacement.start_line for replacement in replacements)
         end_line = max(replacement.end_line for replacement in replacements)
-        enclosing_targets = [
-            target
-            for target in self.source_index.ast_targets
-            if target.file_path == file_path
-            and target.line <= start_line
-            and target.end_line >= end_line
-        ]
-        if not enclosing_targets:
+        target = self.source_index.targets_by_file.smallest_enclosing_target(
+            file_path,
+            start_line,
+            end_line,
+        )
+        if target is None:
             raise ValueError(
                 f"No source-index target encloses {file_path!r} "
                 f"lines {start_line}:{end_line}"
             )
-        return min(
-            enclosing_targets,
-            key=lambda target: (
-                target.end_line - target.line,
-                target.line,
-                target.qualname,
-            ),
-        )
+        return target
 
     def _group_sort_key(
         self,
@@ -19942,22 +19941,10 @@ class FindingRecipePlanBuilder:
         source_path = next(iter(file_paths))
         start_line = min(replacement.start_line for replacement in replacements)
         end_line = max(replacement.end_line for replacement in replacements)
-        enclosing_targets = tuple(
-            target
-            for target in selector_context.source_index.ast_targets
-            if target.file_path == source_path
-            and target.line <= start_line
-            and target.end_line >= end_line
-        )
-        if not enclosing_targets:
-            return None
-        return min(
-            enclosing_targets,
-            key=lambda target: (
-                target.end_line - target.line,
-                target.line,
-                target.qualname,
-            ),
+        return selector_context.source_index.targets_by_file.smallest_enclosing_target(
+            source_path,
+            start_line,
+            end_line,
         )
 
     @classmethod
@@ -21486,20 +21473,10 @@ def _source_index_target_for_line(
 ) -> AstTargetDigest | None:
     if file_path not in source_index.targets_by_file:
         return None
-    candidates = tuple(
-        target
-        for target in source_index.targets_by_file[file_path]
-        if target.line <= line <= target.end_line
-    )
-    if not candidates:
-        return None
-    return min(
-        candidates,
-        key=lambda target: (
-            target.end_line - target.line,
-            -target.line,
-            target.qualname,
-        ),
+    return source_index.targets_by_file.smallest_enclosing_target(
+        file_path,
+        line,
+        line,
     )
 
 
