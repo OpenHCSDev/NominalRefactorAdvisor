@@ -365,8 +365,8 @@ class FindingRecipeSynthesisStatus(StrEnum):
     )
     NO_ACTION_KEYS = (
         "no_action_keys",
-        "synthesizer produced no source action keys",
-        FindingRecipeSynthesisDisposition.UNCOUNTED,
+        "executable recipe has no stable source action keys",
+        FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     DUPLICATE_ACTION_KEYS = (
         "duplicate_action_keys",
@@ -12305,6 +12305,14 @@ class FindingRecipeEvaluation(ABC):
     def with_recipe(self, recipe: RefactorRecipe) -> Self:
         raise TypeError(f"{type(self).__name__} cannot own an executable recipe")
 
+    def gated_by_action_keys(
+        self,
+        action_keys: tuple[FindingRecipeActionKey, ...],
+        seen_action_keys: frozenset[FindingRecipeActionKey],
+    ) -> "FindingRecipeEvaluation":
+        del action_keys, seen_action_keys
+        return self
+
     def gated_by_authority_claim(
         self,
         context: CodemodSelectorContext | None,
@@ -12326,16 +12334,10 @@ class FindingRecipeEvaluation(ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class UnevaluatedRecipeEvaluation(FindingRecipeEvaluation):
-    """Terminal synthesis outcome reached before declaration evaluation."""
+class MissingRecipeSynthesizerEvaluation(FindingRecipeEvaluation):
+    """Finding with no declaration capable of evaluating a recipe."""
 
-    status: FindingRecipeSynthesisStatus
-
-    def __post_init__(self) -> None:
-        if self.status.planned or self.status.rejected:
-            raise ValueError(
-                f"{self.status.value} requires a declaration-owned evaluation"
-            )
+    status = FindingRecipeSynthesisStatus.NO_SYNTHESIZER
 
     @property
     def rejection_reason(self) -> str:
@@ -12403,6 +12405,27 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
     def with_recipe(self, recipe: RefactorRecipe) -> Self:
         return replace(self, executable_recipe=recipe)
 
+    def gated_by_action_keys(
+        self,
+        action_keys: tuple[FindingRecipeActionKey, ...],
+        seen_action_keys: frozenset[FindingRecipeActionKey],
+    ) -> FindingRecipeEvaluation:
+        if not action_keys:
+            return MissingActionKeysRecipeEvaluation(
+                executable_recipe=self.executable_recipe,
+                executable_declaration_type=self.executable_declaration_type,
+            )
+        if any(
+            action_key.conflicts_with(seen_key)
+            for action_key in action_keys
+            for seen_key in seen_action_keys
+        ):
+            return DuplicateActionKeysRecipeEvaluation(
+                executable_recipe=self.executable_recipe,
+                executable_declaration_type=self.executable_declaration_type,
+            )
+        return self
+
     def gated_by_authority_claim(
         self,
         context: CodemodSelectorContext | None,
@@ -12443,14 +12466,33 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class IneffectiveRecipeEvaluation(ExecutableRecipeEvaluation):
-    """Executable declaration whose recipe changes no source semantics."""
+class NonPlanningExecutableRecipeEvaluation(ExecutableRecipeEvaluation, ABC):
+    """Evaluated executable recipe excluded from the emitted plan."""
 
-    status = FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
+    @property
+    @abstractmethod
+    def status(self) -> FindingRecipeSynthesisStatus:
+        raise NotImplementedError
 
     @property
     def planned_recipes(self) -> tuple[RefactorRecipe, ...]:
         return ()
+
+    def gated_by_action_keys(
+        self,
+        action_keys: tuple[FindingRecipeActionKey, ...],
+        seen_action_keys: frozenset[FindingRecipeActionKey],
+    ) -> FindingRecipeEvaluation:
+        del action_keys, seen_action_keys
+        return self
+
+    def gated_by_authority_claim(
+        self,
+        context: CodemodSelectorContext | None,
+        finding: RefactorFinding,
+    ) -> FindingRecipeEvaluation:
+        del context, finding
+        return self
 
     def terminal_evaluation(
         self,
@@ -12458,6 +12500,27 @@ class IneffectiveRecipeEvaluation(ExecutableRecipeEvaluation):
     ) -> FindingRecipeEvaluation:
         del context
         return self
+
+
+@dataclass(frozen=True, kw_only=True)
+class MissingActionKeysRecipeEvaluation(NonPlanningExecutableRecipeEvaluation):
+    """Executable recipe lacking stable source identity."""
+
+    status = FindingRecipeSynthesisStatus.NO_ACTION_KEYS
+
+
+@dataclass(frozen=True, kw_only=True)
+class DuplicateActionKeysRecipeEvaluation(NonPlanningExecutableRecipeEvaluation):
+    """Executable recipe whose source identity conflicts with an earlier recipe."""
+
+    status = FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS
+
+
+@dataclass(frozen=True, kw_only=True)
+class IneffectiveRecipeEvaluation(NonPlanningExecutableRecipeEvaluation):
+    """Executable declaration whose recipe changes no source semantics."""
+
+    status = FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -12576,37 +12639,22 @@ class FindingRecipeSynthesisAttempt:
     def evaluate(self) -> FindingRecipeSynthesisRecord:
         synthesizer = FindingRecipeSynthesizer.for_finding(self.finding)
         if synthesizer is None:
-            evaluation: FindingRecipeEvaluation = UnevaluatedRecipeEvaluation(
-                status=FindingRecipeSynthesisStatus.NO_SYNTHESIZER,
-            )
+            evaluation: FindingRecipeEvaluation = MissingRecipeSynthesizerEvaluation()
             action_keys: tuple[FindingRecipeActionKey, ...] = ()
         else:
-            raw_action_keys = synthesizer.action_keys_for_finding(self.finding)
-            action_keys = tuple(
-                key
-                for key in raw_action_keys
-                if not any(
-                    key.conflicts_with(seen_key) for seen_key in self.seen_action_keys
-                )
+            action_keys = synthesizer.action_keys_for_finding(self.finding)
+            evaluation = synthesizer.evaluate_recipe_for_finding(
+                self.finding,
+                self.selector_context,
             )
-            if not raw_action_keys:
-                evaluation = UnevaluatedRecipeEvaluation(
-                    status=FindingRecipeSynthesisStatus.NO_ACTION_KEYS,
-                )
-            elif len(action_keys) != len(raw_action_keys):
-                evaluation = UnevaluatedRecipeEvaluation(
-                    status=FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS,
-                )
-                action_keys = raw_action_keys
-            else:
-                evaluation = synthesizer.evaluate_recipe_for_finding(
-                    self.finding,
-                    self.selector_context,
-                )
-                evaluation = evaluation.gated_by_authority_claim(
-                    self.selector_context,
-                    self.finding,
-                ).terminal_evaluation(self.selector_context)
+        evaluation = (
+            evaluation.gated_by_action_keys(action_keys, self.seen_action_keys)
+            .gated_by_authority_claim(
+                self.selector_context,
+                self.finding,
+            )
+            .terminal_evaluation(self.selector_context)
+        )
         return FindingRecipeSynthesisRecord(
             finding=self.finding,
             action_keys=action_keys,

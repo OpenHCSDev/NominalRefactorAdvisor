@@ -139,9 +139,9 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeSynthesisStatus,
     FindingEvidenceTargetSelector,
     ExecutableRecipeEvaluation,
+    MissingRecipeSynthesizerEvaluation,
     MappingSemanticMirrorRecipeStrategy,
     SemanticDescentRecipeEvaluation,
-    UnevaluatedRecipeEvaluation,
     DeclareAuthorityOperation,
     DeleteClassAssignmentsOperation,
     DeleteTargetOperation,
@@ -1249,9 +1249,45 @@ def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() ->
     assert "AuthorityClaim" in evaluation.rejection_reason
 
 
-def test_unevaluated_recipe_cannot_claim_an_evaluated_status() -> None:
-    with pytest.raises(ValueError, match="requires a declaration-owned evaluation"):
-        UnevaluatedRecipeEvaluation(status=FindingRecipeSynthesisStatus.PLANNED)
+def test_missing_recipe_synthesizer_is_a_nominal_terminal_outcome() -> None:
+    evaluation = MissingRecipeSynthesizerEvaluation()
+
+    assert evaluation.status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+    assert evaluation.planned_recipes == ()
+
+
+def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+
+    evaluation = ExecutableRecipeEvaluation(
+        executable_recipe=RefactorRecipe("action-key-gate-fixture"),
+        executable_declaration_type=ExecutableRecipeEvaluation,
+    )
+    action_key = FindingRecipeActionKey(
+        detector_id="action_key_gate_fixture",
+        file_path="pkg/mod.py",
+        subject_name="Alpha",
+    )
+    child_key = FindingRecipeActionKey(
+        detector_id="another_detector",
+        file_path="pkg/mod.py",
+        subject_name="Alpha::run",
+    )
+
+    missing = evaluation.gated_by_action_keys((), frozenset())
+    duplicate = evaluation.gated_by_action_keys(
+        (action_key,),
+        frozenset((child_key,)),
+    )
+    unique = evaluation.gated_by_action_keys((action_key,), frozenset())
+
+    assert missing.status is FindingRecipeSynthesisStatus.NO_ACTION_KEYS
+    assert duplicate.status is FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS
+    assert missing.recipe_id == "action-key-gate-fixture"
+    assert duplicate.recipe_id == "action-key-gate-fixture"
+    assert missing.executable_declaration_name == "ExecutableRecipeEvaluation"
+    assert duplicate.executable_declaration_name == "ExecutableRecipeEvaluation"
+    assert unique is evaluation
 
 
 def test_authority_inference_updates_the_terminal_evaluation_recipe(
@@ -2209,6 +2245,118 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
     assert plan.report.planned_count == 0
     assert plan.report.rejected_count == 1
     assert payload["synthesis_report"]["status_counts"] == {"no_effective_rewrites": 1}
+
+
+def test_rejected_synthesis_does_not_require_executable_action_keys(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+
+    detector_id = "rejected_recipe_without_action_keys_test"
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "class Alpha:\n    pass\n")
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Rejected recipe fixture",
+        "A safety rejection remains useful without an executable source identity.",
+        "one declaration-owned safety evaluation",
+        "action-key gating suppresses the rejection reason",
+    ).build(
+        detector_id,
+        "Alpha cannot yet be rewritten safely.",
+        (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
+    )
+
+    class RejectedRecipeWithoutActionKeysSynthesizer(FindingRecipeSynthesizer):
+        detector_id = "rejected_recipe_without_action_keys_test"
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.rejected_evaluation("nominal authority proof is incomplete")
+
+    try:
+        snapshot = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(tmp_path),
+            (finding,),
+        )
+        plan = snapshot.plan_from_findings((finding,))
+    finally:
+        FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+
+    record = plan.records[0]
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert record.reason == "nominal authority proof is incomplete"
+    assert record.executable_declaration_name == (
+        "RejectedRecipeWithoutActionKeysSynthesizer"
+    )
+    assert record.action_keys == ()
+    assert plan.rejected_count == 1
+    assert plan.unsupported_count == 0
+
+
+def test_executable_synthesis_requires_action_keys_before_planning(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+
+    detector_id = "executable_recipe_without_action_keys_test"
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "class Alpha:\n    pass\n")
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Unidentified executable recipe fixture",
+        "An executable rewrite needs stable source identity before planning.",
+        "one source-identified executable rewrite",
+        "a recipe exists without action keys",
+    ).build(
+        detector_id,
+        "Alpha has an unidentified executable rewrite.",
+        (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
+    )
+
+    class ExecutableRecipeWithoutActionKeysSynthesizer(FindingRecipeSynthesizer):
+        detector_id = "executable_recipe_without_action_keys_test"
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe("unidentified-executable-recipe").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                        old_source="pass",
+                        new_source="value = 1",
+                    )
+                )
+            )
+
+    try:
+        snapshot = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(tmp_path),
+            (finding,),
+        )
+        plan = snapshot.plan_from_findings((finding,))
+    finally:
+        FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+
+    record = plan.records[0]
+    assert record.status is FindingRecipeSynthesisStatus.NO_ACTION_KEYS
+    assert record.action_keys == ()
+    assert record.recipe_id == "unidentified-executable-recipe"
+    assert record.executable_declaration_name == (
+        "ExecutableRecipeWithoutActionKeysSynthesizer"
+    )
+    assert plan.document.recipes == ()
+    assert plan.expected_removed_finding_ids == ()
+    assert plan.rejected_count == 0
+    assert plan.unsupported_count == 1
 
 
 def test_inferred_recipe_synthesis_discovers_concrete_nested_family_leaf() -> None:
