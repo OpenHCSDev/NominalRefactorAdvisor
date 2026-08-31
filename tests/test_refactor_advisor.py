@@ -3895,7 +3895,6 @@ def test_detects_generic_cancelable_product_composition_signal(
     assert signal.load_bearing_score > signal.field_count
 
 
-DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
@@ -5768,7 +5767,6 @@ def test_strict_economics_proof_exit_code_is_ci_enforceable(
 STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID = (
     "string_backed_reflective_nominal_lookup"
 )
-UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID = "unreferenced_private_function"
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> None:
@@ -7037,40 +7035,6 @@ def test_analysis_process_pool_uses_copy_on_write_on_linux() -> None:
         assert context.get_start_method() == "fork"
     else:
         assert context is None
-
-
-def test_private_reference_projection_records_outside_function_count(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def _helper():
-    _helper
-    unrelated
-
-
-def caller():
-    _helper()
-""",
-    )
-    module = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)[0]
-    projection = (
-        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily.collect(module)[
-            0
-        ]
-    )
-    function = next(
-        function
-        for function in projection.functions
-        if function.function_name == "_helper"
-    )
-
-    assert (
-        dict(projection.total_counts)["_helper"] - function.own_name_reference_count
-        == 1
-    )
 
 
 def test_parallel_analyze_modules_matches_sequential_stable_ids(
@@ -16810,175 +16774,6 @@ def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:
     assert finding.certification == "certified"
 
 
-def test_detects_dead_embedded_static_payload_emitter(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Publisher:\n    def publish(self, dest):\n        return self._write_manifest(dest)\n\n    def _write_manifest(self, dest):\n        (dest / "manifest.json").write_text("{}", encoding="utf-8")\n\n    def _write_static_shell(self, dest):\n        payload = """\\\n<section class="report">\n  <header>\n    <h1>Release</h1>\n  </header>\n  <main>\n    <article data-kind="summary">\n      <p>Generated view</p>\n    </article>\n    <aside>\n      <span>Status</span>\n    </aside>\n  </main>\n</section>\n"""\n        (dest / "index.html").write_text(payload, encoding="utf-8")\n',
-    )
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_static_payload_function_lines=10, min_static_payload_literal_lines=8
-        ),
-    )
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
-        )
-    )
-    assert (
-        runtime_detectors.DeadEmbeddedStaticPayloadDetector.cache_granularity
-        is base_detectors.DetectorCacheGranularity.CONTEXTUAL_GLOBAL
-    )
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "Publisher._write_static_shell" in finding.summary
-    assert "no in-module references" in finding.summary
-    assert "template/resource" in (finding.scaffold or "")
-
-
-def test_keeps_referenced_embedded_static_payload_emitters(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Publisher:\n    def publish(self, dest):\n        return self._write_static_shell(dest)\n\n    def _write_static_shell(self, dest):\n        payload = """\\\n<section class="report">\n  <header>\n    <h1>Release</h1>\n  </header>\n  <main>\n    <article data-kind="summary">\n      <p>Generated view</p>\n    </article>\n    <aside>\n      <span>Status</span>\n    </aside>\n  </main>\n</section>\n"""\n        (dest / "index.html").write_text(payload, encoding="utf-8")\n',
-    )
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_static_payload_function_lines=10, min_static_payload_literal_lines=8
-        ),
-    )
-    assert not any(
-        (
-            finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
-            for finding in findings
-        )
-    )
-
-
-def test_detects_unreferenced_private_function(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _stale_export(rows):\n    normalized = []\n    for row in rows:\n        normalized.append(str(row).strip())\n    if not normalized:\n        return []\n    return [\n        value.upper()\n        for value in normalized\n        if value\n    ]\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
-        )
-    )
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "_stale_export" in finding.summary
-    assert "no in-module references" in finding.summary
-    assert "registry, callback table, or public facade" in (finding.scaffold or "")
-
-
-def test_detects_dangling_private_method(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Cleanup:\n    def run(self, item):\n        return item\n\n    def _stale_export(self, rows):\n        normalized = []\n        for row in rows:\n            normalized.append(str(row).strip())\n        if not normalized:\n            return []\n        return [\n            value.upper()\n            for value in normalized\n            if value\n        ]\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "dangling_private_method"
-        )
-    )
-    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
-    assert "Cleanup._stale_export" in finding.summary
-    assert "no repository-visible method reference" in finding.summary
-    assert "ABC hook" in (finding.scaffold or "")
-
-
-def test_keeps_detector_override_hook_private_method(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom nominal_refactor_advisor.detectors import IssueDetector\n\n\nclass CustomDetector(IssueDetector):\n    def _collect_findings(self, modules, config):\n        del config\n        findings = []\n        for module in modules:\n            for node in module.module.body:\n                if node.__class__.__name__ == 'ClassDef':\n                    findings.append(node.name)\n        return findings\n",
-    )
-
-    findings = analyze_path(tmp_path)
-
-    assert not any(
-        (
-            finding.detector_id == "dangling_private_method"
-            and "CustomDetector._collect_findings" in finding.summary
-        )
-        for finding in findings
-    )
-
-
-def test_keeps_referenced_private_function(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Cleanup:\n    def run(self, rows):\n        return self._stale_export(rows)\n\n    def _stale_export(self, rows):\n        normalized = []\n        for row in rows:\n            normalized.append(str(row).strip())\n        if not normalized:\n            return []\n        return [\n            value.upper()\n            for value in normalized\n            if value\n        ]\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (
-            finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
-            for finding in findings
-        )
-    )
-    assert not any(
-        (finding.detector_id == "dangling_private_method" for finding in findings)
-    )
-
-
-def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarations(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef _render(rows, *, formatter, suffix):\n    return tuple(formatter(row) + suffix for row in rows)\n\n\nclass CsvEmitter:\n    def emit(self, rows):\n        return _render(rows, formatter=self.format_row, suffix=',')\n\n    def format_row(self, row):\n        return str(row)\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/unrelated.py",
-        "\nclass ExistingUnrelated:\n    pass\n",
-    )
-    baseline_modules = tuple(parse_python_modules(tmp_path))
-    baseline_signatures = {
-        detector_type.__name__: detector_type.context_signature(
-            baseline_modules, base_detectors.DetectorConfig()
-        )
-        for detector_type in (
-            runtime_detectors.DanglingPrivateMethodDetector,
-            runtime_detectors.DeadEmbeddedStaticPayloadDetector,
-            runtime_detectors.UnreferencedPrivateFunctionDetector,
-        )
-    }
-
-    _write_module(
-        tmp_path,
-        "pkg/unrelated.py",
-        "\nclass ExistingUnrelated:\n    pass\n\n\nclass NewlyDeclaredButUnconsumed:\n    pass\n",
-    )
-    updated_modules = tuple(parse_python_modules(tmp_path))
-
-    assert baseline_signatures == {
-        detector_type.__name__: detector_type.context_signature(
-            updated_modules, base_detectors.DetectorConfig()
-        )
-        for detector_type in (
-            runtime_detectors.DanglingPrivateMethodDetector,
-            runtime_detectors.DeadEmbeddedStaticPayloadDetector,
-            runtime_detectors.UnreferencedPrivateFunctionDetector,
-        )
-    }
-
-
 def test_detects_mirrored_import_fallback(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -17312,52 +17107,6 @@ def test_ignores_small_repeated_local_regex_fragments(tmp_path: Path) -> None:
     findings = analyze_path(tmp_path)
     assert not any(
         (finding.detector_id == "repeated_local_regex_bundle" for finding in findings)
-    )
-
-
-def test_unreferenced_private_function_uses_repo_wide_call_witness(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/worker.py",
-        "\nclass WorkerMixin:\n    def _derived_artifact(self):\n        step_one = 1\n        step_two = step_one + 1\n        step_three = step_two + 1\n        step_four = step_three + 1\n        step_five = step_four + 1\n        step_six = step_five + 1\n        return step_six\n",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/facade.py",
-        "\nfrom .worker import WorkerMixin\n\n\nclass Facade(WorkerMixin):\n    def run(self):\n        return self._derived_artifact()\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (
-            finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
-            and "WorkerMixin._derived_artifact" in finding.summary
-            for finding in findings
-        )
-    )
-
-
-def test_dead_embedded_payload_uses_repo_wide_call_witness(tmp_path: Path) -> None:
-    payload = "\n".join((f"key_{index}: value_{index}" for index in range(25)))
-    padding = "\n".join((f"        step_{index} = {index}" for index in range(40)))
-    _write_module(
-        tmp_path,
-        "pkg/artifact.py",
-        f'\nclass ArtifactMixin:\n    def _write_payload(self, path):\n        payload = """{payload}"""\n{padding}\n        path.write_text(payload)\n        return payload\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/facade.py",
-        "\nfrom .artifact import ArtifactMixin\n\n\nclass Facade(ArtifactMixin):\n    def run(self, path):\n        return self._write_payload(path)\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (
-            finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
-            and "ArtifactMixin._write_payload" in finding.summary
-            for finding in findings
-        )
     )
 
 

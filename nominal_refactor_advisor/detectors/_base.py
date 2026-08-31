@@ -430,18 +430,6 @@ class DetectorConfig:
         "Minimum manual registration sites before surfacing a class-registration finding.",
     )
     min_reflective_selector_values: int = 2
-    min_static_payload_function_lines: int = detector_config_option(
-        60,
-        "Minimum function length for unreferenced embedded static-payload emitter detection.",
-    )
-    min_static_payload_literal_lines: int = detector_config_option(
-        20,
-        "Minimum embedded static-payload literal lines before surfacing an emitter finding.",
-    )
-    min_unreferenced_private_function_lines: int = detector_config_option(
-        8,
-        "Minimum private function length before surfacing an unreferenced-code finding.",
-    )
     min_repeated_local_regex_literals: int = detector_config_option(
         3,
         "Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",

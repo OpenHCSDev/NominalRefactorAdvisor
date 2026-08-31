@@ -68,18 +68,19 @@ class CompactRemainingSystemicModuleProjection(CompactModuleIdentity):
 def _compact_concrete_type_case_function_facts(
     module: ParsedModule,
 ) -> tuple[CompactConcreteTypeCaseFunctionFact, ...]:
-    from ._runtime import PrivateReferenceModuleIndex
-
     union_aliases = tuple(sorted(_module_union_type_aliases(module).items()))
     facts: list[CompactConcreteTypeCaseFunctionFact] = []
-    for indexed_function in PrivateReferenceModuleIndex.from_module(
-        module
-    ).named_functions:
-        qualname = indexed_function.qualname
-        function = indexed_function.function
+    for qualname, function in _iter_named_functions(module):
         alias_sources = _top_level_attribute_aliases(function)
         grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
-        for subnode in indexed_function.isinstance_calls:
+        for subnode in _walk_nodes(function):
+            if not (
+                isinstance(subnode, ast.Call)
+                and len(subnode.args) == 2
+                and not subnode.keywords
+                and _ast_terminal_name(subnode.func) == "isinstance"
+            ):
+                continue
             subject_expression = _attribute_family_subject_expression(
                 subnode.args[0], alias_sources=alias_sources
             )

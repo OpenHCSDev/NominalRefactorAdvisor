@@ -2765,7 +2765,7 @@ def test_source_local_detector_does_not_switch_mixed_families_to_native(
             ),
             missing_families=(
                 RegistrationShapeFamily,
-                runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+                systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
             ),
             config=DetectorConfig(),
             local_detector_types=(reflection_detectors.BuiltinLocalsCallDetector,),
@@ -2774,7 +2774,7 @@ def test_source_local_detector_does_not_switch_mixed_families_to_native(
 
     assert [batch.family for batch in result.projection_batches] == [
         RegistrationShapeFamily,
-        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+        systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
     ]
     assert result.local_findings == ()
 
@@ -2966,38 +2966,6 @@ def test_report_context_witness_retains_context_promotion_for_target_projection(
         for finding in result.findings
         for evidence in finding.evidence
     )
-
-
-def test_private_reference_report_demand_skips_context_without_target_candidate(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    target_path = package_root / "target.py"
-    context_path = package_root / "context.py"
-    target_path.write_text("def public():\n    return 1\n", encoding="utf-8")
-    context_path.write_text(
-        "def _context_helper(value):\n"
-        "    first = value + 1\n"
-        "    second = first * 2\n"
-        "    return second\n",
-        encoding="utf-8",
-    )
-    modules = {
-        module.path.name: module
-        for module in parse_python_modules(package_root, use_parse_cache=False)
-    }
-    family = runtime_detectors.CompactPrivateReferenceModuleProjectionFamily
-    target_items = tuple(family.collect(modules["target.py"]))
-    context_items = tuple(family.collect(modules["context.py"]))
-
-    demand = family.report_demand(target_items, DetectorConfig())
-
-    assert isinstance(demand, ast_tools_module.CollectedFamilyPresenceDemand)
-    assert demand.include_context is False
-    assert family.collect_demanded(modules["context.py"], demand) == []
-    assert family.project_cached_demand(context_items, demand) == ()
-    assert context_items[0].functions
 
 
 def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> None:
@@ -3587,19 +3555,19 @@ def test_mixed_projection_shard_uses_only_python_ast(
             source=projection_source,
             missing_families=(
                 RegistrationShapeFamily,
-                runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+                systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
             ),
             config=DetectorConfig(),
             bundle_families=(
                 RegistrationShapeFamily,
-                runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+                systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
             ),
         )
     )
 
     assert [batch.family for batch in result.projection_batches] == [
         RegistrationShapeFamily,
-        runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+        systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
     ]
     assert result.cache_bundle_complete
     assert {
@@ -3612,7 +3580,7 @@ def test_mixed_projection_shard_uses_only_python_ast(
     }
     assert (
         projection_source.load_content_signature(
-            runtime_detectors.CompactPrivateReferenceModuleProjectionFamily,
+            systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
         )
         is not None
     )
@@ -4045,88 +4013,6 @@ def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate
         isinstance(identity, GlobalDetectorFamilyAnalysisCacheIdentity)
         for identity in stored_identities
     )
-
-
-
-
-def test_compact_private_reference_detectors_preserve_semantics_without_ast_shadow(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "mod.py").write_text(
-        "def _stale_export(rows):\n"
-        "    normalized = [str(row).strip() for row in rows]\n"
-        "    if not normalized:\n"
-        "        return []\n"
-        "    return [value.upper() for value in normalized if value]\n"
-        "\n"
-        "class Publisher:\n"
-        "    def _stale_method(self, rows):\n"
-        "        normalized = [str(row).strip() for row in rows]\n"
-        "        if not normalized:\n"
-        "            return []\n"
-        "        return [value.upper() for value in normalized if value]\n"
-        "\n"
-        "    def _write_static_shell(self, dest):\n"
-        "        payload = '''<section class=\"report\">\n"
-        "<header><h1>Release</h1></header>\n"
-        "<main><article>Generated view</article></main>\n"
-        "</section>'''\n"
-        "        (dest / 'index.html').write_text(payload, encoding='utf-8')\n",
-        encoding="utf-8",
-    )
-    detector_types = (
-        runtime_detectors.DeadEmbeddedStaticPayloadDetector,
-        runtime_detectors.UnreferencedPrivateFunctionDetector,
-        runtime_detectors.DanglingPrivateMethodDetector,
-    )
-    config = DetectorConfig(
-        min_unreferenced_private_function_lines=4,
-        min_static_payload_function_lines=4,
-        min_static_payload_literal_lines=4,
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (package_root,),
-        detector_types,
-        use_parse_cache=False,
-    )
-    projected_findings = accumulator.findings_by_detector(config)
-
-    expected_qualnames = {
-        runtime_detectors.DeadEmbeddedStaticPayloadDetector: (
-            "Publisher._write_static_shell",
-        ),
-        runtime_detectors.UnreferencedPrivateFunctionDetector: ("_stale_export",),
-        runtime_detectors.DanglingPrivateMethodDetector: (
-            "Publisher._stale_method",
-            "Publisher._write_static_shell",
-        ),
-    }
-    for detector_type in detector_types:
-        detector = detector_type()
-        candidates = tuple(detector._candidate_items(list(modules), config))
-        assert tuple(candidate.qualname for candidate in candidates) == (
-            expected_qualnames[detector_type]
-        )
-        assert projected_findings[detector_type] == detector._findings_for_candidates(
-            candidates,
-            config,
-        )
-        assert "_candidate_items_for_private_reference_context" not in (
-            detector_type.__dict__
-        )
-    for removed_name in (
-        "ReferenceCountIndex",
-        "PrivateReferenceDetectorContext",
-        "PrivateReferenceContextualDetector",
-        "_private_reference_detector_context",
-        "_embedded_static_payload_candidates",
-        "_unreferenced_private_function_candidates",
-        "_dangling_private_method_candidates",
-    ):
-        assert not hasattr(runtime_detectors, removed_name)
 
 
 
@@ -6044,15 +5930,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.NominalInstanceExplicitOrderingDetector in (
         partition.compact_global_detector_types
     )
-    assert runtime_detectors.DeadEmbeddedStaticPayloadDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.UnreferencedPrivateFunctionDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.DanglingPrivateMethodDetector in (
-        partition.compact_global_detector_types
-    )
     assert structural_detectors.SupportPreludeModuleFamilyDetector in (
         partition.compact_global_detector_types
     )
@@ -6453,7 +6330,6 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
         for finding in exact_findings
     )
 
-
 def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
     tmp_path: Path,
 ) -> None:
@@ -6598,68 +6474,4 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
             for evidence in finding.evidence
         )
         for finding in exact_findings
-    )
-
-
-
-def test_private_reference_contextual_cache_invalidates_when_reference_edge_changes(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    helpers_path = package_root / "helpers.py"
-    helpers_path.write_text(
-        "def _build_plan(value):\n"
-        "    first = value + 1\n"
-        "    second = first * 2\n"
-        "    third = second - value\n"
-        "    fourth = third + first\n"
-        "    fifth = fourth + second\n"
-        "    sixth = fifth - third\n"
-        "    seventh = sixth + fourth\n"
-        "    return seventh\n",
-        encoding="utf-8",
-    )
-    consumer_path = package_root / "consumer.py"
-    consumer_path.write_text(
-        "def use(value):\n    return value\n",
-        encoding="utf-8",
-    )
-    cache_dir = tmp_path / ".nra-cache" / "ast"
-
-    initial_findings = analyze_path(
-        package_root,
-        cache_dir=cache_dir,
-        parse_workers=0,
-        analysis_workers=0,
-    )
-
-    assert any(
-        finding.detector_id == "unreferenced_private_function"
-        and finding.evidence[0].file_path == helpers_path.as_posix()
-        and "`_build_plan`" in finding.summary
-        for finding in initial_findings
-    )
-
-    consumer_path.write_text(
-        "from pkg.helpers import _build_plan\n"
-        "\n"
-        "\n"
-        "def use(value):\n"
-        "    return _build_plan(value)\n",
-        encoding="utf-8",
-    )
-
-    updated_findings = analyze_path(
-        package_root,
-        cache_dir=cache_dir,
-        parse_workers=0,
-        analysis_workers=0,
-    )
-
-    assert not any(
-        finding.detector_id == "unreferenced_private_function"
-        and finding.evidence[0].file_path == helpers_path.as_posix()
-        and "`_build_plan`" in finding.summary
-        for finding in updated_findings
     )
