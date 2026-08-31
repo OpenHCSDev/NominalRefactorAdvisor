@@ -15085,13 +15085,21 @@ def test_detects_namespaced_auto_register_decorator_family(tmp_path: Path) -> No
     assert any((finding.pattern_id == 6 for finding in findings))
 
 
-def test_collects_registration_shapes_via_spec_family(tmp_path: Path) -> None:
+def test_collects_registration_shapes_via_spec_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         '\nclass Plugins:\n    def auto_register(self, registry, key):\n        def deco(cls):\n            return cls\n        return deco\n\n\nplugins = Plugins()\nREGISTRY = {}\n\n\n@plugins.auto_register(REGISTRY, "alpha")\nclass Alpha:\n    pass\n\n\nREGISTRY["beta"] = Alpha\n',
     )
     module = parse_python_modules(tmp_path)[0]
+
+    def unexpected_walk(_node: ast.AST) -> object:
+        raise AssertionError("registration shapes must reuse the module syntax index")
+
+    monkeypatch.setattr(ast, "walk", unexpected_walk)
     shapes = collect_family_items(module, RegistrationShapeFamily)
     assert {shape.registration_style for shape in shapes} == {
         "decorator_registration",

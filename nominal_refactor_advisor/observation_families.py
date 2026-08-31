@@ -56,6 +56,7 @@ from .ast_tools import (
     ShapeEmission,
     SingleSpecCollectedFamily,
     SourceModule,
+    module_syntax_index,
     _REGISTRATION_CALL_FAMILY,
     _REGISTRATION_DECORATOR_FAMILY,
     _builder_call_shape,
@@ -1070,9 +1071,9 @@ class AssignmentRegistrationShapeSpec(KnownClassFamilyShapeSpec):
         known_class_family: AstNameFamily,
     ) -> list[RegistrationShape]:
         shapes: list[RegistrationShape] = []
-        for node in ast.walk(parsed_module.module):
-            if not isinstance(node, ast.Assign):
-                continue
+        for _node_index, node in module_syntax_index(
+            parsed_module.module
+        ).indexed_nodes_of_type(ast.Assign):
             if not isinstance(node.value, ast.Name):
                 continue
             if _terminal_name_in_family(node.value, known_class_family) is None:
