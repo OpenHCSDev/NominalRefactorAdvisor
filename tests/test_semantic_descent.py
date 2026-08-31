@@ -1964,6 +1964,64 @@ def test_dataclass_template_keywords_do_not_invent_dsl_action(
     )
 
 
+def test_reused_dataclass_fields_do_not_invent_foreign_authority_mirrors(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Conversation:\n"
+        "    id: str\n"
+        "    title: str\n"
+        "    created_at: str\n"
+        "    updated_at: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactoringCheckpoint:\n"
+        "    id: str\n"
+        "    title: str\n"
+        "    created_at: str\n"
+        "    updated_at: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactoringStep:\n"
+        "    id: str\n"
+        "    title: str\n"
+        "    created_at: str\n"
+        "    updated_at: str\n"
+        "\n"
+        "class ConversationContext:\n"
+        "    def __init__(self, conversation):\n"
+        "        self.conversation = conversation\n"
+        "\n"
+        "    def get_conversation_summary(self):\n"
+        "        return {\n"
+        "            'id': self.conversation.id,\n"
+        "            'title': self.conversation.title,\n"
+        "            'created_at': self.conversation.created_at.upper(),\n"
+        "            'updated_at': self.conversation.updated_at.upper(),\n"
+        "        }\n",
+    )
+
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(
+            parse_python_modules(tmp_path),
+            DetectorConfig(),
+        )
+    )
+    source_names = {
+        finding.metrics.plan_source_name
+        for finding in findings
+        if (finding.metrics.plan_mapping_name or "").startswith(
+            "ConversationContext.get_conversation_summary:return@"
+        )
+    }
+
+    assert source_names == set()
+
+
 def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     tmp_path: Path,
 ) -> None:

@@ -1776,8 +1776,7 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
-            candidate.match.fact_count <= 2
-            and not context.projection_semantics.has_authority_affinity(
+            not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
                 candidate.authority,
             )
