@@ -15,6 +15,7 @@ from contextlib import contextmanager
 import hashlib
 import io
 import gc
+import keyword
 import os
 import pickle
 import sys
@@ -411,7 +412,8 @@ class PythonModulePathIdentity:
         path: Path,
         analysis_root: Path,
     ) -> "PythonModulePathIdentity":
-        relative = path.relative_to(analysis_root)
+        import_root = cls.import_root(path, analysis_root)
+        relative = path.relative_to(import_root)
         module_parts = list(relative.with_suffix("").parts)
         is_package_init = bool(module_parts and module_parts[-1] == "__init__")
         if is_package_init:
@@ -422,6 +424,31 @@ class PythonModulePathIdentity:
             import_name=import_name,
             is_package_init=is_package_init,
         )
+
+    @staticmethod
+    def import_root(path: Path, analysis_root: Path) -> Path:
+        """Use the outer edge of the source package as import-name authority."""
+
+        package_directory = path.parent
+        import_root: Path | None = None
+        while (package_directory / "__init__.py").is_file():
+            import_root = package_directory.parent
+            package_directory = package_directory.parent
+        return analysis_root if import_root is None else import_root
+
+    @property
+    def is_importable(self) -> bool:
+        return python_module_name_is_importable(self.import_name)
+
+
+def python_module_name_is_importable(module_name: str) -> bool:
+    """Return whether a dotted source identity is valid Python import syntax."""
+
+    parts = module_name.split(".")
+    return bool(
+        parts
+        and all(part.isidentifier() and not keyword.iskeyword(part) for part in parts)
+    )
 
 
 def _source_signature(source: str) -> str:

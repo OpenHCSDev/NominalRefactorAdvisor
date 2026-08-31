@@ -6101,6 +6101,45 @@ def test_parse_python_modules_accepts_direct_file_path(tmp_path: Path) -> None:
     assert modules[0].module_name == "mod"
 
 
+def test_source_import_identity_uses_nested_package_boundary(
+    tmp_path: Path,
+) -> None:
+    projection_path = tmp_path / "openhcs/ui.py"
+    authority_path = (
+        tmp_path
+        / "external/pyqt-reactive/src/pyqt_reactive/services/widget_tree_projection.py"
+    )
+    _write_module(tmp_path, "openhcs/__init__.py", "")
+    _write_module(tmp_path, "openhcs/ui.py", "VALUE = 1\n")
+    _write_module(
+        tmp_path,
+        "external/pyqt-reactive/src/pyqt_reactive/__init__.py",
+        "",
+    )
+    _write_module(
+        tmp_path,
+        "external/pyqt-reactive/src/pyqt_reactive/services/__init__.py",
+        "",
+    )
+    _write_module(
+        tmp_path,
+        "external/pyqt-reactive/src/pyqt_reactive/services/widget_tree_projection.py",
+        "class WidgetRect:\n    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    assert snapshot.module_import_graph.module_name_for_file_path(
+        authority_path.as_posix()
+    ) == "pyqt_reactive.services.widget_tree_projection"
+    assert snapshot.module_import_graph.import_source(
+        importing_file_path=projection_path.as_posix(),
+        imported_file_path=authority_path.as_posix(),
+        imported_name="WidgetRect",
+    ) == (
+        "from pyqt_reactive.services.widget_tree_projection import WidgetRect\n"
+    )
+
+
 def test_parse_python_module_roots_combines_files_and_dedupes(
     tmp_path: Path,
 ) -> None:

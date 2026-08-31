@@ -44,6 +44,7 @@ from .ast_tools import (
     BuiltinCallName,
     ImportBoundNameProjection,
     ParsedModule,
+    python_module_name_is_importable,
 )
 from .class_index import ClassFamilyIndex, build_class_family_index
 from .codemod_spacing import DestinationInsertionSpacing
@@ -1618,6 +1619,10 @@ class SourceModuleImportGraph:
         }
 
     @cached_property
+    def source_path_candidates(self) -> SourcePathCandidateSet:
+        return SourcePathCandidateSet.from_paths(tuple(self.source_file_by_path))
+
+    @cached_property
     def known_module_names(self) -> frozenset[str]:
         return frozenset(
             source_file.module_name for source_file in self.source_index.files
@@ -1693,10 +1698,97 @@ class SourceModuleImportGraph:
         return self.module_reaches(imported_module, importing_module)
 
     def module_name_for_file_path(self, file_path: str) -> str | None:
-        source_file = self.source_file_by_path.get(file_path)
+        source_file = self.source_file_for_path(file_path)
         if source_file is None:
             return None
         return source_file.module_name
+
+    def source_file_for_path(self, file_path: str) -> SourceFileDigest | None:
+        exact_match = self.source_file_by_path.get(file_path)
+        if exact_match is not None:
+            return exact_match
+        resolved_path = SourcePathResolutionAuthority(
+            requested_path=file_path,
+            candidate_set=self.source_path_candidates,
+        ).optional_path()
+        if resolved_path is None:
+            return None
+        return self.source_file_by_path.get(resolved_path)
+
+    @cached_property
+    def package_module_names(self) -> frozenset[str]:
+        return frozenset(
+            source_file.module_name
+            for source_file in self.source_index.files
+            if source_file.is_package_init
+        )
+
+    def import_source(
+        self,
+        *,
+        importing_file_path: str,
+        imported_file_path: str,
+        imported_name: str,
+    ) -> str | None:
+        """Render an import only from canonical parsed-module identities."""
+
+        if not python_module_name_is_importable(imported_name):
+            return None
+        importing_file = self.source_file_for_path(importing_file_path)
+        imported_file = self.source_file_for_path(imported_file_path)
+        if importing_file is None or imported_file is None:
+            return None
+        if not python_module_name_is_importable(imported_file.module_name):
+            return None
+        module_reference = self.relative_module_reference(
+            importing_file,
+            imported_file,
+        ) or imported_file.module_name
+        return f"from {module_reference} import {imported_name}\n"
+
+    def relative_module_reference(
+        self,
+        importing_file: SourceFileDigest,
+        imported_file: SourceFileDigest,
+    ) -> str | None:
+        importing_parts = importing_file.module_name.split(".")
+        imported_parts = imported_file.module_name.split(".")
+        importing_package = (
+            tuple(importing_parts)
+            if importing_file.is_package_init
+            else tuple(importing_parts[:-1])
+        )
+        imported_package = (
+            tuple(imported_parts)
+            if imported_file.is_package_init
+            else tuple(imported_parts[:-1])
+        )
+        if not importing_package:
+            return None
+        common_length = 0
+        for importing_part, imported_part in zip(
+            importing_package,
+            imported_parts,
+            strict=False,
+        ):
+            if importing_part != imported_part:
+                break
+            common_length += 1
+        if common_length == 0:
+            return None
+        if not self.declared_package_chain(importing_package):
+            return None
+        if not self.declared_package_chain(imported_package):
+            return None
+        dots = "." * (len(importing_package) - common_length + 1)
+        remainder = ".".join(imported_parts[common_length:])
+        return f"{dots}{remainder}"
+
+    def declared_package_chain(self, package_parts: tuple[str, ...]) -> bool:
+        return all(
+            ".".join(package_parts[:length]) in self.package_module_names
+            for length in range(1, len(package_parts) + 1)
+        )
 
     def module_reaches(self, start_module: str, target_module: str) -> bool:
         visited: set[str] = set()
@@ -15671,6 +15763,18 @@ class EnumSubsetSemanticMirrorRecipeBuilder(
             method_name,
         ):
             return None
+        authority_import_source = (
+            MappingSemanticMirrorRecipeStrategy.import_source_for_path(
+                self,
+                projection_path=seed.projection_file_path(),
+                authority_path=seed.authority_file_path(),
+                authority_name=seed.authority_name,
+            )
+            if seed.projection_file_path() != seed.authority_file_path()
+            else ""
+        )
+        if authority_import_source is None:
+            return None
         return EnumSubsetSemanticMirrorRecipeParts(
             projection=EnumSubsetProjectionTarget(
                 projection_path=seed.projection_file_path(),
@@ -15678,12 +15782,7 @@ class EnumSubsetSemanticMirrorRecipeBuilder(
             ),
             authority=EnumSubsetAuthorityTarget(
                 source_path=seed.authority_file_path(),
-                import_source=MappingSemanticMirrorRecipeStrategy.import_source_for_path(
-                    self,
-                    projection_path=seed.projection_file_path(),
-                    authority_path=seed.authority_file_path(),
-                    authority_name=seed.authority_name,
-                ),
+                import_source=authority_import_source,
                 class_name=seed.authority_name,
                 qualname=projection.authority.target.qualname,
             ),
@@ -18547,46 +18646,12 @@ class SemanticMirrorAuthorityLocation:
     ) -> "SemanticMirrorAuthorityLocation":
         return replace(self, projection_path=projection_path)
 
-    def import_source(self) -> str:
-        relative_module = self.relative_module_name()
-        if relative_module is not None:
-            return f"from {relative_module} import {self.authority_name}\n"
-        module_name = module_name_from_source_path(self.authority_path)
-        return f"from {module_name} import {self.authority_name}\n"
-
-    def relative_module_name(self) -> str | None:
-        projection_package = self.package_parts(Path(self.projection_path).parent)
-        authority_path = Path(self.authority_path)
-        authority_package = self.package_parts(authority_path.parent)
-        if not projection_package or not authority_package:
-            return None
-        common_length = self.common_prefix_length(projection_package, authority_package)
-        if common_length == 0:
-            return None
-        dots = "." * (len(projection_package) - common_length + 1)
-        authority_module_parts = (
-            *authority_package[common_length:],
-            authority_path.stem,
+    def import_source(self, graph: SourceModuleImportGraph) -> str | None:
+        return graph.import_source(
+            importing_file_path=self.projection_path,
+            imported_file_path=self.authority_path,
+            imported_name=self.authority_name,
         )
-        return f"{dots}{'.'.join(authority_module_parts)}"
-
-    @staticmethod
-    def package_parts(directory: Path) -> tuple[str, ...]:
-        parts: list[str] = []
-        current = directory
-        while (current / "__init__.py").exists():
-            parts.insert(0, current.name)
-            current = current.parent
-        return tuple(parts)
-
-    @staticmethod
-    def common_prefix_length(left: tuple[str, ...], right: tuple[str, ...]) -> int:
-        length = 0
-        for left_part, right_part in zip(left, right, strict=False):
-            if left_part != right_part:
-                break
-            length += 1
-        return length
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -18695,16 +18760,23 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
     assignment_name: str
     assignment_source: str
 
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+    def recipe_for(
+        self,
+        finding: RefactorFinding,
+        import_graph: SourceModuleImportGraph,
+    ) -> RefactorRecipe | None:
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-class-family-collection",
             reason="Derive subclass collection from the class-family authority.",
         ).with_authority_claim(self.authority_claim())
         if self.projection_path != self.authority_path:
+            import_source = self.import_source(import_graph)
+            if import_source is None:
+                return None
             recipe = recipe.with_operation(
                 EnsureImportOperation(
                     target=SourceRewriteTarget(file_path=self.projection_path),
-                    import_source=self.import_source(),
+                    import_source=import_source,
                     rationale="",
                 )
             )
@@ -18734,7 +18806,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
         parts = self.parts()
         if parts is None:
             return None
-        return parts.recipe_for(self.finding)
+        return parts.recipe_for(self.finding, self.module_import_graph)
 
     def parts(self) -> ClassFamilyCollectionSemanticMirrorRecipeParts | None:
         return (
@@ -18807,6 +18879,16 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
                 "nominal class-family authority exposes no complete runtime member "
                 "query for this projection"
             )
+        if (
+            seed.projection_file_path() != seed.authority_file_path()
+            and SemanticMirrorAuthorityLocation(
+                projection_path=seed.projection_file_path(),
+                authority_path=seed.authority_file_path(),
+                authority_name=seed.authority_symbol(),
+            ).import_source(self.module_import_graph)
+            is None
+        ):
+            return "semantic authority has no canonical importable module identity"
         return "class-family collection derivation is available"
 
     def membership_projection_for(
@@ -19233,42 +19315,17 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         )
 
     @staticmethod
-    def module_name_for_path(context: CodemodSelectorContext, source_path: str) -> str:
-        resolved_path = SourcePathResolutionAuthority.from_source_index(
-            source_path,
-            context.source_index,
-        ).optional_path()
-        for source_file in context.source_index.files:
-            if source_file.file_path == resolved_path:
-                return source_file.module_name
-        return module_name_from_source_path(source_path)
-
-    @staticmethod
     def import_source_for_path(
         context: CodemodSelectorContext,
         *,
         projection_path: str,
         authority_path: str,
         authority_name: str,
-    ) -> str:
-        module_name = MappingSemanticMirrorRecipeStrategy.module_name_for_path(
-            context,
-            authority_path,
-        )
-        if MappingSemanticMirrorRecipeStrategy.should_use_relative_import(
-            projection_path,
-            authority_path,
-        ):
-            module_name = f".{module_name.rsplit('.', maxsplit=1)[-1]}"
-        return f"from {module_name} import {authority_name}\n"
-
-    @staticmethod
-    def should_use_relative_import(projection_path: str, authority_path: str) -> bool:
-        projection_file = Path(projection_path)
-        authority_file = Path(authority_path)
-        return (
-            projection_file.parent == authority_file.parent
-            and (projection_file.parent / "__init__.py").exists()
+    ) -> str | None:
+        return context.module_import_graph.import_source(
+            importing_file_path=projection_path,
+            imported_file_path=authority_path,
+            imported_name=authority_name,
         )
 
     @staticmethod
