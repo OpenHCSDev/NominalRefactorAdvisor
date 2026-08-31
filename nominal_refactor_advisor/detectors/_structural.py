@@ -808,52 +808,6 @@ class TypeIndexedDefinitionBoilerplateDetector(
         )
 
 
-class DerivedExportSurfaceDetector(
-    ModuleCollectorCandidateDetector[DerivedExportSurfaceCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Manual export surfaces should derive from the authoritative type family",
-        "A module manually enumerates export names even though those exports are derivable from one local nominal class family. That creates a second authority for the public surface.",
-        "one derived export surface projected from the authoritative class family",
-        "manual export tuple/list repeats names already implied by local type families",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, export_candidate: DerivedExportSurfaceCandidate
-    ) -> RefactorFinding:
-        root_names = ", ".join(export_candidate.derivable_root_names)
-        return self.build_finding(
-            (
-                f"`{export_candidate.export_symbol}` manually enumerates {len(export_candidate.exported_names)} exported names that are derivable from local `{root_names}` families."
-            ),
-            (
-                SourceLocation(
-                    export_candidate.file_path,
-                    export_candidate.line,
-                    export_candidate.export_symbol,
-                ),
-            ),
-            scaffold=(
-                "def public_exports() -> tuple[str, ...]:\n    return tuple(\n        sorted(\n            name\n            for name, value in globals().items()\n            if is_public_export(name, value)\n        )\n    )"
-            ),
-            codemod_patch=(
-                f"# Delete `{export_candidate.export_symbol}` as a handwritten export list.\n"
-                "# Derive the public export surface from the authoritative local type family or generated-family registry instead."
-            ),
-            metrics=MappingMetrics.from_field_names(
-                mapping_site_count=len(export_candidate.exported_names),
-                mapping_name=export_candidate.export_symbol,
-                field_names=export_candidate.derivable_root_names,
-            ),
-        )
-
-
 def _native_export_policy_predicate_candidates(
     source_module: SourceModule,
     syntax_index: NativePythonSyntaxIndex,

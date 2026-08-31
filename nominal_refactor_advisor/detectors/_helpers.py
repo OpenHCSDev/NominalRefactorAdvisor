@@ -2442,41 +2442,6 @@ def _type_indexed_definition_boilerplate_groups(
     )
 
 
-def _derived_export_surface_candidates(
-    module: ParsedModule,
-) -> tuple[DerivedExportSurfaceCandidate, ...]:
-    index = NominalAuthorityIndex((module,))
-    candidates: list[DerivedExportSurfaceCandidate] = []
-    for (
-        export_symbol,
-        line,
-        exported_names,
-    ) in HELPER_SUPPORT_PROJECTION_AUTHORITY.module_string_sequence_assignments(module):
-        local_shapes = [
-            shapes[0]
-            for exported_name in exported_names
-            if (shapes := index.shapes_named(exported_name))
-            and shapes[0].file_path == module.file_path
-        ]
-        if len(local_shapes) < 6 or len(local_shapes) * 5 < len(exported_names) * 4:
-            continue
-        root_names = HELPER_SUPPORT_PROJECTION_AUTHORITY.derivable_nominal_root_names(
-            local_shapes
-        )
-        if not root_names:
-            continue
-        candidates.append(
-            DerivedExportSurfaceCandidate(
-                file_path=module.file_path,
-                export_symbol=export_symbol,
-                line=line,
-                exported_names=exported_names,
-                derivable_root_names=root_names,
-            )
-        )
-    return tuple(candidates)
-
-
 def _dict_key_kind(value: ast.AST) -> str | None:
     if isinstance(value, ast.Name):
         return "type_name"

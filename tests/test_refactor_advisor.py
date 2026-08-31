@@ -456,7 +456,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=30,
             ),
             _impact_ranking_finding(
-                detector_id="derived_export_surface",
+                detector_id="repeated_property_alias_hooks",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=40,
@@ -506,7 +506,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=30,
             ),
             _impact_ranking_finding(
-                detector_id="derived_export_surface",
+                detector_id="repeated_property_alias_hooks",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=40,
@@ -17850,25 +17850,6 @@ def test_detects_type_indexed_definition_boilerplate(tmp_path: Path) -> None:
     assert "AlphaFamilyDefinition" in finding.summary
     assert "AlphaFamily" in finding.summary
     assert "typed declaration table" in (finding.codemod_patch or "")
-
-
-def test_detects_manual_derived_export_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC\n\n\nclass PublicSpecRoot(ABC):\n    pass\n\n\nclass HandlerFamilyRoot(ABC):\n    pass\n\n\nclass AlphaSpec(PublicSpecRoot):\n    pass\n\n\nclass BetaSpec(PublicSpecRoot):\n    pass\n\n\nclass GammaSpec(PublicSpecRoot):\n    pass\n\n\nclass DeltaHandler(HandlerFamilyRoot):\n    pass\n\n\nclass EpsilonHandler(HandlerFamilyRoot):\n    pass\n\n\nclass ZetaHandler(HandlerFamilyRoot):\n    pass\n\n\n_STATIC_EXPORT_NAMES = (\n    "AlphaSpec",\n    "BetaSpec",\n    "GammaSpec",\n    "DeltaHandler",\n    "EpsilonHandler",\n    "ZetaHandler",\n)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "derived_export_surface"
-        )
-    )
-    assert "_STATIC_EXPORT_NAMES" in finding.summary
-    assert "PublicSpecRoot" in finding.summary or "HandlerFamilyRoot" in finding.summary
-    assert "public_exports" in (finding.scaffold or "")
 
 
 def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:

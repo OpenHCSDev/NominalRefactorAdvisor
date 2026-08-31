@@ -9282,11 +9282,6 @@ class ExportSurfaceCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class DerivedExportSurfaceCandidate(ExportSurfaceCandidate):
-    derivable_root_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class DerivedIndexedSurfaceCandidate(LineWitnessCandidate):
     surface_name: str
     key_kind: str
