@@ -17384,26 +17384,6 @@ def test_detects_repeated_property_alias_hooks_across_subclasses(
     assert "self.lineno" in finding.summary
 
 
-def test_detects_constant_property_hooks_across_subclasses(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC\n\n\nclass ObservationKind:\n    FIELD = "field"\n    METHOD = "method"\n\n\nclass ProjectionTemplate(ABC):\n    @property\n    def observation_kind(self):\n        raise NotImplementedError\n\n\nclass AlphaProjection(ProjectionTemplate):\n    @property\n    def observation_kind(self):\n        return ObservationKind.FIELD\n\n\nclass BetaProjection(ProjectionTemplate):\n    @property\n    def observation_kind(self):\n        return ObservationKind.METHOD\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "constant_property_hooks"
-        )
-    )
-    assert "ProjectionTemplate" in finding.summary
-    assert "observation_kind" in finding.summary
-    assert "ObservationKind.FIELD" in finding.summary
-    assert "ObservationKind.METHOD" in finding.summary
-
-
 def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

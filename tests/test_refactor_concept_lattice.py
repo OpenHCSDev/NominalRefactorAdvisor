@@ -207,9 +207,9 @@ def test_unrelated_concepts_do_not_match() -> None:
 
 def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
     finding = advisor.RefactorFinding(
-        detector_id="constant_property_hooks",
+        detector_id="constant_property_default_bundle",
         pattern_id=advisor.PatternId.AUTHORITATIVE_SCHEMA,
-        title="Constant property hooks",
+        title="Constant property defaults",
         summary="An SSOT detector without an executable declaration.",
         why="Detector roles do not prove executable migration ownership.",
         capability_gap="A proof-backed executable declaration.",

@@ -27,10 +27,7 @@ from ..semantic_match import (
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import *
 from ._helpers import *
-from ._helpers import (
-    _constant_property_hook_groups,
-    _property_alias_hook_groups,
-)
+from ._helpers import _property_alias_hook_groups
 from ._structural_step_regex_extractor import *
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
@@ -361,66 +358,6 @@ class RepeatedPropertyAliasHookDetector(
             codemod_patch=(
                 f"# Move `{hook_group.property_name}` <- `self.{hook_group.returned_attribute}` into one shared mixin or intermediate base for `{hook_group.base_name}`."
             ),
-            metrics=hook_group.repeated_method_metrics,
-        )
-
-
-class ConstantPropertyHookDetector(
-    ModuleCollectorCandidateDetector[ConstantPropertyHookGroup]
-):
-    detector_id = "constant_property_hooks"
-    candidate_collector = _constant_property_hook_groups
-    finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Constant property hooks should move into classvars or fixed mixins",
-        "Several subclasses implement the same property as a one-line constant return. That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin.",
-        "single authoritative constant hook implementation for a nominal subclass family",
-        "same property hook is re-declared as a constant return across one subclass family",
-        (
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, hook_group: ConstantPropertyHookGroup
-    ) -> RefactorFinding:
-        evidence = tuple(
-            (
-                SourceLocation(
-                    hook_group.file_path,
-                    line,
-                    f"{class_name}.{hook_group.property_name}",
-                )
-                for class_name, line in zip(
-                    hook_group.class_names, hook_group.line_numbers, strict=True
-                )
-            )
-        )
-        unique_returns = tuple(dict.fromkeys(hook_group.return_expressions))
-        constant_name = hook_group.property_name.upper()
-        if len(unique_returns) == 1:
-            scaffold = f"class {_camel_case(unique_returns[0].replace('.', '_'))}{_camel_case(hook_group.property_name)}Mixin(ABC):\n    @property\n    def {hook_group.property_name}(self):\n        return {unique_returns[0]}"
-            patch = f"# Move `{hook_group.property_name}` <- `{unique_returns[0]}` into one fixed-value mixin for `{hook_group.base_name}`."
-        else:
-            scaffold = (
-                f"class {hook_group.base_name}{_camel_case(hook_group.property_name)}Base(ABC):\n"
-                f"    {constant_name}: ClassVar[object]\n\n"
-                "    @property\n"
-                f"    def {hook_group.property_name}(self):\n"
-                f"        return type(self).{constant_name}"
-            )
-            patch = f"# Replace repeated constant `{hook_group.property_name}` hooks with one classvar-backed base for `{hook_group.base_name}`."
-        return self.build_finding(
-            f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as constant returns {unique_returns}.",
-            evidence,
-            scaffold=scaffold,
-            codemod_patch=patch,
             metrics=hook_group.repeated_method_metrics,
         )
 

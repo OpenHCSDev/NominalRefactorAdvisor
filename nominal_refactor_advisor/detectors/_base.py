@@ -9228,11 +9228,6 @@ class PropertyAliasHookGroup(PropertyHookGroup):
 
 
 @dataclass(frozen=True)
-class ConstantPropertyHookGroup(PropertyHookGroup):
-    return_expressions: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class ConstantPropertyDefaultBundleCandidate(ClassLineWitnessCandidate):
     property_names: tuple[str, ...]
     return_expressions: tuple[str, ...]
