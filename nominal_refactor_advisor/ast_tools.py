@@ -2599,6 +2599,24 @@ class ModuleSyntaxIndex:
             for index in self.node_indices_by_type.get(node_type, ())
         )
 
+    def parent_node(self, node_index: int) -> ast.AST | None:
+        """Return the indexed node's immediate parent, when one exists."""
+
+        parent_index = self.parent_indices[node_index]
+        if parent_index < 0:
+            return None
+        return self.depth_first_nodes[parent_index]
+
+    def enclosing_function_name(self, node_index: int) -> str | None:
+        """Return the nearest executable function owner for one indexed node."""
+
+        function_index = self.executable_function_indices[node_index]
+        if function_index < 0:
+            return None
+        function = self.depth_first_nodes[function_index]
+        assert isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+        return function.name
+
     def ancestor_nodes(self, node_index: int) -> tuple[ast.AST, ...]:
         """Return the root-to-parent path for one indexed syntax event."""
 
@@ -3068,29 +3086,6 @@ def _init_field_observations(
     return observations
 
 
-def _parent_map(module: ast.Module) -> dict[ast.AST, ast.AST]:
-    return {
-        child: parent
-        for parent in _walk_nodes(module)
-        for child in ast.iter_child_nodes(parent)
-    }
-
-
-class ScopeParentage:
-    def enclosing_function_name(
-        self, node: ast.AST, parent_map: dict[ast.AST, ast.AST]
-    ) -> str | None:
-        current: ast.AST | None = node
-        while current is not None:
-            current = parent_map.get(current)
-            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return current.name
-        return None
-
-
-SCOPE_PARENTAGE = ScopeParentage()
-
-
 class LiteralDispatchCaseMatcher:
     def match(
         self, test: ast.AST, literal_type: type[LiteralDispatchScalar]
@@ -3150,9 +3145,8 @@ def _literal_dispatch_side(
 def _literal_dispatch_observation_from_if(
     parsed_module: ParsedModule,
     node: ast.If,
-    literal_type: type[LiteralDispatchScalar],
     literal_kind: LiteralKind,
-    parent_map: dict[ast.AST, ast.AST],
+    function_name: str | None,
 ) -> LiteralDispatchObservation | None:
     literal_cases: list[str] = []
     branch_lines: list[int] = []
@@ -3160,7 +3154,10 @@ def _literal_dispatch_observation_from_if(
     dispatch_axis_expression: str | None = None
     current: ast.stmt | None = node
     while isinstance(current, ast.If):
-        case = LITERAL_DISPATCH_CASE_MATCHER.match(current.test, literal_type)
+        case = LITERAL_DISPATCH_CASE_MATCHER.match(
+            current.test,
+            literal_kind.literal_type,
+        )
         if case is None:
             return None
         current_fingerprint, current_expression, literal_case = case
@@ -3178,7 +3175,6 @@ def _literal_dispatch_observation_from_if(
         or len(literal_cases) < 2
     ):
         return None
-    function_name = SCOPE_PARENTAGE.enclosing_function_name(node, parent_map)
     return LiteralDispatchObservation(
         file_path=parsed_module.file_path,
         line=node.lineno,
@@ -3207,21 +3203,24 @@ def _literal_match_case(
 def _literal_dispatch_observation_from_match(
     parsed_module: ParsedModule,
     node: ast.Match,
-    literal_type: type[LiteralDispatchScalar],
     literal_kind: LiteralKind,
-    parent_map: dict[ast.AST, ast.AST],
+    function_name: str | None,
 ) -> LiteralDispatchObservation | None:
     literal_cases = tuple(
         (
             literal_case
             for match_case in node.cases
-            if (literal_case := _literal_match_case(match_case.pattern, literal_type))
+            if (
+                literal_case := _literal_match_case(
+                    match_case.pattern,
+                    literal_kind.literal_type,
+                )
+            )
             is not None
         )
     )
     if len(literal_cases) < 2:
         return None
-    function_name = SCOPE_PARENTAGE.enclosing_function_name(node, parent_map)
     dispatch_axis_expression = ast.unparse(node.subject)
     return LiteralDispatchObservation(
         file_path=parsed_module.file_path,
@@ -3237,28 +3236,20 @@ def _literal_dispatch_observation_from_match(
     )
 
 
-def _iter_statement_blocks(
-    module: ast.Module,
-) -> tuple[tuple[str | None, list[ast.stmt]], ...]:
-    blocks: list[tuple[str | None, list[ast.stmt]]] = [(None, module.body)]
-    for node in _walk_nodes(module):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            blocks.append((node.name, node.body))
-    return tuple(blocks)
-
-
 def _inline_literal_dispatch_groups(
     parsed_module: ParsedModule,
     owner_name: str | None,
     block: list[ast.stmt],
-    literal_type: type[LiteralDispatchScalar],
     literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
     groups: dict[str, list[tuple[int, str, str]]] = {}
     for stmt in block:
         if not isinstance(stmt, ast.If):
             continue
-        case = LITERAL_DISPATCH_CASE_MATCHER.match(stmt.test, literal_type)
+        case = LITERAL_DISPATCH_CASE_MATCHER.match(
+            stmt.test,
+            literal_kind.literal_type,
+        )
         if case is None:
             continue
         axis_fingerprint, dispatch_axis_expression, literal_case = case
@@ -3289,78 +3280,77 @@ def _inline_literal_dispatch_groups(
     return sorted_tuple(observations, key=lambda item: item.line)
 
 
-_LITERAL_DISPATCH_KINDS: tuple[tuple[type[LiteralDispatchScalar], LiteralKind], ...] = (
-    (str, LiteralKind.STRING),
-    (int, LiteralKind.NUMERIC),
-)
-
-
 @lru_cache(maxsize=None)
 def _literal_dispatch_observations(
     parsed_module: ParsedModule,
+    literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
-    parent_map = _parent_map(parsed_module.module)
+    syntax_index = module_syntax_index(parsed_module.module)
     observations: list[LiteralDispatchObservation] = []
-    for node in _walk_nodes(parsed_module.module):
-        for literal_type, literal_kind in _LITERAL_DISPATCH_KINDS:
-            observation = None
-            if isinstance(node, ast.If):
-                parent = parent_map.get(node)
-                if (
-                    isinstance(parent, ast.If)
-                    and len(parent.orelse) == 1
-                    and (parent.orelse[0] is node)
-                ):
-                    continue
-                observation = _literal_dispatch_observation_from_if(
-                    parsed_module, node, literal_type, literal_kind, parent_map
-                )
-            elif isinstance(node, ast.Match):
-                observation = _literal_dispatch_observation_from_match(
-                    parsed_module, node, literal_type, literal_kind, parent_map
-                )
-            if observation is not None:
-                observations.append(observation)
-    return sorted_tuple(observations, key=lambda item: (item.line, item.literal_kind))
+    for node_index, node in syntax_index.indexed_nodes_of_type(ast.If):
+        parent = syntax_index.parent_node(node_index)
+        if (
+            isinstance(parent, ast.If)
+            and len(parent.orelse) == 1
+            and parent.orelse[0] is node
+        ):
+            continue
+        observation = _literal_dispatch_observation_from_if(
+            parsed_module,
+            node,
+            literal_kind,
+            syntax_index.enclosing_function_name(node_index),
+        )
+        if observation is not None:
+            observations.append(observation)
+    for node_index, node in syntax_index.indexed_nodes_of_type(ast.Match):
+        observation = _literal_dispatch_observation_from_match(
+            parsed_module,
+            node,
+            literal_kind,
+            syntax_index.enclosing_function_name(node_index),
+        )
+        if observation is not None:
+            observations.append(observation)
+    return sorted_tuple(observations, key=lambda item: item.line)
 
 
 def _literal_dispatch_observations_for_kind(
     parsed_module: ParsedModule, literal_kind: LiteralKind
 ) -> tuple[LiteralDispatchObservation, ...]:
-    return tuple(
-        (
-            item
-            for item in _literal_dispatch_observations(parsed_module)
-            if item.literal_kind is literal_kind
-        )
-    )
+    return _literal_dispatch_observations(parsed_module, literal_kind)
 
 
 @lru_cache(maxsize=None)
 def _inline_literal_dispatch_observations(
     parsed_module: ParsedModule,
+    literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
+    syntax_index = module_syntax_index(parsed_module.module)
     observations: list[LiteralDispatchObservation] = []
-    for owner_name, block in _iter_statement_blocks(parsed_module.module):
-        for literal_type, literal_kind in _LITERAL_DISPATCH_KINDS:
-            observations.extend(
-                _inline_literal_dispatch_groups(
-                    parsed_module, owner_name, block, literal_type, literal_kind
-                )
+    statement_blocks = (
+        (None, parsed_module.module.body),
+        *(
+            (owner_name, function.body)
+            for owner_name, function in syntax_index.named_functions
+        ),
+    )
+    for owner_name, block in statement_blocks:
+        observations.extend(
+            _inline_literal_dispatch_groups(
+                parsed_module,
+                owner_name,
+                block,
+                literal_kind,
             )
-    return sorted_tuple(observations, key=lambda item: (item.line, item.literal_kind))
+        )
+    return sorted_tuple(observations, key=lambda item: item.line)
 
 
 def _inline_literal_dispatch_observations_for_kind(
     parsed_module: ParsedModule, literal_kind: LiteralKind
 ) -> tuple[LiteralDispatchObservation, ...]:
-    return tuple(
-        (
-            item
-            for item in _inline_literal_dispatch_observations(parsed_module)
-            if item.literal_kind is literal_kind
-        )
-    )
+    return _inline_literal_dispatch_observations(parsed_module, literal_kind)
 
 
 def _is_docstring_expr(node: ast.stmt) -> bool:

@@ -44,7 +44,6 @@ from .ast_tools import (
     ClassAstObservation,
     CLASS_OBSERVATION_PROJECTION,
     CollectedFamily,
-    COLLECTED_ITEM_PROJECTION,
     ContextForwardingShapeSpec,
     ContextHelperShapeSpec,
     FunctionObservationSpec,
@@ -411,27 +410,12 @@ class TypedLiteralObservationFamily(ObservationFamily[LiteralDispatchObservation
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[LiteralDispatchObservation]:
-        if issubclass(cls.spec_root, TypedLiteralObservationSpec):
-            return [
-                item
-                for item in cls.spec_root().collect(parsed_module)
-                if isinstance(item, LiteralDispatchObservation)
-                if item.literal_kind == cls.literal_kind
-            ]
-        return [
-            item
-            for item in COLLECTED_ITEM_PROJECTION.from_spec_root(
-                cls.spec_root, parsed_module, LiteralDispatchObservation
-            )
-            if isinstance(item, LiteralDispatchObservation)
-            if item.literal_kind == cls.literal_kind
-        ]
+        return cls.spec_root().collect(parsed_module)
 
 
 def _literal_spec(
     stem: str,
     base_name: str,
-    literal_type: type[str] | type[int],
     literal_kind: LiteralKind,
 ) -> _GeneratedClassDeclaration:
     return _GENERATED_CLASS_DECLARATIONS.class_declaration(
@@ -441,13 +425,8 @@ def _literal_spec(
         family_specs=_family_specs(
             LiteralDispatchObservation, TypedLiteralObservationFamily
         ),
-        literal_type=literal_type,
         literal_kind=literal_kind,
     )
-
-
-
-
 
 
 def _native_export_dict_shapes(
@@ -835,12 +814,10 @@ class SentinelTypeUsageObservationSpec(SentinelTypeObservationSpec):
         return list(_sentinel_type_usage_observations(parsed_module))
 
 
-
-
 class TypedLiteralObservationSpec(
     AutoRegisteredModuleShapeSpec[LiteralDispatchObservation], ABC
 ):
-    literal_type: ClassVar[type[str] | type[int]]
+    literal_kind: ClassVar[LiteralKind]
 
     @classmethod
     def registered_specs_for_literal_type(
@@ -855,7 +832,11 @@ class TypedLiteralObservationSpec(
         )
         if literal_type is None:
             return specs
-        return tuple(spec for spec in specs if type(spec).literal_type is literal_type)
+        return tuple(
+            spec
+            for spec in specs
+            if type(spec).literal_kind.literal_type is literal_type
+        )
 
 
 class LiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
@@ -1022,19 +1003,16 @@ _materialize_class_declarations(
         _literal_spec(
             "String",
             "LiteralDispatchObservationSpec",
-            str,
             LiteralKind.STRING,
         ),
         _literal_spec(
             "Numeric",
             "LiteralDispatchObservationSpec",
-            int,
             LiteralKind.NUMERIC,
         ),
         _literal_spec(
             "InlineString",
             "InlineLiteralDispatchObservationSpec",
-            str,
             LiteralKind.STRING,
         ),
         _shape_root(
@@ -1255,38 +1233,6 @@ _materialize_class_declarations(
         ),
     )
 )
-
-
-def _registered_family_types() -> tuple[type[CollectedFamily], ...]:
-    return CollectedFamily.all_registered_families()
-
-
-@lru_cache(maxsize=1)
-def _family_types_by_item_type() -> dict[type, type[CollectedFamily]]:
-    return {family.item_type: family for family in _registered_family_types()}
-
-
-@lru_cache(maxsize=1)
-def _literal_family_types_by_kind() -> dict[LiteralKind, type[CollectedFamily]]:
-    return {
-        family.literal_kind: family
-        for family in _registered_family_types()
-        if issubclass(family, TypedLiteralObservationFamily)
-    }
-
-
-def family_for_item_type(
-    item_type: type[GeneratedItemT],
-) -> type[CollectedFamily[GeneratedItemT]]:
-    """Return the generated family that owns one collected item type."""
-    return cast(
-        type[CollectedFamily[GeneratedItemT]], _family_types_by_item_type()[item_type]
-    )
-
-
-def family_for_literal_kind(literal_kind: LiteralKind) -> type[CollectedFamily]:
-    """Return the generated family that owns one literal-dispatch kind."""
-    return _literal_family_types_by_kind()[literal_kind]
 
 
 GeneratedFamilyNamespaceValue: TypeAlias = (

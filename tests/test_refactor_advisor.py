@@ -20,6 +20,7 @@ import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.detectors._structural as structural_detectors
 import nominal_refactor_advisor.detectors._structural_step_regex_extractor as regex_extractor_detectors
+import nominal_refactor_advisor.observation_families as observation_families_module
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
@@ -44,6 +45,8 @@ from nominal_refactor_advisor.ast_tools import (
     FieldObservationSpec,
     FieldObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
+    LiteralKind,
+    NumericLiteralDispatchObservationFamily,
     ProjectionHelperObservationFamily,
     RegistrationShapeSpec,
     RegistrationShapeFamily,
@@ -9440,6 +9443,81 @@ def test_collects_literal_dispatch_observations_via_spec_family(tmp_path: Path) 
     assert any((item.dispatch_axis_expression == "node.kind" for item in inline_groups))
 
 
+def test_literal_dispatch_families_collect_only_their_declared_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef dispatch(kind, code):\n"
+        '    if kind == "alpha":\n'
+        "        return 1\n"
+        '    elif kind == "beta":\n'
+        "        return 2\n"
+        "    match code:\n"
+        "        case 1:\n"
+        '            return "one"\n'
+        "        case 2:\n"
+        '            return "two"\n'
+        "    return 0\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+    literal_types: list[type[str] | type[int]] = []
+    original_match = ast_tools_module.LITERAL_DISPATCH_CASE_MATCHER.match
+
+    def record_literal_type(
+        test: ast.AST,
+        literal_type: type[str] | type[int],
+    ) -> tuple[str, str, str] | None:
+        literal_types.append(literal_type)
+        return original_match(test, literal_type)
+
+    monkeypatch.setattr(
+        ast_tools_module.LITERAL_DISPATCH_CASE_MATCHER,
+        "match",
+        record_literal_type,
+    )
+    numeric = collect_family_items(module, NumericLiteralDispatchObservationFamily)
+
+    assert literal_types
+    assert set(literal_types) == {int}
+    assert [(item.literal_kind, item.dispatch_axis_expression) for item in numeric] == [
+        (LiteralKind.NUMERIC, "code")
+    ]
+
+    string = collect_family_items(module, StringLiteralDispatchObservationFamily)
+    assert [(item.literal_kind, item.dispatch_axis_expression) for item in string] == [
+        (LiteralKind.STRING, "kind")
+    ]
+
+
+def test_module_syntax_index_projects_literal_dispatch_parentage(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef outer(kind):\n"
+        '    if kind == "alpha":\n'
+        "        return 1\n"
+        '    elif kind == "beta":\n'
+        "        return 2\n"
+        "    return 0\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+    syntax_index = ast_tools_module.module_syntax_index(module.module)
+    indexed_ifs = syntax_index.indexed_nodes_of_type(ast.If)
+
+    outer_index, outer_if = indexed_ifs[0]
+    nested_index, nested_if = indexed_ifs[1]
+    assert isinstance(syntax_index.parent_node(outer_index), ast.FunctionDef)
+    assert syntax_index.parent_node(nested_index) is outer_if
+    assert nested_if is outer_if.orelse[0]
+    assert syntax_index.enclosing_function_name(outer_index) == "outer"
+    assert syntax_index.enclosing_function_name(nested_index) == "outer"
+
+
 def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -15060,10 +15138,8 @@ def test_spec_families_use_autoregistration() -> None:
 
 
 def test_typed_literal_specs_are_derived_from_canonical_registry() -> None:
-    all_typed_specs = {
-        type(spec).__name__
-        for spec in TypedLiteralObservationSpec.registered_specs_for_literal_type()
-    }
+    typed_specs = TypedLiteralObservationSpec.registered_specs_for_literal_type()
+    all_typed_specs = {type(spec).__name__ for spec in typed_specs}
     string_typed_specs = {
         type(spec).__name__
         for spec in TypedLiteralObservationSpec.registered_specs_for_literal_type(str)
@@ -15077,6 +15153,19 @@ def test_typed_literal_specs_are_derived_from_canonical_registry() -> None:
         "StringLiteralDispatchObservationSpec",
         "InlineStringLiteralDispatchObservationSpec",
     }
+    assert {
+        type(spec).__name__: type(spec).literal_kind.literal_type
+        for spec in typed_specs
+    } == {
+        "StringLiteralDispatchObservationSpec": str,
+        "NumericLiteralDispatchObservationSpec": int,
+        "InlineStringLiteralDispatchObservationSpec": str,
+    }
+
+
+def test_observation_families_do_not_expose_ambiguous_single_family_lookups() -> None:
+    assert not hasattr(observation_families_module, "family_for_item_type")
+    assert not hasattr(observation_families_module, "family_for_literal_kind")
 
 
 def test_detects_parallel_scoped_shape_wrappers(tmp_path: Path) -> None:
@@ -16757,7 +16846,7 @@ def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/proof_prefix.py",
-        """
+        '''
 class DeferredStreamPrefixCompactionAuthority:
     @classmethod
     def rebase(cls, certificate, prefix_summary, retained_indices, original_count):
@@ -16783,7 +16872,7 @@ class DeferredStreamPrefixCompactionAuthority:
                 prefix_count=len(retained_indices),
             )
         raise ValueError("unrelated")
-""",
+''',
     )
     finding = next(
         (
@@ -16909,7 +16998,7 @@ def test_json_payload_includes_finding_backed_recipe_plan(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '''
+        """
 class Alpha:
     def export(self, result):
         return {
@@ -16926,7 +17015,7 @@ class Beta:
             "score": item.score,
             "label": item.label,
         }
-''',
+""",
     )
     modules = parse_python_modules(tmp_path)
     findings = [

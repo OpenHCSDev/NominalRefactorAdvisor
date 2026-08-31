@@ -16,7 +16,7 @@ Observation Families
 --------------------
 
 .. automodule:: nominal_refactor_advisor.observation_families
-   :members: GeneratedFamilySpec, FamilyGeneratingSpec, ObservationFamily, ShapeFamily, TypedLiteralObservationFamily, family_for_item_type, family_for_literal_kind
+   :members: GeneratedFamilySpec, FamilyGeneratingSpec, ObservationFamily, ShapeFamily, TypedLiteralObservationFamily
 
 
 Export Policies

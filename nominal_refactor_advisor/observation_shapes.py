@@ -39,8 +39,20 @@ if TYPE_CHECKING:
 class LiteralKind(StrEnum):
     """Literal kinds used by literal-dispatch observations."""
 
-    STRING = "string"
-    NUMERIC = "numeric"
+    literal_type: type[str] | type[int]
+
+    def __new__(
+        cls,
+        value: str,
+        literal_type: type[str] | type[int],
+    ) -> "LiteralKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.literal_type = literal_type
+        return member
+
+    STRING = ("string", str)
+    NUMERIC = ("numeric", int)
 
 
 class FieldOriginKind(StrEnum):
