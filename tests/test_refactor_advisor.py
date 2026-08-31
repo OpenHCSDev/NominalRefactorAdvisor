@@ -17259,27 +17259,6 @@ def test_detects_pass_through_nominal_wrapper(tmp_path: Path) -> None:
     assert "type consumers against `ProbeRoute` directly" in (finding.scaffold or "")
 
 
-def test_detects_nominal_policy_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass ProofCasePolicy:\n    @classmethod\n    def for_case(cls, proof_case):\n        return cls()\n\n    def decision(self):\n        return "certified"\n\n    def certificate_chain_error(self):\n        return None\n\n\nclass CertifiedPlan:\n    def __init__(self, proof_case):\n        self.proof_case = proof_case\n\n    @property\n    def decision(self):\n        return ProofCasePolicy.for_case(self.proof_case).decision()\n\n    @property\n    def certificate_chain_error(self):\n        return ProofCasePolicy.for_case(self.proof_case).certificate_chain_error()\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "nominal_policy_surface"
-        )
-    )
-    assert "CertifiedPlan" in finding.summary
-    assert "decision" in finding.summary
-    assert "certificate_chain_error" in finding.summary
-    assert "ProofCasePolicy.for_case" in finding.summary
-    assert "explicit policy accessor" in (finding.scaffold or "")
-
-
 def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

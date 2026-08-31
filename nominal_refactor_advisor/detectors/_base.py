@@ -10194,49 +10194,6 @@ class EmptyLeafProductFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class NominalPolicySurfaceMethodCandidate(LineWitnessCandidate):
-    qualname: str
-    owner_class_name: str
-    method_name: str
-    policy_root_symbol: str
-    selector_method_name: str
-    policy_member_name: str
-    selector_source_exprs: tuple[str, ...]
-    transported_value_sources: tuple[str, ...]
-
-    evidence = _LINE_QUALNAME_EVIDENCE
-
-
-@dataclass(frozen=True)
-class NominalPolicySurfaceFamilyCandidate:
-    methods: tuple[NominalPolicySurfaceMethodCandidate, ...]
-
-    @property
-    def file_path(self) -> str:
-        return self.methods[0].file_path
-
-    @property
-    def owner_class_name(self) -> str:
-        return self.methods[0].owner_class_name
-
-    @property
-    def policy_root_symbol(self) -> str:
-        return self.methods[0].policy_root_symbol
-
-    @property
-    def selector_method_name(self) -> str:
-        return self.methods[0].selector_method_name
-
-    @property
-    def selector_source_exprs(self) -> tuple[str, ...]:
-        return self.methods[0].selector_source_exprs
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple((method.evidence for method in self.methods[:6]))
-
-
-@dataclass(frozen=True)
 class PipelineAssemblyStage:
     kind: str
     callee_name: str

@@ -410,7 +410,6 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
             )
         return findings
 
-
 _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS = frozenset(
     {
         "artifact",
@@ -5244,54 +5243,3 @@ class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
                 )
             )
         return findings
-
-
-class NominalPolicySurfaceDetector(
-    ConfiguredModuleCollectorCandidateDetector[NominalPolicySurfaceFamilyCandidate]
-):
-    candidate_collector = _nominal_policy_surface_family_candidates
-    finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Nominal surface methods should not be thin shells over a policy family",
-        "A nominal owner exposes public methods or properties that do nothing except resolve a policy family and forward into it. The docs treat that as split authority: the owner surface should either own the contract directly or expose one explicit policy hook instead of scattering zero-information shells.",
-        "single authoritative owner surface or one explicit policy accessor",
-        "public owner surface delegates member-for-member into a policy family",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.INTERFACE_IDENTITY,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, family_candidate: NominalPolicySurfaceFamilyCandidate
-    ) -> RefactorFinding:
-        method_summary = ", ".join(
-            method.method_name for method in family_candidate.methods[:4]
-        )
-        selector_summary = ", ".join(family_candidate.selector_source_exprs[:2])
-        method_count = len(family_candidate.methods)
-        method_phrase = (
-            f"surface methods {method_summary}"
-            if method_count > 1
-            else f"surface method `{family_candidate.methods[0].method_name}`"
-        )
-        return self.build_finding(
-            (
-                f"`{family_candidate.owner_class_name}` exposes {method_phrase} by resolving "
-                f"`{family_candidate.policy_root_symbol}.{family_candidate.selector_method_name}` from {selector_summary}."
-            ),
-            family_candidate.evidence,
-            scaffold=(
-                "class PolicyBackedSurface(ABC):\n    @property\n    @abstractmethod\n    def _policy(self): ...\n\n    def _resolve_policy(self):\n        return self._policy\n\n# Keep one explicit policy accessor and move repeated surface forwarding behind it."
-            ),
-            codemod_patch=(
-                f"# Collapse `{family_candidate.owner_class_name}` surface shells into one explicit policy accessor or owner-owned contract.\n"
-                f"# Do not keep separate pass-through methods over `{family_candidate.policy_root_symbol}` for {method_summary}."
-            ),
-        )
