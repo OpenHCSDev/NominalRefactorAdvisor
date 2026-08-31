@@ -40,7 +40,6 @@ from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     ClassMarkerObservationFamily,
     ConfigDispatchObservationFamily,
-    DualAxisResolutionObservationFamily,
     DynamicMethodInjectionObservationFamily,
     FieldObservationSpec,
     FieldObservationFamily,
@@ -9382,31 +9381,6 @@ def test_parameter_thread_detector_ignores_semantic_decorated_entrypoints(
     )
 
 
-def test_detects_dual_axis_resolution(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef resolve(scope_stack, obj):\n    for scope in scope_stack:\n        for mro_type in type(obj).__mro__:\n            if scope and mro_type:\n                return scope, mro_type\n    return None\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 8 for finding in findings))
-
-
-def test_collects_dual_axis_resolution_observations_via_spec_family(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef resolve(scope_stack, obj):\n    for scope in scope_stack:\n        for mro_type in type(obj).__mro__:\n            if scope and mro_type:\n                return scope, mro_type\n    return None\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-    observations = collect_family_items(module, DualAxisResolutionObservationFamily)
-    assert len(observations) == 1
-    assert observations[0].outer_axis_name == "scope"
-    assert observations[0].inner_axis_name == "mro_type"
-
-
 def test_detects_manual_virtual_membership(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -16805,7 +16779,6 @@ def resolve(config, obj):
     graph = build_observation_graph(parse_python_modules(tmp_path))
     kinds = {item.observation_kind for item in graph.observations}
     assert ObservationKind.CONFIG_DISPATCH in kinds
-    assert ObservationKind.DUAL_AXIS_RESOLUTION in kinds
     assert ObservationKind.EXPORT_DICT in kinds
     assert ObservationKind.SENTINEL_TYPE in kinds
 

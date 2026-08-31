@@ -24,7 +24,6 @@ from .observation_shapes import (
     BuilderCallShape,
     ClassMarkerObservation,
     ConfigDispatchObservation,
-    DualAxisResolutionObservation,
     DynamicMethodInjectionObservation,
     ExportDictShape,
     FieldObservation,
@@ -64,7 +63,6 @@ from .ast_tools import (
     _class_marker_observations,
     _class_name_from_expr,
     _config_dispatch_observations,
-    _dual_axis_resolution_observation,
     _dynamic_method_injection_observations,
     _execution_level_for_scope,
     _export_dict_shape,
@@ -826,15 +824,6 @@ _materialize_class_declarations(
             "DynamicMethodInjection",
             GeneratedShapeHelper(_dynamic_method_injection_observations),
             _TUPLE_FUNCTION_HELPER,
-        ),
-        _obs_root(
-            "DualAxisResolution",
-            "FunctionObservationSpec ABC",
-        ),
-        _std_obs(
-            "DualAxisResolution",
-            GeneratedShapeHelper(_dual_axis_resolution_observation),
-            _FUNCTION_HELPER,
         ),
     )
 )

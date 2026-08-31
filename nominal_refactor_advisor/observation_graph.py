@@ -29,7 +29,6 @@ class ObservationKind(StrEnum):
     BUILDER_CALL = "builder_call"
     CLASS_MARKER = "class_marker"
     CONFIG_DISPATCH = "config_dispatch"
-    DUAL_AXIS_RESOLUTION = "dual_axis_resolution"
     DYNAMIC_METHOD_INJECTION = "dynamic_method_injection"
     EXPORT_DICT = "export_dict"
     FIELD = "field"

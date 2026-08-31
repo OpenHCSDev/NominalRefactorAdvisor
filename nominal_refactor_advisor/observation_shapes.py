@@ -417,25 +417,6 @@ class DynamicMethodInjectionObservation(
 
 
 @dataclass(frozen=True)
-class DualAxisResolutionObservation(
-    FunctionBodyLineSymbolObservationMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.DUAL_AXIS_RESOLUTION
-    line: int
-    symbol: str
-    outer_axis_name: str
-    inner_axis_name: str
-
-    @property
-    def observed_name(self) -> str:
-        return f"{self.outer_axis_name}:{self.inner_axis_name}"
-
-    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("observed_name")
-
-
-
-@dataclass(frozen=True)
 class BuilderCallShape(FunctionBodyCallLikeShape):
     OBSERVATION_KIND = ObservationKind.BUILDER_CALL
     callee_name: str

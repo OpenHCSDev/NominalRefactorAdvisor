@@ -52,7 +52,6 @@ from .observation_shapes import (
     BuilderCallShape,
     ClassMarkerObservation,
     ConfigDispatchObservation,
-    DualAxisResolutionObservation,
     DynamicMethodInjectionObservation,
     ExportDictShape,
     FieldObservation,
@@ -3832,39 +3831,6 @@ def _dynamic_method_injection_observations(
     return sorted_tuple(observations, key=lambda item: item.line)
 
 
-def _dual_axis_resolution_observation(
-    parsed_module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> DualAxisResolutionObservation | None:
-    for node in _walk_nodes(function):
-        if not isinstance(node, ast.For):
-            continue
-        inner_loops = [child for child in node.body if isinstance(child, ast.For)]
-        if not inner_loops:
-            continue
-        outer_name = _loop_target_name(node.target)
-        inner_name = _loop_target_name(inner_loops[0].target)
-        text = ast.dump(inner_loops[0].iter, include_attributes=False)
-        if "__mro__" in text or "mro" in text.lower() or "type" in text.lower():
-            if outer_name and any(
-                (token in outer_name.lower() for token in ("scope", "context", "level"))
-            ):
-                return DualAxisResolutionObservation(
-                    file_path=parsed_module.file_path,
-                    line=node.lineno,
-                    symbol=function.name,
-                    outer_axis_name=outer_name,
-                    inner_axis_name=inner_name or "mro_type",
-                )
-    return None
-
-
-def _loop_target_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    return None
-
-
 def _call_targets_name(node: ast.Call, expected_name: str) -> bool:
     return bool(
         node.args
@@ -4156,8 +4122,6 @@ from .observation_families import (
     ConfigDispatchObservationSpec,
     DataclassBodyFieldObservationSpec,
     DecoratorRegistrationShapeSpec,
-    DualAxisResolutionObservationFamily,
-    DualAxisResolutionObservationSpec,
     DynamicMethodInjectionObservationFamily,
     DynamicMethodInjectionObservationSpec,
     ExportDictShapeFamily,
@@ -4189,7 +4153,6 @@ from .observation_families import (
     ShapeFamily,
     StandardClassMarkerObservationSpec,
     StandardConfigDispatchObservationSpec,
-    StandardDualAxisResolutionObservationSpec,
     StandardDynamicMethodInjectionObservationSpec,
     StandardProjectionHelperObservationSpec,
     StringLiteralDispatchObservationFamily,

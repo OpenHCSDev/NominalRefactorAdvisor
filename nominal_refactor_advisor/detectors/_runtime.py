@@ -4308,51 +4308,6 @@ class ConcreteConfigFieldProbeDetector(
         )
 
 
-class DualAxisResolutionDetector(PerModuleIssueDetector):
-    finding_spec = finding_spec_template(
-        PatternId.DUAL_AXIS_RESOLUTION,
-        "Nested precedence walk should be a dual-axis resolution primitive",
-        "The docs say scope x type precedence should be modeled explicitly when both context and inheritance order contribute to resolution and provenance.",
-        "explicit dual-axis precedence with provenance",
-        "same function combines context hierarchy and type/MRO hierarchy",
-        (
-            CapabilityTag.DUAL_AXIS_RESOLUTION,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        (
-            ObservationTag.NESTED_PRECEDENCE_WALK,
-            ObservationTag.SCOPE_HIERARCHY,
-            ObservationTag.MRO_HIERARCHY,
-        ),
-    )
-
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        observations: tuple[DualAxisResolutionObservation, ...] = (
-            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-                module,
-                DualAxisResolutionObservationFamily,
-                DualAxisResolutionObservation,
-            )
-        )
-        for observation in observations:
-            findings.append(
-                self.build_finding(
-                    f"{observation.symbol} nests scope-like axis `{observation.outer_axis_name}` with MRO/type-like axis `{observation.inner_axis_name}`.",
-                    (
-                        SourceLocation(
-                            observation.file_path, observation.line, observation.symbol
-                        ),
-                    ),
-                    metrics=ResolutionAxisMetrics(resolution_axis_count=2),
-                )
-            )
-        return findings
-
-
 class DynamicRuntimePayloadOwnerDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,

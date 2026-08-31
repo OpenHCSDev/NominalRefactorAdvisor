@@ -103,8 +103,6 @@ from ..ast_tools import (
     FieldObservation,
     FieldObservationFamily,
     ConfigDispatchObservationFamily,
-    DualAxisResolutionObservation,
-    DualAxisResolutionObservationFamily,
     DynamicMethodInjectionObservation,
     DynamicMethodInjectionObservationFamily,
     ExportDictShapeFamily,
