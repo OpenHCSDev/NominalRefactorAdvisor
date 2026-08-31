@@ -71,6 +71,7 @@ from .impact_ranking import (
     RefactorImpactRankingReport,
 )
 from .models import (
+    AutoRegisterMetaRentMetrics,
     BranchCountMetrics,
     EnvironmentBooleanDriftMetrics,
     EvidenceSymbol,
@@ -13169,6 +13170,28 @@ class EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer(
         return self.rejected_evaluation(
             metrics.recipe_rejection_reason(authority_symbol)
         )
+
+
+class AutoRegisterMetaUnderRentedFindingRecipeSynthesizer(
+    SharedActionKeysForFindingMixin,
+    FindingRecipeSynthesizer,
+):
+    """Reject a metaclass edit until its missing rent semantics are proven."""
+
+    detector_id = "autoregister_meta_under_rented"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        del context
+        metrics = finding.metrics
+        if not isinstance(metrics, AutoRegisterMetaRentMetrics):
+            return self.rejected_evaluation(
+                "under-rented AutoRegisterMeta finding lacks typed rent evidence"
+            )
+        return self.rejected_evaluation(metrics.recipe_rejection_reason())
 
 
 @dataclass(frozen=True, kw_only=True)

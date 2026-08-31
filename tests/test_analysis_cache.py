@@ -88,7 +88,12 @@ from nominal_refactor_advisor.detectors import (
 from nominal_refactor_advisor.detectors import _surface as surface_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
-from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import (
+    AutoRegisterMetaRentSignal,
+    FindingSpec,
+    RefactorFinding,
+    SourceLocation,
+)
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticModuleProjectionFamily,
@@ -4112,7 +4117,9 @@ def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
     assert "_findings_from_compact_projections" not in type(detector).__dict__
     assert "_findings_from_compact_context" not in type(detector).__dict__
     assert candidate.registry_projection_names == ("for_format",)
-    assert candidate.missing_rent_signals == ("stable_key_axis",)
+    assert candidate.missing_rent_signals == (
+        AutoRegisterMetaRentSignal.STABLE_KEY_AXIS,
+    )
 
 
 def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(

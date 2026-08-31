@@ -18,6 +18,7 @@ from ..factorization import (
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_tools import BuiltinCallName, SourceModule, walk_function_body_nodes
 from ..native_syntax import NativePythonSyntaxIndex
+from ..models import AutoRegisterMetaRentSignal
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
@@ -1870,14 +1871,14 @@ def _autoregister_missing_rent_signals(
     registry_projection_names: tuple[str, ...],
     consumer_symbols: tuple[str, ...],
     min_leaf_count: int,
-) -> tuple[str, ...]:
-    missing: list[str] = []
+) -> tuple[AutoRegisterMetaRentSignal, ...]:
+    missing: list[AutoRegisterMetaRentSignal] = []
     if not dynamic_factory_symbols and len(concrete_class_names) < min_leaf_count:
-        missing.append("registered_leaf_axis")
+        missing.append(AutoRegisterMetaRentSignal.REGISTERED_LEAF_AXIS)
     if registry_key_attr_name is None and key_extractor_name is None:
-        missing.append("stable_key_axis")
+        missing.append(AutoRegisterMetaRentSignal.STABLE_KEY_AXIS)
     if not behavior_method_names and not abstract_method_names:
-        missing.append("behavior_contract")
+        missing.append(AutoRegisterMetaRentSignal.BEHAVIOR_CONTRACT)
     projection_rent_axes = (
         behavior_method_names,
         abstract_method_names,
@@ -1885,7 +1886,9 @@ def _autoregister_missing_rent_signals(
         consumer_symbols,
     )
     if not any(projection_rent_axes):
-        missing.append("explicit_registry_projection_or_consumer")
+        missing.append(
+            AutoRegisterMetaRentSignal.EXPLICIT_REGISTRY_PROJECTION_OR_CONSUMER
+        )
     return tuple(missing)
 
 

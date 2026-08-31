@@ -150,6 +150,7 @@ from ..models import (
     CERTIFIED,
     STRONG_HEURISTIC,
     BranchCountMetrics,
+    AutoRegisterMetaRentSignal,
     CallSiteCountMetric,
     CertifiedFindingSpec,
     DispatchCountMetrics,
@@ -8492,7 +8493,7 @@ class AutoRegisterMetaRentCandidate(InheritanceFamilyRentSurface):
     behavior_method_names: tuple[str, ...]
     registry_projection_names: tuple[str, ...]
     consumer_symbols: tuple[str, ...]
-    missing_rent_signals: tuple[str, ...]
+    missing_rent_signals: tuple[AutoRegisterMetaRentSignal, ...]
 
 
 @dataclass(frozen=True)

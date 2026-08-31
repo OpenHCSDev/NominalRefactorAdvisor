@@ -70,6 +70,43 @@ class EnvironmentReadKind(StrEnum):
         return method_name if separator else None
 
 
+class AutoRegisterMetaRentSignal(StrEnum):
+    """Semantic coordinates that justify an automatic class registry."""
+
+    REGISTERED_LEAF_AXIS = (
+        "registered_leaf_axis",
+        "multiple concrete leaves or a source-proven dynamic factory family",
+    )
+    STABLE_KEY_AXIS = (
+        "stable_key_axis",
+        "a source-proven registry key declaration or complete proof that registration is unused",
+    )
+    BEHAVIOR_CONTRACT = (
+        "behavior_contract",
+        "a nominal behavior contract or complete proof that the metaclass can be removed",
+    )
+    EXPLICIT_REGISTRY_PROJECTION_OR_CONSUMER = (
+        "explicit_registry_projection_or_consumer",
+        "a registry projection or complete reference closure proving the registry is unused",
+    )
+
+    def __new__(
+        cls,
+        value: str,
+        synthesis_proof_requirement: str,
+    ) -> "AutoRegisterMetaRentSignal":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._synthesis_proof_requirement = synthesis_proof_requirement
+        return member
+
+    @property
+    def synthesis_proof_requirement(self) -> str:
+        """Return the proof needed before a missing coordinate can be rewritten."""
+
+        return self._synthesis_proof_requirement
+
+
 @dataclass(frozen=True)
 class SourceLineReference:
     """One source file and line reference shared by source evidence records."""
@@ -462,7 +499,6 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 
     registration_site_count: int
-    class_count: int | None = None
     registry_name: str | None = None
     class_names: tuple[str, ...] = ()
     class_key_pairs: tuple[str, ...] = ()
@@ -478,7 +514,6 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     ) -> "RegistrationMetrics":
         return cls(
             registration_site_count=registration_site_count,
-            class_count=len(class_names),
             registry_name=registry_name,
             class_names=class_names,
             class_key_pairs=class_key_pairs,
@@ -511,6 +546,26 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     plan_class_key_pairs: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
         "class_key_pairs"
     )
+
+
+@dataclass(frozen=True, kw_only=True)
+class AutoRegisterMetaRentMetrics(RegistrationMetrics):
+    """Typed proof gaps for an under-rented automatic registry family."""
+
+    missing_signals: tuple[AutoRegisterMetaRentSignal, ...]
+    rent_margin: int
+
+    def recipe_rejection_reason(self) -> str:
+        signal_names = ", ".join(signal.value for signal in self.missing_signals)
+        proof_requirements = "; ".join(
+            signal.synthesis_proof_requirement for signal in self.missing_signals
+        )
+        return (
+            f"AutoRegisterMeta family {self.registry_name!r} is missing rent proof "
+            f"for {signal_names}; choosing between declaring the missing registry "
+            f"semantics and removing the metaclass requires {proof_requirements}"
+        )
+
 
 @dataclass(frozen=True)
 class SentinelSimulationMetrics(FindingMetrics):

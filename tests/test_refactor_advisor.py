@@ -227,6 +227,8 @@ from nominal_refactor_advisor.lean_export import (
     findings_from_lean_export_payload,
 )
 from nominal_refactor_advisor.models import (
+    AutoRegisterMetaRentMetrics,
+    AutoRegisterMetaRentSignal,
     DispatchCountMetrics,
     FindingSpec,
     HierarchyCandidateMetrics,
@@ -14825,6 +14827,23 @@ def test_detects_autoregister_meta_family_without_rent_proof(
     assert "AutoRegisterMeta" in finding.summary
     assert "Rent margin" in finding.summary
     assert finding.compression_certificate is not None
+    assert isinstance(finding.metrics, AutoRegisterMetaRentMetrics)
+    assert finding.metrics.missing_signals == (
+        AutoRegisterMetaRentSignal.BEHAVIOR_CONTRACT,
+        AutoRegisterMetaRentSignal.EXPLICIT_REGISTRY_PROJECTION_OR_CONSUMER,
+    )
+
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        (finding,),
+    )
+    synthesis = snapshot.plan_from_findings((finding,))
+    record = synthesis.records[0]
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert record.action_keys
+    assert "choosing between declaring" in record.reason
+    assert "complete reference closure" in record.reason
+    assert synthesis.unsupported_count == 0
 
 
 def test_autoregister_rent_ignores_unrelated_registry_metaclass(

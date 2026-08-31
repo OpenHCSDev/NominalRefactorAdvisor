@@ -48,7 +48,13 @@ from ..codemod import (
     CancelableCompositionSignalTargetAuthority,
 )
 from ..collection_algebra import sorted_tuple
-from ..models import HierarchyCandidateMetrics, RefactorFinding, SourceLocation
+from ..models import (
+    AutoRegisterMetaRentMetrics,
+    AutoRegisterMetaRentSignal,
+    HierarchyCandidateMetrics,
+    RefactorFinding,
+    SourceLocation,
+)
 from ..patterns import PatternId
 from ..semantic_identity import SemanticRoleIdentityToken
 from ..source_index import build_source_index_artifacts
@@ -2252,7 +2258,6 @@ class ManualClassRegistrationDetector(
             ),
             metrics=RegistrationMetrics(
                 registration_site_count=len(registrations),
-                class_count=len(class_names),
                 registry_name=registry_name,
                 class_names=sorted_tuple(class_names),
                 class_key_pairs=tuple(
@@ -3153,7 +3158,9 @@ def _compact_autoregister_meta_rent_candidates(
             consumer_symbols=consumer_symbols,
             min_leaf_count=min_leaf_count,
         )
-        if missing_rent_signals == ("registered_leaf_axis",) and (
+        if missing_rent_signals == (
+            AutoRegisterMetaRentSignal.REGISTERED_LEAF_AXIS,
+        ) and (
             behavior_method_names
             or abstract_method_names
             or registry_projection_names
@@ -3274,7 +3281,8 @@ class AutoRegisterMetaUnderRentedDetector(
                 f"behavior methods {rent_candidate.behavior_method_names}, abstract hooks "
                 f"{rent_candidate.abstract_method_names}, projections {rent_candidate.registry_projection_names}, "
                 f"and consumers {rent_candidate.consumer_symbols}; missing rent signal(s): "
-                f"{rent_candidate.missing_rent_signals}. Rent margin {rent_candidate.rent_margin}."
+                f"{tuple(signal.value for signal in rent_candidate.missing_rent_signals)}. "
+                f"Rent margin {rent_candidate.rent_margin}."
             ),
             (rent_candidate.evidence,),
             scaffold=(
@@ -3295,10 +3303,12 @@ class AutoRegisterMetaUnderRentedDetector(
                 "# If the family is metadata-only or has no projection surface, replace it with a typed table or ordinary ABC."
             ),
             compression_certificate=rent_candidate.compression_certificate,
-            metrics=RegistrationMetrics.from_class_names(
+            metrics=AutoRegisterMetaRentMetrics(
                 registration_site_count=len(rent_candidate.concrete_class_names),
                 registry_name=rent_candidate.class_name,
                 class_names=rent_candidate.concrete_class_names,
+                missing_signals=rent_candidate.missing_rent_signals,
+                rent_margin=rent_candidate.rent_margin,
             ),
         )
 
