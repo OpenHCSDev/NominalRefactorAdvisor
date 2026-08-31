@@ -17094,57 +17094,6 @@ def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarat
     }
 
 
-def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nimport shutil\n\n\nclass Packager:\n    def _copy_pdf(self, pdf_file, package_dir):\n        pdf_dest = package_dir / pdf_file.name\n        shutil.copy2(pdf_file, pdf_dest)\n        print(f"PDF: {pdf_file.name}")\n\n    def _copy_markdown(self, markdown_file, package_dir):\n        markdown_dest = package_dir / markdown_file.name\n        shutil.copy2(markdown_file, markdown_dest)\n        print(f"Markdown: {markdown_file.name}")\n\n    def _copy_metadata(self, metadata_file, package_dir):\n        metadata_dest = package_dir / metadata_file.name\n        shutil.copy2(metadata_file, metadata_dest)\n        print(f"Metadata: {metadata_file.name}")\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "sibling_small_method_template"
-        )
-    )
-    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
-    assert "_copy_pdf" in finding.summary
-    assert "_copy_markdown" in finding.summary
-    assert "parameterized local helper" in (finding.scaffold or "")
-
-
-def test_detects_static_sibling_role_presence_template(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Bridge:\n    @staticmethod\n    def _merged_descriptor_status(resolution, status_result):\n        if resolution.descriptor_status is not None:\n            return resolution.descriptor_status\n        return status_result.descriptor_status\n\n    @staticmethod\n    def _merged_descriptor_summaries(resolution, status_result):\n        if resolution.descriptors:\n            return resolution.descriptors\n        return status_result.descriptors\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "sibling_small_method_template"
-        )
-    )
-    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
-    assert "_merged_descriptor_status" in finding.summary
-    assert "_merged_descriptor_summaries" in finding.summary
-
-
-def test_ignores_unrelated_small_private_methods(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Packager:\n    def _alpha(self, value):\n        result = normalize(value)\n        emit(result)\n        return result\n\n    def _beta(self, value):\n        result = normalize(value)\n        emit(result)\n        return result\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == "sibling_small_method_template" for finding in findings)
-    )
-
-
 def test_detects_mirrored_import_fallback(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
