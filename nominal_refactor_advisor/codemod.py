@@ -72,6 +72,7 @@ from .impact_ranking import (
 )
 from .models import (
     BranchCountMetrics,
+    EnvironmentBooleanDriftMetrics,
     EvidenceSymbol,
     FindingMetrics,
     ImpactDelta,
@@ -13140,6 +13141,36 @@ class SharedActionKeysForFindingMixin:
         )
 
 
+class EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer(
+    SharedActionKeysForFindingMixin,
+    FindingRecipeSynthesizer,
+):
+    """Preserve the exact proof gap for environment-boolean drift findings."""
+
+    detector_id = "environment_boolean_authority_drift"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        del context
+        metrics = finding.metrics
+        if not isinstance(metrics, EnvironmentBooleanDriftMetrics):
+            return self.rejected_evaluation(
+                "environment-boolean drift finding lacks typed drift evidence"
+            )
+        authority_location = FindingSemanticMirrorLocations(
+            finding
+        ).optional_authority_location()
+        authority_symbol = (
+            None if authority_location is None else authority_location.symbol
+        )
+        return self.rejected_evaluation(
+            metrics.recipe_rejection_reason(authority_symbol)
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class RepeatedAuthorityTargetRewrite(SourceRewriteDelta):
     """One target rewritten through a repeated-call authority."""
@@ -15999,6 +16030,10 @@ class FindingSemanticMirrorLocations:
             projection_location=projection_location,
             authority_location=authority_location,
         )
+
+    def optional_authority_location(self) -> SourceLocation | None:
+        locations = self.optional_locations()
+        return None if locations is None else locations[1]
 
 
 class SemanticMirrorEndpointRole(StrEnum):

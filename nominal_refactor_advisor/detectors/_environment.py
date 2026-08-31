@@ -20,7 +20,14 @@ from ..ast_tools import (
     walk_function_body_nodes,
 )
 from ..class_index import ATTRIBUTE_CHAIN_AUTHORITY
-from ..models import RefactorFinding, SourceLocation
+from ..models import (
+    EnvironmentBooleanDriftMetrics,
+    EnvironmentReadKind,
+    FixedKeyEnvironmentAuthorityWrapperMetrics,
+    LocalEnvironmentBooleanParserMetrics,
+    RefactorFinding,
+    SourceLocation,
+)
 from ..name_algebra import CLASS_NAME_ALGEBRA
 from ..native_syntax import NativePythonSyntaxIndex
 from ..patterns import PatternId
@@ -66,23 +73,6 @@ _ENVIRONMENT_BOOLEAN_TOKENS = frozenset(("boolean", "decision", "enabled", "flag
 _INSTANCE_PARAMETER_NAMES = frozenset(("cls", "self"))
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
-
-
-class EnvironmentReadKind(StrEnum):
-    """Direct Python environment access forms recognized by the detector."""
-
-    GETENV = "getenv"
-    ENVIRON_GET = "environ.get"
-    ENVIRON_SUBSCRIPT = "environ[...]"
-
-    @property
-    def os_member_name(self) -> str:
-        return self.value.partition(".")[0].partition("[")[0]
-
-    @property
-    def method_name(self) -> str | None:
-        _owner, separator, method_name = self.value.partition(".")
-        return method_name if separator else None
 
 
 AbsentDecisionSelector = Callable[[bool | None, bool | None], bool | None]
@@ -165,13 +155,6 @@ class EnvironmentReadCallArgument(StrEnum):
 
     KEY = "key"
     DEFAULT = "default"
-
-
-class EnvironmentBooleanDriftKind(StrEnum):
-    """Environment authority drift shapes emitted under one detector family."""
-
-    LOCAL_TOKEN_PARSER = "local token parser"
-    FIXED_KEY_AUTHORITY_WRAPPER = "fixed-key authority wrapper"
 
 
 class EnvironmentFlagDecision(Enum):
@@ -1187,10 +1170,13 @@ def _fixed_key_authority_wrapper_facts(
 
 @dataclass(frozen=True)
 class _EnvironmentBooleanDriftCandidate(SourceLocation):
-    kind: EnvironmentBooleanDriftKind
-    environment_key: str
+    metrics: EnvironmentBooleanDriftMetrics
     summary_detail: str
     authority: _DeclaredEnvironmentFlagAuthority | None = None
+
+    @property
+    def environment_key(self) -> str:
+        return self.metrics.environment_key
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -1226,11 +1212,17 @@ def _parser_candidate(
     if authority is not None:
         detail += f" despite existing declared authority `{authority.symbol}`"
     return _EnvironmentBooleanDriftCandidate(
-        kind=EnvironmentBooleanDriftKind.LOCAL_TOKEN_PARSER,
         file_path=site.file_path,
         line=site.line,
         symbol=site.symbol,
-        environment_key=site.environment_key,
+        metrics=LocalEnvironmentBooleanParserMetrics(
+            environment_key=site.environment_key,
+            read_kind=site.read_kind,
+            token_values=site.token_values,
+            matched_decision=site.matched_decision,
+            absent_decision=site.absent_decision,
+            absent_source=site.absent_source,
+        ),
         summary_detail=detail,
         authority=authority,
     )
@@ -1240,11 +1232,12 @@ def _wrapper_candidate(
     site: _FixedKeyAuthorityWrapperSite,
 ) -> _EnvironmentBooleanDriftCandidate:
     return _EnvironmentBooleanDriftCandidate(
-        kind=EnvironmentBooleanDriftKind.FIXED_KEY_AUTHORITY_WRAPPER,
         file_path=site.file_path,
         line=site.line,
         symbol=site.symbol,
-        environment_key=site.environment_key,
+        metrics=FixedKeyEnvironmentAuthorityWrapperMetrics(
+            environment_key=site.environment_key,
+        ),
         summary_detail=(
             "is a one-return fixed-key wrapper around existing declared authority "
             f"`{site.authority.symbol}`"
@@ -1543,6 +1536,7 @@ class EnvironmentBooleanAuthorityDriftDetector(
                     "AST dataflow links a direct Python environment read or fixed-key "
                     "wrapper to independently owned boolean flag semantics"
                 ),
+                metrics=candidate.metrics,
             )
             for candidate in sorted(
                 candidates,
@@ -1550,7 +1544,7 @@ class EnvironmentBooleanAuthorityDriftDetector(
                     item.file_path,
                     item.line,
                     item.symbol,
-                    item.kind.value,
+                    item.environment_key,
                 ),
             )
         ]

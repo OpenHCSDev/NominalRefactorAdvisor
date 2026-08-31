@@ -10,9 +10,18 @@ from nominal_refactor_advisor.analysis import (
 )
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.calibration import run_calibration_manifest
+from nominal_refactor_advisor.codemod import (
+    CodemodSourceSnapshot,
+    FindingRecipeSynthesisStatus,
+)
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     EnvironmentBooleanAuthorityDriftDetector,
+)
+from nominal_refactor_advisor.models import (
+    EnvironmentReadKind,
+    FixedKeyEnvironmentAuthorityWrapperMetrics,
+    LocalEnvironmentBooleanParserMetrics,
 )
 
 _CENTRAL_AUTHORITY_SOURCE = """
@@ -176,6 +185,38 @@ class FeatureEnvironmentAuthority:
     assert "one-return fixed-key wrapper" in wrapper_finding.summary
     assert wrapper_finding.evidence[1].symbol == (
         "DeclaredEnvironmentFlagAuthority.enabled"
+    )
+    assert isinstance(
+        wrapper_finding.metrics,
+        FixedKeyEnvironmentAuthorityWrapperMetrics,
+    )
+    assert isinstance(profile_finding.metrics, LocalEnvironmentBooleanParserMetrics)
+    assert profile_finding.metrics.read_kind is EnvironmentReadKind.ENVIRON_GET
+    assert profile_finding.metrics.token_values == ("0", "false", "no", "off")
+    assert profile_finding.metrics.matched_decision is False
+    assert profile_finding.metrics.absent_decision is True
+
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path / "pkg", use_parse_cache=False),
+        findings,
+    )
+    plan = snapshot.plan_from_findings(findings)
+    records_by_symbol = {
+        record.finding.evidence[0].subject_symbol: record for record in plan.records
+    }
+    assert all(record.action_keys for record in plan.records)
+    assert all(
+        record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+        for record in plan.records
+    )
+    assert "token and absent-state semantics are not proven equivalent" in (
+        records_by_symbol["RuntimeProfileEnvironmentAuthority.enabled"].reason
+    )
+    assert "complete call and import reference closure" in (
+        records_by_symbol["FeatureEnvironmentAuthority.enabled"].reason
+    )
+    assert records_by_symbol["trace_enabled"].reason == (
+        "local environment parser has no source-proven declared authority"
     )
 
 

@@ -53,6 +53,23 @@ class SemanticFieldRole(StrEnum):
     OWNER_SYMBOL = "owner_symbol"
 
 
+class EnvironmentReadKind(StrEnum):
+    """Direct Python environment access forms recognized by analysis."""
+
+    GETENV = "getenv"
+    ENVIRON_GET = "environ.get"
+    ENVIRON_SUBSCRIPT = "environ[...]"
+
+    @property
+    def os_member_name(self) -> str:
+        return self.value.partition(".")[0].partition("[")[0]
+
+    @property
+    def method_name(self) -> str | None:
+        _owner, separator, method_name = self.value.partition(".")
+        return method_name if separator else None
+
+
 @dataclass(frozen=True)
 class SourceLineReference:
     """One source file and line reference shared by source evidence records."""
@@ -305,6 +322,49 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
             if "." in symbol:
                 names.append(symbol.split(".", 1)[0])
         return tuple(names)
+
+
+@dataclass(frozen=True)
+class EnvironmentBooleanDriftMetrics(BehaviorFindingMetrics, ABC):
+    """Typed evidence shared by environment-boolean drift shapes."""
+
+    environment_key: str
+
+    @abstractmethod
+    def recipe_rejection_reason(self, authority_symbol: str | None) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class LocalEnvironmentBooleanParserMetrics(EnvironmentBooleanDriftMetrics):
+    """Observed local token parser and its absence semantics."""
+
+    read_kind: EnvironmentReadKind
+    token_values: tuple[str, ...]
+    matched_decision: bool
+    absent_decision: bool | None
+    absent_source: str | None
+
+    def recipe_rejection_reason(self, authority_symbol: str | None) -> str:
+        if authority_symbol is None:
+            return "local environment parser has no source-proven declared authority"
+        return (
+            f"candidate authority {authority_symbol!r} is shape-correlated, but its "
+            "token and absent-state semantics are not proven equivalent"
+        )
+
+
+@dataclass(frozen=True)
+class FixedKeyEnvironmentAuthorityWrapperMetrics(EnvironmentBooleanDriftMetrics):
+    """One fixed-key wrapper around a parameterized environment authority."""
+
+    def recipe_rejection_reason(self, authority_symbol: str | None) -> str:
+        if authority_symbol is None:
+            return "fixed-key wrapper has no source-proven declared authority"
+        return (
+            f"removing the fixed-key wrapper around {authority_symbol!r} requires "
+            "complete call and import reference closure"
+        )
 
 
 @dataclass(frozen=True)
