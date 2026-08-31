@@ -7950,6 +7950,21 @@ def test_detects_derived_query_index_surface(tmp_path: Path) -> None:
     assert "ITEM_BY_KEY" in (finding.scaffold or "")
 
 
+def test_derived_query_index_keeps_cls_relative_authorities_distinct(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom enum import Enum\n\n\nclass Alpha(Enum):\n    ONE = "one"\n\n    @classmethod\n    def from_literal(cls, value):\n        for member in cls:\n            if member.value == value:\n                return member\n        raise ValueError(value)\n\n\nclass Beta(Enum):\n    TWO = "two"\n\n    @classmethod\n    def from_literal(cls, value):\n        for member in cls:\n            if member.value == value:\n                return member\n        raise ValueError(value)\n',
+    )
+
+    assert not any(
+        finding.detector_id == "derived_query_index_surface"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_runtime_adapter_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

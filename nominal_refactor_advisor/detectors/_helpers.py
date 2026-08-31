@@ -49,7 +49,7 @@ NamedStringSequenceSpec: TypeAlias = tuple[str, int, tuple[str, ...]]
 NamedStringSequenceSpecs: TypeAlias = tuple[NamedStringSequenceSpec, ...]
 MutableNamedStringSequenceSpecs: TypeAlias = list[NamedStringSequenceSpec]
 NamedStringSequenceSpecsByName: TypeAlias = dict[str, MutableNamedStringSequenceSpecs]
-DerivedQuerySignature: TypeAlias = tuple[str, str, str]
+DerivedQuerySignature: TypeAlias = tuple[str | None, str, str, str]
 DerivedQuerySpecsBySignature: TypeAlias = dict[
     DerivedQuerySignature, MutableNamedStringSequenceSpecs
 ]
@@ -916,6 +916,20 @@ def _linear_query_key_names(
     return query_key_names
 
 
+def _linear_query_source_owner(
+    qualname: str,
+    source_expression: str,
+) -> str | None:
+    expression = ast.parse(source_expression, mode="eval").body
+    if not (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.expression_root_names(expression)
+        & _IMPLICIT_METHOD_PARAMETER_NAMES
+    ):
+        return None
+    owner_name, separator, _method_name = qualname.rpartition(".")
+    return owner_name if separator else qualname
+
+
 def _derived_query_index_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedQueryIndexCandidate, ...]:
@@ -927,11 +941,17 @@ def _derived_query_index_candidates(
         source_expression, query_key_names, return_expression, exception_name = (
             signature
         )
-        grouped[source_expression, return_expression, exception_name].append(
-            (qualname, function.lineno, query_key_names)
-        )
+        grouped[
+            (
+                _linear_query_source_owner(qualname, source_expression),
+                source_expression,
+                return_expression,
+                exception_name,
+            )
+        ].append((qualname, function.lineno, query_key_names))
     candidates: list[DerivedQueryIndexCandidate] = []
     for (
+        _source_owner,
         source_expression,
         return_expression,
         exception_name,
