@@ -44,7 +44,7 @@ from nominal_refactor_advisor.analysis_cache import (
     SourceFileSignatureCache,
 )
 from nominal_refactor_advisor.ast_tools import (
-    ExportDictShapeFamily,
+    BuilderCallShapeFamily,
     RegistrationShapeFamily,
     SourceModule,
     collect_family_items,
@@ -1728,28 +1728,25 @@ def test_collected_family_items_are_persisted_beside_parse_cache(
     module_path = package_root / "mod.py"
     module_path.write_text(
         "\n"
-        "def export(item):\n"
-        "    return {\n"
-        "        'name': item.name,\n"
-        "        'score': item.score,\n"
-        "        'label': item.label,\n"
-        "    }\n",
+        "class Payload: pass\n"
+        "def build(item):\n"
+        "    return Payload(name=item.name, score=item.score, label=item.label)\n",
         encoding="utf-8",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
 
     first_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
-    first_items = collect_family_items(first_module, ExportDictShapeFamily)
+    first_items = collect_family_items(first_module, BuilderCallShapeFamily)
     family_cache_dir = cache_dir / "collected-family"
 
     assert first_items
     assert tuple(family_cache_dir.glob("*.pickle"))
 
     second_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
-    second_items = collect_family_items(second_module, ExportDictShapeFamily)
+    second_items = collect_family_items(second_module, BuilderCallShapeFamily)
 
-    assert [item.key_names for item in second_items] == [
-        item.key_names for item in first_items
+    assert [item.field_names for item in second_items] == [
+        item.field_names for item in first_items
     ]
 
 
@@ -1759,13 +1756,14 @@ def test_legacy_family_cache_payload_is_ast_checked_and_certified(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "mod.py").write_text(
-        "def export(item):\n"
-        "    return {'name': item.name, 'score': item.score, 'label': item.label}\n",
+        "class Payload: pass\n"
+        "def build(item):\n"
+        "    return Payload(name=item.name, score=item.score, label=item.label)\n",
         encoding="utf-8",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
-    expected_items = collect_family_items(module, ExportDictShapeFamily)
+    expected_items = collect_family_items(module, BuilderCallShapeFamily)
     payload_path = next((cache_dir / "collected-family").glob("*.pickle"))
     payload = pickle.loads(payload_path.read_bytes())
     payload_path.write_bytes(
@@ -1781,7 +1779,7 @@ def test_legacy_family_cache_payload_is_ast_checked_and_certified(
     release_module_analysis_memory()
 
     reloaded_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
-    actual_items = collect_family_items(reloaded_module, ExportDictShapeFamily)
+    actual_items = collect_family_items(reloaded_module, BuilderCallShapeFamily)
     certified_payload = pickle.loads(payload_path.read_bytes())
 
     assert actual_items == expected_items
@@ -1795,8 +1793,9 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "mod.py").write_text(
-        "def export(item):\n"
-        "    return {'name': item.name, 'score': item.score, 'label': item.label}\n",
+        "class Payload: pass\n"
+        "def build(item):\n"
+        "    return Payload(name=item.name, score=item.score, label=item.label)\n",
         encoding="utf-8",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
@@ -1810,13 +1809,13 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
         schema,
     )
     monkeypatch.setattr(
-        ExportDictShapeFamily,
+        BuilderCallShapeFamily,
         "cache_payload_max_bytes",
         10_000,
     )
 
     module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
-    assert collect_family_items(module, ExportDictShapeFamily)
+    assert collect_family_items(module, BuilderCallShapeFamily)
     payload_paths = tuple((cache_dir / "collected-family").glob("*.pickle"))
 
     assert len(payload_paths) == 1
@@ -2049,41 +2048,6 @@ def test_native_registration_projection_matches_registered_ast_specs(
     )
 
     assert native == collect_family_items(parsed_module, RegistrationShapeFamily)
-
-
-def test_native_export_dict_projection_matches_registered_ast_spec(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    module_path = package_root / "exports.py"
-    module_path.write_text(
-        "def export(item):\n"
-        "    return {\n"
-        "        'name': item.name,\n"
-        "        'score': item.score,\n"
-        "        'label': item.label,\n"
-        "    }\n"
-        "\n"
-        "class Renderer:\n"
-        "    def export(self, result):\n"
-        "        return {'name': result.name, 'score': result.score, "
-        "'label': result.label}\n",
-        encoding="utf-8",
-    )
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    source_module = SourceModule(
-        path=parsed_module.path,
-        module_name=parsed_module.module_name,
-        source=parsed_module.source,
-    )
-
-    native = ExportDictShapeFamily.collect_source(
-        source_module,
-        NativePythonSyntaxIndex.from_source(source_module.source),
-    )
-
-    assert native == collect_family_items(parsed_module, ExportDictShapeFamily)
 
 
 def test_native_builder_projection_matches_canonical_ast_family(
@@ -2381,10 +2345,7 @@ def test_native_grouped_report_demands_match_ast_views(tmp_path: Path) -> None:
     )
     syntax_index = NativePythonSyntaxIndex.from_source(source_module.source)
     config = DetectorConfig()
-    for family in (
-        runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
-        ExportDictShapeFamily,
-    ):
+    for family in (runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,):
         full_items = tuple(collect_family_items(parsed_module, family))
         selected_items = tuple(
             item for item in full_items if item.function_name == "selected"
@@ -2488,7 +2449,6 @@ def test_source_native_projection_shard_skips_python_ast_construction(
             source=projection_source,
             missing_families=(
                 RegistrationShapeFamily,
-                ExportDictShapeFamily,
                 runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
                 environment_detectors._EnvironmentBooleanModuleProjectionFamily,
                 runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily,
@@ -2501,7 +2461,6 @@ def test_source_native_projection_shard_skips_python_ast_construction(
         (batch.family, len(batch.items)) for batch in result.projection_batches
     ] == [
         (RegistrationShapeFamily, 2),
-        (ExportDictShapeFamily, 1),
         (runtime_detectors.RepeatedBuilderCallShapeProjectionFamily, 1),
         (environment_detectors._EnvironmentBooleanModuleProjectionFamily, 1),
         (runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily, 1),
@@ -3088,6 +3047,9 @@ def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
 
     def module_source(class_name: str, field_prefix: str = "") -> str:
         return (
+            "class Payload:\n"
+            "    pass\n"
+            "\n"
             f"class {class_name}:\n"
             "    def _shared(self, value):\n"
             "        first = value + 1\n"
@@ -3098,6 +3060,9 @@ def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
             "        second = first / 2\n"
             "        return second\n"
             "    def build(self, source):\n"
+            f"        return Payload({field_prefix}alpha=source.alpha, "
+            f"{field_prefix}beta=source.beta, {field_prefix}gamma=source.gamma)\n"
+            "    def rebuild(self, source):\n"
             f"        return Payload({field_prefix}alpha=source.alpha, "
             f"{field_prefix}beta=source.beta, {field_prefix}gamma=source.gamma)\n"
             "    def export(self, source):\n"
@@ -3119,7 +3084,10 @@ def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
     )
     config = DetectorConfig()
     family_detector_pairs = (
-        (ExportDictShapeFamily, runtime_detectors.RepeatedExportDictDetector()),
+        (
+            runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
+            runtime_detectors.RepeatedBuilderCallDetector(),
+        ),
     )
     for family, detector in family_detector_pairs:
         full_items = tuple(
@@ -3546,7 +3514,7 @@ def test_compact_family_cache_rejects_zero_byte_failed_write(tmp_path: Path) -> 
     source_path.write_text(source, encoding="utf-8")
     family_cache_dir = tmp_path / "collected-family"
     family_cache_dir.mkdir()
-    family = ExportDictShapeFamily
+    family = BuilderCallShapeFamily
     family_cache = ast_tools_module.CollectedFamilyCacheContext(
         path=source_path,
         module_name="mod",
@@ -3583,12 +3551,12 @@ def test_compact_family_cache_identity_derives_item_schema(
         family_cache_dir=None,
     )
 
-    monkeypatch.setattr(ExportDictShapeFamily, "item_type", StringItem)
-    ExportDictShapeFamily.item_schema_signature.cache_clear()
-    string_identity = family_cache.identity(ExportDictShapeFamily)
-    monkeypatch.setattr(ExportDictShapeFamily, "item_type", IntegerItem)
-    ExportDictShapeFamily.item_schema_signature.cache_clear()
-    integer_identity = family_cache.identity(ExportDictShapeFamily)
+    monkeypatch.setattr(BuilderCallShapeFamily, "item_type", StringItem)
+    BuilderCallShapeFamily.item_schema_signature.cache_clear()
+    string_identity = family_cache.identity(BuilderCallShapeFamily)
+    monkeypatch.setattr(BuilderCallShapeFamily, "item_type", IntegerItem)
+    BuilderCallShapeFamily.item_schema_signature.cache_clear()
+    integer_identity = family_cache.identity(BuilderCallShapeFamily)
 
     assert (
         string_identity.family_schema.item_type_module
@@ -3755,7 +3723,6 @@ def test_compact_flattened_candidate_projections_match_full_ast_detection(
     )
     detector_types = (
         runtime_detectors.RepeatedBuilderCallDetector,
-        runtime_detectors.RepeatedExportDictDetector,
         runtime_detectors.ManualClassRegistrationDetector,
     )
     accumulator = accumulate_compact_global_projections_for_roots(
@@ -5569,9 +5536,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         in partition.compact_global_detector_types
     )
     assert runtime_detectors.RepeatedBuilderCallDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.RepeatedExportDictDetector in (
         partition.compact_global_detector_types
     )
     assert runtime_detectors.ManualClassRegistrationDetector in (

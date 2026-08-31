@@ -54,7 +54,6 @@ from .observation_shapes import (
     ClassMarkerObservation,
     ConfigDispatchObservation,
     DynamicMethodInjectionObservation,
-    ExportDictShape,
     FieldObservation,
     FieldOriginKind,
     LiteralDispatchObservation,
@@ -1068,12 +1067,6 @@ class _BuilderCallContext:
     call: ast.Call
     callee_name: str
     field_pairs: tuple[tuple[str, ast.AST], ...]
-
-
-@dataclass(frozen=True)
-class _ExportDictContext:
-    dict_node: ast.Dict
-    key_pairs: tuple[tuple[str, ast.AST], ...]
 
 
 @dataclass(frozen=True)
@@ -3957,79 +3950,6 @@ def _builder_call_shape(
     )
 
 
-def _export_dict_shape(
-    parsed_module: ParsedModule,
-    node: ast.AST,
-    class_name: str | None,
-    function_name: str | None,
-) -> ExportDictShape | None:
-    context = (
-        Maybe.of(as_ast(node, ast.Dict))
-        .filter(lambda _dict: function_name is not None)
-        .map(
-            lambda dict_node: _ExportDictContext(
-                dict_node=dict_node,
-                key_pairs=tuple(
-                    (key.value, value)
-                    for key, value in zip(
-                        dict_node.keys, dict_node.values, strict=False
-                    )
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
-                ),
-            )
-        )
-        .filter(
-            lambda export_context: (
-                len(export_context.key_pairs) >= 3
-                and len(export_context.key_pairs) == len(export_context.dict_node.keys)
-            )
-        )
-        .unwrap_or_none()
-    )
-    return (
-        Maybe.of(context)
-        .combine(
-            lambda export_context: _source_roots_for_value_pairs(
-                export_context.key_pairs
-            ),
-            lambda export_context, source_roots: ExportDictShape(
-                file_path=parsed_module.file_path,
-                class_name=class_name,
-                function_name=function_name,
-                lineno=export_context.dict_node.lineno,
-                key_names=tuple(name for name, _ in export_context.key_pairs),
-                value_fingerprint=tuple(
-                    (
-                        _fingerprint_builder_value(value)
-                        for _, value in export_context.key_pairs
-                    )
-                ),
-                source_arity=len(source_roots),
-                source_name=(
-                    next(iter(source_roots)) if len(source_roots) == 1 else None
-                ),
-                identity_field_names=tuple(
-                    (
-                        name
-                        for name, value in export_context.key_pairs
-                        if _terminal_name(value) == name
-                    )
-                ),
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _source_roots_for_value_pairs(
-    value_pairs: tuple[tuple[str, ast.AST], ...],
-) -> set[str] | None:
-    source_roots: set[str] = set()
-    for _, value in value_pairs:
-        source_roots.update(ROOT_NAME_PROJECTION.root_names(value))
-    return source_roots or None
-
-
 def _fingerprint_builder_value(node: ast.AST) -> str:
     return _builder_value_key(node)
 
@@ -4089,8 +4009,6 @@ from .observation_families import (
     DecoratorRegistrationShapeSpec,
     DynamicMethodInjectionObservationFamily,
     DynamicMethodInjectionObservationSpec,
-    ExportDictShapeFamily,
-    ExportDictShapeSpec,
     FieldObservationFamily,
     FieldObservationSpec,
     InitAssignmentFieldObservationSpec,

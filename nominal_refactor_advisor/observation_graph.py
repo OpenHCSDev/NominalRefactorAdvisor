@@ -30,7 +30,6 @@ class ObservationKind(StrEnum):
     CLASS_MARKER = "class_marker"
     CONFIG_DISPATCH = "config_dispatch"
     DYNAMIC_METHOD_INJECTION = "dynamic_method_injection"
-    EXPORT_DICT = "export_dict"
     FIELD = "field"
     LITERAL_DISPATCH = "literal_dispatch"
     PROJECTION_HELPER = "projection_helper"

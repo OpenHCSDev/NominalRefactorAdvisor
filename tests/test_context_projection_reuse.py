@@ -90,7 +90,7 @@ def test_grouped_shape_preparation_reuses_exact_shape_snapshot(
         assert tuple(prepared_shapes) == shapes
         return []
 
-    detector_type = runtime_detectors.RepeatedExportDictDetector
+    detector_type = runtime_detectors.ManualClassRegistrationDetector
     monkeypatch.setattr(detector_type, "_collect_shapes", counted_shapes)
     monkeypatch.setattr(detector_type, "_group_key", group_key)
     monkeypatch.setattr(detector_type, "_findings_for_shapes", counted_findings)

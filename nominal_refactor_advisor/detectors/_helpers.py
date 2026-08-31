@@ -4870,11 +4870,6 @@ def _single_owner_builder_family_patch(owner_symbol: str, callee_name: str) -> s
     )
 
 
-def _projection_schema_patch(export_shapes: tuple[ExportDictShape, ...]) -> str:
-    target_file = export_shapes[0].file_path
-    return f"*** Begin Patch\n*** Update File: {target_file}\n@@\n+@dataclass(frozen=True)\n+class ProjectionSchema:\n+    ...\n+\n+    @classmethod\n+    def from_source(cls, source): ...\n*** End Patch"
-
-
 def _autoregister_patch(
     registry_name: str,
     class_names: set[str],
@@ -4939,13 +4934,6 @@ def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
 
 def _single_owner_builder_family_scaffold(callee_name: str) -> str:
     return f'@dataclass(frozen=True)\nclass InvocationSpec:\n    args: tuple[object, ...]\n    kwargs: dict[str, object]\n\nINVOCATION_SPECS = (\n    InvocationSpec(args=(...), kwargs={{"flag": True}}),\n)\n\nfor spec in INVOCATION_SPECS:\n    owner.{callee_name}(*spec.args, **spec.kwargs)'
-
-
-def _projection_schema_scaffold(export_shapes: tuple[ExportDictShape, ...]) -> str:
-    keys = export_shapes[0].key_names
-    field_block = "\n".join((f"    {key}: object" for key in keys[:4]))
-    mapping_block = "\n".join((f"            {key}=source.{key}," for key in keys[:4]))
-    return f"@dataclass(frozen=True)\nclass ProjectionSchema:\n{field_block}\n\n    @classmethod\n    def from_source(cls, source):\n        return cls(\n{mapping_block}\n        )"
 
 
 def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:

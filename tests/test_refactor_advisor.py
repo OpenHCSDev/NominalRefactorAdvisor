@@ -450,7 +450,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=20,
             ),
             _impact_ranking_finding(
-                detector_id="repeated_export_dicts",
+                detector_id="projection_builder_authority",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=30,
@@ -500,7 +500,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=20,
             ),
             _impact_ranking_finding(
-                detector_id="repeated_export_dicts",
+                detector_id="projection_builder_authority",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=30,
@@ -3957,7 +3957,6 @@ def test_detects_generic_cancelable_product_composition_signal(
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 REPEATED_BUILDER_CALLS_DETECTOR_ID = "repeated_builder_calls"
-REPEATED_EXPORT_DICTS_DETECTOR_ID = "repeated_export_dicts"
 REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID = (
     "repeated_validate_shape_guard_family"
 )
@@ -5879,22 +5878,20 @@ def _sequential_value_rewrite_plan(module_path: Path) -> CodemodPlanSequence:
     )
 
 
-def _generated_repeated_export_dict_source() -> str:
+def _generated_repeated_builder_source() -> str:
     return (
+        "class Projection:\n"
+        "    pass\n\n\n"
         "class GeneratedAlpha:\n"
-        "    def export(self, result):\n"
-        "        return {\n"
-        "            'pose_id': result.pose_id,\n"
-        "            'score': result.score,\n"
-        "            'label': result.label,\n"
-        "        }\n\n\n"
+        "    def build(self, result):\n"
+        "        return Projection(\n"
+        "            pose_id=result.pose_id, score=result.score, label=result.label\n"
+        "        )\n\n\n"
         "class GeneratedBeta:\n"
-        "    def export(self, item):\n"
-        "        return {\n"
-        "            'pose_id': item.pose_id,\n"
-        "            'score': item.score,\n"
-        "            'label': item.label,\n"
-        "        }\n"
+        "    def build(self, item):\n"
+        "        return Projection(\n"
+        "            pose_id=item.pose_id, score=item.score, label=item.label\n"
+        "        )\n"
     )
 
 
@@ -12714,7 +12711,7 @@ def test_codemod_projected_scan_analyzes_created_modules(
         "VALUE = 1\n",
     )
     created_path = tmp_path / "pkg/generated.py"
-    created_source = _generated_repeated_export_dict_source()
+    created_source = _generated_repeated_builder_source()
     modules = parse_python_modules(tmp_path)
     simulation = CodemodSimulationReport(
         rewrites=(),
@@ -12742,7 +12739,7 @@ def test_codemod_projected_scan_analyzes_created_modules(
     assert projected_module.module_name == "pkg.generated"
     assert any(
         (
-            finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID
+            finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
             and any(
                 evidence.file_path == created_path.as_posix()
                 for evidence in finding.evidence
@@ -13494,7 +13491,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
                             {
                                 "operation": "create_file",
                                 "file_path": created_path.as_posix(),
-                                "source": _generated_repeated_export_dict_source(),
+                                "source": _generated_repeated_builder_source(),
                             }
                         ],
                     }
@@ -13543,7 +13540,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     assert "projected_finding_recipe_plan" not in projected_findings
     assert "projected_finding_continuation" not in projected_findings
     assert any(
-        finding["detector_id"] == REPEATED_EXPORT_DICTS_DETECTOR_ID
+        finding["detector_id"] == REPEATED_BUILDER_CALLS_DETECTOR_ID
         and any(
             evidence["file_path"] == created_path.as_posix()
             for evidence in finding["evidence"]
@@ -15373,36 +15370,6 @@ def test_collects_registration_shapes_via_spec_family(
     }
 
 
-def test_detects_repeated_export_dict_shape(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Alpha:\n    def export(self, result):\n        return {\n            "pose_id": result.pose_id,\n            "score": result.score,\n            "label": result.label,\n        }\n\n\nclass Beta:\n    def export(self, item):\n        return {\n            "pose_id": item.pose_id,\n            "score": item.score,\n            "label": item.label,\n        }\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        (
-            finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID
-            for finding in findings
-        )
-    )
-    assert any(("projection dict" in finding.title.lower() for finding in findings))
-    assert any(
-        (
-            finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID
-            and finding.scaffold
-            for finding in findings
-        )
-    )
-    assert any(
-        (
-            finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID
-            and finding.codemod_patch
-            for finding in findings
-        )
-    )
-
-
 def test_collects_projection_helper_shapes_via_spec_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -16862,22 +16829,26 @@ def test_observation_graph_auto_includes_registered_observation_families(
 SENTINEL = type("Sentinel", (), {})()
 
 
+class Projection:
+    pass
+
+
 class Alpha:
-    def export(self, result):
-        return {
-            "pose_id": result.pose_id,
-            "score": result.score,
-            "label": result.label,
-        }
+    def build(self, result):
+        return Projection(
+            pose_id=result.pose_id,
+            score=result.score,
+            label=result.label,
+        )
 
 
 class Beta:
-    def export(self, item):
-        return {
-            "pose_id": item.pose_id,
-            "score": item.score,
-            "label": item.label,
-        }
+    def build(self, item):
+        return Projection(
+            pose_id=item.pose_id,
+            score=item.score,
+            label=item.label,
+        )
 
 
 def resolve(config, obj):
@@ -16892,8 +16863,8 @@ def resolve(config, obj):
     )
     graph = build_observation_graph(parse_python_modules(tmp_path))
     kinds = {item.observation_kind for item in graph.observations}
+    assert ObservationKind.BUILDER_CALL in kinds
     assert ObservationKind.CONFIG_DISPATCH in kinds
-    assert ObservationKind.EXPORT_DICT in kinds
     assert ObservationKind.SENTINEL_TYPE in kinds
 
 
@@ -17132,52 +17103,6 @@ def test_ignores_pass_through_composition_facade(tmp_path: Path) -> None:
     assert not any(
         finding.detector_id == "pass_through_composition_facade"
         for finding in analyze_path(tmp_path)
-    )
-
-
-def test_json_payload_includes_finding_backed_recipe_plan(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def export(self, result):
-        return {
-            "pose_id": result.pose_id,
-            "score": result.score,
-            "label": result.label,
-        }
-
-
-class Beta:
-    def export(self, item):
-        return {
-            "pose_id": item.pose_id,
-            "score": item.score,
-            "label": item.label,
-        }
-""",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = [
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID
-    ]
-
-    payload = JsonPayloadBuilder(
-        findings=findings,
-        plans=[],
-        modules=modules,
-    ).to_dict()
-
-    recipe_plan = payload["finding_recipe_plan"]
-    assert recipe_plan["expected_removed_finding_count"] == 0
-    assert recipe_plan["document"]["recipes"] == ()
-    assert recipe_plan["synthesis_report"]["records"][0]["status"] == (
-        "no_synthesizer"
     )
 
 

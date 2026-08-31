@@ -25,7 +25,6 @@ from .observation_shapes import (
     ClassMarkerObservation,
     ConfigDispatchObservation,
     DynamicMethodInjectionObservation,
-    ExportDictShape,
     FieldObservation,
     LiteralDispatchObservation,
     LiteralKind,
@@ -65,7 +64,6 @@ from .ast_tools import (
     _config_dispatch_observations,
     _dynamic_method_injection_observations,
     _execution_level_for_scope,
-    _export_dict_shape,
     _fingerprint_builder_value,
     _init_field_observations,
     _inline_literal_dispatch_observations_for_kind,
@@ -429,122 +427,14 @@ def _literal_spec(
     )
 
 
-def _native_export_dict_shapes(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[ExportDictShape] | None:
-    """Derive export-dict shapes from native candidate selection."""
-
-    if not syntax_index.is_complete:
-        return None
-    parsed_module = source_module.parsed_module(
-        ast.Module(body=[], type_ignores=[]),
-    )
-    shapes: list[ExportDictShape] = []
-    try:
-        dictionaries = sorted(
-            syntax_index.common_captures().get("dictionary", ()),
-            key=lambda node: (node.start_byte, -node.end_byte),
-        )
-        for dictionary in dictionaries:
-            function_name = syntax_index.nearest_scope_name(
-                dictionary, "function_definition"
-            )
-            if function_name is None:
-                continue
-            children = tuple(
-                child for child in dictionary.named_children if child.type != "comment"
-            )
-            pairs = tuple(child for child in children if child.type == "pair")
-            if len(pairs) < 3 or len(pairs) != len(children):
-                continue
-            expression = syntax_index.expression_for(dictionary)
-            shape = _export_dict_shape(
-                parsed_module,
-                expression,
-                syntax_index.nearest_scope_name(dictionary, "class_definition"),
-                function_name,
-            )
-            if shape is not None:
-                shapes.append(shape)
-        return shapes
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
-@dataclass(frozen=True)
-class ExportDictProjectionDemand:
-    """Exact export groups capable of retaining report-target evidence."""
-
-    group_keys: frozenset[tuple[tuple[str, ...], tuple[str, ...]]]
-
-
-def _export_dict_projection_demand(
-    target_items: tuple[object, ...],
-    config: object,
-) -> ExportDictProjectionDemand:
-    del config
-    return ExportDictProjectionDemand(
-        group_keys=frozenset(
-            (item.key_names, item.value_fingerprint)
-            for item in target_items
-            if isinstance(item, ExportDictShape)
-        )
-    )
-
-
-def _project_export_dict_demand(
-    items: tuple[object, ...],
-    demand: object,
-) -> tuple[object, ...]:
-    if not isinstance(demand, ExportDictProjectionDemand):
-        return items
-    return tuple(
-        item
-        for item in items
-        if isinstance(item, ExportDictShape)
-        and (item.key_names, item.value_fingerprint) in demand.group_keys
-    )
-
-
-def _collect_export_dict_source_demand(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-    demand: object,
-) -> list[object] | None:
-    shapes = _native_export_dict_shapes(source_module, syntax_index)
-    if shapes is None:
-        return None
-    return list(_project_export_dict_demand(tuple(shapes), demand))
-
-
-def _collect_export_dict_ast_demand(
-    parsed_module: ParsedModule,
-    demand: object,
-) -> list[object]:
-    family = _FAMILY_EXPORTS["ExportDictShapeFamily"]
-    return list(
-        _project_export_dict_demand(tuple(family.collect(parsed_module)), demand)
-    )
-
-
 _materialize_class_declarations(
-    (
-        _ctx_shape("BuilderCall", ast.Call),
-        _ctx_shape(
-            "ExportDict",
-            ast.Dict,
-            source_collector=GeneratedSourceCollector(_native_export_dict_shapes),
-        ),
-    )
+    (_ctx_shape("BuilderCall", ast.Call),)
 )
 
 
 BuilderCallShapeSpec.shape_helper = _builder_call_shape
-ExportDictShapeSpec.shape_helper = _export_dict_shape
 
 _BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
-_EXPORT_DICT_SHAPE_SPEC = ExportDictShapeSpec()
 
 
 class ScopeFilteredFunctionObservationSpec(
@@ -1297,20 +1187,6 @@ _FAMILY_EXPORT_NAMES = tuple(_FAMILY_EXPORTS)
 _FAMILY_EXPORTS["RegistrationShapeFamily"].report_presence_predicate = staticmethod(
     lambda items, config: bool(items)
 )
-_FAMILY_EXPORTS["ExportDictShapeFamily"].source_demand_collector = staticmethod(
-    _collect_export_dict_source_demand
-)
-_FAMILY_EXPORTS["ExportDictShapeFamily"].ast_demand_collector = staticmethod(
-    _collect_export_dict_ast_demand
-)
-_FAMILY_EXPORTS["ExportDictShapeFamily"].report_demand_builder = staticmethod(
-    _export_dict_projection_demand
-)
-_FAMILY_EXPORTS["ExportDictShapeFamily"].cached_demand_projector = staticmethod(
-    _project_export_dict_demand
-)
-
-
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     module_name=__name__,
     root_types=tuple(SharedRegistryRootBase.__subclasses__()),

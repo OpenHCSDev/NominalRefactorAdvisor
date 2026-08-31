@@ -106,8 +106,6 @@ from ..ast_tools import (
     ConfigDispatchObservationFamily,
     DynamicMethodInjectionObservation,
     DynamicMethodInjectionObservationFamily,
-    ExportDictShapeFamily,
-    ExportDictShape,
     ParsedModule,
     SourceModule,
     ProjectionHelperShape,
@@ -420,9 +418,6 @@ class DetectorConfig:
     )
     min_builder_keywords: int = detector_config_option(
         3, "Minimum keyword count for repeated record-builder detection."
-    )
-    min_export_keys: int = detector_config_option(
-        3, "Minimum key count for repeated export-dict detection."
     )
     min_registration_sites: int = detector_config_option(
         2,

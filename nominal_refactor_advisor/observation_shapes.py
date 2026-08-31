@@ -548,24 +548,6 @@ class RegistrationShape:
         return f"{self.registry_name}[...] = {self.registered_class}"
 
 
-@dataclass(frozen=True)
-class ExportDictShape(FunctionBodyCallLikeShape):
-    OBSERVATION_KIND = ObservationKind.EXPORT_DICT
-    key_names: tuple[str, ...]
-
-    @property
-    def symbol(self) -> str:
-        return f"{self.owner_prefix}:export-dict"
-
-    @property
-    def observed_name(self) -> str:
-        return ",".join(self.key_names)
-
-    @property
-    def fiber_key(self) -> str:
-        return f"{self.key_names}:{self.value_fingerprint}"
-
-
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     module_name=__name__,
     include_enums=True,

@@ -207,9 +207,9 @@ def test_unrelated_concepts_do_not_match() -> None:
 
 def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
     finding = advisor.RefactorFinding(
-        detector_id="repeated_export_dicts",
+        detector_id="metadata_only_class_family",
         pattern_id=advisor.PatternId.AUTHORITATIVE_SCHEMA,
-        title="Repeated export dictionaries",
+        title="Metadata-only class family",
         summary="An SSOT detector without an executable declaration.",
         why="Detector roles do not prove executable migration ownership.",
         capability_gap="A proof-backed executable declaration.",

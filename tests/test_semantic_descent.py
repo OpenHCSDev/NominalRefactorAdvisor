@@ -1449,7 +1449,7 @@ def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
         )
         if item.detector_id == "semantic_mirror_without_descent"
     )
-    unrelated_finding = replace(finding, detector_id="repeated_export_dicts")
+    unrelated_finding = replace(finding, detector_id="numeric_literal_dispatch")
 
     plan = codemod_plan_from_findings(
         (finding, unrelated_finding),
