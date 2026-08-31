@@ -10865,13 +10865,6 @@ class OptionRecordQuotientCandidate(
 
 
 @dataclass(frozen=True)
-class IdentityKeywordForwardingShellCandidate(
-    CalleeLineSurface, FunctionLineWitnessCandidate
-):
-    forwarded_keyword_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class OptionalKeywordBagAssemblyCandidate(FunctionLineWitnessCandidate):
     bag_name: str
     parameter_names: tuple[str, ...]

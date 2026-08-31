@@ -5175,12 +5175,6 @@ class _FunctionSignatureView:
         return self.parameter_names - _IMPLICIT_METHOD_PARAMETER_NAMES
 
     @property
-    def has_parameter_defaults(self) -> bool:
-        return bool(self.function.args.defaults) or any(
-            (default is not None for default in self.function.args.kw_defaults)
-        )
-
-    @property
     def arguments(self) -> tuple[ast.arg, ...]:
         return (
             *self.function.args.posonlyargs,
@@ -6365,38 +6359,6 @@ def _source_segment(module: ParsedModule, node: ast.expr) -> str:
     return HELPER_SUPPORT_PROJECTION_AUTHORITY.source_segment(module, node)
 
 
-def _decorator_terminal_names(node: ast.FunctionDef) -> tuple[str, ...]:
-    return tuple(
-        (
-            name
-            for name in (
-                _ast_terminal_name(
-                    decorator.func if isinstance(decorator, ast.Call) else decorator
-                )
-                for decorator in node.decorator_list
-            )
-            if name is not None
-        )
-    )
-
-
-_SEMANTIC_FORWARDING_DECORATORS = frozenset(
-    {
-        "numpy",
-        "numpy_decorator",
-        "special_inputs",
-        "special_outputs",
-    }
-)
-
-
-def _has_semantic_forwarding_decorator(node: NamedFunctionNode) -> bool:
-    return any(
-        name in _SEMANTIC_FORWARDING_DECORATORS
-        for name in _decorator_terminal_names(node)
-    )
-
-
 ClassShapeT = TypeVar("ClassShapeT")
 BuiltCandidateT = TypeVar("BuiltCandidateT")
 ClassShapeProjector = Callable[[ast.ClassDef], ClassShapeT | None]
@@ -6664,26 +6626,6 @@ class HelperSyntaxProjectionAuthority:
                 continue
             return None
         return tuple(forwarded)
-
-    def identity_forwarded_keyword_names(self, call: ast.Call) -> tuple[str, ...]:
-        forwarded: list[str] = []
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                return ()
-            if isinstance(keyword.value, ast.Name):
-                if keyword.arg != keyword.value.id:
-                    return ()
-                forwarded.append(keyword.arg)
-                continue
-            nested_call = as_ast(keyword.value, ast.Call)
-            if nested_call is None or nested_call.args:
-                return ()
-            nested_forwarded = self.identity_forwarded_keyword_names(nested_call)
-            if not nested_forwarded:
-                return ()
-            forwarded.extend(nested_forwarded)
-        return tuple(forwarded)
-
 
 HELPER_SYNTAX_PROJECTION_AUTHORITY = HelperSyntaxProjectionAuthority()
 
@@ -7435,64 +7377,6 @@ def _nested_builder_shell_candidates(
         config,
         sort_key=lambda item: (item.file_path, item.lineno),
     )
-
-
-def _identity_keyword_forwarding_shell_candidate(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-) -> Iterable[IdentityKeywordForwardingShellCandidate]:
-    if function.name.startswith("__") and function.name.endswith("__"):
-        return
-    if _has_semantic_forwarding_decorator(function):
-        return
-    body = _trim_docstring_body(list(function.body))
-    if len(body) != 1 or not isinstance(body[0], ast.Return):
-        return
-    returned = body[0].value
-    if not isinstance(returned, ast.Call) or returned.args:
-        return
-    if _call_targets_nominal_owner(returned.func):
-        return
-    parameter_names = _FunctionSignatureView(function).explicit_parameter_names
-    if not parameter_names or any(
-        (keyword.arg is None for keyword in returned.keywords)
-    ):
-        return
-    forwarded_keyword_names = (
-        HELPER_SYNTAX_PROJECTION_AUTHORITY.identity_forwarded_keyword_names(returned)
-    )
-    if set(forwarded_keyword_names) != parameter_names:
-        return
-    yield IdentityKeywordForwardingShellCandidate(
-        file_path=module.file_path,
-        line=function.lineno,
-        function_name=qualname,
-        callee_name=_qualified_call_display_name(returned),
-        forwarded_keyword_names=forwarded_keyword_names,
-        line_count=max(
-            1, (function.end_lineno or function.lineno) - function.lineno + 1
-        ),
-    )
-
-
-def _identity_keyword_forwarding_shell_candidates(
-    module: ParsedModule,
-) -> tuple[IdentityKeywordForwardingShellCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _identity_keyword_forwarding_shell_candidate,
-        sort_key=lambda item: (item.file_path, item.line, item.function_name),
-    )
-
-
-def _call_targets_nominal_owner(node: ast.AST) -> bool:
-    if isinstance(node, ast.Name) and node.id == "cls":
-        return True
-    if isinstance(node, ast.Attribute):
-        parts = _ast_attribute_chain(node)
-        return parts is not None and parts[0] in {"self", "cls"}
-    return False
 
 
 _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})

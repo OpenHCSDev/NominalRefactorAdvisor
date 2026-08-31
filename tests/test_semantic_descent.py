@@ -1192,46 +1192,6 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     assert simulation.is_clean is True
 
 
-def test_identity_keyword_forwarding_shell_remains_advisory_without_recipe(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "from dataclasses import dataclass\n"
-        "\n"
-        "@dataclass(frozen=True)\n"
-        "class SupportItem:\n"
-        "    name: str\n"
-        "    value: str\n"
-        "\n"
-        "class SupportBuilder:\n"
-        "    def first(self, name, value):\n"
-        "        return (self.item(name, value),)\n"
-        "\n"
-        "    def second(self, *, name, value):\n"
-        "        return self.item(value=value, name=name)\n"
-        "\n"
-        "    @staticmethod\n"
-        "    def item(name, value):\n"
-        "        return SupportItem(name=name, value=value)\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = next(
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "identity_keyword_forwarding_shell"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    assert plan.records[0].status.value == "no_synthesizer"
-    assert plan.records[0].refactor_concept == ""
-    assert NominalBoundaryConcept.target_findings((finding,), snapshot) == ()
-    assert plan.records[0].executable_declaration_name == ""
-    assert plan.expected_removed_finding_ids == ()
-    assert plan.document.recipes == ()
-
-
 def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
     tmp_path: Path,
 ) -> None:

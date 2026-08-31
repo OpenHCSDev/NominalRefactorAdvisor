@@ -4680,54 +4680,6 @@ declare_candidate_rule_detector(
     candidate_collector=_inline_candidate_renderer_declaration_candidates,
 )
 
-
-
-declare_candidate_rule_detector(
-    IdentityKeywordForwardingShellCandidate,
-    high_confidence_certified_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Identity keyword forwarding shell should collapse into the semantic authority",
-        "A function whose complete body is `return Authority(field=field, ...)` and whose forwarded keyword names exactly match its own parameters has no independent invariant, policy, or provenance boundary. The stable object is the callee authority or a typed request record, not the transport shell.",
-        "direct authority call or typed request object instead of a same-name keyword relay",
-        "single-return wrapper forwards every parameter as an identically named keyword",
-        (
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda shell: (
-        f"`{shell.function_name}` only forwards {shell.forwarded_keyword_names} to `{shell.callee_name}` with identical keyword names."
-    ),
-    scaffold=lambda shell: (
-        f"# Delete `{shell.function_name}` and call `{shell.callee_name}` directly.\n"
-        "# If the parameter family is semantically real, replace the parameter list with one typed request record."
-    ),
-    codemod_patch=lambda shell: (
-        f"# Inline `{shell.function_name}` at call sites and remove the wrapper.\n"
-        "# Preserve only invariants that are not already owned by the callee authority."
-    ),
-    compression_certificate=lambda shell: CompressionCertificate.from_object_family(
-        manual_object_count=max(
-            shell.line_count, len(shell.forwarded_keyword_names) + 1
-        ),
-        replacement_shape=ObjectFamilyShape(shared_objects=("callee_authority",)),
-        semantic_axes=shell.forwarded_keyword_names,
-    ),
-    metrics=lambda shell: ParameterThreadMetrics(
-        function_count=1,
-        shared_parameter_count=len(shell.forwarded_keyword_names),
-        shared_parameter_names=shell.forwarded_keyword_names,
-    ),
-    detector_priority=-13,
-    candidate_collector=_identity_keyword_forwarding_shell_candidates,
-)
-
-
 declare_candidate_rule_detector(
     OptionalKeywordBagAssemblyCandidate,
     high_confidence_certified_spec(

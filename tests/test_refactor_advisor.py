@@ -3895,7 +3895,6 @@ def test_detects_generic_cancelable_product_composition_signal(
     assert signal.load_bearing_score > signal.field_count
 
 
-IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
@@ -8935,76 +8934,6 @@ def test_detects_nested_builder_shell(tmp_path: Path) -> None:
     assert "ExecutionRequest.from_detected_site" in finding.summary
     assert "SearchRequest.from_inputs" in finding.summary
     assert "key, ligand_com, strategy, n_poses, n_poses_override" in finding.summary
-
-
-def test_detects_identity_keyword_forwarding_shell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build_scan(\n    *,\n    label,\n    path,\n    elapsed_seconds,\n    scan_budget_seconds,\n    findings,\n    plans,\n):\n    return ScanEconomicsProof.from_findings_and_plans(\n        label=label,\n        path=path,\n        elapsed_seconds=elapsed_seconds,\n        scan_budget_seconds=scan_budget_seconds,\n        findings=findings,\n        plans=plans,\n    )\n",
-    )
-    finding = next(
-        (
-            item
-            for item in analyze_path(tmp_path)
-            if item.detector_id == IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID
-        )
-    )
-    assert "build_scan" in finding.summary
-    assert "ScanEconomicsProof.from_findings_and_plans" in finding.summary
-    assert "label" in finding.summary
-    assert "typed request record" in (finding.scaffold or "")
-
-
-def test_detects_nested_identity_keyword_forwarding_shell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass SupportProjectionAuthority:\n    def object_family_compression_certificate(\n        self,\n        *,\n        manual_object_count,\n        shared_objects,\n        semantic_axes,\n        per_axis_objects=(),\n        per_source_objects=(),\n        residual_object_count=0,\n        independent_source_count=1,\n    ):\n        return CompressionCertificate.from_object_family(\n            manual_object_count=manual_object_count,\n            replacement_shape=ObjectFamilyShape(\n                shared_objects=shared_objects,\n                per_axis_objects=per_axis_objects,\n                per_source_objects=per_source_objects,\n            ),\n            semantic_axes=semantic_axes,\n            residual_object_count=residual_object_count,\n            independent_source_count=independent_source_count,\n        )\n",
-    )
-    finding = next(
-        (
-            item
-            for item in analyze_path(tmp_path)
-            if item.detector_id == IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID
-        )
-    )
-    assert (
-        "SupportProjectionAuthority.object_family_compression_certificate"
-        in finding.summary
-    )
-    assert "per_source_objects" in finding.summary
-
-
-def test_ignores_non_shell_same_name_keyword_call(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build_scan(*, label, path, elapsed_seconds):\n    started_at = clock()\n    return ScanEconomicsProof(\n        label=label,\n        path=path,\n        elapsed_seconds=elapsed_seconds,\n        started_at=started_at,\n    )\n",
-    )
-    assert not any(
-        (
-            finding.detector_id == IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID
-            for finding in analyze_path(tmp_path)
-        )
-    )
-
-
-def test_identity_keyword_forwarding_ignores_owned_semantic_surfaces(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Stats:\n    @classmethod\n    def from_counts(cls, *, line_count, theorem_count):\n        return cls(line_count=line_count, theorem_count=theorem_count)\n\n\nclass ActionSpec:\n    def error_message(self, *, paper_id, error):\n        return self.error_template.format(paper_id=paper_id, error=error)\n",
-    )
-
-    assert not any(
-        (
-            finding.detector_id == IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID
-            for finding in analyze_path(tmp_path)
-        )
-    )
 
 
 def test_detects_optional_keyword_bag_assembly(tmp_path: Path) -> None:
@@ -16893,43 +16822,6 @@ class StreamPrefixCompactionRelationAuthority:
     findings = analyze_path(tmp_path)
     assert not any(
         finding.detector_id == "load_bearing_relation_branch" for finding in findings
-    )
-
-
-def test_detects_manual_process_step_ladders(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef runner(cmd):\n    return cmd\n\n\ndef warn(label):\n    return label\n\n\ndef build_pdf():\n    steps = [\n        (("tool", "a"), "first pass"),\n        (("tool", "b"), "second pass"),\n    ]\n    for cmd, label in steps:\n        result = runner(cmd).run()\n        if result.returncode:\n            warn(label)\n\n\ndef build_submission():\n    submission_steps = [\n        (("tool", "c"), "submission pass"),\n        (("tool", "d"), "final pass"),\n    ]\n    for index, (cmd, label) in enumerate(submission_steps):\n        result = runner(cmd).run()\n        if result.returncode:\n            warn(label)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "manual_process_step_ladder"
-        )
-    )
-    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
-    assert "steps" in finding.summary
-    assert "submission_steps" in finding.summary
-    assert "build_pdf" in finding.summary
-    assert "build_submission" in finding.summary
-    assert "ProcessStagePlan" in (finding.scaffold or "")
-    assert "typed stage plan" in (finding.codemod_patch or "")
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
-def test_ignores_single_manual_process_step_ladder(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef runner(cmd):\n    return cmd\n\n\ndef build_pdf():\n    steps = [\n        (("tool", "a"), "first pass"),\n        (("tool", "b"), "second pass"),\n    ]\n    for cmd, label in steps:\n        runner(cmd).run()\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == "manual_process_step_ladder" for finding in findings)
     )
 
 

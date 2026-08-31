@@ -16,7 +16,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
-from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
+from typing import Callable, Generic, TypeAlias, TypeVar
 
 from tree_sitter import Node
 
@@ -65,12 +65,6 @@ from ._base import *
 from ._base import high_confidence_certified_spec
 from ._helpers import *
 from ._helpers import _projection_helper_groups
-
-
-class _ReplacementShapeRole:
-    PROCESS_STAGE_PLAN = object()
-    TEXT_REWRITE_PLAN = object()
-    BLOCK_ALGEBRA = object()
 
 
 SemanticBranchObservation: TypeAlias = tuple[int, str, str]
@@ -164,70 +158,15 @@ def collect_nested_branch_chains_from_body(
     return tuple(chains)
 
 
-_REPLACEMENT_SHAPE_ROWS = (
-    (
-        _ReplacementShapeRole.PROCESS_STAGE_PLAN,
-        ObjectFamilyShape(
-            shared_objects=("process_stage_plan", "stage_runner"),
-            per_axis_objects=("stage_step",),
-        ),
-    ),
-    (
-        _ReplacementShapeRole.TEXT_REWRITE_PLAN,
-        ObjectFamilyShape(
-            shared_objects=("text_rewrite_plan", "file_application_surface"),
-            per_axis_objects=("file_collection",),
-        ),
-    ),
-    (
-        _ReplacementShapeRole.BLOCK_ALGEBRA,
-        ObjectFamilyShape(
-            shared_objects=("block_algebra", "block_runner"),
-            per_source_objects=("context_row",),
-        ),
-    ),
-)
-
-
-@dataclass(frozen=True)
-class ReplacementShapeProjector:
-    rows: tuple[tuple[object, ObjectFamilyShape], ...]
-
-    def shape_for(self, role: object) -> ObjectFamilyShape:
-        return next(
-            (
-                replacement_shape
-                for candidate_role, replacement_shape in self.rows
-                if candidate_role is role
-            )
-        )
-
-
-_REPLACEMENT_SHAPE_PROJECTOR = ReplacementShapeProjector(_REPLACEMENT_SHAPE_ROWS)
-
-
-def _manual_process_step_ladder_compression_certificate(
-    candidate: ManualProcessStepLadderCandidate,
-) -> CompressionCertificate:
-    table_count = len(candidate.step_table_names)
-    step_count = max(candidate.minimum_step_count, 1)
-    return CompressionCertificate.from_object_family(
-        manual_object_count=table_count * (step_count + 1),
-        replacement_shape=_REPLACEMENT_SHAPE_PROJECTOR.shape_for(
-            _ReplacementShapeRole.PROCESS_STAGE_PLAN
-        ),
-        semantic_axes=tuple((f"step:{index}" for index in range(step_count))),
-    )
-
-
 def _mirrored_file_rewrite_loop_compression_certificate(
     candidate: MirroredFileRewriteLoopCandidate,
 ) -> CompressionCertificate:
     loop_count = len(candidate.line_numbers)
     return CompressionCertificate.from_object_family(
         manual_object_count=loop_count * 4,
-        replacement_shape=_REPLACEMENT_SHAPE_PROJECTOR.shape_for(
-            _ReplacementShapeRole.TEXT_REWRITE_PLAN
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("text_rewrite_plan", "file_application_surface"),
+            per_axis_objects=("file_collection",),
         ),
         semantic_axes=tuple(
             (f"file_collection:{index}" for index in range(loop_count))
@@ -5103,158 +5042,6 @@ class MirroredImportFallbackDetector(
                 field_count=import_candidate.imported_name_count,
                 mapping_name="mirrored import fallback",
                 field_names=import_candidate.imported_modules,
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class ManualProcessStepLadderCandidate(FunctionEvidenceLocationsCandidate):
-    step_table_names: tuple[str, ...]
-    minimum_step_count: int
-
-    @property
-    def witness_name(self) -> str:
-        return "manual process step ladder"
-
-
-def _assigned_process_step_tables(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> dict[str, tuple[int, int]]:
-    tables: dict[str, tuple[int, int]] = {}
-    for node in walk_function_body_nodes(function):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        value = node.value
-        if not isinstance(value, (ast.List, ast.Tuple)) or len(value.elts) < 2:
-            continue
-        tuple_items = [
-            item
-            for item in value.elts
-            if isinstance(item, (ast.Tuple, ast.List)) and len(item.elts) >= 2
-        ]
-        if len(tuple_items) < 2:
-            continue
-        tables[target.id] = (node.lineno, len(tuple_items))
-    return tables
-
-
-def _loop_iter_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and (node.func.id == "enumerate")
-        and node.args
-        and isinstance(node.args[0], ast.Name)
-    ):
-        return node.args[0].id
-    return None
-
-
-def _unpacked_target_leaf_count(node: ast.AST) -> int:
-    if isinstance(node, ast.Name):
-        return 1
-    if isinstance(node, (ast.Tuple, ast.List)):
-        return sum((_unpacked_target_leaf_count(elt) for elt in node.elts))
-    return 0
-
-
-def _loop_has_process_call(loop: ast.For) -> bool:
-    for node in _walk_nodes(loop):
-        if not isinstance(node, ast.Call):
-            continue
-        callee = ast.unparse(node.func)
-        if any((token in callee.lower() for token in ("run", "popen", "subprocess"))):
-            return True
-    return False
-
-
-def _manual_process_step_ladder_candidates(
-    module: ParsedModule,
-) -> tuple[ManualProcessStepLadderCandidate, ...]:
-    sites: list[tuple[str, str, int, int]] = []
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        tables = _assigned_process_step_tables(function)
-        if not tables:
-            continue
-        for node in walk_function_body_nodes(function):
-            if not isinstance(node, ast.For):
-                continue
-            table_name = _loop_iter_name(node.iter)
-            if (
-                table_name not in tables
-                or _unpacked_target_leaf_count(node.target) < 2
-                or (not _loop_has_process_call(node))
-            ):
-                continue
-            table_line, step_count = tables[table_name]
-            sites.append((qualname, table_name, table_line, step_count))
-    if len(sites) < 2:
-        return ()
-    ordered = sorted_tuple(sites, key=lambda item: (item[2], item[0], item[1]))
-    return (
-        ManualProcessStepLadderCandidate(
-            file_path=module.file_path,
-            line=ordered[0][2],
-            step_table_names=tuple((table_name for _, table_name, _, _ in ordered)),
-            function_names=tuple((qualname for qualname, _, _, _ in ordered)),
-            line_numbers=tuple((line for _, _, line, _ in ordered)),
-            minimum_step_count=min((step_count for _, _, _, step_count in ordered)),
-        ),
-    )
-
-
-class ManualProcessStepLadderDetector(
-    ModuleCollectorCandidateDetector[ManualProcessStepLadderCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.STAGED_ORCHESTRATION,
-        "Manual process-step ladders should become a typed stage plan",
-        "Multiple functions declare local command-step tables and execute them through repeated loops. The step schema, execution policy, and failure policy are one staged orchestration authority, not separate local declarations.",
-        "single typed process-stage plan deriving command lists and execution loops",
-        "local process-step tables are manually executed by repeated loop skeletons",
-        (
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.PARTIAL_VIEW,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, ladder_candidate: ManualProcessStepLadderCandidate
-    ) -> RefactorFinding:
-        tables = ", ".join(ladder_candidate.step_table_names)
-        functions = ", ".join(ladder_candidate.function_names)
-        return self.build_finding(
-            (
-                f"{ladder_candidate.file_path} repeats local process-step tables {tables} "
-                f"and execution loops across {functions}."
-            ),
-            ladder_candidate.evidence_locations,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass ProcessStagePlan:\n    steps: tuple[ProcessStep, ...]\n    def run(self, context): ..."
-            ),
-            codemod_patch=(
-                "# Replace local command-step tables and repeated loops with one typed stage plan.\n# Derive command argv, labels, allowed failures, and callbacks from the plan rows."
-            ),
-            compression_certificate=_manual_process_step_ladder_compression_certificate(
-                ladder_candidate
-            ),
-            metrics=OrchestrationMetrics(
-                function_line_count=sum(ladder_candidate.line_numbers) * 0,
-                branch_site_count=len(ladder_candidate.step_table_names),
-                call_site_count=len(ladder_candidate.step_table_names),
-                parameter_count=0,
-                callee_family_count=1,
             ),
         )
 
