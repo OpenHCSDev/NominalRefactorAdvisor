@@ -7667,7 +7667,12 @@ def _structural_confusability_candidates_for_function(
     class_nodes: Sequence[ast.ClassDef],
     class_lookup: dict[str, ast.ClassDef],
 ) -> Iterable[StructuralConfusabilityCandidate]:
+    annotated_parameter_names = (
+        SUPPORT_PROJECTION_AUTHORITY.annotated_parameter_names(function)
+    )
     for parameter_name in SUPPORT_PROJECTION_AUTHORITY.parameter_names(function):
+        if parameter_name in annotated_parameter_names:
+            continue
         observed_method_names = sorted_tuple(
             {
                 subnode.func.attr
@@ -8110,6 +8115,21 @@ class SupportProjectionAuthority:
                 + tuple(node.args.kwonlyargs)
                 if item.arg not in {"self", "cls"}
             )
+        )
+
+    def annotated_parameter_names(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> frozenset[str]:
+        return frozenset(
+            parameter.arg
+            for parameter in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+            if parameter.arg not in {"self", "cls"}
+            and parameter.annotation is not None
         )
 
     def strategy_selector_specs(

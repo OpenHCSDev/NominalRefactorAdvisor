@@ -8937,6 +8937,21 @@ def test_ignores_structural_confusability_when_abstract_witness_exists(
     )
 
 
+def test_ignores_structural_confusability_for_typed_consumer(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass DatabaseBackend:\n    def store(self, item):\n        return item\n\n    def flush(self):\n        return None\n\n\nclass CacheBackend:\n    def store(self, item):\n        return item\n\n    def flush(self):\n        return None\n\n\ndef process_batch(items, backend: DatabaseBackend):\n    for item in items:\n        backend.store(item)\n    backend.flush()\n",
+    )
+
+    assert not any(
+        item.detector_id == "structural_confusability"
+        for item in analyze_path(tmp_path)
+    )
+
+
 def test_detects_semantic_witness_family_with_abc_base(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
