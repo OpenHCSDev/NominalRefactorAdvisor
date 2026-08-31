@@ -389,6 +389,12 @@ class LatentRosterObservation:
     member_names: tuple[str, ...]
     line_count: int
 
+    @property
+    def is_public_export_surface(self) -> bool:
+        """Return whether this roster declares Python's module export contract."""
+
+        return self.roster_name == "__all__"
+
     @classmethod
     def from_module(
         cls,

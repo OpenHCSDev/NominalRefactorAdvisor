@@ -14997,6 +14997,21 @@ def test_detects_latent_implementation_class_roster(tmp_path: Path) -> None:
     assert "__registry__" in (finding.codemod_patch or "")
 
 
+def test_ignores_public_export_surface_as_implementation_roster(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\n\n\nclass Exporter(ABC):\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        return rows\n\n\n__all__ = ("CsvExporter", "JsonExporter")\n',
+    )
+
+    assert not any(
+        finding.detector_id == "latent_implementation_roster"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_latent_implementation_subset_roster_with_policy_hint(
     tmp_path: Path,
 ) -> None:

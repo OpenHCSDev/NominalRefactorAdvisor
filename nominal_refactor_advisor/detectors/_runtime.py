@@ -2741,6 +2741,8 @@ def _compact_latent_implementation_roster_candidates(
             >= 2
         )
         for roster in context.latent_rosters:
+            if roster.is_public_export_surface:
+                continue
             key_attr_name: str | None = None
             match = roster.match(concrete_class_names) or roster.match(
                 concrete_simple_names
