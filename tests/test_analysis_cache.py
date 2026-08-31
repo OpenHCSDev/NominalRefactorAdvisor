@@ -2805,10 +2805,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
             keyed_registry_projection,
         ),
         (
-            systemic_detectors.ParallelKeyedTableAxisDetector,
-            replace(empty_projection, keyed_table_axes=(object(),)),
-        ),
-        (
             systemic_detectors.ParallelKeyedTableAndFamilyDetector,
             replace(empty_projection, keyed_table_axes=(object(),)),
         ),
@@ -3876,12 +3872,6 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
             systemic_detectors._parallel_keyed_table_and_family_candidates_from_specs(
                 family_specs,
                 table_specs,
-            ),
-        ),
-        (
-            systemic_detectors.ParallelKeyedTableAxisDetector(),
-            systemic_detectors._parallel_keyed_table_axis_candidates_from_specs(
-                table_specs
             ),
         ),
         (
@@ -5558,9 +5548,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert systemic_detectors.ParallelKeyedTableAndFamilyDetector in (
-        partition.compact_global_detector_types
-    )
-    assert systemic_detectors.ParallelKeyedTableAxisDetector in (
         partition.compact_global_detector_types
     )
     assert systemic_detectors.ResidualClosedAxisBranchingDetector in (

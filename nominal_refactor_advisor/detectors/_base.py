@@ -5631,73 +5631,6 @@ def _parallel_keyed_table_and_family_candidates_from_specs(
     )
 
 
-def _parallel_keyed_table_axis_candidates_from_specs(
-    table_specs: Sequence[_KeyedTableAxisSpec],
-) -> tuple[ParallelKeyedTableAxisCandidate, ...]:
-    specs = sorted_tuple(
-        table_specs,
-        key=lambda item: (item.file_path, item.line, item.table_name),
-    )
-    candidates: list[ParallelKeyedTableAxisCandidate] = []
-    seen: set[tuple[str, str, str]] = set()
-    for index, left_spec in enumerate(specs):
-        for right_spec in specs[index + 1 :]:
-            if left_spec.file_path == right_spec.file_path:
-                continue
-            if left_spec.key_type_name != right_spec.key_type_name:
-                continue
-            shared_case_names = sorted_tuple(
-                set(left_spec.case_names) & set(right_spec.case_names)
-            )
-            if len(shared_case_names) < 2:
-                continue
-            case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
-                left_spec.case_names, right_spec.case_names
-            )
-            if case_overlap_score < 0.8:
-                continue
-            table_overlap = SUPPORT_PROJECTION_AUTHORITY.identifier_name_overlap(
-                left_spec.table_name, right_spec.table_name
-            )
-            value_overlap = 0.0
-            if (
-                left_spec.value_shape_name is not None
-                and right_spec.value_shape_name is not None
-            ):
-                value_overlap = SUPPORT_PROJECTION_AUTHORITY.identifier_name_overlap(
-                    left_spec.value_shape_name, right_spec.value_shape_name
-                )
-            name_overlap_ratio = max(table_overlap, value_overlap)
-            if name_overlap_ratio < 0.5:
-                continue
-            key = sorted_tuple((left_spec.table_name, right_spec.table_name)) + (
-                left_spec.key_type_name,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                ParallelKeyedTableAxisCandidate(
-                    key_type_name=left_spec.key_type_name,
-                    left=left_spec,
-                    right=right_spec,
-                    shared_case_names=shared_case_names,
-                    case_overlap_ratio=case_overlap_score,
-                    name_overlap_ratio=name_overlap_ratio,
-                )
-            )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.key_type_name,
-            item.left.file_path,
-            item.left.table_name,
-            item.right.file_path,
-            item.right.table_name,
-        ),
-    )
-
-
 def _parallel_keyed_axis_family_candidates_from_specs(
     specs: Sequence[_KeyedFamilyAxisSpec],
 ) -> tuple[ParallelKeyedAxisFamilyCandidate, ...]:
@@ -9158,25 +9091,6 @@ class ParallelKeyedTableAndFamilyCandidate:
         return (
             SourceLocation(self.file_path, self.table_line, self.table_name),
             SourceLocation(self.file_path, self.family_line, self.family_name),
-        )
-
-
-@dataclass(frozen=True)
-class ParallelKeyedTableAxisCandidate:
-    key_type_name: str
-    left: _KeyedTableAxisSpec
-    right: _KeyedTableAxisSpec
-    shared_case_names: tuple[str, ...]
-    case_overlap_ratio: float
-    name_overlap_ratio: float
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            SourceLocation(self.left.file_path, self.left.line, self.left.table_name),
-            SourceLocation(
-                self.right.file_path, self.right.line, self.right.table_name
-            ),
         )
 
 

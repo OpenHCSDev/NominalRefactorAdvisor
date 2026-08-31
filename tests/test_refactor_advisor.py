@@ -7909,34 +7909,6 @@ def test_detects_parallel_keyed_table_and_family(tmp_path: Path) -> None:
     assert "build_axis_rows" in (finding.scaffold or "")
 
 
-def test_detects_parallel_keyed_table_axis(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/specs.py",
-        '\nfrom dataclasses import dataclass\nfrom enum import Enum, auto\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n    GAMMA = auto()\n\n\n@dataclass(frozen=True)\nclass ModeSpec:\n    mode: Mode\n    label: str\n\n\nMODE_SPECS = {\n    Mode.ALPHA: ModeSpec(Mode.ALPHA, "alpha"),\n    Mode.BETA: ModeSpec(Mode.BETA, "beta"),\n    Mode.GAMMA: ModeSpec(Mode.GAMMA, "gamma"),\n}\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/plans.py",
-        "\nfrom dataclasses import dataclass\n\nfrom pkg.specs import Mode\n\n\n@dataclass(frozen=True)\nclass ModePlan:\n    mode: Mode\n    priority: int\n\n\nMODE_PLANNING_SPECS = {\n    Mode.ALPHA: ModePlan(Mode.ALPHA, 1),\n    Mode.BETA: ModePlan(Mode.BETA, 2),\n    Mode.GAMMA: ModePlan(Mode.GAMMA, 3),\n}\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "parallel_keyed_table_axis"
-        )
-    )
-    assert "Mode" in finding.summary
-    assert "MODE_SPECS" in finding.summary
-    assert "MODE_PLANNING_SPECS" in finding.summary
-    assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "__registry__[method].run" in (finding.scaffold or "")
-    assert "AutoRegisterMeta-backed semantic family" in (finding.codemod_patch or "")
-
-
 def test_detects_callable_method_axis_registry_as_strategy_family(
     tmp_path: Path,
 ) -> None:
