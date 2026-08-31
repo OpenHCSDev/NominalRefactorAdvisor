@@ -5503,6 +5503,13 @@ def _is_generated_companion_surface_role(
     )
 
 
+def _may_be_generated_companion_dataclass(node: ast.ClassDef) -> bool:
+    return bool(
+        _GENERATED_COMPANION_SURFACE_ROLE_NAMES & _dataclass_name_tokens(node.name)
+        or "inherited_fields" in _dataclass_field_names(node)
+    )
+
+
 def _manual_companion_dataclass_surface_certificate(
     *,
     authority_fields: dict[str, str],
@@ -5636,17 +5643,17 @@ def _manual_companion_dataclass_surface_candidates(
         )
     )
     candidates: list[ManualCompanionDataclassSurfaceCandidate] = []
-    for left_node, right_node in combinations(dataclass_nodes, 2):
-        for authority_node, companion_node in (
-            (left_node, right_node),
-            (right_node, left_node),
-        ):
+    for companion_node in dataclass_nodes:
+        if not _may_be_generated_companion_dataclass(companion_node):
+            continue
+        for authority_node in dataclass_nodes:
+            if authority_node is companion_node:
+                continue
             candidate = _manual_companion_dataclass_surface_candidate_for_pair(
                 module, authority_node, companion_node
             )
             if candidate is not None:
                 candidates.append(candidate)
-                break
     return sorted_tuple(
         candidates,
         key=lambda item: (item.file_path, item.line, item.companion_class_name),

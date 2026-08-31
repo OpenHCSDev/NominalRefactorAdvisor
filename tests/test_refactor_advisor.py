@@ -7464,6 +7464,35 @@ def test_companion_dataclass_surface_skips_field_projection_for_unrelated_names(
     assert base_detectors._companion_dataclass_surface_projection(*classes) is None
 
 
+def test_companion_dataclass_surface_skips_unmarked_companion_roster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass\n"
+        "class AlphaRecord:\n"
+        "    value: int\n\n\n"
+        "@dataclass\n"
+        "class AlphaSnapshot:\n"
+        "    value: int\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+
+    def unexpected_pair_projection(*args: object) -> object:
+        raise AssertionError("unmarked dataclasses cannot be companion candidates")
+
+    monkeypatch.setattr(
+        base_detectors,
+        "_manual_companion_dataclass_surface_candidate_for_pair",
+        unexpected_pair_projection,
+    )
+
+    assert base_detectors._manual_companion_dataclass_surface_candidates(module) == ()
+
+
 def test_companion_dataclass_surface_requires_matching_defaults(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
