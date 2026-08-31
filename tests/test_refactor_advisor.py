@@ -18492,6 +18492,28 @@ def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
     assert "formal artifact/export" in (finding.codemod_patch or "")
 
 
+def test_formal_boundary_string_registry_skips_candidate_free_ast_walk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        "\ndef ordinary_call(value):\n    return transform(value)\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+
+    def unexpected_walk(_node: ast.AST) -> object:
+        raise AssertionError("candidate-free module should not require an AST walk")
+
+    monkeypatch.setattr(runtime_detectors.ast, "walk", unexpected_walk)
+
+    assert (
+        runtime_detectors.FormalBoundaryStringRegistryAuthority.module_constants(module)
+        == ()
+    )
+
+
 def test_detects_formal_boundary_string_registry_mirrored_with_generated_artifact(
     tmp_path: Path,
 ) -> None:

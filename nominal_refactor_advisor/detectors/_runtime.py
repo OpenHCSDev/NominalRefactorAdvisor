@@ -576,6 +576,8 @@ class FormalBoundaryStringRegistryAuthority:
         constants = FormalBoundaryStringRegistryAuthority.constants_from_statements(
             statements
         )
+        if not constants:
+            return ()
         calls = tuple(
             node
             for node in ast.walk(module.module)
