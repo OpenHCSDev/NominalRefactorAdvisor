@@ -93,6 +93,7 @@ from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, Source
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticModuleProjectionFamily,
+    CompactSemanticProjectionDemand,
     SemanticAuthority,
     SemanticAuthorityKind,
     SemanticDescentGraph,
@@ -302,6 +303,52 @@ def test_class_and_detector_collectors_share_named_function_projection(
     assert ast_tools_module.walk_function_body_nodes(function) is (
         ast_tools_module.walk_function_body_nodes(function)
     )
+
+
+def test_module_syntax_index_projects_nodes_from_its_owned_traversal() -> None:
+    module = ast.parse(
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        def build(self):\n"
+        "            return Result()\n"
+    )
+    syntax_index = ast_tools_module.module_syntax_index(module)
+
+    indexed_classes = syntax_index.indexed_nodes_of_type(ast.ClassDef)
+    indexed_calls = syntax_index.indexed_nodes_of_type(ast.Call)
+
+    assert tuple(node.name for _index, node in indexed_classes) == ("Outer", "Inner")
+    assert tuple(ast.unparse(node) for _index, node in indexed_calls) == ("Result()",)
+    assert all(
+        syntax_index.depth_first_nodes[index] is node
+        for index, node in (*indexed_classes, *indexed_calls)
+    )
+
+
+def test_context_semantic_supplements_use_indexed_call_projection(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "module.py").write_text(
+        "class Presenter:\n"
+        "    def build(self):\n"
+        "        return Result()\n",
+        encoding="utf-8",
+    )
+    module = parse_python_modules(package_root, use_parse_cache=False)[0]
+
+    projection = CompactSemanticModuleProjectionFamily.collect_demanded(
+        module,
+        CompactSemanticProjectionDemand(include_presentations=False),
+    )
+
+    assert projection is not None
+    assert len(projection) == 1
+    assert tuple(
+        (supplement.class_symbol, supplement.constructed_type_names)
+        for supplement in projection[0].class_supplements
+    ) == (("module.Presenter", ("Result",)),)
 
 
 def test_module_detector_shard_cache_reuses_exact_focused_findings(

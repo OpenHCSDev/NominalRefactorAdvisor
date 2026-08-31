@@ -1221,6 +1221,7 @@ _TRegistered = TypeVar("_TRegistered")
 _TRegisteredType = TypeVar("_TRegisteredType")
 ShapeItemT = TypeVar("ShapeItemT")
 FlattenedItemT = TypeVar("FlattenedItemT")
+SyntaxNodeT = TypeVar("SyntaxNodeT", bound=ast.AST)
 ShapeEmission: TypeAlias = ShapeItemT | tuple[ShapeItemT, ...]
 ContextShapeHelperArg: TypeAlias = ast.AST | str | None
 LiteralDispatchScalar: TypeAlias = str | int
@@ -2587,6 +2588,17 @@ class ModuleSyntaxIndex:
     scopes: tuple[LexicalSyntaxScope, ...]
     named_functions: tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]
 
+    def indexed_nodes_of_type(
+        self,
+        node_type: type[SyntaxNodeT],
+    ) -> tuple[tuple[int, SyntaxNodeT], ...]:
+        """Project indexed exact-type nodes from the single syntax traversal."""
+
+        return tuple(
+            (index, cast(SyntaxNodeT, self.depth_first_nodes[index]))
+            for index in self.node_indices_by_type.get(node_type, ())
+        )
+
     def ancestor_nodes(self, node_index: int) -> tuple[ast.AST, ...]:
         """Return the root-to-parent path for one indexed syntax event."""
 
@@ -2927,13 +2939,15 @@ class ClassObservationProjection:
 CLASS_OBSERVATION_PROJECTION = ClassObservationProjection()
 
 
-@lru_cache(maxsize=None)
-def _class_nodes(root: ast.AST) -> tuple[ast.ClassDef, ...]:
-    return tuple(node for node in ast.walk(root) if isinstance(node, ast.ClassDef))
-
-
 def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
-    return _name_family({node.name for node in _class_nodes(parsed_module.module)})
+    return _name_family(
+        {
+            node.name
+            for _node_index, node in module_syntax_index(
+                parsed_module.module
+            ).indexed_nodes_of_type(ast.ClassDef)
+        }
+    )
 
 
 def _class_body_field_observation(

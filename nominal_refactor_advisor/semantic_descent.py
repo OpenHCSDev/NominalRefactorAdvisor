@@ -3931,10 +3931,7 @@ def _compact_semantic_class_supplements_from_syntax_index(
 
     constructed_type_names_by_class_id: dict[int, set[str]] = {}
     syntax_index = module_syntax_index(parsed_module.module)
-    for node_index in syntax_index.node_indices_by_type.get(ast.Call, ()):
-        call = syntax_index.depth_first_nodes[node_index]
-        if not isinstance(call, ast.Call):
-            continue
+    for node_index, call in syntax_index.indexed_nodes_of_type(ast.Call):
         type_names = PresentationAuthorityConstructionCollector.construction_type_names(
             call
         )
