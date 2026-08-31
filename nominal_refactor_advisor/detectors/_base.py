@@ -106,7 +106,6 @@ from ..ast_tools import (
     DynamicMethodInjectionObservation,
     DynamicMethodInjectionObservationFamily,
     ExportDictShapeFamily,
-    LiteralDispatchObservation,
     ExportDictShape,
     ParsedModule,
     SourceModule,
@@ -121,9 +120,8 @@ from ..ast_tools import (
     ScopedShapeWrapperSpecFamily,
     SentinelTypeObservation,
     SentinelTypeObservationFamily,
-    StringLiteralDispatchObservationFamily,
+    LiteralDispatchObservation,
     NumericLiteralDispatchObservationFamily,
-    InlineStringLiteralDispatchObservationFamily,
     collect_family_items,
     named_function_nodes,
     structural_ast_hash,
@@ -5641,110 +5639,6 @@ def _manual_companion_dataclass_surface_candidates(
     )
 
 
-_BRIDGE_AXIS_SOURCE_TOKENS = frozenset(
-    ("backend", *SemanticRoleIdentityToken.bridge_axis_source_values())
-)
-
-
-def _literal_bridge_axis_cases(
-    observation: LiteralDispatchObservation,
-) -> tuple[str, tuple[str, ...]] | None:
-    if len(observation.literal_cases) < 2:
-        return None
-    if not any(
-        (
-            token
-            in CLASS_NAME_ALGEBRA.ordered_tokens(observation.dispatch_axis_expression)
-            for token in _BRIDGE_AXIS_SOURCE_TOKENS
-        )
-    ):
-        return None
-    return observation.dispatch_axis_expression, sorted_tuple(observation.literal_cases)
-
-
-def _bridge_operation_name(symbol: str) -> str:
-    return symbol.rsplit(".", 1)[-1].removesuffix(":inline-literal-dispatch")
-
-
-def _bridge_axis_family_compression_certificate(
-    *,
-    function_count: int,
-    case_count: int,
-    semantic_axes: tuple[object, ...],
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=function_count * case_count,
-        replacement_shape=ObjectFamilyShape.from_roles(
-            ("bridge_abc",),
-            axis=("bridge_case",),
-            source=("operation_hook",),
-        ),
-        semantic_axes=semantic_axes,
-    )
-
-
-def _bridge_axis_dispatch_family_candidates(
-    module: ParsedModule,
-) -> tuple["BridgeAxisDispatchFamilyCandidate", ...]:
-    if not any((token in module.source for token in _BRIDGE_AXIS_SOURCE_TOKENS)):
-        return ()
-    grouped: dict[tuple[str, tuple[str, ...]], list[LiteralDispatchObservation]] = (
-        defaultdict(list)
-    )
-    for family in (
-        StringLiteralDispatchObservationFamily,
-        InlineStringLiteralDispatchObservationFamily,
-    ):
-        for observation in collect_family_items(module, family):
-            axis_cases = _literal_bridge_axis_cases(observation)
-            if axis_cases is not None:
-                grouped[axis_cases].append(observation)
-    candidates: list[BridgeAxisDispatchFamilyCandidate] = []
-    for (dispatch_axis_expression, literal_cases), observations in grouped.items():
-        symbols = tuple(
-            dict.fromkeys(
-                (_bridge_operation_name(item.symbol) for item in observations)
-            )
-        )
-        if len(symbols) < 3:
-            continue
-        ordered_observations = sorted_tuple(
-            observations, key=lambda item: (item.line, item.symbol)
-        )
-        line_numbers = tuple((item.line for item in ordered_observations))
-        operation_names = sorted_tuple(
-            {_bridge_operation_name(symbol) for symbol in symbols}
-        )
-        certificate = _bridge_axis_family_compression_certificate(
-            function_count=len(symbols),
-            case_count=len(literal_cases),
-            semantic_axes=(
-                ("axis", dispatch_axis_expression),
-                ("cases", literal_cases),
-                ("operations", operation_names),
-            ),
-        )
-        if not certificate.pays_rent:
-            continue
-        candidates.append(
-            BridgeAxisDispatchFamilyCandidate(
-                file_path=module.file_path,
-                line=line_numbers[0],
-                dispatch_axis_expression=dispatch_axis_expression,
-                literal_cases=literal_cases,
-                function_names=symbols,
-                operation_names=operation_names,
-                line_numbers=line_numbers,
-                line_count=sum((len(item.branch_lines) for item in observations)),
-                compression_certificate=certificate,
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line, item.dispatch_axis_expression),
-    )
-
-
 _ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES = frozenset(
     {
         "__array_interface__",
@@ -10979,17 +10873,6 @@ class FieldFamilyCompressionSurface(FieldFamilyLineSurface):
 
 
 @dataclass(frozen=True)
-class DataclassFieldProjectionBoilerplateCandidate(
-    FieldFamilyCompressionSurface, ClassLineWitnessCandidate
-):
-    helper_names: tuple[str, ...]
-    projection_argument_names: tuple[str, ...]
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "field_names")
-    )
-
-
-@dataclass(frozen=True)
 class OptionRecordQuotientCandidate(
     FieldFamilyLineSurface, ClassNameLineNumbersGroup, LineWitnessCandidate
 ):
@@ -11045,15 +10928,6 @@ class AllMissingAxisPredicateCandidate(FunctionLineWitnessCandidate):
     append_target_name: str
     signal_name: str
     line_count: int
-
-
-@dataclass(frozen=True)
-class BridgeAxisDispatchFamilyCandidate(
-    FunctionFamilyCompressionSurface, LineWitnessCandidate
-):
-    dispatch_axis_expression: str
-    literal_cases: tuple[str, ...]
-    operation_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)

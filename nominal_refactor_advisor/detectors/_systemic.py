@@ -4890,62 +4890,6 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    DataclassFieldProjectionBoilerplateCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Dataclass field projection should derive from annotations and defaults",
-        "A dataclass field list repeatedly calls the same projection/default helper with per-field coercer or policy arguments. That still makes a parallel schema: the annotation and default value are no longer load-bearing enough, and every new field needs a hand-written projection row. The projector should derive requiredness from dataclass defaults and derive validation/coercion from the annotated type, with only true semantic conversions declared as nominal converter types.",
-        "annotation/default-derived dataclass projector with nominal converter exceptions",
-        "dataclass fields repeat projection helper calls instead of letting field declarations carry semantics",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"`{candidate.class_name}` repeats projection helpers {candidate.helper_names} "
-        f"across fields {candidate.field_names}; arguments "
-        f"{candidate.projection_argument_names} are per-field schema residue."
-    ),
-    evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=lambda candidate: (
-        "from dataclasses import fields, MISSING\n"
-        "from typing import get_type_hints\n\n"
-        "class DataclassProjector:\n"
-        "    def project(self, dataclass_type, payload):\n"
-        "        hints = get_type_hints(dataclass_type)\n"
-        "        for field in fields(dataclass_type):\n"
-        "            required = field.default is MISSING and field.default_factory is MISSING\n"
-        "            target_type = hints[field.name]\n"
-        "            ...\n"
-        "# Keep explicit converter classes only when the type annotation cannot express the semantic conversion."
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Delete per-field projection helper calls {candidate.helper_names} on "
-        f"`{candidate.class_name}`.\n"
-        "# Use plain dataclass defaults for required/optional semantics, derive the "
-        "target contract from type annotations, and route exceptional conversions "
-        "through nominal converter classes keyed by the target type."
-    ),
-    compression_certificate=lambda candidate: candidate.compression_certificate,
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=len(candidate.field_names),
-        mapping_name=candidate.class_name,
-        field_names=candidate.field_names,
-        source_name="dataclass_annotations",
-    ),
-    detector_priority=-15,
-    candidate_collector=_dataclass_field_projection_boilerplate_candidates,
-)
-
-
-declare_candidate_rule_detector(
     TupleIndexSemanticOpacityCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
@@ -5307,74 +5251,6 @@ declare_candidate_rule_detector(
     compression_certificate=_closed_axis_conversion_matrix_compression_certificate,
     detector_priority=-9,
     candidate_collector=_closed_axis_conversion_matrix_candidates,
-)
-
-
-def _bridge_axis_identifier(dispatch_axis_expression: str) -> str:
-    cleaned = "".join((ch if ch.isalnum() else "_" for ch in dispatch_axis_expression))
-    return cleaned.strip("_") or "representation"
-
-
-def _bridge_axis_dispatch_scaffold(
-    candidate: BridgeAxisDispatchFamilyCandidate,
-) -> str:
-    axis_identifier = _bridge_axis_identifier(candidate.dispatch_axis_expression)
-    return (
-        "from abc import ABC, abstractmethod\n"
-        "from metaclass_registry import AutoRegisterMeta\n\n"
-        "class RepresentationBridge(ABC, metaclass=AutoRegisterMeta):\n"
-        f'    __registry_key__ = "{axis_identifier}"\n'
-        f"    {axis_identifier} = None\n\n"
-        "    @classmethod\n"
-        f"    def for_{axis_identifier}(cls, value):\n"
-        "        return cls.__registry__[value]()\n\n"
-        + "\n".join(
-            (
-                f"    @abstractmethod\n    def {operation_name}(self, value): ..."
-                for operation_name in candidate.operation_names
-            )
-        )
-    )
-
-
-declare_candidate_rule_detector(
-    BridgeAxisDispatchFamilyCandidate,
-    high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Repeated backend-axis dispatch should become a bridge authority",
-        "Several operations redispatch the same closed representation axis. The ArrayBridge-style normal form is one ABC bridge family keyed by the representation, with shared lifecycle and operation hooks on the bridge implementations instead of every operation branching again.",
-        "ABC bridge authority with one registered implementation per representation and operation hooks for the repeated actions",
-        "multiple operations repeat the same backend/type/format dispatch axis",
-        (
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"Operations {candidate.function_names} all dispatch `{candidate.dispatch_axis_expression}` "
-        f"over cases {candidate.literal_cases}; factor the repeated axis into a bridge ABC "
-        f"with hooks for {candidate.operation_names}."
-    ),
-    scaffold=_bridge_axis_dispatch_scaffold,
-    codemod_patch=lambda candidate: (
-        f"# Replace repeated `{candidate.dispatch_axis_expression}` branches in {candidate.function_names} "
-        "with one bridge lookup and operation hooks.\n"
-        "# Keep backend-specific conversion/capability details on the bridge implementations; "
-        "leave call sites responsible only for selecting the operation."
-    ),
-    metrics=lambda candidate: DispatchCountMetrics(
-        dispatch_site_count=len(candidate.function_names),
-        dispatch_axis=candidate.dispatch_axis_expression,
-        literal_cases=candidate.literal_cases,
-    ),
-    compression_certificate=lambda candidate: candidate.compression_certificate,
-    detector_priority=-9,
-    candidate_collector=_bridge_axis_dispatch_family_candidates,
 )
 
 

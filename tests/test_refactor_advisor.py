@@ -16882,26 +16882,6 @@ def test_detects_dataclass_schema_registry_mirror(tmp_path: Path) -> None:
     assert "dataclasses.fields" in (finding.codemod_patch or "")
 
 
-def test_detects_dataclass_field_projection_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/viewer_transport.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ViewerStreamKwargs:\n    viewer_transport: ViewerTransportEndpoint = _required_viewer_stream_field(_coerce_viewer_transport)\n    display_config: ViewerDisplayConfigProtocol = _required_viewer_stream_field(_coerce_display_config)\n    microscope_handler: ViewerMicroscopeHandlerProtocol = _required_viewer_stream_field(_coerce_microscope_handler)\n    producer_identity: StreamProducerIdentity = _required_viewer_stream_field(_coerce_producer_identity)\n    transport_config: ZMQConfig | None = _optional_viewer_stream_field(_coerce_transport_config)\n    plate_path: str | None = _optional_viewer_stream_field(_coerce_plate_path)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "dataclass_field_projection_boilerplate"
-        )
-    )
-
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "ViewerStreamKwargs" in finding.summary
-    assert "_required_viewer_stream_field" in finding.summary
-    assert "type annotations" in (finding.codemod_patch or "")
-
-
 def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -16970,39 +16950,6 @@ class StreamPrefixCompactionRelationAuthority:
     findings = analyze_path(tmp_path)
     assert not any(
         finding.detector_id == "load_bearing_relation_branch" for finding in findings
-    )
-
-
-def test_detects_constant_backed_dispatch_axis(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nACTION_RUN = "run"\nACTION_CHECK = "check"\nACTION_EXPORT = "export"\nACTION_AUDIT = "audit"\n\nACTION_CHOICES = (ACTION_RUN, ACTION_CHECK, ACTION_EXPORT, ACTION_AUDIT)\n\n\nclass Driver:\n    def run_one(self, action):\n        if action == ACTION_RUN:\n            return self.run()\n        if action in (ACTION_CHECK, ACTION_EXPORT):\n            return self.project(action)\n        if action == ACTION_AUDIT:\n            return self.audit()\n\n    def run_all(self, action):\n        if action in (ACTION_RUN, ACTION_CHECK):\n            return self.batch(action)\n        if action == ACTION_EXPORT:\n            return self.export()\n        if action == ACTION_AUDIT:\n            return self.audit()\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "constant_backed_dispatch_axis"
-        )
-    )
-    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
-    assert "ACTION_*" in finding.summary
-    assert "run_one" in finding.summary
-    assert "run_all" in finding.summary
-    assert "typed action table" in (finding.codemod_patch or "")
-
-
-def test_ignores_single_site_constant_backed_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nACTION_RUN = "run"\nACTION_CHECK = "check"\nACTION_EXPORT = "export"\nACTION_AUDIT = "audit"\n\n\nclass Driver:\n    def run_one(self, action):\n        if action == ACTION_RUN:\n            return self.run()\n        if action in (ACTION_CHECK, ACTION_EXPORT):\n            return self.project(action)\n        if action == ACTION_AUDIT:\n            return self.audit()\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == "constant_backed_dispatch_axis" for finding in findings)
     )
 
 
@@ -18738,29 +18685,6 @@ def test_detects_closed_axis_conversion_matrix(tmp_path: Path) -> None:
     assert "cpu_to_gpu" in finding.summary
     assert "sources" in finding.summary
     assert "targets" in finding.summary
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
-def test_detects_repeated_bridge_axis_dispatch_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/arrays.py",
-        '\n\ndef normalize_array(backend, value):\n    if backend == "numpy":\n        return numpy.asarray(value)\n    if backend == "cupy":\n        return cupy.asarray(value)\n    if backend == "torch":\n        return torch.as_tensor(value)\n    raise ValueError(backend)\n\n\ndef transfer_array(backend, value):\n    if backend == "numpy":\n        return value.get()\n    if backend == "cupy":\n        return cupy.asarray(value)\n    if backend == "torch":\n        return value.cuda()\n    raise ValueError(backend)\n\n\ndef array_dtype(backend, value):\n    if backend == "numpy":\n        return value.dtype\n    if backend == "cupy":\n        return value.dtype\n    if backend == "torch":\n        return value.dtype\n    raise ValueError(backend)\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "bridge_axis_dispatch_family"
-        )
-    )
-    assert "normalize_array" in finding.summary
-    assert "transfer_array" in finding.summary
-    assert "array_dtype" in finding.summary
-    assert "RepresentationBridge" in (finding.scaffold or "")
-    assert "AutoRegisterMeta" in (finding.scaffold or "")
-    assert "operation hooks" in (finding.codemod_patch or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
 

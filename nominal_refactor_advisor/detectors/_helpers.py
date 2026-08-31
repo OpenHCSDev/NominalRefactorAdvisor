@@ -7763,7 +7763,6 @@ def _schema_accessor_family_candidates(
 
 _DATACLASS_SCHEMA_REGISTRY_MIRROR_MIN_FIELDS = 4
 _DATACLASS_SCHEMA_REGISTRY_MIRROR_MIN_RATIO = 0.6
-_DATACLASS_FIELD_PROJECTION_BOILERPLATE_MIN_FIELDS = 4
 _SCHEMA_REGISTRY_FIELD_KEYWORDS = frozenset(
     {
         "field",
@@ -7775,124 +7774,6 @@ _SCHEMA_REGISTRY_FIELD_KEYWORDS = frozenset(
         "metadata_field",
     }
 )
-
-
-def _dataclass_field_projection_default_call(
-    statement: ast.stmt,
-) -> tuple[str, str, tuple[str, ...], int, int] | None:
-    annotated_assignment = as_ast(statement, ast.AnnAssign)
-    if annotated_assignment is None or annotated_assignment.value is None:
-        return None
-    field_name = name_id(annotated_assignment.target)
-    call = as_ast(annotated_assignment.value, ast.Call)
-    if field_name is None or call is None:
-        return None
-    helper_name = _ast_terminal_name(call.func)
-    if helper_name is None:
-        return None
-    if helper_name in {"Field", "field"}:
-        return None
-    projected_argument_names = tuple(
-        name
-        for argument in call.args
-        for name in (_ast_terminal_name(argument),)
-        if name is not None
-    )
-    projected_argument_names += tuple(
-        name
-        for keyword in call.keywords
-        for name in (_ast_terminal_name(keyword.value),)
-        if keyword.arg is not None and name is not None
-    )
-    if not projected_argument_names:
-        return None
-    line_count = max(
-        1,
-        (annotated_assignment.end_lineno or annotated_assignment.lineno)
-        - annotated_assignment.lineno
-        + 1,
-    )
-    return (
-        field_name,
-        helper_name,
-        projected_argument_names,
-        annotated_assignment.lineno,
-        line_count,
-    )
-
-
-def _dataclass_field_projection_boilerplate_certificate(
-    *,
-    field_names: tuple[str, ...],
-    helper_names: tuple[str, ...],
-    line_count: int,
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=max(
-            line_count, len(field_names) * max(len(helper_names), 1)
-        ),
-        replacement_shape=ObjectFamilyShape.from_roles(
-            (
-                "dataclass_type_annotation",
-                "default_value_authority",
-                "derived_projector",
-            ),
-            axis=("declared_dataclass_field",),
-        ),
-        semantic_axes=field_names,
-        residual_object_count=len(helper_names),
-    )
-
-
-def _dataclass_field_projection_boilerplate_candidates(
-    module: ParsedModule,
-) -> tuple[DataclassFieldProjectionBoilerplateCandidate, ...]:
-    candidates: list[DataclassFieldProjectionBoilerplateCandidate] = []
-    for class_node in _typed_ast_nodes(module.module, ast.ClassDef):
-        if not _is_dataclass_class(class_node):
-            continue
-        rows = tuple(
-            row
-            for statement in class_node.body
-            for row in (_dataclass_field_projection_default_call(statement),)
-            if row is not None
-        )
-        if len(rows) < _DATACLASS_FIELD_PROJECTION_BOILERPLATE_MIN_FIELDS:
-            continue
-        helper_names = tuple(dict.fromkeys(row[1] for row in rows))
-        if len(helper_names) > max(1, len(rows) // 2):
-            continue
-        field_names = tuple(row[0] for row in rows)
-        projection_argument_names = tuple(
-            dict.fromkeys(argument for row in rows for argument in row[2])
-        )
-        line_count = sum(row[4] for row in rows)
-        certificate = _dataclass_field_projection_boilerplate_certificate(
-            field_names=field_names,
-            helper_names=helper_names,
-            line_count=line_count,
-        )
-        if not certificate.pays_rent:
-            continue
-        candidates.append(
-            DataclassFieldProjectionBoilerplateCandidate(
-                file_path=module.file_path,
-                line=class_node.lineno,
-                class_name=class_node.name,
-                field_names=field_names,
-                helper_names=helper_names,
-                projection_argument_names=projection_argument_names,
-                line_numbers=tuple(row[3] for row in rows),
-                line_count=line_count,
-                compression_certificate=certificate,
-            )
-        )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line, item.class_name),
-        )
-    )
 
 
 def _schema_registry_assignment(
