@@ -2292,11 +2292,6 @@ def test_native_support_prelude_projection_matches_ast_family(
             "    CliArgumentSpec(flags=('--delta',)),\n"
             ")\n",
         ),
-        (
-            systemic_detectors.CompactSpecAxisModuleProjectionFamily,
-            "ALPHA_SPEC = CaseSpec(stage=AlphaStage, handler=run_alpha)\n"
-            "BETA_SPEC = CaseSpec(stage=BetaStage, handler=run_beta)\n",
-        ),
     ),
 )
 def test_native_sparse_systemic_projection_matches_ast_family(
@@ -5635,9 +5630,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert semantic_descent_detectors.SemanticMirrorWithoutDescentDetector in (
-        partition.compact_global_detector_types
-    )
-    assert systemic_detectors.CrossModuleSpecAxisAuthorityDetector in (
         partition.compact_global_detector_types
     )
     assert systemic_detectors.RepeatedValidateShapeGuardFamilyDetector in (

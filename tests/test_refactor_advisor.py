@@ -8229,31 +8229,6 @@ def test_detects_transport_shell_template_method(tmp_path: Path) -> None:
     assert "package" in finding.summary
 
 
-def test_detects_cross_module_spec_axis_authority(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        '\nclass AlphaArtifact:\n    pass\n\n\nclass BetaArtifact:\n    pass\n\n\ndef execute_alpha(artifact):\n    return artifact\n\n\ndef execute_beta(artifact):\n    return artifact\n\n\nclass GeneratedWrapperRule:\n    def __init__(self, *, name, artifact_cls, executor):\n        self.name = name\n        self.artifact_cls = artifact_cls\n        self.executor = executor\n\n\nWRAPPER_RULES = (\n    GeneratedWrapperRule(\n        name="wrap_alpha",\n        artifact_cls=AlphaArtifact,\n        executor=execute_alpha,\n    ),\n    GeneratedWrapperRule(\n        name="wrap_beta",\n        artifact_cls=BetaArtifact,\n        executor=execute_beta,\n    ),\n)\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/benchmark.py",
-        '\nfrom pkg.pipeline import (\n    AlphaArtifact,\n    BetaArtifact,\n    execute_alpha,\n    execute_beta,\n)\n\n\ndef package_outcome(result):\n    return result\n\n\nclass BenchmarkRoute:\n    def __init__(self, *, path_name, artifact_cls, executor, outcome_builder):\n        self.path_name = path_name\n        self.artifact_cls = artifact_cls\n        self.executor = executor\n        self.outcome_builder = outcome_builder\n\n\nALPHA_ROUTE = BenchmarkRoute(\n    path_name="alpha",\n    artifact_cls=AlphaArtifact,\n    executor=execute_alpha,\n    outcome_builder=package_outcome,\n)\n\nBETA_ROUTE = BenchmarkRoute(\n    path_name="beta",\n    artifact_cls=BetaArtifact,\n    executor=execute_beta,\n    outcome_builder=package_outcome,\n)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "cross_module_spec_axis_authority"
-        )
-    )
-    assert "WRAPPER_RULES" in finding.summary
-    assert "ALPHA_ROUTE" in finding.summary
-    assert "AlphaArtifact->execute_alpha" in finding.summary
-    assert "BetaArtifact->execute_beta" in finding.summary
-
-
 def test_detects_parallel_registry_projection_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

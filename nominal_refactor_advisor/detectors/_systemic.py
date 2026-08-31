@@ -431,58 +431,6 @@ def _compact_implicit_self_contract_mixin_candidates(
 
 
 @dataclass(frozen=True)
-class CompactSpecAxisModuleProjection:
-    families: tuple[SpecAxisFamily, ...]
-
-
-class CompactSpecAxisModuleProjectionFamily(
-    CollectedFamily[CompactSpecAxisModuleProjection]
-):
-    item_type = CompactSpecAxisModuleProjection
-    report_presence_predicate = staticmethod(
-        lambda items, config: any(
-            item.families
-            for item in items
-            if isinstance(item, CompactSpecAxisModuleProjection)
-        )
-    )
-    source_collector = staticmethod(
-        lambda source_module, syntax_index: _native_spec_axis_projections(
-            source_module,
-            syntax_index,
-        )
-    )
-
-    @classmethod
-    def collect(
-        cls, parsed_module: ParsedModule
-    ) -> list[CompactSpecAxisModuleProjection]:
-        del cls
-        return [CompactSpecAxisModuleProjection(_spec_axis_families(parsed_module))]
-
-
-def _native_spec_axis_projections(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[CompactSpecAxisModuleProjection] | None:
-    """Project spec axes from the shared top-level assignment fragments."""
-
-    if not syntax_index.is_complete:
-        return None
-    try:
-        statements = tuple(
-            syntax_index.statement_for(node)
-            for node in syntax_index.top_level_assignment_statements()
-        )
-        parsed_module = source_module.parsed_module(
-            ast.Module(body=list(statements), type_ignores=[]),
-        )
-        return [CompactSpecAxisModuleProjection(_spec_axis_families(parsed_module))]
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
-@dataclass(frozen=True)
 class CompactValidateShapeModuleProjection:
     methods: tuple[ValidateShapeGuardMethodCandidate, ...]
 
@@ -2798,77 +2746,6 @@ class TransportShellTemplateMethodDetector(
             codemod_patch=(
                 f"# Collapse `{shell_candidate.class_name}` onto the downstream selector/spec family.\n"
                 "# Keep one selection boundary and let that boundary own materialization, execution, and result packaging."
-            ),
-        )
-
-
-class CrossModuleSpecAxisAuthorityDetector(
-    CompactModuleProjectionDetectorMixin[CompactSpecAxisModuleProjection],
-    ConfiguredCrossModuleCollectorCandidateDetector[
-        CrossModuleSpecAxisAuthorityCandidate
-    ],
-):
-    module_projection_family = CompactSpecAxisModuleProjectionFamily
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Cross-module spec axis should have one authority",
-        "The docs say one semantic family should have one authoritative owner. When two modules encode the same identity-axis -> executable-axis spec pairs, one table is a duplicate authority unless it is explicitly derived.",
-        "one repository-wide authoritative spec-axis family",
-        "same identity/executable spec axis is re-encoded across modules",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.CLASS_FAMILY,
-        ),
-    )
-
-    def _findings_from_compact_projections(
-        self,
-        projections: tuple[CompactSpecAxisModuleProjection, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        candidates = _cross_module_spec_axis_authority_candidates_from_families(
-            tuple(
-                family for projection in projections for family in projection.families
-            ),
-            config,
-        )
-        return self._findings_for_candidates(candidates, config)
-
-    def _finding_for_candidate(
-        self, authority_candidate: CrossModuleSpecAxisAuthorityCandidate
-    ) -> RefactorFinding:
-        family_names = ", ".join(
-            (
-                f"{Path(family.file_path).name}:{family.family_name}"
-                for family in authority_candidate.families
-            )
-        )
-        pair_names = ", ".join(
-            (
-                f"{identity}->{executable}"
-                for identity, executable in authority_candidate.shared_axis_pairs
-            )
-        )
-        axis_fields = " -> ".join(authority_candidate.axis_field_names)
-        evidence = tuple(
-            (family.evidence for family in authority_candidate.families[:6])
-        )
-        return self.build_finding(
-            (
-                f"Families {family_names} each encode the same `{axis_fields}` pairs {pair_names} across module boundaries."
-            ),
-            evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass AxisExecutionSpec:\n    identity: object\n    executable: object\n# Keep one exported authority and let downstream modules compose from it."
-            ),
-            codemod_patch=(
-                "# Extract one repository-wide spec-axis family.\n# Make downstream wrappers, benchmarks, or adapters reference that authority instead of restating identity/executable pairs."
             ),
         )
 
