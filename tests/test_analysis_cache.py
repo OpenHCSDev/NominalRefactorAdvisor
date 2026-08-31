@@ -3124,6 +3124,15 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     assert not hasattr(class_index_module, "_compact_exact_type_guards")
     assert not hasattr(class_index_module, "_CLASS_HEADER_CORE_CLASS_DEFAULTS")
     assert not hasattr(class_index_module, "_CLASS_HEADER_CORE_MODULE_DEFAULTS")
+    assert not hasattr(
+        class_index_module.CompactModuleClassProjection,
+        "nominal_class_first_line_overrides",
+    )
+    assert not hasattr(
+        class_index_module.CompactModuleClassProjection,
+        "extra_nominal_class_bases",
+    )
+    assert not hasattr(class_index_module, "_compact_nominal_class_scope_facts")
 
 
 

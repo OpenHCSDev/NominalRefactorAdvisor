@@ -208,8 +208,6 @@ class CompactModuleClassProjection(
     latent_rosters: tuple["LatentRosterObservation", ...] = ()
     named_projection_surfaces: tuple["CompactNamedProjectionSurface", ...] = ()
     manual_family_rosters: tuple["CompactManualFamilyRosterObservation", ...] = ()
-    nominal_class_first_line_overrides: tuple[tuple[str, int], ...] = ()
-    extra_nominal_class_bases: tuple[tuple[str, tuple[str, ...]], ...] = ()
     nominal_wrapper_authorities: tuple["CompactNominalWrapperAuthority", ...] = ()
     pass_through_nominal_wrappers: tuple["CompactPassThroughNominalWrapper", ...] = ()
     abc_optimizer_methods: tuple["CompactABCOptimizerMethod", ...] = ()
@@ -1370,24 +1368,17 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             for node in _walk_nodes(parsed_module.module)
             if isinstance(node, ast.ClassDef)
         )
-        nominal_field_type_maps = {
-            id(node): _compact_class_field_type_map(node) for node in all_class_nodes
-        }
         abc_optimizer_methods = _compact_abc_optimizer_methods(
             parsed_module,
             indexed_class_nodes,
             method_names=(None if demand is None else demand.abc_method_names),
         )
         (
-            nominal_class_first_line_overrides,
-            extra_nominal_class_bases,
             nominal_wrapper_authorities,
             pass_through_nominal_wrappers,
-        ) = _compact_nominal_class_scope_facts(
+        ) = _compact_nominal_wrapper_scope_facts(
             parsed_module,
-            indexed_class_nodes,
             all_class_nodes,
-            nominal_field_type_maps,
         )
         classes = _compact_indexed_classes(
             parsed_module,
@@ -1431,8 +1422,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     parsed_module
                 ),
                 manual_family_rosters=_compact_manual_family_rosters(parsed_module),
-                nominal_class_first_line_overrides=nominal_class_first_line_overrides,
-                extra_nominal_class_bases=extra_nominal_class_bases,
                 nominal_wrapper_authorities=nominal_wrapper_authorities,
                 pass_through_nominal_wrappers=pass_through_nominal_wrappers,
                 abc_optimizer_methods=abc_optimizer_methods,
@@ -2129,28 +2118,17 @@ def _compact_manual_family_rosters(
     return tuple(observations)
 
 
-def _compact_nominal_class_scope_facts(
+def _compact_nominal_wrapper_scope_facts(
     parsed_module: ParsedModule,
-    indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
     class_nodes: tuple[ast.ClassDef, ...],
-    nominal_field_type_maps: dict[int, tuple[tuple[str, str], ...]],
 ) -> tuple[
-    tuple[tuple[str, int], ...],
-    tuple[tuple[str, tuple[str, ...]], ...],
     tuple[CompactNominalWrapperAuthority, ...],
     tuple[CompactPassThroughNominalWrapper, ...],
 ]:
-    indexed_node_ids = {id(node) for _, node in indexed_class_nodes}
-    indexed_first_nodes: dict[str, ast.ClassDef] = {}
-    for _, node in indexed_class_nodes:
-        indexed_first_nodes.setdefault(node.name, node)
-    first_nodes: dict[str, ast.ClassDef] = {}
-    extra_bases: dict[str, set[str]] = {}
     nominal_wrapper_authorities: list[CompactNominalWrapperAuthority] = []
     pass_through_nominal_wrappers: list[CompactPassThroughNominalWrapper] = []
     for node in class_nodes:
-        first_nodes.setdefault(node.name, node)
-        field_type_map = nominal_field_type_maps[id(node)]
+        field_type_map = _compact_class_field_type_map(node)
         if _compact_is_reusable_nominal_wrapper_authority(node):
             nominal_wrapper_authorities.append(
                 CompactNominalWrapperAuthority(
@@ -2173,23 +2151,7 @@ def _compact_nominal_class_scope_facts(
         )
         if wrapper is not None:
             pass_through_nominal_wrappers.append(wrapper)
-        if id(node) in indexed_node_ids:
-            continue
-        extra_bases.setdefault(node.name, set()).update(
-            terminal_name
-            for base in node.bases
-            if (terminal_name := _terminal_reference_name(base)) is not None
-        )
     return (
-        tuple(
-            (class_name, first_node.lineno)
-            for class_name, first_node in first_nodes.items()
-            if first_node is not indexed_first_nodes.get(class_name)
-        ),
-        tuple(
-            (class_name, sorted_tuple(base_names))
-            for class_name, base_names in extra_bases.items()
-        ),
         tuple(nominal_wrapper_authorities),
         tuple(pass_through_nominal_wrappers),
     )
