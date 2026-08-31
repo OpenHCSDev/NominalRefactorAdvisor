@@ -1304,16 +1304,16 @@ class AuthorityClaimSourceIndexResolver:
                 else ()
             )
         symbols = frozenset(claim.searched_symbols)
+        indexed_candidates = {
+            target.target_id: target
+            for symbol in symbols
+            for target in self.source_index.targets_matching_symbol(symbol)
+        }
         return tuple(
             target
-            for target in self.source_index.ast_targets
+            for target in indexed_candidates.values()
             if not target.is_module
             and claim.matches_file_qualname(target.file_path, target.qualname)
-            and (
-                target.qualname in symbols
-                or target.name in symbols
-                or target.qualname.rsplit(".", maxsplit=1)[-1] in symbols
-            )
         )
 
 
@@ -5849,9 +5849,8 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
             return ()
         return tuple(
             target
-            for target in source_index.ast_targets
+            for target in source_index.targets_matching_symbol(class_name)
             if target.is_class
-            and target.matches_symbol(class_name)
             and (source_path is None or target.file_path == resolved_source_path)
         )
 

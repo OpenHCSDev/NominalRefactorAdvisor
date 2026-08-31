@@ -16263,6 +16263,7 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
     assert source_index.target_by_id is source_index.target_by_id
     assert source_index.targets_by_file is source_index.targets_by_file
     assert source_index.targets_by_qualname is source_index.targets_by_qualname
+    assert source_index.targets_by_symbol is source_index.targets_by_symbol
     assert source_index.target_file_paths is source_index.target_file_paths
     assert (
         source_index.target_ids_by_finding_id is source_index.target_ids_by_finding_id
@@ -16274,6 +16275,7 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
     assert source_index.target_by_id[target_keys[0][0]].qualname == "Alpha.run"
     assert target_keys[0][1] == f"{module_path.as_posix()}:Alpha.run"
     assert source_index.targets_by_qualname["Alpha.run"][0].target_id == target_keys[0][0]
+    assert source_index.targets_matching_symbol("run")[0].target_id == target_keys[0][0]
     assert (
         source_index.targets_by_file.smallest_enclosing_target(
             module_path.as_posix(),

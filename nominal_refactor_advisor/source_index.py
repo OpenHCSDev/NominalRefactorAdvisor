@@ -127,7 +127,13 @@ class AstTargetDigest:
         return self.line <= start_line and self.end_line >= end_line
 
     def matches_symbol(self, symbol: str) -> bool:
-        return self.qualname == symbol or self.qualname.endswith(f".{symbol}")
+        return symbol in self.lookup_symbols
+
+    @property
+    def lookup_symbols(self) -> tuple[str, ...]:
+        """Exact declaration names accepted by source-target lookup."""
+
+        return tuple(dict.fromkeys((self.qualname, self.name)))
 
 
 @dataclass(frozen=True)
@@ -403,6 +409,17 @@ class SourceIndex:
         for target in self.ast_targets:
             builder.append(target.qualname, target)
         return builder.to_tuple_index()
+
+    @cached_property
+    def targets_by_symbol(self) -> TupleIndex[str, AstTargetDigest]:
+        builder = TupleListIndexBuilder[str, AstTargetDigest]()
+        for target in self.ast_targets:
+            for symbol in target.lookup_symbols:
+                builder.append(symbol, target)
+        return builder.to_tuple_index()
+
+    def targets_matching_symbol(self, symbol: str) -> tuple[AstTargetDigest, ...]:
+        return self.targets_by_symbol.tuple_for_key(symbol)
 
     @cached_property
     def evidence_target_relation(self) -> EvidenceTargetRelation:
