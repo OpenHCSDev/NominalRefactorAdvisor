@@ -24,9 +24,7 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..semantic_identity import SemanticRoleIdentityToken
-import pickle
 import re
-import zlib
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import combinations
@@ -37,9 +35,12 @@ from ._substrate_support import *
 from ._substrate_support import _class_ancestor_name_map
 from ..class_index import (
     CompactABCOptimizerMethod,
+    CompactABCOptimizerSemanticProfile,
+    CompactABCSemanticCoordinate,
     CompactClassFamilyIndex,
     CompactIndexedClass,
     CompactModuleClassProjection,
+    ClassSymbolResolutionAuthority,
     build_compact_class_family_index,
 )
 
@@ -1080,8 +1081,7 @@ def _runtime_adapter_shell_candidates_for_function(
             if keyword.arg is None:
                 continue
             if (
-                direct_attr_name
-                := HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
+                direct_attr_name := HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
                     keyword.value, source_name
                 )
             ) is not None:
@@ -1353,6 +1353,7 @@ class MethodProjection:
                 continue
             aliases[binding.name] = attr_name
         return aliases
+
 
 METHOD_PROJECTION = MethodProjection()
 
@@ -3806,8 +3807,6 @@ def _alternate_constructor_family_groups(
     return tuple(groups)
 
 
-_ABC_OPTIMIZER_IGNORED_BASE_NAMES = frozenset({"ABC", "Generic", "Protocol", "object"})
-_SemanticCoordinate: TypeAlias = tuple[tuple[str, ...], str, str]
 _ABCOptimizerFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
 _ABCOptimizerMethodNamesByFamily: TypeAlias = dict[_ABCOptimizerFamilyKey, set[str]]
 _ABCOptimizerAxisSpecsByFamily: TypeAlias = dict[_ABCOptimizerFamilyKey, set[str]]
@@ -3824,7 +3823,7 @@ _ABCOptimizerMethodPlanKey: TypeAlias = tuple[str, tuple[str, ...]]
 @dataclass(frozen=True)
 class _ABCOptimizerMethodGroupProfile(ResidueHookNamesCarrier):
     shared_statement_count: int
-    varying_coordinates: tuple[_SemanticCoordinate, ...]
+    varying_coordinates: tuple[CompactABCSemanticCoordinate, ...]
     compression_certificate: CompressionCertificate
 
 
@@ -3870,7 +3869,8 @@ _ABCOptimizerFamilyCandidateBuilder: TypeAlias = Callable[
 
 
 def _abc_optimizer_residue_names(
-    method_name: str, varying_coordinates: tuple[_SemanticCoordinate, ...]
+    method_name: str,
+    varying_coordinates: tuple[CompactABCSemanticCoordinate, ...],
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     classvar_names: list[str] = []
     property_hook_names: list[str] = []
@@ -4662,26 +4662,15 @@ def _abc_optimizer_family_plans(
     }
 
 
-def _compact_abc_optimizer_coordinates_from_blob(
-    blob: bytes,
-) -> tuple[_SemanticCoordinate, ...]:
-    coordinates = pickle.loads(zlib.decompress(blob))
-    if not isinstance(coordinates, tuple):
-        raise TypeError("compact ABC optimizer coordinates must decode to a tuple")
-    return coordinates
-
-
 def _compact_abc_optimizer_varying_coordinates(
-    methods: tuple[CompactABCOptimizerMethod, ...],
-) -> tuple[_SemanticCoordinate, ...]:
+    profiles: tuple[CompactABCOptimizerSemanticProfile, ...],
+) -> tuple[CompactABCSemanticCoordinate, ...]:
     grouped: dict[tuple[tuple[str, ...], str], set[str]] = defaultdict(set)
-    representatives: dict[tuple[tuple[str, ...], str], _SemanticCoordinate] = {}
-    for method in methods:
-        if method.coordinates_blob is None:
-            return ()
-        for path, kind, value in _compact_abc_optimizer_coordinates_from_blob(
-            method.coordinates_blob
-        ):
+    representatives: dict[tuple[tuple[str, ...], str], CompactABCSemanticCoordinate] = (
+        {}
+    )
+    for profile in profiles:
+        for path, kind, value in profile.coordinates:
             key = (path, kind)
             grouped[key].add(value)
             representatives.setdefault(key, (path, kind, value))
@@ -4707,10 +4696,11 @@ def _compact_abc_optimizer_method_plan(
     shared_statement_count = next(iter(statement_counts))
     if shared_statement_count < 3:
         return None
-    skeletons = {method.skeleton_blob for method in methods}
-    if None in skeletons or len(skeletons) != 1:
+    profiles = tuple(method.semantic_profile for method in methods)
+    skeletons = {profile.skeleton for profile in profiles}
+    if len(skeletons) != 1:
         return None
-    varying_coordinates = _compact_abc_optimizer_varying_coordinates(methods)
+    varying_coordinates = _compact_abc_optimizer_varying_coordinates(profiles)
     if not varying_coordinates or len(varying_coordinates) > max(
         4, shared_statement_count * 2
     ):
@@ -4758,7 +4748,7 @@ def _compact_abc_optimizer_classes_by_base(
         ]
         for base_symbol, descendant_symbols in class_index.descendants_by_symbol.items()
         if (base := class_index.class_for(base_symbol)) is not None
-        and base.simple_name not in _ABC_OPTIMIZER_IGNORED_BASE_NAMES
+        and ClassSymbolResolutionAuthority.establishes_nominal_family(base.simple_name)
     }
     for indexed_class in class_index.classes_by_symbol.values():
         resolved_base_names = {
@@ -4769,7 +4759,7 @@ def _compact_abc_optimizer_classes_by_base(
         for base_name in indexed_class.declared_base_names:
             simple_name = base_name.rsplit(".", 1)[-1]
             if (
-                base_name not in _ABC_OPTIMIZER_IGNORED_BASE_NAMES
+                ClassSymbolResolutionAuthority.establishes_nominal_family(base_name)
                 and simple_name not in resolved_base_names
             ):
                 classes_by_base.setdefault((base_name, simple_name), []).append(
@@ -6511,6 +6501,7 @@ class HelperSyntaxProjectionAuthority:
                 continue
             return None
         return tuple(forwarded)
+
 
 HELPER_SYNTAX_PROJECTION_AUTHORITY = HelperSyntaxProjectionAuthority()
 

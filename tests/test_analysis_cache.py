@@ -331,9 +331,7 @@ def test_context_semantic_supplements_use_indexed_call_projection(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "module.py").write_text(
-        "class Presenter:\n"
-        "    def build(self):\n"
-        "        return Result()\n",
+        "class Presenter:\n" "    def build(self):\n" "        return Result()\n",
         encoding="utf-8",
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
@@ -1863,7 +1861,9 @@ def test_generated_boundary_global_projection_reuses_compact_module_cache(
     )
 
     assert second_sites == first_sites
-    assert second_sites[0].file_path == (package_root / "generated_catalog.py").as_posix()
+    assert (
+        second_sites[0].file_path == (package_root / "generated_catalog.py").as_posix()
+    )
 
 
 def test_warm_compact_projection_stream_skips_ast_deserialization(
@@ -2135,7 +2135,6 @@ def test_native_builder_projection_matches_canonical_ast_family(
     )
 
 
-
 @pytest.mark.parametrize(
     "family, source",
     (
@@ -2215,7 +2214,10 @@ def test_native_subclass_traversal_projection_matches_ast_family(
 
     assert native == collect_family_items(parsed_module, family)
     assert native is not None
-    assert native[0].materialization_kind is base_detectors.SubclassMaterializationKind.TYPE
+    assert (
+        native[0].materialization_kind
+        is base_detectors.SubclassMaterializationKind.TYPE
+    )
 
 
 def test_native_export_policy_projection_matches_ast_family(
@@ -2521,11 +2523,7 @@ def test_uncached_compact_analysis_skips_persistent_content_identities(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "family.py").write_text(
-        "class Handler:\n"
-        "    pass\n"
-        "\n"
-        "class Alpha(Handler):\n"
-        "    pass\n",
+        "class Handler:\n" "    pass\n" "\n" "class Alpha(Handler):\n" "    pass\n",
         encoding="utf-8",
     )
 
@@ -2544,9 +2542,7 @@ def test_uncached_compact_analysis_skips_persistent_content_identities(
         cache_dir=None,
         analysis_cache_dir=None,
         use_parse_cache=False,
-        detector_types=(
-            systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
-        ),
+        detector_types=(systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,),
     )
 
     assert result.cache_status is AnalysisCacheStatus.DISABLED
@@ -2943,8 +2939,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         )
 
 
-
-
 def test_class_demand_omits_unreportable_autoregister_reference_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3015,8 +3009,6 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
     )
     assert isinstance(positive_demand, class_index_module.CompactClassProjectionDemand)
     assert positive_demand.include_autoregister_references is True
-
-
 
 
 def test_native_definition_headers_preserve_decorators_lines_and_full_span() -> None:
@@ -3133,8 +3125,6 @@ def test_native_class_header_core_matches_cached_minimal_projection(
         "extra_nominal_class_bases",
     )
     assert not hasattr(class_index_module, "_compact_nominal_class_scope_facts")
-
-
 
 
 def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
@@ -3287,8 +3277,6 @@ def test_cold_focused_semantic_scan_omits_only_context_presentations(
         (package_root / "__init__.py").resolve(),
         context_path.resolve(),
     }
-
-
 
 
 def test_mixed_projection_shard_uses_only_python_ast(
@@ -3485,9 +3473,7 @@ def test_collected_family_content_signature_index_rejects_stale_source(
     index.store_if_dirty()
 
     reloaded = ast_tools_module.CollectedFamilyContentSignatureIndex.load(cache_dir)
-    assert (
-        reloaded.lookup(source_v1.identity(RegistrationShapeFamily)) == "content-v1"
-    )
+    assert reloaded.lookup(source_v1.identity(RegistrationShapeFamily)) == "content-v1"
     source_v2 = ast_tools_module.CollectedFamilyCacheContext(
         path=source_v1.path,
         module_name=source_v1.module_name,
@@ -3793,8 +3779,6 @@ def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate
     )
 
 
-
-
 def test_compact_flattened_candidate_projections_match_full_ast_detection(
     tmp_path: Path,
 ) -> None:
@@ -3961,11 +3945,9 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     family_specs = systemic_detectors._compact_keyed_family_axis_specs_from_context(
         context
     )
-    table_specs = systemic_detectors._compact_keyed_table_axis_specs(
+    table_specs = systemic_detectors._compact_keyed_table_axis_specs(projections)
+    manual_selector_specs = systemic_detectors._compact_manual_selector_axis_specs(
         projections
-    )
-    manual_selector_specs = (
-        systemic_detectors._compact_manual_selector_axis_specs(projections)
     )
     detectors_and_candidates = (
         (
@@ -4029,7 +4011,6 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         systemic_detectors.DispatchAlgebraAuthority,
         "module_keyed_table_axis_specs",
     )
-
 
 
 def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow(
@@ -4154,9 +4135,7 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
         candidate.base_class.simple_name == "Boundary" for candidate in candidates
     )
     assert all(
-        tuple(
-            descendant.simple_name for descendant in candidate.descendant_classes
-        )
+        tuple(descendant.simple_name for descendant in candidate.descendant_classes)
         == ("ConcreteBoundary",)
         for candidate in candidates
     )
@@ -4371,11 +4350,9 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
             facts,
         )
     )
-    policies = (
-        systemic_detectors._compact_registry_projection_policy_authority_candidates_from_facts(
-            projections,
-            facts,
-        )
+    policies = systemic_detectors._compact_registry_projection_policy_authority_candidates_from_facts(
+        projections,
+        facts,
     )
 
     assert {candidate.surface_name for candidate in candidates} == {
@@ -4383,9 +4360,7 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
         "PUBLIC_MODE_CHOICES",
         "PUBLIC_MODE_TYPES",
     }
-    assert {candidate.projection_role for candidate in candidates} == {
-        "config_choices"
-    }
+    assert {candidate.projection_role for candidate in candidates} == {"config_choices"}
     assert len(policies) == 1
     assert policies[0].policy_hint == "public"
     assert policies[0].surface_names == (
@@ -4707,11 +4682,9 @@ def test_compact_repeated_keyed_family_preserves_grouping_semantics(
         )
     )
 
-    candidates = (
-        systemic_detectors.RepeatedKeyedFamilyDetector._candidates_from_compact_projections(
-            projections,
-            config,
-        )
+    candidates = systemic_detectors.RepeatedKeyedFamilyDetector._candidates_from_compact_projections(
+        projections,
+        config,
     )
 
     assert len(candidates) == 1
@@ -5074,8 +5047,10 @@ def test_compact_pass_through_nominal_wrapper_preserves_semantics(
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
-    projections = surface_detectors.PassThroughNominalWrapperDetector.compact_module_projections(
-        modules
+    projections = (
+        surface_detectors.PassThroughNominalWrapperDetector.compact_module_projections(
+            modules
+        )
     )
     compact_wrapper_candidates = (
         surface_detectors._compact_pass_through_nominal_wrapper_candidates(projections)
@@ -5248,6 +5223,59 @@ def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
     assert not hasattr(
         structural_detectors._CompactABCOptimizerDetectorBase,
         "compact_candidate_attribute",
+    )
+    assert not hasattr(class_index_module, "_COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
+    assert not hasattr(helper_detectors, "_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
+    assert not hasattr(class_index_module.CompactABCOptimizerMethod, "skeleton_blob")
+    assert not hasattr(class_index_module.CompactABCOptimizerMethod, "coordinates_blob")
+
+
+def test_compact_abc_optimizer_profiles_are_derived_after_the_family_join(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    _write_compact_abc_optimizer_fixture(package_root)
+    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    projection_family = class_index_module.CompactModuleClassProjectionFamily
+    projections = tuple(
+        projection
+        for module in modules
+        for projection in projection_family.collect(module)
+    )
+    profile_derivations: list[tuple[str, ...]] = []
+    original_derivation = (
+        class_index_module._compact_abc_optimizer_statements_from_sources
+    )
+
+    def recording_derivation(statement_sources):
+        profile_derivations.append(statement_sources)
+        return original_derivation(statement_sources)
+
+    monkeypatch.setattr(
+        class_index_module,
+        "_compact_abc_optimizer_statements_from_sources",
+        recording_derivation,
+    )
+
+    assert profile_derivations == []
+    context = structural_detectors.CompactABCOptimizerContext.from_projections(
+        projections
+    )
+
+    assert tuple(candidate.method_name for candidate in context.method_candidates) == (
+        "emit",
+        "validate",
+        "audit",
+        "cache",
+    )
+    assert len(profile_derivations) == 10
+    assert all(len(statement_sources) == 4 for statement_sources in profile_derivations)
+    assert class_index_module.ClassSymbolResolutionAuthority.establishes_nominal_family(
+        "domain.Worker"
+    )
+    assert not class_index_module.ClassSymbolResolutionAuthority.establishes_nominal_family(
+        "abc.ABC"
     )
 
 
@@ -6004,6 +6032,7 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
         )
         for finding in exact_findings
     )
+
 
 def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
     tmp_path: Path,

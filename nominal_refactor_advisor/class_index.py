@@ -10,15 +10,13 @@ from __future__ import annotations
 
 import ast
 import copy
-import pickle
 import re
-import zlib
 from collections import defaultdict
 from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from heapq import merge
-from typing import ClassVar, Self
+from typing import ClassVar, Self, TypeAlias
 
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .ast_tools import (
@@ -97,6 +95,7 @@ class IndexedClass(ClassDeclaration):
             resolved_base_symbols=(),
         )
 
+
 @dataclass(frozen=True)
 class CompactClassValueConstruction:
     """One class-owned construction of a nominal value declaration."""
@@ -151,10 +150,10 @@ class CompactIndexedClass(CompactClassHeader):
             lines.setdefault(name, line)
         return lines
 
+
 def has_complete_concrete_mro_composite(
     direct_child_symbols: tuple[str, ...],
-    concrete_descendants: tuple[IndexedClass, ...]
-    | tuple[CompactIndexedClass, ...],
+    concrete_descendants: tuple[IndexedClass, ...] | tuple[CompactIndexedClass, ...],
 ) -> bool:
     """Return whether one descendant composes every concrete root branch."""
 
@@ -279,17 +278,53 @@ class CompactPassThroughNominalWrapper:
     forwarded_member_names: tuple[str, ...]
 
 
+CompactABCSemanticCoordinate: TypeAlias = tuple[tuple[str, ...], str, str]
+
+
+@dataclass(frozen=True)
+class CompactABCOptimizerSemanticProfile:
+    """Semantic method body projected only after an inheritance-family join."""
+
+    skeleton: tuple[str, ...]
+    coordinates: tuple[CompactABCSemanticCoordinate, ...]
+
+
 @dataclass(frozen=True)
 class CompactABCOptimizerMethod:
-    """Losslessly encoded method facts for global ABC anti-unification."""
+    """Method source sufficient for lazy global ABC anti-unification."""
 
     class_symbol: str
     method_name: str
     line: int
     line_count: int
-    statement_count: int
-    skeleton_blob: bytes | None
-    coordinates_blob: bytes | None
+    statement_sources: tuple[str, ...]
+
+    @property
+    def statement_count(self) -> int:
+        return len(self.statement_sources)
+
+    @cached_property
+    def semantic_profile(self) -> CompactABCOptimizerSemanticProfile:
+        if self.statement_count < 3:
+            raise ValueError("ABC optimizer profiles require at least three statements")
+        statements = _compact_abc_optimizer_statements_from_sources(
+            self.statement_sources
+        )
+        coordinates = tuple(
+            coordinate
+            for statement_index, statement in enumerate(statements)
+            for coordinate in _compact_abc_optimizer_coordinates(
+                statement,
+                ("body", statement_index),
+            )
+        )
+        return CompactABCOptimizerSemanticProfile(
+            skeleton=tuple(
+                _compact_abc_optimizer_statement_skeleton(statement)
+                for statement in statements
+            ),
+            coordinates=coordinates,
+        )
 
 
 @dataclass(frozen=True)
@@ -356,9 +391,7 @@ class LatentRosterObservation:
         observations: list[LatentRosterObservation] = []
         for statement in _trim_leading_docstring(list(parsed_module.module.body)):
             observations.extend(cls.from_statement(parsed_module, statement))
-            observations.extend(
-                cls.from_mutation_statement(parsed_module, statement)
-            )
+            observations.extend(cls.from_mutation_statement(parsed_module, statement))
             if not isinstance(statement, ast.ClassDef):
                 continue
             for class_statement in _trim_leading_docstring(list(statement.body)):
@@ -1454,9 +1487,7 @@ def _compact_predicate_selected_methods(
         }
         if not (
             SelectionGuardKind.NOT_EXACTLY_ONE in guard_kinds
-            or (
-                {SelectionGuardKind.EMPTY, SelectionGuardKind.AMBIGUOUS} <= guard_kinds
-            )
+            or ({SelectionGuardKind.EMPTY, SelectionGuardKind.AMBIGUOUS} <= guard_kinds)
         ):
             continue
         if not any(
@@ -1916,11 +1947,6 @@ def _compact_class_field_type_map(
     return sorted_tuple(nominal_fields.items())
 
 
-_COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES = frozenset(
-    {"ABC", "Generic", "Protocol", "object"}
-)
-
-
 class _CompactABCSemanticSkeletonNormalizer(ast.NodeTransformer):
     def visit_arg(self, node: ast.arg) -> ast.arg:
         del node
@@ -1944,9 +1970,7 @@ class _CompactABCSemanticSkeletonNormalizer(ast.NodeTransformer):
 
 
 def _compact_abc_optimizer_statement_skeleton(statement: ast.stmt) -> str:
-    normalized = _CompactABCSemanticSkeletonNormalizer().visit(
-        ast.parse(ast.unparse(statement)).body[0]
-    )
+    normalized = _CompactABCSemanticSkeletonNormalizer().visit(statement)
     ast.fix_missing_locations(normalized)
     return ast.dump(normalized, include_attributes=False)
 
@@ -1994,16 +2018,18 @@ def _compact_abc_optimizer_coordinates(
     return tuple(coordinates)
 
 
-def _compact_abc_optimizer_blob(value: object) -> bytes:
-    return zlib.compress(
-        pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL),
-        level=9,
-    )
+def _compact_abc_optimizer_statements_from_sources(
+    statement_sources: tuple[str, ...],
+) -> tuple[ast.stmt, ...]:
+    statements = tuple(ast.parse("\n".join(statement_sources)).body)
+    if len(statements) != len(statement_sources):
+        raise ValueError("ABC optimizer statement source lost its AST boundary")
+    return statements
 
 
 def _compact_abc_optimizer_class_is_eligible(node: ast.ClassDef) -> bool:
     return any(
-        declared_name not in _COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES
+        ClassSymbolResolutionAuthority.establishes_nominal_family(declared_name)
         for base in node.bases
         if (declared_name := ClassSymbolResolutionAuthority.declared_base_name(base))
         is not None
@@ -2015,34 +2041,12 @@ def _compact_abc_optimizer_method(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> CompactABCOptimizerMethod:
     body = _trim_leading_docstring(list(method.body))
-    statement_count = len(body)
-    skeleton_blob: bytes | None = None
-    coordinates_blob: bytes | None = None
-    if statement_count >= 3:
-        skeleton_blob = _compact_abc_optimizer_blob(
-            tuple(
-                _compact_abc_optimizer_statement_skeleton(statement)
-                for statement in body
-            )
-        )
-        coordinates_blob = _compact_abc_optimizer_blob(
-            tuple(
-                coordinate
-                for statement_index, statement in enumerate(body)
-                for coordinate in _compact_abc_optimizer_coordinates(
-                    statement,
-                    ("body", statement_index),
-                )
-            )
-        )
     return CompactABCOptimizerMethod(
         class_symbol=class_symbol,
         method_name=method.name,
         line=method.lineno,
         line_count=max(1, (method.end_lineno or method.lineno) - method.lineno + 1),
-        statement_count=statement_count,
-        skeleton_blob=skeleton_blob,
-        coordinates_blob=coordinates_blob,
+        statement_sources=tuple(ast.unparse(statement) for statement in body),
     )
 
 
@@ -3535,6 +3539,10 @@ class CompactClassReferenceResolver:
 class ClassSymbolResolutionAuthority:
     """Resolve AST name chains to indexed class symbols under an explicit policy."""
 
+    NOMINAL_FAMILY_NEUTRAL_BASE_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"ABC", "Generic", "Protocol", "object"}
+    )
+
     parsed_module: ParsedModule
     import_aliases: dict[str, str]
     known_symbols: frozenset[str]
@@ -3599,6 +3607,15 @@ class ClassSymbolResolutionAuthority:
         if ATTRIBUTE_CHAIN_AUTHORITY.project(reference_node) is None:
             return None
         return ast.unparse(reference_node)
+
+    @classmethod
+    def establishes_nominal_family(cls, declared_base_name: str) -> bool:
+        """Return whether a base declaration can own a domain class family."""
+
+        return (
+            declared_base_name.rsplit(".", 1)[-1]
+            not in cls.NOMINAL_FAMILY_NEUTRAL_BASE_NAMES
+        )
 
 
 @dataclass(frozen=True)
