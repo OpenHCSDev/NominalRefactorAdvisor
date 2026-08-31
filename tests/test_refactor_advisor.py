@@ -18570,33 +18570,6 @@ def test_detects_repeated_array_protocol_probe_bridge(tmp_path: Path) -> None:
     assert finding.compression_certificate.pays_rent
 
 
-def test_detects_option_record_quotient_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/options.py",
-        '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass CsvOptions:\n    delimiter: str = ","\n    header: bool = True\n\n\n@dataclass(frozen=True)\nclass JsonOptions:\n    indent: int | None = None\n    sort_keys: bool = False\n\n\n@dataclass(frozen=True)\nclass TiffOptions:\n    compression: str | None = None\n    photometric: str = "minisblack"\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "option_record_quotient"
-        )
-    )
-    assert "CsvOptions" in finding.summary
-    assert "JsonOptions" in finding.summary
-    assert "TiffOptions" in finding.summary
-    assert "schema catalog" in finding.summary
-    assert all(isinstance(item, SourceLocation) for item in finding.evidence)
-    assert {item.symbol for item in finding.evidence} == {
-        "CsvOptions",
-        "JsonOptions",
-        "TiffOptions",
-    }
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
 def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(
     tmp_path: Path,
 ) -> None:

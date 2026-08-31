@@ -6365,53 +6365,6 @@ def _closed_axis_conversion_matrix_candidates(
     )
 
 
-def _option_record_quotient_candidates(
-    module: ParsedModule,
-) -> tuple[OptionRecordQuotientCandidate, ...]:
-    records = tuple(_field_only_frozen_dataclass_candidates(module))
-    option_records = tuple(
-        (
-            record
-            for record in records
-            if record.class_name.endswith(("Option", "Options", "Config", "Settings"))
-        )
-    )
-    if len(option_records) < 3:
-        return ()
-    field_names = sorted_tuple(
-        {
-            field_name
-            for record in option_records
-            for field_name, _ in record.field_specs
-        }
-    )
-    default_names = sorted_tuple(
-        {
-            field_name
-            for record in option_records
-            for field_name, _ in record.default_specs
-        }
-    )
-    common_base_names = sorted_tuple(
-        set.intersection(*(set(record.base_names) for record in option_records))
-        if option_records
-        else set()
-    )
-    line_numbers = tuple((record.line for record in option_records))
-    return (
-        OptionRecordQuotientCandidate(
-            file_path=module.file_path,
-            line=min(line_numbers),
-            class_names=tuple((record.class_name for record in option_records)),
-            line_numbers=line_numbers,
-            field_names=field_names,
-            default_names=default_names,
-            common_base_names=common_base_names,
-            line_count=sum((record.line_count for record in option_records)),
-        ),
-    )
-
-
 def _method_body_fingerprint(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     body = _trim_docstring_body(method.body)
     return ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)

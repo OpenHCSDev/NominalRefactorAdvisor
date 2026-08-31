@@ -782,25 +782,6 @@ def _closed_axis_conversion_matrix_compression_certificate(
     )
 
 
-def _option_record_quotient_compression_certificate(
-    candidate: OptionRecordQuotientCandidate,
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=max(
-            candidate.line_count,
-            len(candidate.class_names) * max(len(candidate.field_names), 1),
-        ),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("option_schema_catalog",),
-            per_axis_objects=("option_case",),
-        ),
-        semantic_axes=(*(f"record:{item}" for item in candidate.class_names),),
-        residual_object_count=len(candidate.field_names)
-        + len(candidate.default_names)
-        + len(candidate.common_base_names),
-    )
-
-
 _SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(
     function_line_count=0,
     branch_site_count=0,
@@ -4878,46 +4859,6 @@ declare_candidate_rule_detector(
         field_names=candidate.keyword_names,
     ),
     candidate_collector=_canonical_finding_spec_builder_candidates,
-)
-
-
-declare_candidate_rule_detector(
-    OptionRecordQuotientCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Option record family should derive from one schema catalog",
-        "Several small frozen option/config records in the same module are often projections of one closed format axis. Keeping every record as a hand-written class preserves type names, but repeats product mechanics and default surfaces that can be generated from a typed option schema catalog.",
-        "typed option schema catalog that derives concrete option records",
-        "field-only option/config record family repeats product-record mechanics across a closed format axis",
-        (
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"{candidate.file_path} declares option record family {candidate.class_names} over fields {candidate.field_names}; derive the records from one typed option schema catalog."
-    ),
-    evidence=lambda candidate: candidate.evidence,
-    scaffold=lambda candidate: (
-        "OPTION_SCHEMAS = (\n    OptionSchema('csv', CsvOptions, fields=(...)),\n    OptionSchema('json', JsonOptions, fields=(...)),\n)\n\n# Derive concrete frozen records and defaults from the schema catalog."
-    ),
-    codemod_patch=lambda candidate: (
-        "# Keep the public option record names, but derive their field/default declarations from one schema catalog.\n# The only per-option residue should be semantic field/default differences."
-    ),
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=len(candidate.class_names),
-        mapping_name="option_schema_catalog",
-        field_names=candidate.field_names,
-        identity_field_names=candidate.class_names,
-    ),
-    compression_certificate=_option_record_quotient_compression_certificate,
-    detector_priority=-8,
-    candidate_collector=_option_record_quotient_candidates,
 )
 
 

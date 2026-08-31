@@ -10506,18 +10506,6 @@ class FieldFamilyCompressionSurface(FieldFamilyLineSurface):
 
 
 @dataclass(frozen=True)
-class OptionRecordQuotientCandidate(
-    FieldFamilyLineSurface, ClassNameLineNumbersGroup, LineWitnessCandidate
-):
-    default_names: tuple[str, ...]
-    common_base_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return self.evidence_for_file(self.file_path)
-
-
-@dataclass(frozen=True)
 class SchemaAccessorFamilyCandidate(
     FieldFamilyCompressionSurface, ClassLineWitnessCandidate
 ):
