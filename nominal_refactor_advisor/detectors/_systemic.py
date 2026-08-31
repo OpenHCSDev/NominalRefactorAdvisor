@@ -4830,66 +4830,6 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    DataclassSchemaRegistryMirrorCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Schema registry should derive from dataclass field declarations",
-        "A literal schema or registry table repeats the field axis already declared by a dataclass. Moving accessor methods into a table is still an SSOT violation when the table restates field names, requiredness, or coercion policy outside the nominal product declaration. The dataclass field declaration should own the projection metadata, and the projector should derive rows from `dataclasses.fields(...)`.",
-        "dataclass-owned field metadata with a derived projection engine",
-        "literal schema/registry rows mirror a nearby dataclass field axis",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
-    ),
-    summary=lambda mirror: (
-        f"`{mirror.schema_name}` mirrors {len(mirror.mirrored_field_names)} fields "
-        f"from dataclass `{mirror.dataclass_name}`: {mirror.mirrored_field_names}; "
-        f"constructors {mirror.schema_constructor_names} should be derived field metadata."
-    ),
-    evidence=lambda mirror: (
-        SourceLocation(mirror.file_path, mirror.line, mirror.schema_name),
-        *(
-            SourceLocation(mirror.file_path, line, mirror.schema_name)
-            for line in mirror.schema_line_numbers[:8]
-        ),
-    ),
-    scaffold=lambda mirror: (
-        "from dataclasses import dataclass, field, fields\n\n"
-        "@dataclass(frozen=True)\n"
-        f"class {mirror.dataclass_name}:\n"
-        "    value: object = field(metadata={'projection': ProjectionFieldSpec(...)})\n\n"
-        "class DataclassProjectionSchema:\n"
-        "    @classmethod\n"
-        "    def from_dataclass(cls, dataclass_type):\n"
-        "        return cls(tuple(field.metadata['projection'] for field in fields(dataclass_type)))"
-    ),
-    codemod_patch=lambda mirror: (
-        f"# Delete the parallel schema rows in `{mirror.schema_name}` that restate "
-        f"{mirror.mirrored_field_names}.\n"
-        f"# Attach requiredness/coercion/key metadata to `{mirror.dataclass_name}` "
-        "fields with `field(metadata=...)` and derive the projector with "
-        "`dataclasses.fields(...)`."
-    ),
-    compression_certificate=lambda mirror: mirror.compression_certificate,
-    metrics=lambda mirror: MappingMetrics.from_field_names(
-        mapping_site_count=len(mirror.schema_field_names),
-        mapping_name=mirror.schema_name,
-        field_names=mirror.mirrored_field_names,
-        source_name=mirror.dataclass_name,
-    ),
-    detector_priority=-14,
-    candidate_collector=_dataclass_schema_registry_mirror_candidates,
-)
-
-
-declare_candidate_rule_detector(
     TupleIndexSemanticOpacityCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,

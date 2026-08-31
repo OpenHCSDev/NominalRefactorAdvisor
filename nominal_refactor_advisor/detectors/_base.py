@@ -10841,18 +10841,6 @@ class ClosedAxisConversionMatrixCandidate(
 
 
 @dataclass(frozen=True)
-class DataclassSchemaRegistryMirrorCandidate(ClassLineWitnessCandidate):
-    schema_name: str
-    dataclass_name: str
-    schema_constructor_names: tuple[str, ...]
-    mirrored_field_names: tuple[str, ...]
-    schema_field_names: tuple[str, ...]
-    schema_line_numbers: tuple[int, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
-
-
-@dataclass(frozen=True)
 class FieldFamilyLineSurface:
     field_names: tuple[str, ...]
     line_count: int

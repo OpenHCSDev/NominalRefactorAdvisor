@@ -16825,26 +16825,6 @@ def test_detects_schema_shaped_accessor_family(tmp_path: Path) -> None:
     assert "projection schema" in (finding.codemod_patch or "")
 
 
-def test_detects_dataclass_schema_registry_mirror(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/viewer_transport.py",
-        "\nfrom dataclasses import dataclass\n\n\nclass ViewerStreamKwargName:\n    TRANSPORT_CONFIG = object()\n    DISPLAY_CONFIG = object()\n    MICROSCOPE_HANDLER = object()\n    PRODUCER_IDENTITY = object()\n    PLATE_PATH = object()\n    MESSAGE_EXTRA = object()\n\n\n@dataclass(frozen=True)\nclass ViewerStreamKwargs:\n    transport_config: object | None\n    display_config: object\n    microscope_handler: object\n    producer_identity: object\n    plate_path: str | None\n    message_extra: dict[str, object] | None\n\n\n@dataclass(frozen=True)\nclass ViewerStreamKwargSpec:\n    field: object\n    required: bool\n    coercion: object\n\n\nVIEWER_STREAM_KWARG_SCHEMA = ViewerStreamKwargSchema(\n    specs=(\n        ViewerStreamKwargSpec(field=ViewerStreamKwargName.TRANSPORT_CONFIG, required=False, coercion=transport_config),\n        ViewerStreamKwargSpec(field=ViewerStreamKwargName.DISPLAY_CONFIG, required=True, coercion=display_config),\n        ViewerStreamKwargSpec(field=ViewerStreamKwargName.MICROSCOPE_HANDLER, required=True, coercion=microscope_handler),\n        ViewerStreamKwargSpec(field=ViewerStreamKwargName.PRODUCER_IDENTITY, required=True, coercion=producer_identity),\n        ViewerStreamKwargSpec(field=ViewerStreamKwargName.PLATE_PATH, required=False, coercion=plate_path),\n        ViewerStreamKwargSpec(field=ViewerStreamKwargName.MESSAGE_EXTRA, required=False, coercion=message_extra),\n    )\n)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "dataclass_schema_registry_mirror"
-        )
-    )
-
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "VIEWER_STREAM_KWARG_SCHEMA" in finding.summary
-    assert "ViewerStreamKwargs" in finding.summary
-    assert "dataclasses.fields" in (finding.codemod_patch or "")
-
-
 def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
