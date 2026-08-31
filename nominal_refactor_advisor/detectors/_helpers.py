@@ -5850,6 +5850,11 @@ def _inline_candidate_renderer_declaration_candidate(
 def _inline_candidate_renderer_declaration_candidates(
     module: ParsedModule,
 ) -> tuple[InlineCandidateRendererDeclarationCandidate, ...]:
+    if (
+        _DECLARE_MODULE_DETECTOR_NAME not in module.source
+        or _CANDIDATE_FINDING_RENDERER_NAME not in module.source
+    ):
+        return ()
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
         module.module,

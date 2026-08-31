@@ -8818,6 +8818,29 @@ def test_detects_inline_candidate_renderer_declaration(tmp_path: Path) -> None:
     assert "declare_candidate_rule_detector" in (findings[0].scaffold or "")
 
 
+def test_inline_candidate_renderer_skips_marker_free_ast_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef ordinary_call(value):\n    return transform(value)\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+
+    def unexpected_scan(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("marker-free module should not require an AST scan")
+
+    monkeypatch.setattr(
+        base_detectors.CandidateCollectionAuthority,
+        "ast_node_candidates",
+        unexpected_scan,
+    )
+
+    assert helper_detectors._inline_candidate_renderer_declaration_candidates(module) == ()
+
+
 def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
