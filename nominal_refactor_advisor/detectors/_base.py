@@ -9251,18 +9251,6 @@ class GuardedWrapperSpecPair:
 
 
 @dataclass(frozen=True)
-class DeclarativeFamilyLeafCandidate(WitnessCarrierCandidate):
-    base_names: tuple[str, ...]
-    assigned_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class DeclarativeFamilyBoilerplateGroup(ClassLineNumbersGroup):
-    base_names: tuple[str, ...]
-    assigned_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class BuilderKeywordSurface:
     builder_name: str
     keyword_names: tuple[str, ...]

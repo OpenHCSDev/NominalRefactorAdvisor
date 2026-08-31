@@ -782,56 +782,6 @@ class ReflectiveSelfAttributeEscapeDetector(
         )
 
 
-class ClassvarOnlySiblingLeafDetector(
-    ModuleCollectorCandidateDetector[DeclarativeFamilyBoilerplateGroup]
-):
-    candidate_collector = _classvar_only_sibling_leaf_groups
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Classvar-only sibling leaves should come from one metaprogrammed family table",
-        "Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should collapse into one declarative family table plus metaprogrammed class generation.",
-        "one authoritative declarative family-definition table with class-generation",
-        "same class-level family declaration boilerplate repeats across sibling family leaves",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, group: DeclarativeFamilyBoilerplateGroup
-    ) -> RefactorFinding:
-        evidence = tuple(
-            (
-                SourceLocation(group.file_path, line, class_name)
-                for class_name, line in zip(
-                    group.class_names, group.line_numbers, strict=True
-                )
-            )
-        )
-        spec_name = _camel_case(group.base_names[0]) + "Declaration"
-        return self.build_finding(
-            (
-                f"Family classes {', '.join(group.class_names[:6])} all repeat declarative classvars {group.assigned_names} under bases {group.base_names}."
-            ),
-            evidence,
-            scaffold=(
-                f"@dataclass(frozen=True)\nclass {spec_name}:\n    family_name: str\n    item_type: type[object]\n    spec_root: type[object] | None = None\n    spec: object | None = None\n\ndef declare_{group.base_names[0].lower()}(spec: {spec_name}) -> type[CollectedFamily]:\n    return type(spec.family_name, (...,), {{...}})"
-            ),
-            codemod_patch=(
-                f"# Replace repeated family leaf classes for bases {group.base_names} with one declarative family-definition table.\n"
-                "# Generate or register the concrete family classes from that table instead of re-spelling the same classvars in each class."
-            ),
-            metrics=RegistrationMetrics.from_class_names(
-                registration_site_count=len(group.class_names),
-                registry_name=group.base_names[0],
-                class_names=group.class_names,
-                class_key_pairs=group.assigned_names,
-            ),
-        )
-
-
 declare_candidate_rule_detector(
     RepeatedBaseBundleCandidate,
     high_confidence_spec(

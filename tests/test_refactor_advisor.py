@@ -456,7 +456,7 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
                 line=30,
             ),
             _impact_ranking_finding(
-                detector_id="classvar_only_sibling_leaf",
+                detector_id="derived_export_surface",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=40,
@@ -506,7 +506,7 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
                 line=30,
             ),
             _impact_ranking_finding(
-                detector_id="classvar_only_sibling_leaf",
+                detector_id="derived_export_surface",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=40,
@@ -17853,40 +17853,6 @@ def test_detects_string_backed_reflective_nominal_lookup_via_dict_get(
     )
     assert "witness_field_name" in finding.summary
     assert "dict.get" in finding.summary
-
-
-def test_detects_classvar_only_sibling_leaf(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\n\n\nclass ProjectionLeaf(ABC):\n    pass\n\n\nclass AlphaProjection(ProjectionLeaf):\n    payload_cls = Alpha\n    renderer_cls = AlphaRenderer\n\n\nclass BetaProjection(ProjectionLeaf):\n    payload_cls = Beta\n    renderer_cls = BetaRenderer\n\n\nclass GammaProjection(ProjectionLeaf):\n    payload_cls = Gamma\n    renderer_cls = GammaRenderer\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "classvar_only_sibling_leaf"
-        )
-    )
-    assert "AlphaProjection" in finding.summary
-    assert "payload_cls" in finding.summary
-    assert "renderer_cls" in finding.summary
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "declarative family-definition table" in (finding.codemod_patch or "")
-
-
-def test_ignores_registered_classvar_only_strategy_leaves(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum\nfrom typing import ClassVar\n\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass Scheme(Enum):\n    RGB = "RGB"\n    CMYK = "CMYK"\n    STACK = "Stack"\n\n\nclass EnumKeyedStrategyMixin:\n    pass\n\n\nclass SchemeBindingStrategy(EnumKeyedStrategyMixin, ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "scheme_literal"\n    __skip_if_no_key__ = True\n    scheme_literal: ClassVar[str | None] = None\n    __enum_member_attr__ = "scheme"\n    __enum_label_attr__ = "scheme_literal"\n\n    @abstractmethod\n    def bind(self, module):\n        raise NotImplementedError\n\n\nclass IndexedSchemeBindingStrategy(SchemeBindingStrategy):\n    image_settings: ClassVar[tuple[str, ...]] = ()\n    weight_settings: ClassVar[tuple[str, ...]] = ()\n\n    def bind(self, module):\n        return tuple(type(self).image_settings), tuple(type(self).weight_settings)\n\n\nclass RgbBindingStrategy(IndexedSchemeBindingStrategy):\n    scheme = Scheme.RGB\n    image_settings = ("red", "green", "blue")\n    weight_settings = ("red_weight", "green_weight", "blue_weight")\n\n\nclass CmykBindingStrategy(IndexedSchemeBindingStrategy):\n    scheme = Scheme.CMYK\n    image_settings = ("cyan", "magenta", "yellow", "gray")\n    weight_settings = ("cyan_weight", "magenta_weight", "yellow_weight", "gray_weight")\n\n\nclass StackBindingStrategy(SchemeBindingStrategy):\n    scheme = Scheme.STACK\n',
-    )
-    findings = analyze_path(tmp_path)
-    detector_ids = {finding.detector_id for finding in findings}
-    assert "classvar_only_sibling_leaf" not in detector_ids
 
 
 def test_detects_repeated_base_bundle(tmp_path: Path) -> None:

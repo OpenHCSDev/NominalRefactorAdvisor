@@ -2333,65 +2333,6 @@ def _is_declarative_class_value(node: ast.AST) -> bool:
     return False
 
 
-_REGISTERED_NOMINAL_AUTHORITY_ASSIGNMENTS = frozenset(
-    {
-        "__registry_key__",
-        "__enum_member_attr__",
-        "__enum_label_attr__",
-    }
-)
-
-
-def _module_class_nodes(module: ParsedModule) -> dict[str, ast.ClassDef]:
-    return {
-        node.name: node
-        for node in _walk_nodes(module.module)
-        if isinstance(node, ast.ClassDef)
-    }
-
-
-def _class_family_nodes_in_module(
-    class_nodes: Mapping[str, ast.ClassDef],
-    node: ast.ClassDef,
-) -> tuple[ast.ClassDef, ...]:
-    """Return the class and same-module ancestors known to static analysis."""
-    family_nodes: list[ast.ClassDef] = []
-    seen: set[str] = set()
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        if current.name in seen:
-            continue
-        seen.add(current.name)
-        family_nodes.append(current)
-        stack.extend(
-            (
-                class_nodes[base_name]
-                for base_name in CLASS_NODE_AUTHORITY.declared_base_names(current)
-                if base_name in class_nodes and base_name not in seen
-            )
-        )
-    return tuple(family_nodes)
-
-
-def _is_registered_nominal_authority_node(node: ast.ClassDef) -> bool:
-    assignments = CLASS_NODE_AUTHORITY.direct_assignments(node)
-    return HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(node) or bool(
-        _REGISTERED_NOMINAL_AUTHORITY_ASSIGNMENTS & set(assignments)
-    )
-
-
-def _has_registered_nominal_authority_ancestor(
-    class_nodes: Mapping[str, ast.ClassDef],
-    node: ast.ClassDef,
-) -> bool:
-    """Return True when classvar leaves are backed by a real registry family."""
-    return any(
-        (family_node is not node and _is_registered_nominal_authority_node(family_node))
-        for family_node in _class_family_nodes_in_module(class_nodes, node)
-    )
-
-
 _ABC_BASE_NAME = "ABC"
 _COMPOSABLE_BASE_NAME_SUFFIXES = (
     _ABC_BASE_NAME,
@@ -2527,72 +2468,6 @@ def _is_simple_classvar_value(node: ast.AST) -> bool:
     if isinstance(node, ast.Tuple):
         return all((_is_simple_classvar_value(item) for item in node.elts))
     return False
-
-
-def _classvar_only_sibling_leaf_candidates_for_class(
-    module: ParsedModule, node: ast.ClassDef
-) -> Iterable[DeclarativeFamilyLeafCandidate]:
-    base_names = tuple(
-        name
-        for name in CLASS_NODE_AUTHORITY.declared_base_names(node)
-        if name not in _IGNORED_ANCESTOR_NAMES
-    )
-    if not base_names:
-        return
-    assigned_names = HELPER_SYNTAX_PROJECTION_AUTHORITY.classvar_assignment_names(node)
-    if assigned_names is None:
-        return
-    if len(assigned_names) < 1 or len(assigned_names) > 4:
-        return
-    if len(_trim_docstring_body(node.body)) != len(assigned_names):
-        return
-    yield DeclarativeFamilyLeafCandidate(
-        file_path=module.file_path,
-        line=node.lineno,
-        subject_name=node.name,
-        name_family=assigned_names,
-        base_names=base_names,
-        assigned_names=assigned_names,
-    )
-
-
-def _classvar_only_sibling_leaf_candidates(
-    module: ParsedModule,
-) -> tuple[DeclarativeFamilyLeafCandidate, ...]:
-    class_nodes = _module_class_nodes(module)
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        module.module,
-        ast.ClassDef,
-        lambda parsed_module, node: (
-            ()
-            if _has_registered_nominal_authority_ancestor(class_nodes, node)
-            else _classvar_only_sibling_leaf_candidates_for_class(parsed_module, node)
-        ),
-    )
-
-
-def _classvar_only_sibling_leaf_groups(
-    module: ParsedModule,
-) -> tuple[DeclarativeFamilyBoilerplateGroup, ...]:
-    grouped: dict[
-        (tuple[tuple[str, ...], tuple[str, ...]], list[DeclarativeFamilyLeafCandidate])
-    ] = defaultdict(list)
-    for candidate in _classvar_only_sibling_leaf_candidates(module):
-        grouped[candidate.base_names, candidate.assigned_names].append(candidate)
-    return tuple(
-        (
-            DeclarativeFamilyBoilerplateGroup(
-                file_path=module.file_path,
-                base_names=base_names,
-                assigned_names=assigned_names,
-                class_names=tuple((item.subject_name for item in items)),
-                line_numbers=tuple((item.line for item in items)),
-            )
-            for (base_names, assigned_names), items in sorted(grouped.items())
-            if len(items) >= 3
-        )
-    )
 
 
 def _type_indexed_definition_boilerplate_groups(
@@ -3515,12 +3390,6 @@ def _native_subclass_traversal_sites(
         return sites
     except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
         return None
-
-
-def _declarative_family_boilerplate_groups(
-    module: ParsedModule,
-) -> tuple[DeclarativeFamilyBoilerplateGroup, ...]:
-    return _classvar_only_sibling_leaf_groups(module)
 
 
 def _source_type_name_for_constructor(node: ast.FunctionDef) -> str | None:
