@@ -5249,50 +5249,6 @@ declare_candidate_rule_detector(
 )
 
 
-class NestedBuilderShellDetector(
-    ConfiguredModuleCollectorCandidateDetector[NestedBuilderShellCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_CONTEXT,
-        "Nested builder shell should collapse into one authoritative request boundary",
-        "A builder forwards a substantial semantic parameter family unchanged into a subordinate nominal builder and only adds a small residue locally. The docs treat that as split request authority: one layer should own the forwarded family instead of rebuilding it inside another shell.",
-        "single authoritative request/context builder boundary",
-        "one builder nests a forwarded subordinate request builder inside a second nominal shell",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, shell_candidate: NestedBuilderShellCandidate
-    ) -> RefactorFinding:
-        forwarded = ", ".join(shell_candidate.forwarded_parameter_names)
-        residue_fields = ", ".join(shell_candidate.residue_field_names)
-        residue_sources = ", ".join(shell_candidate.residue_source_names)
-        return self.build_finding(
-            (
-                f"`{shell_candidate.qualname}` forwards `{forwarded}` into "
-                f"`{shell_candidate.nested_callee_name}` under `{shell_candidate.nested_field_name}` "
-                f"while separately deriving `{residue_fields}` from `{residue_sources}`."
-            ),
-            (shell_candidate.evidence,),
-            scaffold=(
-                "@dataclass(frozen=True)\nclass OuterRequest:\n    child_request: ChildRequest\n\n    @classmethod\n    def from_source(cls, source, *, child_request: ChildRequest):\n        return cls(child_request=child_request, ...)\n"
-            ),
-            codemod_patch=(
-                f"# Stop rebuilding `{shell_candidate.nested_callee_name}` inside `{shell_candidate.qualname}`.\n"
-                "# Accept the subordinate request/context directly, or move both layers into one authoritative builder."
-            ),
-            metrics=ParameterThreadMetrics(
-                function_count=1,
-                shared_parameter_count=len(shell_candidate.forwarded_parameter_names),
-                shared_parameter_names=shell_candidate.forwarded_parameter_names,
-            ),
-        )
-
-
 declare_candidate_rule_detector(
     ManualFiberTagCandidate,
     high_confidence_spec(

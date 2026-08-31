@@ -412,7 +412,6 @@ class DetectorConfig:
         3, "Minimum statement count for repeated-method detection."
     )
     min_shared_pipeline_stages: int = 5
-    min_nested_builder_forwarded_params: int = 4
     min_string_cases: int = detector_config_option(
         2, "Minimum string cases for closed-family dispatch detection."
     )
@@ -10989,21 +10988,6 @@ class SemanticOverlapABCResidueAxisCatalogCandidate(
 ):
     residue_kind_names: tuple[str, ...]
     residue_site_count: int
-
-
-@dataclass(frozen=True)
-class NestedBuilderShellCandidate:
-    file_path: str
-    qualname: str
-    lineno: int
-    outer_callee_name: str
-    nested_field_name: str
-    nested_callee_name: str
-    forwarded_parameter_names: tuple[str, ...]
-    residue_field_names: tuple[str, ...]
-    residue_source_names: tuple[str, ...]
-
-    evidence = _LINENO_QUALNAME_EVIDENCE
 
 
 @dataclass(frozen=True)

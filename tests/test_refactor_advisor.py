@@ -8921,25 +8921,6 @@ def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
     assert "ClassFunctionStackNodeVisitor" in (findings[0].scaffold or "")
 
 
-def test_detects_nested_builder_shell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass SearchRequest:\n    @classmethod\n    def from_inputs(\n        cls,\n        *,\n        key,\n        ligand_com,\n        strategy,\n        n_poses=None,\n        n_poses_override=None,\n    ):\n        return cls(\n            key=key,\n            ligand_com=ligand_com,\n            strategy=strategy,\n            n_poses=n_poses,\n            n_poses_override=n_poses_override,\n        )\n\n\nclass ExecutionRequest:\n    @classmethod\n    def from_detected_site(\n        cls,\n        site,\n        *,\n        key,\n        ligand_com,\n        strategy,\n        n_poses=None,\n        n_poses_override=None,\n    ):\n        return cls(\n            search=SearchRequest.from_inputs(\n                key=key,\n                ligand_com=ligand_com,\n                strategy=strategy,\n                n_poses=n_poses,\n                n_poses_override=n_poses_override,\n            ),\n            center=site.center,\n            box_size=max(site.radius, extent(site)),\n        )\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "nested_builder_shell"
-        )
-    )
-    assert "ExecutionRequest.from_detected_site" in finding.summary
-    assert "SearchRequest.from_inputs" in finding.summary
-    assert "key, ligand_com, strategy, n_poses, n_poses_override" in finding.summary
-
-
 def test_optional_parameter_default_is_not_nominal_variant_evidence(
     tmp_path: Path,
 ) -> None:
