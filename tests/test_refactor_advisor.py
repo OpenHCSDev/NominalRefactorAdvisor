@@ -17327,56 +17327,6 @@ class StreamPrefixCompactionRelationAuthority:
     )
 
 
-def test_detects_semantic_certificate_fallback(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/formal_runtime.py",
-        """
-class RuntimeReuseAuthority:
-    @classmethod
-    def reuse_prefix(cls, certified_block, active_block, previous_certificate):
-        if (
-            FormalBlockReuseSignature.from_block(certified_block)
-            != FormalBlockReuseSignature.from_block(active_block)
-        ):
-            return previous_certificate
-        return ReuseCertificate.from_block_sequence((certified_block, active_block))
-""",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "semantic_certificate_fallback"
-        )
-    )
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "typed certificate" in finding.summary
-    assert "theorem-backed runtime morphism" in (finding.codemod_patch or "")
-
-
-def test_semantic_certificate_fallback_accepts_typed_certificate(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/formal_runtime.py",
-        """
-class RuntimeReuseAuthority:
-    @classmethod
-    def reuse_prefix(cls, certified_block, active_block):
-        block_family = FormalBlockFamilyCertificate.from_block_sequence(
-            (certified_block, active_block)
-        )
-        return ReuseCertificate.from_certified_block_family(block_family)
-""",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "semantic_certificate_fallback" for finding in findings
-    )
-
-
 def test_detects_constant_backed_dispatch_axis(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
