@@ -16,7 +16,7 @@ from ..factorization import (
     factorization_axis_catalog_certificate,
 )
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
-from ..ast_tools import SourceModule, walk_function_body_nodes
+from ..ast_tools import BuiltinCallName, SourceModule, walk_function_body_nodes
 from ..native_syntax import NativePythonSyntaxIndex
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import (

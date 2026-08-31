@@ -94,7 +94,6 @@ if TYPE_CHECKING:
 from ..ast_tools import (
     BuilderCallShape,
     BuilderCallShapeFamily,
-    BuiltinCallName,
     ClassMarkerObservation,
     ClassMarkerObservationFamily,
     ClassFunctionStackNodeVisitor,
@@ -5567,100 +5566,6 @@ def _array_protocol_probe_bridge_candidates(
     )
 
 
-_NON_LIFECYCLE_STAGE_DOMAIN_CALL_NAMES = frozenset(
-    {
-        "Any",
-        "TypeError",
-        "Visitor",
-        "_walk_nodes",
-        "bind_all",
-        "cast",
-        "of",
-        "registered_effect_steps",
-        "unwrap_or_none",
-        "visit",
-    }
-)
-_NON_LIFECYCLE_STAGE_CALL_NAMES = (
-    _NON_LIFECYCLE_STAGE_DOMAIN_CALL_NAMES
-    | BuiltinCallName.non_lifecycle_stage_call_names()
-)
-
-
-def _is_domain_lifecycle_stage_sequence(stage_sequence: tuple[str, ...]) -> bool:
-    return bool(
-        len(stage_sequence) >= 3
-        and all(
-            (
-                stage_name not in _NON_LIFECYCLE_STAGE_CALL_NAMES
-                for stage_name in stage_sequence
-            )
-        )
-        and any(
-            ("_" in stage_name or len(stage_name) >= 6 for stage_name in stage_sequence)
-        )
-    )
-
-
-def _lifecycle_stage_sequence_certificate(
-    *, function_count: int, stage_names: tuple[str, ...]
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=function_count * len(stage_names),
-        replacement_shape=ObjectFamilyShape.from_roles(
-            ("lifecycle_abc",),
-            axis=("stage_hook",),
-            source=("implementation_residue",),
-        ),
-        semantic_axes=(("stage_sequence", stage_names),),
-    )
-
-
-def _lifecycle_stage_sequence_candidates(
-    module: ParsedModule,
-) -> tuple["LifecycleStageSequenceCandidate", ...]:
-    grouped: dict[
-        tuple[str, ...], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]
-    ] = defaultdict(list)
-    for qualname, function in _iter_named_functions(module):
-        if "." in qualname:
-            continue
-        stage_sequence = SUPPORT_PROJECTION_AUTHORITY.function_call_stage_sequence(
-            function
-        )
-        if _is_domain_lifecycle_stage_sequence(stage_sequence):
-            grouped[stage_sequence].append((qualname, function))
-    candidates: list[LifecycleStageSequenceCandidate] = []
-    for stage_sequence, functions in grouped.items():
-        if len(functions) < 3:
-            continue
-        ordered = sorted_tuple(functions, key=lambda item: (item[1].lineno, item[0]))
-        function_names = tuple((name for name, _ in ordered))
-        line_numbers = tuple((function.lineno for _, function in ordered))
-        certificate = _lifecycle_stage_sequence_certificate(
-            function_count=len(function_names), stage_names=stage_sequence
-        )
-        if not certificate.pays_rent:
-            continue
-        candidates.append(
-            LifecycleStageSequenceCandidate(
-                file_path=module.file_path,
-                line=line_numbers[0],
-                function_names=function_names,
-                stage_names=stage_sequence,
-                line_numbers=line_numbers,
-                line_count=sum(
-                    (
-                        len(_trim_docstring_body(function.body))
-                        for _, function in ordered
-                    )
-                ),
-                compression_certificate=certificate,
-            )
-        )
-    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line))
-
-
 def _selection_helper_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionHelperShape | None:
@@ -8880,27 +8785,6 @@ class SupportProjectionAuthority:
             if isinstance(value, value_type)
         }
 
-    def function_call_stage_sequence(
-        self, function: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> tuple[str, ...]:
-        call_names: list[str] = []
-
-        class Visitor(ast.NodeVisitor):
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                if node is function:
-                    self.generic_visit(node)
-
-            visit_AsyncFunctionDef = visit_FunctionDef
-
-            def visit_Call(self, node: ast.Call) -> None:
-                call_name = _call_name(node.func)
-                if call_name is not None:
-                    call_names.append(call_name)
-                self.generic_visit(node)
-
-        Visitor().visit(function)
-        return tuple(call_names)
-
     def identifier_name_overlap(self, left_name: str, right_name: str) -> float:
         left_tokens = CLASS_NAME_ALGEBRA.token_set(left_name)
         right_tokens = CLASS_NAME_ALGEBRA.token_set(right_name)
@@ -10660,13 +10544,6 @@ class ArrayProtocolProbeBridgeCandidate(
 ):
     attribute_names: tuple[str, ...]
     probe_count: int
-
-
-@dataclass(frozen=True)
-class LifecycleStageSequenceCandidate(
-    FunctionFamilyCompressionSurface, LineWitnessCandidate
-):
-    stage_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)

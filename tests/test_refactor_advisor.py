@@ -18570,26 +18570,6 @@ def test_detects_repeated_array_protocol_probe_bridge(tmp_path: Path) -> None:
     assert finding.compression_certificate.pays_rent
 
 
-def test_detects_lifecycle_stage_sequence_template(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        "\n\ndef load_alpha(request):\n    data = normalize(request)\n    data = validate(data)\n    return materialize(data)\n\n\ndef load_beta(request):\n    data = normalize(request)\n    data = validate(data)\n    return materialize(data)\n\n\ndef load_gamma(request):\n    data = normalize(request)\n    data = validate(data)\n    return materialize(data)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "lifecycle_stage_sequence"
-        )
-    )
-    assert "load_alpha" in finding.summary
-    assert "normalize" in finding.summary
-    assert "LifecycleTemplate" in (finding.scaffold or "")
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
 def test_detects_option_record_quotient_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

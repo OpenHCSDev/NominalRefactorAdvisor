@@ -5004,55 +5004,6 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    LifecycleStageSequenceCandidate,
-    high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Repeated lifecycle stage sequence should move into a template method",
-        "Several functions execute the same ordered stage calls. That is a lifecycle skeleton: an ABC should own sequencing, while implementations provide hooks for the irreducible stages or payload residue.",
-        "lifecycle ABC template method with stage hooks",
-        "multiple operations repeat the same lifecycle stage sequence",
-        (
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"Functions {candidate.function_names} repeat lifecycle stages "
-        f"{candidate.stage_names}; move sequencing into an ABC template method."
-    ),
-    scaffold=lambda candidate: (
-        "class LifecycleTemplate(ABC):\n"
-        "    def run(self, request):\n"
-        + "\n".join(
-            (
-                f"        request = self.{stage_name}(request)"
-                for stage_name in candidate.stage_names
-            )
-        )
-        + "\n        return request"
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Move repeated stage order {candidate.stage_names} out of {candidate.function_names}.\n"
-        "# Put the sequence in one ABC template method and leave only stage hooks or payload residue in implementations."
-    ),
-    metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
-        duplicate_site_count=len(candidate.function_names),
-        statement_count=len(candidate.stage_names),
-        class_count=1,
-        method_symbols=candidate.function_names,
-    ),
-    compression_certificate=lambda candidate: candidate.compression_certificate,
-    detector_priority=-9,
-    candidate_collector=_lifecycle_stage_sequence_candidates,
-)
-
-
-declare_candidate_rule_detector(
     NodeVisitorStackBoilerplateCandidate,
     high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD,

@@ -919,24 +919,6 @@ class BuiltinCallName(StrEnum):
         return frozenset((cls.DICT, cls.LIST, cls.SET, cls.TUPLE))
 
     @classmethod
-    def non_lifecycle_stage_call_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset(
-            (
-                cls.ANY,
-                cls.DICT,
-                cls.FROZENSET,
-                cls.ISINSTANCE,
-                cls.ITER,
-                cls.LEN,
-                cls.LIST,
-                cls.NEXT,
-                cls.SET,
-                cls.TUPLE,
-                cls.TYPE,
-            )
-        )
-
-    @classmethod
     def formula_builtin_callee_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset((cls.ABS, cls.ALL, cls.ANY, cls.MAX, cls.MIN, cls.SUM))
 
