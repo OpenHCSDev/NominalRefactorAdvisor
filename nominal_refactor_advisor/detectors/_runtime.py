@@ -3227,7 +3227,7 @@ class AutoRegisterMetaUnderRentedDetector(
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "AutoRegisterMeta family should prove its rent",
-        "A metaclass registry pays rent when it derives a semantic family membership surface: a stable key axis, multiple registered leaves, a behavioral or abstract contract, and some registry projection or consumer. Without those coordinates, the metaclass is mostly signature noise and the same information usually belongs in a typed declaration table, enum, or ordinary ABC.",
+        "A metaclass registry pays rent when it derives a semantic family membership surface: a stable key axis, multiple registered leaves, and a behavioral or abstract contract. Explicit registry projections and consumers strengthen that proof. Without those coordinates, the metaclass is mostly signature noise and the same information usually belongs in a typed declaration table, enum, or ordinary ABC.",
         "AutoRegisterMeta-backed family with computed rent evidence over key axis, leaves, behavior, projections, and consumers",
         "class declares AutoRegisterMeta but lacks enough generic rent signals to justify metaclass registration",
         (
@@ -3290,8 +3290,8 @@ class AutoRegisterMetaUnderRentedDetector(
             ),
             codemod_patch=(
                 f"# Prove or remove AutoRegisterMeta on `{rent_candidate.class_name}`.\n"
-                "# Rent proof must expose a stable key axis, multiple registered leaves, a behavioral contract,\n"
-                "# and a registry projection/consumer derived from `cls.__registry__`.\n"
+                "# Rent proof must expose a stable key axis, multiple registered leaves, and a behavioral contract.\n"
+                "# Prefer an explicit registry projection/consumer derived from `cls.__registry__` when the family is enumerated.\n"
                 "# If the family is metadata-only or has no projection surface, replace it with a typed table or ordinary ABC."
             ),
             compression_certificate=rent_candidate.compression_certificate,

@@ -26,6 +26,7 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.AutoRegisterConcept,
         codemod.AutoRegisterClassRegistryConcept,
         codemod.AutoRegisterStrategyFamilyConcept,
+        codemod.AutoRegisterMroOrderingConcept,
         codemod.RoleCaseAuthorityConcept,
     }
 )
@@ -62,6 +63,9 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ),
     codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer: (
         codemod.AutoRegisterConcept
+    ),
+    codemod.AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer: (
+        codemod.AutoRegisterMroOrderingConcept
     ),
     codemod.EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
     codemod.AutoregisterInstanceViewRecipeBuilder: (
@@ -123,6 +127,7 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                     codemod.AutoRegisterConcept,
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,
+                    codemod.AutoRegisterMroOrderingConcept,
                     codemod.RoleCaseAuthorityConcept,
                 }
             ),
@@ -162,6 +167,7 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                     codemod.AutoRegisterConcept,
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,
+                    codemod.AutoRegisterMroOrderingConcept,
                 }
             ),
         ),
@@ -172,6 +178,7 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                     codemod.AutoRegisterConcept,
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,
+                    codemod.AutoRegisterMroOrderingConcept,
                 }
             ),
         ),

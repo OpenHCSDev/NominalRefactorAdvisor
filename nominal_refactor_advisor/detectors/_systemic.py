@@ -2326,15 +2326,22 @@ class AutoRegisterExplicitPriorityOrderingDetector(
                         *evidence_sites[:5],
                     ),
                     scaffold=(
-                        "class RegisteredPolicy(ABC, metaclass=AutoRegisterMeta):\n"
+                        "class RegisteredPolicyResolutionMro(\n"
+                        "    SpecificRegisteredPolicy,\n"
+                        "    FallbackRegisteredPolicy,\n"
+                        "):\n"
+                        "    policy_key = None\n\n"
                         "    @classmethod\n"
-                        "    def ordered(cls):\n"
-                        "        return tuple(cls.__subclasses__())\n\n"
-                        "# Encode ordering by inheritance/MRO, not by a parallel priority field."
+                        "    def registered_types(cls):\n"
+                        "        return tuple(\n"
+                        "            candidate\n"
+                        "            for candidate in cls.__mro__[1:]\n"
+                        "            if candidate in RegisteredPolicy.__registry__.values()\n"
+                        "        )\n"
                     ),
                     codemod_patch=(
                         f"# Delete the {axis_label} class axis from `{indexed_class.simple_name}` and its leaves.\n"
-                        "# Replace sorted registry traversal over explicit order fields with an MRO/subclass traversal owned by the nominal hierarchy."
+                        "# Replace sorted registry traversal with one registry-filtered MRO composition owned by the nominal family."
                     ),
                     metrics=MappingMetrics(
                         mapping_site_count=len(evidence_sites),

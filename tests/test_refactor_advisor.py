@@ -14557,7 +14557,10 @@ def test_detects_autoregister_family_priority_axis_ordering(
     assert "SourcePathExclusion" in finding.summary
     assert "priority" in finding.summary
     assert "MRO" in finding.title
-    assert "__subclasses__" in (finding.scaffold or "")
+    assert "RegisteredPolicyResolutionMro" in (finding.scaffold or "")
+    assert "cls.__mro__" in (finding.scaffold or "")
+    assert "RegisteredPolicy.__registry__.values()" in (finding.scaffold or "")
+    assert "__subclasses__" not in (finding.scaffold or "")
     assert "Delete the `priority` class axis" in (finding.codemod_patch or "")
 
 

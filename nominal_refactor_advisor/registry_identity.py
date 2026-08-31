@@ -13,6 +13,16 @@ DEFAULT_REGISTRY_KEY_ATTRIBUTE = "registry_key"
 AUTOREGISTER_META_NAME = "AutoRegisterMeta"
 REGISTRY_ATTRIBUTE_NAME = "__registry__"
 REGISTRY_KEY_ATTRIBUTE_NAME = "__registry_key__"
+KEY_EXTRACTOR_ATTRIBUTE_NAME = "__key_extractor__"
+SKIP_IF_NO_KEY_ATTRIBUTE_NAME = "__skip_if_no_key__"
+AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES = frozenset(
+    {
+        REGISTRY_ATTRIBUTE_NAME,
+        REGISTRY_KEY_ATTRIBUTE_NAME,
+        KEY_EXTRACTOR_ATTRIBUTE_NAME,
+        SKIP_IF_NO_KEY_ATTRIBUTE_NAME,
+    }
+)
 
 
 def class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -66,11 +76,20 @@ class AutoRegisterClassAuthority:
 
     @property
     def registry_key_attribute(self) -> str | None:
-        for name, value in self.assignment_pairs:
-            if name != REGISTRY_KEY_ATTRIBUTE_NAME:
-                continue
-            return self.registry_key_value(value)
-        return None
+        value = self.assignment_value(REGISTRY_KEY_ATTRIBUTE_NAME)
+        return None if value is None else self.registry_key_value(value)
+
+    @property
+    def skips_missing_keys(self) -> bool:
+        value = self.assignment_value(SKIP_IF_NO_KEY_ATTRIBUTE_NAME)
+        return isinstance(value, ast.Constant) and value.value is True
+
+    @property
+    def declares_key_extractor(self) -> bool:
+        return any(
+            name == KEY_EXTRACTOR_ATTRIBUTE_NAME
+            for name, _value in self.assignment_pairs
+        )
 
     @property
     def declares_registry(self) -> bool:
@@ -82,6 +101,12 @@ class AutoRegisterClassAuthority:
             and statement.name == method_name
             for statement in self.node.body
         )
+
+    def assignment_value(self, assignment_name: str) -> ast.AST | None:
+        values = tuple(
+            value for name, value in self.assignment_pairs if name == assignment_name
+        )
+        return values[0] if len(values) == 1 else None
 
     @staticmethod
     def registry_key_value(value: ast.AST) -> str | None:

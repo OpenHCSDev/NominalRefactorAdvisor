@@ -1192,6 +1192,187 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     assert simulation.is_clean is True
 
 
+def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "from abc import ABC, abstractmethod\n"
+        "from enum import Enum\n"
+        "from typing import ClassVar\n"
+        "from metaclass_registry import AutoRegisterMeta\n"
+        "\n"
+        "class PhaseKey(str, Enum):\n"
+        "    FIRST = 'first'\n"
+        "    SECOND = 'second'\n"
+        "    FINAL = 'final'\n"
+        "\n"
+        "\n"
+        "class Phase(ABC, metaclass=AutoRegisterMeta):\n"
+        "    __registry__: ClassVar[dict[PhaseKey, type['Phase']]] = {}\n"
+        "    __registry_key__ = 'phase'\n"
+        "    __skip_if_no_key__ = True\n"
+        "    phase: ClassVar[PhaseKey | None] = None\n"
+        "    priority: ClassVar[int]\n"
+        "\n"
+        "    @classmethod\n"
+        "    def ordered_types(cls) -> tuple[type['Phase'], ...]:\n"
+        "        return tuple(\n"
+        "            sorted(\n"
+        "                cls.__registry__.values(),\n"
+        "                key=lambda candidate: candidate.priority,\n"
+        "            )\n"
+        "        )\n"
+        "\n"
+        "    @abstractmethod\n"
+        "    def matches(self, value: str) -> bool:\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "class FirstPhase(Phase):\n"
+        "    phase = PhaseKey.FIRST\n"
+        "    priority = 10\n"
+        "\n"
+        "    def matches(self, value: str) -> bool:\n"
+        "        return value == self.phase\n"
+        "\n"
+        "\n"
+        "class TerminalPhase(Phase):\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class SecondPhase(TerminalPhase):\n"
+        "    phase = PhaseKey.SECOND\n"
+        "    priority = 20\n"
+        "\n"
+        "    def matches(self, value: str) -> bool:\n"
+        "        return value == self.phase\n"
+        "\n"
+        "\n"
+        "class FinalPhase(TerminalPhase):\n"
+        "    phase = PhaseKey.FINAL\n"
+        "    priority = 100\n"
+        "\n"
+        "    def matches(self, value: str) -> bool:\n"
+        "        return value == self.phase\n"
+    )
+    _write_module(tmp_path, source)
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in analyze_modules(modules)
+        if item.detector_id == "autoregister_explicit_priority_ordering"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+    operations = tuple(
+        operation.to_dict() for operation in plan.document.recipes[0].operations
+    )
+    projected_findings = analyze_modules(
+        snapshot.with_virtual_sources(
+            simulation.simulation.rewritten_sources
+        ).parsed_modules,
+        DetectorConfig(),
+    )
+    namespace: dict[str, object] = {}
+    exec(rewritten, namespace)
+    ordered_types = namespace["Phase"].ordered_types()
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].executable_declaration_name
+        == "AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer"
+    )
+    assert plan.records[0].refactor_concept == "auto_register_mro_ordering"
+    assert [operation["operation"] for operation in operations] == [
+        "delete_class_assignments",
+        "delete_class_assignments",
+        "delete_class_assignments",
+        "delete_class_assignments",
+        "replace_text",
+        "insert_after_target",
+    ]
+    assert "priority" not in rewritten
+    assert (
+        "class _PhaseResolutionMro(\n"
+        "    FirstPhase,\n"
+        "    SecondPhase,\n"
+        "    FinalPhase,\n"
+        "):" in rewritten
+    )
+    assert "_PhaseResolutionMro.registered_types()" in rewritten
+    assert [item.__name__ for item in ordered_types] == [
+        "FirstPhase",
+        "SecondPhase",
+        "FinalPhase",
+    ]
+    assert not any(
+        item.detector_id == "autoregister_explicit_priority_ordering"
+        for item in projected_findings
+    )
+    assert simulation.is_clean is True
+
+    def plan_for_source(source_root: Path, source_text: str):
+        _write_module(source_root, source_text)
+        source_modules = parse_python_modules(source_root)
+        source_finding = next(
+            item
+            for item in analyze_modules(source_modules)
+            if item.detector_id == "autoregister_explicit_priority_ordering"
+        )
+        source_snapshot = CodemodSourceSnapshot.from_modules(
+            source_modules,
+            (source_finding,),
+        )
+        return codemod_plan_from_findings(
+            (source_finding,),
+            selector_context=source_snapshot,
+        )
+
+    registered_ancestor_root = tmp_path / "registered_ancestor"
+    unsafe_plan = plan_for_source(
+        registered_ancestor_root,
+        source.replace(
+            "class TerminalPhase(Phase):\n    pass\n",
+            "class TerminalPhase(Phase):\n"
+            "    phase = PhaseKey.FIRST\n"
+            "    priority = 15\n"
+            "\n"
+            "    def matches(self, value: str) -> bool:\n"
+            "        return value == self.phase\n",
+        ),
+    )
+
+    assert unsafe_plan.records[0].status.value == "rejected_by_safety_check"
+    assert "incomparable single-inheritance leaves" in unsafe_plan.records[0].reason
+
+    open_key_plan = plan_for_source(
+        tmp_path / "open_key",
+        source.replace("PhaseKey | None", "str | None")
+        .replace("PhaseKey.FIRST", "'first'")
+        .replace("PhaseKey.SECOND", "'second'")
+        .replace("PhaseKey.FINAL", "'final'"),
+    )
+
+    assert open_key_plan.records[0].status.value == "rejected_by_safety_check"
+    assert "exhaust one local enum key" in open_key_plan.records[0].reason
+
+    custom_key_plan = plan_for_source(
+        tmp_path / "custom_key",
+        source.replace(
+            "    __skip_if_no_key__ = True\n",
+            "    __skip_if_no_key__ = True\n"
+            "    __key_extractor__ = staticmethod(lambda name, cls: name)\n",
+            1,
+        ),
+    )
+
+    assert custom_key_plan.records[0].status.value == "rejected_by_safety_check"
+    assert "without a custom key extractor" in custom_key_plan.records[0].reason
+
+
 def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
     tmp_path: Path,
 ) -> None:
