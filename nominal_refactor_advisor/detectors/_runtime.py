@@ -14,6 +14,7 @@ import tempfile
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 
@@ -1428,7 +1429,29 @@ class GeneratedBoundarySemanticConstantMirrorDetector(
 class RuntimeNamespaceBridgeSite:
     line: int
     symbol: str
-    bridge_kind: str
+    bridge_kind: RuntimeNamespaceBridgeKind
+
+
+class RuntimeNamespaceBridgeKind(StrEnum):
+    """Exact runtime namespace compatibility mechanisms witnessed in source."""
+
+    RUNTIME_BRIDGE_IMPORT = "runtime_bridge_namespace import"
+    GLOBALS_UPDATE = "globals update"
+    RUNTIME_BRIDGE_GLOBALS_UPDATE = "runtime_bridge_namespace globals update"
+    GUARDED_GLOBALS_DEFINITION = "guarded globals definition"
+
+
+_GLOBALS_BUILTIN_NAME = "globals"
+_RUNTIME_BRIDGE_NAMESPACE_NAME = "runtime_bridge_namespace"
+
+
+def _runtime_namespace_bridge_source_may_match(source: str) -> bool:
+    """Return whether source contains a symbol required by every bridge witness."""
+
+    return (
+        _GLOBALS_BUILTIN_NAME in source
+        or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
+    )
 
 
 def _call_symbol(node: ast.AST) -> str:
@@ -1444,7 +1467,7 @@ def _is_globals_call(node: ast.AST) -> bool:
     return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "globals"
+        and node.func.id == _GLOBALS_BUILTIN_NAME
         and not node.args
         and not node.keywords
     )
@@ -1452,7 +1475,7 @@ def _is_globals_call(node: ast.AST) -> bool:
 
 def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:
     return isinstance(node, ast.Call) and _call_symbol(node.func).endswith(
-        "runtime_bridge_namespace"
+        _RUNTIME_BRIDGE_NAMESPACE_NAME
     )
 
 
@@ -1492,17 +1515,21 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
+        if not _runtime_namespace_bridge_source_may_match(module.source):
+            return []
         sites: list[RuntimeNamespaceBridgeSite] = []
 
         class Visitor(ast.NodeVisitor):
             def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
                 for alias in node.names:
-                    if alias.name == "runtime_bridge_namespace":
+                    if alias.name == _RUNTIME_BRIDGE_NAMESPACE_NAME:
                         sites.append(
                             RuntimeNamespaceBridgeSite(
                                 line=int(node.lineno),
                                 symbol=alias.asname or alias.name,
-                                bridge_kind="runtime_bridge_namespace import",
+                                bridge_kind=(
+                                    RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_IMPORT
+                                ),
                             )
                         )
                 self.generic_visit(node)
@@ -1513,9 +1540,11 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                     and node.func.attr == "update"
                     and _is_globals_call(node.func.value)
                 ):
-                    bridge_kind = "globals update"
+                    bridge_kind = RuntimeNamespaceBridgeKind.GLOBALS_UPDATE
                     if any(_is_runtime_bridge_namespace_call(arg) for arg in node.args):
-                        bridge_kind = "runtime_bridge_namespace globals update"
+                        bridge_kind = (
+                            RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_GLOBALS_UPDATE
+                        )
                     sites.append(
                         RuntimeNamespaceBridgeSite(
                             line=int(node.lineno),
@@ -1532,7 +1561,9 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                         RuntimeNamespaceBridgeSite(
                             line=int(node.lineno),
                             symbol=guarded_symbol,
-                            bridge_kind="guarded globals definition",
+                            bridge_kind=(
+                                RuntimeNamespaceBridgeKind.GUARDED_GLOBALS_DEFINITION
+                            ),
                         )
                     )
                 self.generic_visit(node)
@@ -1540,7 +1571,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
         Visitor().visit(module.module)
         if not sites:
             return []
-        bridge_kinds = sorted_tuple(site.bridge_kind for site in sites)
+        bridge_kinds = sorted_tuple(site.bridge_kind.value for site in sites)
         evidence = tuple(
             SourceLocation(module.file_path, site.line, site.symbol)
             for site in sites[:12]
