@@ -5746,84 +5746,6 @@ def _static_typed_observation_detector_candidates(
     return tuple(candidates)
 
 
-_DECLARE_MODULE_DETECTOR_NAME = "declare_module_detector"
-_CANDIDATE_FINDING_RENDERER_NAME = "CandidateFindingRenderer"
-
-
-def _is_candidate_finding_renderer_call(node: ast.AST) -> bool:
-    return isinstance(node, ast.Call) and (
-        _call_name(node.func) == _CANDIDATE_FINDING_RENDERER_NAME
-    )
-
-
-def _is_single_candidate_evidence_lambda(node: ast.AST) -> bool:
-    if not isinstance(node, ast.Lambda) or len(node.args.args) != 1:
-        return False
-    parameter_name = node.args.args[0].arg
-    if not isinstance(node.body, ast.Tuple) or len(node.body.elts) != 1:
-        return False
-    evidence_expr = node.body.elts[0]
-    return (
-        isinstance(evidence_expr, ast.Attribute)
-        and evidence_expr.attr == "evidence"
-        and isinstance(evidence_expr.value, ast.Name)
-        and evidence_expr.value.id == parameter_name
-    )
-
-
-def _inline_candidate_renderer_declaration_candidate(
-    module: ParsedModule, node: ast.Call
-) -> tuple[InlineCandidateRendererDeclarationCandidate, ...]:
-    if _call_name(node.func) != _DECLARE_MODULE_DETECTOR_NAME or len(node.args) < 3:
-        return ()
-    renderer = node.args[2]
-    if not _is_candidate_finding_renderer_call(renderer):
-        return ()
-    renderer_call = cast(ast.Call, renderer)
-    renderer_keywords = {
-        keyword.arg: keyword.value
-        for keyword in renderer_call.keywords
-        if keyword.arg is not None
-    }
-    if "summary" not in renderer_keywords or "evidence" not in renderer_keywords:
-        return ()
-    candidate_type_name = _source_segment(module, node.args[0])
-    return (
-        InlineCandidateRendererDeclarationCandidate(
-            file_path=module.file_path,
-            line=node.lineno,
-            qualname=f"{_DECLARE_MODULE_DETECTOR_NAME}[{candidate_type_name}]",
-            candidate_type_name=candidate_type_name,
-            renderer_keyword_names=(
-                HELPER_SYNTAX_PROJECTION_AUTHORITY.renderer_keyword_names(renderer_call)
-            ),
-            detector_keyword_names=tuple(
-                (keyword.arg for keyword in node.keywords if keyword.arg is not None)
-            ),
-            has_single_candidate_evidence=_is_single_candidate_evidence_lambda(
-                renderer_keywords["evidence"]
-            ),
-            line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
-        ),
-    )
-
-
-def _inline_candidate_renderer_declaration_candidates(
-    module: ParsedModule,
-) -> tuple[InlineCandidateRendererDeclarationCandidate, ...]:
-    if (
-        _DECLARE_MODULE_DETECTOR_NAME not in module.source
-        or _CANDIDATE_FINDING_RENDERER_NAME not in module.source
-    ):
-        return ()
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        module.module,
-        ast.Call,
-        _inline_candidate_renderer_declaration_candidate,
-    )
-
-
 def _candidate_detector_scope_kind(
     node: ast.ClassDef,
 ) -> CandidateCollectorScope | None:
@@ -6559,11 +6481,6 @@ class HelperSyntaxProjectionAuthority:
                 and isinstance(item.value, ast.Name)
                 and item.value.id == parameter_name
             }
-        )
-
-    def renderer_keyword_names(self, call: ast.Call) -> tuple[str, ...]:
-        return tuple(
-            (keyword.arg for keyword in call.keywords if keyword.arg is not None)
         )
 
     def direct_forwarded_parameter_names(

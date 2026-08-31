@@ -10674,15 +10674,6 @@ class StaticTypedObservationDetectorCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class InlineCandidateRendererDeclarationCandidate(QualnameLineWitnessCandidate):
-    candidate_type_name: str
-    renderer_keyword_names: tuple[str, ...]
-    detector_keyword_names: tuple[str, ...]
-    has_single_candidate_evidence: bool
-    line_count: int
-
-
-@dataclass(frozen=True)
 class InlineAstPredicateGrammarCandidate(ClassMethodLineWitnessCandidate):
     ast_type_names: tuple[str, ...]
     predicate_count: int

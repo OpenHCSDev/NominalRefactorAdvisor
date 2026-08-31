@@ -4641,46 +4641,6 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    InlineCandidateRendererDeclarationCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Inline renderer declaration should fold into detector algebra",
-        "A detector declaration that embeds `CandidateFindingRenderer[...]` repeats the same rendering-object construction beside every candidate type. The detector algebra already knows the candidate type, finding spec, collector, and priority; it should derive the renderer object from typed summary/evidence/scaffold/patch/metrics hooks.",
-        "one detector declaration algebra derives the renderer object and detector class",
-        "module detector declaration manually embeds candidate renderer construction",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda renderer: (
-        f"`{renderer.qualname}` embeds renderer keywords {renderer.renderer_keyword_names} across {renderer.line_count} lines; declare the detector rule directly and derive the renderer."
-    ),
-    scaffold=lambda renderer: (
-        "declare_candidate_rule_detector(\n    Candidate,\n    finding_spec,\n    summary=lambda candidate: ...,\n)"
-    ),
-    codemod_patch=lambda renderer: (
-        "# Replace the nested `CandidateFindingRenderer[...]` argument with `declare_candidate_rule_detector(...)` keyword hooks. Omit `evidence=` when it is exactly `lambda candidate: (candidate.evidence,)`."
-    ),
-    metrics=lambda renderer: MappingMetrics.from_field_names(
-        mapping_site_count=renderer.line_count,
-        mapping_name=renderer.candidate_type_name,
-        field_names=(
-            *renderer.renderer_keyword_names,
-            *renderer.detector_keyword_names,
-        ),
-        source_name="CandidateFindingRenderer",
-    ),
-    detector_priority=-15,
-    candidate_collector=_inline_candidate_renderer_declaration_candidates,
-)
-
-declare_candidate_rule_detector(
     OptionalKeywordBagAssemblyCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
