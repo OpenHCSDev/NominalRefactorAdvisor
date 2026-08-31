@@ -190,6 +190,16 @@ class _EnvironmentImportAliases:
     os_modules: frozenset[str]
     imported_member_names: dict[str, frozenset[str]]
 
+    @property
+    def environment_read_names(self) -> frozenset[str]:
+        """Local names that can begin a registered environment read."""
+
+        return self.os_modules | frozenset(
+            name
+            for read_kind in EnvironmentReadKind
+            for name in self.names_for(read_kind)
+        )
+
     def names_for(self, read_kind: EnvironmentReadKind) -> frozenset[str]:
         return self.imported_member_names.get(read_kind.os_member_name, frozenset())
 
@@ -247,6 +257,11 @@ class _FunctionScope:
 
     def nodes(self) -> tuple[ast.AST, ...]:
         return walk_function_body_nodes(self.node)
+
+    def references_any_name(self, names: frozenset[str]) -> bool:
+        return any(
+            isinstance(node, ast.Name) and node.id in names for node in self.nodes()
+        )
 
     @staticmethod
     def assignment_nodes(
@@ -1244,6 +1259,28 @@ class _EnvironmentBooleanModuleProjection:
     authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...]
     wrapper_facts: tuple[_FixedKeyAuthorityWrapperFact, ...]
 
+    @classmethod
+    def from_scopes(
+        cls,
+        scopes: tuple[_FunctionScope, ...],
+        aliases: _EnvironmentImportAliases,
+    ) -> "_EnvironmentBooleanModuleProjection":
+        environment_read_names = aliases.environment_read_names
+        return cls(
+            parser_sites=(
+                tuple(
+                    site
+                    for scope in scopes
+                    if scope.references_any_name(environment_read_names)
+                    for site in _environment_boolean_parser_sites(scope, aliases)
+                )
+                if environment_read_names
+                else ()
+            ),
+            authorities=_declared_environment_flag_authorities(scopes),
+            wrapper_facts=_fixed_key_authority_wrapper_facts(scopes),
+        )
+
 
 def _native_environment_function_may_declare_authority(name: str) -> bool:
     tokens = EnvironmentSemanticNameAuthority.tokens(name)
@@ -1376,17 +1413,7 @@ def _native_environment_module_projection(
                 )
             )
         scopes_tuple = tuple(scopes)
-        return [
-            _EnvironmentBooleanModuleProjection(
-                parser_sites=tuple(
-                    site
-                    for scope in scopes_tuple
-                    for site in _environment_boolean_parser_sites(scope, aliases)
-                ),
-                authorities=_declared_environment_flag_authorities(scopes_tuple),
-                wrapper_facts=_fixed_key_authority_wrapper_facts(scopes_tuple),
-            )
-        ]
+        return [_EnvironmentBooleanModuleProjection.from_scopes(scopes_tuple, aliases)]
     except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
         return None
 
@@ -1412,17 +1439,7 @@ class _EnvironmentBooleanModuleProjectionFamily(
         del cls
         scopes = _function_scopes(parsed_module)
         aliases = _EnvironmentImportAliases.from_module(parsed_module.module)
-        return [
-            _EnvironmentBooleanModuleProjection(
-                parser_sites=tuple(
-                    site
-                    for scope in scopes
-                    for site in _environment_boolean_parser_sites(scope, aliases)
-                ),
-                authorities=_declared_environment_flag_authorities(scopes),
-                wrapper_facts=_fixed_key_authority_wrapper_facts(scopes),
-            )
-        ]
+        return [_EnvironmentBooleanModuleProjection.from_scopes(scopes, aliases)]
 
 
 def _fixed_key_authority_wrapper_sites_from_facts(
