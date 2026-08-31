@@ -17914,25 +17914,6 @@ def test_ignores_autoregister_meta_behavioral_family_root(tmp_path: Path) -> Non
     )
 
 
-def test_detects_self_naming_builder_catalog(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nAlpha = declare_record("Alpha", "value: int", bases=(Root,))\nBeta = declare_record("Beta", "value: int", bases=(Root,))\nGamma = declare_record("Gamma", "value: int", bases=(Root,))\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "self_naming_builder_catalog"
-        )
-    )
-    assert "declare_record" in finding.summary
-    assert "self-naming declaration calls" in finding.summary
-    assert "declaration catalog" in (finding.codemod_patch or "")
-
-
 def test_detects_repeated_base_bundle(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

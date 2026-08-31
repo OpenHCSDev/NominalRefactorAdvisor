@@ -9275,13 +9275,6 @@ class PositionalKeywordCallSurface:
 
 
 @dataclass(frozen=True)
-class SelfNamingBuilderCatalogCandidate(
-    BuilderKeywordSurface, PositionalKeywordCallSurface, ClassLineNumbersGroup
-):
-    line_count: int
-
-
-@dataclass(frozen=True)
 class RepeatedBaseBundleCandidate(ClassLineNumbersGroup):
     base_names: tuple[str, ...]
     bundle_width: int

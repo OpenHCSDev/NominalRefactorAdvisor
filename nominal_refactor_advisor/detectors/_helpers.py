@@ -2392,60 +2392,6 @@ def _has_registered_nominal_authority_ancestor(
     )
 
 
-def _self_naming_builder_catalog_candidates(
-    module: ParsedModule,
-) -> tuple[SelfNamingBuilderCatalogCandidate, ...]:
-    grouped: dict[tuple[str, int, tuple[str, ...]], list[tuple[str, int, int]]] = (
-        defaultdict(list)
-    )
-    for statement in _trim_docstring_body(module.module.body):
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            continue
-        target = statement.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        call = statement.value
-        if not isinstance(call, ast.Call) or len(call.args) < 2:
-            continue
-        builder_name = _ast_terminal_name(call.func)
-        if builder_name is None:
-            continue
-        first_arg = call.args[0]
-        if (
-            not isinstance(first_arg, ast.Constant)
-            or not isinstance(first_arg.value, str)
-            or first_arg.value != target.id
-        ):
-            continue
-        keyword_names = tuple(
-            (keyword.arg for keyword in call.keywords if keyword.arg is not None)
-        )
-        if len(keyword_names) != len(call.keywords):
-            continue
-        line_count = (statement.end_lineno or statement.lineno) - statement.lineno + 1
-        grouped[builder_name, len(call.args), keyword_names].append(
-            (target.id, statement.lineno, line_count)
-        )
-    return tuple(
-        (
-            SelfNamingBuilderCatalogCandidate(
-                file_path=module.file_path,
-                class_names=tuple((item[0] for item in ordered)),
-                line_numbers=tuple((item[1] for item in ordered)),
-                builder_name=builder_name,
-                positional_arg_count=positional_arg_count,
-                keyword_names=keyword_names,
-                line_count=sum((item[2] for item in ordered)),
-            )
-            for (builder_name, positional_arg_count, keyword_names), items in sorted(
-                grouped.items()
-            )
-            if len(items) >= 3
-            for ordered in [sorted_tuple(items, key=lambda item: (item[1], item[0]))]
-        )
-    )
-
-
 _ABC_BASE_NAME = "ABC"
 _COMPOSABLE_BASE_NAME_SUFFIXES = (
     _ABC_BASE_NAME,

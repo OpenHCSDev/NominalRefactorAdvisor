@@ -959,44 +959,6 @@ class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
 
 
 declare_candidate_rule_detector(
-    SelfNamingBuilderCatalogCandidate,
-    high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Self-naming builder assignments should become a declaration catalog",
-        "A module that repeatedly assigns `Name = builder('Name', ...)` is encoding a relation between exported names and builder payloads in duplicated assignment syntax. The names, schemas, bases, and options should live in one typed catalog that materializes the declarations.",
-        "one declaration catalog feeding a builder materializer",
-        "same self-naming module-level builder call repeats across sibling declarations",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"{len(candidate.class_names)} `{candidate.builder_name}` assignments repeat {candidate.line_count} lines of self-naming declaration calls with keywords {candidate.keyword_names}."
-    ),
-    evidence=lambda candidate: candidate.evidence,
-    scaffold=lambda candidate: (
-        "DECLARATIONS = (...)\n"
-        "for declaration in DECLARATIONS:\n"
-        "    globals()[declaration.name] = builder(declaration.name, ...)"
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Replace repeated `{candidate.builder_name}(name, ...)` assignments with one typed declaration catalog.\n"
-        "# Derive the assigned symbol from the row name and keep only irreducible builder payload in each row."
-    ),
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=len(candidate.class_names),
-        mapping_name=candidate.builder_name,
-        field_names=candidate.keyword_names,
-    ),
-    detector_priority=-6,
-    detector_name="SelfNamingBuilderCatalogDetector",
-    candidate_collector=_self_naming_builder_catalog_candidates,
-)
-
-
-declare_candidate_rule_detector(
     RepeatedBaseBundleCandidate,
     high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
