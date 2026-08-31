@@ -9159,16 +9159,6 @@ def test_collects_class_marker_observations_via_spec_family(tmp_path: Path) -> N
     assert any((item.marker_name == "_is_global_config" for item in observations))
 
 
-def test_detects_sentinel_type_marker(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nSENTINEL = type("Sentinel", (), {})()\n\n\ndef present(registry):\n    return SENTINEL in registry\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 11 for finding in findings))
-
-
 def test_collects_sentinel_type_observations_via_spec_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -9198,16 +9188,6 @@ def test_sentinel_usage_projection_stops_without_a_declaration(
     monkeypatch.setattr(ast_tools_module, "_walk_nodes", unexpected_walk)
 
     assert ast_tools_module._sentinel_type_usage_observations(module) == ()
-
-
-def test_detects_dynamic_method_injection(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef inject(target_type, method_name, method_impl):\n    setattr(target_type, method_name, method_impl)\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 12 for finding in findings))
 
 
 def test_collects_dynamic_method_injection_observations_via_spec_family(

@@ -3767,54 +3767,6 @@ class ExactTypeGuardInheritanceRetreatDetector(
         )
 
 
-declare_typed_observation_detector(
-    "SentinelTypeMarkerDetector",
-    finding_spec_template(
-        PatternId.SENTINEL_TYPE_MARKER,
-        "Unique sentinel type marker is present or should be used",
-        "The docs distinguish sentinel types from sentinel attributes: unique nominal marker objects are appropriate when exact capability identity matters more than payload.",
-        "exact capability-marker identity independent of structure",
-        "same module creates or uses unique nominal sentinel markers",
-        (
-            CapabilityTag.CAPABILITY_MARKER_IDENTITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.SENTINEL_TYPE,
-            ObservationTag.CAPABILITY_MARKER,
-        ),
-    ),
-    SentinelTypeObservationFamily,
-    SentinelTypeObservation,
-    "{module_path} contains {evidence_count} sentinel-type capability marker sites.",
-    evidence_limit=6,
-)
-
-
-declare_typed_observation_detector(
-    "DynamicMethodInjectionDetector",
-    finding_spec_template(
-        PatternId.TYPE_NAMESPACE_INJECTION,
-        "Dynamic method injection belongs in a type-namespace pattern",
-        "The docs say behavior that must affect all current and future instances belongs in a class namespace pattern, not in repeated instance-level patching.",
-        "shared type-namespace mutation for a nominal family",
-        "same module mutates class behavior through runtime namespace injection",
-        (
-            CapabilityTag.SHARED_TYPE_NAMESPACE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.DYNAMIC_METHOD_INJECTION,
-            ObservationTag.TYPE_NAMESPACE,
-        ),
-    ),
-    DynamicMethodInjectionObservationFamily,
-    DynamicMethodInjectionObservation,
-    "{module_path} contains {evidence_count} dynamic type-namespace injection sites.",
-    evidence_limit=6,
-)
-
-
 class NumericLiteralDispatchDetector(PerModuleIssueDetector):
     finding_spec = certified_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
