@@ -17313,7 +17313,42 @@ def test_detects_projection_style_builder_authority(tmp_path: Path) -> None:
     )
     assert "SearchContext" in finding.summary
     assert "projection sites" in finding.summary
-    assert "SearchContextBuilder" in (finding.scaffold or "")
+    assert "class SearchContext:" in (finding.scaffold or "")
+    assert "return cls(...)" in (finding.scaffold or "")
+
+
+def test_projection_builder_preserves_nominal_owner_update_methods(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass Session:\n    session_id: str\n    cursor: int | None\n    checkpoints: tuple[int, ...]\n    store_ref: str | None\n    backend: str | None\n    dirty_cursor: int | None\n\n    def with_cursor(self, cursor):\n        return Session(\n            session_id=self.session_id,\n            cursor=cursor,\n            checkpoints=self.checkpoints,\n            store_ref=self.store_ref,\n            backend=self.backend,\n            dirty_cursor=self.dirty_cursor,\n        )\n\n    def with_store(self, store_ref, backend):\n        return Session(\n            session_id=self.session_id,\n            cursor=self.cursor,\n            checkpoints=self.checkpoints,\n            store_ref=store_ref,\n            backend=backend,\n            dirty_cursor=self.dirty_cursor,\n        )\n\n    def mark_dirty(self):\n        return Session(\n            session_id=self.session_id,\n            cursor=self.cursor,\n            checkpoints=self.checkpoints,\n            store_ref=self.store_ref,\n            backend=self.backend,\n            dirty_cursor=self.cursor,\n        )\n",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "projection_builder_authority"
+        for finding in findings
+    )
+
+
+def test_projection_builder_requires_a_low_arity_source_projection(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Request:\n    def __init__(self, *, image, scale, radius, length, mode, label):\n        self.image = image\n\n\ndef first(image, scale, radius, length, mode):\n    return Request(\n        image=image, scale=scale, radius=radius, length=length, mode=mode, label='first'\n    )\n\n\ndef second(image, scale, radius, length, mode):\n    return Request(\n        image=image, scale=scale, radius=radius, length=length, mode=mode, label='second'\n    )\n\n\ndef third(item, settings):\n    return Request(\n        image=item.image,\n        scale=settings.scale,\n        radius=settings.radius,\n        length=settings.length,\n        mode=settings.mode,\n        label='third',\n    )\n",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "projection_builder_authority"
+        for finding in findings
+    )
 
 
 def test_detects_repeated_structural_observation_projection(tmp_path: Path) -> None:

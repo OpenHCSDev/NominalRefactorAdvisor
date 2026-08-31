@@ -438,6 +438,12 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
     def symbol(self) -> str:
         return f"{self.owner_prefix}:{self.callee_name}"
 
+    @property
+    def is_nominal_owner_projection(self) -> bool:
+        """Whether the nominal record already owns this projection site."""
+
+        return self.class_name == self.callee_name
+
     observed_name: ClassVar[AliasProperty[str]] = AliasProperty("callee_name")
 
     @property

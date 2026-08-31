@@ -1355,6 +1355,8 @@ def _projection_builder_groups(
         list
     )
     for builder in _module_builder_call_shapes(module):
+        if builder.is_nominal_owner_projection:
+            continue
         if len(builder.field_names) < max(config.min_builder_keywords, 6):
             continue
         if not all(
@@ -1368,6 +1370,9 @@ def _projection_builder_groups(
     candidates: list[tuple[BuilderCallShape, ...]] = []
     for builders in grouped.values():
         if len(builders) < 3:
+            continue
+        source_arities = tuple(builder.source_arity for builder in builders)
+        if min(source_arities) != 1 or max(source_arities) > 2:
             continue
         if len({builder.value_fingerprint for builder in builders}) < 2:
             continue

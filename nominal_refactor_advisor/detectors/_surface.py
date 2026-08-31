@@ -601,7 +601,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                     ),
                     evidence,
                     scaffold=(
-                        f"@dataclass(frozen=True)\nclass {callee_name}Builder:\n    @classmethod\n    def from_sources(cls, ...):\n        return {callee_name}(...)"
+                        f"class {callee_name}:\n    @classmethod\n    def from_sources(cls, ...):\n        return cls(...)"
                     ),
                     codemod_patch=(
                         f"# Move `{callee_name}` projection logic into one authoritative builder/classmethod.\n"
