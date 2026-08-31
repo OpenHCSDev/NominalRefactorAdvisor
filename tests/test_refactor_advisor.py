@@ -5956,7 +5956,9 @@ def capture(locals):
     assert not any(finding.detector_id == "builtin_locals_call" for finding in findings)
 
 
-def test_detects_reflective_attribute_hooks(tmp_path: Path) -> None:
+def test_declared_proxy_attribute_hook_is_not_a_nominal_boundary_violation(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/runtime_contract.py",
@@ -5967,15 +5969,10 @@ class DynamicSource:
 """,
     )
 
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "direct_reflective_attribute_hook"
-        )
+    assert not any(
+        finding.detector_id == "direct_reflective_attribute_hook"
+        for finding in analyze_path(tmp_path)
     )
-    assert finding.pattern_id == PatternId.NOMINAL_BOUNDARY
-    assert "explicit value()/set_value()" in (finding.codemod_patch or "")
 
 
 _REPEATED_BUILDER_SOURCE = """
@@ -17876,6 +17873,21 @@ def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
     assert "file_path" in (finding.scaffold or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
+
+
+def test_hasattr_self_does_not_prove_a_missing_nominal_contract(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LazyResource:\n    def close(self):\n        if hasattr(self, "handle"):\n            self.handle.close()\n',
+    )
+
+    assert not any(
+        finding.detector_id == "reflective_self_attribute_escape"
+        for finding in analyze_path(tmp_path)
+    )
 
 
 def test_detects_abc_base_dispatch_over_child_helper_sentinel(

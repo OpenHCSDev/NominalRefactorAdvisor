@@ -1629,9 +1629,7 @@ def _reflective_self_attribute_candidates_for_class(
             if not isinstance(subnode, ast.Call):
                 continue
             builtin_name = _ast_terminal_name(subnode.func)
-            if builtin_name not in _REFLECTIVE_SELF_BUILTINS:
-                continue
-            if len(subnode.args) < 2:
+            if builtin_name != _GETATTR_BUILTIN or len(subnode.args) != 2:
                 continue
             receiver, attribute_name_node = subnode.args[0], subnode.args[1]
             attribute_name = _constant_string(attribute_name_node)
