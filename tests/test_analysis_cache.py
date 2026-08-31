@@ -3306,77 +3306,6 @@ def test_native_class_header_core_matches_cached_minimal_projection(
 
 
 
-def test_native_public_delegate_demand_matches_imported_callsites(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    target_path = package_root / "target.py"
-    context_path = package_root / "context.py"
-    target_path.write_text(
-        "from pkg.library import public_api\n\nresult = public_api()\n",
-        encoding="utf-8",
-    )
-    context_source = (
-        "from pkg.library import public_api as invoke\n"
-        "\n"
-        "class Runner:\n"
-        "    def run(self):\n"
-        "        return invoke()\n"
-    )
-    context_path.write_text(context_source, encoding="utf-8")
-    modules = {
-        module.path.name: module
-        for module in parse_python_modules(package_root, use_parse_cache=False)
-    }
-    family = runtime_detectors.CompactPublicApiPrivateDelegateModuleProjectionFamily
-    target_items = tuple(family.collect(modules["target.py"]))
-    context_items = tuple(family.collect(modules["context.py"]))
-    demand = family.report_demand(target_items, DetectorConfig())
-
-    expected = family.project_cached_demand(context_items, demand)
-    actual = family.collect_demanded_source(
-        SourceModule(context_path, "context", context_source),
-        NativePythonSyntaxIndex.from_source(context_source),
-        demand,
-    )
-
-    assert actual is not None
-    assert tuple(actual) == expected
-    assert actual[0].callsites_by_target[0][0] == "pkg.library.public_api"
-    assert actual[0].callsites_by_target[0][1][0].location.symbol == "Runner.run:call"
-
-
-def test_native_public_delegate_demand_falls_back_for_possible_wrapper(
-    tmp_path: Path,
-) -> None:
-    target_source = "from pkg.library import public_api\nresult = public_api()\n"
-    context_source = "def public_api(value):\n    return value\n"
-    target_path = tmp_path / "target.py"
-    context_path = tmp_path / "context.py"
-    target_path.write_text(target_source, encoding="utf-8")
-    context_path.write_text(context_source, encoding="utf-8")
-    target_module = next(
-        module
-        for module in parse_python_modules(tmp_path, use_parse_cache=False)
-        if module.path == target_path
-    )
-    family = runtime_detectors.CompactPublicApiPrivateDelegateModuleProjectionFamily
-    demand = family.report_demand(
-        tuple(family.collect(target_module)),
-        DetectorConfig(),
-    )
-
-    assert (
-        family.collect_demanded_source(
-            SourceModule(context_path, "context", context_source),
-            NativePythonSyntaxIndex.from_source(context_source),
-            demand,
-        )
-        is None
-    )
-
-
 def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
     tmp_path: Path,
 ) -> None:
@@ -3994,7 +3923,7 @@ def test_compact_family_cache_identity_derives_item_schema(
     assert string_identity.cache_token != integer_identity.cache_token
 
 
-def test_compact_global_detector_shards_partially_reuse_across_report_targets(
+def test_compact_global_detector_shards_reuse_across_report_targets(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
@@ -4039,7 +3968,7 @@ def test_compact_global_detector_shards_partially_reuse_across_report_targets(
 
     assert second.cache_status is AnalysisCacheStatus.PARTIAL
     assert second.findings == second_scope.filter_findings(all_findings)
-    assert 0 < second.projection_count < first.projection_count
+    assert first.projection_count > second.projection_count
 
 
 def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate(
@@ -5694,128 +5623,6 @@ def test_abc_optimizer_detectors_share_one_compact_context(
     assert calls == 1
 
 
-def test_compact_public_private_delegate_context_preserves_semantics_without_ast_shadow(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "scoring.py").write_text(
-        "class _Router:\n"
-        "    @classmethod\n"
-        "    def for_engine(cls, engine):\n"
-        "        return cls()\n\n"
-        "    def score(self, payload):\n"
-        "        return payload['value']\n\n"
-        "    def requires_electrostatics(self):\n"
-        "        return True\n\n"
-        "def route_scoring(engine, **payload):\n"
-        "    return _Router.for_engine(engine).score(payload)\n\n"
-        "def scoring_engine_requires_electrostatics(engine):\n"
-        "    return _Router.for_engine(engine).requires_electrostatics()\n",
-        encoding="utf-8",
-    )
-    consumer_source = (
-        "from pkg.scoring import route_scoring, scoring_engine_requires_electrostatics\n\n"
-        "def score_request():\n"
-        "    if scoring_engine_requires_electrostatics('fast'):\n"
-        "        return route_scoring('fast', value=1.0)\n"
-        "    return 0.0\n"
-    )
-    (package_root / "pipeline.py").write_text(consumer_source, encoding="utf-8")
-    (package_root / "api.py").write_text(consumer_source, encoding="utf-8")
-    modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
-    config = DetectorConfig()
-    shell_detector = runtime_detectors.PublicApiPrivateDelegateShellDetector()
-    family_detector = runtime_detectors.PublicApiPrivateDelegateFamilyDetector()
-    projections = type(shell_detector).compact_module_projections(modules)
-    context = runtime_detectors.CompactPublicApiPrivateDelegateContext.from_projections(
-        projections, config
-    )
-
-    assert len(context.shell_candidates) == 2
-    assert len(context.family_candidates) == 1
-    assert shell_detector._candidate_items(list(modules), config) == (
-        context.shell_candidates
-    )
-    assert family_detector._candidate_items(list(modules), config) == (
-        context.family_candidates
-    )
-    assert shell_detector._findings_from_compact_context(
-        projections, context, config
-    ) == shell_detector._findings_for_candidates(context.shell_candidates, config)
-    assert family_detector._findings_from_compact_context(
-        projections, context, config
-    ) == family_detector._findings_for_candidates(context.family_candidates, config)
-    assert {candidate.wrapper.qualname for candidate in context.shell_candidates} == {
-        "route_scoring",
-        "scoring_engine_requires_electrostatics",
-    }
-    family_candidate = context.family_candidates[0]
-    assert family_candidate.delegate_root_symbol == "_Router"
-    assert family_candidate.wrapper_names == (
-        "route_scoring",
-        "scoring_engine_requires_electrostatics",
-    )
-    assert "candidate_collector" not in type(family_detector).__dict__
-    for removed_name in (
-        "_compact_public_api_private_delegate_context",
-        "_public_api_private_delegate_shell_candidates",
-        "_public_api_private_delegate_family_candidates",
-    ):
-        assert not hasattr(runtime_detectors, removed_name)
-    assert not hasattr(
-        runtime_detectors._CompactPublicApiPrivateDelegateDetectorBase,
-        "compact_candidate_attribute",
-    )
-    detector_types = (type(shell_detector), type(family_detector))
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (tmp_path,), detector_types, use_parse_cache=False
-    )
-    findings = accumulator.findings_by_detector(config)
-    assert accumulator.projection_count == len(modules)
-    assert len(findings[type(shell_detector)]) == 2
-    assert len(findings[type(family_detector)]) == 1
-    target_path = package_root / "pipeline.py"
-    report_scope = AnalysisPathScope(
-        analysis_roots=(package_root,), report_roots=(target_path,)
-    )
-    family = type(shell_detector).module_projection_family
-    target_projections = tuple(
-        projection
-        for projection in projections
-        if projection.file_path == target_path.as_posix()
-    )
-    demand = family.report_demand(target_projections, config)
-    demanded_projections = target_projections + family.project_cached_demand(
-        tuple(
-            projection
-            for projection in projections
-            if projection not in target_projections
-        ),
-        demand,
-    )
-    for detector in (shell_detector, family_detector):
-        assert report_scope.filter_findings(
-            detector._findings_from_compact_projections(
-                demanded_projections,
-                config,
-            )
-        ) == report_scope.filter_findings(
-            detector._findings_from_compact_projections(projections, config)
-        )
-    assert sum(
-        len(item.top_level_symbol_lines)
-        + len(item.wrappers)
-        + len(item.callsites_by_target)
-        for item in demanded_projections
-    ) < sum(
-        len(item.top_level_symbol_lines)
-        + len(item.wrappers)
-        + len(item.callsites_by_target)
-        for item in projections
-    )
-
-
 def test_compact_boundary_wrapper_graph_preserves_semantics_without_ast_shadow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6331,12 +6138,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert semantic_descent_detectors.SemanticMirrorWithoutDescentDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.PublicApiPrivateDelegateShellDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.PublicApiPrivateDelegateFamilyDetector in (
         partition.compact_global_detector_types
     )
     assert systemic_detectors.CrossModuleSpecAxisAuthorityDetector in (

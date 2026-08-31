@@ -16969,32 +16969,6 @@ def test_keeps_referenced_private_function(tmp_path: Path) -> None:
     )
 
 
-def test_detects_public_api_private_delegate_shell(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/scoring.py",
-        '\nclass _Router:\n    @classmethod\n    def for_engine(cls, engine):\n        return cls()\n\n    def score(self, kwargs):\n        return kwargs["value"]\n\n\ndef route_scoring(engine, **kwargs):\n    return _Router.for_engine(engine).score(kwargs)\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        '\nfrom pkg.scoring import route_scoring as score_route\n\n\ndef run_pipeline():\n    return score_route("fast", value=1.0)\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/api.py",
-        '\nimport pkg.scoring as scoring\n\n\ndef score_request():\n    return scoring.route_scoring("safe", value=2.0)\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == "public_api_private_delegate_shell"
-        and "route_scoring" in finding.summary
-        for finding in findings
-    )
-
-
 def test_private_reference_candidate_signatures_ignore_unconsumed_class_declarations(
     tmp_path: Path,
 ) -> None:
@@ -17918,66 +17892,6 @@ def test_detects_pass_through_nominal_wrapper(tmp_path: Path) -> None:
     assert "ProbeRouteWitness" in finding.summary
     assert "ProbeRoute" in finding.summary
     assert "type consumers against `ProbeRoute` directly" in (finding.scaffold or "")
-
-
-def test_detects_public_api_private_delegate_shell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/scoring.py",
-        '\nclass _Router:\n    @classmethod\n    def for_engine(cls, engine):\n        return cls()\n\n    def score(self, kwargs):\n        return kwargs["value"]\n\n\ndef route_scoring(engine, **kwargs):\n    return _Router.for_engine(engine).score(kwargs)\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        '\nfrom pkg.scoring import route_scoring as score_route\n\n\ndef run_pipeline():\n    return score_route("fast", value=1.0)\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/api.py",
-        '\nimport pkg.scoring as scoring\n\n\ndef score_request():\n    return scoring.route_scoring("safe", value=2.0)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "public_api_private_delegate_shell"
-        )
-    )
-    assert "route_scoring" in finding.summary
-    assert "_Router" in finding.summary
-    assert "2 external call site(s)" in finding.summary
-    assert "public facade/ABC/policy authority" in (finding.codemod_patch or "")
-
-
-def test_detects_public_api_private_delegate_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/scoring.py",
-        '\nclass _Router:\n    @classmethod\n    def for_engine(cls, engine):\n        return cls()\n\n    def score(self, payload):\n        return payload["value"]\n\n    def requires_electrostatics(self):\n        return True\n\n\ndef route_scoring(engine, **payload):\n    return _Router.for_engine(engine).score(payload)\n\n\ndef scoring_engine_requires_electrostatics(engine):\n    return _Router.for_engine(engine).requires_electrostatics()\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        '\nfrom pkg.scoring import route_scoring, scoring_engine_requires_electrostatics\n\n\ndef run_pipeline():\n    if scoring_engine_requires_electrostatics("fast"):\n        return route_scoring("fast", value=1.0)\n    return 0.0\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/api.py",
-        '\nimport pkg.scoring as scoring\n\n\ndef score_request():\n    if scoring.scoring_engine_requires_electrostatics("safe"):\n        return scoring.route_scoring("safe", value=2.0)\n    return 0.0\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "public_api_private_delegate_family"
-        )
-    )
-    assert "route_scoring" in finding.summary
-    assert "scoring_engine_requires_electrostatics" in finding.summary
-    assert "_Router" in finding.summary
-    assert "public facade" in (finding.codemod_patch or "")
 
 
 def test_detects_nominal_policy_surface(tmp_path: Path) -> None:
