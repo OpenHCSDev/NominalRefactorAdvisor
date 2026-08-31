@@ -52,6 +52,7 @@ from .detectors._base import (
     CandidateCollectorBaseShape,
     CandidateCollectorScope,
     DerivedCandidateCollectorMixin,
+    IssueDetector,
 )
 from .descriptor_algebra import ConstantProperty
 from .impact_ranking import (
@@ -503,6 +504,21 @@ class RefactorConcept(ABC):
             finding
             for finding in findings
             if cls.matches_finding(finding, selector_context)
+        )
+
+    @classmethod
+    def detector_ids_for_findings(
+        cls,
+        findings: Iterable[RefactorFinding],
+    ) -> frozenset[str]:
+        """Derive the conservative detector roster for one concept iteration."""
+
+        return frozenset(
+            (
+                *(finding.detector_id for finding in findings),
+                *IssueDetector.semantic_mirror_detector_ids(),
+                *FindingRecipeSynthesizer.detector_ids_for_concept(cls),
+            )
         )
 
     @classmethod
@@ -12923,6 +12939,19 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
     @classmethod
     def registered_detector_ids(cls) -> frozenset[str]:
         return frozenset(cls.__registry__)
+
+    @classmethod
+    def detector_ids_for_concept(
+        cls,
+        concept_type: type[RefactorConcept],
+    ) -> frozenset[str]:
+        """Project registered detector ids through executable concept MROs."""
+
+        return frozenset(
+            detector_id
+            for detector_id, synthesizer_type in cls.__registry__.items()
+            if issubclass(synthesizer_type, concept_type)
+        )
 
     @classmethod
     def for_finding(

@@ -1555,6 +1555,8 @@ def test_projected_finding_report_uses_focused_partial_scan(
     ).report()
 
     assert report.scan_mode is CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL
+    assert "scan_mode" not in type(report).__dataclass_fields__
+    assert report.scan_mode is report.after_scan.scan_mode
     assert report.to_dict()["scan_mode"] == "evidence_local_partial"
     assert analyzed_module_paths == [changed_path.as_posix()]
     assert tuple(finding.summary for finding in report.after_findings) == (
@@ -5792,6 +5794,19 @@ def _manual_class_registration_source() -> str:
         "    pass\n\n\n"
         "class BetaHandler:\n"
         "    pass\n\n\n"
+        "REGISTRY['alpha'] = AlphaHandler\n"
+        "REGISTRY['beta'] = BetaHandler\n"
+    )
+
+
+def _staged_class_family_source() -> str:
+    return (
+        "REGISTRY = {}\n\n\n"
+        "class AlphaHandler:\n"
+        "    pass\n\n\n"
+        "class BetaHandler:\n"
+        "    pass\n\n\n"
+        "ALL_HANDLERS = (AlphaHandler, BetaHandler)\n"
         "REGISTRY['alpha'] = AlphaHandler\n"
         "REGISTRY['beta'] = BetaHandler\n"
     )
@@ -13134,20 +13149,7 @@ def test_class_family_migration_derives_serial_stages_from_one_concept(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "REGISTRY = {}\n"
-        "\n"
-        "\n"
-        "class AlphaHandler:\n"
-        "    pass\n"
-        "\n"
-        "\n"
-        "class BetaHandler:\n"
-        "    pass\n"
-        "\n"
-        "\n"
-        "ALL_HANDLERS = (AlphaHandler, BetaHandler)\n"
-        "REGISTRY['alpha'] = AlphaHandler\n"
-        "REGISTRY['beta'] = BetaHandler\n",
+        _staged_class_family_source(),
     )
 
     report = CodemodRefactorGoalRunner(
@@ -13186,6 +13188,69 @@ def test_class_family_migration_derives_serial_stages_from_one_concept(
         second_stage.simulation.document,
     )
     assert all("stage_index" not in stage.to_dict() for stage in report.stages)
+
+
+def test_class_family_goal_restricts_inner_scans_and_keeps_exact_terminal_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nominal_refactor_advisor.codemod_workflow as workflow_module
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.detectors import IssueDetector
+
+    _write_module(tmp_path, "pkg/mod.py", _staged_class_family_source())
+    exact_scan_count = 0
+    detector_rosters: list[tuple[str, ...]] = []
+    real_analyze_modules = workflow_module.analyze_modules
+    real_analyze_detector_types = workflow_module.analyze_detector_types
+
+    def tracked_analyze_modules(*args: object, **kwargs: object):
+        nonlocal exact_scan_count
+        exact_scan_count += 1
+        return real_analyze_modules(*args, **kwargs)
+
+    def tracked_analyze_detector_types(*args: object, **kwargs: object):
+        detector_rosters.append(
+            tuple(
+                detector_type.effective_detector_id()
+                for detector_type in kwargs["detector_types"]
+            )
+        )
+        return real_analyze_detector_types(*args, **kwargs)
+
+    monkeypatch.setattr(
+        workflow_module,
+        "analyze_modules",
+        tracked_analyze_modules,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "analyze_detector_types",
+        tracked_analyze_detector_types,
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=ClassFamilyAuthorityConcept,
+        max_stages=3,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+    semantic_mirror_ids = IssueDetector.semantic_mirror_detector_ids()
+    assert report.stop_reason.completed is True
+    assert exact_scan_count == 2
+    assert len(detector_rosters) == report.stage_count == 2
+    assert all(
+        semantic_mirror_ids <= frozenset(detector_roster)
+        for detector_roster in detector_rosters
+    )
+    assert all(
+        len(detector_roster) < len(IssueDetector.registered_detector_types())
+        for detector_roster in detector_rosters
+    )
 
 
 def test_codemod_refactor_goal_runner_scopes_context_root_progress(

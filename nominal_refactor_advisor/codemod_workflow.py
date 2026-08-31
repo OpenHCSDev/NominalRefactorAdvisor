@@ -61,15 +61,7 @@ class CodemodProjectedScanMode(StrEnum):
 
     EXACT = "exact"
     EVIDENCE_LOCAL_PARTIAL = "evidence_local_partial"
-
-    @classmethod
-    def for_report_roots(
-        cls,
-        report_roots: tuple[Path, ...],
-    ) -> "CodemodProjectedScanMode":
-        if report_roots:
-            return cls.EVIDENCE_LOCAL_PARTIAL
-        return cls.EXACT
+    TARGET_DETECTOR_PARTIAL = "target_detector_partial"
 
 
 class CodemodFindingClassStatus(StrEnum):
@@ -656,9 +648,12 @@ class CodemodProjectedFindingReport:
     after_scan: "CodemodWorkflowScan"
     source_sequence: CodemodPlanSequence | None = None
     expected_removed_finding_ids: tuple[str, ...] = ()
-    scan_mode: CodemodProjectedScanMode = CodemodProjectedScanMode.EXACT
     include_source_index: bool = False
     include_continuation: bool = False
+
+    @property
+    def scan_mode(self) -> CodemodProjectedScanMode:
+        return self.after_scan.scan_mode
 
     @property
     def before_finding_count(self) -> int:
@@ -884,6 +879,7 @@ class CodemodWorkflowScan:
 
     modules: list[ParsedModule]
     findings: list[RefactorFinding]
+    scan_mode: CodemodProjectedScanMode = CodemodProjectedScanMode.EXACT
 
     @property
     def source_index(self) -> SourceIndex:
@@ -928,6 +924,7 @@ class CodemodSimulationFindingProjection:
         return CodemodWorkflowScan(
             modules=list(projected_modules),
             findings=analyze_modules(projected_modules, self.config),
+            scan_mode=CodemodProjectedScanMode.EXACT,
         )
 
     def evidence_local_projected_scan(
@@ -939,6 +936,7 @@ class CodemodSimulationFindingProjection:
             return CodemodWorkflowScan(
                 modules=list(projected_modules),
                 findings=list(self.findings),
+                scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
             )
         detector_types = default_detector_types_for_analysis()
         detector_selection = EvidenceLocalPartialDetectorSelection.from_detector_types(
@@ -970,7 +968,11 @@ class CodemodSimulationFindingProjection:
                 detector_types=detector_types,
             )
         )
-        return CodemodWorkflowScan(modules=list(projected_modules), findings=findings)
+        return CodemodWorkflowScan(
+            modules=list(projected_modules),
+            findings=findings,
+            scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
+        )
 
     def changed_findings(
         self,
@@ -1046,7 +1048,6 @@ class CodemodSimulationFindingProjection:
             after_scan=after_scan,
             source_sequence=self.source_sequence,
             expected_removed_finding_ids=self.expected_removed_finding_ids,
-            scan_mode=CodemodProjectedScanMode.for_report_roots(self.report_roots),
             include_source_index=self.include_source_index,
             include_continuation=self.include_continuation,
         )
@@ -1104,6 +1105,52 @@ class CodemodRefactorGoalRunner:
             report_roots=self.report_roots,
         ).scan()
 
+    def projected_target_scan(
+        self,
+        scan: CodemodWorkflowScan,
+        simulation: CodemodSimulationReport,
+        target_findings: tuple[RefactorFinding, ...],
+    ) -> CodemodWorkflowScan:
+        """Rerun only active goal detector declarations between stages."""
+
+        detector_ids = self.migration_type.detector_ids_for_findings(target_findings)
+        detector_types = tuple(
+            detector_type
+            for detector_type in IssueDetector.registered_detector_types()
+            if detector_type.effective_detector_id() in detector_ids
+        )
+        if len(detector_types) != len(detector_ids):
+            return self.projected_scan(scan, simulation)
+        projected_modules = ProjectedScanModuleSet(
+            modules=tuple(scan.modules),
+            simulation=simulation,
+            roots=self.roots,
+        ).modules_after_projection()
+        return CodemodWorkflowScan(
+            modules=list(projected_modules),
+            findings=self.report_scoped_findings(
+                analyze_detector_types(
+                    list(projected_modules),
+                    self.config,
+                    detector_types=detector_types,
+                )
+            ),
+            scan_mode=CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL,
+        )
+
+    def exact_scan(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
+        """Certify every detector over an in-memory migration state once."""
+
+        if scan.scan_mode is CodemodProjectedScanMode.EXACT:
+            return scan
+        return CodemodWorkflowScan(
+            modules=scan.modules,
+            findings=self.report_scoped_findings(
+                analyze_modules(scan.modules, self.config)
+            ),
+            scan_mode=CodemodProjectedScanMode.EXACT,
+        )
+
     def report_scoped_findings(
         self,
         findings: Iterable[RefactorFinding],
@@ -1139,10 +1186,16 @@ class CodemodRefactorGoalRunner:
             )
             simulation = document.simulate_snapshot(snapshot)
             projected_scan = (
-                self.projected_scan(active_scan, simulation.simulation)
+                self.projected_target_scan(
+                    active_scan,
+                    simulation.simulation,
+                    target_findings,
+                )
                 if plan.document.has_recipes
                 else active_scan
             )
+            if not self.target_findings(projected_scan):
+                projected_scan = self.exact_scan(projected_scan)
             stage = self.stage(
                 active_scan,
                 projected_scan,
@@ -1198,7 +1251,7 @@ class CodemodRefactorGoalRunner:
             active_scan = next_scan
         return self.report(
             tuple(stages),
-            active_scan,
+            self.exact_scan(active_scan),
             CodemodWorkflowStopReason.MAX_STAGES,
         )
 
@@ -1224,6 +1277,8 @@ class CodemodRefactorGoalRunner:
         class_plan_report: FindingRecipeClassPlanReport,
         simulation: CodemodPlanDocumentSimulation,
     ) -> CodemodRefactorGoalStage:
+        before_target_findings = self.target_findings(before_scan)
+        after_target_findings = self.target_findings(after_scan)
         return CodemodRefactorGoalStage(
             class_plan_report=class_plan_report,
             simulation=simulation,
@@ -1235,8 +1290,8 @@ class CodemodRefactorGoalRunner:
                 after_snapshot=after_scan.source_snapshot,
             ),
             finding_delta=CodemodFindingDelta.from_findings(
-                tuple(before_scan.findings),
-                tuple(after_scan.findings),
+                before_target_findings,
+                after_target_findings,
             ),
         )
 
@@ -1246,11 +1301,12 @@ class CodemodRefactorGoalRunner:
         scan: CodemodWorkflowScan,
         reason: CodemodWorkflowStopReason,
     ) -> CodemodRefactorGoalReport:
+        verified_scan = self.exact_scan(scan)
         return CodemodRefactorGoalReport(
             migration_type=self.migration_type,
             stages=stages,
             stop_reason=reason,
-            final_finding_count=len(scan.findings),
+            final_finding_count=len(verified_scan.findings),
         )
 
 
