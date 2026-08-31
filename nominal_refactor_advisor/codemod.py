@@ -2576,30 +2576,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         *,
         backend: "CodemodBackend" | None = None,
     ) -> "CodemodPlanDocumentSimulation":
-        rewrite_snapshot = document.rewrite_snapshot(self)
-        document.preflight_rewrite_snapshot(rewrite_snapshot).require_clean()
-        simulation = rewrite_snapshot.simulate_rewrites(
-            rewrite_snapshot.source_rewrite_batch_for_document(document),
-            backend=backend,
-        ).with_base_snapshot(self)
-        after_snapshot_projection = CodemodAfterSnapshotProjection(
-            base_snapshot=rewrite_snapshot,
-            source_overlay_by_file_path=simulation.rewritten_sources,
-        )
-        active_guard_suite = document.combined_guard_suite
-        architecture_guard_report = (
-            active_guard_suite.clean_report()
-            if active_guard_suite.is_empty
-            else after_snapshot_projection.snapshot.evaluate_guard_suite(
-                active_guard_suite
-            )
-        )
-        return CodemodPlanDocumentSimulation(
-            document=document,
-            simulation=simulation,
-            architecture_guard_report=architecture_guard_report,
-            after_snapshot_projection=after_snapshot_projection,
-        )
+        return document.preflight(self).simulate(backend=backend)
 
     def simulate_finding_plan(
         self,
@@ -11380,7 +11357,13 @@ class CodemodPlanDocument(CodemodPayloadRecord):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> CodemodPlanPreflightReport:
-        return self.preflight_rewrite_snapshot(self.rewrite_snapshot(snapshot))
+        return self.preflight(snapshot).report
+
+    def preflight(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> "CodemodPlanDocumentPreflight":
+        return CodemodPlanDocumentPreflight.from_snapshot(self, snapshot)
 
     def preflight_rewrite_snapshot(
         self,
@@ -11440,6 +11423,59 @@ class CodemodPlanDocument(CodemodPayloadRecord):
 
     def to_dict(self) -> JsonObject:
         return self.payload_bindings().payload(self)
+
+
+@dataclass(frozen=True)
+class CodemodPlanDocumentPreflight:
+    """One document, its rewrite snapshot, and the proof required to simulate it."""
+
+    document: CodemodPlanDocument
+    base_snapshot: CodemodSourceSnapshot
+    rewrite_snapshot: CodemodSourceSnapshot
+    report: CodemodPlanPreflightReport
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        document: CodemodPlanDocument,
+        snapshot: CodemodSourceSnapshot,
+    ) -> "CodemodPlanDocumentPreflight":
+        rewrite_snapshot = document.rewrite_snapshot(snapshot)
+        return cls(
+            document=document,
+            base_snapshot=snapshot,
+            rewrite_snapshot=rewrite_snapshot,
+            report=document.preflight_rewrite_snapshot(rewrite_snapshot),
+        )
+
+    def simulate(
+        self,
+        *,
+        backend: CodemodBackend | None = None,
+    ) -> "CodemodPlanDocumentSimulation":
+        self.report.require_clean()
+        simulation = self.rewrite_snapshot.simulate_rewrites(
+            self.rewrite_snapshot.source_rewrite_batch_for_document(self.document),
+            backend=backend,
+        ).with_base_snapshot(self.base_snapshot)
+        after_snapshot_projection = CodemodAfterSnapshotProjection(
+            base_snapshot=self.rewrite_snapshot,
+            source_overlay_by_file_path=simulation.rewritten_sources,
+        )
+        active_guard_suite = self.document.combined_guard_suite
+        architecture_guard_report = (
+            active_guard_suite.clean_report()
+            if active_guard_suite.is_empty
+            else after_snapshot_projection.snapshot.evaluate_guard_suite(
+                active_guard_suite
+            )
+        )
+        return CodemodPlanDocumentSimulation(
+            document=self.document,
+            simulation=simulation,
+            architecture_guard_report=architecture_guard_report,
+            after_snapshot_projection=after_snapshot_projection,
+        )
 
 
 @dataclass(frozen=True)
@@ -11558,15 +11594,14 @@ class CodemodPlanSequence(CodemodPayloadRecord):
         active_snapshot = snapshot
         reports: list[CodemodOperationPreflightReport] = []
         for document in self.documents:
-            report = document.preflight_snapshot(active_snapshot)
+            preflight = document.preflight(active_snapshot)
+            report = preflight.report
             reports.extend(report.reports)
             if report.preflight_failed or not document.has_recipes:
                 if report.preflight_failed:
                     break
                 continue
-            active_snapshot = document.simulate_snapshot(
-                active_snapshot
-            ).required_after_snapshot
+            active_snapshot = preflight.simulate().required_after_snapshot
         return CodemodPlanPreflightReport(tuple(reports))
 
     def simulate_snapshot(

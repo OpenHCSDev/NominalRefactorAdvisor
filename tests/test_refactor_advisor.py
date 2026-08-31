@@ -5812,6 +5812,28 @@ def _staged_class_family_source() -> str:
     )
 
 
+def _sequential_value_rewrite_plan(module_path: Path) -> CodemodPlanSequence:
+    values = ("1", "2", "3", "4")
+    return CodemodPlanSequence(
+        documents=tuple(
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe(f"rewrite-value-{before}-to-{after}").with_operation(
+                        ReplaceTextOperation(
+                            target=SourceRewriteTarget(
+                                file_path=module_path.as_posix()
+                            ),
+                            old_source=f"VALUE = {before}",
+                            new_source=f"VALUE = {after}",
+                        )
+                    ),
+                )
+            )
+            for before, after in zip(values, values[1:])
+        )
+    )
+
+
 def _generated_repeated_export_dict_source() -> str:
     return (
         "class GeneratedAlpha:\n"
@@ -10919,57 +10941,8 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def run(self):\n        return 1\n",
-    )
-    sequence = CodemodPlanSequence(
-        documents=(
-            CodemodPlanDocument(
-                recipes=(
-                    RefactorRecipe("rewrite-alpha-once").with_operation(
-                        ReplaceTextOperation(
-                            target=SourceRewriteTarget(
-                                qualname="Alpha.run",
-                                file_path=module_path.as_posix(),
-                            ),
-                            old_source="return 1",
-                            new_source="return 2",
-                        )
-                    ),
-                )
-            ),
-            CodemodPlanDocument(
-                recipes=(
-                    RefactorRecipe("rewrite-alpha-twice").with_operation(
-                        ReplaceTextOperation(
-                            target=SourceRewriteTarget(
-                                qualname="Alpha.run",
-                                file_path=module_path.as_posix(),
-                            ),
-                            old_source="return 2",
-                            new_source="return 3",
-                        )
-                    ),
-                )
-            ),
-            CodemodPlanDocument(
-                recipes=(
-                    RefactorRecipe("rewrite-alpha-third").with_operation(
-                        ReplaceTextOperation(
-                            target=SourceRewriteTarget(
-                                qualname="Alpha.run",
-                                file_path=module_path.as_posix(),
-                            ),
-                            old_source="return 3",
-                            new_source="return 4",
-                        )
-                    ),
-                )
-            ),
-        )
-    )
+    _write_module(tmp_path, "pkg/mod.py", "VALUE = 1\n")
+    sequence = _sequential_value_rewrite_plan(module_path)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     rebuild_count = 0
     real_from_source_mapping = CodemodSourceSnapshot.from_source_mapping.__func__
@@ -10992,10 +10965,41 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
     assert simulation.simulation.applied_rewrite_count == 3
     assert len(simulation.stage_reports) == 3
     assert (
-        "return 4"
+        "VALUE = 4"
         in simulation.final_snapshot.sources_by_file_path[module_path.as_posix()]
     )
     assert rebuild_count == 0
+
+
+def test_codemod_sequence_preflight_reuses_each_document_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "VALUE = 1\n")
+    sequence = _sequential_value_rewrite_plan(module_path)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    preflight_count = 0
+    real_preflight = CodemodPlanDocument.preflight_rewrite_snapshot
+
+    def counted_preflight(
+        document: CodemodPlanDocument,
+        rewrite_snapshot: CodemodSourceSnapshot,
+    ):
+        nonlocal preflight_count
+        preflight_count += 1
+        return real_preflight(document, rewrite_snapshot)
+
+    monkeypatch.setattr(
+        CodemodPlanDocument,
+        "preflight_rewrite_snapshot",
+        counted_preflight,
+    )
+
+    report = sequence.preflight_snapshot(snapshot)
+
+    assert report.is_clean is True
+    assert preflight_count == len(sequence.documents) == 3
 
 
 def test_codemod_workflow_scan_reuses_source_snapshot(
