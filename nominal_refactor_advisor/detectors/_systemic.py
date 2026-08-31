@@ -1312,55 +1312,6 @@ class ResidualClosedAxisIndirectionDetector(
         )
 
 
-class InlineEnumSubsetGuardDetector(
-    ModuleCollectorCandidateDetector[InlineEnumSubsetGuardCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Inline enum subset guard should derive from enum-owned policy",
-        "A branch that hardcodes an enum-member subset is a closed-axis policy table in disguise. The policy should be owned by the enum member or a typed row family, with any lookup derived exhaustively from that type-safe source.",
-        "type-safe enum-owned policy instead of inline enum subset literals",
-        "function branches on a hand-enumerated subset of one closed enum axis",
-        (
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.BRANCH_DISPATCH,
-            ObservationTag.PROJECTION_DICT,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, guard_candidate: InlineEnumSubsetGuardCandidate
-    ) -> RefactorFinding:
-        cases = ", ".join(
-            (
-                f"{guard_candidate.enum_name}.{case_name}"
-                for case_name in guard_candidate.case_names
-            )
-        )
-        return self.build_finding(
-            (
-                f"`{guard_candidate.function_name}` checks `{guard_candidate.dispatch_axis_expression} "
-                f"{guard_candidate.operator} {{{cases}}}`; move that subset into enum-owned typed policy."
-            ),
-            (guard_candidate.evidence,),
-            scaffold=(
-                f"@dataclass(frozen=True)\nclass PolicyRow:\n    key: {guard_candidate.enum_name}\n    requires_policy: bool\n\ndef exhaustive_enum_lookup(enum_type, rows):\n    by_key = {{row.key: row for row in rows}}\n    if set(by_key) != set(enum_type):\n        raise TypeError('incomplete enum policy')\n    return by_key\n\nPOLICY_BY_KEY = exhaustive_enum_lookup(...)\nif POLICY_BY_KEY[{guard_candidate.dispatch_axis_expression}].requires_policy:\n    ..."
-            ),
-            codemod_patch=(
-                f"# Replace inline subset {{{cases}}} with a policy owned by `{guard_candidate.enum_name}`.\n"
-                "# Derive any enum-keyed dict from enum members or typed policy rows, and fail if coverage is incomplete."
-            ),
-            metrics=DispatchCountMetrics.from_literal_family(
-                dispatch_axis=guard_candidate.enum_name,
-                literal_cases=guard_candidate.case_names,
-            ),
-        )
-
-
 class SplitDispatchAuthorityDetector(
     ModuleCollectorCandidateDetector[SplitDispatchAuthorityCandidate]
 ):

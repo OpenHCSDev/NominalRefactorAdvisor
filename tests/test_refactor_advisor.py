@@ -7395,26 +7395,18 @@ def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
     assert "OperationContext" in (finding.scaffold or "")
 
 
-def test_detects_inline_enum_subset_guard_policy(tmp_path: Path) -> None:
+def test_single_enum_subset_does_not_claim_factoring_authority(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         '\nfrom enum import Enum\n\n\nclass MeasurementScope(Enum):\n    ARTIFACT = "artifact"\n    IMAGE = "image"\n    OBJECT = "object"\n    RELATIONSHIP = "relationship"\n    EXPERIMENT = "experiment"\n\n\ndef validate_subject(scope, subject_name):\n    if scope in {\n        MeasurementScope.IMAGE,\n        MeasurementScope.OBJECT,\n        MeasurementScope.RELATIONSHIP,\n    } and subject_name is None:\n        raise ValueError("name required")\n',
     )
+
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "inline_enum_subset_guard"
-        )
+
+    assert not any(
+        finding.detector_id == "inline_enum_subset_guard" for finding in findings
     )
-    assert "MeasurementScope.IMAGE" in finding.summary
-    assert "MeasurementScope.OBJECT" in finding.summary
-    assert "enum-owned typed policy" in finding.summary
-    assert finding.scaffold is not None
-    assert "requires_policy" in finding.scaffold
-    assert "exhaustive_enum_lookup" in finding.scaffold
 
 
 def test_detects_residual_closed_axis_indirection(tmp_path: Path) -> None:

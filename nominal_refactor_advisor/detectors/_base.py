@@ -1129,8 +1129,6 @@ OptionalCandidateMetricsRenderer: TypeAlias = (
 OptionalCandidateValueRenderer: TypeAlias = (
     Callable[[CandidateItemT], FindingValueT | None] | None
 )
-InlineEnumSubsetGuardKey: TypeAlias = tuple[str, int, str, tuple[str, ...]]
-InlineEnumSubsetGuardSeen: TypeAlias = set[InlineEnumSubsetGuardKey]
 ManualRecordConstructorFieldPartition: TypeAlias = tuple[
     tuple[str, ...], tuple[str, ...]
 ]
@@ -3360,87 +3358,6 @@ class DispatchAlgebraAuthority:
 
 
 DISPATCH_ALGEBRA_AUTHORITY = DispatchAlgebraAuthority()
-
-
-def _enum_subset_guard_from_compare(
-    node: ast.Compare,
-) -> tuple[str, str, tuple[str, ...], str] | None:
-    return (
-        Maybe.of(single_compare_match(node, (ast.In, ast.NotIn)))
-        .combine(
-            lambda comparison: collection_literal(comparison.right),
-            lambda comparison, comparator: (comparison, comparator),
-        )
-        .combine(
-            lambda context: _enum_member_ref_family(context[1].elements),
-            lambda context, ref_family: (
-                ast.unparse(context[0].left),
-                ref_family[0],
-                ref_family[1],
-                "not in" if isinstance(context[0].operator, ast.NotIn) else "in",
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _enum_member_ref_family(
-    elements: Sequence[ast.AST],
-) -> tuple[str, tuple[str, ...]] | None:
-    refs = tuple(
-        (
-            ref
-            for element in elements
-            if (ref := SUPPORT_PROJECTION_AUTHORITY.enum_member_ref(element))
-            is not None
-        )
-    )
-    if len(refs) != len(elements) or len(refs) < 2:
-        return None
-    enum_names = {enum_name for enum_name, _ in refs}
-    if len(enum_names) != 1:
-        return None
-    return next(iter(enum_names)), tuple(member_name for _, member_name in refs)
-
-
-def _inline_enum_subset_guard_candidates_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-    seen: InlineEnumSubsetGuardSeen,
-) -> Iterable[InlineEnumSubsetGuardCandidate]:
-    for node in _walk_nodes(function):
-        if not isinstance(node, ast.Compare):
-            continue
-        guard = _enum_subset_guard_from_compare(node)
-        if guard is None:
-            continue
-        dispatch_axis_expression, enum_name, case_names, operator = guard
-        key = (qualname, node.lineno, enum_name, case_names)
-        if key in seen:
-            continue
-        seen.add(key)
-        yield InlineEnumSubsetGuardCandidate(
-            file_path=module.file_path,
-            line=node.lineno,
-            function_name=qualname,
-            dispatch_axis_expression=dispatch_axis_expression,
-            enum_name=enum_name,
-            case_names=case_names,
-            operator=operator,
-        )
-
-
-def _inline_enum_subset_guard_candidates(
-    module: ParsedModule,
-) -> tuple[InlineEnumSubsetGuardCandidate, ...]:
-    seen: InlineEnumSubsetGuardSeen = set()
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _inline_enum_subset_guard_candidates_for_function,
-        seen,
-        sort_key=lambda item: (item.file_path, item.line, item.function_name),
-    )
 
 
 def _enum_family_name(case_names: tuple[str, ...]) -> str | None:
@@ -8949,12 +8866,6 @@ class ResidualClosedAxisIndirectionCandidate(
             SourceLocation(self.file_path, self.table_line, self.table_name),
             SourceLocation(self.file_path, self.line, self.qualname),
         )
-
-
-@dataclass(frozen=True)
-class InlineEnumSubsetGuardCandidate(EnumCaseFamilyMixin, FunctionLineWitnessCandidate):
-    dispatch_axis_expression: str
-    operator: str
 
 
 @dataclass(frozen=True)
