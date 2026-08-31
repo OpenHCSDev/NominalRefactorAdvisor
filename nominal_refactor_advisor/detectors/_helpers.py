@@ -2859,60 +2859,6 @@ def _derived_export_surface_candidates(
     return tuple(candidates)
 
 
-def _module_public_source_names(module: ParsedModule) -> tuple[str, ...]:
-    names: set[str] = set()
-    for statement in _trim_docstring_body(module.module.body):
-        if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not statement.name.startswith("_"):
-                names.add(statement.name)
-            continue
-        if isinstance(statement, ast.ImportFrom):
-            for alias in statement.names:
-                exported_name = alias.asname or alias.name
-                if not exported_name.startswith("_"):
-                    names.add(exported_name)
-            continue
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name) and (not target.id.startswith("_")):
-                names.add(target.id)
-    return sorted_tuple(names)
-
-
-class ManualPublicApiSurfaceBuilder:
-    def public_api_surface_candidates(
-        self, module: ParsedModule
-    ) -> tuple[ManualPublicApiSurfaceCandidate, ...]:
-        public_source_names = set(_module_public_source_names(module))
-        candidates: list[ManualPublicApiSurfaceCandidate] = []
-        for (
-            export_symbol,
-            line,
-            exported_names,
-        ) in HELPER_SUPPORT_PROJECTION_AUTHORITY.module_string_sequence_assignments(
-            module
-        ):
-            if export_symbol != "__all__":
-                continue
-            if len(exported_names) < 4:
-                continue
-            if not set(exported_names) <= public_source_names:
-                continue
-            candidates.append(
-                ManualPublicApiSurfaceCandidate(
-                    file_path=module.file_path,
-                    export_symbol=export_symbol,
-                    line=line,
-                    exported_names=exported_names,
-                    source_name_count=len(public_source_names),
-                )
-            )
-        return tuple(candidates)
-
-
-MANUAL_PUBLIC_API_SURFACE_BUILDER = ManualPublicApiSurfaceBuilder()
-
-
 def _dict_key_kind(value: ast.AST) -> str | None:
     if isinstance(value, ast.Name):
         return "type_name"

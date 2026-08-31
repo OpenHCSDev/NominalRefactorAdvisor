@@ -1344,44 +1344,6 @@ class DerivedExportSurfaceDetector(
         )
 
 
-declare_candidate_rule_detector(
-    ManualPublicApiSurfaceCandidate,
-    high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Manual public API surfaces should derive from the module authority",
-        "A module hand-maintains `__all__` even though the exported names are derivable from the module's own public declarations. That creates a second authority for the public surface.",
-        "one derived public API surface projected from the module's authoritative declarations",
-        "manual public export list repeats names already present in module bindings",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-    ),
-    summary=lambda api_candidate: (
-        f"`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings."
-    ),
-    evidence=lambda api_candidate: (
-        SourceLocation(
-            api_candidate.file_path, api_candidate.line, api_candidate.export_symbol
-        ),
-    ),
-    scaffold=lambda api_candidate: (
-        "def is_public_api_export(name: str, value: object) -> bool:\n    return not name.startswith('_') and is_public_binding(value)\n\n__all__ = sorted(\n    name for name, value in globals().items() if is_public_api_export(name, value)\n)"
-    ),
-    codemod_patch=lambda api_candidate: (
-        f"# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n# Derive the public export surface from module bindings instead of restating names in a second manual surface."
-    ),
-    metrics=lambda api_candidate: MappingMetrics(
-        mapping_site_count=len(api_candidate.exported_names),
-        field_count=api_candidate.source_name_count,
-        mapping_name=api_candidate.export_symbol,
-        field_names=("module_public_bindings",),
-    ),
-    candidate_collector=MANUAL_PUBLIC_API_SURFACE_BUILDER.public_api_surface_candidates,
-)
-
-
 def _native_export_policy_predicate_candidates(
     source_module: SourceModule,
     syntax_index: NativePythonSyntaxIndex,

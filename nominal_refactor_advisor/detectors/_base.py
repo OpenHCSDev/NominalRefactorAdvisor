@@ -9606,11 +9606,6 @@ class DerivedExportSurfaceCandidate(ExportSurfaceCandidate):
 
 
 @dataclass(frozen=True)
-class ManualPublicApiSurfaceCandidate(ExportSurfaceCandidate):
-    source_name_count: int
-
-
-@dataclass(frozen=True)
 class DerivedIndexedSurfaceCandidate(LineWitnessCandidate):
     surface_name: str
     key_kind: str

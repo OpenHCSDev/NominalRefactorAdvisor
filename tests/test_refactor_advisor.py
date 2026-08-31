@@ -18263,23 +18263,16 @@ def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:
     assert "derived_index" in (finding.scaffold or "")
 
 
-def test_detects_manual_public_api_surface(tmp_path: Path) -> None:
+def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         '\nclass Alpha:\n    pass\n\n\nclass Beta:\n    pass\n\n\ndef gamma():\n    return 1\n\n\ndef delta():\n    return 2\n\n\n__all__ = ["Alpha", "Beta", "gamma", "delta"]\n',
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "manual_public_api_surface"
-        )
+    assert not any(
+        finding.detector_id == "manual_public_api_surface" for finding in findings
     )
-    assert "__all__" in finding.summary
-    assert "public API" in finding.title
-    assert "is_public_api_export" in (finding.scaffold or "")
 
 
 def test_detects_repeated_export_policy_predicates(tmp_path: Path) -> None:
