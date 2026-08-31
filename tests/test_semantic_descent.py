@@ -2019,15 +2019,26 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
         == "DataclassPayloadProjectionMappingRecipeBuilder"
     )
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
+        "ensure_import",
         "replace_text",
-        "replace_target",
     )
-    assert "def payload_from_field_values(cls, **values)" in rewritten_source
-    assert "**RefactorAction.payload_from_field_values(" in rewritten_source
-    assert "kind=self.action.kind" in rewritten_source
-    assert "description=self.action.description" in rewritten_source
-    assert "confidence=self.action.confidence" in rewritten_source
+    assert "import dataclasses" in rewritten_source
+    assert "for field in dataclasses.fields(" in rewritten_source
+    assert "RefactorAction\n" in rewritten_source
+    assert "getattr(\n                    self.action," in rewritten_source
+    assert "payload_from_field_values" not in rewritten_source
+    assert "'kind': self.action.kind" not in rewritten_source
     assert "'emitted': self.emitted" in rewritten_source
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    action = namespace["RefactorAction"]("run", "Run it", "high")
+    report = namespace["ActionReport"](action, True)
+    assert report.to_dict() == {
+        "kind": "run",
+        "description": "Run it",
+        "confidence": "high",
+        "emitted": True,
+    }
 
 
 def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe(
@@ -2134,11 +2145,13 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         encoding="utf-8",
     )
     (package_dir / "report.py").write_text(
+        "from __future__ import annotations\n"
+        "\n"
         "from dataclasses import dataclass\n"
         "\n"
         "@dataclass(frozen=True)\n"
         "class ActionReport:\n"
-        "    action: object\n"
+        "    action: \"RefactorAction\"\n"
         "    emitted: bool\n"
         "\n"
         "    def to_dict(self):\n"
@@ -2166,9 +2179,6 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
     recipe = plan.document.recipes[0]
-    rewritten_model = simulation.simulation.rewritten_sources[
-        (package_dir / "model.py").as_posix()
-    ]
     rewritten_report = simulation.simulation.rewritten_sources[
         (package_dir / "report.py").as_posix()
     ]
@@ -2178,13 +2188,53 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert simulation.is_clean is True
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
         "ensure_import",
+        "ensure_import",
         "replace_text",
-        "replace_target",
     )
-    assert "def payload_from_field_values(cls, **values)" in rewritten_model
     assert "from .model import RefactorAction" in rewritten_report
-    assert "**RefactorAction.payload_from_field_values(" in rewritten_report
+    assert "import dataclasses" in rewritten_report
+    assert "for field in dataclasses.fields(" in rewritten_report
+    assert "getattr(\n                    self.action," in rewritten_report
+    assert (package_dir / "model.py").as_posix() not in (
+        simulation.simulation.rewritten_sources
+    )
     assert "'emitted': self.emitted" in rewritten_report
+
+    report_path = package_dir / "report.py"
+    report_path.write_text(
+        report_path.read_text(encoding="utf-8").replace(
+            "from dataclasses import dataclass\n",
+            "from dataclasses import dataclass\n"
+            "from .model import RefactorAction\n",
+        ),
+        encoding="utf-8",
+    )
+    imported_modules = parse_python_modules(tmp_path)
+    imported_finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            imported_modules,
+            DetectorConfig(),
+        )
+        if item.metrics.plan_source_name == "RefactorAction"
+    )
+    imported_snapshot = CodemodSourceSnapshot.from_modules(
+        imported_modules,
+        (imported_finding,),
+    )
+    imported_plan = codemod_plan_from_findings(
+        (imported_finding,),
+        selector_context=imported_snapshot,
+    )
+
+    assert tuple(
+        operation.operation_key()
+        for operation in imported_plan.document.recipes[0].operations
+    ) == ("ensure_import", "replace_text")
+    assert (
+        imported_plan.document.recipes[0].operations[0].import_source
+        == "import dataclasses"
+    )
 
 
 def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
@@ -2238,6 +2288,92 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
 
     assert record.status.value == "rejected_by_safety_check"
     assert "module cycle" in record.reason
+
+
+def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactorAction:\n"
+        "    kind: str\n"
+        "    description: str\n"
+        "    confidence: str\n"
+        "\n"
+        "\n"
+        "def project(action: RefactorAction):\n"
+        "    return {\n"
+        "        'kind': action.kind,\n"
+        "        'description': action.description,\n"
+        "        'confidence': action.confidence,\n"
+        "    }\n"
+    )
+    unsafe_sources = {
+        "subset": source.replace(
+            "    confidence: str\n",
+            "    confidence: str\n    category: str\n",
+            1,
+        ),
+        "transformed": source.replace(
+            "action.confidence,",
+            "action.confidence.upper(),",
+        ),
+        "reordered": source.replace(
+            "        'kind': action.kind,\n"
+            "        'description': action.description,\n",
+            "        'description': action.description,\n"
+            "        'kind': action.kind,\n",
+        ),
+        "interleaved": source.replace(
+            "        'description': action.description,\n",
+            "        'unrelated': 1,\n"
+            "        'description': action.description,\n",
+        ),
+        "shadowed_dataclasses": source.replace(
+            "def project(action: RefactorAction):",
+            "def project(action: RefactorAction, dataclasses):",
+        ),
+        "structural_owner": source.replace(
+            "def project(action: RefactorAction):",
+            "def project(action: object):",
+        ),
+        "nested_authority_annotation": source.replace(
+            "def project(action: RefactorAction):",
+            "def project(action: list[RefactorAction]):",
+        ),
+        "inherited": source.replace(
+            "@dataclass(frozen=True)\nclass RefactorAction:\n",
+            "@dataclass(frozen=True)\n"
+            "class RefactorActionBase:\n"
+            "    inherited: str\n"
+            "\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class RefactorAction(RefactorActionBase):\n",
+        ),
+    }
+
+    for case_name, unsafe_source in unsafe_sources.items():
+        case_root = tmp_path / case_name
+        _write_module(case_root, unsafe_source)
+        modules = parse_python_modules(case_root)
+        finding = next(
+            item
+            for item in SemanticMirrorWithoutDescentDetector().detect(
+                modules,
+                DetectorConfig(),
+            )
+            if item.metrics.plan_source_name == "RefactorAction"
+            and item.metrics.plan_mapping_name.startswith("project:return@")
+        )
+        snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+        plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+        assert plan.records[0].status.value == "rejected_by_safety_check"
+        assert not plan.records[0].recipe_id
+        assert "no safe mapping recipe" in plan.records[0].reason
 
 
 def test_semantic_mirror_constructor_projection_uses_dataclass_method(
