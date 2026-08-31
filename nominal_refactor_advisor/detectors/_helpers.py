@@ -2333,13 +2333,6 @@ def _is_declarative_class_value(node: ast.AST) -> bool:
     return False
 
 
-def _nominal_class_name_suffixes(class_name: str) -> tuple[str, ...]:
-    tokens = re.findall(
-        "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+", class_name.lstrip("_")
-    )
-    return tuple(("".join(tokens[index:]) for index in range(len(tokens) - 1)))
-
-
 _REGISTERED_NOMINAL_AUTHORITY_ASSIGNMENTS = frozenset(
     {
         "__registry_key__",
@@ -2397,77 +2390,6 @@ def _has_registered_nominal_authority_ancestor(
         (family_node is not node and _is_registered_nominal_authority_node(family_node))
         for family_node in _class_family_nodes_in_module(class_nodes, node)
     )
-
-
-def _metadata_only_class_family_candidates(
-    module: ParsedModule,
-) -> tuple[MetadataOnlyClassFamilyCandidate, ...]:
-    class_nodes = _module_class_nodes(module)
-    grouped: dict[
-        str,
-        list[tuple[ast.ClassDef, tuple[str, ...], tuple[str, ...], int]],
-    ] = defaultdict(list)
-    for node in _walk_nodes(module.module):
-        if not isinstance(node, ast.ClassDef) or node.decorator_list:
-            continue
-        if _has_registered_nominal_authority_ancestor(class_nodes, node):
-            continue
-        assigned_names = (
-            HELPER_SYNTAX_PROJECTION_AUTHORITY.metadata_only_class_assignment_names(
-                node
-            )
-        )
-        if not assigned_names:
-            continue
-        base_names = CLASS_NODE_AUTHORITY.declared_base_names(node)
-        if not base_names:
-            continue
-        line_count = (node.end_lineno or node.lineno) - node.lineno + 1
-        for suffix in _nominal_class_name_suffixes(node.name):
-            grouped[suffix].append((node, base_names, assigned_names, line_count))
-
-    selected_class_names: set[str] = set()
-    candidates: list[MetadataOnlyClassFamilyCandidate] = []
-    ordered_groups = sorted_tuple(
-        (
-            (suffix, tuple(items))
-            for suffix, items in grouped.items()
-            if len(items) >= 3
-        ),
-        key=lambda item: (
-            -len(item[1]),
-            -sum((candidate[3] for candidate in item[1])),
-            item[0],
-        ),
-    )
-    for suffix, items in ordered_groups:
-        ordered_items = sorted_tuple(
-            items, key=lambda item: (item[0].lineno, item[0].name)
-        )
-        class_names = tuple((item[0].name for item in ordered_items))
-        if set(class_names) <= selected_class_names:
-            continue
-        selected_class_names.update(class_names)
-        line_numbers = tuple((item[0].lineno for item in ordered_items))
-        base_name_families = sorted_tuple(
-            {item[1] for item in ordered_items},
-            key=lambda names: (len(names), names),
-        )
-        assigned_names = sorted_tuple(
-            {name for _, _, names, _ in ordered_items for name in names}
-        )
-        candidates.append(
-            MetadataOnlyClassFamilyCandidate(
-                file_path=module.file_path,
-                family_suffix=suffix,
-                class_names=class_names,
-                line_numbers=line_numbers,
-                base_name_families=base_name_families,
-                assigned_names=assigned_names,
-                line_count=sum((item[3] for item in ordered_items)),
-            )
-        )
-    return tuple(candidates)
 
 
 def _self_naming_builder_catalog_candidates(

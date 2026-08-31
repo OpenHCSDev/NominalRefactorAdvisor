@@ -17898,52 +17898,7 @@ def test_ignores_registered_classvar_only_strategy_leaves(
     )
     findings = analyze_path(tmp_path)
     detector_ids = {finding.detector_id for finding in findings}
-    assert "metadata_only_class_family" not in detector_ids
     assert "classvar_only_sibling_leaf" not in detector_ids
-
-
-def test_detects_metadata_only_class_family_with_varying_bases(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC\n\n\nclass AlphaRuleSpec(ABC):\n    family_specs = (GeneratedFamilySpec(AlphaRule),)\n    shape_helper = alpha_rule\n\n\nclass BetaRuleSpec(RuleRoot, ABC):\n    family_specs = (GeneratedFamilySpec(BetaRule),)\n    required_parameter_name = "beta"\n\n\nclass GammaRuleSpec(RuleRoot, TupleResultMixin):\n    family_specs = (GeneratedFamilySpec(GammaRule),)\n    shape_helper = gamma_rule\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "metadata_only_class_family"
-        )
-    )
-    assert "RuleSpec" in finding.summary
-    assert "classvar-only nominal declarations" in finding.summary
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "Keep explicit subclasses" in (finding.codemod_patch or "")
-    assert "dynamic `type(...)`" in (finding.codemod_patch or "")
-
-
-def test_detects_metadata_only_declaration_indirection_churn(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass CenterDeclaration:\n    key: object\n    helper: object\n\n\nclass CenterStrategy:\n    center_declaration = None\n\n\nclass MeanCenterStrategy(CenterStrategy):\n    center_declaration = CenterDeclaration(MEAN, mean)\n\n\nclass MedianCenterStrategy(CenterStrategy):\n    center_declaration = CenterDeclaration(MEDIAN, median)\n\n\nclass ModeCenterStrategy(CenterStrategy):\n    center_declaration = CenterDeclaration(MODE, mode)\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "metadata_only_class_family"
-        )
-    )
-    assert "declaration-indirection churn" in finding.summary
-    assert "no-op churn" in (finding.codemod_patch or "")
-    assert "per-class declaration objects" in (finding.codemod_patch or "")
 
 
 def test_detects_dynamic_class_materialization_regression(tmp_path: Path) -> None:

@@ -9544,14 +9544,6 @@ class DeclarativeFamilyBoilerplateGroup(ClassLineNumbersGroup):
 
 
 @dataclass(frozen=True)
-class MetadataOnlyClassFamilyCandidate(ClassLineNumbersGroup):
-    family_suffix: str
-    base_name_families: tuple[tuple[str, ...], ...]
-    assigned_names: tuple[str, ...]
-    line_count: int
-
-
-@dataclass(frozen=True)
 class BuilderKeywordSurface:
     builder_name: str
     keyword_names: tuple[str, ...]
