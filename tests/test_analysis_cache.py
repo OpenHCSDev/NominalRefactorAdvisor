@@ -2876,7 +2876,7 @@ def test_report_presence_demand_skips_context_only_single_family_facts(
     module_path = package_root / "context.py"
     module_path.write_text("VALUE = 1\n", encoding="utf-8")
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    family = runtime_detectors.DeclaredFieldExtractionSiteFamily
+    family = runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily
 
     empty_demand = family.report_demand((), DetectorConfig())
     present_demand = family.report_demand((object(),), DetectorConfig())
@@ -4214,12 +4214,6 @@ def test_compact_flattened_candidate_projections_match_full_ast_detection(
         "def build_right(source):\n"
         "    return Target(alpha=source.alpha, beta=source.beta)\n"
         "\n"
-        "def build_pose(source):\n"
-        "    return Target(**declared_values_by_type(PoseCarrier, source))\n"
-        "\n"
-        "def build_repair(source):\n"
-        "    return Target(**declared_values_by_type(RepairCarrier, source))\n"
-        "\n"
         "def export_left(source):\n"
         "    return {'alpha': source.alpha, 'beta': source.beta, 'gamma': source.gamma}\n"
         "\n"
@@ -4234,7 +4228,6 @@ def test_compact_flattened_candidate_projections_match_full_ast_detection(
     )
     detector_types = (
         runtime_detectors.RepeatedBuilderCallDetector,
-        runtime_detectors.DeclaredFieldExtractionFanoutDetector,
         runtime_detectors.RepeatedExportDictDetector,
         runtime_detectors.ManualClassRegistrationDetector,
     )
@@ -6227,9 +6220,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         in partition.compact_global_detector_types
     )
     assert runtime_detectors.RepeatedBuilderCallDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.DeclaredFieldExtractionFanoutDetector in (
         partition.compact_global_detector_types
     )
     assert runtime_detectors.RepeatedExportDictDetector in (
