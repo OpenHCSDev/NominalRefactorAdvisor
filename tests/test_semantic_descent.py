@@ -2381,6 +2381,45 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
     ) in rewritten
 
 
+def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "family.py"
+    module_path.write_text(
+        "class Root:\n"
+        "    pass\n"
+        "\n"
+        "class Intermediate(Root):\n"
+        "    pass\n"
+        "\n"
+        "class Alpha(Intermediate):\n"
+        "    pass\n"
+        "\n"
+        "class Beta(Intermediate):\n"
+        "    pass\n"
+        "\n"
+        "ALL_MEMBERS = (Intermediate, Alpha, Beta)\n",
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        finding
+        for finding in SemanticMirrorWithoutDescentDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if finding.metrics.plan_registry_name == "ALL_MEMBERS"
+        and finding.evidence[1].symbol == "Root"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert "no complete runtime member query" in plan.records[0].reason
+    assert plan.document.recipes == ()
+
+
 def test_semantic_descent_ignores_qualified_enum_member_references(
     tmp_path: Path,
 ) -> None:

@@ -18448,23 +18448,27 @@ class ClassFamilyCollectionMembershipProjection(StrEnum):
     def __new__(
         cls,
         value: str,
-        declares_autoregister_meta: bool,
+        authority_matcher: Callable[[bool, bool, bool], bool],
         value_source_builder: Callable[[str], str],
     ) -> "ClassFamilyCollectionMembershipProjection":
         member = str.__new__(cls, value)
         member._value_ = value
-        member._declares_autoregister_meta = declares_autoregister_meta
+        member._authority_matcher = authority_matcher
         member._value_source_builder = value_source_builder
         return member
 
     AUTOREGISTER_REGISTRY = (
         "autoregister_registry",
-        True,
+        lambda declares_autoregister, covers_family, _all_direct: (
+            declares_autoregister and covers_family
+        ),
         lambda authority_name: f"{authority_name}.__registry__.values()",
     )
     DIRECT_SUBCLASSES = (
         "direct_subclasses",
-        False,
+        lambda declares_autoregister, covers_family, all_direct: (
+            not declares_autoregister and covers_family and all_direct
+        ),
         lambda authority_name: f"{authority_name}.__subclasses__()",
     )
 
@@ -18472,17 +18476,20 @@ class ClassFamilyCollectionMembershipProjection(StrEnum):
     def for_authority_declaration(
         cls,
         declares_autoregister_meta: bool,
-    ) -> "ClassFamilyCollectionMembershipProjection":
-        matches = tuple(
-            projection
-            for projection in cls
-            if projection._declares_autoregister_meta is declares_autoregister_meta
-        )
-        if len(matches) != 1:
-            raise ValueError(
-                "class-family membership declarations must cover each authority kind once"
+        covers_complete_family: bool,
+        all_members_are_direct: bool,
+    ) -> "ClassFamilyCollectionMembershipProjection | None":
+        return single_item(
+            tuple(
+                projection
+                for projection in cls
+                if projection._authority_matcher(
+                    declares_autoregister_meta,
+                    covers_complete_family,
+                    all_members_are_direct,
+                )
             )
-        return matches[0]
+        )
 
     def value_source(self, authority_name: str) -> str:
         return self._value_source_builder(authority_name)
@@ -18796,7 +18803,10 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
                 "collection matching all mirrored class names"
             )
         if self.membership_projection_for(seed) is None:
-            return "could not resolve the nominal class-family authority declaration"
+            return (
+                "nominal class-family authority exposes no complete runtime member "
+                "query for this projection"
+            )
         return "class-family collection derivation is available"
 
     def membership_projection_for(
@@ -18814,8 +18824,29 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
         authority_declaration = self.class_family_index.class_for(authority_symbol)
         if authority_declaration is None:
             return None
+        projected_member_names = frozenset(self.finding.metrics.plan_class_names)
+        descendant_names = frozenset(
+            descendant.simple_name
+            for descendant_symbol in self.class_family_index.descendant_symbols(
+                authority_symbol
+            )
+            if (
+                descendant := self.class_family_index.class_for(descendant_symbol)
+            )
+            is not None
+        )
+        direct_member_names = frozenset(
+            child.simple_name
+            for child_symbol in self.class_family_index.children_by_symbol.get(
+                authority_symbol,
+                (),
+            )
+            if (child := self.class_family_index.class_for(child_symbol)) is not None
+        )
         return ClassFamilyCollectionMembershipProjection.for_authority_declaration(
-            authority_declaration.declares_autoregister_meta
+            authority_declaration.declares_autoregister_meta,
+            projected_member_names == descendant_names,
+            projected_member_names == direct_member_names,
         )
 
     def assignment_matches_class_collection(

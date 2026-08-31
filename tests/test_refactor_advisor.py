@@ -13038,15 +13038,28 @@ def test_class_family_name_projection_reads_registered_family_authority() -> Non
     )
 
     membership_projection = (
-        ClassFamilyCollectionMembershipProjection.for_authority_declaration(True)
+        ClassFamilyCollectionMembershipProjection.for_authority_declaration(
+            True,
+            True,
+            True,
+        )
     )
 
+    assert membership_projection is not None
     assert ClassFamilyCollectionElementProjection.CLASS_NAME.value_source(
         "tuple",
         membership_projection.value_source("RegisteredHandler"),
     ) == (
         "tuple(member_type.__name__ for member_type in "
         "RegisteredHandler.__registry__.values())"
+    )
+    assert (
+        ClassFamilyCollectionMembershipProjection.for_authority_declaration(
+            False,
+            True,
+            False,
+        )
+        is None
     )
 
 
