@@ -7224,27 +7224,6 @@ def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> 
     assert [module.module_name for module in modules] == ["pkg.mod"]
 
 
-def test_detects_sibling_role_helper_symmetry(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom pathlib import Path\n\n\nclass PathPlanner:\n    def _input_dir_for_step(self, snapshot, step_index):\n        if step_index in self.plans and self.plans[step_index].input_dir is not None:\n            return Path(self.plans[step_index].input_dir)\n        if step_index == 0 or snapshot.input_source == "pipeline_start":\n            return self.initial_input\n        return Path(self.plans[step_index - 1].output_dir)\n\n    def _output_dir_for_step(self, snapshot, step_index, work_in_place_dir):\n        if step_index in self.plans and self.plans[step_index].output_dir is not None:\n            return Path(self.plans[step_index].output_dir)\n        if step_index == 0 or snapshot.input_source == "pipeline_start":\n            return self._build_output_path()\n        return work_in_place_dir\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "sibling_role_helper_symmetry"
-        )
-    )
-    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
-    assert "_input_dir_for_step" in finding.summary
-    assert "_output_dir_for_step" in finding.summary
-    assert "one local authority" in finding.title
-    assert "record only if this result crosses a boundary" in (finding.scaffold or "")
-
-
 def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

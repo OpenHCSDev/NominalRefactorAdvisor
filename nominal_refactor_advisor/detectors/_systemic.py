@@ -1334,54 +1334,6 @@ class SuffixAxisCompatibilitySurfaceDetector(
         )
 
 
-class SiblingRoleHelperSymmetryDetector(
-    ModuleCollectorCandidateDetector[SiblingRoleHelperSymmetryCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Sibling role helpers should collapse to one local authority",
-        "One owner has private helpers whose names differ by a role token but whose control skeletons and parameters are parallel. That is usually one local computation split into symmetrical role-specific helpers, which makes future changes require duplicated edits.",
-        "one authoritative local computation instead of parallel role-specific helpers",
-        "same owner has role-token sibling helpers with matching control skeletons",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.METHOD_ROLE,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, helper_candidate: SiblingRoleHelperSymmetryCandidate
-    ) -> RefactorFinding:
-        helper_summary = ", ".join(helper_candidate.method_names)
-        role_summary = " / ".join(helper_candidate.role_tokens)
-        shared_summary = "_".join(helper_candidate.shared_tokens)
-        return self.build_finding(
-            (
-                f"`{helper_candidate.owner_name}` splits `{shared_summary}` across role helpers "
-                f"{helper_summary} for roles {role_summary}."
-            ),
-            helper_candidate.evidence,
-            scaffold=(
-                f"def resolve_{shared_summary}(...):\n    # Compute the role-specific values together while the branch facts are live.\n    ...\n    return left_value, right_value\n\n# Use a small record only if this result crosses a boundary; keep local-only pairs as values."
-            ),
-            codemod_patch=(
-                f"# Collapse sibling helpers {helper_candidate.method_names} into one local authority.\n"
-                "# Preserve role names at the assignment site instead of maintaining parallel helper bodies."
-            ),
-            metrics=ParameterThreadMetrics(
-                function_count=len(helper_candidate.methods),
-                shared_parameter_count=len(helper_candidate.shared_tokens),
-                shared_parameter_names=helper_candidate.shared_tokens,
-            ),
-        )
-
-
 class ResidualClosedAxisIndirectionDetector(
     ModuleCollectorCandidateDetector[ResidualClosedAxisIndirectionCandidate]
 ):
