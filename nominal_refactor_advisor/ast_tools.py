@@ -2570,6 +2570,7 @@ class LexicalSyntaxScope:
     class_names: tuple[str, ...] = ()
     function_names: tuple[str, ...] = ()
     function_node_indices: tuple[int, ...] = ()
+    executable_function_index: int = -1
 
 
 @dataclass(frozen=True)
@@ -2580,10 +2581,7 @@ class ModuleSyntaxIndex:
     depth_first_nodes: tuple[ast.AST, ...]
     breadth_first_nodes: tuple[ast.AST, ...]
     parent_indices: array
-    parent_field_names: tuple[str | None, ...]
-    depths: array
     scope_ids: array
-    executable_function_indices: array
     node_indices_by_type: dict[type[ast.AST], array]
     scopes: tuple[LexicalSyntaxScope, ...]
     named_functions: tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]
@@ -2610,7 +2608,7 @@ class ModuleSyntaxIndex:
     def enclosing_function_name(self, node_index: int) -> str | None:
         """Return the nearest executable function owner for one indexed node."""
 
-        function_index = self.executable_function_indices[node_index]
+        function_index = self.scopes[self.scope_ids[node_index]].executable_function_index
         if function_index < 0:
             return None
         function = self.depth_first_nodes[function_index]
@@ -2633,26 +2631,14 @@ class ModuleSyntaxIndex:
     def build(cls, module: ast.Module) -> "ModuleSyntaxIndex":
         nodes: list[ast.AST] = []
         parent_indices = array("i")
-        parent_field_names: list[str | None] = []
-        depths = array("I")
         scope_ids = array("I")
-        executable_function_indices = array("i")
         node_indices_by_type: dict[type[ast.AST], array] = {}
         scopes = [LexicalSyntaxScope()]
         named_functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
         nodes_by_depth: list[list[ast.AST]] = []
-        stack: list[tuple[ast.AST, int, str | None, int, int, int]] = [
-            (module, -1, None, 0, 0, -1)
-        ]
+        stack: list[tuple[ast.AST, int, int, int]] = [(module, -1, 0, 0)]
         while stack:
-            (
-                node,
-                parent_index,
-                parent_field,
-                scope_id,
-                depth,
-                executable_function_index,
-            ) = stack.pop()
+            node, parent_index, scope_id, depth = stack.pop()
             node_index = len(nodes)
             scope = scopes[scope_id]
             nodes.append(node)
@@ -2661,10 +2647,7 @@ class ModuleSyntaxIndex:
                 nodes_by_depth.append([])
             nodes_by_depth[depth].append(node)
             parent_indices.append(parent_index)
-            parent_field_names.append(parent_field)
-            depths.append(depth)
             scope_ids.append(scope_id)
-            executable_function_indices.append(executable_function_index)
 
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 named_functions.append(
@@ -2680,6 +2663,7 @@ class ModuleSyntaxIndex:
                         class_names=(*scope.class_names, node.name),
                         function_names=scope.function_names,
                         function_node_indices=scope.function_node_indices,
+                        executable_function_index=-1,
                     )
                 )
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -2693,56 +2677,18 @@ class ModuleSyntaxIndex:
                             *scope.function_node_indices,
                             node_index,
                         ),
+                        executable_function_index=node_index,
                     )
                 )
-            children: list[tuple[ast.AST, str, int]] = []
-            for field_name, value in ast.iter_fields(node):
-                field_executable_function_index = (
-                    -1
-                    if isinstance(
-                        node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-                    )
-                    else executable_function_index
-                )
-                if isinstance(value, ast.AST):
-                    children.append(
-                        (value, field_name, field_executable_function_index)
-                    )
-                elif isinstance(value, list):
-                    for item_index, item in enumerate(value):
-                        if not isinstance(item, ast.AST):
-                            continue
-                        item_executable_function_index = (
-                            node_index
-                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                            and field_name == "body"
-                            and not (
-                                item_index == 0
-                                and isinstance(item, ast.Expr)
-                                and isinstance(item.value, ast.Constant)
-                                and isinstance(item.value.value, str)
-                            )
-                            else field_executable_function_index
-                        )
-                        children.append(
-                            (
-                                item,
-                                field_name,
-                                item_executable_function_index,
-                            )
-                        )
+            children = tuple(ast.iter_child_nodes(node))
             stack.extend(
                 (
                     child,
                     node_index,
-                    field_name,
                     child_scope_id,
                     depth + 1,
-                    child_executable_function_index,
                 )
-                for child, field_name, child_executable_function_index in reversed(
-                    children
-                )
+                for child in reversed(children)
             )
         return cls(
             module=module,
@@ -2751,10 +2697,7 @@ class ModuleSyntaxIndex:
                 node for level_nodes in nodes_by_depth for node in level_nodes
             ),
             parent_indices=parent_indices,
-            parent_field_names=tuple(parent_field_names),
-            depths=depths,
             scope_ids=scope_ids,
-            executable_function_indices=executable_function_indices,
             node_indices_by_type=node_indices_by_type,
             scopes=tuple(scopes),
             named_functions=tuple(named_functions),

@@ -9518,6 +9518,28 @@ def test_module_syntax_index_projects_literal_dispatch_parentage(
     assert syntax_index.enclosing_function_name(nested_index) == "outer"
 
 
+def test_module_syntax_index_keeps_nested_class_bodies_outside_outer_execution() -> None:
+    module = ast.parse(
+        "def outer():\n"
+        "    class Nested:\n"
+        "        if enabled:\n"
+        "            mode = 'class'\n"
+        "        def inner(self):\n"
+        "            if ready:\n"
+        "                return 'method'\n"
+    )
+    syntax_index = ast_tools_module.module_syntax_index(module)
+    indexed_ifs = syntax_index.indexed_nodes_of_type(ast.If)
+
+    assert tuple(
+        syntax_index.enclosing_function_name(node_index)
+        for node_index, _node in indexed_ifs
+    ) == (None, "inner")
+    assert not hasattr(syntax_index, "parent_field_names")
+    assert not hasattr(syntax_index, "depths")
+    assert not hasattr(syntax_index, "executable_function_indices")
+
+
 def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
