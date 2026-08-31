@@ -14909,6 +14909,25 @@ def test_detects_all_missing_axis_predicate(tmp_path: Path) -> None:
     assert "not any" in (finding.codemod_patch or "")
 
 
+def test_all_missing_axis_predicate_does_not_attribute_nested_function_body(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\n\ndef outer():\n    def inner(first_axis, second_axis, third_axis):\n        missing = []\n        if not first_axis and not second_axis and not third_axis:\n            missing.append("axis_bundle")\n        return tuple(missing)\n\n    return inner\n',
+    )
+
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "all_missing_axis_predicate"
+    ]
+
+    assert len(findings) == 1
+    assert "`inner`" in findings[0].summary
+
+
 def test_detects_manual_concrete_subclass_roster_across_modules(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

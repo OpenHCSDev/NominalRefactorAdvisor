@@ -2108,7 +2108,12 @@ def _all_missing_axis_predicates_for_function(
     function: NamedFunctionNode,
 ) -> tuple[AllMissingAxisPredicateCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module, function, ast.If, _all_missing_axis_predicate_for_if, qualname
+        module,
+        function,
+        ast.If,
+        _all_missing_axis_predicate_for_if,
+        qualname,
+        traversal=walk_function_body_nodes,
     )
 
 
