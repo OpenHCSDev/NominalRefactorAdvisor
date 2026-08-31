@@ -10851,15 +10851,6 @@ class SchemaAccessorFamilyCandidate(
 
 
 @dataclass(frozen=True)
-class OptionalParameterBranchCandidate(FunctionLineWitnessCandidate):
-    parameter_name: str
-    annotation_text: str
-    observed_attribute_names: tuple[str, ...]
-    none_check_count: int
-    line_count: int
-
-
-@dataclass(frozen=True)
 class AllMissingAxisPredicateCandidate(FunctionLineWitnessCandidate):
     predicate_names: tuple[str, ...]
     append_target_name: str

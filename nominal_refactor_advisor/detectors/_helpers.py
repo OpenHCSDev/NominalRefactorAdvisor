@@ -59,41 +59,6 @@ _APPEND_METHOD_NAME = "append"
 
 _IMPLICIT_METHOD_PARAMETER_NAMES = frozenset({"self", "cls"})
 _SEQUENCE_WRAPPER_CALL_NAMES = BuiltinCallName.sequence_wrapper_names()
-_OPTIONAL_VARIANT_TYPE_SUFFIXES = frozenset(
-    {
-        "Adapter",
-        "Backend",
-        "Builder",
-        "Formatter",
-        "Handler",
-        "Policy",
-        "Provider",
-        "Renderer",
-        "Resolver",
-        "Service",
-        "Spec",
-        "Strategy",
-    }
-)
-_OPTIONAL_VARIANT_PARAMETER_NAMES = frozenset(
-    {
-        "adapter",
-        "backend",
-        "builder",
-        "config",
-        "formatter",
-        "handler",
-        "mode",
-        "policy",
-        "provider",
-        "renderer",
-        "resolver",
-        "schema",
-        "service",
-        "spec",
-        "strategy",
-    }
-)
 
 
 class HelperSupportProjectionAuthority:
@@ -5090,45 +5055,6 @@ class _FunctionSignatureView:
         return any((arg.arg == parameter_name for arg in self.function.args.args))
 
 
-def _annotation_contains_none(node: ast.AST | None) -> bool:
-    if node is None:
-        return False
-    if isinstance(node, ast.Constant) and node.value is None:
-        return True
-    if isinstance(node, ast.Name):
-        return node.id == "None"
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return _annotation_contains_none(node.left) or _annotation_contains_none(
-            node.right
-        )
-    if isinstance(node, ast.Subscript) and _call_name(node.value) in {
-        "Optional",
-        "Union",
-    }:
-        return _annotation_contains_none(node.slice)
-    if isinstance(node, (ast.Tuple, ast.List)):
-        return any((_annotation_contains_none(element) for element in node.elts))
-    return False
-
-
-def _annotation_has_nominal_variant_role(node: ast.AST | None) -> bool:
-    return any(
-        (
-            name.endswith(tuple(_OPTIONAL_VARIANT_TYPE_SUFFIXES))
-            for name in _annotation_type_names(node)
-        )
-    )
-
-
-def _parameter_has_optional_variant_role(
-    parameter_name: str, annotation: ast.AST | None
-) -> bool:
-    parameter_tokens = frozenset(parameter_name.strip("_").split("_"))
-    return _annotation_has_nominal_variant_role(annotation) or bool(
-        parameter_tokens & _OPTIONAL_VARIANT_PARAMETER_NAMES
-    )
-
-
 def _is_transport_expression(node: ast.AST, *, allowed_roots: set[str]) -> bool:
     return (
         HELPER_SUPPORT_PROJECTION_AUTHORITY.expression_root_names(node) <= allowed_roots
@@ -7463,85 +7389,6 @@ def _schema_accessor_family_candidates(
                 item.enum_name,
             ),
         )
-    )
-
-
-def _none_check_matches_name(node: ast.Compare, parameter_name: str) -> bool:
-    pairs = zip((node.left, *node.comparators), (*node.comparators,))
-    return any(
-        (
-            isinstance(operator, (ast.Is, ast.IsNot))
-            and (
-                (
-                    isinstance(left, ast.Name)
-                    and left.id == parameter_name
-                    and isinstance(right, ast.Constant)
-                    and right.value is None
-                )
-                or (
-                    isinstance(right, ast.Name)
-                    and right.id == parameter_name
-                    and isinstance(left, ast.Constant)
-                    and left.value is None
-                )
-            )
-        )
-        for operator, (left, right) in zip(node.ops, pairs)
-    )
-
-
-def _direct_none_check_count(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, parameter_name: str
-) -> int:
-    return sum(
-        (
-            1
-            for item in _walk_nodes(function)
-            if isinstance(item, ast.Compare)
-            and _none_check_matches_name(item, parameter_name)
-        )
-    )
-
-
-def _optional_parameter_branch_candidates_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-) -> Iterable[OptionalParameterBranchCandidate]:
-    for argument in _FunctionSignatureView(function).arguments:
-        if not _annotation_contains_none(argument.annotation):
-            continue
-        if not _parameter_has_optional_variant_role(argument.arg, argument.annotation):
-            continue
-        none_check_count = _direct_none_check_count(function, argument.arg)
-        if none_check_count == 0:
-            continue
-        observed_attribute_names = (
-            HELPER_SYNTAX_PROJECTION_AUTHORITY.parameter_receiver_attribute_names(
-                function, argument.arg
-            )
-        )
-        yield OptionalParameterBranchCandidate(
-            file_path=module.file_path,
-            line=function.lineno,
-            function_name=qualname,
-            parameter_name=argument.arg,
-            annotation_text=ast.unparse(argument.annotation),
-            observed_attribute_names=observed_attribute_names,
-            none_check_count=none_check_count,
-            line_count=max(
-                1, (function.end_lineno or function.lineno) - function.lineno + 1
-            ),
-        )
-
-
-def _optional_parameter_branch_candidates(
-    module: ParsedModule,
-) -> tuple[OptionalParameterBranchCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _optional_parameter_branch_candidates_for_function,
-        sort_key=lambda item: (item.file_path, item.line, item.parameter_name),
     )
 
 

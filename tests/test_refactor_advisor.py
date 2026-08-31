@@ -3954,7 +3954,6 @@ def test_detects_generic_cancelable_product_composition_signal(
     assert signal.load_bearing_score > signal.field_count
 
 
-OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 REPEATED_BUILDER_CALLS_DETECTOR_ID = "repeated_builder_calls"
@@ -8982,69 +8981,17 @@ def test_detects_nested_builder_shell(tmp_path: Path) -> None:
     assert "key, ligand_com, strategy, n_poses, n_poses_override" in finding.summary
 
 
-def test_detects_optional_parameter_branch_axis(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef render(policy: RenderPolicy | None, message):\n    if policy is None:\n        return DefaultRenderPolicy().render(message)\n    return policy.render(message)\n",
-    )
-    finding = next(
-        (
-            item
-            for item in analyze_path(tmp_path)
-            if item.detector_id == OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID
-        )
-    )
-    assert "policy: RenderPolicy | None" in finding.summary
-    assert "branches on `policy is None`" in finding.summary
-    assert "ABC" in (finding.scaffold or "")
-
-
-def test_detects_semantic_none_union_branch_without_attribute_access(
+def test_optional_parameter_default_is_not_nominal_variant_evidence(
     tmp_path: Path,
 ) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\ndef resolve_mode(mode: Mode | None, request):\n    if mode is None:\n        return auto_mode(request)\n    return direct_mode(mode, request)\n",
-    )
-    finding = next(
-        (
-            item
-            for item in analyze_path(tmp_path)
-            if item.detector_id == OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID
-        )
-    )
-    assert "mode: Mode | None" in finding.summary
-    assert "branches on `mode is None`" in finding.summary
-    assert "nominal strategy variants" in finding.capability_gap
-
-
-def test_ignores_untyped_none_branch_axis(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef render(policy, message):\n    if policy is None:\n        return DefaultRenderPolicy().render(message)\n    return policy.render(message)\n",
+        "\ndef render(policy: RenderPolicy | None, message):\n    if policy is None:\n        return DefaultRenderPolicy().render(message)\n    return policy.render(message)\n",
     )
     assert not any(
-        (
-            finding.detector_id == OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID
-            for finding in analyze_path(tmp_path)
-        )
-    )
-
-
-def test_ignores_ast_sentinel_optional_branch_axis(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef node_name(node: ast.AST | None):\n    if node is None:\n        return None\n    return node.__class__.__name__\n",
-    )
-    assert not any(
-        (
-            finding.detector_id == OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID
-            for finding in analyze_path(tmp_path)
-        )
+        finding.detector_id == "optional_parameter_branch"
+        for finding in analyze_path(tmp_path)
     )
 
 

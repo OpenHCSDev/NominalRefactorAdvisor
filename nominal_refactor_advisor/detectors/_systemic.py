@@ -4752,57 +4752,6 @@ declare_candidate_rule_detector(
 )
 
 
-declare_candidate_rule_detector(
-    OptionalParameterBranchCandidate,
-    high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Optional parameter branch should become a nominal variant hook",
-        "A parameter annotated as optional, tested with `is None`, and also observed through methods/properties is encoding a behavior axis through absence. If the branch changes behavior, the semantic-compressor normal form is an ABC or nominal strategy family whose concrete variants own the absent/present behavior instead of a nullable signature plus local branch.",
-        "ABC or nominal strategy variants for the absent/present case",
-        "function signature admits `None`, branches on that parameter, and calls/reads through the same parameter as an object",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda branch: (
-        f"`{branch.function_name}` accepts `{branch.parameter_name}: {branch.annotation_text}`, branches on `{branch.parameter_name} is None` {branch.none_check_count} time(s), and observes attributes {branch.observed_attribute_names}."
-    ),
-    scaffold=lambda branch: (
-        f"class {branch.parameter_name.title().replace('_', '')}Policy(ABC):\n"
-        "    @abstractmethod\n"
-        "    def apply(self, context): ...\n\n"
-        "# Replace the nullable parameter with a concrete policy/variant object."
-    ),
-    codemod_patch=lambda branch: (
-        f"# Split `{branch.parameter_name}` absence/presence into named variants.\n"
-        "# Move the None branch into a default/null-object implementation and delete the local optional check."
-    ),
-    compression_certificate=lambda branch: CompressionCertificate.from_object_family(
-        manual_object_count=max(branch.line_count, branch.none_check_count + 2),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("optional_axis_abc",),
-            per_axis_objects=("variant_hook",),
-        ),
-        semantic_axes=(branch.parameter_name,),
-        residual_object_count=2,
-    ),
-    metrics=lambda branch: OrchestrationMetrics(
-        function_line_count=branch.line_count,
-        branch_site_count=branch.none_check_count,
-        call_site_count=0,
-        parameter_count=1,
-        callee_family_count=2,
-    ),
-    detector_priority=-12,
-    candidate_collector=_optional_parameter_branch_candidates,
-)
-
-
 class FindingSpecDefaultFieldBoilerplateDetector(
     ModuleCollectorCandidateDetector[FindingSpecDefaultFieldCandidate]
 ):
