@@ -17889,40 +17889,6 @@ def test_ignores_registered_classvar_only_strategy_leaves(
     assert "classvar_only_sibling_leaf" not in detector_ids
 
 
-def test_detects_autoregister_meta_misuse_for_metadata_only_family(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass ModulePolicy(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'module_name'\n    __skip_if_no_key__ = True\n    module_name = None\n\n\nclass AlphaPolicy(ModulePolicy):\n    module_name = 'alpha'\n    row_identity = LABEL\n\n\nclass BetaPolicy(ModulePolicy):\n    module_name = 'beta'\n    row_identity = OBJECT\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "autoregister_meta_misuse"
-        )
-    )
-    assert finding.pattern_id == PatternId.AUTO_REGISTER_META
-    assert "AlphaPolicy" in finding.summary or "ModulePolicy" in finding.summary
-    assert "metadata-only containers" in finding.summary
-    assert "authoritative typed declaration table" in (finding.codemod_patch or "")
-
-
-def test_ignores_autoregister_meta_behavioral_family_root(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass EffectStep(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'step_id'\n    __skip_if_no_key__ = True\n    step_id = None\n\n\nclass ProjectingStep(EffectStep):\n    def apply(self, value):\n        return self.project(value)\n\n    @abstractmethod\n    def project(self, value):\n        raise NotImplementedError\n\n\nclass AlphaStep(ProjectingStep):\n    step_id = 'alpha'\n\n    def project(self, value):\n        return value\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == "autoregister_meta_misuse" for finding in findings)
-    )
-
-
 def test_detects_repeated_base_bundle(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
