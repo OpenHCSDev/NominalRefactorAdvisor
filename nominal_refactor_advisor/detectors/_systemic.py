@@ -4641,54 +4641,6 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    OptionalKeywordBagAssemblyCandidate,
-    high_confidence_certified_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Optional keyword bag assembly should become a named call variant",
-        "A function that initializes a temporary dict, guards several optional parameters with `is not None`, copies same-name values into that dict, and unpacks it into a call is encoding a constructor/call variant as branch mechanics. The stable semantic object is a named variant factory, policy, or direct call surface that owns those optional coordinates.",
-        "named call variant or factory instead of optional keyword bag mutation",
-        "empty dict plus repeated non-None guards feeds a call through **kwargs",
-        (
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda bag: (
-        f"`{bag.function_name}` builds `{bag.bag_name}` from optional parameters "
-        f"{bag.parameter_names} and unpacks it into `{bag.call_name}`."
-    ),
-    scaffold=lambda bag: (
-        f"# Replace `{bag.bag_name}` with a named factory/variant for `{bag.call_name}`.\n"
-        "# Move optional-coordinate policy into the factory type or call the concrete constructor directly."
-    ),
-    codemod_patch=lambda bag: (
-        f"# Delete the mutable `{bag.bag_name}` assembly and its repeated `is not None` branches.\n"
-        "# Use a named spec factory/variant whose constructor signature exposes only valid coordinates."
-    ),
-    compression_certificate=lambda bag: CompressionCertificate.from_object_family(
-        manual_object_count=bag.line_count,
-        replacement_shape=ObjectFamilyShape.from_roles(
-            ("call_variant_factory",),
-            axis=bag.target_keyword_names,
-        ),
-        semantic_axes=bag.target_keyword_names,
-    ),
-    metrics=lambda bag: ParameterThreadMetrics(
-        function_count=1,
-        shared_parameter_count=len(bag.parameter_names),
-        shared_parameter_names=bag.parameter_names,
-    ),
-    detector_priority=-13,
-    candidate_collector=_optional_keyword_bag_assembly_candidates,
-)
-
-
-declare_candidate_rule_detector(
     SchemaAccessorFamilyCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,

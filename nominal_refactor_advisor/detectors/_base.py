@@ -10856,15 +10856,6 @@ class OptionRecordQuotientCandidate(
 
 
 @dataclass(frozen=True)
-class OptionalKeywordBagAssemblyCandidate(FunctionLineWitnessCandidate):
-    bag_name: str
-    parameter_names: tuple[str, ...]
-    target_keyword_names: tuple[str, ...]
-    call_name: str
-    line_count: int
-
-
-@dataclass(frozen=True)
 class SchemaAccessorFamilyCandidate(
     FieldFamilyCompressionSurface, ClassLineWitnessCandidate
 ):

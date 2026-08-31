@@ -8896,24 +8896,6 @@ def test_detects_nested_builder_shell(tmp_path: Path) -> None:
     assert "key, ligand_com, strategy, n_poses, n_poses_override" in finding.summary
 
 
-def test_detects_optional_keyword_bag_assembly(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build_spec(pattern_id, title, *, confidence=None, certification=None):\n    optional_levels = {}\n    if confidence is not None:\n        optional_levels['confidence'] = confidence\n    if certification is not None:\n        optional_levels['certification'] = certification\n    return FindingSpec(\n        pattern_id=pattern_id,\n        title=title,\n        **optional_levels,\n    )\n",
-    )
-    finding = next(
-        (
-            item
-            for item in analyze_path(tmp_path)
-            if item.detector_id == "optional_keyword_bag_assembly"
-        )
-    )
-    assert "optional_levels" in finding.summary
-    assert "confidence" in finding.summary
-    assert "FindingSpec" in finding.summary
-
-
 def test_detects_optional_parameter_branch_axis(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
