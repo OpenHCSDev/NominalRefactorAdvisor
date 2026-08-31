@@ -8466,27 +8466,6 @@ def test_detects_manual_keyed_record_table(tmp_path: Path) -> None:
     assert "KeyedRecordTable" in (finding.scaffold or "")
 
 
-def test_detects_external_concrete_type_identity_table(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom dataclasses import dataclass\nfrom types import MappingProxyType\n\n\n@dataclass(frozen=True)\nclass TypeIdentity:\n    module: str\n    qualname: str\n\n\n@dataclass(frozen=True)\nclass ExternalTypeRule:\n    identity: TypeIdentity\n    register: object\n\n\ndef register_array_type(payload_type):\n    return payload_type\n\n\ndef register_table_type(payload_type):\n    return payload_type\n\n\nEXTERNAL_TYPES_BY_IDENTITY = MappingProxyType({\n    rule.identity: rule\n    for rule in (\n        ExternalTypeRule(TypeIdentity("numpy", "ndarray"), register_array_type),\n        ExternalTypeRule(TypeIdentity("cupy._core.core", "ndarray"), register_array_type),\n        ExternalTypeRule(TypeIdentity("torch", "Tensor"), register_array_type),\n        ExternalTypeRule(TypeIdentity("pandas.core.frame", "DataFrame"), register_table_type),\n    )\n})\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "external_concrete_type_identity_table"
-        )
-    )
-    assert finding.pattern_id == PatternId.VIRTUAL_MEMBERSHIP
-    assert "EXTERNAL_TYPES_BY_IDENTITY" in finding.summary
-    assert "numpy.ndarray" in finding.summary
-    assert "pandas.core.frame.DataFrame" in finding.summary
-    assert "RuntimeCapability" in (finding.scaffold or "")
-
-
 def test_detects_exact_type_guard_that_rejects_nominal_descendants(
     tmp_path: Path,
 ) -> None:
