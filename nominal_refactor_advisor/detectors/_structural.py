@@ -1299,17 +1299,6 @@ class SupportPreludeModuleFact:
         return [] if fact is None else [fact]
 
 
-@dataclass(frozen=True)
-class ModuleConstructorPolicyFamilyCandidate:
-    file_path: str
-    constructor_name: str
-    row_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    field_names: tuple[str, ...]
-
-    evidence = ZippedSourceLocationEvidenceProperty("line_numbers", "row_names")
-
-
 def _catalog_installing_mixin_candidate(method: ast.FunctionDef) -> str | None:
     return (
         Maybe.of(_CatalogInstallingMixinShape.from_method(method))
@@ -1465,51 +1454,6 @@ class SupportPreludeModuleFactFamily(CollectedFamily[SupportPreludeModuleFact]):
     report_presence_predicate = staticmethod(lambda items, config: bool(items))
     source_collector = staticmethod(SupportPreludeModuleFact.from_source_module)
     collect = staticmethod(SupportPreludeModuleFact.from_parsed_module)
-
-
-def _is_module_policy_row_name(name: str) -> bool:
-    return name.isupper() and "_" in name
-
-
-def _constructor_call_schema(call: ast.Call) -> tuple[str, ...]:
-    return (
-        *(f"arg{index}" for index, _arg in enumerate(call.args)),
-        *(keyword.arg or "**" for keyword in call.keywords),
-    )
-
-
-def _module_constructor_policy_family_candidates(
-    module: ParsedModule,
-) -> tuple[ModuleConstructorPolicyFamilyCandidate, ...]:
-    grouped: dict[tuple[str, tuple[str, ...]], list[tuple[str, int]]] = defaultdict(
-        list
-    )
-    for row_name, (line, call) in _module_level_named_calls(module).items():
-        if not _is_module_policy_row_name(row_name):
-            continue
-        schema = _constructor_call_schema(call)
-        if len(schema) < 2:
-            continue
-        grouped[(ast.unparse(call.func), schema)].append((row_name, line))
-
-    candidates: list[ModuleConstructorPolicyFamilyCandidate] = []
-    for (constructor_name, field_names), rows in grouped.items():
-        if len(rows) < 4:
-            continue
-        ordered = sorted_tuple(rows, key=lambda item: (item[1], item[0]))
-        candidates.append(
-            ModuleConstructorPolicyFamilyCandidate(
-                file_path=module.file_path,
-                constructor_name=constructor_name,
-                row_names=tuple((row_name for row_name, _line in ordered)),
-                line_numbers=tuple((line for _row_name, line in ordered)),
-                field_names=field_names,
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line_numbers, item.constructor_name),
-    )
 
 
 class AlternateConstructorFamilyDetector(
@@ -1732,45 +1676,6 @@ class SupportPreludeModuleFamilyDetector(
                 )
             )
         return findings
-
-
-declare_candidate_rule_detector(
-    ModuleConstructorPolicyFamilyCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Module constructor policy rows should derive from a semantic catalog",
-        "Several module-level constant rows instantiate the same policy constructor with the same argument schema. Those rows are semantic data, so the architecture should derive them from one role/catalog authority rather than spell each constructor call by hand.",
-        "one constructor-row catalog keyed by semantic policy role",
-        "same module has multiple constant rows assigned from the same constructor shape",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
-        (
-            ObservationTag.KEYWORD_MAPPING,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-        ),
-    ),
-    summary=lambda policy_candidate: (
-        f"Module constants {', '.join(policy_candidate.row_names)} repeat `{policy_candidate.constructor_name}` constructor rows with schema {policy_candidate.field_names}."
-    ),
-    evidence=lambda policy_candidate: policy_candidate.evidence,
-    scaffold=lambda policy_candidate: (
-        "@dataclass(frozen=True)\nclass PolicyRowSpec:\n    role_name: str\n    constructor_args: tuple[object, ...]\n\nclass PolicyCatalog:\n    def materialize(self) -> dict[str, object]: ..."
-    ),
-    codemod_patch=lambda policy_candidate: (
-        "# Replace repeated module-level constructor rows with one semantic policy catalog.\n# Keep role names and constructor coordinates as data, then derive the module constants from the catalog."
-    ),
-    metrics=lambda policy_candidate: MappingMetrics(
-        mapping_site_count=len(policy_candidate.row_names),
-        field_count=len(policy_candidate.field_names),
-        mapping_name=policy_candidate.constructor_name,
-        field_names=policy_candidate.row_names,
-    ),
-    candidate_collector=_module_constructor_policy_family_candidates,
-)
 
 
 declare_candidate_rule_detector(

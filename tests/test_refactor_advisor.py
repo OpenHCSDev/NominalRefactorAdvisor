@@ -18351,37 +18351,6 @@ def test_detects_support_prelude_module_family_without_manifest(tmp_path: Path) 
     assert "ModuleFamilyCatalog" in (finding.scaffold or "")
 
 
-def test_detects_module_constructor_policy_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass SelectionPolicy:\n    names: frozenset[str]\n    suffixes: tuple[str, ...]\n    predicate: object\n\n\nALPHA_SELECTION_POLICY = SelectionPolicy(\n    ALPHA_NAMES,\n    ALPHA_SUFFIXES,\n    is_alpha,\n)\n\n\nBETA_SELECTION_POLICY = SelectionPolicy(\n    BETA_NAMES,\n    BETA_SUFFIXES,\n    is_beta,\n)\n\n\nGAMMA_SELECTION_POLICY = SelectionPolicy(\n    GAMMA_NAMES,\n    GAMMA_SUFFIXES,\n    is_gamma,\n)\n\n\nDELTA_SELECTION_POLICY = SelectionPolicy(\n    DELTA_NAMES,\n    DELTA_SUFFIXES,\n    is_delta,\n)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "module_constructor_policy_family"
-        )
-    )
-    assert "SelectionPolicy" in finding.summary
-    assert "ALPHA_SELECTION_POLICY" in finding.summary
-    assert "PolicyCatalog" in (finding.scaffold or "")
-
-
-def test_ignores_small_module_constructor_policy_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass TableSpec:\n    columns: tuple[str, ...]\n    rows: object\n\n\nOBSERVATION_TABLE = TableSpec(\n    OBSERVATION_COLUMNS,\n    observation_rows,\n)\n\n\nPHASE_TABLE = TableSpec(\n    PHASE_COLUMNS,\n    phase_rows,\n)\n\n\nSUMMARY_TABLE = TableSpec(\n    SUMMARY_COLUMNS,\n    summary_rows,\n)\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "module_constructor_policy_family"
-        for finding in findings
-    )
-
-
 def test_detects_closed_axis_conversion_matrix(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
