@@ -50,8 +50,6 @@ from ..codemod import (
 from ..collection_algebra import sorted_tuple
 from ..models import HierarchyCandidateMetrics, RefactorFinding, SourceLocation
 from ..patterns import PatternId
-from ..semantic_algebra import ObjectFamilyShape
-from ..semantic_description_length import CompressionCertificate
 from ..semantic_identity import SemanticRoleIdentityToken
 from ..source_index import build_source_index_artifacts
 from ..source_index import (
@@ -156,22 +154,6 @@ def collect_nested_branch_chains_from_body(
         for nested_body in iter_nested_statement_bodies(statement):
             chains.extend(collect_nested_branch_chains_from_body(nested_body, spec))
     return tuple(chains)
-
-
-def _mirrored_file_rewrite_loop_compression_certificate(
-    candidate: MirroredFileRewriteLoopCandidate,
-) -> CompressionCertificate:
-    loop_count = len(candidate.line_numbers)
-    return CompressionCertificate.from_object_family(
-        manual_object_count=loop_count * 4,
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("text_rewrite_plan", "file_application_surface"),
-            per_axis_objects=("file_collection",),
-        ),
-        semantic_axes=tuple(
-            (f"file_collection:{index}" for index in range(loop_count))
-        ),
-    )
 
 
 def _literal_dispatch_authority_name(dispatch_axis_expression: str) -> str:
@@ -5042,123 +5024,6 @@ class MirroredImportFallbackDetector(
                 field_count=import_candidate.imported_name_count,
                 mapping_name="mirrored import fallback",
                 field_names=import_candidate.imported_modules,
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class MirroredFileRewriteLoopCandidate(LineWitnessCandidate):
-    function_name: str
-    line_numbers: tuple[int, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return "mirrored file rewrite loops"
-
-    @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, self.function_name)
-                for line in self.line_numbers
-            )
-        )
-
-
-def _iterates_globbed_files(node: ast.AST) -> bool:
-    if not isinstance(node, ast.Call):
-        return False
-    func = node.func
-    return isinstance(func, ast.Attribute) and func.attr in {"glob", "rglob", "iterdir"}
-
-
-def _loop_has_text_rewrite_signature(loop: ast.For) -> bool:
-    has_file_iteration = _iterates_globbed_files(loop.iter)
-    has_read = False
-    has_write = False
-    has_replace = False
-    for node in _walk_nodes(loop):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not isinstance(func, ast.Attribute):
-            continue
-        has_read = has_read or func.attr == "read_text"
-        has_write = has_write or func.attr == "write_text"
-        has_replace = has_replace or func.attr == "replace"
-    return has_file_iteration and has_read and has_write and has_replace
-
-
-def _mirrored_file_rewrite_loop_candidates(
-    module: ParsedModule,
-) -> tuple[MirroredFileRewriteLoopCandidate, ...]:
-    candidates: list[MirroredFileRewriteLoopCandidate] = []
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        loops = tuple(
-            (
-                node
-                for node in walk_function_body_nodes(function)
-                if isinstance(node, ast.For) and _loop_has_text_rewrite_signature(node)
-            )
-        )
-        if len(loops) < 2:
-            continue
-        candidates.append(
-            MirroredFileRewriteLoopCandidate(
-                file_path=module.file_path,
-                line=loops[0].lineno,
-                function_name=qualname,
-                line_numbers=tuple((loop.lineno for loop in loops)),
-            )
-        )
-    return tuple(candidates)
-
-
-class MirroredFileRewriteLoopDetector(
-    ModuleCollectorCandidateDetector[MirroredFileRewriteLoopCandidate]
-):
-    finding_spec = finding_spec_template(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Mirrored file rewrite loops should become a text rewrite plan",
-        "Several loops read files, apply the same textual rewrite mechanics, and write changes back. The traversal roots are local variation, but the rewrite algebra and write policy should be one declared plan.",
-        "single text rewrite plan with one file-application surface",
-        "same read/transform/write loop mirrored over different file collections",
-        (
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
-        (
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, loop_candidate: MirroredFileRewriteLoopCandidate
-    ) -> RefactorFinding:
-        lines = ", ".join(str(line) for line in loop_candidate.line_numbers)
-        return self.build_finding(
-            (
-                f"{loop_candidate.file_path} mirrors file rewrite loops in "
-                f"{loop_candidate.function_name} at lines {lines}."
-            ),
-            loop_candidate.evidence_locations,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass TextRewritePlan:\n    rules: tuple[TextRewriteRule, ...]\n    def apply_to_files(self, files): ..."
-            ),
-            codemod_patch=(
-                "# Replace mirrored read/replace/write loops with one typed rewrite plan.\n# Pass only the varying file collections and display labels at call sites."
-            ),
-            compression_certificate=_mirrored_file_rewrite_loop_compression_certificate(
-                loop_candidate
-            ),
-            metrics=MappingMetrics(
-                mapping_site_count=len(loop_candidate.line_numbers),
-                field_count=0,
-                mapping_name="text rewrite",
-                field_names=(),
-                source_name=loop_candidate.function_name,
-                identity_field_names=(),
             ),
         )
 

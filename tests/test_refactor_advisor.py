@@ -16913,40 +16913,6 @@ class StreamPrefixCompactionRelationAuthority:
     )
 
 
-def test_detects_mirrored_file_rewrite_loops(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef rewrite_package(root_dir, content_dir):\n    replacements = [("old", "new"), ("legacy", "modern")]\n    for path in root_dir.glob("*.txt"):\n        content = path.read_text(encoding="utf-8")\n        updated = content\n        for old, new in replacements:\n            updated = updated.replace(old, new)\n        if updated != content:\n            path.write_text(updated, encoding="utf-8")\n\n    for path in content_dir.glob("*.txt"):\n        content = path.read_text(encoding="utf-8")\n        updated = content\n        for old, new in replacements:\n            updated = updated.replace(old, new)\n        if updated != content:\n            path.write_text(updated, encoding="utf-8")\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "mirrored_file_rewrite_loop"
-        )
-    )
-    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
-    assert "rewrite_package" in finding.summary
-    assert "TextRewritePlan" in (finding.scaffold or "")
-    assert "typed rewrite plan" in (finding.codemod_patch or "")
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
-def test_ignores_single_file_rewrite_loop(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef rewrite_package(root_dir):\n    replacements = [("old", "new")]\n    for path in root_dir.glob("*.txt"):\n        content = path.read_text(encoding="utf-8")\n        updated = content.replace("old", "new")\n        if updated != content:\n            path.write_text(updated, encoding="utf-8")\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        (finding.detector_id == "mirrored_file_rewrite_loop" for finding in findings)
-    )
-
-
 def test_detects_repeated_local_regex_bundles(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
