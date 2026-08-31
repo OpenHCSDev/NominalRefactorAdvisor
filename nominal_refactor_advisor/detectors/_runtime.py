@@ -1375,6 +1375,26 @@ def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:
     )
 
 
+def _runtime_namespace_bridge_kind_for_call(
+    node: ast.Call,
+) -> RuntimeNamespaceBridgeKind | None:
+    if not (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "update"
+        and _is_globals_call(node.func.value)
+    ):
+        return None
+    if any(_is_runtime_bridge_namespace_call(argument) for argument in node.args):
+        return RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_GLOBALS_UPDATE
+    if (
+        len(node.args) == 1
+        and not node.keywords
+        and isinstance(node.args[0], ast.Name | ast.Attribute)
+    ):
+        return RuntimeNamespaceBridgeKind.GLOBALS_UPDATE
+    return None
+
+
 def _globals_guard_symbol(node: ast.If) -> str | None:
     test = node.test
     if not isinstance(test, ast.Compare):
@@ -1431,16 +1451,8 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                 self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call) -> None:
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "update"
-                    and _is_globals_call(node.func.value)
-                ):
-                    bridge_kind = RuntimeNamespaceBridgeKind.GLOBALS_UPDATE
-                    if any(_is_runtime_bridge_namespace_call(arg) for arg in node.args):
-                        bridge_kind = (
-                            RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_GLOBALS_UPDATE
-                        )
+                bridge_kind = _runtime_namespace_bridge_kind_for_call(node)
+                if bridge_kind is not None:
                     sites.append(
                         RuntimeNamespaceBridgeSite(
                             line=int(node.lineno),

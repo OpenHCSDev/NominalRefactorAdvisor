@@ -16898,6 +16898,36 @@ def test_detects_raw_globals_update_bridge(tmp_path: Path) -> None:
     assert "globals update" in finding.summary
 
 
+def test_runtime_namespace_bridge_preserves_derived_public_aliases(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef public_aliases():\n    return {'alpha': object()}\n\n\nglobals().update(public_aliases())\n",
+    )
+
+    assert not any(
+        finding.detector_id == "runtime_namespace_bridge"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_runtime_namespace_bridge_preserves_explicit_lazy_import_cache(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef __getattr__(name):\n    from .backend import DiskBackend, DiskStore\n    globals().update(DiskBackend=DiskBackend, DiskStore=DiskStore)\n    return globals()[name]\n",
+    )
+
+    assert not any(
+        finding.detector_id == "runtime_namespace_bridge"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_schema_shaped_accessor_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
