@@ -13020,12 +13020,34 @@ def test_class_family_migration_derives_serial_stages_from_one_concept(
     ]
     assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in first_source
     assert "ALL_HANDLERS = (AlphaHandler, BetaHandler)" in first_source
-    assert "ALL_HANDLERS = tuple(RegisteredHandler.__subclasses__())" in final_source
+    assert (
+        "ALL_HANDLERS = tuple(RegisteredHandler.__registry__.values())"
+        in final_source
+    )
     assert report.replay_sequence.documents == (
         first_stage.simulation.document,
         second_stage.simulation.document,
     )
     assert all("stage_index" not in stage.to_dict() for stage in report.stages)
+
+
+def test_class_family_name_projection_reads_registered_family_authority() -> None:
+    from nominal_refactor_advisor.codemod import (
+        ClassFamilyCollectionElementProjection,
+        ClassFamilyCollectionMembershipProjection,
+    )
+
+    membership_projection = (
+        ClassFamilyCollectionMembershipProjection.for_authority_declaration(True)
+    )
+
+    assert ClassFamilyCollectionElementProjection.CLASS_NAME.value_source(
+        "tuple",
+        membership_projection.value_source("RegisteredHandler"),
+    ) == (
+        "tuple(member_type.__name__ for member_type in "
+        "RegisteredHandler.__registry__.values())"
+    )
 
 
 def test_class_family_goal_restricts_inner_scans_and_keeps_exact_terminal_gate(

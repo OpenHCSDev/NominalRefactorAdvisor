@@ -67,6 +67,12 @@ class IndexedClass(ClassDeclaration):
             for decorator in self.node.decorator_list
         )
 
+    @property
+    def declares_autoregister_meta(self) -> bool:
+        """Whether this declaration owns an AutoRegister-backed family."""
+
+        return _declares_autoregister_meta(self.node)
+
     @classmethod
     def from_parsed_class(
         cls,

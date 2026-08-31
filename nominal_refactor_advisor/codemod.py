@@ -28,7 +28,7 @@ import tempfile
 import textwrap
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from enum import Enum, StrEnum
@@ -18416,16 +18416,76 @@ class RegistrationSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrate
 class ClassFamilyCollectionElementProjection(StrEnum):
     """How one collection projection references a class-family member."""
 
-    CLASS_OBJECT = "class_object"
-    CLASS_NAME = "class_name"
+    def __new__(
+        cls,
+        value: str,
+        value_source_builder: Callable[[str, str], str],
+    ) -> "ClassFamilyCollectionElementProjection":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._value_source_builder = value_source_builder
+        return member
 
-    def value_source(self, factory_name: str, authority_name: str) -> str:
-        if self is ClassFamilyCollectionElementProjection.CLASS_OBJECT:
-            return f"{factory_name}({authority_name}.__subclasses__())"
-        return (
+    CLASS_OBJECT = (
+        "class_object",
+        lambda factory_name, member_source: f"{factory_name}({member_source})",
+    )
+    CLASS_NAME = (
+        "class_name",
+        lambda factory_name, member_source: (
             f"{factory_name}(member_type.__name__ for member_type in "
-            f"{authority_name}.__subclasses__())"
+            f"{member_source})"
+        ),
+    )
+
+    def value_source(self, factory_name: str, member_source: str) -> str:
+        return self._value_source_builder(factory_name, member_source)
+
+
+class ClassFamilyCollectionMembershipProjection(StrEnum):
+    """Runtime member query selected from the nominal authority declaration."""
+
+    def __new__(
+        cls,
+        value: str,
+        declares_autoregister_meta: bool,
+        value_source_builder: Callable[[str], str],
+    ) -> "ClassFamilyCollectionMembershipProjection":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._declares_autoregister_meta = declares_autoregister_meta
+        member._value_source_builder = value_source_builder
+        return member
+
+    AUTOREGISTER_REGISTRY = (
+        "autoregister_registry",
+        True,
+        lambda authority_name: f"{authority_name}.__registry__.values()",
+    )
+    DIRECT_SUBCLASSES = (
+        "direct_subclasses",
+        False,
+        lambda authority_name: f"{authority_name}.__subclasses__()",
+    )
+
+    @classmethod
+    def for_authority_declaration(
+        cls,
+        declares_autoregister_meta: bool,
+    ) -> "ClassFamilyCollectionMembershipProjection":
+        matches = tuple(
+            projection
+            for projection in cls
+            if projection._declares_autoregister_meta is declares_autoregister_meta
         )
+        if len(matches) != 1:
+            raise ValueError(
+                "class-family membership declarations must cover each authority kind once"
+            )
+        return matches[0]
+
+    def value_source(self, authority_name: str) -> str:
+        return self._value_source_builder(authority_name)
 
 
 @dataclass(frozen=True)
@@ -18435,10 +18495,14 @@ class ClassFamilyCollectionProjection:
     factory_name: str
     element_projection: ClassFamilyCollectionElementProjection
 
-    def value_source(self, authority_name: str) -> str:
+    def value_source(
+        self,
+        authority_name: str,
+        membership_projection: ClassFamilyCollectionMembershipProjection,
+    ) -> str:
         return self.element_projection.value_source(
             self.factory_name,
-            authority_name,
+            membership_projection.value_source(authority_name),
         )
 
 
@@ -18685,6 +18749,16 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
                 lambda row: self.collection_projection(row[2]),
                 lambda row, projection: (row[0], row[1], row[2], projection),
             )
+            .combine(
+                lambda row: self.membership_projection_for(row[0]),
+                lambda row, membership_projection: (
+                    row[0],
+                    row[1],
+                    row[2],
+                    row[3],
+                    membership_projection,
+                ),
+            )
             .map(
                 lambda row: ClassFamilyCollectionSemanticMirrorRecipeParts(
                     projection_path=row[0].projection_file_path(),
@@ -18696,6 +18770,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
                         row[1],
                         row[0].authority_symbol(),
                         row[3],
+                        row[4],
                     ),
                 )
             )
@@ -18720,7 +18795,28 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
                 "projection assignment is not a literal class or class-name "
                 "collection matching all mirrored class names"
             )
+        if self.membership_projection_for(seed) is None:
+            return "could not resolve the nominal class-family authority declaration"
         return "class-family collection derivation is available"
+
+    def membership_projection_for(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+    ) -> ClassFamilyCollectionMembershipProjection | None:
+        if self.class_family_index is None:
+            return None
+        authority_symbol = self.class_family_index.symbol_for(
+            file_path=seed.authority_file_path(),
+            qualname=seed.authority_symbol(),
+        )
+        if authority_symbol is None:
+            return None
+        authority_declaration = self.class_family_index.class_for(authority_symbol)
+        if authority_declaration is None:
+            return None
+        return ClassFamilyCollectionMembershipProjection.for_authority_declaration(
+            authority_declaration.declares_autoregister_meta
+        )
 
     def assignment_matches_class_collection(
         self,
@@ -18817,11 +18913,15 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
         assignment_name: str,
         authority_name: str,
         collection_projection: ClassFamilyCollectionProjection,
+        membership_projection: ClassFamilyCollectionMembershipProjection,
     ) -> str:
         value = cls.assignment_value(statement)
         if value is None:
             raise ValueError("class-family collection replacement requires a value")
-        value_source = collection_projection.value_source(authority_name)
+        value_source = collection_projection.value_source(
+            authority_name,
+            membership_projection,
+        )
         if isinstance(statement, ast.AnnAssign):
             return f"{assignment_name}: {ast.unparse(statement.annotation)} = {value_source}"
         return f"{assignment_name} = {value_source}"
