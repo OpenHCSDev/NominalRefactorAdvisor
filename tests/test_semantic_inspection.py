@@ -3,11 +3,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import nominal_refactor_advisor.semantic_inspection as semantic_inspection_module
+
 from nominal_refactor_advisor import SemanticInspectionReport, inspect_paths
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.models import FindingSpec, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_inspection import inspect_modules
+
+
+def test_semantic_inspection_exports_derive_from_record_authority() -> None:
+    record_names = {
+        name
+        for name, value in vars(semantic_inspection_module).items()
+        if isinstance(value, type)
+        and issubclass(value, semantic_inspection_module.SemanticInspectionRecord)
+        and value.__module__ == semantic_inspection_module.__name__
+    }
+
+    assert record_names <= set(semantic_inspection_module.__all__)
+    assert "ScopedAstEventReference" not in semantic_inspection_module.__all__
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> Path:

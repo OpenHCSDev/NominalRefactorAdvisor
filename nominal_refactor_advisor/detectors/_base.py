@@ -65,6 +65,7 @@ from ..semantic_match import (
     call_attribute_name,
     collection_literal,
     constant_value,
+    loaded_nominal_descendants,
     name_id,
     named_call_assignment,
     named_value_binding,
@@ -515,7 +516,7 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     def detector_family_base_names(cls) -> frozenset[str]:
         return frozenset(
             detector_type.__name__
-            for detector_type in (cls, *_issue_detector_subclasses(cls))
+            for detector_type in (cls, *loaded_nominal_descendants(cls))
         )
 
     @classmethod
@@ -2623,20 +2624,6 @@ class ContextualGlobalFiberCollectedShapeIssueDetector(
 
     def _shape_signature_digest(self, shape: ShapeT) -> str:
         return _contextual_global_digest(repr(shape))
-
-
-def _issue_detector_subclasses(
-    detector_type: type[IssueDetector],
-) -> tuple[type[IssueDetector], ...]:
-    children = tuple(detector_type.__subclasses__())
-    return (
-        *children,
-        *(
-            descendant
-            for child in children
-            for descendant in _issue_detector_subclasses(child)
-        ),
-    )
 
 
 CollectedItemT = TypeVar("CollectedItemT")

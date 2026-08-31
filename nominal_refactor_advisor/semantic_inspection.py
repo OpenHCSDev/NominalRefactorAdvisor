@@ -18,6 +18,7 @@ from typing import Iterable, Sequence, TypeAlias, cast
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .detectors import DetectorConfig
+from .export_tools import PublicExportPolicy, derive_public_exports
 from .models import (
     RefactorFinding,
     SemanticRecord,
@@ -903,20 +904,19 @@ def inspect_modules(
     return inspector.inspect_modules(modules, findings=findings)
 
 
-def _semantic_inspection_record_export_names() -> tuple[str, ...]:
-    return tuple(
-        record_type.__name__
-        for record_type in SemanticInspectionRecord.__subclasses__()
-        if record_type.__module__ == __name__
-    )
-
-
-__all__ = (
-    *_semantic_inspection_record_export_names(),
-    "SourceIndexSemanticAstInspector",
-    "SemanticAstInspector",
-    "SemanticInspectionRecord",
-    "inspect_modules",
-    "inspect_path",
-    "inspect_paths",
+_PUBLIC_EXPORT_POLICY = PublicExportPolicy(
+    module_name=__name__,
+    root_types=(SemanticInspectionRecord,),
+    explicit_names=frozenset(
+        {
+            "SourceIndexSemanticAstInspector",
+            "SemanticAstInspector",
+            "inspect_modules",
+            "inspect_path",
+            "inspect_paths",
+        }
+    ),
 )
+
+
+__all__ = derive_public_exports(globals(), _PUBLIC_EXPORT_POLICY)
