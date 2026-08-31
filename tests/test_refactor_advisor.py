@@ -9271,6 +9271,36 @@ def test_collects_dynamic_method_injection_observations_via_spec_family(
     assert [item.mutator_name for item in observations] == ["setattr"]
 
 
+def test_function_observation_families_preserve_nested_definition_ownership(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef outer(config, target_type, instance):\n"
+        "    def inner():\n"
+        "        if hasattr(config, 'nested_mode'):\n"
+        "            setattr(target_type, 'run', lambda: None)\n"
+        "        return instance.__class__._is_nested\n"
+        "    return inner()\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+
+    config_dispatches = collect_family_items(
+        module,
+        ConfigDispatchObservationFamily,
+    )
+    class_markers = collect_family_items(module, ClassMarkerObservationFamily)
+    method_injections = collect_family_items(
+        module,
+        DynamicMethodInjectionObservationFamily,
+    )
+
+    assert config_dispatches == []
+    assert {observation.symbol for observation in class_markers} == {"inner"}
+    assert {observation.symbol for observation in method_injections} == {"inner"}
+
+
 def test_markdown_output_includes_prescription_details(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

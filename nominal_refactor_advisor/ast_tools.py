@@ -3629,7 +3629,7 @@ def _config_dispatch_observations(
 ) -> tuple[ConfigDispatchObservation, ...]:
     seen: set[tuple[int, str]] = set()
     observations: list[ConfigDispatchObservation] = []
-    for node in _walk_nodes(function):
+    for node in walk_function_body_nodes(function):
         if isinstance(node, ast.If):
             for attr_name in _config_dispatch_attributes(node.test):
                 key = (node.lineno, attr_name)
@@ -3711,7 +3711,7 @@ def _class_marker_observations(
 ) -> tuple[ClassMarkerObservation, ...]:
     seen: set[tuple[int, str]] = set()
     observations: list[ClassMarkerObservation] = []
-    for node in _walk_nodes(function):
+    for node in walk_function_body_nodes(function):
         if isinstance(node, ast.Call) and _terminal_name_in_family(
             node.func, _HASATTR_CALL_FAMILY
         ):
@@ -3816,7 +3816,7 @@ def _dynamic_method_injection_observations(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[DynamicMethodInjectionObservation, ...]:
     observations: list[DynamicMethodInjectionObservation] = []
-    for node in _walk_nodes(function):
+    for node in walk_function_body_nodes(function):
         if not isinstance(node, ast.Call):
             continue
         if _terminal_name(node.func) != _SETATTR_BUILTIN:
