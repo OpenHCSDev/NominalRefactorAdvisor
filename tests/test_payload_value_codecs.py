@@ -19,12 +19,14 @@ from nominal_refactor_advisor.codemod import (
     SelectionCountPayloadValueCodec,
     SelectorObjectPayloadValueCodec,
     SourceIndexTargetSelector,
+    SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_payload import (
     BooleanPayloadValueCodec,
     CodemodPayloadRecord,
     DefaultedStringPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
+    FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
     ObjectPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
@@ -114,6 +116,25 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         assert codec.read({"value": serialized}, "value") == value
 
 
+def test_flattened_record_codec_owns_nested_projection() -> None:
+    target = SourceRewriteTarget(
+        file_path="pkg/example.py",
+        qualname="Alpha.run",
+    )
+    codec = FlattenedPayloadRecordValueCodec(SourceRewriteTarget)
+
+    assert codec.payload_field_names("target") == (
+        "target_id",
+        "file_path",
+        "target_qualname",
+    )
+    assert dict(codec.payload_items(target, "target")) == target.to_dict()
+    assert (
+        dict(codec.payload_items(target, "target", omit_none=True)) == target.to_dict()
+    )
+    assert codec.read(target.to_dict(), "target") == target
+
+
 def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
     with pytest.raises(ValueError, match="non-empty string"):
         RequiredStringPayloadValueCodec().read({}, "name")
@@ -139,6 +160,16 @@ def test_payload_records_own_boundary_diagnostics() -> None:
                 "legacy": True,
             }
         )
+
+    explicit_null = SelectionCountExpectation.from_json_value({"min": None})
+    assert explicit_null.minimum is None
+    assert explicit_null.to_dict() == {}
+
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported SelectionCountExpectation payload field\(s\): 'legacy'",
+    ):
+        SelectionCountExpectation.from_json_value({"legacy": None})
 
 
 def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:

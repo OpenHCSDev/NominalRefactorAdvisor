@@ -17,14 +17,13 @@ from nominal_refactor_advisor.codemod import (
     SourceEditOrigin,
     SourceRewriteTarget,
     SourceRewriteContributor,
-    SourceRewriteTargetReference,
 )
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
+    FlattenedPayloadRecordValueCodec,
     PayloadBinding,
     PayloadBindingSet,
     RequiredStringPayloadValueCodec,
-    codemod_envelope_field,
     codemod_payload_field,
 )
 
@@ -68,6 +67,20 @@ def test_payload_binding_set_rejects_duplicate_constructor_argument_names() -> N
         )
 
 
+def test_payload_binding_set_rejects_fields_shadowing_flattened_records() -> None:
+    with pytest.raises(ValueError, match="Duplicate payload field binding name"):
+        PayloadBindingSet(
+            (
+                PayloadBinding(
+                    field_name="target",
+                    constructor_argument_name="target",
+                    codec=FlattenedPayloadRecordValueCodec(SourceRewriteTarget),
+                ),
+                _binding("target_id", "legacy_target_id"),
+            )
+        )
+
+
 def test_payload_binding_set_derives_wire_alias_from_dataclass_field() -> None:
     @dataclass(frozen=True)
     class DeclaredPayload:
@@ -75,7 +88,6 @@ def test_payload_binding_set_derives_wire_alias_from_dataclass_field() -> None:
             RequiredStringPayloadValueCodec(),
             field_name="wire_source",
         )
-        envelope: str = codemod_envelope_field(default="context")
 
     binding_set = PayloadBindingSet.from_dataclass(
         DeclaredPayload
@@ -97,7 +109,9 @@ def test_registered_operation_payload_bindings_are_unique() -> None:
 
         assert operation_type.operation_key() == operation_key
         assert isinstance(binding_set, PayloadBindingSet), operation_key
-        assert len({binding.field_name for binding in binding_set}) == len(binding_set)
+        assert len(set(binding_set.payload_field_names)) == len(
+            binding_set.payload_field_names
+        )
         assert len(
             {binding.constructor_argument_name for binding in binding_set}
         ) == len(binding_set)
@@ -120,15 +134,10 @@ def test_operation_registry_covers_each_concrete_nominal_descendant_once() -> No
 
 
 def test_registered_operation_payloads_are_owned_by_constructor_fields() -> None:
-    envelope_field_names = frozenset(
-        record_field.name for record_field in fields(SourceRewriteTargetReference)
-    )
     for operation_key, operation_type in RefactorRecipeOperation.__registry__.items():
         binding_set = operation_type.payload_bindings()
         declared_payload_field_names = frozenset(
-            record_field.name
-            for record_field in fields(operation_type)
-            if record_field.name not in envelope_field_names
+            record_field.name for record_field in fields(operation_type)
         )
 
         assert all(
@@ -203,6 +212,7 @@ def test_payload_records_own_their_wire_schema() -> None:
             ("reason", "reason"),
         ),
         RecipeCallReplacement: (
+            ("target", "target"),
             ("old_source", "old_source"),
             ("new_source", "new_source"),
         ),
@@ -234,8 +244,15 @@ def test_payload_records_own_their_wire_schema() -> None:
         )
         assert record_type.payload_bindings() is binding_set
         assert "payload_bindings" not in record_type.__dict__
-        if record_type is not RecipeCallReplacement:
-            assert "to_dict" not in record_type.__dict__
+        assert "to_dict" not in record_type.__dict__
+
+    assert RecipeCallReplacement.payload_bindings().payload_field_names == (
+        "target_id",
+        "file_path",
+        "target_qualname",
+        "old_source",
+        "new_source",
+    )
 
 
 def test_payload_helpers_derive_their_wire_schema_from_fields() -> None:

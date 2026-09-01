@@ -76,6 +76,7 @@ from .codemod_payload import (
     DataclassPayloadProjection,
     DefaultedStringPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
+    FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
     JsonArray,
     JsonObject,
@@ -90,7 +91,6 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     StrEnumPayloadValueCodec,
     StringArrayPayloadValueCodec,
-    codemod_envelope_field,
     codemod_payload_field,
 )
 from .codemod_spacing import DestinationInsertionSpacing
@@ -1806,10 +1806,6 @@ class SourceRewriteTarget(
         default=None,
     )
 
-    @classmethod
-    def from_mapping(cls, fields: Mapping[str, JsonValue]) -> "SourceRewriteTarget":
-        return cls(**cls.payload_bindings().constructor_kwargs(fields))
-
     def optional_file_path(self, source_index: SourceIndex) -> str | None:
         if self.file_path is None:
             return None
@@ -1948,8 +1944,9 @@ class ArchitectureGuardViolationTarget(SourceRewriteTarget):
 class SourceRewriteTargetReference:
     """Shared owner for DSL records that reference source-index targets."""
 
-    target: SourceRewriteTarget = codemod_envelope_field(
-        default_factory=SourceRewriteTarget
+    target: SourceRewriteTarget = codemod_payload_field(
+        FlattenedPayloadRecordValueCodec(SourceRewriteTarget),
+        default_factory=SourceRewriteTarget,
     )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
@@ -2630,7 +2627,7 @@ class CodemodTargetSelection:
 
 
 @dataclass(frozen=True)
-class SelectionCountExpectation(DataclassPayloadProjection):
+class SelectionCountExpectation(CodemodPayloadRecord):
     """Cardinality contract for selector-backed codemod operations."""
 
     minimum: int | None = codemod_payload_field(
@@ -2649,23 +2646,19 @@ class SelectionCountExpectation(DataclassPayloadProjection):
     )
 
     @classmethod
+    def from_json_value(cls, value: JsonValue) -> "SelectionCountExpectation":
+        expectation = super().from_json_value(value)
+        expectation.validate_definition()
+        return expectation
+
+    @classmethod
     def from_mapping(
         cls,
         payload: Mapping[str, JsonValue] | None,
     ) -> "SelectionCountExpectation":
         if payload is None:
             return cls()
-        expected_fields = frozenset(
-            binding.field_name for binding in cls.payload_bindings()
-        )
-        unknown_fields = tuple(sorted(set(payload) - expected_fields))
-        if unknown_fields:
-            raise ValueError(
-                f"Unsupported selection_count field(s): {', '.join(unknown_fields)}"
-            )
-        expectation = cls(**cls.payload_bindings().constructor_kwargs(payload))
-        expectation.validate_definition()
-        return expectation
+        return cls.from_json_value(JsonObject(payload))
 
     @property
     def is_empty(self) -> bool:
@@ -2927,7 +2920,7 @@ class CodemodTargetSelector(
         cls,
         payload: Mapping[str, JsonValue],
     ) -> "CodemodTargetSelector":
-        return cls(**cls.payload_bindings().constructor_kwargs(payload))
+        return cls.from_payload_fields(payload)
 
     def select(self, context: CodemodSelectorContext) -> CodemodTargetSelection:
         return CodemodTargetSelection(self.target_ids(context))
@@ -3438,22 +3431,6 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
 
     old_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     new_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-
-    @classmethod
-    def from_json_value(cls, value: JsonValue) -> "RecipeCallReplacement":
-        payload = cls.payload_fields(value)
-        replacement = cls(
-            target=SourceRewriteTarget.from_mapping(payload),
-            **cls.payload_bindings().constructor_kwargs(payload),
-        )
-        replacement.require_supported_payload_fields(payload)
-        return replacement
-
-    def to_dict(self) -> JsonObject:
-        return {
-            **self.target.to_dict(),
-            **type(self).payload_bindings().payload(self),
-        }
 
     def line_replacement(
         self,
@@ -4569,30 +4546,22 @@ class RefactorRecipeOperation(
         operation_type = cls.__registry__.get(operation_key)
         if operation_type is None or not issubclass(operation_type, cls):
             raise ValueError(f"Unsupported recipe operation: {operation_key}")
-        operation = operation_type.from_operation_payload(
-            SourceRewriteTarget.from_mapping(payload),
-            payload,
-        )
+        operation = operation_type.from_operation_payload(payload)
         operation.require_supported_payload_fields(payload)
         return operation
 
     def to_dict(self) -> JsonObject:
         return {
             "operation": self.operation_key(),
-            **self.target.to_dict(),
             **self.operation_payload(),
         }
 
     @classmethod
     def from_operation_payload(
         cls,
-        target: SourceRewriteTarget,
         payload: Mapping[str, JsonValue],
     ) -> "RefactorRecipeOperation":
-        return cls(
-            target=target,
-            **cls.payload_bindings().constructor_kwargs(payload),
-        )
+        return cls.from_payload_fields(payload)
 
     def operation_payload(self) -> JsonObject:
         return type(self).payload_bindings().payload(self, omit_none=True)

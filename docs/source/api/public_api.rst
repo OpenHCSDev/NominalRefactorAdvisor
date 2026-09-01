@@ -37,15 +37,15 @@ common fields and do not own an invariant.
 Codemod operations, selectors, and payload records declare wire semantics with
 ``codemod_payload_field`` on their dataclass fields.
 ``DataclassPayloadProjection`` derives each binding catalogue and JSON
-projection from those declarations.  Common target fields use
-``codemod_envelope_field`` when their enclosing record owns their flattened
-projection.  ``CodemodPayloadRecord`` inherits object decoding and unknown-field
-rejection from the same nominal declaration; polymorphic record families only
-specialize discriminator dispatch.  No parallel schema, payload carrier, or
-boundary-role catalogue is maintained.
+projection from those declarations.  ``FlattenedPayloadRecordValueCodec`` lets
+a nested nominal record, such as a source-rewrite target, own a flattened wire
+projection without an envelope exception.  ``CodemodPayloadRecord`` inherits
+object decoding and unknown-field rejection from the same nominal declaration;
+polymorphic record families only specialize discriminator dispatch.  No
+parallel schema, payload carrier, or boundary-role catalogue is maintained.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
-   :members: DataclassPayloadProjection, CodemodPayloadRecord, codemod_payload_field, codemod_envelope_field, PayloadValueCodec, PayloadBindingSet
+   :members: DataclassPayloadProjection, CodemodPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadValueCodec, PayloadBindingSet
 
 Rejected ``FindingRecipeSynthesisRecord`` values expose ``proof_obstacles``.
 Each obstacle identifies the nominal executable declaration that failed to

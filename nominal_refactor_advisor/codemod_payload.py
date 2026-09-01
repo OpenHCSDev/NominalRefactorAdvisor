@@ -44,6 +44,12 @@ class DataclassPayloadProjection(CodemodJsonReport, ABC):
             cls
         )
 
+    @classmethod
+    def from_payload_fields(cls, payload: Mapping[str, JsonValue]) -> Self:
+        """Construct this projection through its declaration-owned bindings."""
+
+        return cls(**cls.payload_bindings().constructor_kwargs(payload))
+
     def to_dict(self) -> JsonObject:
         return type(self).payload_bindings().payload(self)
 
@@ -65,7 +71,9 @@ class CodemodPayloadRecord(DataclassPayloadProjection, ABC):
     ) -> None:
         """Reject fields absent from this record's declaration-derived projection."""
 
-        unsupported_fields = tuple(sorted(set(payload) - set(self.to_dict())))
+        supported_fields = set(type(self).payload_bindings().payload_field_names)
+        supported_fields.update(self.to_dict())
+        unsupported_fields = tuple(sorted(set(payload) - supported_fields))
         if unsupported_fields:
             raise ValueError(
                 f"Unsupported {type(self).__name__} payload field(s): "
@@ -77,7 +85,7 @@ class CodemodPayloadRecord(DataclassPayloadProjection, ABC):
         """Decode one record through its declaration-owned field bindings."""
 
         payload = cls.payload_fields(value)
-        record = cls(**cls.payload_bindings().constructor_kwargs(payload))
+        record = cls.from_payload_fields(payload)
         record.require_supported_payload_fields(payload)
         return record
 
@@ -96,6 +104,71 @@ class PayloadValueCodec(Generic[PayloadValueT], ABC):
     @abstractmethod
     def serialize(self, value: object) -> JsonValue:
         raise NotImplementedError
+
+    def payload_field_names(self, field_name: str) -> tuple[str, ...]:
+        """Return the wire fields projected by this codec."""
+
+        return (field_name,)
+
+    def payload_items(
+        self,
+        value: object,
+        field_name: str,
+        *,
+        omit_none: bool = False,
+    ) -> tuple[tuple[str, JsonValue], ...]:
+        """Project one runtime value into its wire fields."""
+
+        serialized = self.serialize(value)
+        if omit_none and serialized is None:
+            return ()
+        return ((field_name, serialized),)
+
+
+PayloadRecordT = TypeVar("PayloadRecordT", bound=DataclassPayloadProjection)
+
+
+@dataclass(frozen=True)
+class FlattenedPayloadRecordValueCodec(
+    PayloadValueCodec[PayloadRecordT],
+    Generic[PayloadRecordT],
+):
+    """Flatten one nested nominal record into its enclosing object payload."""
+
+    record_type: type[PayloadRecordT]
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> PayloadRecordT:
+        del field_name
+        return self.record_type.from_payload_fields(payload)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, self.record_type):
+            raise TypeError(
+                "flattened payload-record codec requires "
+                f"{self.record_type.__name__}"
+            )
+        return value.to_dict()
+
+    def payload_field_names(self, field_name: str) -> tuple[str, ...]:
+        del field_name
+        return self.record_type.payload_bindings().payload_field_names
+
+    def payload_items(
+        self,
+        value: object,
+        field_name: str,
+        *,
+        omit_none: bool = False,
+    ) -> tuple[tuple[str, JsonValue], ...]:
+        del field_name, omit_none
+        serialized = self.serialize(value)
+        if not isinstance(serialized, Mapping):
+            raise TypeError("flattened payload-record codec requires an object payload")
+        return tuple(serialized.items())
 
 
 class StringPayloadValueCodec(
@@ -367,7 +440,6 @@ class PayloadFieldDeclaration(Generic[PayloadValueT]):
 
 
 _PAYLOAD_FIELD_DECLARATION = object()
-_PAYLOAD_ENVELOPE_FIELD = object()
 _NO_PAYLOAD_FIELD_DEFAULT = object()
 
 
@@ -415,20 +487,6 @@ def codemod_payload_field(
     )
 
 
-def codemod_envelope_field(
-    *,
-    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
-    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
-) -> PayloadValueT:
-    """Declare a field projected by its enclosing codemod record."""
-
-    return _codemod_dataclass_field(
-        {_PAYLOAD_ENVELOPE_FIELD: True},
-        default=default,
-        default_factory=default_factory,
-    )
-
-
 @dataclass(frozen=True)
 class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
     """Derived JSON-to-constructor binding for one DSL payload field."""
@@ -445,9 +503,22 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
             self.constructor_argument_name: self.codec.read(payload, self.field_name)
         }
 
-    def payload_items(self, owner: PayloadOwnerT) -> tuple[tuple[str, JsonValue], ...]:
+    def payload_items(
+        self,
+        owner: PayloadOwnerT,
+        *,
+        omit_none: bool = False,
+    ) -> tuple[tuple[str, JsonValue], ...]:
         value = getattr(owner, self.constructor_argument_name)
-        return ((self.field_name, self.codec.serialize(value)),)
+        return self.codec.payload_items(
+            value,
+            self.field_name,
+            omit_none=omit_none,
+        )
+
+    @property
+    def payload_field_names(self) -> tuple[str, ...]:
+        return self.codec.payload_field_names(self.field_name)
 
 
 class PayloadBindingSet(
@@ -494,12 +565,10 @@ class PayloadBindingSet(
         self,
         owner_type: type[PayloadOwnerT],
     ) -> Self:
-        """Fail when a constructor field has no payload or envelope declaration."""
+        """Fail when a constructor field has no payload declaration."""
 
         expected_field_names = frozenset(
-            record_field.name
-            for record_field in dataclass_fields(owner_type)
-            if _PAYLOAD_ENVELOPE_FIELD not in record_field.metadata
+            record_field.name for record_field in dataclass_fields(owner_type)
         )
         bound_field_names = frozenset(
             binding.constructor_argument_name for binding in self
@@ -531,13 +600,24 @@ class PayloadBindingSet(
         payload = {
             key: value
             for binding in self
-            for key, value in binding.payload_items(owner)
-            if not omit_none or value is not None
+            for key, value in binding.payload_items(owner, omit_none=omit_none)
         }
         return JsonObject(payload)
 
     def has_field_in(self, payload: Mapping[str, JsonValue]) -> bool:
-        return any(binding.field_name in payload for binding in self)
+        return any(
+            field_name in payload
+            for binding in self
+            for field_name in binding.payload_field_names
+        )
+
+    @property
+    def payload_field_names(self) -> tuple[str, ...]:
+        """Return every wire field projected by the binding set."""
+
+        return tuple(
+            field_name for binding in self for field_name in binding.payload_field_names
+        )
 
     @staticmethod
     def require_unique_binding_names(
@@ -547,7 +627,14 @@ class PayloadBindingSet(
         ],
     ) -> None:
         for name_kind, names in (
-            ("payload field", tuple(binding.field_name for binding in bindings)),
+            (
+                "payload field",
+                tuple(
+                    field_name
+                    for binding in bindings
+                    for field_name in binding.payload_field_names
+                ),
+            ),
             (
                 "constructor argument",
                 tuple(binding.constructor_argument_name for binding in bindings),

@@ -359,7 +359,7 @@ def test_class_base_operations_own_the_base_name_payload() -> None:
         assert "payload_value" not in operation_type.__dataclass_fields__
         assert tuple(
             binding.field_name for binding in operation_type.payload_bindings()
-        ) == ("rationale", "base_name")
+        ) == ("target", "rationale", "base_name")
 
 
 def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
@@ -367,7 +367,7 @@ def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
     assert tuple(
         binding.field_name
         for binding in codemod.AuthoritySourceOperation.payload_bindings()
-    ) == ("rationale", "authority_source")
+    ) == ("target", "rationale", "authority_source")
 
 
 def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
@@ -379,7 +379,7 @@ def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
         assert "payload_value" not in operation_type.__dataclass_fields__
         assert tuple(
             binding.field_name for binding in operation_type.payload_bindings()
-        ) == ("rationale", field_name)
+        ) == ("target", "rationale", field_name)
 
 
 def test_source_payload_operations_share_the_source_declaration() -> None:
