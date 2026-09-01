@@ -16,8 +16,8 @@ from nominal_refactor_advisor.codemod import (
     SelectionCountExpectation,
     SourceEditOrigin,
     SourceRewriteTarget,
-    SourceRewritePlanItem,
     SourceRewriteContributor,
+    SourceRewriteTargetReference,
 )
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
@@ -120,15 +120,15 @@ def test_operation_registry_covers_each_concrete_nominal_descendant_once() -> No
 
 
 def test_registered_operation_payloads_are_owned_by_constructor_fields() -> None:
-    transport_field_names = frozenset(
-        record_field.name for record_field in fields(SourceRewritePlanItem)
+    envelope_field_names = frozenset(
+        record_field.name for record_field in fields(SourceRewriteTargetReference)
     )
     for operation_key, operation_type in RefactorRecipeOperation.__registry__.items():
         binding_set = operation_type.payload_bindings()
         declared_payload_field_names = frozenset(
             record_field.name
             for record_field in fields(operation_type)
-            if record_field.name not in transport_field_names
+            if record_field.name not in envelope_field_names
         )
 
         assert all(

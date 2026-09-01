@@ -24,6 +24,7 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.codemod_payload import (
     BooleanPayloadValueCodec,
     DefaultedStringPayloadValueCodec,
+    EmptyDefaultStringPayloadValueCodec,
     IntegerPayloadValueCodec,
     ObjectPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
@@ -89,6 +90,7 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
     cases = (
         (RequiredStringPayloadValueCodec(), "Alpha.run"),
         (DefaultedStringPayloadValueCodec("default"), "Alpha.run"),
+        (EmptyDefaultStringPayloadValueCodec(), ""),
         (OptionalStringPayloadValueCodec(), ""),
         (StringArrayPayloadValueCodec(), ("Alpha", "Beta")),
         (BooleanPayloadValueCodec(), True),
@@ -141,10 +143,21 @@ def test_payload_roles_own_boundary_diagnostics() -> None:
 def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:
     assert DefaultedStringPayloadValueCodec("default").read({}, "name") == "default"
     assert OptionalStringPayloadValueCodec().read({}, "name") is None
-    assert OptionalStringPayloadValueCodec("").read({}, "name") == ""
+    assert EmptyDefaultStringPayloadValueCodec().read({}, "name") == ""
 
     with pytest.raises(ValueError, match="non-empty string"):
         DefaultedStringPayloadValueCodec("default").read({"name": ""}, "name")
+
+
+def test_codemod_payload_has_no_parallel_value_decoding_api() -> None:
+    assert not {
+        "required_string",
+        "optional_string",
+        "string_or_empty",
+        "array",
+        "string_tuple",
+        "source_target",
+    }.intersection(CodemodPayload.__dict__)
 
 
 def test_optional_array_codec_leaves_own_missing_value_semantics() -> None:

@@ -74,6 +74,8 @@ from .codemod_payload import (
     CodemodJsonReport,
     CodemodPayloadRecord,
     DataclassPayloadProjection,
+    DefaultedStringPayloadValueCodec,
+    EmptyDefaultStringPayloadValueCodec,
     IntegerPayloadValueCodec,
     JsonArray,
     JsonObject,
@@ -968,7 +970,7 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
         default=(),
     )
     reason: str = codemod_payload_field(
-        OptionalStringPayloadValueCodec(""),
+        EmptyDefaultStringPayloadValueCodec(),
         default="",
     )
 
@@ -3512,45 +3514,6 @@ class CodemodPayload:
         if unsupported_fields:
             raise self.role.unsupported_fields_error(unsupported_fields)
 
-    def required_string(self, field_name: str) -> str:
-        value = self.fields.get(field_name)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"Expected non-empty string field {field_name!r}")
-        return value
-
-    def optional_string(self, field_name: str) -> str | None:
-        value = self.fields.get(field_name)
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError(f"Expected string field {field_name!r}")
-        return value
-
-    def string_or_empty(self, field_name: str) -> str:
-        value = self.optional_string(field_name)
-        if value is None:
-            return ""
-        return value
-
-    def array(self, field_name: str) -> tuple[JsonValue, ...]:
-        value = self.fields.get(field_name)
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"Expected array field {field_name!r}")
-        return tuple(value)
-
-    def string_tuple(self, field_name: str) -> tuple[str, ...]:
-        values = self.array(field_name)
-        if not all(isinstance(item, str) for item in values):
-            raise ValueError(f"Expected string array field {field_name!r}")
-        return cast(tuple[str, ...], values)
-
-    def source_target(self) -> SourceRewriteTarget:
-        return SourceRewriteTarget(
-            **SourceRewriteTarget.payload_bindings().constructor_kwargs(self.fields)
-        )
-
 
 @dataclass(frozen=True)
 class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
@@ -3566,7 +3529,7 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
             role=CodemodPayloadRole.CALL_REPLACEMENT,
         )
         replacement = cls(
-            target=payload.source_target(),
+            target=SourceRewriteTarget.from_mapping(payload.fields),
             **cls.payload_bindings().constructor_kwargs(payload.fields),
         )
         payload.require_supported_fields(replacement.to_dict())
@@ -3599,7 +3562,10 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
 class SourceRewritePlanItem(SourceRewriteTargetReference):
     """Common target and rationale state for source rewrite plan items."""
 
-    rationale: str = codemod_envelope_field(default="")
+    rationale: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(),
+        default="",
+    )
 
     def rationale_text(self, default: str) -> str:
         if self.rationale:
@@ -4691,12 +4657,15 @@ class RefactorRecipeOperation(
             payload,
             CodemodPayloadRole.REFACTOR_RECIPE_OPERATION,
         )
-        operation_key = plan_payload.required_string("operation")
+        operation_key = RequiredStringPayloadValueCodec().read(
+            plan_payload.fields,
+            "operation",
+        )
         operation_type = cls.__registry__.get(operation_key)
         if operation_type is None or not issubclass(operation_type, cls):
             raise ValueError(f"Unsupported recipe operation: {operation_key}")
         operation = operation_type.from_operation_payload(
-            plan_payload.source_target(),
+            SourceRewriteTarget.from_mapping(plan_payload.fields),
             plan_payload,
         )
         plan_payload.require_supported_fields(operation.to_dict())
@@ -4707,7 +4676,6 @@ class RefactorRecipeOperation(
             "operation": self.operation_key(),
             **self.target.to_dict(),
             **self.operation_payload(),
-            "rationale": self.rationale,
         }
 
     @classmethod
@@ -4718,7 +4686,6 @@ class RefactorRecipeOperation(
     ) -> "RefactorRecipeOperation":
         return cls(
             target=target,
-            rationale=payload.string_or_empty("rationale"),
             **cls.payload_bindings().constructor_kwargs(payload.fields),
         )
 
@@ -4977,7 +4944,7 @@ class ReplaceTextOperation(RefactorRecipeOperation):
     """Replace one exact text fragment inside a source-index target."""
 
     old_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    new_source: str = codemod_payload_field(OptionalStringPayloadValueCodec(""))
+    new_source: str = codemod_payload_field(EmptyDefaultStringPayloadValueCodec())
 
     def source_edits(
         self,
@@ -4999,7 +4966,7 @@ class ReplaceTextOperation(RefactorRecipeOperation):
 class CreateFileOperation(SourcePayloadOperation):
     """Create a Python source file for later operations in the same plan."""
 
-    source: str = codemod_payload_field(OptionalStringPayloadValueCodec(""))
+    source: str = codemod_payload_field(EmptyDefaultStringPayloadValueCodec())
 
     def created_source_paths(
         self,
@@ -5140,7 +5107,7 @@ class DeleteModuleAssignmentsOperation(AssignmentNamesPayloadOperation):
 class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
     """Replace one named module-level assignment statement."""
 
-    source: str = codemod_payload_field(OptionalStringPayloadValueCodec(""))
+    source: str = codemod_payload_field(EmptyDefaultStringPayloadValueCodec())
     assignment_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def source_edits(
@@ -8929,11 +8896,11 @@ class ExposeGlobalCandidateCacheContextOperation(
         default=(),
     )
     base_name: str = codemod_payload_field(
-        OptionalStringPayloadValueCodec("IssueDetector"),
+        DefaultedStringPayloadValueCodec("IssueDetector"),
         default="IssueDetector",
     )
     import_source: str = codemod_payload_field(
-        OptionalStringPayloadValueCodec(""),
+        EmptyDefaultStringPayloadValueCodec(),
         default="",
     )
 
@@ -10996,7 +10963,7 @@ class RefactorRecipe(CodemodPayloadRecord):
         default_factory=ArchitectureGuardSuite,
     )
     reason: str = codemod_payload_field(
-        OptionalStringPayloadValueCodec(""),
+        EmptyDefaultStringPayloadValueCodec(),
         default="",
     )
     authority_claims: tuple[AuthorityClaim, ...] = codemod_payload_field(

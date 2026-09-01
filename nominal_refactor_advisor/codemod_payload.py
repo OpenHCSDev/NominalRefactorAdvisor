@@ -23,6 +23,7 @@ JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
 PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadValueT = TypeVar("PayloadValueT")
 StrEnumT = TypeVar("StrEnumT", bound=StrEnum)
+StringPayloadValueT = TypeVar("StringPayloadValueT", bound=str | None)
 
 
 class CodemodJsonReport(ABC):
@@ -72,11 +73,15 @@ class PayloadValueCodec(Generic[PayloadValueT], ABC):
         raise NotImplementedError
 
 
-class StringPayloadValueCodec(PayloadValueCodec[str | None], ABC):
+class StringPayloadValueCodec(
+    PayloadValueCodec[StringPayloadValueT],
+    Generic[StringPayloadValueT],
+    ABC,
+):
     """Shared wire mechanics for the supported nominal string policies."""
 
     @abstractmethod
-    def value_when_missing(self, field_name: str) -> str | None:
+    def value_when_missing(self, field_name: str) -> StringPayloadValueT:
         """Return the declared missing-field value or reject its absence."""
         raise NotImplementedError
 
@@ -99,14 +104,14 @@ class StringPayloadValueCodec(PayloadValueCodec[str | None], ABC):
         self,
         payload: Mapping[str, JsonValue],
         field_name: str,
-    ) -> str | None:
+    ) -> StringPayloadValueT:
         value = payload.get(field_name)
         if value is None:
             return self.value_when_missing(field_name)
         if not isinstance(value, str):
             raise ValueError(f"Expected string field {field_name!r}")
         self.validate_present_value(value, field_name)
-        return value
+        return cast(StringPayloadValueT, value)
 
     def serialize(self, value: object) -> JsonValue:
         if value is None:
@@ -118,7 +123,7 @@ class StringPayloadValueCodec(PayloadValueCodec[str | None], ABC):
 
 
 @dataclass(frozen=True)
-class RequiredStringPayloadValueCodec(StringPayloadValueCodec):
+class RequiredStringPayloadValueCodec(StringPayloadValueCodec[str]):
     """Require a present, non-empty string payload value."""
 
     def value_when_missing(self, field_name: str) -> str:
@@ -126,12 +131,15 @@ class RequiredStringPayloadValueCodec(StringPayloadValueCodec):
 
 
 @dataclass(frozen=True)
-class DefaultedStringPayloadValueCodec(StringPayloadValueCodec):
-    """Use a declared default when a non-empty string field is absent."""
+class _MissingDefaultStringPayloadValueCodec(
+    StringPayloadValueCodec[StringPayloadValueT],
+    Generic[StringPayloadValueT],
+):
+    """Shared missing-value mechanics for declared string policy leaves."""
 
-    missing_value: str
+    missing_value: StringPayloadValueT
 
-    def value_when_missing(self, field_name: str) -> str:
+    def value_when_missing(self, field_name: str) -> StringPayloadValueT:
         del field_name
         return self.missing_value
 
@@ -140,7 +148,28 @@ class DefaultedStringPayloadValueCodec(StringPayloadValueCodec):
 
 
 @dataclass(frozen=True)
-class OptionalStringPayloadValueCodec(DefaultedStringPayloadValueCodec):
+class DefaultedStringPayloadValueCodec(_MissingDefaultStringPayloadValueCodec[str]):
+    """Use a declared default when a non-empty string field is absent."""
+
+
+@dataclass(frozen=True)
+class EmptyDefaultStringPayloadValueCodec(_MissingDefaultStringPayloadValueCodec[str]):
+    """Accept empty strings and default an absent field to the empty string."""
+
+    missing_value: str = ""
+
+    def validate_present_value(
+        self,
+        value: str,
+        field_name: str | None,
+    ) -> None:
+        del value, field_name
+
+
+@dataclass(frozen=True)
+class OptionalStringPayloadValueCodec(
+    _MissingDefaultStringPayloadValueCodec[str | None]
+):
     """Accept empty strings and optionally default an absent field."""
 
     missing_value: str | None = None
