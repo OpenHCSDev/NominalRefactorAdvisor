@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections import deque
-from collections.abc import Hashable, Iterable
+from collections import Counter, deque
+from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
@@ -151,23 +151,78 @@ class CodemodProjectedScanMode(StrEnum):
 class CodemodFindingClassStatus(StrEnum):
     """Projected status for one semantic class of advisor findings."""
 
-    ELIMINATED = "eliminated"
-    MOVED = "moved"
-    EXPANDED = "expanded"
-    PARTIALLY_ELIMINATED = "partially_eliminated"
-    PERSISTED = "persisted"
-    INTRODUCED = "introduced"
-    UNCHANGED = "unchanged"
+    def __new__(
+        cls,
+        value: str,
+        matcher: Callable[["CodemodFindingClassChange"], bool] | None,
+    ) -> "CodemodFindingClassStatus":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._matcher = matcher
+        return member
+
+    ELIMINATED = (
+        "eliminated",
+        lambda change: bool(change.before_finding_ids) and not change.after_finding_ids,
+    )
+    MOVED = (
+        "moved",
+        lambda change: bool(change.before_finding_ids)
+        and bool(change.after_finding_ids)
+        and change.before_finding_count == change.after_finding_count
+        and bool(change.removed_finding_ids or change.added_finding_ids),
+    )
+    EXPANDED = (
+        "expanded",
+        lambda change: bool(change.before_finding_ids)
+        and change.after_finding_count > change.before_finding_count,
+    )
+    PARTIALLY_ELIMINATED = (
+        "partially_eliminated",
+        lambda change: bool(change.after_finding_ids)
+        and change.after_finding_count < change.before_finding_count,
+    )
+    PERSISTED = (
+        "persisted",
+        lambda change: bool(change.before_finding_ids)
+        and change.before_finding_count == change.after_finding_count
+        and not change.removed_finding_ids
+        and bool(change.expected_removed_finding_ids),
+    )
+    INTRODUCED = (
+        "introduced",
+        lambda change: not change.before_finding_ids and bool(change.after_finding_ids),
+    )
+    UNCHANGED = ("unchanged", None)
+
+    def matches(self, change: "CodemodFindingClassChange") -> bool:
+        return self._matcher is not None and self._matcher(change)
+
+    @classmethod
+    def from_change(
+        cls,
+        change: "CodemodFindingClassChange",
+    ) -> "CodemodFindingClassStatus":
+        matching_statuses = frozenset(
+            status for status in cls if status.matches(change)
+        )
+        if len(matching_statuses) > 1:
+            raise TypeError(
+                "finding-class transition matches multiple statuses: "
+                f"{tuple(sorted(status.value for status in matching_statuses))!r}"
+            )
+        return next(iter(matching_statuses), cls.UNCHANGED)
 
     @classmethod
     def counts(
         cls,
         changes: tuple["CodemodFindingClassChange", ...],
     ) -> JsonObject:
+        change_counts = Counter(change.status for change in changes)
         return {
-            status.value: sum(1 for change in changes if change.status is status)
+            status.value: change_counts[status]
             for status in cls
-            if any(change.status is status for change in changes)
+            if change_counts[status]
         }
 
 
@@ -418,23 +473,7 @@ class CodemodFindingClassChange(CodemodFindingDelta):
 
     @property
     def status(self) -> CodemodFindingClassStatus:
-        if not self.before_finding_ids and self.after_finding_ids:
-            return CodemodFindingClassStatus.INTRODUCED
-        if not self.after_finding_ids:
-            return CodemodFindingClassStatus.ELIMINATED
-        if (
-            self.removed_finding_ids
-            and self.added_finding_ids
-            and self.before_finding_count == self.after_finding_count
-        ):
-            return CodemodFindingClassStatus.MOVED
-        if self.finding_count_increase:
-            return CodemodFindingClassStatus.EXPANDED
-        if self.removed_finding_ids:
-            return CodemodFindingClassStatus.PARTIALLY_ELIMINATED
-        if self.expected_removed_finding_ids:
-            return CodemodFindingClassStatus.PERSISTED
-        return CodemodFindingClassStatus.UNCHANGED
+        return CodemodFindingClassStatus.from_change(self)
 
     @property
     def expected_removed_finding_count(self) -> int:

@@ -15385,6 +15385,59 @@ def test_codemod_finding_class_delta_reports_increased_obligations(
     assert delta.to_dict()["status_counts"] == {"expanded": 1}
 
 
+def test_finding_class_status_members_own_transition_classification(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
+
+    spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Stable projection mirrors nominal authority",
+        "A projection should descend from its nominal authority.",
+        "single nominal owner",
+        "projection repeats a nominal authority without descent",
+    )
+    source_path = tmp_path / "projection.py"
+    first = spec.build(
+        "semantic_mirror_without_descent",
+        "Alpha mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
+    )
+    second = spec.build(
+        "semantic_mirror_without_descent",
+        "Beta mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 18, "Beta.run"),),
+    )
+
+    def status(
+        before_findings: tuple[RefactorFinding, ...],
+        after_findings: tuple[RefactorFinding, ...],
+        expected_removed_finding_ids: tuple[str, ...] = (),
+    ) -> CodemodFindingClassStatus:
+        delta = CodemodFindingClassDelta.from_findings(
+            before_findings,
+            after_findings,
+            expected_removed_finding_ids=expected_removed_finding_ids,
+        )
+        assert len(delta.changes) == 1
+        return delta.changes[0].status
+
+    assert status((), (first,)) is CodemodFindingClassStatus.INTRODUCED
+    assert status((first,), ()) is CodemodFindingClassStatus.ELIMINATED
+    assert status((first,), (second,)) is CodemodFindingClassStatus.MOVED
+    assert status((first,), (first, second)) is CodemodFindingClassStatus.EXPANDED
+    assert status((first, second), (first,)) is (
+        CodemodFindingClassStatus.PARTIALLY_ELIMINATED
+    )
+    assert status(
+        (first,),
+        (first,),
+        (first.stable_id,),
+    ) is CodemodFindingClassStatus.PERSISTED
+    assert status((first,), (first,)) is CodemodFindingClassStatus.UNCHANGED
+
+
 def test_codemod_class_plan_groups_typed_synthesis_records(
     tmp_path: Path,
 ) -> None:
