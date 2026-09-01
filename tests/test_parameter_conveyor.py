@@ -315,7 +315,7 @@ def test_rebinding_between_construction_and_call_blocks_the_component() -> None:
             "pkg.rebound",
             _base_source().replace(
                 "    return _build(left, right)\n",
-                "    left = normalize(left)\n" "    return _build(left, right)\n",
+                "    left = normalize(left)\n    return _build(left, right)\n",
             ),
         )
     )
@@ -335,7 +335,7 @@ def test_branch_local_carrier_does_not_claim_dominance() -> None:
             "pkg.branch",
             _base_source().replace(
                 "    key = _CacheKey(left=left, right=right)\n",
-                "    if left:\n" "        key = _CacheKey(left=left, right=right)\n",
+                "    if left:\n        key = _CacheKey(left=left, right=right)\n",
             ),
         )
     )
@@ -374,7 +374,7 @@ def test_mutated_or_unconsumed_field_parameters_block_the_component() -> None:
         _module(
             "pkg.mutated",
             _base_source(
-                callee_body=("    left = normalize(left)\n" "    return left, right\n")
+                callee_body=("    left = normalize(left)\n    return left, right\n")
             ),
         )
     ).assessed_components()[0]
@@ -416,8 +416,172 @@ def test_dynamic_full_product_forwarding_blocks_the_component() -> None:
 
     component = builder.assessed_components()[0]
 
-    assert ClosedParameterConveyorAuthorityViolation.DYNAMIC_CALL_TARGET in (
+    assert (
+        ClosedParameterConveyorAuthorityViolation.UNRESOLVED_COMPLETE_PRODUCT_CALL
+        in (component.proof.violations)
+    )
+    assert builder.proven_components() == ()
+
+
+def test_named_and_qualified_open_targets_block_complete_product_flow() -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class _CacheKey:\n"
+        "    left: object\n"
+        "    right: object\n"
+        "\n"
+        "def _build(left, right, callback, handler):\n"
+        "    callback(left, right)\n"
+        "    return handler.run(left, right)\n"
+        "\n"
+        "def caller(left, right, callback, handler):\n"
+        "    key = _CacheKey(left=left, right=right)\n"
+        "    return _build(left, right, callback, handler)\n"
+    )
+    component = _builder(_module("pkg.open_targets", source)).assessed_components()[0]
+
+    assert len(component.proof.unresolved_complete_product_call_ids) == 2
+    assert (
+        ClosedParameterConveyorAuthorityViolation.UNRESOLVED_COMPLETE_PRODUCT_CALL
+        in component.proof.violations
+    )
+
+
+def test_exact_alias_forwarding_and_renamed_parameters_join_the_whole_chain() -> None:
+    builder = _builder(
+        _module(
+            "pkg.alias_chain",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class _CacheKey:\n"
+            "    left: object\n"
+            "    right: object\n"
+            "\n"
+            "def _second(first_value, second_value):\n"
+            "    return first_value, second_value\n"
+            "\n"
+            "def _first(left, right):\n"
+            "    first_alias = left\n"
+            "    second_alias = right\n"
+            "    return _second(first_alias, second_alias)\n"
+            "\n"
+            "def caller(left, right):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    return _first(left, right)\n",
+        )
+    )
+
+    components = builder.proven_components()
+
+    assert len(components) == 1
+    assert components[0].participant_symbols == (
+        "pkg.alias_chain._first",
+        "pkg.alias_chain._second",
+    )
+    assert tuple(
+        (binding.field_name, binding.parameter_name)
+        for binding in components[0].forwarding_edges[0].field_bindings
+    ) == (("left", "first_value"), ("right", "second_value"))
+
+
+def test_open_alias_forwarding_blocks_the_attractive_prefix() -> None:
+    builder = _builder(
+        _module(
+            "pkg.open_alias",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class _CacheKey:\n"
+            "    left: object\n"
+            "    right: object\n"
+            "\n"
+            "def _second(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def _first(left, right, flag):\n"
+            "    if flag:\n"
+            "        maybe_left = left\n"
+            "    return _second(maybe_left, right)\n"
+            "\n"
+            "def caller(left, right, flag):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    return _first(left, right, flag)\n",
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert component.participant_symbols == ("pkg.open_alias._first",)
+    assert ClosedParameterConveyorAuthorityViolation.OPEN_VALUE_ALIAS_FORWARDING in (
         component.proof.violations
+    )
+    assert (
+        ClosedParameterConveyorAuthorityViolation.UNRESOLVED_COMPLETE_PRODUCT_CALL
+        in component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_open_disconnected_root_blocks_the_authority_wide_batch() -> None:
+    builder = _builder(
+        _module(
+            "pkg.open_root",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class _CacheKey:\n"
+            "    left: object\n"
+            "    right: object\n"
+            "\n"
+            "def _closed(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def closed_root(left, right):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    return _closed(left, right)\n"
+            "\n"
+            "def open_root(left, right, flag, callback):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    if flag:\n"
+            "        maybe_left = left\n"
+            "    return callback(maybe_left, right)\n",
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert component.participant_symbols == ("pkg.open_root._closed",)
+    assert ClosedParameterConveyorAuthorityViolation.OPEN_VALUE_ALIAS_FORWARDING in (
+        component.proof.violations
+    )
+    assert (
+        ClosedParameterConveyorAuthorityViolation.UNRESOLVED_COMPLETE_PRODUCT_CALL
+        in component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_carrier_alias_mutation_blocks_root_substitution() -> None:
+    builder = _builder(
+        _module(
+            "pkg.carrier_alias_mutation",
+            _base_source().replace(
+                "    return _build(left, right)\n",
+                "    alias = key\n"
+                "    alias.left = normalize(left)\n"
+                "    return _build(left, right)\n",
+            ),
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert (
+        ClosedParameterConveyorAuthorityViolation.REBINDING_OR_MUTATION_BETWEEN_BINDING_AND_USE
+        in component.proof.violations
     )
     assert builder.proven_components() == ()
 

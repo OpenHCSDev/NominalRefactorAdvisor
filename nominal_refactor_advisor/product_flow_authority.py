@@ -28,6 +28,7 @@ from .product_flow import (
     CompactMutationKind,
     CompactProductConstruction,
     CompactProductFlowModuleProjection,
+    CompactValueOriginResolution,
     LexicalValueReference,
 )
 from .semantic_descent import (
@@ -133,6 +134,38 @@ class CompactFunctionCallResolution(ABC):
     @abstractmethod
     def resolved_call(self) -> "CompactResolvedFunctionCall | None":
         raise NotImplementedError
+
+    @cached_property
+    def argument_origin_resolutions(
+        self,
+    ) -> tuple[CompactValueOriginResolution, ...]:
+        return tuple(
+            self.context.flow.value_origin_for(
+                reference,
+                self.call.position,
+            )
+            for value in (
+                *(argument.value for argument in self.call.positional_arguments),
+                *(argument.value for argument in self.call.keyword_arguments),
+            )
+            if (reference := value.lexical_reference) is not None
+        )
+
+    @cached_property
+    def possible_argument_origins(self) -> frozenset[LexicalValueReference]:
+        return frozenset(
+            origin
+            for resolution in self.argument_origin_resolutions
+            for origin in resolution.possible_origins
+        )
+
+    @cached_property
+    def exact_argument_origins(self) -> frozenset[LexicalValueReference]:
+        return frozenset(
+            exact_origin
+            for resolution in self.argument_origin_resolutions
+            if (exact_origin := resolution.exact_origin) is not None
+        )
 
 
 @dataclass(frozen=True)

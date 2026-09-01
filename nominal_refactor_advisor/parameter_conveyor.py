@@ -13,10 +13,13 @@ from .product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
     CompactFunctionDeclaration,
+    CompactLexicalMutation,
     CompactMutationKind,
+    CompactValueOriginResolution,
     LexicalValueReference,
 )
 from .product_flow_authority import (
+    CompactFunctionCallResolution,
     CompactProductAuthority,
     CompactProductFlowContext,
     CompactProductFlowRepository,
@@ -52,6 +55,37 @@ class ParameterConveyorCallEdge(ABC):
     @property
     def field_names(self) -> tuple[str, ...]:
         return tuple(binding.field_name for binding in self.field_bindings)
+
+    @property
+    def field_mapping(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (binding.field_name, binding.parameter_name)
+            for binding in self.field_bindings
+        )
+
+
+@dataclass(frozen=True)
+class ParameterConveyorProductProjection:
+    """One authority product expressed as allowed lexical origins per field."""
+
+    references_by_field: tuple[tuple[str, frozenset[LexicalValueReference]], ...]
+
+    @classmethod
+    def from_field_mapping(
+        cls,
+        field_mapping: tuple[tuple[str, str], ...],
+    ) -> "ParameterConveyorProductProjection":
+        return cls(
+            tuple(
+                (field_name, frozenset((LexicalValueReference(parameter_name),)))
+                for field_name, parameter_name in field_mapping
+            )
+        )
+
+    def is_covered_by(self, origins: frozenset[LexicalValueReference]) -> bool:
+        return all(
+            references & origins for _field_name, references in self.references_by_field
+        )
 
 
 @dataclass(frozen=True)
@@ -138,10 +172,16 @@ def _has_unresolved_consumer(
     return bool(proof.unresolved_consumer_symbols)
 
 
-def _has_dynamic_call_target(
+def _has_open_value_alias_forwarding(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
-    return bool(proof.dynamic_product_call_symbols)
+    return bool(proof.open_value_alias_call_ids)
+
+
+def _has_unresolved_complete_product_call(
+    proof: "ClosedParameterConveyorAuthorityProof",
+) -> bool:
+    return bool(proof.unresolved_complete_product_call_ids)
 
 
 def _has_incomplete_call_family(
@@ -231,10 +271,15 @@ class ClosedParameterConveyorAuthorityViolation(StrEnum):
         "a same-name consumer cannot be resolved to one nominal declaration",
         _has_unresolved_consumer,
     )
-    DYNAMIC_CALL_TARGET = (
-        "dynamic_call_target",
-        "a participant forwards the complete product through a dynamic call target",
-        _has_dynamic_call_target,
+    OPEN_VALUE_ALIAS_FORWARDING = (
+        "open_value_alias_forwarding",
+        "a complete product may flow through an alias whose origin is not exact",
+        _has_open_value_alias_forwarding,
+    )
+    UNRESOLVED_COMPLETE_PRODUCT_CALL = (
+        "unresolved_complete_product_call",
+        "a complete product reaches a call outside the closed component",
+        _has_unresolved_complete_product_call,
     )
     INCOMPLETE_CALL_FAMILY = (
         "incomplete_call_family",
@@ -314,7 +359,8 @@ class ClosedParameterConveyorAuthorityProof:
     ambiguous_root_call_ids: tuple[str, ...]
     incompletely_consuming_participant_symbols: tuple[str, ...]
     unresolved_consumer_symbols: tuple[str, ...]
-    dynamic_product_call_symbols: tuple[str, ...]
+    open_value_alias_call_ids: tuple[str, ...]
+    unresolved_complete_product_call_ids: tuple[str, ...]
     incomplete_call_family_symbols: tuple[str, ...]
     escaping_callable_symbols: tuple[str, ...]
     conflicting_mapping_symbols: tuple[str, ...]
@@ -367,7 +413,7 @@ class _ParameterConveyorComponentSeed:
 
 _CallIdentity: TypeAlias = tuple[str, int, CompactFlowPosition]
 _RootEdgeIdentity: TypeAlias = tuple[str, _CallIdentity, CompactFlowPosition]
-_FieldProjectionKey: TypeAlias = tuple[str, str, LexicalValueReference]
+_ValueProjectionKey: TypeAlias = tuple[str, LexicalValueReference]
 
 
 @dataclass(frozen=True)
@@ -386,19 +432,41 @@ class ClosedParameterConveyorComponentBuilder:
         }
 
     @cached_property
-    def calls_by_field_projection(
+    def bound_argument_origins_by_call(
         self,
-    ) -> dict[_FieldProjectionKey, tuple[CompactResolvedFunctionCall, ...]]:
-        grouped: dict[_FieldProjectionKey, list[CompactResolvedFunctionCall]] = (
+    ) -> dict[_CallIdentity, dict[str, CompactValueOriginResolution]]:
+        return {
+            self.call_identity(edge): {
+                parameter_name: edge.context.flow.value_origin_for(
+                    reference,
+                    edge.call.position,
+                )
+                for parameter_name, reference in self.simple_bound_arguments_by_call[
+                    self.call_identity(edge)
+                ].items()
+            }
+            for edge in self.repository.resolved_function_calls
+        }
+
+    @cached_property
+    def calls_by_value_projection(
+        self,
+    ) -> dict[_ValueProjectionKey, tuple[CompactResolvedFunctionCall, ...]]:
+        grouped: dict[_ValueProjectionKey, list[CompactResolvedFunctionCall]] = (
             defaultdict(list)
         )
         for edge in self.repository.resolved_function_calls:
             for parameter_name, reference in self.simple_bound_arguments_by_call.get(
                 self.call_identity(edge), {}
             ).items():
-                grouped[(edge.context.owner_symbol, parameter_name, reference)].append(
-                    edge
-                )
+                projections = [reference]
+                exact_origin = self.bound_argument_origins_by_call[
+                    self.call_identity(edge)
+                ][parameter_name].exact_origin
+                if exact_origin is not None:
+                    projections.append(exact_origin)
+                for projection in dict.fromkeys(projections):
+                    grouped[(edge.context.owner_symbol, projection)].append(edge)
         return {key: tuple(edges) for key, edges in grouped.items()}
 
     @cached_property
@@ -423,15 +491,19 @@ class ClosedParameterConveyorComponentBuilder:
                     first_field,
                 ),
             )
+            first_field_references = (
+                *self._reference_equivalents(
+                    construction.context,
+                    source_reference,
+                    construction.call.position,
+                ),
+                carrier_reference,
+            )
             candidate_edges = {
                 self.call_identity(edge): edge
-                for expected_reference in (source_reference, carrier_reference)
-                for edge in self.calls_by_field_projection.get(
-                    (
-                        construction.context.owner_symbol,
-                        first_field,
-                        expected_reference,
-                    ),
+                for expected_reference in dict.fromkeys(first_field_references)
+                for edge in self.calls_by_value_projection.get(
+                    (construction.context.owner_symbol, expected_reference),
                     (),
                 )
             }
@@ -484,7 +556,7 @@ class ClosedParameterConveyorComponentBuilder:
             authority = authority_by_symbol[authority_symbol]
             participant_symbols, forwarding_edges = self._reachable_participants(
                 authority,
-                frozenset(edge.callee_symbol for edge in root_edges),
+                tuple(root_edges),
             )
             seeds.append(
                 _ParameterConveyorComponentSeed(
@@ -499,30 +571,46 @@ class ClosedParameterConveyorComponentBuilder:
     def _reachable_participants(
         self,
         authority: CompactProductAuthority,
-        root_participant_symbols: frozenset[str],
+        root_edges: tuple[ConstructedProductCallEdge, ...],
     ) -> tuple[frozenset[str], tuple[ForwardedProductCallEdge, ...]]:
-        participants = set(root_participant_symbols)
-        pending = deque(root_participant_symbols)
-        edges: dict[_CallIdentity, ForwardedProductCallEdge] = {}
+        participants = {edge.callee_symbol for edge in root_edges}
+        pending: deque[ParameterConveyorCallEdge] = deque(root_edges)
+        visited_mappings: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+        edges: dict[
+            tuple[_CallIdentity, tuple[tuple[str, str], ...]],
+            ForwardedProductCallEdge,
+        ] = {}
         while pending:
-            caller_symbol = pending.popleft()
+            incoming_edge = pending.popleft()
+            caller_symbol = incoming_edge.callee_symbol
+            caller_mapping = incoming_edge.field_mapping
+            mapping_identity = caller_symbol, caller_mapping
+            if mapping_identity in visited_mappings:
+                continue
+            visited_mappings.add(mapping_identity)
+            caller_parameters_by_field = dict(caller_mapping)
             first_field = authority.field_names[0]
-            candidate_edges = self.calls_by_field_projection.get(
+            candidate_edges = self.calls_by_value_projection.get(
                 (
                     caller_symbol,
-                    first_field,
-                    LexicalValueReference(first_field),
+                    LexicalValueReference(caller_parameters_by_field[first_field]),
                 ),
                 (),
             )
             for call_edge in candidate_edges:
-                edge = self._forwarded_edge(caller_symbol, authority, call_edge)
+                edge = self._forwarded_edge(
+                    caller_symbol,
+                    authority,
+                    call_edge,
+                    caller_parameters_by_field,
+                )
                 if edge is None:
                     continue
-                edges[self.call_identity(call_edge)] = edge
+                edge_mapping = edge.field_mapping
+                edges[(self.call_identity(call_edge), edge_mapping)] = edge
                 if edge.callee_symbol not in participants:
                     participants.add(edge.callee_symbol)
-                    pending.append(edge.callee_symbol)
+                pending.append(edge)
         return frozenset(participants), tuple(edges.values())
 
     def _constructed_edge(
@@ -538,9 +626,16 @@ class ClosedParameterConveyorComponentBuilder:
             call_edge,
             {
                 field_name: frozenset(
-                    reference
-                    for reference in (
-                        construction_arguments[field_name],
+                    (
+                        *(
+                            self._reference_equivalents(
+                                construction.context,
+                                construction_arguments[field_name],
+                                construction.call.position,
+                            )
+                            if construction_arguments[field_name] is not None
+                            else ()
+                        ),
                         LexicalValueReference(
                             construction.construction.result_binding.root_name,
                             (
@@ -549,7 +644,6 @@ class ClosedParameterConveyorComponentBuilder:
                             ),
                         ),
                     )
-                    if reference is not None
                 )
                 for field_name in construction.authority.field_names
             },
@@ -571,7 +665,11 @@ class ClosedParameterConveyorComponentBuilder:
                 {
                     mutation.reference.root_name
                     for mutation in construction.context.flow.mutations
-                    if mutation.reference.root_name in protected_roots
+                    if self._mutation_reaches_protected_root(
+                        construction.context,
+                        mutation,
+                        protected_roots,
+                    )
                     and construction_position.dominates(mutation.position)
                     and mutation.position.dominates(call_position)
                     and not (
@@ -604,12 +702,15 @@ class ClosedParameterConveyorComponentBuilder:
         caller_symbol: str,
         authority: CompactProductAuthority,
         call_edge: CompactResolvedFunctionCall,
+        caller_parameters_by_field: dict[str, str],
     ) -> ForwardedProductCallEdge | None:
         bindings = self._field_bindings(
             authority,
             call_edge,
             {
-                field_name: frozenset((LexicalValueReference(field_name),))
+                field_name: frozenset(
+                    (LexicalValueReference(caller_parameters_by_field[field_name]),)
+                )
                 for field_name in authority.field_names
             },
         )
@@ -635,22 +736,72 @@ class ClosedParameterConveyorComponentBuilder:
             self.call_identity(call_edge),
             {},
         )
+        argument_origins = self.bound_argument_origins_by_call.get(
+            self.call_identity(call_edge),
+            {},
+        )
         bindings: list[ParameterConveyorFieldBinding] = []
         for field_name in authority.field_names:
-            value_reference = simple_arguments.get(field_name)
-            if (
-                value_reference is None
-                or value_reference not in expected_references_by_field[field_name]
-            ):
+            matches = tuple(
+                (parameter_name, value_reference)
+                for parameter_name, value_reference in simple_arguments.items()
+                if expected_references_by_field[field_name]
+                & frozenset(
+                    reference
+                    for reference in (
+                        value_reference,
+                        argument_origins[parameter_name].exact_origin,
+                    )
+                    if reference is not None
+                )
+            )
+            if len(matches) != 1:
                 return None
+            parameter_name, value_reference = matches[0]
             bindings.append(
                 ParameterConveyorFieldBinding(
                     field_name=field_name,
-                    parameter_name=field_name,
+                    parameter_name=parameter_name,
                     value_reference=value_reference,
                 )
             )
         return tuple(bindings)
+
+    @staticmethod
+    def _reference_equivalents(
+        context: CompactProductFlowContext,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition,
+    ) -> tuple[LexicalValueReference, ...]:
+        exact_origin = context.flow.value_origin_for(
+            reference,
+            use_position,
+        ).exact_origin
+        return tuple(
+            dict.fromkeys(
+                candidate
+                for candidate in (reference, exact_origin)
+                if candidate is not None
+            )
+        )
+
+    @staticmethod
+    def _mutation_reaches_protected_root(
+        context: CompactProductFlowContext,
+        mutation: CompactLexicalMutation,
+        protected_roots: set[str],
+    ) -> bool:
+        origin_resolution = context.flow.value_origin_for(
+            mutation.reference,
+            mutation.position,
+        )
+        return bool(
+            mutation.reference.root_name in protected_roots
+            or any(
+                origin.root_name in protected_roots
+                for origin in origin_resolution.possible_origins
+            )
+        )
 
     @staticmethod
     def _construction_arguments(
@@ -707,19 +858,12 @@ class ClosedParameterConveyorComponentBuilder:
             self.call_identity(edge.resolved_call) for edge in edges
         )
         participant_symbols = frozenset(seed.participant_symbols)
-        participant_simple_names = {
-            symbol: symbol.rsplit(".", 1)[-1] for symbol in participant_symbols
-        }
-        resolved_call_ids = frozenset(
-            self.call_identity(edge) for edge in self.repository.resolved_function_calls
-        )
         unresolved_consumers = {
-            participant_symbol
-            for context in self.repository.flow_contexts
-            for call in context.flow.calls
-            if self._raw_call_identity(context, call) not in resolved_call_ids
-            for participant_symbol, simple_name in participant_simple_names.items()
-            if call.target.terminal_name == simple_name
+            possible_symbol
+            for resolution in self.repository.function_call_resolutions
+            if resolution.resolved_call is None
+            for possible_symbol in resolution.target_resolution.possible_symbols
+            if possible_symbol in participant_symbols
         }
         incomplete_call_family_symbols = {
             participant_symbol
@@ -734,26 +878,53 @@ class ClosedParameterConveyorComponentBuilder:
             for participant_symbol in participant_symbols
             if self.repository.callable_escapes_for(participant_symbol)
         }
-        dynamic_product_call_symbols = {
-            participant.symbol
-            for participant in participants
-            if self._has_dynamic_complete_product_call(
-                participant.context,
-                seed.authority.field_names,
-            )
+        field_mappings_by_participant: dict[
+            str,
+            set[tuple[tuple[str, str], ...]],
+        ] = defaultdict(set)
+        for edge in edges:
+            field_mappings_by_participant[edge.callee_symbol].add(edge.field_mapping)
+        exact_field_mapping_by_participant = {
+            participant_symbol: next(iter(mappings))
+            for participant_symbol, mappings in field_mappings_by_participant.items()
+            if len(mappings) == 1
         }
+        open_alias_call_ids, unresolved_product_call_ids = (
+            self._participant_product_call_hazards(
+                participants,
+                component_call_ids,
+                exact_field_mapping_by_participant,
+            )
+        )
+        root_open_alias_ids, unresolved_root_call_ids = self._root_call_hazards(
+            seed.authority,
+            seed.root_edges,
+        )
+        open_alias_call_ids.update(root_open_alias_ids)
+        unresolved_product_call_ids.update(unresolved_root_call_ids)
         incomplete_consumption_symbols = {
             participant.symbol
             for participant in participants
-            if not frozenset(seed.authority.field_names).issubset(
-                participant.context.flow.loaded_value_root_names
-            )
+            if participant.symbol not in exact_field_mapping_by_participant
+            or not frozenset(
+                parameter_name
+                for _field_name, parameter_name in exact_field_mapping_by_participant[
+                    participant.symbol
+                ]
+            ).issubset(participant.context.flow.loaded_value_root_names)
         }
         mutated_binding_symbols = {
             participant.symbol
             for participant in participants
             if any(
-                mutation.reference.root_name in seed.authority.field_names
+                mutation.reference.root_name
+                in {
+                    parameter_name
+                    for _field_name, parameter_name in exact_field_mapping_by_participant.get(
+                        participant.symbol,
+                        (),
+                    )
+                }
                 for mutation in participant.context.flow.mutations
             )
         }
@@ -813,7 +984,10 @@ class ClosedParameterConveyorComponentBuilder:
                 sorted(incomplete_consumption_symbols)
             ),
             unresolved_consumer_symbols=tuple(sorted(unresolved_consumers)),
-            dynamic_product_call_symbols=tuple(sorted(dynamic_product_call_symbols)),
+            open_value_alias_call_ids=tuple(sorted(open_alias_call_ids)),
+            unresolved_complete_product_call_ids=tuple(
+                sorted(unresolved_product_call_ids)
+            ),
             incomplete_call_family_symbols=tuple(
                 sorted(incomplete_call_family_symbols)
             ),
@@ -823,6 +997,7 @@ class ClosedParameterConveyorComponentBuilder:
                     participant_symbol
                     for participant_symbol in participant_symbols
                     if len(authority_symbols_by_participant[participant_symbol]) > 1
+                    or len(field_mappings_by_participant[participant_symbol]) > 1
                 )
             ),
             non_dominating_root_symbols=tuple(
@@ -878,8 +1053,7 @@ class ClosedParameterConveyorComponentBuilder:
             if declaration.owner_class_qualname is None:
                 continue
             owner_symbol = (
-                f"{declaration.identity.module_name}."
-                f"{declaration.owner_class_qualname}"
+                f"{declaration.identity.module_name}.{declaration.owner_class_qualname}"
             )
             method_name = declaration.identity.qualname.rsplit(".", 1)[-1]
             related_class_symbols = (
@@ -896,26 +1070,138 @@ class ClosedParameterConveyorComponentBuilder:
                 incomplete.add(participant_symbol)
         return incomplete
 
-    @staticmethod
-    def _has_dynamic_complete_product_call(
-        context: CompactProductFlowContext,
-        field_names: tuple[str, ...],
-    ) -> bool:
-        expected_roots = frozenset(field_names)
-        return any(
-            call.target.terminal_name is None
-            and expected_roots.issubset(
-                {
-                    reference.root_name
-                    for argument in (
-                        *(item.value for item in call.positional_arguments),
-                        *(item.value for item in call.keyword_arguments),
-                    )
-                    if (reference := argument.lexical_reference) is not None
-                }
-            )
-            for call in context.flow.calls
+    def _participant_product_call_hazards(
+        self,
+        participants: tuple[ParameterConveyorParticipant, ...],
+        component_call_ids: frozenset[_CallIdentity],
+        field_mapping_by_participant: dict[str, tuple[tuple[str, str], ...]],
+    ) -> tuple[set[str], set[str]]:
+        participant_symbols = frozenset(
+            participant.symbol for participant in participants
         )
+        open_alias_call_ids: set[str] = set()
+        unresolved_call_ids: set[str] = set()
+        for resolution in self.repository.function_call_resolutions:
+            if resolution.context.owner_symbol not in participant_symbols:
+                continue
+            caller_mapping = field_mapping_by_participant.get(
+                resolution.context.owner_symbol
+            )
+            if caller_mapping is None:
+                continue
+            product_projection = ParameterConveyorProductProjection.from_field_mapping(
+                caller_mapping
+            )
+            identity = self._raw_call_identity(resolution.context, resolution.call)
+            if identity in component_call_ids:
+                continue
+            self._record_call_hazard(
+                product_projection,
+                resolution,
+                open_alias_call_ids,
+                unresolved_call_ids,
+                source_alias_is_open=False,
+            )
+        return open_alias_call_ids, unresolved_call_ids
+
+    def _root_call_hazards(
+        self,
+        authority: CompactProductAuthority,
+        exact_root_edges: tuple[ConstructedProductCallEdge, ...],
+    ) -> tuple[set[str], set[str]]:
+        exact_root_identities = frozenset(
+            (
+                self.call_identity(edge.resolved_call),
+                edge.construction.call.position,
+            )
+            for edge in exact_root_edges
+        )
+        open_alias_call_ids: set[str] = set()
+        unresolved_call_ids: set[str] = set()
+        for construction in self.repository.resolved_product_constructions:
+            if construction.authority.class_symbol != authority.class_symbol:
+                continue
+            construction_arguments = self._construction_arguments(construction)
+            if frozenset(construction_arguments) != frozenset(authority.field_names):
+                continue
+            construction_origin_resolutions = {
+                field_name: construction.context.flow.value_origin_for(
+                    reference,
+                    construction.call.position,
+                )
+                for field_name in authority.field_names
+                if (reference := construction_arguments[field_name]) is not None
+            }
+            if len(construction_origin_resolutions) != len(authority.field_names):
+                continue
+            product_projection = ParameterConveyorProductProjection(
+                tuple(
+                    (
+                        field_name,
+                        frozenset(
+                            (
+                                construction_arguments[field_name],
+                                *origin_resolution.possible_origins,
+                            )
+                        ),
+                    )
+                    for field_name, origin_resolution in construction_origin_resolutions.items()
+                )
+            )
+            construction_alias_is_open = any(
+                resolution.exact_origin is None
+                for resolution in construction_origin_resolutions.values()
+            )
+            for resolution in self.repository.function_call_resolutions:
+                if (
+                    resolution.context.owner_symbol != construction.context.owner_symbol
+                    or not construction.call.position.dominates(
+                        resolution.call.position
+                    )
+                ):
+                    continue
+                identity = self._raw_call_identity(
+                    resolution.context,
+                    resolution.call,
+                )
+                if (identity, construction.call.position) in exact_root_identities:
+                    continue
+                self._record_call_hazard(
+                    product_projection,
+                    resolution,
+                    open_alias_call_ids,
+                    unresolved_call_ids,
+                    source_alias_is_open=construction_alias_is_open,
+                )
+        return open_alias_call_ids, unresolved_call_ids
+
+    @staticmethod
+    def _record_call_hazard(
+        product_projection: ParameterConveyorProductProjection,
+        resolution: CompactFunctionCallResolution,
+        open_alias_call_ids: set[str],
+        unresolved_call_ids: set[str],
+        *,
+        source_alias_is_open: bool,
+    ) -> None:
+        if not product_projection.is_covered_by(resolution.possible_argument_origins):
+            return
+        display_id = (
+            ClosedParameterConveyorComponentBuilder._call_resolution_display_id(
+                resolution
+            )
+        )
+        if source_alias_is_open or not product_projection.is_covered_by(
+            resolution.exact_argument_origins
+        ):
+            open_alias_call_ids.add(display_id)
+        unresolved_call_ids.add(display_id)
+
+    @staticmethod
+    def _call_resolution_display_id(
+        resolution: CompactFunctionCallResolution,
+    ) -> str:
+        return f"{resolution.context.file_path}:{resolution.call.line}"
 
     @staticmethod
     def _is_repository_private(declaration: CompactFunctionDeclaration) -> bool:
