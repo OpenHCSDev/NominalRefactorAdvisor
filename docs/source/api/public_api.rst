@@ -34,10 +34,11 @@ export and application require a proof across reachable refactor trajectories.
 Its cancelable-composition signal is generic: it treats pack, unpack, and
 field-forwarding wrappers as factorable product morphisms when they preserve
 common fields and do not own an invariant.
-``RefactorRecipeOperation`` subclasses declare wire semantics with
-``codemod_payload_field`` on their dataclass fields.  The inherited operation
-codec catalog is derived from those declarations, so adding a field does not
-require a parallel serialization method.
+``RefactorRecipeOperation`` and ``CodemodTargetSelector`` subclasses declare
+wire semantics with ``codemod_payload_field`` on their dataclass fields.  Their
+inherited codec catalogs, and the recipe/document record schemas built from
+them, derive from those declarations, so adding a field does not require a
+parallel serialization method.
 
 Rejected ``FindingRecipeSynthesisRecord`` values expose ``proof_obstacles``.
 Each obstacle identifies the nominal executable declaration that failed to

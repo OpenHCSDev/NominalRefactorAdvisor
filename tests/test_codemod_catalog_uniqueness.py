@@ -150,7 +150,7 @@ def test_operation_payload_derivation_rejects_unbound_constructor_fields() -> No
 
 def test_registered_selector_payload_bindings_are_unique() -> None:
     for selector_key, selector_type in CodemodTargetSelector.__registry__.items():
-        binding_set = selector_type.payload_bindings
+        binding_set = selector_type.payload_bindings()
 
         assert selector_type.registry_key == selector_key
         assert isinstance(binding_set, PayloadBindingSet), selector_key
@@ -158,6 +158,20 @@ def test_registered_selector_payload_bindings_are_unique() -> None:
         assert len(
             {binding.constructor_argument_name for binding in binding_set}
         ) == len(binding_set)
+        assert frozenset(
+            binding.constructor_argument_name for binding in binding_set
+        ) == frozenset(record_field.name for record_field in fields(selector_type))
+        assert "payload_bindings" not in selector_type.__dict__, selector_key
+        assert selector_type.payload_bindings() is binding_set
+
+
+def test_selector_payload_derivation_rejects_unbound_constructor_fields() -> None:
+    @dataclass(frozen=True)
+    class IncompletePayloadSelector(CodemodTargetSelector):
+        undeclared_value: str
+
+    with pytest.raises(TypeError, match="missing=\\('undeclared_value',\\)"):
+        IncompletePayloadSelector.payload_bindings()
 
 
 def test_payload_records_own_their_wire_schema() -> None:
@@ -195,7 +209,12 @@ def test_payload_records_own_their_wire_schema() -> None:
     assert issubclass(SourceRewriteContributor, CodemodPayloadRecord)
     for record_type, binding_names in expected_binding_names.items():
         assert issubclass(record_type, CodemodPayloadRecord)
-        assert tuple(
-            (binding.field_name, binding.constructor_argument_name)
-            for binding in record_type.payload_bindings()
-        ) == binding_names
+        binding_set = record_type.payload_bindings()
+        assert (
+            tuple(
+                (binding.field_name, binding.constructor_argument_name)
+                for binding in binding_set
+            )
+            == binding_names
+        )
+        assert record_type.payload_bindings() is binding_set

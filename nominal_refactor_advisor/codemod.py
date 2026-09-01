@@ -996,6 +996,7 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
     reason: str = ""
 
     @classmethod
+    @lru_cache(maxsize=None)
     def payload_bindings(cls) -> PayloadBindingSet["ArchitectureGuardRule", object]:
         del cls
         return PayloadBindingSet.from_field_codecs(
@@ -3447,6 +3448,7 @@ SelectorPayloadBindings: TypeAlias = PayloadBindingSet[
 ]
 
 
+@dataclass(frozen=True)
 class CodemodTargetSelector(
     CodemodPayloadRecord,
     ABC,
@@ -3460,7 +3462,13 @@ class CodemodTargetSelector(
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
     registry_key: ClassVar[str]
-    payload_bindings: ClassVar[SelectorPayloadBindings] = PayloadBindingSet()
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def payload_bindings(cls) -> SelectorPayloadBindings:
+        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
+            cls
+        )
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "CodemodTargetSelector":
@@ -3486,7 +3494,7 @@ class CodemodTargetSelector(
         cls,
         payload: Mapping[str, JsonValue],
     ) -> "CodemodTargetSelector":
-        return cls(**cls.payload_bindings.constructor_kwargs(payload))
+        return cls(**cls.payload_bindings().constructor_kwargs(payload))
 
     def select(self, context: CodemodSelectorContext) -> CodemodTargetSelection:
         return CodemodTargetSelection(self.target_ids(context))
@@ -3498,7 +3506,7 @@ class CodemodTargetSelector(
         }
 
     def selector_payload(self) -> JsonObject:
-        return type(self).payload_bindings.payload(self)
+        return type(self).payload_bindings().payload(self)
 
     @abstractmethod
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -3509,11 +3517,8 @@ class CodemodTargetSelector(
 class FindingEvidenceTargetSelector(CodemodTargetSelector):
     """Select source-index targets connected to advisor finding evidence."""
 
-    finding_ids: tuple[str, ...]
-    payload_bindings: ClassVar[SelectorPayloadBindings] = (
-        PayloadBindingSet.from_field_codecs(
-            finding_ids=OptionalStringArrayPayloadValueCodec(),
-        )
+    finding_ids: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec()
     )
 
     @classmethod
@@ -3531,15 +3536,17 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
 class TargetSetExpressionSelector(CodemodTargetSelector):
     """Compose selectors with union, intersection, and exclusion."""
 
-    include: tuple[CodemodTargetSelector, ...] = ()
-    require: tuple[CodemodTargetSelector, ...] = ()
-    exclude: tuple[CodemodTargetSelector, ...] = ()
-    payload_bindings: ClassVar[SelectorPayloadBindings] = (
-        PayloadBindingSet.from_field_codecs(
-            include=PayloadRecordArrayValueCodec(CodemodTargetSelector),
-            require=PayloadRecordArrayValueCodec(CodemodTargetSelector),
-            exclude=PayloadRecordArrayValueCodec(CodemodTargetSelector),
-        )
+    include: tuple[CodemodTargetSelector, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(CodemodTargetSelector),
+        default=(),
+    )
+    require: tuple[CodemodTargetSelector, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(CodemodTargetSelector),
+        default=(),
+    )
+    exclude: tuple[CodemodTargetSelector, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(CodemodTargetSelector),
+        default=(),
     )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -3584,21 +3591,29 @@ class RegexPatternSet:
 class SourceIndexTargetSelector(CodemodTargetSelector):
     """Select source-index AST targets by kind, path, qualname, or regex."""
 
-    node_kinds: tuple[AstTargetNodeKind, ...] = ()
-    file_paths: tuple[str, ...] = ()
-    qualnames: tuple[str, ...] = ()
-    file_path_patterns: tuple[str, ...] = ()
-    name_patterns: tuple[str, ...] = ()
-    qualname_patterns: tuple[str, ...] = ()
-    payload_bindings: ClassVar[SelectorPayloadBindings] = (
-        PayloadBindingSet.from_field_codecs(
-            node_kinds=NodeKindArrayPayloadValueCodec(),
-            file_paths=OptionalStringArrayPayloadValueCodec(),
-            qualnames=OptionalStringArrayPayloadValueCodec(),
-            file_path_patterns=OptionalStringArrayPayloadValueCodec(),
-            name_patterns=OptionalStringArrayPayloadValueCodec(),
-            qualname_patterns=OptionalStringArrayPayloadValueCodec(),
-        )
+    node_kinds: tuple[AstTargetNodeKind, ...] = codemod_payload_field(
+        NodeKindArrayPayloadValueCodec(),
+        default=(),
+    )
+    file_paths: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    qualnames: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    file_path_patterns: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    name_patterns: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    qualname_patterns: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
     )
 
     @classmethod
@@ -3652,17 +3667,20 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
 class ClassFamilyTargetSelector(CodemodTargetSelector):
     """Select class targets from class-family symbols and graph closure."""
 
-    class_symbols: tuple[str, ...]
-    include_self: bool = True
-    include_ancestors: bool = False
-    include_descendants: bool = False
-    payload_bindings: ClassVar[SelectorPayloadBindings] = (
-        PayloadBindingSet.from_field_codecs(
-            class_symbols=OptionalStringArrayPayloadValueCodec(),
-            include_self=BooleanPayloadValueCodec(declared_default=True),
-            include_ancestors=BooleanPayloadValueCodec(),
-            include_descendants=BooleanPayloadValueCodec(),
-        )
+    class_symbols: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec()
+    )
+    include_self: bool = codemod_payload_field(
+        BooleanPayloadValueCodec(declared_default=True),
+        default=True,
+    )
+    include_ancestors: bool = codemod_payload_field(
+        BooleanPayloadValueCodec(),
+        default=False,
+    )
+    include_descendants: bool = codemod_payload_field(
+        BooleanPayloadValueCodec(),
+        default=False,
     )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -3702,17 +3720,21 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
 class InheritanceEdgeTargetSelector(CodemodTargetSelector):
     """Select class targets participating in resolved inheritance edges."""
 
-    parent_symbols: tuple[str, ...] = ()
-    child_symbols: tuple[str, ...] = ()
-    include_parents: bool = True
-    include_children: bool = True
-    payload_bindings: ClassVar[SelectorPayloadBindings] = (
-        PayloadBindingSet.from_field_codecs(
-            parent_symbols=OptionalStringArrayPayloadValueCodec(),
-            child_symbols=OptionalStringArrayPayloadValueCodec(),
-            include_parents=BooleanPayloadValueCodec(declared_default=True),
-            include_children=BooleanPayloadValueCodec(declared_default=True),
-        )
+    parent_symbols: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    child_symbols: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    include_parents: bool = codemod_payload_field(
+        BooleanPayloadValueCodec(declared_default=True),
+        default=True,
+    )
+    include_children: bool = codemod_payload_field(
+        BooleanPayloadValueCodec(declared_default=True),
+        default=True,
     )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -3777,11 +3799,8 @@ class CallSiteSelector:
 class CallSiteTargetSelector(CodemodTargetSelector):
     """Select source-index targets that enclose matching call sites."""
 
-    callee_names: tuple[str, ...]
-    payload_bindings: ClassVar[SelectorPayloadBindings] = (
-        PayloadBindingSet.from_field_codecs(
-            callee_names=OptionalStringArrayPayloadValueCodec(),
-        )
+    callee_names: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec()
     )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -4050,17 +4069,17 @@ class CodemodPayload:
 class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
     """One exact call-site replacement inside an authority extraction recipe."""
 
-    old_source: str
-    new_source: str
+    old_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    new_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     @classmethod
+    @lru_cache(maxsize=None)
     def payload_bindings(
         cls,
     ) -> PayloadBindingSet["RecipeCallReplacement", str]:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            old_source=RequiredStringPayloadValueCodec(),
-            new_source=RequiredStringPayloadValueCodec(),
+        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
+            cls,
+            non_payload_owner_types=(SourceRewriteTargetReference,),
         )
 
     @classmethod
@@ -11503,31 +11522,30 @@ def _joined_rationales(rationales: Iterable[str]) -> str:
 class RefactorRecipe(CodemodPayloadRecord):
     """Executable batch of source rewrites and post-refactor invariants."""
 
-    recipe_id: str
-    operations: tuple[RefactorRecipeOperation, ...] = ()
-    guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
-    reason: str = ""
-    authority_claims: tuple[AuthorityClaim, ...] = ()
+    recipe_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    operations: tuple[RefactorRecipeOperation, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(RefactorRecipeOperation),
+        default=(),
+    )
+    guard_suite: ArchitectureGuardSuite = codemod_payload_field(
+        ArchitectureGuardSuitePayloadValueCodec(),
+        field_name=ARCHITECTURE_GUARDS_PAYLOAD_FIELD,
+        default_factory=ArchitectureGuardSuite,
+    )
+    reason: str = codemod_payload_field(
+        OptionalStringPayloadValueCodec(""),
+        default="",
+    )
+    authority_claims: tuple[AuthorityClaim, ...] = codemod_payload_field(
+        AuthorityClaimArrayPayloadValueCodec(),
+        default=(),
+    )
 
     @classmethod
+    @lru_cache(maxsize=None)
     def payload_bindings(cls) -> PayloadBindingSet["RefactorRecipe", object]:
-        del cls
-        return (
-            PayloadBindingSet.from_field_codecs(
-                recipe_id=RequiredStringPayloadValueCodec(),
-                operations=PayloadRecordArrayValueCodec(RefactorRecipeOperation),
-            )
-            + PayloadBindingSet.from_explicit_fields(
-                (
-                    ARCHITECTURE_GUARDS_PAYLOAD_FIELD,
-                    "guard_suite",
-                    ArchitectureGuardSuitePayloadValueCodec(),
-                ),
-            )
-            + PayloadBindingSet.from_field_codecs(
-                reason=OptionalStringPayloadValueCodec(""),
-                authority_claims=AuthorityClaimArrayPayloadValueCodec(),
-            )
+        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
+            cls
         )
 
     @classmethod
@@ -11847,20 +11865,21 @@ class RefactorRecipe(CodemodPayloadRecord):
 class CodemodPlanDocument(CodemodPayloadRecord):
     """Caller-supplied codemod plan plus post-refactor guard invariants."""
 
-    recipes: tuple[RefactorRecipe, ...] = ()
-    guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
+    recipes: tuple[RefactorRecipe, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(RefactorRecipe),
+        default=(),
+    )
+    guard_suite: ArchitectureGuardSuite = codemod_payload_field(
+        ArchitectureGuardSuitePayloadValueCodec(),
+        field_name=ARCHITECTURE_GUARDS_PAYLOAD_FIELD,
+        default_factory=ArchitectureGuardSuite,
+    )
 
     @classmethod
+    @lru_cache(maxsize=None)
     def payload_bindings(cls) -> PayloadBindingSet["CodemodPlanDocument", object]:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            recipes=PayloadRecordArrayValueCodec(RefactorRecipe),
-        ) + PayloadBindingSet.from_explicit_fields(
-            (
-                ARCHITECTURE_GUARDS_PAYLOAD_FIELD,
-                "guard_suite",
-                ArchitectureGuardSuitePayloadValueCodec(),
-            ),
+        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
+            cls
         )
 
     @classmethod
@@ -12108,17 +12127,17 @@ class CodemodPlanDocumentPreflight:
 class CodemodPlanSequence(CodemodPayloadRecord):
     """Ordered codemod documents resolved against each prior simulated stage."""
 
-    documents: tuple[CodemodPlanDocument, ...] = ()
+    documents: tuple[CodemodPlanDocument, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(CodemodPlanDocument),
+        field_name="stages",
+        default=(),
+    )
 
     @classmethod
+    @lru_cache(maxsize=None)
     def payload_bindings(cls) -> PayloadBindingSet["CodemodPlanSequence", object]:
-        del cls
-        return PayloadBindingSet.from_explicit_fields(
-            (
-                "stages",
-                "documents",
-                PayloadRecordArrayValueCodec(CodemodPlanDocument),
-            ),
+        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
+            cls
         )
 
     @classmethod

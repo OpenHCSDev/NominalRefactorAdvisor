@@ -44,9 +44,9 @@ The advisor currently enforces these repository-level choices:
 - detector bases centralize orchestration so concrete detectors keep only matching logic
 - executable detector leaves inherit recipe synthesis through their MRO rather
   than repeating detector identities in a second registry
-- codemod operation fields own their wire codecs; inherited payload catalogs
-  derive from those dataclass declarations instead of being recomposed by each
-  operation class
+- codemod operation and selector fields own their wire codecs; inherited
+  payload catalogs and plan-record schemas derive from those dataclass
+  declarations instead of being recomposed by each consumer class
 - findings and plans use authoritative dataclasses rather than loose dict bags
 - class-time registration is normalized through ``metaclass-registry`` rather than local manual rosters
 - docs prefer generated catalogs and code-validated object references over hand-maintained inventories

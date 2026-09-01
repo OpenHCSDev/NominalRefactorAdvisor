@@ -41,7 +41,7 @@ def test_registered_payload_bindings_own_exact_codec_leaves() -> None:
         for declaration_type in RefactorRecipeOperation.__registry__.values()
     )
     selector_binding_sets = (
-        declaration_type.payload_bindings
+        declaration_type.payload_bindings()
         for declaration_type in CodemodTargetSelector.__registry__.values()
     )
 
