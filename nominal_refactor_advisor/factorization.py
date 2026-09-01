@@ -1,8 +1,8 @@
 """Finite factorization evidence algebra for semantic duplication.
 
 Each semantic object is a row and each observed invariant is an axis.  The
-module derives finite relations and exact current-snapshot competition evidence
-without choosing a refactoring normal form or authority placement.
+module derives finite relations without choosing a refactoring normal form,
+authority placement, or locally optimal transformation.
 """
 
 from __future__ import annotations
@@ -15,10 +15,8 @@ from typing import Generic, Hashable, TypeAlias, TypeVar
 
 from .collection_algebra import sorted_tuple
 from .descriptor_algebra import AliasProperty
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_algebra import FiniteAxisSystem, ObjectFamilyShape, structural_key
 from .semantic_description_length import CompressionCertificate
-from metaclass_registry import AutoRegisterMeta
 
 AxisName: TypeAlias = str
 AxisValue: TypeAlias = Hashable
@@ -76,37 +74,6 @@ class FactorizationRow:
         return tuple((axis_name, self.value_for(axis_name)) for axis_name in axis_names)
 
 
-class CompressibleExplanation(ABC, metaclass=AutoRegisterMeta):
-    """ABC for explanations competing to describe the same semantic objects."""
-
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
-    @property
-    @abstractmethod
-    def explanation_key(self) -> Hashable:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def covered_objects(self) -> frozenset[Hashable]:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def compression_certificate(self) -> CompressionCertificate:
-        raise NotImplementedError
-
-    @property
-    def certified_savings(self) -> int:
-        return self.compression_certificate.certified_description_length_savings
-
-    @property
-    def pays_rent(self) -> bool:
-        return self.compression_certificate.pays_rent
-
-
 class FiniteCoverRelation(ABC, Generic[CoverNodeT]):
     """ABC for finite posets with one derived cover-edge algorithm."""
 
@@ -138,195 +105,6 @@ class FiniteCoverRelation(ABC, Generic[CoverNodeT]):
                     continue
                 edges.append((candidate, parent))
         return tuple(edges)
-
-
-@dataclass(frozen=True)
-class ExplanationConflictGraph(ABC):
-    """ABC for exact competition among mutually exclusive explanations."""
-
-    explanations: tuple[CompressibleExplanation, ...]
-
-    @property
-    def conflict_edges(self) -> tuple[tuple[int, int], ...]:
-        return tuple(
-            (
-                (left, right)
-                for left, right in combinations(range(len(self.explanations)), 2)
-                if self.conflicts(left, right)
-            )
-        )
-
-    @abstractmethod
-    def conflicts(self, left: int, right: int) -> bool:
-        """Return whether two indexed explanations cannot coexist."""
-        raise NotImplementedError
-
-    def independent(self, indices: Iterable[int]) -> bool:
-        index_tuple = tuple(indices)
-        return all(
-            (
-                not self.conflicts(left, right)
-                for left, right in combinations(index_tuple, 2)
-            )
-        )
-
-    def exact_component_selections(
-        self,
-    ) -> tuple["MDLConflictComponentSelection", ...]:
-        weighted_indices = tuple(
-            (
-                index
-                for index, explanation in enumerate(self.explanations)
-                if explanation.pays_rent
-            )
-        )
-        adjacency = {
-            index: frozenset(
-                (
-                    other
-                    for other in weighted_indices
-                    if other != index and self.conflicts(index, other)
-                )
-            )
-            for index in weighted_indices
-        }
-        ordered = sorted_tuple(
-            weighted_indices,
-            key=lambda index: (
-                -self.explanations[index].certified_savings,
-                repr(self.explanations[index].explanation_key),
-            ),
-        )
-        return tuple(
-            self.exact_component_selection(component, adjacency)
-            for component in self.conflict_components(ordered, adjacency)
-        )
-
-    @staticmethod
-    def conflict_components(
-        ordered_indices: tuple[int, ...],
-        adjacency: Mapping[int, frozenset[int]],
-    ) -> tuple[tuple[int, ...], ...]:
-        remaining = set(ordered_indices)
-        components: list[tuple[int, ...]] = []
-        for seed in ordered_indices:
-            if seed not in remaining:
-                continue
-            pending = [seed]
-            component: set[int] = set()
-            while pending:
-                index = pending.pop()
-                if index not in remaining:
-                    continue
-                remaining.remove(index)
-                component.add(index)
-                pending.extend(adjacency[index] & remaining)
-            components.append(
-                tuple(index for index in ordered_indices if index in component)
-            )
-        return tuple(components)
-
-    def exact_component_selection(
-        self,
-        ordered: tuple[int, ...],
-        adjacency: Mapping[int, frozenset[int]],
-    ) -> "MDLConflictComponentSelection":
-        if len(ordered) <= 1:
-            return MDLConflictComponentSelection(
-                component_indices=ordered,
-                optimal_witnesses=(ordered,),
-                optimal_solution_count=1,
-                invariant_selected_indices=ordered,
-                certified_savings=sum(
-                    self.explanations[index].certified_savings for index in ordered
-                ),
-            )
-        optimal_witness_by_membership: dict[tuple[int, bool], tuple[int, ...]] = {}
-        optimal_solution_count = 0
-        invariant_selected_indices: set[int] | None = None
-        best_score = 0
-
-        def retain_candidate_witnesses(
-            optimum: tuple[int, ...],
-        ) -> None:
-            selected = frozenset(optimum)
-            for index in ordered:
-                optimal_witness_by_membership.setdefault(
-                    (index, index in selected),
-                    optimum,
-                )
-
-        def search(remaining: tuple[int, ...], chosen: tuple[int, ...]) -> None:
-            nonlocal best_score, optimal_solution_count, invariant_selected_indices
-            upper_bound = sum(
-                max(self.explanations[index].certified_savings, 0)
-                for index in remaining
-            )
-            current_score = sum(
-                (self.explanations[index].certified_savings for index in chosen)
-            )
-            if current_score + upper_bound < best_score:
-                return
-            if not remaining:
-                canonical_chosen = tuple(sorted(chosen))
-                if current_score > best_score:
-                    best_score = current_score
-                    optimal_witness_by_membership.clear()
-                    retain_candidate_witnesses(canonical_chosen)
-                    optimal_solution_count = 1
-                    invariant_selected_indices = set(canonical_chosen)
-                elif current_score == best_score:
-                    optimal_solution_count += 1
-                    if invariant_selected_indices is None:
-                        invariant_selected_indices = set(canonical_chosen)
-                    else:
-                        invariant_selected_indices.intersection_update(canonical_chosen)
-                    retain_candidate_witnesses(canonical_chosen)
-                return
-            pivot, *tail = remaining
-            search(
-                tuple((index for index in tail if index not in adjacency[pivot])),
-                (*chosen, pivot),
-            )
-            search(tuple(tail), chosen)
-
-        search(ordered, ())
-        return MDLConflictComponentSelection(
-            component_indices=tuple(sorted(ordered)),
-            optimal_witnesses=tuple(
-                dict.fromkeys(optimal_witness_by_membership.values())
-            ),
-            optimal_solution_count=optimal_solution_count,
-            invariant_selected_indices=tuple(
-                sorted(invariant_selected_indices or set())
-            ),
-            certified_savings=best_score,
-        )
-
-
-@dataclass(frozen=True)
-class DeclaredExplanationConflictGraph(ExplanationConflictGraph):
-    """Conflict graph whose exact edges are proved by a domain projection."""
-
-    declared_conflict_edges: frozenset[tuple[int, int]]
-
-    def __post_init__(self) -> None:
-        explanation_count = len(self.explanations)
-        if any(
-            left < 0
-            or right < 0
-            or left >= explanation_count
-            or right >= explanation_count
-            or left >= right
-            for left, right in self.declared_conflict_edges
-        ):
-            raise ValueError(
-                "Declared explanation conflicts require canonical in-range edges"
-            )
-
-    def conflicts(self, left: int, right: int) -> bool:
-        edge = (left, right) if left < right else (right, left)
-        return edge in self.declared_conflict_edges
 
 
 @dataclass(frozen=True)
@@ -504,48 +282,6 @@ class AxisIndependenceModel:
 
 
 @dataclass(frozen=True)
-class MDLConflictComponentSelection:
-    """Exact optimum facts with bounded ambiguity witnesses for one component."""
-
-    component_indices: tuple[int, ...]
-    optimal_witnesses: tuple[tuple[int, ...], ...]
-    optimal_solution_count: int
-    invariant_selected_indices: tuple[int, ...]
-    certified_savings: int
-
-    @property
-    def is_ambiguous(self) -> bool:
-        return self.optimal_solution_count > 1
-
-
-@dataclass(frozen=True)
-class AmbiguousExplanationSelection:
-    """Equal-cost incompatible MDL optima that cannot be chosen semantically."""
-
-    component_indices: tuple[int, ...]
-    explanations: tuple[CompressibleExplanation, ...]
-    alternative_index_witnesses: tuple[tuple[int, ...], ...]
-    alternative_witnesses: tuple[tuple[CompressibleExplanation, ...], ...]
-    optimal_solution_count: int
-    certified_savings: int
-
-
-@dataclass(frozen=True)
-class CurrentSnapshotMDLCompetitionResult:
-    """Invariant MDL selections and ambiguities for one candidate snapshot."""
-
-    conflict_graph: ExplanationConflictGraph
-    selected_indices: tuple[int, ...]
-    ambiguities: tuple[AmbiguousExplanationSelection, ...] = ()
-
-    @property
-    def selected(self) -> tuple[CompressibleExplanation, ...]:
-        return tuple(
-            self.conflict_graph.explanations[index] for index in self.selected_indices
-        )
-
-
-@dataclass(frozen=True)
 class OwnershipProjection:
     """One directed ownership projection edge."""
 
@@ -568,49 +304,6 @@ class ResidueHookNamesCarrier:
     classvar_names: tuple[str, ...]
     property_hook_names: tuple[str, ...]
     behavior_hook_names: tuple[str, ...]
-
-
-class CurrentSnapshotMDLCompetition:
-    """Compare non-overlapping explanations exactly in one candidate snapshot."""
-
-    def __init__(self, conflict_graph: ExplanationConflictGraph) -> None:
-        self.conflict_graph = conflict_graph
-
-    @property
-    def explanations(self) -> tuple[CompressibleExplanation, ...]:
-        return self.conflict_graph.explanations
-
-    def solve(self) -> CurrentSnapshotMDLCompetitionResult:
-        component_selections = self.conflict_graph.exact_component_selections()
-        selected_indices = tuple(
-            sorted(
-                index
-                for component in component_selections
-                for index in component.invariant_selected_indices
-            )
-        )
-        ambiguities = tuple(
-            AmbiguousExplanationSelection(
-                component_indices=component.component_indices,
-                explanations=tuple(
-                    self.explanations[index] for index in component.component_indices
-                ),
-                alternative_index_witnesses=component.optimal_witnesses,
-                alternative_witnesses=tuple(
-                    tuple(self.explanations[index] for index in alternative)
-                    for alternative in component.optimal_witnesses
-                ),
-                optimal_solution_count=component.optimal_solution_count,
-                certified_savings=component.certified_savings,
-            )
-            for component in component_selections
-            if component.is_ambiguous
-        )
-        return CurrentSnapshotMDLCompetitionResult(
-            conflict_graph=self.conflict_graph,
-            selected_indices=selected_indices,
-            ambiguities=ambiguities,
-        )
 
 
 @dataclass(frozen=True)

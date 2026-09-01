@@ -9,7 +9,7 @@ import subprocess
 import sys
 from abc import ABC
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
@@ -134,7 +134,7 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeClassPlanReport,
     FindingRecipePlanBuilder,
     FindingRecipePlanCandidate,
-    CurrentSnapshotRecipeCompetition,
+    CurrentSnapshotRecipeBatchEvaluation,
     FindingRecipePlanningHorizon,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisStatus,
@@ -203,11 +203,8 @@ from nominal_refactor_advisor.economics import (
 )
 from nominal_refactor_advisor.factorization import (
     AxisIndependenceModel,
-    CompressibleExplanation,
-    DeclaredExplanationConflictGraph,
     FactorizationRow,
     FormalConceptLattice,
-    CurrentSnapshotMDLCompetition,
     OwnershipClosure,
     OwnershipProjection,
 )
@@ -1176,7 +1173,7 @@ def test_executable_recipe_evaluation_does_not_hide_programming_errors(
         evaluation.terminal_evaluation(None)
 
 
-def test_finding_recipe_plan_selects_global_mdl_winner_independent_of_input_order(
+def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input_order(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
@@ -1252,8 +1249,8 @@ def test_finding_recipe_plan_selects_global_mdl_winner_independent_of_input_orde
         return _finding_spec(
             PatternId.NOMINAL_BOUNDARY,
             f"{detector_id} fixture",
-            "Competing source changes require one globally selected result.",
-            "one certified end state",
+            "Competing source changes require trajectory exploration.",
+            "one globally proved trajectory",
             "multiple executable rewrites target the same declaration",
         ).build(
             detector_id,
@@ -1284,44 +1281,42 @@ def test_finding_recipe_plan_selects_global_mdl_winner_independent_of_input_orde
 
     for plan in plans:
         records_by_detector = {record.detector_id: record for record in plan.records}
-        simulation = plan.simulate_snapshot(
-            snapshot,
-            backend=CodemodBackend.AST_SPAN,
+        assert {record.status for record in records_by_detector.values()} == {
+            FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
+        }
+        assert plan.document.recipes == ()
+        assert plan.expected_removed_finding_ids == ()
+        evidence = records_by_detector[strong_detector_id].conflict_evidence
+        assert evidence is not None
+        assert evidence is records_by_detector[weak_detector_id].conflict_evidence
+        assert frozenset(evidence.component_candidate_indices) == {0, 1}
+        assert evidence.component_finding_ids == tuple(
+            sorted((weak.stable_id, strong.stable_id))
         )
-
-        assert records_by_detector[strong_detector_id].status is (
-            FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
-        )
-        assert records_by_detector[weak_detector_id].status is (
-            FindingRecipeSynthesisStatus.DOMINATED_IN_CURRENT_SNAPSHOT
-        )
-        assert plan.expected_removed_finding_ids == (strong.stable_id,)
-        assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
-            "value = 3\n"
-        )
-        proof = records_by_detector[strong_detector_id].competition_proof
-        assert proof is not None
-        assert proof.selected_set_assessment.proved
-        assert proof.selected_set_assessment.rewritten_source_digest
-        assert proof.selected_candidate_indices
+        assert len(evidence.candidate_assessments) == 2
+        assert len(evidence.pair_assessments) == 1
     assert {
         record.finding_id: (
             record.status,
-            record.competition_proof.selected_finding_ids,
-            record.competition_proof.certified_savings,
-            record.competition_proof.selected_set_assessment.rewritten_source_digest,
+            record.conflict_evidence.component_finding_ids,
+            tuple(
+                assessment.disposition
+                for assessment in record.conflict_evidence.pair_assessments
+            ),
         )
         for record in plans[0].records
-        if record.competition_proof is not None
+        if record.conflict_evidence is not None
     } == {
         record.finding_id: (
             record.status,
-            record.competition_proof.selected_finding_ids,
-            record.competition_proof.certified_savings,
-            record.competition_proof.selected_set_assessment.rewritten_source_digest,
+            record.conflict_evidence.component_finding_ids,
+            tuple(
+                assessment.disposition
+                for assessment in record.conflict_evidence.pair_assessments
+            ),
         )
         for record in plans[1].records
-        if record.competition_proof is not None
+        if record.conflict_evidence is not None
     }
 
 
@@ -1347,8 +1342,8 @@ def _direct_recipe_candidate(
     finding = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
         f"{detector_id} fixture",
-        "Competing source changes require one global selection.",
-        "one certified end state",
+        "Competing source changes require trajectory exploration.",
+        "one globally proved trajectory",
         "executable recipes claim related source semantics",
     ).build(
         detector_id,
@@ -1368,7 +1363,7 @@ def _direct_recipe_candidate(
             finding=finding,
             evaluation=ExecutableRecipeEvaluation(
                 executable_recipe=recipe,
-                executable_declaration_type=CurrentSnapshotRecipeCompetition,
+                executable_declaration_type=CurrentSnapshotRecipeBatchEvaluation,
             ),
             action_keys=(
                 FindingRecipeActionKey(
@@ -1381,13 +1376,13 @@ def _direct_recipe_candidate(
     )
 
 
-def _direct_recipe_competition(
+def _direct_recipe_batch_evaluation(
     candidates: tuple[FindingRecipePlanCandidate, ...],
     snapshot: CodemodSourceSnapshot | None,
 ) -> tuple[FindingRecipeSynthesisRecord, ...]:
     builder = FindingRecipePlanBuilder(())
     return (
-        CurrentSnapshotRecipeCompetition(
+        CurrentSnapshotRecipeBatchEvaluation(
             candidates=candidates,
             source_snapshot=snapshot,
             batch_projection=builder,
@@ -1397,7 +1392,7 @@ def _direct_recipe_competition(
     )
 
 
-def test_finding_recipe_competition_rejects_equal_cost_local_choice(
+def test_finding_recipe_batch_preserves_equal_cost_conflicting_branches(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1416,29 +1411,31 @@ def test_finding_recipe_competition_rejects_equal_cost_local_choice(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition(candidates, snapshot)
+    records = _direct_recipe_batch_evaluation(candidates, snapshot)
     payloads = tuple(record.to_dict() for record in records)
 
     assert {record.status for record in records} == {
-        FindingRecipeSynthesisStatus.AMBIGUOUS_CURRENT_SNAPSHOT
+        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
     }
     assert all(not record.candidate_recipes for record in records)
-    assert all(payload["competition_proof"] is not None for payload in payloads)
+    assert all(payload["conflict_evidence"] is not None for payload in payloads)
     assert {
-        tuple(payload["competition_proof"]["selected_finding_ids"])
+        tuple(payload["conflict_evidence"]["component_finding_ids"])
         for payload in payloads
-    } == {()}
+    } == {tuple(sorted(candidate.finding_id for candidate in candidates))}
     assert all(
-        len(payload["competition_proof"]["alternative_finding_id_witnesses"]) == 2
-        for payload in payloads
-    )
-    assert all(
-        payload["competition_proof"]["optimal_solution_count"] == 2
+        tuple(payload["conflict_evidence"])
+        == (
+            "component_candidate_indices",
+            "component_finding_ids",
+            "candidate_assessments",
+            "pair_assessments",
+        )
         for payload in payloads
     )
 
 
-def test_finding_recipe_competition_witnesses_every_ambiguous_candidate(
+def test_finding_recipe_batch_exposes_every_conflicting_branch(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1457,19 +1454,19 @@ def test_finding_recipe_competition_witnesses_every_ambiguous_candidate(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition(candidates, snapshot)
-    proof = records[0].competition_proof
+    records = _direct_recipe_batch_evaluation(candidates, snapshot)
+    evidence = records[0].conflict_evidence
 
-    assert proof is not None
-    assert proof.optimal_solution_count == 3
-    assert {
-        candidate_index
-        for witness in proof.alternative_candidate_index_witnesses
-        for candidate_index in witness
-    } == {0, 1, 2}
+    assert evidence is not None
+    assert frozenset(evidence.component_candidate_indices) == {0, 1, 2}
+    assert evidence.component_finding_ids == tuple(
+        sorted(candidate.finding_id for candidate in candidates)
+    )
+    assert all(record.conflict_evidence is evidence for record in records)
+    assert all(not record.candidate_recipes for record in records)
 
 
-def test_finding_recipe_competition_requires_explicit_cost_for_conflicts(
+def test_finding_recipe_batch_does_not_use_missing_cost_to_select_conflict(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1494,18 +1491,16 @@ def test_finding_recipe_competition_requires_explicit_cost_for_conflicts(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition((proved, unproved), snapshot)
+    records = _direct_recipe_batch_evaluation((proved, unproved), snapshot)
 
     assert {record.status for record in records} == {
-        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
     }
-    assert all(
-        "missing explicit compression proofs" in record.reason for record in records
-    )
     assert all(not record.candidate_recipes for record in records)
+    assert all(record.conflict_evidence is not None for record in records)
 
 
-def test_finding_recipe_competition_fails_closed_without_physical_snapshot(
+def test_finding_recipe_batch_fails_closed_without_physical_snapshot(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1531,7 +1526,7 @@ def test_finding_recipe_competition_fails_closed_without_physical_snapshot(
         ),
     )
 
-    records = _direct_recipe_competition(candidates, None)
+    records = _direct_recipe_batch_evaluation(candidates, None)
 
     assert {record.status for record in records} == {
         FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
@@ -1539,7 +1534,7 @@ def test_finding_recipe_competition_fails_closed_without_physical_snapshot(
     assert all("requires a source snapshot" in record.reason for record in records)
 
 
-def test_finding_recipe_competition_refuses_incomparable_prefix_conflicts(
+def test_finding_recipe_batch_preserves_nominal_prefix_conflicts(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1564,19 +1559,18 @@ def test_finding_recipe_competition_refuses_incomparable_prefix_conflicts(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition((child, parent), snapshot)
+    records = _direct_recipe_batch_evaluation((child, parent), snapshot)
     records_by_detector = {record.detector_id: record for record in records}
 
     assert {record.status for record in records_by_detector.values()} == {
-        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
     }
     assert all(
-        "do not share one cost surface" in record.reason
-        for record in records_by_detector.values()
+        record.conflict_evidence is not None for record in records_by_detector.values()
     )
 
 
-def test_finding_recipe_competition_refuses_incomparable_physical_conflicts(
+def test_finding_recipe_batch_preserves_physical_conflicts(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1601,19 +1595,18 @@ def test_finding_recipe_competition_refuses_incomparable_physical_conflicts(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition((weak, strong), snapshot)
+    records = _direct_recipe_batch_evaluation((weak, strong), snapshot)
     records_by_detector = {record.detector_id: record for record in records}
 
     assert {record.status for record in records_by_detector.values()} == {
-        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
     }
     assert all(
-        "do not share one cost surface" in record.reason
-        for record in records_by_detector.values()
+        record.conflict_evidence is not None for record in records_by_detector.values()
     )
 
 
-def test_finding_recipe_competition_co_selects_composable_disjoint_edits(
+def test_finding_recipe_batch_combines_composable_disjoint_edits(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1640,12 +1633,12 @@ def test_finding_recipe_competition_co_selects_composable_disjoint_edits(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     builder = FindingRecipePlanBuilder(())
-    competition = CurrentSnapshotRecipeCompetition(
+    batch_evaluation = CurrentSnapshotRecipeBatchEvaluation(
         candidates=candidates,
         source_snapshot=snapshot,
         batch_projection=builder,
     )
-    records = competition.solve().records
+    records = batch_evaluation.solve().records
     recipes = builder.merged_recipes(
         [record.evaluation.required_recipe for record in records],
         snapshot,
@@ -1659,8 +1652,8 @@ def test_finding_recipe_competition_co_selects_composable_disjoint_edits(
     assert {record.planning_horizon for record in records} == {
         FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
     }
-    assert competition.interacting_candidate_pairs == ()
-    assert competition.pair_assessments == ()
+    assert batch_evaluation.interacting_candidate_pairs == ()
+    assert batch_evaluation.pair_assessments == ()
     assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
         "a = 2\nb = 2\n"
     )
@@ -1682,14 +1675,14 @@ def test_finding_recipe_singleton_without_cost_is_only_a_snapshot_candidate(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    (record,) = _direct_recipe_competition((candidate,), snapshot)
+    (record,) = _direct_recipe_batch_evaluation((candidate,), snapshot)
 
     assert record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     assert record.planning_horizon is FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
     assert record.planning_horizon.requires_trajectory_proof
 
 
-def test_finding_recipe_competition_rejects_order_dependent_composition(
+def test_finding_recipe_batch_rejects_order_dependent_composition(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1723,7 +1716,7 @@ def test_finding_recipe_competition_rejects_order_dependent_composition(
                             source=source,
                         )
                     ),
-                    executable_declaration_type=CurrentSnapshotRecipeCompetition,
+                    executable_declaration_type=CurrentSnapshotRecipeBatchEvaluation,
                 ),
             )
         )
@@ -1734,7 +1727,7 @@ def test_finding_recipe_competition_rejects_order_dependent_composition(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition(candidates, snapshot)
+    records = _direct_recipe_batch_evaluation(candidates, snapshot)
 
     assert {record.status for record in records} == {
         FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
@@ -1742,7 +1735,7 @@ def test_finding_recipe_competition_rejects_order_dependent_composition(
     assert all("depends on source order" in record.reason for record in records)
 
 
-def test_finding_recipe_competition_rejects_incomparable_before_costs(
+def test_finding_recipe_batch_does_not_use_incomparable_costs_to_select_conflict(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1764,15 +1757,15 @@ def test_finding_recipe_competition_rejects_incomparable_before_costs(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition(candidates, snapshot)
+    records = _direct_recipe_batch_evaluation(candidates, snapshot)
 
     assert {record.status for record in records} == {
-        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
     }
-    assert all("before-cost baseline" in record.reason for record in records)
+    assert all(not record.candidate_recipes for record in records)
 
 
-def test_finding_recipe_competition_rejects_non_paying_singleton(
+def test_finding_recipe_batch_does_not_reject_candidate_on_local_cost(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1788,14 +1781,14 @@ def test_finding_recipe_competition_rejects_non_paying_singleton(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    record = _direct_recipe_competition((candidate,), snapshot)[0]
+    record = _direct_recipe_batch_evaluation((candidate,), snapshot)[0]
 
-    assert record.status is FindingRecipeSynthesisStatus.DOES_NOT_PAY_RENT
-    assert record.candidate_recipes == ()
+    assert record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert len(record.candidate_recipes) == 1
     assert record.planning_horizon.requires_trajectory_proof
 
 
-def test_finding_recipe_competition_preserves_duplicate_finding_positions(
+def test_finding_recipe_batch_preserves_duplicate_finding_positions(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1829,22 +1822,24 @@ def test_finding_recipe_competition_preserves_duplicate_finding_positions(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition(
+    records = _direct_recipe_batch_evaluation(
         (weak, strong_with_duplicate_id),
         snapshot,
     )
 
     assert records[0].finding_id == records[1].finding_id
-    assert tuple(record.status for record in records) == (
-        FindingRecipeSynthesisStatus.DOMINATED_IN_CURRENT_SNAPSHOT,
-        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE,
-    )
-    proof = records[1].competition_proof
-    assert proof is not None
-    assert proof.selected_candidate_indices == (1,)
+    assert {record.status for record in records} == {
+        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
+    }
+    evidence = records[0].conflict_evidence
+    assert evidence is not None
+    assert evidence is records[1].conflict_evidence
+    assert frozenset(evidence.component_candidate_indices) == {0, 1}
+    assert evidence.component_finding_ids == (records[0].finding_id,) * 2
+    assert all(not record.candidate_recipes for record in records)
 
 
-def test_finding_recipe_competition_isolates_dirty_disjoint_recipe(
+def test_finding_recipe_batch_isolates_dirty_disjoint_recipe(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -1887,7 +1882,7 @@ def test_finding_recipe_competition_isolates_dirty_disjoint_recipe(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_competition((clean, dirty), snapshot)
+    records = _direct_recipe_batch_evaluation((clean, dirty), snapshot)
 
     records_by_detector = {record.detector_id: record for record in records}
 
@@ -1934,7 +1929,7 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules, ())
-    records = _direct_recipe_competition(candidates, snapshot)
+    records = _direct_recipe_batch_evaluation(candidates, snapshot)
     builder = FindingRecipePlanBuilder(())
     plan = FindingRecipePlan(
         document=CodemodPlanDocument(
@@ -5515,88 +5510,6 @@ def test_factorization_row_requires_declared_axis_for_projection() -> None:
         assert exc.args == ("codec",)
     else:
         raise AssertionError("factorization rows should reject undeclared axes")
-
-
-@dataclass(frozen=True)
-class _MDLFixtureExplanation(CompressibleExplanation):
-    key: str
-    objects: frozenset[str]
-    certificate: CompressionCertificate
-
-    @property
-    def explanation_key(self) -> str:
-        return self.key
-
-    @property
-    def covered_objects(self) -> frozenset[str]:
-        return self.objects
-
-    @property
-    def compression_certificate(self) -> CompressionCertificate:
-        return self.certificate
-
-
-def _mdl_explanation(
-    key: str,
-    *,
-    before: int,
-    after: int,
-) -> _MDLFixtureExplanation:
-    return _MDLFixtureExplanation(
-        key=key,
-        objects=frozenset((key,)),
-        certificate=CompressionCertificate(
-            before_cost=SemanticCostVector(residual_objects=before),
-            after_cost=SemanticCostVector(residual_objects=after),
-            semantic_axes=(key,),
-        ),
-    )
-
-
-def test_declared_mdl_competition_escapes_path_graph_greedy_minimum() -> None:
-    left = _mdl_explanation("left", before=5, after=1)
-    middle = _mdl_explanation("middle", before=8, after=1)
-    right = _mdl_explanation("right", before=5, after=1)
-    graph = DeclaredExplanationConflictGraph(
-        explanations=(left, middle, right),
-        declared_conflict_edges=frozenset({(0, 1), (1, 2)}),
-    )
-
-    result = CurrentSnapshotMDLCompetition(graph).solve()
-
-    assert result.selected_indices == (0, 2)
-    assert result.selected == (left, right)
-    assert result.ambiguities == ()
-
-
-def test_declared_mdl_competition_retains_candidate_complete_optimum_witnesses() -> (
-    None
-):
-    explanations = tuple(
-        _mdl_explanation(f"alternative-{index}", before=5, after=1)
-        for index in range(20)
-    )
-    graph = DeclaredExplanationConflictGraph(
-        explanations=explanations,
-        declared_conflict_edges=frozenset(
-            (left, right)
-            for left in range(len(explanations))
-            for right in range(left + 1, len(explanations))
-        ),
-    )
-
-    result = CurrentSnapshotMDLCompetition(graph).solve()
-
-    assert result.selected == ()
-    assert len(result.ambiguities) == 1
-    ambiguity = result.ambiguities[0]
-    assert ambiguity.optimal_solution_count == 20
-    assert len(ambiguity.alternative_witnesses) == 20
-    assert {
-        explanation.explanation_key
-        for witness in ambiguity.alternative_witnesses
-        for explanation in witness
-    } == {explanation.explanation_key for explanation in explanations}
 
 
 def test_formal_concept_lattice_derives_shared_intents() -> None:
@@ -13751,7 +13664,7 @@ def test_unproved_migration_stops_before_application_and_fresh_rescan(
     assert "return 'old'" in module_path.read_text(encoding="utf-8")
 
 
-def test_goal_runner_does_not_commit_current_snapshot_recipe_competition(
+def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13847,7 +13760,7 @@ def test_goal_runner_does_not_commit_current_snapshot_recipe_competition(
             )
 
     def unexpected_apply(_report: CodemodSimulationReport) -> tuple[str, ...]:
-        raise AssertionError("a current-snapshot optimum must not be committed")
+        raise AssertionError("conflicting trajectory branches must not be committed")
 
     previous_synthesizers = {
         detector_id: FindingRecipeSynthesizer.__registry__.get(detector_id)
@@ -13886,10 +13799,10 @@ def test_goal_runner_does_not_commit_current_snapshot_recipe_competition(
     assert module_path.read_text(encoding="utf-8") == original_source
     records = report.stages[0].class_plan_report.finding_plan.records
     assert {record.status for record in records} == {
-        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE,
-        FindingRecipeSynthesisStatus.DOMINATED_IN_CURRENT_SNAPSHOT,
+        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES,
     }
-    assert all(record.competition_proof is not None for record in records)
+    assert all(record.conflict_evidence is not None for record in records)
+    assert all(not record.candidate_recipes for record in records)
 
 
 def test_class_family_migration_stops_before_unproved_serial_trajectory(
