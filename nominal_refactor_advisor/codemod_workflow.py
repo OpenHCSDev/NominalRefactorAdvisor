@@ -131,9 +131,19 @@ class CodemodRefactorTrajectoryBudget(CodemodJsonReport):
 class CodemodProjectedScanMode(StrEnum):
     """Completeness contract for a projected post-codemod scan."""
 
-    EXACT = "exact"
-    EVIDENCE_LOCAL_PARTIAL = "evidence_local_partial"
-    TARGET_DETECTOR_PARTIAL = "target_detector_partial"
+    EXACT = ("exact", True)
+    EVIDENCE_LOCAL_PARTIAL = ("evidence_local_partial", False)
+    TARGET_DETECTOR_PARTIAL = ("target_detector_partial", False)
+
+    def __new__(cls, value: str, exact: bool) -> "CodemodProjectedScanMode":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._exact = exact
+        return member
+
+    @property
+    def exact(self) -> bool:
+        return self._exact
 
 
 class CodemodFindingClassStatus(StrEnum):
@@ -1474,7 +1484,7 @@ class CodemodRefactorGoalRunner:
     def exact_scan(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
         """Certify every detector over an in-memory migration state once."""
 
-        if scan.scan_mode is CodemodProjectedScanMode.EXACT:
+        if scan.scan_mode.exact:
             return scan
         return CodemodWorkflowScan(
             modules=scan.modules,

@@ -180,6 +180,7 @@ from nominal_refactor_advisor.codemod import (
     ReplaceModuleAssignmentOperation,
     ReplaceTargetOperation,
     ReplaceTextOperation,
+    RewriteOperation,
     PromoteClassMethodsOperation,
     PromoteExactLeafMethodsToAncestorOperation,
     RecipeCallReplacement,
@@ -601,6 +602,9 @@ def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overl
         backend=CodemodBackend.AST_SPAN,
     )
     assert simulation.applied_rewrite_count == 1
+    assert run_rewrite.operation is RewriteOperation.REPLACE_TARGET
+    assert simulation.rewrites[0].operation is RewriteOperation.REPLACE_TARGET
+    assert simulation.rewrites[0].to_dict()["operation"] == "replace_target"
 
     with pytest.raises(PlannedRewriteConflictError, match="planned rewrites overlap"):
         authority.select((run_rewrite, conflicting_run_rewrite))
@@ -5540,6 +5544,8 @@ def test_detects_generic_cancelable_product_composition_signal(
     assert signal.field_names == ("alpha", "beta")
     assert signal.covered_finding_ids == (finding.stable_id,)
     assert signal.load_bearing_score > signal.field_count
+    assert CancelableCompositionKind.PRODUCT_PACK_FORWARD.load_bearing_bonus == 25
+    assert CancelableCompositionKind.PACK_UNPACK_FORWARD.load_bearing_bonus == 75
 
 
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
@@ -17716,10 +17722,11 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     )
 
     assert third_result.returncode == 0, third_result.stderr
-    # Compact analysis rebuilds only the changed file's projection families;
-    # that bounded preparation is now reported as parse time.
-    assert float(third_timing["parse_seconds"]) < 1.0
     assert third_timing["analysis_cache_status"] == "partial"
+    # A method-body-only edit invalidates the source snapshot while preserving
+    # the graph's semantic projections.  Partial cache status plus the exact
+    # graph payload proves reuse without treating machine speed as correctness.
+    assert third_graph_payload == graph_payload
     assert third_graph_payload["active_graph_source"] in {
         "repository",
         "finding_backed",

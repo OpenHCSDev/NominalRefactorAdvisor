@@ -232,11 +232,37 @@ class RewriteOperation(StrEnum):
     REPLACE_TARGET = "replace_target"
 
 
-class CodemodBackend(StrEnum):
-    """Parser backend used to validate simulated rewrite output."""
+def _validate_ast_span_source(source: str, file_path: str) -> None:
+    ast.parse(source, filename=file_path)
 
-    AST_SPAN = "ast_span"
-    LIBCST = "libcst"
+
+def _validate_libcst_source(source: str, file_path: str) -> None:
+    del file_path
+    import libcst as cst
+
+    cst.parse_module(source)
+
+
+class CodemodBackend(StrEnum):
+    """Parser backend carrying its simulated-source validation behavior."""
+
+    AST_SPAN = ("ast_span", _validate_ast_span_source)
+    LIBCST = ("libcst", _validate_libcst_source)
+
+    def __new__(
+        cls,
+        value: str,
+        source_validator: Callable[[str, str], None],
+    ) -> "CodemodBackend":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._source_validator = source_validator
+        return member
+
+    def validate_source(self, source: str, file_path: str) -> None:
+        """Validate source through this backend's declared parser."""
+
+        self._source_validator(source, file_path)
 
 
 class FindingRecipeSynthesisDisposition(StrEnum):
@@ -360,10 +386,26 @@ class FindingRecipeSynthesisStatus(StrEnum):
 
 
 class CancelableCompositionKind(StrEnum):
-    """Kinds of product-carrier compositions that can be factored away."""
+    """Kinds of product-carrier compositions and their prioritization rent."""
 
-    PRODUCT_PACK_FORWARD = "product_pack_forward"
-    PACK_UNPACK_FORWARD = "pack_unpack_forward"
+    PRODUCT_PACK_FORWARD = ("product_pack_forward", 25)
+    PACK_UNPACK_FORWARD = ("pack_unpack_forward", 75)
+
+    def __new__(
+        cls,
+        value: str,
+        load_bearing_bonus: int,
+    ) -> "CancelableCompositionKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._load_bearing_bonus = load_bearing_bonus
+        return member
+
+    @property
+    def load_bearing_bonus(self) -> int:
+        """Return the prioritization rent owned by this composition kind."""
+
+        return self._load_bearing_bonus
 
 
 class ArchitectureGuardViolationKind(StrEnum):
@@ -379,12 +421,6 @@ class CodemodPreflightStatus(StrEnum):
 
     PASSED = "passed"
     FAILED = "failed"
-
-
-_COMPOSITION_KIND_LOAD_BEARING_BONUS = {
-    CancelableCompositionKind.PACK_UNPACK_FORWARD: 75,
-    CancelableCompositionKind.PRODUCT_PACK_FORWARD: 25,
-}
 
 
 class RefactorConcept(ABC):
@@ -568,8 +604,22 @@ class RoleCaseAuthorityConcept(NominalBoundaryConcept):
 class SourceNodeDecoratorPolicy(StrEnum):
     """Whether source node spans include decorators."""
 
-    EXCLUDE = "exclude"
-    INCLUDE = "include"
+    EXCLUDE = ("exclude", False)
+    INCLUDE = ("include", True)
+
+    def __new__(
+        cls,
+        value: str,
+        includes_decorators: bool,
+    ) -> "SourceNodeDecoratorPolicy":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._includes_decorators = includes_decorators
+        return member
+
+    @property
+    def includes_decorators(self) -> bool:
+        return self._includes_decorators
 
 
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
@@ -932,9 +982,9 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
 
 @dataclass(frozen=True, kw_only=True)
 class SourceRewriteDelta(ReplacementSource):
-    """Replacement source and operation shared by planned and simulated rewrites."""
+    """Replacement source shared by planned and simulated target rewrites."""
 
-    operation: RewriteOperation = RewriteOperation.REPLACE_TARGET
+    operation: ClassVar[RewriteOperation] = RewriteOperation.REPLACE_TARGET
     rationale: str = ""
     contributors: tuple[SourceRewriteContributor, ...] = ()
 
@@ -4480,7 +4530,7 @@ class SourceNodeSpan:
 
     @property
     def start_line(self) -> int:
-        if self.decorator_policy is SourceNodeDecoratorPolicy.INCLUDE and isinstance(
+        if self.decorator_policy.includes_decorators and isinstance(
             self.node,
             (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
         ):
@@ -5040,8 +5090,6 @@ class RefactorRecipeOperation(
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Operation"
     operation_key_value: ClassVar[str]
-    contributes_source_overlay: ClassVar[bool] = False
-    reports_preflight: ClassVar[bool] = False
 
     @classmethod
     def operation_key(cls) -> str:
@@ -5161,6 +5209,12 @@ class RefactorRecipeOperation(
         del source_index
         return ()
 
+    @property
+    def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
+        """Return authority claims established by this operation, when any."""
+
+        return ()
+
     def required_source_path(
         self,
         source_index: SourceIndex,
@@ -5278,15 +5332,6 @@ class ReplaceTargetOperation(RefactorRecipeOperation):
             plan_item_index=plan_item_index,
             selector_context=selector_context,
         )
-
-
-class AuthorityDeclaringRecipeOperation(ABC):
-    """Recipe operation that makes an authority claim true after application."""
-
-    @property
-    @abstractmethod
-    def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
-        raise NotImplementedError
 
 
 class TargetNodeRecipeOperationMixin(ABC):
@@ -5411,8 +5456,6 @@ class ReplaceTextOperation(RefactorRecipeOperation):
 @dataclass(frozen=True, kw_only=True)
 class CreateFileOperation(SourcePayloadOperation):
     """Create a Python source file for later operations in the same plan."""
-
-    contributes_source_overlay = True
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
@@ -7731,7 +7774,6 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
 class DeclareAuthorityOperation(
     AuthoritySourceOperation,
     AuthorityClaimCarrier,
-    AuthorityDeclaringRecipeOperation,
 ):
     """Insert a declared authority boundary and bind it to an AuthorityClaim."""
 
@@ -9148,7 +9190,6 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
     """Move a dependency-checked set of top-level symbols into another module."""
 
     symbol_qualnames: tuple[str, ...]
-    reports_preflight = True
 
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
@@ -9997,7 +10038,6 @@ class DeriveAutoregisterInstanceViewOperation(
 class ConvertManualRegistryToAutoregisterOperation(
     BaseNamePayloadOperation,
     ManualRegistryConversionCarrier,
-    AuthorityDeclaringRecipeOperation,
 ):
     """Convert manual class registry writes into an AutoRegisterMeta base."""
 
@@ -11790,7 +11830,6 @@ class RefactorRecipe(CodemodPayloadRecord):
         return tuple(
             claim
             for operation in self.operations
-            if isinstance(operation, AuthorityDeclaringRecipeOperation)
             for claim in operation.declared_authority_claims
         )
 
@@ -12794,6 +12833,14 @@ class FindingRecipeCandidatePairDisposition(StrEnum):
     CONFLICTING = "conflicting"
     UNPROVED = "unproved"
 
+    @property
+    def compatible(self) -> bool:
+        return self is type(self).COMPATIBLE
+
+    @property
+    def unproved(self) -> bool:
+        return self is type(self).UNPROVED
+
 
 @dataclass(frozen=True)
 class FindingRecipeCandidatePairAssessment(CodemodJsonReport):
@@ -12832,6 +12879,14 @@ class FindingRecipeSetDisposition(StrEnum):
     @property
     def conflicting(self) -> bool:
         return self is type(self).CONFLICTING
+
+    @property
+    def clean(self) -> bool:
+        return self is type(self).CLEAN
+
+    @property
+    def unproved(self) -> bool:
+        return self is type(self).UNPROVED
 
 
 @dataclass(frozen=True)
@@ -14191,11 +14246,46 @@ class RepeatedCallAuthorityParameter:
     annotation: str
 
 
+def _repeated_builder_value_source(
+    geometry: SourceTextGeometry,
+    value: ast.expr,
+) -> str | None:
+    return geometry.segment_for_node(value)
+
+
+def _repeated_builder_root_name_source(
+    geometry: SourceTextGeometry,
+    value: ast.expr,
+) -> str | None:
+    del geometry
+    roots = ROOT_NAME_PROJECTION.root_names(value)
+    return next(iter(roots)) if len(roots) == 1 else None
+
+
 class RepeatedBuilderParameterProjection(StrEnum):
     """How a generated builder parameter is recovered from a matched call."""
 
-    VALUE = "value"
-    ROOT_NAME = "root_name"
+    VALUE = ("value", _repeated_builder_value_source)
+    ROOT_NAME = ("root_name", _repeated_builder_root_name_source)
+
+    def __new__(
+        cls,
+        value: str,
+        source_projection: Callable[[SourceTextGeometry, ast.expr], str | None],
+    ) -> "RepeatedBuilderParameterProjection":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._source_projection = source_projection
+        return member
+
+    def source_from(
+        self,
+        geometry: SourceTextGeometry,
+        value: ast.expr,
+    ) -> str | None:
+        """Project one matched argument through this declaration's semantics."""
+
+        return self._source_projection(geometry, value)
 
 
 RepeatedAuthorityParameterT = TypeVar(
@@ -15298,12 +15388,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             value = cls.single_tuple_item(value)
             if value is None:
                 return None
-        if parameter.value_projection is RepeatedBuilderParameterProjection.ROOT_NAME:
-            roots = ROOT_NAME_PROJECTION.root_names(value)
-            if len(roots) != 1:
-                return None
-            return next(iter(roots))
-        return geometry.segment_for_node(value)
+        return parameter.value_projection.source_from(geometry, value)
 
 
 class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
@@ -22435,8 +22520,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
                     vertex_position_by_candidate_index[assessment.right_index],
                 )
                 for assessment in self.pair_assessments
-                if assessment.disposition
-                is not FindingRecipeCandidatePairDisposition.COMPATIBLE
+                if not assessment.disposition.compatible
                 and assessment.left_index in vertex_position_by_candidate_index
                 and assessment.right_index in vertex_position_by_candidate_index
             ),
@@ -22468,8 +22552,9 @@ class CurrentSnapshotRecipeBatchEvaluation:
                 (position, candidate_index)
                 for position, candidate_index in enumerate(remaining_indices)
                 if all(
-                    pair_dispositions.get(tuple(sorted((selected, candidate_index))))
-                    is FindingRecipeCandidatePairDisposition.COMPATIBLE
+                    pair_dispositions[
+                        tuple(sorted((selected, candidate_index)))
+                    ].compatible
                     for selected in candidate_batch
                     if tuple(sorted((selected, candidate_index))) in pair_dispositions
                 )
@@ -22508,14 +22593,14 @@ class CurrentSnapshotRecipeBatchEvaluation:
                 reason=assessment.reason,
             )
             for assessment in self.pair_assessments
-            if assessment.disposition is FindingRecipeCandidatePairDisposition.UNPROVED
+            if assessment.disposition.unproved
         )
         branches: list[FindingRecipeTrajectoryBranch] = []
         for (
             candidate_indices
         ) in self.trajectory_batch_enumeration.candidate_index_batches:
             simulation = self.simulate_recipe_set(candidate_indices)
-            if simulation.assessment.disposition is FindingRecipeSetDisposition.CLEAN:
+            if simulation.assessment.disposition.clean:
                 if simulation.document is None:
                     raise RuntimeError(
                         "clean recipe batch simulation lost its document"
@@ -22531,10 +22616,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
                     )
                 )
                 continue
-            if (
-                simulation.assessment.disposition
-                is FindingRecipeSetDisposition.UNPROVED
-            ):
+            if simulation.assessment.disposition.unproved:
                 obstacles.append(
                     FindingRecipeTrajectoryObstacle(
                         kind=FindingRecipeTrajectoryObstacleKind.BATCH_SIMULATION,
@@ -22582,8 +22664,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
             unproved_assessments = tuple(
                 assessment
                 for assessment in component_assessments
-                if assessment.disposition
-                is FindingRecipeCandidatePairDisposition.UNPROVED
+                if assessment.disposition.unproved
             )
             if unproved_assessments:
                 reason = self.unproved_reason(unproved_assessments)
@@ -23039,7 +23120,7 @@ class CancelableCompositionSignal(SourceTargetSpan, ProductForwardIdentity):
         return (
             self.field_count * 50
             + self.covered_finding_count * 100
-            + _COMPOSITION_KIND_LOAD_BEARING_BONUS[self.composition_kind]
+            + self.composition_kind.load_bearing_bonus
         )
 
     @property
@@ -23175,7 +23256,7 @@ class SourceRewriteSimulationAuthority:
             ):
                 simulated.append(self.apply_resolved_rewrite(lines, resolved_rewrite))
             sources[file_path] = "".join(lines)
-            self.validate_source(sources[file_path], file_path)
+            self.backend.validate_source(sources[file_path], file_path)
 
         changed_sources = {
             file_path: sources[file_path]
@@ -23227,7 +23308,6 @@ class SourceRewriteSimulationAuthority:
             target_id=target.target_id,
             file_path=target.file_path,
             qualname=target.qualname,
-            operation=rewrite.operation,
             line=target.line,
             end_line=target.end_line,
             original_source=original_source,
@@ -23240,14 +23320,6 @@ class SourceRewriteSimulationAuthority:
         if replacement_source and not replacement_source.endswith(("\n", "\r")):
             replacement_source = f"{replacement_source}\n"
         return replacement_source.splitlines(keepends=True)
-
-    def validate_source(self, source: str, file_path: str) -> None:
-        if self.backend == CodemodBackend.LIBCST:
-            import libcst as cst
-
-            cst.parse_module(source)
-            return
-        ast.parse(source, filename=file_path)
 
 
 def simulate_planned_rewrites(
@@ -23308,13 +23380,10 @@ class PlannedRewriteSelectionAuthority:
     def coalesced_exact_rewrites(
         rewrites: Iterable[PlannedSourceRewrite],
     ) -> tuple[PlannedSourceRewrite, ...]:
-        rewrites_by_edit: dict[
-            tuple[str, RewriteOperation, str], PlannedSourceRewrite
-        ] = {}
+        rewrites_by_edit: dict[tuple[str, str], PlannedSourceRewrite] = {}
         for rewrite in rewrites:
             edit_key = (
                 rewrite.target_id,
-                rewrite.operation,
                 rewrite.replacement_source,
             )
             existing = rewrites_by_edit.get(edit_key)
@@ -23338,8 +23407,6 @@ class PlannedRewriteSelectionAuthority:
         return tuple(item.rewrite for item in self.resolved_rewrites(rewrites))
 
     def required_target(self, rewrite: PlannedSourceRewrite) -> AstTargetDigest:
-        if rewrite.operation is not RewriteOperation.REPLACE_TARGET:
-            raise ValueError(f"Unsupported rewrite operation: {rewrite.operation}")
         target = self.source_index.target_by_id.get(rewrite.target_id)
         if target is None:
             raise KeyError(f"Unknown source-index target id: {rewrite.target_id}")
