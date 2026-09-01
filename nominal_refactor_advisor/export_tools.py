@@ -8,6 +8,9 @@ from enum import Enum
 from typing import Any
 
 
+PYTHON_PUBLIC_EXPORT_ASSIGNMENT = "__all__"
+
+
 @dataclass(frozen=True)
 class PublicExportPolicy:
     """Declarative policy for deriving a module's public export surface."""

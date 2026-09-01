@@ -2852,6 +2852,36 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
     ) in rewritten
 
 
+def test_semantic_mirror_preserves_public_export_contract(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "from abc import ABC, abstractmethod\n"
+        "\n"
+        "class ToolAdapter(ABC):\n"
+        "    @abstractmethod\n"
+        "    def run(self): ...\n"
+        "\n"
+        "class AlphaAdapter(ToolAdapter):\n"
+        "    def run(self):\n"
+        "        return 'alpha'\n"
+        "\n"
+        "class BetaAdapter(ToolAdapter):\n"
+        "    def run(self):\n"
+        "        return 'beta'\n"
+        "\n"
+        "__all__ = ('AlphaAdapter', 'BetaAdapter')\n",
+    )
+
+    findings = SemanticMirrorWithoutDescentDetector().detect(
+        parse_python_modules(tmp_path),
+        DetectorConfig(),
+    )
+
+    assert not any(
+        finding.metrics.plan_mapping_name == "__all__" for finding in findings
+    )
+
+
 def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
     tmp_path: Path,
 ) -> None:

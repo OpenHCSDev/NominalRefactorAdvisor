@@ -31,6 +31,7 @@ from .ast_tools import (
     named_function_nodes,
 )
 from .collection_algebra import sorted_tuple
+from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .native_syntax import NativePythonSyntaxIndex
 from .source_identity import resolved_source_path_text
 
@@ -393,7 +394,7 @@ class LatentRosterObservation:
     def is_public_export_surface(self) -> bool:
         """Return whether this roster declares Python's module export contract."""
 
-        return self.roster_name == "__all__"
+        return self.roster_name == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 
     @classmethod
     def from_module(

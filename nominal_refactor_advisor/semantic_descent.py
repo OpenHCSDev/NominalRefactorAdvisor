@@ -62,6 +62,7 @@ from .class_index import (
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .deadline import scan_deadline_checkpoint
+from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .models import (
     FindingMetrics,
     MappingMetrics,
@@ -1125,6 +1126,15 @@ class PresentationProjection(SemanticProjectionReference):
     def owner(self) -> ProjectionOwnerSymbol:
         return ProjectionOwnerSymbol(self.owner_symbol)
 
+    @property
+    def is_public_export_contract(self) -> bool:
+        """Return whether this projection declares Python's module export API."""
+
+        return (
+            self.owner_symbol == ProjectionOwnerSymbol.module_owner_value
+            and self.label == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+        )
+
 
 @dataclass(frozen=True)
 class SemanticClassSupplement:
@@ -1709,6 +1719,8 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
+        if candidate.projection.is_public_export_contract:
+            return False
         if self.call_projection_is_inadmissible(context, candidate):
             return False
         if (
