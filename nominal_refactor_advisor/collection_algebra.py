@@ -73,6 +73,26 @@ class UniqueIdentityIndexAuthority(
             index.add(handle_for(declaration), declaration, declaration)
         return index.values_by_handle()
 
+    @classmethod
+    def unambiguous_declarations_by_handle(
+        cls,
+        declarations: Iterable[IdentityDeclarationT],
+        handle_for: Callable[[IdentityDeclarationT], IdentityHandleT],
+    ) -> dict[IdentityHandleT, IdentityDeclarationT]:
+        """Project only handles represented by exactly one declaration row."""
+
+        declarations_by_handle: dict[IdentityHandleT, IdentityDeclarationT] = {}
+        duplicate_handles: set[IdentityHandleT] = set()
+        for declaration in declarations:
+            handle = handle_for(declaration)
+            if handle in declarations_by_handle:
+                duplicate_handles.add(handle)
+            else:
+                declarations_by_handle[handle] = declaration
+        for handle in duplicate_handles:
+            del declarations_by_handle[handle]
+        return declarations_by_handle
+
 
 def sorted_tuple(
     items: Iterable[ItemT],

@@ -555,6 +555,11 @@ class CompactCallTargetReference(ABC):
     def terminal_name(self) -> str | None:
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def lexical_reference(self) -> LexicalValueReference | None:
+        """Return exact lookup syntax when no receiver-type proof is required."""
+
     @abstractmethod
     def local_candidate_symbols(
         self,
@@ -571,6 +576,10 @@ class BareCallTargetReference(CompactCallTargetReference):
     @property
     def terminal_name(self) -> str:
         return self.function_name
+
+    @property
+    def lexical_reference(self) -> LexicalValueReference:
+        return LexicalValueReference(self.function_name)
 
     def local_candidate_symbols(
         self,
@@ -596,6 +605,10 @@ class CurrentClassMethodReference(CompactCallTargetReference):
     def terminal_name(self) -> str:
         return self.method_name
 
+    @property
+    def lexical_reference(self) -> None:
+        return None
+
     def local_candidate_symbols(
         self,
         module_name: str,
@@ -613,6 +626,10 @@ class QualifiedCallTargetReference(CompactCallTargetReference):
     def terminal_name(self) -> str:
         return self.reference.terminal_name
 
+    @property
+    def lexical_reference(self) -> LexicalValueReference:
+        return self.reference
+
     def local_candidate_symbols(
         self,
         module_name: str,
@@ -626,6 +643,10 @@ class QualifiedCallTargetReference(CompactCallTargetReference):
 class DynamicCallTargetReference(CompactCallTargetReference):
     @property
     def terminal_name(self) -> None:
+        return None
+
+    @property
+    def lexical_reference(self) -> None:
         return None
 
     def local_candidate_symbols(

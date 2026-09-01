@@ -41,6 +41,23 @@ def test_unique_identity_index_accepts_only_equal_duplicate_declarations() -> No
     assert error.value.colliding_declaration == _Declaration("beta")
 
 
+def test_unambiguous_identity_projection_excludes_every_repeated_handle() -> None:
+    declarations = (
+        _Declaration("unique"),
+        _Declaration("equal"),
+        _Declaration("equal"),
+        _Declaration("conflict"),
+        _Declaration("conflict-other"),
+    )
+
+    assert UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+        declarations,
+        lambda declaration: (
+            "conflict" if declaration.name.startswith("conflict") else declaration.name
+        ),
+    ) == {"unique": _Declaration("unique")}
+
+
 def test_source_index_rejects_forced_target_handle_collision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
