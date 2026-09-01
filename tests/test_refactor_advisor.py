@@ -13649,6 +13649,37 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
     assert statuses_by_title["Manual registry mirrors class family"] == "eliminated"
 
 
+def test_codemod_finding_class_delta_treats_coordinate_only_change_as_moved(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
+
+    spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Stable projection mirrors nominal authority",
+        "A projection should descend from its nominal authority.",
+        "one source-derived projection",
+        "projection repeats a nominal authority without descent",
+    )
+    source_path = tmp_path / "projection.py"
+    before = spec.build(
+        "semantic_mirror_without_descent",
+        "Stable projection mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 12, "project:return"),),
+    )
+    after = spec.build(
+        "semantic_mirror_without_descent",
+        "Stable projection mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 18, "project:return"),),
+    )
+
+    delta = CodemodFindingClassDelta.from_findings((before,), (after,))
+
+    assert before.stable_id != after.stable_id
+    assert delta.moved_class_count == 1
+    assert delta.to_dict()["status_counts"] == {"moved": 1}
+
+
 def test_codemod_class_plan_groups_typed_synthesis_records(
     tmp_path: Path,
 ) -> None:

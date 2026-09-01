@@ -284,6 +284,20 @@ class PresentationProjectionKind(StrEnum):
         return self._surface_label
 
 
+class PresentationProjectionSiteKind(StrEnum):
+    """Lexical role of a projection site within its nominal owner."""
+
+    ASSIGNMENT = "assignment"
+    BRANCH = "if"
+    MATCH = "match"
+    RETURN = "return"
+
+    def label_for(self, owner_symbol: str) -> str:
+        """Return the stable semantic label for this owner-local site role."""
+
+        return f"{owner_symbol}:{self.value}"
+
+
 class PresentationTokenKind(StrEnum):
     """Source syntax category for one normalized presentation token."""
 
@@ -4493,7 +4507,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             self._append_projection(
                 node,
                 PresentationProjectionKind.BRANCH_LITERAL,
-                f"if@{node.lineno}",
+                PresentationProjectionSiteKind.BRANCH.label_for(self.qualname),
                 tokens,
                 axis_type_names=self._axis_type_names_for_node(node.test),
             )
@@ -4515,7 +4529,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             self._append_projection(
                 node,
                 PresentationProjectionKind.MATCH_LITERAL,
-                f"match@{node.lineno}",
+                PresentationProjectionSiteKind.MATCH.label_for(self.qualname),
                 tuple(tokens),
                 axis_type_names=self._axis_type_names_for_node(node.subject),
             )
@@ -4528,7 +4542,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         *,
         axis_type_names: tuple[str, ...] = (),
     ) -> bool:
-        label = _assignment_label(node)
+        label = _assignment_label(node, owner_symbol=self.qualname)
         if ProjectionSuppressionPolicy(label).suppresses_semantic_projection():
             return False
         if SingleAssignmentAndValueNameProjection(node).pair is None:
@@ -4545,7 +4559,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         return self._collect_value_projection(
             node,
             value,
-            label=f"{self.qualname}:return@{node.lineno}",
+            label=PresentationProjectionSiteKind.RETURN.label_for(self.qualname),
             allow_call_projection=False,
             axis_type_names=(
                 self.type_scopes[-1].projection_type_names(
@@ -6356,13 +6370,13 @@ class AttributeChainAuthority:
         return cls.terminal_name(node)
 
 
-def _assignment_label(node: ast.stmt) -> str:
+def _assignment_label(node: ast.stmt, *, owner_symbol: str) -> str:
     name = SingleAssignmentAndValueNameProjection(node).name
     if name is not None:
         return name
     if isinstance(node, ast.Assign) and node.targets:
         return ast.unparse(node.targets[0])
-    return f"assignment@{node.lineno}"
+    return PresentationProjectionSiteKind.ASSIGNMENT.label_for(owner_symbol)
 
 
 def _semantic_descent_implementation_paths() -> tuple[Path, ...]:

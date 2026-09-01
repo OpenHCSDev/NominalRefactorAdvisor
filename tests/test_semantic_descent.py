@@ -528,7 +528,7 @@ def test_semantic_descent_graph_flags_returned_declaration_table(
     projection = graph.projection_catalog.projection_for_edge(certificate.edge)
 
     assert projection.kind is PresentationProjectionKind.MAPPING_LITERAL
-    assert projection.label.startswith("Manifest.to_dict:return@")
+    assert projection.label == "Manifest.to_dict:return"
     assert set(certificate.edge.match.tokens) >= {"title", "summary", "status"}
     assert (
         "repeats members from enum `FieldName`" in certificate.missing_derivation_path
@@ -1926,9 +1926,8 @@ def test_reused_dataclass_fields_do_not_invent_foreign_authority_mirrors(
     source_names = {
         finding.metrics.plan_source_name
         for finding in findings
-        if (finding.metrics.plan_mapping_name or "").startswith(
-            "ConversationContext.get_conversation_summary:return@"
-        )
+        if finding.metrics.plan_mapping_name
+        == "ConversationContext.get_conversation_summary:return"
     }
 
     assert source_names == set()
@@ -1969,7 +1968,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
         for item in findings
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_source_name == "RefactorAction"
-        and item.metrics.plan_mapping_name == "ActionReport.to_dict:return@15"
+        and item.metrics.plan_mapping_name == "ActionReport.to_dict:return"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
@@ -2558,7 +2557,7 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
                 DetectorConfig(),
             )
             if item.metrics.plan_source_name == "RefactorAction"
-            and item.metrics.plan_mapping_name.startswith("project:return@")
+            and item.metrics.plan_mapping_name == "project:return"
         )
         snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
@@ -2621,13 +2620,13 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
         capability_gap="derive the projection from the authority instead",
         relation_context="projection lacks a semantic-descent certificate",
         evidence=(
-            SourceLocation(str(module_path), 26, "build_replacement:return@26"),
+            SourceLocation(str(module_path), 26, "build_replacement:return"),
             SourceLocation(str(module_path), 12, "SourceLineSpan"),
         ),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
             field_names=("end_line", "start_line"),
-            mapping_name="build_replacement:return@26",
+            mapping_name="build_replacement:return",
             source_name="SourceLineSpan",
         ),
     )
@@ -3090,7 +3089,7 @@ def test_enum_string_literal_branch_still_reports_mirror(
 
     assert any(
         finding.metrics.plan_source_name == "Mode"
-        and finding.metrics.plan_mapping_name.startswith("if@")
+        and finding.metrics.plan_mapping_name == "classify:if"
         for finding in findings
     )
 
@@ -3181,7 +3180,7 @@ def test_enum_branch_over_structural_type_names_is_not_mirror(
 
     assert not any(
         finding.metrics.plan_source_name == "BuiltinCallName"
-        and finding.metrics.plan_mapping_name.startswith("if@")
+        and finding.metrics.plan_mapping_name == "structural_kind:if"
         for finding in findings
     )
 
@@ -3245,7 +3244,7 @@ def test_enum_branch_with_only_weak_authority_name_affinity_is_not_mirror(
 
     assert not any(
         finding.metrics.plan_source_name == "BuiltinCallName"
-        and finding.metrics.plan_mapping_name.startswith("if@")
+        and finding.metrics.plan_mapping_name == "returned_sequence_name:if"
         for finding in findings
     )
 
@@ -3277,7 +3276,7 @@ def test_dataclass_branch_over_local_variable_names_is_not_mirror(
 
     assert not any(
         finding.metrics.plan_source_name == "Edge"
-        and finding.metrics.plan_mapping_name.startswith("if@")
+        and finding.metrics.plan_mapping_name == "compare:if"
         for finding in findings
     )
 
@@ -3309,7 +3308,7 @@ def test_dataclass_branch_over_field_name_literals_still_reports_mirror(
 
     assert any(
         finding.metrics.plan_source_name == "Edge"
-        and finding.metrics.plan_mapping_name.startswith("if@")
+        and finding.metrics.plan_mapping_name == "compare:if"
         for finding in findings
     )
 
@@ -3346,7 +3345,7 @@ def test_dataclass_branch_using_qualified_authority_constructor_is_descent(
 
     assert not any(
         finding.metrics.plan_source_name == "Edge"
-        and finding.metrics.plan_mapping_name.startswith("if@")
+        and finding.metrics.plan_mapping_name == "check:if"
         for finding in findings
     )
 

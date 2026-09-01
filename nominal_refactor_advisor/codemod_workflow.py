@@ -348,7 +348,11 @@ class CodemodFindingClassChange(CodemodFindingDelta):
             return CodemodFindingClassStatus.INTRODUCED
         if not self.after_finding_ids:
             return CodemodFindingClassStatus.ELIMINATED
-        if self.expected_removed_finding_ids and self.added_finding_ids:
+        if (
+            self.removed_finding_ids
+            and self.added_finding_ids
+            and self.before_finding_count == self.after_finding_count
+        ):
             return CodemodFindingClassStatus.MOVED
         if self.removed_finding_ids:
             return CodemodFindingClassStatus.PARTIALLY_ELIMINATED

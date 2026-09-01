@@ -15550,40 +15550,6 @@ class SemanticMirrorEndpointRole(StrEnum):
     AUTHORITY = "authority"
 
 
-class SemanticMirrorProjectionKind(StrEnum):
-    """Projection site kind encoded in semantic mirror evidence symbols."""
-
-    RETURN = "return"
-
-
-@dataclass(frozen=True)
-class SemanticMirrorProjectionSymbol:
-    """Structured projection-site view of a semantic mirror evidence symbol."""
-
-    value: str
-
-    site_separator: ClassVar[str] = ":"
-    line_separator: ClassVar[str] = "@"
-
-    @property
-    def kind(self) -> SemanticMirrorProjectionKind | None:
-        role_token = self.role_token
-        if role_token is None:
-            return None
-        try:
-            return SemanticMirrorProjectionKind(role_token)
-        except ValueError:
-            return None
-
-    @cached_property
-    def role_token(self) -> str | None:
-        _subject, site_separator, site = self.value.partition(self.site_separator)
-        if not site_separator:
-            return None
-        role, _line_separator, _line = site.partition(self.line_separator)
-        return role or None
-
-
 @dataclass(frozen=True)
 class SemanticMirrorRecipeEndpoint:
     """One role-tagged source location in a semantic mirror recipe seed."""
@@ -15606,11 +15572,6 @@ class SemanticMirrorRecipeEndpoint:
     @property
     def subject(self) -> str:
         return EvidenceSymbol(self.location.symbol).subject
-
-    @property
-    def projection_kind(self) -> SemanticMirrorProjectionKind | None:
-        return SemanticMirrorProjectionSymbol(self.location.symbol).kind
-
 
 @dataclass(frozen=True)
 class SemanticMirrorRecipeSeedLocations:
@@ -15672,10 +15633,6 @@ class SemanticMirrorRecipeSeedLocations:
 
     def authority_symbol(self) -> str:
         return self.authority_endpoint().symbol
-
-    def projection_is_kind(self, kind: SemanticMirrorProjectionKind) -> bool:
-        return self.projection_endpoint().projection_kind is kind
-
 
 @dataclass(frozen=True)
 class SemanticMirrorImportBoundary:
