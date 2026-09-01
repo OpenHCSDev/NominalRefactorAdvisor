@@ -24,6 +24,7 @@ from nominal_refactor_advisor.codemod_payload import (
     PayloadBinding,
     PayloadBindingSet,
     RequiredStringPayloadValueCodec,
+    codemod_envelope_field,
     codemod_payload_field,
 )
 
@@ -74,6 +75,7 @@ def test_payload_binding_set_derives_wire_alias_from_dataclass_field() -> None:
             RequiredStringPayloadValueCodec(),
             field_name="wire_source",
         )
+        envelope: str = codemod_envelope_field(default="context")
 
     binding_set = PayloadBindingSet.from_dataclass(
         DeclaredPayload
@@ -139,6 +141,7 @@ def test_registered_operation_payloads_are_owned_by_constructor_fields() -> None
         ), operation_key
         assert "payload_bindings" not in operation_type.__dict__, operation_key
         assert operation_type.payload_bindings() is binding_set
+    assert "payload_bindings" not in RefactorRecipeOperation.__dict__
 
 
 def test_operation_payload_derivation_rejects_unbound_constructor_fields() -> None:
@@ -165,6 +168,7 @@ def test_registered_selector_payload_bindings_are_unique() -> None:
         ) == frozenset(record_field.name for record_field in fields(selector_type))
         assert "payload_bindings" not in selector_type.__dict__, selector_key
         assert selector_type.payload_bindings() is binding_set
+    assert "payload_bindings" not in CodemodTargetSelector.__dict__
 
 
 def test_selector_payload_derivation_rejects_unbound_constructor_fields() -> None:
@@ -229,8 +233,8 @@ def test_payload_records_own_their_wire_schema() -> None:
             == binding_names
         )
         assert record_type.payload_bindings() is binding_set
+        assert "payload_bindings" not in record_type.__dict__
         if record_type is not RecipeCallReplacement:
-            assert "payload_bindings" not in record_type.__dict__
             assert "to_dict" not in record_type.__dict__
 
 

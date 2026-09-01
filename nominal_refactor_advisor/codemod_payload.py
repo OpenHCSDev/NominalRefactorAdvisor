@@ -313,28 +313,20 @@ class PayloadFieldDeclaration(Generic[PayloadValueT]):
 
 
 _PAYLOAD_FIELD_DECLARATION = object()
+_PAYLOAD_ENVELOPE_FIELD = object()
 _NO_PAYLOAD_FIELD_DEFAULT = object()
 
 
-def codemod_payload_field(
-    codec: PayloadValueCodec[PayloadValueT],
+def _codemod_dataclass_field(
+    metadata: Mapping[object, object],
     *,
-    field_name: str | None = None,
     default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
     default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
 ) -> PayloadValueT:
-    """Declare a constructor field and its derived codemod wire projection."""
-
     if default is not _NO_PAYLOAD_FIELD_DEFAULT and (
         default_factory is not _NO_PAYLOAD_FIELD_DEFAULT
     ):
-        raise TypeError("codemod payload fields cannot declare two defaults")
-    metadata = {
-        _PAYLOAD_FIELD_DECLARATION: PayloadFieldDeclaration(
-            codec=codec,
-            field_name=field_name,
-        )
-    }
+        raise TypeError("codemod dataclass fields cannot declare two defaults")
     if default is not _NO_PAYLOAD_FIELD_DEFAULT:
         return cast(PayloadValueT, field(default=default, metadata=metadata))
     if default_factory is not _NO_PAYLOAD_FIELD_DEFAULT:
@@ -346,6 +338,41 @@ def codemod_payload_field(
             ),
         )
     return cast(PayloadValueT, field(metadata=metadata))
+
+
+def codemod_payload_field(
+    codec: PayloadValueCodec[PayloadValueT],
+    *,
+    field_name: str | None = None,
+    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
+    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
+) -> PayloadValueT:
+    """Declare a constructor field and its derived codemod wire projection."""
+
+    return _codemod_dataclass_field(
+        {
+            _PAYLOAD_FIELD_DECLARATION: PayloadFieldDeclaration(
+                codec=codec,
+                field_name=field_name,
+            )
+        },
+        default=default,
+        default_factory=default_factory,
+    )
+
+
+def codemod_envelope_field(
+    *,
+    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
+    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
+) -> PayloadValueT:
+    """Declare a field projected by its enclosing codemod record."""
+
+    return _codemod_dataclass_field(
+        {_PAYLOAD_ENVELOPE_FIELD: True},
+        default=default,
+        default_factory=default_factory,
+    )
 
 
 @dataclass(frozen=True)
@@ -412,20 +439,13 @@ class PayloadBindingSet(
     def require_complete_dataclass_fields(
         self,
         owner_type: type[PayloadOwnerT],
-        *,
-        non_payload_owner_types: tuple[type[object], ...] = (),
     ) -> Self:
-        """Fail when a constructor field has no payload declaration or exclusion."""
+        """Fail when a constructor field has no payload or envelope declaration."""
 
-        excluded_field_names = frozenset(
-            record_field.name
-            for non_payload_owner_type in non_payload_owner_types
-            for record_field in dataclass_fields(non_payload_owner_type)
-        )
         expected_field_names = frozenset(
             record_field.name
             for record_field in dataclass_fields(owner_type)
-            if record_field.name not in excluded_field_names
+            if _PAYLOAD_ENVELOPE_FIELD not in record_field.metadata
         )
         bound_field_names = frozenset(
             binding.constructor_argument_name for binding in self

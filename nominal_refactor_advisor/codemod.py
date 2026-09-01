@@ -88,6 +88,7 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     StrEnumPayloadValueCodec,
     StringArrayPayloadValueCodec,
+    codemod_envelope_field,
     codemod_payload_field,
 )
 from .codemod_spacing import DestinationInsertionSpacing
@@ -1996,7 +1997,9 @@ class ArchitectureGuardViolationTarget(SourceRewriteTarget):
 class SourceRewriteTargetReference:
     """Shared owner for DSL records that reference source-index targets."""
 
-    target: SourceRewriteTarget = field(default_factory=SourceRewriteTarget)
+    target: SourceRewriteTarget = codemod_envelope_field(
+        default_factory=SourceRewriteTarget
+    )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return (self.target,)
@@ -2939,12 +2942,6 @@ class ReplacementImportPayloadValueCodec(PayloadValueCodec["MovedSymbolImportPol
         return value.import_source
 
 
-SelectorPayloadBindings: TypeAlias = PayloadBindingSet[
-    "CodemodTargetSelector",
-    JsonValue,
-]
-
-
 @dataclass(frozen=True)
 class CodemodTargetSelector(
     CodemodPayloadRecord,
@@ -2959,13 +2956,6 @@ class CodemodTargetSelector(
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
     registry_key: ClassVar[str]
-
-    @classmethod
-    @lru_cache(maxsize=None)
-    def payload_bindings(cls) -> SelectorPayloadBindings:
-        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
-            cls
-        )
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "CodemodTargetSelector":
@@ -3570,16 +3560,6 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
     new_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     @classmethod
-    @lru_cache(maxsize=None)
-    def payload_bindings(
-        cls,
-    ) -> PayloadBindingSet["RecipeCallReplacement", str]:
-        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
-            cls,
-            non_payload_owner_types=(SourceRewriteTargetReference,),
-        )
-
-    @classmethod
     def from_json_value(cls, value: JsonValue) -> "RecipeCallReplacement":
         payload = CodemodPayload.from_json_value(
             value,
@@ -3615,17 +3595,11 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
         )
 
 
-OperationPayloadBindings: TypeAlias = PayloadBindingSet[
-    "RefactorRecipeOperation",
-    object,
-]
-
-
 @dataclass(frozen=True, kw_only=True)
 class SourceRewritePlanItem(SourceRewriteTargetReference):
     """Common target and rationale state for source rewrite plan items."""
 
-    rationale: str = ""
+    rationale: str = codemod_envelope_field(default="")
 
     def rationale_text(self, default: str) -> str:
         if self.rationale:
@@ -4746,14 +4720,6 @@ class RefactorRecipeOperation(
             target=target,
             rationale=payload.string_or_empty("rationale"),
             **cls.payload_bindings().constructor_kwargs(payload.fields),
-        )
-
-    @classmethod
-    @lru_cache(maxsize=None)
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
-            cls,
-            non_payload_owner_types=(SourceRewritePlanItem,),
         )
 
     def operation_payload(self) -> JsonObject:
