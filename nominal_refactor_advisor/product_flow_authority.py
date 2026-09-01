@@ -11,6 +11,8 @@ from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactModuleClassProjection,
+    CompactPublicNameExposure,
+    CompactRepositoryPublicExposureIndex,
     build_compact_class_family_index,
 )
 from .collection_algebra import (
@@ -239,6 +241,10 @@ class CompactProductFlowRepository:
             self.class_projections,
             self.class_index,
         )
+
+    @cached_property
+    def public_exposure_index(self) -> CompactRepositoryPublicExposureIndex:
+        return CompactRepositoryPublicExposureIndex(self.class_projections)
 
     @cached_property
     def function_declaration_multiplicity(
@@ -527,6 +533,22 @@ class CompactProductFlowRepository:
             escape
             for escape in self.callable_escapes
             if escape.declaration.identity.symbol == function_symbol
+        )
+
+    def callable_boundary_exposure(
+        self,
+        declaration: CompactFunctionDeclaration,
+    ) -> CompactPublicNameExposure:
+        qualname = declaration.identity.qualname
+        if declaration.owner_class_qualname is not None:
+            binding_name = declaration.owner_class_qualname.split(".", 1)[0]
+        elif "." not in qualname:
+            binding_name = qualname
+        else:
+            return CompactPublicNameExposure.PRIVATE
+        return self.public_exposure_index.exposure_for(
+            declaration.identity.module_name,
+            binding_name,
         )
 
     def _lexical_function_target_resolution(

@@ -34,7 +34,11 @@ from .ast_tools import (
     module_syntax_index,
     named_function_nodes,
 )
-from .collection_algebra import sorted_tuple
+from .collection_algebra import (
+    IdentityHandleMultiplicityProjection,
+    UniqueIdentityIndexAuthority,
+    sorted_tuple,
+)
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .native_syntax import NativePythonSyntaxIndex
 from .source_identity import resolved_source_path_text
@@ -251,9 +255,19 @@ def has_complete_concrete_mro_composite(
 class CompactPublicNameExposure(StrEnum):
     """Proof result for one name on a module's declared public surface."""
 
-    PUBLIC = "public"
-    PRIVATE = "private"
-    UNRESOLVED = "unresolved"
+    PUBLIC = "public", True
+    PRIVATE = "private", False
+    UNRESOLVED = "unresolved", True
+
+    def __new__(cls, value: str, blocks_closed_boundary: bool) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._blocks_closed_boundary = blocks_closed_boundary
+        return member
+
+    @property
+    def blocks_closed_boundary(self) -> bool:
+        return self._blocks_closed_boundary
 
 
 class CompactModulePublicExportContract(ABC):
@@ -318,6 +332,79 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     public_export_contract: CompactModulePublicExportContract
     star_import_origins: tuple[CompactModuleStarImportOrigin, ...]
     classes: tuple[CompactIndexedClass, ...]
+
+
+@dataclass(frozen=True)
+class CompactRepositoryPublicExposureIndex:
+    """Derive transitive public exposure from module-owned namespace contracts."""
+
+    module_projections: tuple[CompactModuleClassHeader, ...]
+
+    @cached_property
+    def module_projection_multiplicity(
+        self,
+    ) -> IdentityHandleMultiplicityProjection[str, CompactModuleClassHeader]:
+        return UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(
+            self.module_projections,
+            lambda projection: projection.module_name,
+        )
+
+    @cached_property
+    def projections_by_module_name(self) -> dict[str, CompactModuleClassHeader]:
+        return self.module_projection_multiplicity.unambiguous_declarations_by_handle
+
+    @cached_property
+    def named_reexports_by_target_symbol(
+        self,
+    ) -> dict[str, tuple[tuple[str, str], ...]]:
+        grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for projection in self.module_projections:
+            for local_name, target_symbol in projection.import_aliases:
+                grouped[target_symbol].append((projection.module_name, local_name))
+        return {
+            symbol: tuple(dict.fromkeys(reexports))
+            for symbol, reexports in grouped.items()
+        }
+
+    def exposure_for(
+        self,
+        module_name: str,
+        binding_name: str,
+    ) -> CompactPublicNameExposure:
+        pending = deque(((module_name, binding_name),))
+        visited: set[tuple[str, str]] = set()
+        unresolved = False
+        while pending:
+            current_module, current_name = pending.popleft()
+            binding = current_module, current_name
+            if binding in visited:
+                continue
+            visited.add(binding)
+            projection = self.projections_by_module_name.get(current_module)
+            if projection is None:
+                unresolved = True
+                continue
+            exposure = projection.public_export_contract.exposure_for(current_name)
+            if exposure is CompactPublicNameExposure.PUBLIC:
+                return exposure
+            if exposure is CompactPublicNameExposure.UNRESOLVED:
+                unresolved = True
+            symbol = f"{current_module}.{current_name}"
+            pending.extend(self.named_reexports_by_target_symbol.get(symbol, ()))
+            if any(
+                not origin.is_resolved
+                and consumer.public_export_contract.exposure_for(
+                    current_name
+                ).blocks_closed_boundary
+                for consumer in self.module_projections
+                for origin in consumer.star_import_origins
+            ):
+                unresolved = True
+        return (
+            CompactPublicNameExposure.UNRESOLVED
+            if unresolved
+            else CompactPublicNameExposure.PRIVATE
+        )
 
 
 @dataclass(frozen=True)

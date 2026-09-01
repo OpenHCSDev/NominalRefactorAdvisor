@@ -1025,7 +1025,9 @@ class ClosedParameterConveyorComponentBuilder:
                 sorted(
                     participant.symbol
                     for participant in participants
-                    if not self._is_repository_private(participant.declaration)
+                    if self.repository.callable_boundary_exposure(
+                        participant.declaration
+                    ).blocks_closed_boundary
                 )
             ),
             incomplete_method_family_symbols=tuple(
@@ -1202,11 +1204,6 @@ class ClosedParameterConveyorComponentBuilder:
         resolution: CompactFunctionCallResolution,
     ) -> str:
         return f"{resolution.context.file_path}:{resolution.call.line}"
-
-    @staticmethod
-    def _is_repository_private(declaration: CompactFunctionDeclaration) -> bool:
-        name = declaration.identity.qualname.rsplit(".", 1)[-1]
-        return name.startswith("_") and not name.startswith("__")
 
     @staticmethod
     def _edge_display_id(edge: ParameterConveyorCallEdge) -> str:

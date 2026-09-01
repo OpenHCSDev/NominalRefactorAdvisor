@@ -309,6 +309,104 @@ def test_public_participant_is_not_treated_as_a_closed_repository_boundary() -> 
     assert builder.proven_components() == ()
 
 
+def test_explicitly_exported_private_participant_keeps_boundary_open() -> None:
+    builder = _builder(
+        _module(
+            "pkg.explicit_export",
+            "__all__ = ('_build',)\n" + _base_source(),
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert (
+        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        in component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_public_named_reexport_keeps_private_participant_boundary_open() -> None:
+    builder = _builder(
+        _module("pkg.impl", _base_source()),
+        _module("pkg.api", "from pkg.impl import _build as build\n"),
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert (
+        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        in component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_transitive_public_reexport_keeps_private_participant_boundary_open() -> None:
+    builder = _builder(
+        _module("pkg.impl", _base_source()),
+        _module(
+            "pkg.facade",
+            "__all__ = ()\nfrom pkg.impl import _build as internal_build\n",
+        ),
+        _module("pkg.api", "from pkg.facade import internal_build as build\n"),
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert (
+        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        in component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_dynamic_export_contract_keeps_private_participant_boundary_open() -> None:
+    builder = _builder(
+        _module(
+            "pkg.dynamic_export",
+            "__all__ = exported_names()\n" + _base_source(),
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert (
+        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        in component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_private_method_on_public_class_keeps_boundary_open() -> None:
+    builder = _builder(
+        _module(
+            "pkg.public_owner",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class _CacheKey:\n"
+            "    left: object\n"
+            "    right: object\n"
+            "\n"
+            "class Builder:\n"
+            "    def _build(self, left, right):\n"
+            "        return left, right\n"
+            "\n"
+            "    def caller(self, left, right):\n"
+            "        key = _CacheKey(left=left, right=right)\n"
+            "        return self._build(left, right)\n",
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert (
+        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        in component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
 def test_rebinding_between_construction_and_call_blocks_the_component() -> None:
     builder = _builder(
         _module(
@@ -685,12 +783,13 @@ def test_competing_product_authorities_block_both_local_trajectories() -> None:
     assert builder.proven_components() == ()
 
 
-def test_self_host_coherence_cache_key_reaches_the_intended_final_authority() -> None:
+def test_self_host_coherence_cache_key_does_not_cross_its_public_owner() -> None:
     module = parse_python_modules(
         Path("nominal_refactor_advisor/observation_graph.py"),
         use_parse_cache=True,
     )[0]
-    components = _builder(module).proven_components()
+    builder = _builder(module)
+    components = builder.assessed_components()
 
     component = next(
         component
@@ -702,4 +801,5 @@ def test_self_host_coherence_cache_key_reaches_the_intended_final_authority() ->
         "nominal_refactor_advisor.observation_graph."
         "ObservationGraph._build_coherence_cohorts_for",
     )
-    assert component.proof.is_proven
+    assert component.proof.open_boundary_symbols == component.participant_symbols
+    assert builder.proven_components() == ()
