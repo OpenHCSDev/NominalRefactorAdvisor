@@ -7,28 +7,31 @@ import pytest
 from nominal_refactor_advisor import codemod as codemod_module
 from nominal_refactor_advisor.codemod import (
     AuthorityClaimPayloadValueCodec,
-    BooleanPayloadValueCodec,
     CodemodPayload,
     CodemodPayloadRole,
     CodemodTargetSelector,
-    DefaultedStringPayloadValueCodec,
-    IntegerPayloadValueCodec,
     MovedSymbolImportPolicy,
     NodeKindArrayPayloadValueCodec,
-    ObjectPayloadValueCodec,
-    OptionalStringArrayPayloadValueCodec,
-    OptionalStringPayloadValueCodec,
-    PayloadBindingSet,
     PayloadRecordArrayValueCodec,
-    PayloadValueCodec,
     RecipeCallReplacement,
     RefactorRecipeOperation,
-    RequiredStringPayloadValueCodec,
     ReplacementImportPayloadValueCodec,
     SelectionCountExpectation,
     SelectionCountPayloadValueCodec,
     SelectorObjectPayloadValueCodec,
     SourceIndexTargetSelector,
+)
+from nominal_refactor_advisor.codemod_payload import (
+    BooleanPayloadValueCodec,
+    DefaultedStringPayloadValueCodec,
+    IntegerPayloadValueCodec,
+    ObjectPayloadValueCodec,
+    OptionalStringArrayPayloadValueCodec,
+    OptionalStringPayloadValueCodec,
+    PayloadBindingSet,
+    PayloadValueCodec,
+    RequiredIntegerPayloadValueCodec,
+    RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
 )
 from nominal_refactor_advisor.semantic_descent import AuthorityClaim
@@ -90,6 +93,7 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         (StringArrayPayloadValueCodec(), ("Alpha", "Beta")),
         (BooleanPayloadValueCodec(), True),
         (IntegerPayloadValueCodec(), 3),
+        (RequiredIntegerPayloadValueCodec(), 3),
         (ObjectPayloadValueCodec(), {"owner": "AlphaAuthority"}),
         (NodeKindArrayPayloadValueCodec(), (AstTargetNodeKind.FUNCTION,)),
         (SelectorObjectPayloadValueCodec(), selector),
@@ -147,3 +151,9 @@ def test_optional_array_codec_leaves_own_missing_value_semantics() -> None:
     assert OptionalStringArrayPayloadValueCodec().read({}, "names") == ()
     with pytest.raises(ValueError, match="string array"):
         StringArrayPayloadValueCodec().read({}, "names")
+
+
+def test_required_integer_codec_owns_missing_value_semantics() -> None:
+    assert IntegerPayloadValueCodec().read({}, "count") is None
+    with pytest.raises(ValueError, match="non-negative integer"):
+        RequiredIntegerPayloadValueCodec().read({}, "count")

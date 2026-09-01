@@ -1,0 +1,489 @@
+"""Declaration-owned JSON payload semantics for the codemod DSL."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
+from enum import StrEnum
+from functools import lru_cache
+from typing import Generic, Self, TypeAlias, TypeVar, cast
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+
+
+class JsonObject(dict[str, "JsonValue"]):
+    """Nominal JSON object payload at codemod and CLI boundaries."""
+
+
+JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
+JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
+PayloadOwnerT = TypeVar("PayloadOwnerT")
+PayloadValueT = TypeVar("PayloadValueT")
+StrEnumT = TypeVar("StrEnumT", bound=StrEnum)
+
+
+class CodemodJsonReport(ABC):
+    """Nominal boundary for codemod reports that serialize to JSON."""
+
+    @abstractmethod
+    def to_dict(self) -> JsonObject:
+        raise NotImplementedError
+
+
+class DataclassPayloadProjection(CodemodJsonReport, ABC):
+    """JSON projection derived completely from nominal dataclass fields."""
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def payload_bindings(cls) -> PayloadBindingSet[Self, object]:
+        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
+            cls
+        )
+
+    def to_dict(self) -> JsonObject:
+        return type(self).payload_bindings().payload(self)
+
+
+class CodemodPayloadRecord(DataclassPayloadProjection, ABC):
+    """Nominal JSON record that owns both decoding and encoding semantics."""
+
+    @classmethod
+    @abstractmethod
+    def from_json_value(cls, value: JsonValue) -> Self:
+        raise NotImplementedError
+
+
+class PayloadValueCodec(Generic[PayloadValueT], ABC):
+    """Nominal owner of one payload value's wire semantics."""
+
+    @abstractmethod
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> PayloadValueT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def serialize(self, value: object) -> JsonValue:
+        raise NotImplementedError
+
+
+class StringPayloadValueCodec(PayloadValueCodec[str | None], ABC):
+    """Shared wire mechanics for the supported nominal string policies."""
+
+    @abstractmethod
+    def value_when_missing(self, field_name: str) -> str | None:
+        """Return the declared missing-field value or reject its absence."""
+        raise NotImplementedError
+
+    def validate_present_value(
+        self,
+        value: str,
+        field_name: str | None,
+    ) -> None:
+        """Validate one present value under the non-empty string policy."""
+        if not value:
+            if field_name is None:
+                raise ValueError("string payload codec does not permit an empty value")
+            raise ValueError(f"Expected non-empty string field {field_name!r}")
+
+    def serialize_missing(self) -> JsonValue:
+        """Reject missing values unless a nominal leaf declares them valid."""
+        raise TypeError("string payload codec requires a string value")
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> str | None:
+        value = payload.get(field_name)
+        if value is None:
+            return self.value_when_missing(field_name)
+        if not isinstance(value, str):
+            raise ValueError(f"Expected string field {field_name!r}")
+        self.validate_present_value(value, field_name)
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        if value is None:
+            return self.serialize_missing()
+        if not isinstance(value, str):
+            raise TypeError("string payload codec requires a string value")
+        self.validate_present_value(value, None)
+        return value
+
+
+@dataclass(frozen=True)
+class RequiredStringPayloadValueCodec(StringPayloadValueCodec):
+    """Require a present, non-empty string payload value."""
+
+    def value_when_missing(self, field_name: str) -> str:
+        raise ValueError(f"Expected non-empty string field {field_name!r}")
+
+
+@dataclass(frozen=True)
+class DefaultedStringPayloadValueCodec(StringPayloadValueCodec):
+    """Use a declared default when a non-empty string field is absent."""
+
+    missing_value: str
+
+    def value_when_missing(self, field_name: str) -> str:
+        del field_name
+        return self.missing_value
+
+    def serialize_missing(self) -> JsonValue:
+        return None
+
+
+@dataclass(frozen=True)
+class OptionalStringPayloadValueCodec(DefaultedStringPayloadValueCodec):
+    """Accept empty strings and optionally default an absent field."""
+
+    missing_value: str | None = None
+
+    def validate_present_value(
+        self,
+        value: str,
+        field_name: str | None,
+    ) -> None:
+        del value, field_name
+
+
+@dataclass(frozen=True)
+class StrEnumPayloadValueCodec(PayloadValueCodec[StrEnumT], Generic[StrEnumT]):
+    """Typed string-enum payload semantics with a declared default."""
+
+    enum_type: type[StrEnumT]
+    declared_default: StrEnumT
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> StrEnumT:
+        value = payload.get(field_name, self.declared_default.value)
+        if not isinstance(value, str):
+            raise ValueError(f"Expected string enum field {field_name!r}")
+        try:
+            return self.enum_type(value)
+        except ValueError as error:
+            raise ValueError(f"Unsupported {field_name!r} value: {value!r}") from error
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, self.enum_type):
+            raise TypeError(
+                f"string-enum payload codec requires {self.enum_type.__name__}"
+            )
+        return value.value
+
+
+@dataclass(frozen=True)
+class StringArrayPayloadValueCodec(PayloadValueCodec[tuple[str, ...]]):
+    """Required array-of-string payload semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[str, ...]:
+        if field_name not in payload or payload[field_name] is None:
+            raise ValueError(f"Expected string array field {field_name!r}")
+        value = payload[field_name]
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, str) for item in value
+        ):
+            raise ValueError(f"Expected string array field {field_name!r}")
+        return tuple(value)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, str) for item in value
+        ):
+            raise TypeError("string-array payload codec requires string values")
+        return tuple(value)
+
+
+@dataclass(frozen=True)
+class OptionalStringArrayPayloadValueCodec(StringArrayPayloadValueCodec):
+    """Array-of-string payload semantics with an empty missing-field value."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[str, ...]:
+        if field_name not in payload or payload[field_name] is None:
+            return ()
+        return super().read(payload, field_name)
+
+
+@dataclass(frozen=True)
+class BooleanPayloadValueCodec(PayloadValueCodec[bool]):
+    """Optional boolean payload semantics with one declared default."""
+
+    declared_default: bool = False
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> bool:
+        if field_name not in payload:
+            return self.declared_default
+        value = payload[field_name]
+        if not isinstance(value, bool):
+            raise ValueError(f"Expected boolean field {field_name!r}")
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, bool):
+            raise TypeError("boolean payload codec requires a boolean value")
+        return value
+
+
+@dataclass(frozen=True)
+class IntegerPayloadValueCodec(PayloadValueCodec[int | None]):
+    """Optional non-negative integer payload semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> int | None:
+        value = payload.get(field_name)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"Expected non-negative integer field {field_name!r}")
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise TypeError("integer payload codec requires a non-negative integer")
+        return value
+
+
+@dataclass(frozen=True)
+class RequiredIntegerPayloadValueCodec(IntegerPayloadValueCodec):
+    """Require a present non-negative integer payload value."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> int:
+        value = super().read(payload, field_name)
+        if value is None:
+            raise ValueError(f"Expected non-negative integer field {field_name!r}")
+        return value
+
+
+@dataclass(frozen=True)
+class ObjectPayloadValueCodec(PayloadValueCodec[Mapping[str, JsonValue]]):
+    """Required JSON-object payload semantics."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> Mapping[str, JsonValue]:
+        value = payload.get(field_name)
+        if not isinstance(value, Mapping):
+            raise ValueError(f"Expected object field {field_name!r}")
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, Mapping):
+            raise TypeError("object payload codec requires a mapping value")
+        return JsonObject(value)
+
+
+@dataclass(frozen=True)
+class PayloadFieldDeclaration(Generic[PayloadValueT]):
+    """Wire semantics owned by one dataclass constructor field."""
+
+    codec: PayloadValueCodec[PayloadValueT]
+    field_name: str | None = None
+
+
+_PAYLOAD_FIELD_DECLARATION = object()
+_NO_PAYLOAD_FIELD_DEFAULT = object()
+
+
+def codemod_payload_field(
+    codec: PayloadValueCodec[PayloadValueT],
+    *,
+    field_name: str | None = None,
+    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
+    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
+) -> PayloadValueT:
+    """Declare a constructor field and its derived codemod wire projection."""
+
+    if default is not _NO_PAYLOAD_FIELD_DEFAULT and (
+        default_factory is not _NO_PAYLOAD_FIELD_DEFAULT
+    ):
+        raise TypeError("codemod payload fields cannot declare two defaults")
+    metadata = {
+        _PAYLOAD_FIELD_DECLARATION: PayloadFieldDeclaration(
+            codec=codec,
+            field_name=field_name,
+        )
+    }
+    if default is not _NO_PAYLOAD_FIELD_DEFAULT:
+        return cast(PayloadValueT, field(default=default, metadata=metadata))
+    if default_factory is not _NO_PAYLOAD_FIELD_DEFAULT:
+        return cast(
+            PayloadValueT,
+            field(
+                default_factory=cast(Callable[[], PayloadValueT], default_factory),
+                metadata=metadata,
+            ),
+        )
+    return cast(PayloadValueT, field(metadata=metadata))
+
+
+@dataclass(frozen=True)
+class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
+    """Derived JSON-to-constructor binding for one DSL payload field."""
+
+    field_name: str
+    constructor_argument_name: str
+    codec: PayloadValueCodec[PayloadValueT]
+
+    def constructor_kwargs(
+        self,
+        payload: Mapping[str, JsonValue],
+    ) -> dict[str, PayloadValueT]:
+        return {
+            self.constructor_argument_name: self.codec.read(payload, self.field_name)
+        }
+
+    def payload_items(self, owner: PayloadOwnerT) -> tuple[tuple[str, JsonValue], ...]:
+        value = getattr(owner, self.constructor_argument_name)
+        return ((self.field_name, self.codec.serialize(value)),)
+
+
+class PayloadBindingSet(
+    tuple[PayloadBinding[PayloadOwnerT, PayloadValueT], ...],
+    Generic[PayloadOwnerT, PayloadValueT],
+):
+    """Validated projection of declaration-owned payload fields."""
+
+    def __new__(
+        cls,
+        bindings: Iterable[PayloadBinding[PayloadOwnerT, PayloadValueT]] = (),
+    ) -> Self:
+        binding_tuple = tuple(bindings)
+        cls.require_unique_binding_names(binding_tuple)
+        return super().__new__(cls, binding_tuple)
+
+    @classmethod
+    def from_dataclass(
+        cls,
+        owner_type: type[PayloadOwnerT],
+    ) -> Self:
+        """Derive wire bindings from the owner's declared dataclass fields."""
+
+        bindings = []
+        for record_field in dataclass_fields(owner_type):
+            declaration = record_field.metadata.get(_PAYLOAD_FIELD_DECLARATION)
+            if declaration is None:
+                continue
+            if not isinstance(declaration, PayloadFieldDeclaration):
+                raise TypeError(
+                    f"Invalid payload field declaration on {owner_type.__name__}."
+                    f"{record_field.name}"
+                )
+            bindings.append(
+                PayloadBinding(
+                    field_name=declaration.field_name or record_field.name,
+                    constructor_argument_name=record_field.name,
+                    codec=declaration.codec,
+                )
+            )
+        return cls(bindings)
+
+    def require_complete_dataclass_fields(
+        self,
+        owner_type: type[PayloadOwnerT],
+        *,
+        non_payload_owner_types: tuple[type[object], ...] = (),
+    ) -> Self:
+        """Fail when a constructor field has no payload declaration or exclusion."""
+
+        excluded_field_names = frozenset(
+            record_field.name
+            for non_payload_owner_type in non_payload_owner_types
+            for record_field in dataclass_fields(non_payload_owner_type)
+        )
+        expected_field_names = frozenset(
+            record_field.name
+            for record_field in dataclass_fields(owner_type)
+            if record_field.name not in excluded_field_names
+        )
+        bound_field_names = frozenset(
+            binding.constructor_argument_name for binding in self
+        )
+        missing_field_names = tuple(sorted(expected_field_names - bound_field_names))
+        unexpected_field_names = tuple(sorted(bound_field_names - expected_field_names))
+        if missing_field_names or unexpected_field_names:
+            raise TypeError(
+                f"Incomplete payload field declarations on {owner_type.__name__}: "
+                f"missing={missing_field_names!r}, unexpected={unexpected_field_names!r}"
+            )
+        return self
+
+    def constructor_kwargs(
+        self,
+        payload: Mapping[str, JsonValue],
+    ) -> dict[str, PayloadValueT]:
+        constructor_kwargs: dict[str, PayloadValueT] = {}
+        for binding in self:
+            constructor_kwargs.update(binding.constructor_kwargs(payload))
+        return constructor_kwargs
+
+    def payload(
+        self,
+        owner: PayloadOwnerT,
+        *,
+        omit_none: bool = False,
+    ) -> JsonObject:
+        payload = {
+            key: value
+            for binding in self
+            for key, value in binding.payload_items(owner)
+            if not omit_none or value is not None
+        }
+        return JsonObject(payload)
+
+    def has_field_in(self, payload: Mapping[str, JsonValue]) -> bool:
+        return any(binding.field_name in payload for binding in self)
+
+    @staticmethod
+    def require_unique_binding_names(
+        bindings: tuple[
+            PayloadBinding[PayloadOwnerT, PayloadValueT],
+            ...,
+        ],
+    ) -> None:
+        for name_kind, names in (
+            ("payload field", tuple(binding.field_name for binding in bindings)),
+            (
+                "constructor argument",
+                tuple(binding.constructor_argument_name for binding in bindings),
+            ),
+        ):
+            duplicate_names = tuple(
+                name for name, count in Counter(names).items() if count > 1
+            )
+            if duplicate_names:
+                raise ValueError(
+                    f"Duplicate {name_kind} binding name(s): "
+                    f"{', '.join(repr(name) for name in duplicate_names)}"
+                )

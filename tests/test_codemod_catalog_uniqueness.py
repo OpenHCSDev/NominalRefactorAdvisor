@@ -7,18 +7,24 @@ import pytest
 
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
-    CodemodPayloadRecord,
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodTargetSelector,
-    PayloadBinding,
-    PayloadBindingSet,
     RefactorRecipe,
     RefactorRecipeOperation,
     RecipeCallReplacement,
-    RequiredStringPayloadValueCodec,
+    SelectionCountExpectation,
+    SourceEditOrigin,
+    SourceRewriteTarget,
     SourceRewritePlanItem,
     SourceRewriteContributor,
+)
+from nominal_refactor_advisor.codemod_payload import (
+    CodemodPayloadRecord,
+    PayloadBinding,
+    PayloadBindingSet,
+    RequiredStringPayloadValueCodec,
+    codemod_payload_field,
 )
 
 
@@ -61,30 +67,26 @@ def test_payload_binding_set_rejects_duplicate_constructor_argument_names() -> N
         )
 
 
-def test_payload_binding_set_rejects_duplicates_across_composition() -> None:
-    with pytest.raises(ValueError, match="Duplicate payload field binding name"):
-        PayloadBindingSet((_binding("source", "old_source"),)) + PayloadBindingSet(
-            (_binding("source", "new_source"),)
+def test_payload_binding_set_derives_wire_alias_from_dataclass_field() -> None:
+    @dataclass(frozen=True)
+    class DeclaredPayload:
+        source: str = codemod_payload_field(
+            RequiredStringPayloadValueCodec(),
+            field_name="wire_source",
         )
 
-
-def test_payload_binding_set_derives_same_name_fields_from_keywords() -> None:
-    binding_set = PayloadBindingSet.from_field_codecs(
-        source=RequiredStringPayloadValueCodec(),
-        destination=RequiredStringPayloadValueCodec(),
-    )
+    binding_set = PayloadBindingSet.from_dataclass(
+        DeclaredPayload
+    ).require_complete_dataclass_fields(DeclaredPayload)
 
     assert tuple(
         (binding.field_name, binding.constructor_argument_name)
         for binding in binding_set
-    ) == (("source", "source"), ("destination", "destination"))
-
-
-def test_explicit_payload_fields_reject_redundant_same_name_schema() -> None:
-    with pytest.raises(ValueError, match="must use from_field_codecs"):
-        PayloadBindingSet.from_explicit_fields(
-            ("source", "source", RequiredStringPayloadValueCodec()),
-        )
+    ) == (("wire_source", "source"),)
+    assert binding_set.constructor_kwargs({"wire_source": "value"}) == {
+        "source": "value"
+    }
+    assert binding_set.payload(DeclaredPayload("value")) == {"wire_source": "value"}
 
 
 def test_registered_operation_payload_bindings_are_unique() -> None:
@@ -176,6 +178,15 @@ def test_selector_payload_derivation_rejects_unbound_constructor_fields() -> Non
 
 def test_payload_records_own_their_wire_schema() -> None:
     expected_binding_names = {
+        SourceRewriteContributor: (
+            ("recipe_id", "recipe_id"),
+            ("plan_item_declaration", "plan_item_declaration"),
+            ("plan_item_index", "plan_item_index"),
+            ("file_path", "file_path"),
+            ("line", "line"),
+            ("end_line", "end_line"),
+            ("source_hash", "source_hash"),
+        ),
         ArchitectureGuardRule: (
             ("rule_id", "rule_id"),
             ("forbidden_attribute_names", "forbidden_attribute_names"),
@@ -218,3 +229,38 @@ def test_payload_records_own_their_wire_schema() -> None:
             == binding_names
         )
         assert record_type.payload_bindings() is binding_set
+        if record_type is not RecipeCallReplacement:
+            assert "payload_bindings" not in record_type.__dict__
+            assert "to_dict" not in record_type.__dict__
+
+
+def test_payload_helpers_derive_their_wire_schema_from_fields() -> None:
+    expected_binding_names = {
+        SourceEditOrigin: (
+            ("recipe_id", "recipe_id"),
+            ("plan_item_declaration", "plan_item_declaration"),
+            ("plan_item_index", "plan_item_index"),
+        ),
+        SourceRewriteTarget: (
+            ("target_id", "target_id"),
+            ("file_path", "file_path"),
+            ("target_qualname", "qualname"),
+        ),
+        SelectionCountExpectation: (
+            ("min", "minimum"),
+            ("max", "maximum"),
+            ("exact", "exact"),
+        ),
+    }
+
+    for record_type, binding_names in expected_binding_names.items():
+        binding_set = record_type.payload_bindings()
+        assert (
+            tuple(
+                (binding.field_name, binding.constructor_argument_name)
+                for binding in binding_set
+            )
+            == binding_names
+        )
+        assert record_type.payload_bindings() is binding_set
+        assert "payload_bindings" not in record_type.__dict__

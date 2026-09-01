@@ -32,7 +32,6 @@ from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
-from dataclasses import fields as dataclass_fields
 from enum import Enum, StrEnum
 from functools import cached_property, lru_cache
 from itertools import combinations
@@ -69,6 +68,27 @@ from .class_index import (
     ModuleClassReferenceResolver,
     build_class_family_index,
     declared_nominal_base_count,
+)
+from .codemod_payload import (
+    BooleanPayloadValueCodec,
+    CodemodJsonReport,
+    CodemodPayloadRecord,
+    DataclassPayloadProjection,
+    IntegerPayloadValueCodec,
+    JsonArray,
+    JsonObject,
+    JsonScalar,
+    JsonValue,
+    ObjectPayloadValueCodec,
+    OptionalStringArrayPayloadValueCodec,
+    OptionalStringPayloadValueCodec,
+    PayloadBindingSet,
+    PayloadValueCodec,
+    RequiredIntegerPayloadValueCodec,
+    RequiredStringPayloadValueCodec,
+    StrEnumPayloadValueCodec,
+    StringArrayPayloadValueCodec,
+    codemod_payload_field,
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
@@ -146,21 +166,9 @@ from .source_identity import (
 )
 from .taxonomy import CertificationLevel, ConfidenceLevel
 
-JsonScalar: TypeAlias = str | int | float | bool | None
 ExtractableMethodNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 ExtractableMethodNodes: TypeAlias = tuple[ExtractableMethodNode, ...]
-
-
-class JsonObject(dict[str, "JsonValue"]):
-    """Nominal JSON object payload at codemod and CLI boundaries."""
-
-
-JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
-JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
-PayloadOwnerT = TypeVar("PayloadOwnerT")
-PayloadValueT = TypeVar("PayloadValueT")
 PayloadRecordT = TypeVar("PayloadRecordT", bound="CodemodPayloadRecord")
-StrEnumT = TypeVar("StrEnumT", bound=StrEnum)
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",
     str,
@@ -170,23 +178,6 @@ SourceTargetIdentityValueT = TypeVar(
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
     return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
-
-
-class CodemodJsonReport(ABC):
-    """Nominal boundary for codemod reports that serialize to JSON."""
-
-    @abstractmethod
-    def to_dict(self) -> JsonObject:
-        raise NotImplementedError
-
-
-class CodemodPayloadRecord(CodemodJsonReport, ABC):
-    """Nominal JSON record that owns both decoding and encoding semantics."""
-
-    @classmethod
-    @abstractmethod
-    def from_json_value(cls, value: JsonValue) -> Self:
-        raise NotImplementedError
 
 
 class CodemodPayloadRole(Enum):
@@ -777,12 +768,14 @@ class ReplacementSource:
 
 
 @dataclass(frozen=True)
-class SourceEditOrigin:
+class SourceEditOrigin(DataclassPayloadProjection):
     """Operation identity retained until a semantic edit has physical geometry."""
 
-    recipe_id: str
-    plan_item_declaration: str
-    plan_item_index: int
+    recipe_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    plan_item_declaration: str = codemod_payload_field(
+        RequiredStringPayloadValueCodec()
+    )
+    plan_item_index: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
 
     @property
     def identity(self) -> tuple[object, ...]:
@@ -813,22 +806,15 @@ class SourceEditOrigin:
         }
         return tuple(origins_by_identity.values())
 
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            recipe_id=self.recipe_id,
-            plan_item_declaration=self.plan_item_declaration,
-            plan_item_index=self.plan_item_index,
-        )
-
 
 @dataclass(frozen=True, kw_only=True)
 class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
     """Nominal plan-item provenance plus its executable source precondition."""
 
-    file_path: str
-    line: int
-    end_line: int
-    source_hash: str
+    file_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    line: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
+    end_line: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
+    source_hash: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     @classmethod
     def from_target(
@@ -938,34 +924,9 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
             value,
             role=CodemodPayloadRole.SOURCE_REWRITE_CONTRIBUTOR,
         )
-        plan_item_index = payload.fields.get("plan_item_index")
-        line = payload.fields.get("line")
-        end_line = payload.fields.get("end_line")
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in (plan_item_index, line, end_line)
-        ):
-            raise ValueError("Source rewrite contributor geometry must be non-negative")
-        contributor = cls(
-            recipe_id=payload.required_string("recipe_id"),
-            plan_item_declaration=payload.required_string("plan_item_declaration"),
-            plan_item_index=plan_item_index,
-            file_path=payload.required_string("file_path"),
-            line=line,
-            end_line=end_line,
-            source_hash=payload.required_string("source_hash"),
-        )
+        contributor = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
         payload.require_supported_fields(contributor.to_dict())
         return contributor
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            **super().to_dict(),
-            file_path=self.file_path,
-            line=self.line,
-            end_line=self.end_line,
-            source_hash=self.source_hash,
-        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -988,27 +949,27 @@ class PlannedSourceRewrite(SourceRewriteDelta):
 class ArchitectureGuardRule(CodemodPayloadRecord):
     """Caller-supplied invariant for a completed authority-boundary refactor."""
 
-    rule_id: str
-    forbidden_attribute_names: tuple[str, ...] = ()
-    forbidden_call_names: tuple[str, ...] = ()
-    forbidden_literal_dispatch_subjects: tuple[str, ...] = ()
-    file_path_suffixes: tuple[str, ...] = ()
-    reason: str = ""
-
-    @classmethod
-    @lru_cache(maxsize=None)
-    def payload_bindings(cls) -> PayloadBindingSet["ArchitectureGuardRule", object]:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            rule_id=RequiredStringPayloadValueCodec(),
-            forbidden_attribute_names=OptionalStringArrayPayloadValueCodec(),
-            forbidden_call_names=OptionalStringArrayPayloadValueCodec(),
-            forbidden_literal_dispatch_subjects=(
-                OptionalStringArrayPayloadValueCodec()
-            ),
-            file_path_suffixes=OptionalStringArrayPayloadValueCodec(),
-            reason=OptionalStringPayloadValueCodec(""),
-        )
+    rule_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    forbidden_attribute_names: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    forbidden_call_names: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    forbidden_literal_dispatch_subjects: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    file_path_suffixes: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    reason: str = codemod_payload_field(
+        OptionalStringPayloadValueCodec(""),
+        default="",
+    )
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "ArchitectureGuardRule":
@@ -1024,9 +985,6 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
         return not self.file_path_suffixes or any(
             file_path.endswith(suffix) for suffix in self.file_path_suffixes
         )
-
-    def to_dict(self) -> JsonObject:
-        return self.payload_bindings().payload(self)
 
 
 @dataclass(frozen=True)
@@ -1876,29 +1834,25 @@ def _parsed_modules_from_source_mapping(
 
 
 @dataclass(frozen=True)
-class SourceRewriteTarget(SourceTargetIdentity[str | None]):
+class SourceRewriteTarget(
+    SourceTargetIdentity[str | None],
+    DataclassPayloadProjection,
+):
     """Source-index target selector for a planned rewrite."""
 
-    target_id: str | None = None
-    qualname: str | None = None
-    file_path: str | None = None
-
-    @classmethod
-    def payload_bindings(
-        cls,
-    ) -> PayloadBindingSet[
-        "SourceRewriteTarget",
-        str | None,
-    ]:
-        del cls
-        optional_string_codec = OptionalStringPayloadValueCodec()
-        return (
-            PayloadBindingSet.from_field_codecs(target_id=optional_string_codec)
-            + PayloadBindingSet.from_explicit_fields(
-                ("target_qualname", "qualname", optional_string_codec),
-            )
-            + PayloadBindingSet.from_field_codecs(file_path=optional_string_codec)
-        )
+    target_id: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
+    qualname: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        field_name="target_qualname",
+        default=None,
+    )
+    file_path: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
 
     @classmethod
     def from_mapping(cls, fields: Mapping[str, JsonValue]) -> "SourceRewriteTarget":
@@ -2001,17 +1955,24 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
             "source-index target"
         )
 
-    def to_dict(self) -> JsonObject:
-        return self.payload_bindings().payload(self)
-
 
 @dataclass(frozen=True)
 class ArchitectureGuardViolationTarget(SourceRewriteTarget):
     """Source-index target context for one architecture guard violation."""
 
-    target_id: str | None = None
-    qualname: str | None = "<module>"
-    file_path: str | None = None
+    target_id: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
+    qualname: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        field_name="target_qualname",
+        default="<module>",
+    )
+    file_path: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
 
     @classmethod
     def from_location_target(
@@ -2715,26 +2676,23 @@ class CodemodTargetSelection:
 
 
 @dataclass(frozen=True)
-class SelectionCountExpectation:
+class SelectionCountExpectation(DataclassPayloadProjection):
     """Cardinality contract for selector-backed codemod operations."""
 
-    minimum: int | None = None
-    maximum: int | None = None
-    exact: int | None = None
-
-    @classmethod
-    def payload_bindings(
-        cls,
-    ) -> PayloadBindingSet[
-        "SelectionCountExpectation",
-        int | None,
-    ]:
-        return PayloadBindingSet.from_explicit_fields(
-            ("min", "minimum", IntegerPayloadValueCodec()),
-            ("max", "maximum", IntegerPayloadValueCodec()),
-        ) + PayloadBindingSet.from_field_codecs(
-            exact=IntegerPayloadValueCodec(),
-        )
+    minimum: int | None = codemod_payload_field(
+        IntegerPayloadValueCodec(),
+        field_name="min",
+        default=None,
+    )
+    maximum: int | None = codemod_payload_field(
+        IntegerPayloadValueCodec(),
+        field_name="max",
+        default=None,
+    )
+    exact: int | None = codemod_payload_field(
+        IntegerPayloadValueCodec(),
+        default=None,
+    )
 
     @classmethod
     def from_mapping(
@@ -2790,239 +2748,6 @@ class SelectionCountExpectation:
 
     def to_dict(self) -> JsonObject:
         return self.payload_bindings().payload(self, omit_none=True)
-
-
-class PayloadValueCodec(Generic[PayloadValueT], ABC):
-    """Nominal owner of one payload value's wire semantics."""
-
-    @abstractmethod
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> PayloadValueT:
-        raise NotImplementedError
-
-    @abstractmethod
-    def serialize(self, value: object) -> JsonValue:
-        raise NotImplementedError
-
-
-class StringPayloadValueCodec(PayloadValueCodec[str | None], ABC):
-    """Shared wire mechanics for the supported nominal string policies."""
-
-    @abstractmethod
-    def value_when_missing(self, field_name: str) -> str | None:
-        """Return the declared missing-field value or reject its absence."""
-        raise NotImplementedError
-
-    def validate_present_value(
-        self,
-        value: str,
-        field_name: str | None,
-    ) -> None:
-        """Validate one present value under the non-empty string policy."""
-        if not value:
-            if field_name is None:
-                raise ValueError("string payload codec does not permit an empty value")
-            raise ValueError(f"Expected non-empty string field {field_name!r}")
-
-    def serialize_missing(self) -> JsonValue:
-        """Reject missing values unless a nominal leaf declares them valid."""
-        raise TypeError("string payload codec requires a string value")
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> str | None:
-        value = payload.get(field_name)
-        if value is None:
-            return self.value_when_missing(field_name)
-        if not isinstance(value, str):
-            raise ValueError(f"Expected string field {field_name!r}")
-        self.validate_present_value(value, field_name)
-        return value
-
-    def serialize(self, value: object) -> JsonValue:
-        if value is None:
-            return self.serialize_missing()
-        if not isinstance(value, str):
-            raise TypeError("string payload codec requires a string value")
-        self.validate_present_value(value, None)
-        return value
-
-
-@dataclass(frozen=True)
-class RequiredStringPayloadValueCodec(StringPayloadValueCodec):
-    """Require a present, non-empty string payload value."""
-
-    def value_when_missing(self, field_name: str) -> str:
-        raise ValueError(f"Expected non-empty string field {field_name!r}")
-
-
-@dataclass(frozen=True)
-class DefaultedStringPayloadValueCodec(StringPayloadValueCodec):
-    """Use a declared default when a non-empty string field is absent."""
-
-    missing_value: str
-
-    def value_when_missing(self, field_name: str) -> str:
-        del field_name
-        return self.missing_value
-
-    def serialize_missing(self) -> JsonValue:
-        return None
-
-
-@dataclass(frozen=True)
-class OptionalStringPayloadValueCodec(DefaultedStringPayloadValueCodec):
-    """Accept empty strings and optionally default an absent field."""
-
-    missing_value: str | None = None
-
-    def validate_present_value(
-        self,
-        value: str,
-        field_name: str | None,
-    ) -> None:
-        del value, field_name
-
-
-@dataclass(frozen=True)
-class StrEnumPayloadValueCodec(PayloadValueCodec[StrEnumT], Generic[StrEnumT]):
-    """Typed string-enum payload semantics with a declared default."""
-
-    enum_type: type[StrEnumT]
-    declared_default: StrEnumT
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> StrEnumT:
-        value = payload.get(field_name, self.declared_default.value)
-        if not isinstance(value, str):
-            raise ValueError(f"Expected string enum field {field_name!r}")
-        try:
-            return self.enum_type(value)
-        except ValueError as error:
-            raise ValueError(f"Unsupported {field_name!r} value: {value!r}") from error
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, self.enum_type):
-            raise TypeError(
-                f"string-enum payload codec requires {self.enum_type.__name__}"
-            )
-        return value.value
-
-
-@dataclass(frozen=True)
-class StringArrayPayloadValueCodec(PayloadValueCodec[tuple[str, ...]]):
-    """Required array-of-string payload semantics."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> tuple[str, ...]:
-        if field_name not in payload or payload[field_name] is None:
-            raise ValueError(f"Expected string array field {field_name!r}")
-        value = payload[field_name]
-        if not isinstance(value, (list, tuple)) or not all(
-            isinstance(item, str) for item in value
-        ):
-            raise ValueError(f"Expected string array field {field_name!r}")
-        return tuple(value)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, (list, tuple)) or not all(
-            isinstance(item, str) for item in value
-        ):
-            raise TypeError("string-array payload codec requires string values")
-        return tuple(value)
-
-
-@dataclass(frozen=True)
-class OptionalStringArrayPayloadValueCodec(StringArrayPayloadValueCodec):
-    """Array-of-string payload semantics with an empty missing-field value."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> tuple[str, ...]:
-        if field_name not in payload or payload[field_name] is None:
-            return ()
-        return super().read(payload, field_name)
-
-
-@dataclass(frozen=True)
-class BooleanPayloadValueCodec(PayloadValueCodec[bool]):
-    """Optional boolean payload semantics with one declared default."""
-
-    declared_default: bool = False
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> bool:
-        if field_name not in payload:
-            return self.declared_default
-        value = payload[field_name]
-        if not isinstance(value, bool):
-            raise ValueError(f"Expected boolean field {field_name!r}")
-        return value
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, bool):
-            raise TypeError("boolean payload codec requires a boolean value")
-        return value
-
-
-@dataclass(frozen=True)
-class IntegerPayloadValueCodec(PayloadValueCodec[int | None]):
-    """Optional non-negative integer payload semantics."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> int | None:
-        value = payload.get(field_name)
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"Expected non-negative integer field {field_name!r}")
-        return value
-
-    def serialize(self, value: object) -> JsonValue:
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise TypeError("integer payload codec requires a non-negative integer")
-        return value
-
-
-@dataclass(frozen=True)
-class ObjectPayloadValueCodec(PayloadValueCodec[Mapping[str, JsonValue]]):
-    """Required JSON-object payload semantics."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> Mapping[str, JsonValue]:
-        value = payload.get(field_name)
-        if not isinstance(value, Mapping):
-            raise ValueError(f"Expected object field {field_name!r}")
-        return value
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, Mapping):
-            raise TypeError("object payload codec requires a mapping value")
-        return JsonObject(value)
 
 
 @dataclass(frozen=True)
@@ -3212,234 +2937,6 @@ class ReplacementImportPayloadValueCodec(PayloadValueCodec["MovedSymbolImportPol
                 "replacement-import payload codec requires MovedSymbolImportPolicy"
             )
         return value.import_source
-
-
-@dataclass(frozen=True)
-class PayloadFieldDeclaration(Generic[PayloadValueT]):
-    """Wire semantics owned by one dataclass constructor field."""
-
-    codec: PayloadValueCodec[PayloadValueT]
-    field_name: str | None = None
-
-
-_PAYLOAD_FIELD_DECLARATION = object()
-_NO_PAYLOAD_FIELD_DEFAULT = object()
-
-
-def codemod_payload_field(
-    codec: PayloadValueCodec[PayloadValueT],
-    *,
-    field_name: str | None = None,
-    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
-    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
-) -> PayloadValueT:
-    """Declare a constructor field and its derived codemod wire projection."""
-
-    if default is not _NO_PAYLOAD_FIELD_DEFAULT and (
-        default_factory is not _NO_PAYLOAD_FIELD_DEFAULT
-    ):
-        raise TypeError("codemod payload fields cannot declare two defaults")
-    metadata = {
-        _PAYLOAD_FIELD_DECLARATION: PayloadFieldDeclaration(
-            codec=codec,
-            field_name=field_name,
-        )
-    }
-    if default is not _NO_PAYLOAD_FIELD_DEFAULT:
-        return cast(PayloadValueT, field(default=default, metadata=metadata))
-    if default_factory is not _NO_PAYLOAD_FIELD_DEFAULT:
-        return cast(
-            PayloadValueT,
-            field(
-                default_factory=cast(Callable[[], PayloadValueT], default_factory),
-                metadata=metadata,
-            ),
-        )
-    return cast(PayloadValueT, field(metadata=metadata))
-
-
-@dataclass(frozen=True)
-class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
-    """Declarative JSON-to-constructor binding for one DSL payload field."""
-
-    field_name: str
-    constructor_argument_name: str
-    codec: PayloadValueCodec[PayloadValueT]
-
-    def constructor_kwargs(
-        self,
-        payload: Mapping[str, JsonValue],
-    ) -> dict[str, PayloadValueT]:
-        return {
-            self.constructor_argument_name: self.codec.read(payload, self.field_name)
-        }
-
-    def payload_items(self, owner: PayloadOwnerT) -> tuple[tuple[str, JsonValue], ...]:
-        value = getattr(owner, self.constructor_argument_name)
-        return ((self.field_name, self.codec.serialize(value)),)
-
-
-class PayloadBindingSet(
-    tuple[PayloadBinding[PayloadOwnerT, PayloadValueT], ...],
-    Generic[PayloadOwnerT, PayloadValueT],
-):
-    """Validated declaration-owned payload binding catalog."""
-
-    def __new__(
-        cls,
-        bindings: Iterable[PayloadBinding[PayloadOwnerT, PayloadValueT]] = (),
-    ) -> Self:
-        binding_tuple = tuple(bindings)
-        cls.require_unique_binding_names(binding_tuple)
-        return super().__new__(cls, binding_tuple)
-
-    @classmethod
-    def from_field_codecs(
-        cls,
-        **field_codecs: PayloadValueCodec,
-    ) -> Self:
-        return cls(
-            PayloadBinding(
-                field_name=field_name,
-                constructor_argument_name=field_name,
-                codec=codec,
-            )
-            for field_name, codec in field_codecs.items()
-        )
-
-    @classmethod
-    def from_explicit_fields(
-        cls,
-        *specs: tuple[str, str, PayloadValueCodec],
-    ) -> Self:
-        """Bind explicit payload aliases to constructor arguments."""
-
-        redundant_fields = tuple(
-            field_name
-            for field_name, constructor_argument_name, _codec in specs
-            if field_name == constructor_argument_name
-        )
-        if redundant_fields:
-            raise ValueError(
-                "Same-name payload fields must use from_field_codecs: "
-                f"{redundant_fields!r}"
-            )
-        return cls(
-            PayloadBinding(
-                field_name=field_name,
-                constructor_argument_name=constructor_argument_name,
-                codec=codec,
-            )
-            for field_name, constructor_argument_name, codec in specs
-        )
-
-    @classmethod
-    def from_dataclass(
-        cls,
-        owner_type: type[PayloadOwnerT],
-    ) -> Self:
-        """Derive wire bindings from the owner's declared dataclass fields."""
-
-        bindings = []
-        for record_field in dataclass_fields(owner_type):
-            declaration = record_field.metadata.get(_PAYLOAD_FIELD_DECLARATION)
-            if declaration is None:
-                continue
-            if not isinstance(declaration, PayloadFieldDeclaration):
-                raise TypeError(
-                    f"Invalid payload field declaration on {owner_type.__name__}."
-                    f"{record_field.name}"
-                )
-            bindings.append(
-                PayloadBinding(
-                    field_name=declaration.field_name or record_field.name,
-                    constructor_argument_name=record_field.name,
-                    codec=declaration.codec,
-                )
-            )
-        return cls(bindings)
-
-    def require_complete_dataclass_fields(
-        self,
-        owner_type: type[PayloadOwnerT],
-        *,
-        non_payload_owner_types: tuple[type[object], ...] = (),
-    ) -> Self:
-        """Fail when a constructor field has no payload declaration or exclusion."""
-
-        excluded_field_names = frozenset(
-            record_field.name
-            for non_payload_owner_type in non_payload_owner_types
-            for record_field in dataclass_fields(non_payload_owner_type)
-        )
-        expected_field_names = frozenset(
-            record_field.name
-            for record_field in dataclass_fields(owner_type)
-            if record_field.name not in excluded_field_names
-        )
-        bound_field_names = frozenset(
-            binding.constructor_argument_name for binding in self
-        )
-        missing_field_names = tuple(sorted(expected_field_names - bound_field_names))
-        unexpected_field_names = tuple(sorted(bound_field_names - expected_field_names))
-        if missing_field_names or unexpected_field_names:
-            raise TypeError(
-                f"Incomplete payload field declarations on {owner_type.__name__}: "
-                f"missing={missing_field_names!r}, unexpected={unexpected_field_names!r}"
-            )
-        return self
-
-    def __add__(self, other: Self) -> Self:
-        return type(self)((*self, *other))
-
-    def constructor_kwargs(
-        self,
-        payload: Mapping[str, JsonValue],
-    ) -> dict[str, PayloadValueT]:
-        constructor_kwargs: dict[str, PayloadValueT] = {}
-        for binding in self:
-            constructor_kwargs.update(binding.constructor_kwargs(payload))
-        return constructor_kwargs
-
-    def payload(
-        self,
-        owner: PayloadOwnerT,
-        *,
-        omit_none: bool = False,
-    ) -> JsonObject:
-        payload = {
-            key: value
-            for binding in self
-            for key, value in binding.payload_items(owner)
-            if not omit_none or value is not None
-        }
-        return JsonObject(payload)
-
-    def has_field_in(self, payload: Mapping[str, JsonValue]) -> bool:
-        return any(binding.field_name in payload for binding in self)
-
-    @staticmethod
-    def require_unique_binding_names(
-        bindings: tuple[
-            PayloadBinding[PayloadOwnerT, PayloadValueT],
-            ...,
-        ],
-    ) -> None:
-        for name_kind, names in (
-            ("payload field", tuple(binding.field_name for binding in bindings)),
-            (
-                "constructor argument",
-                tuple(binding.constructor_argument_name for binding in bindings),
-            ),
-        ):
-            duplicate_names = tuple(
-                name for name, count in Counter(names).items() if count > 1
-            )
-            if duplicate_names:
-                raise ValueError(
-                    f"Duplicate {name_kind} binding name(s): "
-                    f"{', '.join(repr(name) for name in duplicate_names)}"
-                )
 
 
 SelectorPayloadBindings: TypeAlias = PayloadBindingSet[
@@ -11542,13 +11039,6 @@ class RefactorRecipe(CodemodPayloadRecord):
     )
 
     @classmethod
-    @lru_cache(maxsize=None)
-    def payload_bindings(cls) -> PayloadBindingSet["RefactorRecipe", object]:
-        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
-            cls
-        )
-
-    @classmethod
     def from_json_value(cls, value: JsonValue) -> "RefactorRecipe":
         payload = CodemodPayload.from_json_value(
             value,
@@ -11857,9 +11347,6 @@ class RefactorRecipe(CodemodPayloadRecord):
             guard_suite=self.active_guard_suite(guard_suite),
         )
 
-    def to_dict(self) -> JsonObject:
-        return self.payload_bindings().payload(self)
-
 
 @dataclass(frozen=True)
 class CodemodPlanDocument(CodemodPayloadRecord):
@@ -11874,13 +11361,6 @@ class CodemodPlanDocument(CodemodPayloadRecord):
         field_name=ARCHITECTURE_GUARDS_PAYLOAD_FIELD,
         default_factory=ArchitectureGuardSuite,
     )
-
-    @classmethod
-    @lru_cache(maxsize=None)
-    def payload_bindings(cls) -> PayloadBindingSet["CodemodPlanDocument", object]:
-        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
-            cls
-        )
 
     @classmethod
     def compose(
@@ -12066,9 +11546,6 @@ class CodemodPlanDocument(CodemodPayloadRecord):
             backend=backend,
         )
 
-    def to_dict(self) -> JsonObject:
-        return self.payload_bindings().payload(self)
-
 
 @dataclass(frozen=True)
 class CodemodPlanDocumentPreflight:
@@ -12132,13 +11609,6 @@ class CodemodPlanSequence(CodemodPayloadRecord):
         field_name="stages",
         default=(),
     )
-
-    @classmethod
-    @lru_cache(maxsize=None)
-    def payload_bindings(cls) -> PayloadBindingSet["CodemodPlanSequence", object]:
-        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
-            cls
-        )
 
     @classmethod
     def is_sequence_payload(cls, value: JsonValue) -> bool:
@@ -12283,9 +11753,6 @@ class CodemodPlanSequence(CodemodPayloadRecord):
                 active_snapshot.sources_by_file_path,
             ),
         )
-
-    def to_dict(self) -> JsonObject:
-        return self.payload_bindings().payload(self)
 
 
 @dataclass(frozen=True)

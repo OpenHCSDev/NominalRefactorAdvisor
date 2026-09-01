@@ -34,11 +34,15 @@ export and application require a proof across reachable refactor trajectories.
 Its cancelable-composition signal is generic: it treats pack, unpack, and
 field-forwarding wrappers as factorable product morphisms when they preserve
 common fields and do not own an invariant.
-``RefactorRecipeOperation`` and ``CodemodTargetSelector`` subclasses declare
-wire semantics with ``codemod_payload_field`` on their dataclass fields.  Their
-inherited codec catalogs, and the recipe/document record schemas built from
-them, derive from those declarations, so adding a field does not require a
-parallel serialization method.
+Codemod operations, selectors, and payload records declare wire semantics with
+``codemod_payload_field`` on their dataclass fields.
+``DataclassPayloadProjection`` derives each binding catalogue and JSON
+projection from those declarations.  Specialised operation, selector, and
+flattened-target records override only the projection boundary they own; no
+parallel schema is maintained.
+
+.. automodule:: nominal_refactor_advisor.codemod_payload
+   :members: DataclassPayloadProjection, CodemodPayloadRecord, codemod_payload_field, PayloadValueCodec, PayloadBindingSet
 
 Rejected ``FindingRecipeSynthesisRecord`` values expose ``proof_obstacles``.
 Each obstacle identifies the nominal executable declaration that failed to
@@ -60,7 +64,7 @@ ownership move, and the complete method batch pays compression rent.  The
 codemod preflight reconstructs the same proof from the current full AST.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: PlannedSourceRewrite, RefactorRecipeOperation, codemod_payload_field, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------
