@@ -2142,7 +2142,11 @@ def test_semantic_mirror_rejects_reordered_dataclass_field_name_collection(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    record = plan.records[0]
+    assert record.status.value == "rejected_by_safety_check"
+    assert tuple(
+        obstacle.executable_declaration_name for obstacle in record.proof_obstacles
+    ) == ("DataclassFieldNameCollectionProjectionMappingRecipeBuilder",)
     assert plan.document.recipes == ()
 
 
@@ -2185,7 +2189,11 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    record = plan.records[0]
+    assert record.status.value == "rejected_by_safety_check"
+    assert tuple(
+        obstacle.executable_declaration_name for obstacle in record.proof_obstacles
+    ) == ("DataclassFieldNameCollectionProjectionMappingRecipeBuilder",)
     assert plan.document.recipes == ()
 
 
@@ -2330,8 +2338,13 @@ def test_key_value_sequence_recipe_rejects_interleaving_and_comments(
         snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-        assert plan.records[0].status.value == "rejected_by_safety_check"
-        assert not plan.records[0].recipe_id
+        record = plan.records[0]
+        assert record.status.value == "rejected_by_safety_check"
+        assert not record.recipe_id
+        assert tuple(
+            obstacle.executable_declaration_name
+            for obstacle in record.proof_obstacles
+        ) == ("DataclassKeyValueSequenceProjectionMappingRecipeBuilder",)
 
 
 def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_recipe(
@@ -2634,7 +2647,9 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
                 "DataclassPayloadProjectionMappingRecipeBuilder"
             ]
         )
-        assert "EnumSubsetSemanticMirrorRecipeBuilder" not in obstacles_by_declaration
+        assert tuple(obstacles_by_declaration) == (
+            "DataclassPayloadProjectionMappingRecipeBuilder",
+        )
 
 
 def test_semantic_mirror_constructor_projection_uses_dataclass_method(
@@ -2720,6 +2735,62 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     assert "start_line=insertion_line" in rewritten_source
     assert "end_line=insertion_line - 1" in rewritten_source
     assert "replacement_lines=import_lines" in rewritten_source
+
+
+def test_constructor_projection_rejection_reports_only_constructor_builder(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLineReplacement:\n"
+        "    start_line: int\n"
+        "    end_line: int\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLineSpan:\n"
+        "    start_line: int\n"
+        "    end_line: int\n"
+        "\n"
+        "def build_replacement(start_line, end_line):\n"
+        "    return SourceLineReplacement(\n"
+        "        start_line=start_line,\n"
+        "        end_line=end_line,\n"
+        "    )\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        detector_id="semantic_mirror_without_descent",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Semantic mirror without descent",
+        summary="Constructor projection repeats SourceLineSpan fields.",
+        why="semantic fact is mirrored outside its nominal authority",
+        capability_gap="derive the projection from the authority instead",
+        relation_context="projection lacks a semantic-descent certificate",
+        evidence=(
+            SourceLocation(str(module_path), 14, "build_replacement:return"),
+            SourceLocation(str(module_path), 9, "SourceLineSpan"),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            field_names=("end_line", "start_line"),
+            mapping_name="build_replacement:return",
+            source_name="SourceLineSpan",
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    record = codemod_plan_from_findings(
+        (finding,),
+        selector_context=snapshot,
+    ).records[0]
+
+    assert record.status.value == "rejected_by_safety_check"
+    assert tuple(
+        obstacle.executable_declaration_name for obstacle in record.proof_obstacles
+    ) == ("DataclassConstructorProjectionMappingRecipeBuilder",)
 
 
 def test_nested_factory_keyword_names_do_not_prove_dataclass_authority(

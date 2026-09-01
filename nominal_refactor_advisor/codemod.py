@@ -16177,16 +16177,114 @@ class FunctionProjectionTarget:
     function_qualname: str
 
 
+@dataclass(frozen=True)
+class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
+    """Uniquely resolved source-index function that contains a projection."""
+
+    target: AstTargetDigest
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+
+    @staticmethod
+    def from_function_identity(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        function_qualname: str,
+    ) -> "ResolvedFunctionProjectionTarget | None":
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path,
+            qualname=function_qualname,
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        return ResolvedFunctionProjectionTarget.from_target(
+            context,
+            source_path=source_path,
+            target=context.source_index.target_by_id[target_ids[0]],
+        )
+
+    @staticmethod
+    def from_source_line(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        line: int,
+    ) -> "ResolvedFunctionProjectionTarget | None":
+        target = _source_index_target_for_line(
+            context.source_index,
+            source_path,
+            line,
+        )
+        if target is None:
+            return None
+        return ResolvedFunctionProjectionTarget.from_target(
+            context,
+            source_path=source_path,
+            target=target,
+        )
+
+    @staticmethod
+    def from_target(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        target: AstTargetDigest,
+    ) -> "ResolvedFunctionProjectionTarget | None":
+        node = context.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return ResolvedFunctionProjectionTarget(
+            source_path=source_path,
+            function_qualname=target.qualname,
+            target=target,
+            node=node,
+        )
+
+
+@dataclass(frozen=True)
+class FunctionReturnProjectionTarget(ResolvedFunctionProjectionTarget):
+    """Uniquely resolved return statement inside a source-index function."""
+
+    return_node: ast.Return
+
+    @staticmethod
+    def from_return_location(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        function_qualname: str,
+        line: int,
+    ) -> "FunctionReturnProjectionTarget | None":
+        function = ResolvedFunctionProjectionTarget.from_function_identity(
+            context,
+            source_path=source_path,
+            function_qualname=function_qualname,
+        )
+        if function is None:
+            return None
+        matches = tuple(
+            child
+            for child in ast.walk(function.node)
+            if isinstance(child, ast.Return) and child.lineno == line
+        )
+        if len(matches) != 1:
+            return None
+        return FunctionReturnProjectionTarget(
+            source_path=function.source_path,
+            function_qualname=function.function_qualname,
+            target=function.target,
+            node=function.node,
+            return_node=matches[0],
+        )
+
+
 ProjectionTargetT = TypeVar("ProjectionTargetT", bound=FunctionProjectionTarget)
 
 
 @dataclass(frozen=True)
-class ReturnDictProjectionTarget(FunctionProjectionTarget):
+class ReturnDictProjectionTarget(FunctionReturnProjectionTarget):
     """Source-index target for a return dict with named string-key fields."""
 
-    target: AstTargetDigest
-    node: ast.FunctionDef | ast.AsyncFunctionDef
-    return_node: ast.Return
     dict_node: ast.Dict
     field_values: tuple[ReturnDictFieldValue, ...]
 
@@ -16199,12 +16297,9 @@ class ReturnKeyValueSequenceFieldValue(ReturnFieldValue):
 
 
 @dataclass(frozen=True)
-class ReturnKeyValueSequenceProjectionTarget(FunctionProjectionTarget):
+class ReturnKeyValueSequenceProjectionTarget(FunctionReturnProjectionTarget):
     """Source-index target for a returned sequence of string-key value pairs."""
 
-    target: AstTargetDigest
-    node: ast.FunctionDef | ast.AsyncFunctionDef
-    return_node: ast.Return
     sequence_node: ast.Tuple | ast.List
     field_values: tuple[ReturnKeyValueSequenceFieldValue, ...]
 
@@ -16243,34 +16338,30 @@ class ReturnDictProjectionTargetAuthority:
         line: int,
         field_names: tuple[str, ...],
     ) -> ReturnDictProjectionTarget | None:
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=source_path,
-            qualname=function_qualname,
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return None
-        return_node = FunctionReturnNodeAuthority.return_node_at_line(
-            node,
-            line,
+        function_return = FunctionReturnProjectionTarget.from_return_location(
+            context,
+            source_path=source_path,
+            function_qualname=function_qualname,
+            line=line,
         )
-        if return_node is None or not isinstance(return_node.value, ast.Dict):
+        if function_return is None or not isinstance(
+            function_return.return_node.value,
+            ast.Dict,
+        ):
             return None
-        field_values = cls.field_values(return_node.value, field_names)
+        dict_node = function_return.return_node.value
+        field_values = cls.field_values(dict_node, field_names)
         if frozenset(field.field_name for field in field_values) != frozenset(
             field_names
         ):
             return None
         return ReturnDictProjectionTarget(
-            source_path=source_path,
-            function_qualname=function_qualname,
-            target=target,
-            node=node,
-            return_node=return_node,
-            dict_node=return_node.value,
+            source_path=function_return.source_path,
+            function_qualname=function_return.function_qualname,
+            target=function_return.target,
+            node=function_return.node,
+            return_node=function_return.return_node,
+            dict_node=dict_node,
             field_values=field_values,
         )
 
@@ -16313,36 +16404,30 @@ class ReturnKeyValueSequenceProjectionTargetAuthority:
         line: int,
         field_names: tuple[str, ...],
     ) -> ReturnKeyValueSequenceProjectionTarget | None:
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=source_path,
-            qualname=function_qualname,
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return None
-        return_node = FunctionReturnNodeAuthority.return_node_at_line(
-            node,
-            line,
+        function_return = FunctionReturnProjectionTarget.from_return_location(
+            context,
+            source_path=source_path,
+            function_qualname=function_qualname,
+            line=line,
         )
-        if return_node is None or not isinstance(
-            return_node.value, ast.Tuple | ast.List
+        if function_return is None or not isinstance(
+            function_return.return_node.value,
+            ast.Tuple | ast.List,
         ):
             return None
-        field_values = cls.field_values(return_node.value, field_names)
+        sequence_node = function_return.return_node.value
+        field_values = cls.field_values(sequence_node, field_names)
         if frozenset(field.field_name for field in field_values) != frozenset(
             field_names
         ):
             return None
         return ReturnKeyValueSequenceProjectionTarget(
-            source_path=source_path,
-            function_qualname=function_qualname,
-            target=target,
-            node=node,
-            return_node=return_node,
-            sequence_node=return_node.value,
+            source_path=function_return.source_path,
+            function_qualname=function_return.function_qualname,
+            target=function_return.target,
+            node=function_return.node,
+            return_node=function_return.return_node,
+            sequence_node=sequence_node,
             field_values=field_values,
         )
 
@@ -16890,15 +16975,13 @@ class DataclassKeyValueElementRunProjection:
 
 
 @dataclass(frozen=True)
-class DataclassFieldNameCollectionProjectionTarget(FunctionProjectionTarget):
+class DataclassFieldNameCollectionProjectionTarget(ResolvedFunctionProjectionTarget):
     """One local collection that exhaustively names dataclass fields."""
 
-    target: AstTargetDigest
-    node: ast.FunctionDef | ast.AsyncFunctionDef
     collection_node: ast.Tuple | ast.List
 
     @classmethod
-    def from_function_location(
+    def from_binding_location(
         cls,
         context: CodemodSelectorContext,
         *,
@@ -16907,19 +16990,16 @@ class DataclassFieldNameCollectionProjectionTarget(FunctionProjectionTarget):
         line: int,
         field_names: frozenset[str],
     ) -> "DataclassFieldNameCollectionProjectionTarget | None":
-        target = _source_index_target_for_line(
-            context.source_index,
-            source_path,
-            line,
+        function = ResolvedFunctionProjectionTarget.from_source_line(
+            context,
+            source_path=source_path,
+            line=line,
         )
-        if target is None:
-            return None
-        node = context.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        if function is None:
             return None
         collections = tuple(
             collection
-            for statement in ast.walk(node)
+            for statement in ast.walk(function.node)
             for collection in cls.bound_collection(statement, binding_name, line)
             if len(collection.elts) == len(field_names)
             and frozenset(cls.string_elements(collection)) == field_names
@@ -16927,10 +17007,10 @@ class DataclassFieldNameCollectionProjectionTarget(FunctionProjectionTarget):
         if len(collections) != 1:
             return None
         return cls(
-            source_path=source_path,
-            function_qualname=target.qualname,
-            target=target,
-            node=node,
+            source_path=function.source_path,
+            function_qualname=function.function_qualname,
+            target=function.target,
+            node=function.node,
             collection_node=collections[0],
         )
 
@@ -17024,24 +17104,6 @@ class DataclassesModuleReference:
         return cls(expression=expression, import_source="import dataclasses")
 
 
-class FunctionReturnNodeAuthority:
-    """Nominal AST query for the unique return statement at a source line."""
-
-    @staticmethod
-    def return_node_at_line(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-        line: int,
-    ) -> ast.Return | None:
-        matches = tuple(
-            child
-            for child in ast.walk(node)
-            if isinstance(child, ast.Return) and child.lineno == line
-        )
-        if len(matches) != 1:
-            return None
-        return matches[0]
-
-
 class DataclassAuthorityMappingRecipeBuilder(
     PartsBackedMappingRecipeBuilder[RecipePartsT],
     Generic[ProjectionTargetT, RecipePartsT],
@@ -17058,8 +17120,15 @@ class DataclassAuthorityMappingRecipeBuilder(
         if seed is None:
             return False
         resolved_target = self.resolved_authority_target(seed)
-        return resolved_target is not None and self.is_dataclass_authority(
-            resolved_target.node
+        import_boundary = SemanticMirrorImportBoundary.from_seed(seed, self)
+        return (
+            resolved_target is not None
+            and self.is_dataclass_authority(resolved_target.node)
+            and import_boundary is not None
+            and self.projection_shape_is_applicable(
+                seed,
+                import_boundary.projection_path,
+            )
         )
 
     @cached_property
@@ -17165,6 +17234,16 @@ class DataclassAuthorityMappingRecipeBuilder(
             and self.is_dataclass_authority(ancestor.node)
             for ancestor_symbol in class_index.ancestor_symbols(class_symbol)
         )
+
+    @abstractmethod
+    def projection_shape_is_applicable(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> bool:
+        """Return whether this leaf owns the projection syntax in the finding."""
+
+        raise NotImplementedError
 
     @abstractmethod
     def projection_target(
@@ -17379,6 +17458,22 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             field_names,
         )
 
+    def projection_shape_is_applicable(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> bool:
+        function_return = FunctionReturnProjectionTarget.from_return_location(
+            self,
+            source_path=source_path,
+            function_qualname=seed.projection_subject(),
+            line=seed.projection_line(),
+        )
+        return function_return is not None and isinstance(
+            function_return.return_node.value,
+            ast.Dict,
+        )
+
     def projection_target(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
@@ -17523,12 +17618,31 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
             field_names,
         )
 
+    def projection_shape_is_applicable(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> bool:
+        function = ResolvedFunctionProjectionTarget.from_source_line(
+            self,
+            source_path=source_path,
+            line=seed.projection_line(),
+        )
+        return function is not None and any(
+            DataclassFieldNameCollectionProjectionTarget.bound_collection(
+                statement,
+                seed.projection_subject(),
+                seed.projection_line(),
+            )
+            for statement in ast.walk(function.node)
+        )
+
     def projection_target(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
         source_path: str,
     ) -> DataclassFieldNameCollectionProjectionTarget | None:
-        return DataclassFieldNameCollectionProjectionTarget.from_function_location(
+        return DataclassFieldNameCollectionProjectionTarget.from_binding_location(
             self,
             source_path=source_path,
             binding_name=seed.projection_subject(),
@@ -17615,6 +17729,31 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         return self.resolved_target_is_exhaustive_dataclass(
             resolved_target,
             field_names,
+        )
+
+    def projection_shape_is_applicable(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> bool:
+        function_return = FunctionReturnProjectionTarget.from_return_location(
+            self,
+            source_path=source_path,
+            function_qualname=seed.projection_subject(),
+            line=seed.projection_line(),
+        )
+        if function_return is None or not isinstance(
+            function_return.return_node.value,
+            ast.Tuple | ast.List,
+        ):
+            return False
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        return any(
+            field_value is not None and field_value.field_name in field_names
+            for element in function_return.return_node.value.elts
+            for field_value in (
+                ReturnKeyValueSequenceProjectionTargetAuthority.field_value(element),
+            )
         )
 
     def projection_target(
@@ -17746,7 +17885,7 @@ class DataclassConstructorProjectionMethod:
 
 
 @dataclass(frozen=True)
-class DataclassCallProjectionTarget(FunctionProjectionTarget):
+class DataclassCallProjectionTarget(FunctionReturnProjectionTarget):
     """Common call-site projection fields shared by dataclass call rewrites."""
 
     call_node: ast.Call
@@ -17830,39 +17969,58 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
 
     finding: RefactorFinding
 
+    def projection_shape_is_applicable(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> bool:
+        function_return = FunctionReturnProjectionTarget.from_return_location(
+            self,
+            source_path=source_path,
+            function_qualname=seed.projection_subject(),
+            line=seed.projection_line(),
+        )
+        if function_return is None:
+            return False
+        field_names = frozenset(self.finding.metrics.plan_field_names)
+        return any(
+            field_names
+            <= frozenset(
+                keyword.arg
+                for keyword in call.keywords
+                if keyword.arg is not None
+            )
+            for call in ast.walk(function_return.return_node.value)
+            if isinstance(call, ast.Call)
+        )
+
     def projection_target(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
         source_path: str,
     ) -> DataclassConstructorProjectionCallTarget | None:
-        function_qualname = seed.projection_subject()
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=source_path,
-            qualname=function_qualname,
-        ).target_ids(self)
-        if len(target_ids) != 1:
-            return None
-        target = self.source_index.target_by_id[target_ids[0]]
-        node = self.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return None
-        return_node = FunctionReturnNodeAuthority.return_node_at_line(
-            node,
-            seed.projection_line(),
+        function_return = FunctionReturnProjectionTarget.from_return_location(
+            self,
+            source_path=source_path,
+            function_qualname=seed.projection_subject(),
+            line=seed.projection_line(),
         )
-        if return_node is None:
+        if function_return is None:
             return None
         matching_calls = tuple(
             call
-            for call in ast.walk(return_node.value)
+            for call in ast.walk(function_return.return_node.value)
             if isinstance(call, ast.Call) and self.call_projects_dataclass_fields(call)
         )
         if len(matching_calls) != 1:
             return None
         call_node = matching_calls[0]
         return DataclassConstructorProjectionCallTarget(
-            source_path=source_path,
-            function_qualname=function_qualname,
+            source_path=function_return.source_path,
+            function_qualname=function_return.function_qualname,
+            target=function_return.target,
+            node=function_return.node,
+            return_node=function_return.return_node,
             call_node=call_node,
             field_values_by_name=self.field_values_by_name(call_node),
             remaining_keywords=self.remaining_keywords(call_node),
