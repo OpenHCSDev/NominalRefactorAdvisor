@@ -474,41 +474,14 @@ class ClosedParameterConveyorComponentBuilder:
                 authority,
                 frozenset(edge.callee_symbol for edge in root_edges),
             )
-            adjacency: dict[str, set[str]] = {
-                symbol: set() for symbol in participant_symbols
-            }
-            for edge in forwarding_edges:
-                adjacency[edge.caller_symbol].add(edge.callee_symbol)
-                adjacency[edge.callee_symbol].add(edge.caller_symbol)
-            remaining = set(participant_symbols)
-            while remaining:
-                start = min(remaining)
-                connected = {start}
-                pending = deque((start,))
-                while pending:
-                    current = pending.popleft()
-                    for neighbor in adjacency[current] - connected:
-                        connected.add(neighbor)
-                        pending.append(neighbor)
-                remaining -= connected
-                connected_roots = tuple(
-                    edge for edge in root_edges if edge.callee_symbol in connected
+            seeds.append(
+                _ParameterConveyorComponentSeed(
+                    authority=authority,
+                    participant_symbols=participant_symbols,
+                    root_edges=tuple(root_edges),
+                    forwarding_edges=forwarding_edges,
                 )
-                if not connected_roots:
-                    continue
-                seeds.append(
-                    _ParameterConveyorComponentSeed(
-                        authority=authority,
-                        participant_symbols=frozenset(connected),
-                        root_edges=connected_roots,
-                        forwarding_edges=tuple(
-                            edge
-                            for edge in forwarding_edges
-                            if edge.caller_symbol in connected
-                            and edge.callee_symbol in connected
-                        ),
-                    )
-                )
+            )
         return tuple(seeds)
 
     def _reachable_participants(

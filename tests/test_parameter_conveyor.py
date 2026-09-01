@@ -150,6 +150,87 @@ def test_attractive_root_is_not_exposed_when_its_transitive_family_is_open() -> 
     assert builder.proven_components() == ()
 
 
+def test_open_disconnected_island_blocks_the_whole_nominal_authority() -> None:
+    builder = _builder(
+        _module(
+            "pkg.disconnected_open",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class _CacheKey:\n"
+            "    left: object\n"
+            "    right: object\n"
+            "\n"
+            "def _closed(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def _open(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def closed_root(left, right):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    return _closed(left, right)\n"
+            "\n"
+            "def open_root(left, right):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    return _open(left, right)\n"
+            "\n"
+            "def unconverted(left, right):\n"
+            "    return _open(transform(left), right)\n",
+        )
+    )
+
+    components = builder.assessed_components()
+
+    assert len(components) == 1
+    assert components[0].participant_symbols == (
+        "pkg.disconnected_open._closed",
+        "pkg.disconnected_open._open",
+    )
+    assert len(components[0].root_edges) == 2
+    assert ClosedParameterConveyorAuthorityViolation.INCOMPLETE_CALL_FAMILY in (
+        components[0].proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_closed_disconnected_islands_form_one_authority_wide_batch() -> None:
+    builder = _builder(
+        _module(
+            "pkg.disconnected_closed",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class _CacheKey:\n"
+            "    left: object\n"
+            "    right: object\n"
+            "\n"
+            "def _first(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def _second(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def first_root(left, right):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    return _first(left, right)\n"
+            "\n"
+            "def second_root(left, right):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    return _second(left, right)\n",
+        )
+    )
+
+    components = builder.proven_components()
+
+    assert len(components) == 1
+    assert components[0].participant_symbols == (
+        "pkg.disconnected_closed._first",
+        "pkg.disconnected_closed._second",
+    )
+    assert len(components[0].root_edges) == 2
+
+
 def test_partial_product_construction_never_becomes_a_component() -> None:
     builder = _builder(
         _module(
