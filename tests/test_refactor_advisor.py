@@ -225,9 +225,9 @@ from nominal_refactor_advisor.models import (
     RefactorFinding,
     SourceLocation,
 )
-from nominal_refactor_advisor.impact_ranking import (
-    RefactorImpactSearchBudget,
-    build_refactor_impact_ranking,
+from nominal_refactor_advisor.structural_overlap import (
+    StructuralOverlapReportLimits,
+    build_structural_overlap_report,
 )
 from nominal_refactor_advisor.observation_graph import (
     ObservationGraph,
@@ -361,7 +361,7 @@ def _test_scan_economics_proof(
     )
 
 
-def _impact_ranking_finding(
+def _structural_overlap_finding(
     *,
     detector_id: str,
     mapping_name: str,
@@ -421,29 +421,29 @@ def test_sorted_findings_authority_uses_source_identity_without_priority() -> No
     assert ordered[0].detector_id == "unreferenced_private_function"
 
 
-def test_impact_ranking_reports_only_non_actionable_overlap_evidence() -> None:
+def test_structural_overlap_reports_only_non_actionable_overlap_evidence() -> None:
     findings = cast(
         tuple,
         (
-            _impact_ranking_finding(
+            _structural_overlap_finding(
                 detector_id="repeated_builder_calls",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=10,
             ),
-            _impact_ranking_finding(
+            _structural_overlap_finding(
                 detector_id="parallel_mapping_projection",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=20,
             ),
-            _impact_ranking_finding(
+            _structural_overlap_finding(
                 detector_id="projection_builder_authority",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=30,
             ),
-            _impact_ranking_finding(
+            _structural_overlap_finding(
                 detector_id="repeated_property_alias_hooks",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
@@ -451,43 +451,43 @@ def test_impact_ranking_reports_only_non_actionable_overlap_evidence() -> None:
             ),
         ),
     )
-    report = build_refactor_impact_ranking(
+    report = build_structural_overlap_report(
         findings,
         SourceIndex(),
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=10,
-            minimum_covered_findings=2,
+        limits=StructuralOverlapReportLimits(
+            maximum_group_count=10,
+            minimum_finding_count=2,
         ),
     )
 
-    assert report.opportunity_count >= 2
+    assert report.group_count >= 2
     assert report.to_dict()["actionability"] == "structural_evidence_only"
     assert "trajectories" not in report.to_dict()
 
 
-def test_impact_ranking_observations_are_input_order_invariant() -> None:
+def test_structural_overlap_observations_are_input_order_invariant() -> None:
     findings = cast(
         tuple,
         (
-            _impact_ranking_finding(
+            _structural_overlap_finding(
                 detector_id="repeated_builder_calls",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=10,
             ),
-            _impact_ranking_finding(
+            _structural_overlap_finding(
                 detector_id="parallel_mapping_projection",
                 mapping_name="source_payload",
                 field_names=("source", "component"),
                 line=20,
             ),
-            _impact_ranking_finding(
+            _structural_overlap_finding(
                 detector_id="projection_builder_authority",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
                 line=30,
             ),
-            _impact_ranking_finding(
+            _structural_overlap_finding(
                 detector_id="repeated_property_alias_hooks",
                 mapping_name="object_axis_context",
                 field_names=("row_identity", "slice_index"),
@@ -495,25 +495,25 @@ def test_impact_ranking_observations_are_input_order_invariant() -> None:
             ),
         ),
     )
-    report = build_refactor_impact_ranking(
+    report = build_structural_overlap_report(
         findings,
         SourceIndex(),
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=10,
-            minimum_covered_findings=2,
+        limits=StructuralOverlapReportLimits(
+            maximum_group_count=10,
+            minimum_finding_count=2,
         ),
     )
-    reversed_report = build_refactor_impact_ranking(
+    reversed_report = build_structural_overlap_report(
         tuple(reversed(findings)),
         SourceIndex(),
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=10,
-            minimum_covered_findings=2,
+        limits=StructuralOverlapReportLimits(
+            maximum_group_count=10,
+            minimum_finding_count=2,
         ),
     )
 
-    assert tuple(opportunity.key for opportunity in report.opportunities) == tuple(
-        opportunity.key for opportunity in reversed_report.opportunities
+    assert tuple(group.key for group in report.groups) == tuple(
+        group.key for group in reversed_report.groups
     )
 
 
@@ -12303,7 +12303,7 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
             "-m",
             "nominal_refactor_advisor",
             tmp_path.as_posix(),
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--codemod-synthesize-plan",
             "--codemod-plan-out",
             plan_path.as_posix(),
@@ -12335,7 +12335,7 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
             "-m",
             "nominal_refactor_advisor",
             tmp_path.as_posix(),
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--codemod-synthesize-plan",
             "--codemod-simulate",
             "--json",
@@ -12377,7 +12377,7 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
             "-m",
             "nominal_refactor_advisor",
             tmp_path.as_posix(),
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--codemod-synthesize-plan",
             "--codemod-preflight",
             "--json",
@@ -12427,7 +12427,7 @@ def test_module_cli_blocks_unproved_finding_backed_plan_application(
             "-m",
             "nominal_refactor_advisor",
             tmp_path.as_posix(),
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--codemod-synthesize-plan",
             "--codemod-apply",
             "--json",
@@ -13162,7 +13162,7 @@ def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> N
     assert "fibers" in payload
 
 
-def test_module_cli_json_summary_skips_default_impact_ranking(
+def test_module_cli_json_summary_skips_default_structural_overlap(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -13192,10 +13192,45 @@ def test_module_cli_json_summary_skips_default_impact_ranking(
     assert "findings" in payload
     assert "timing" in payload
     assert "payload_timing" in payload
-    assert "impact_ranking" not in payload
+    assert "structural_overlap" not in payload
     assert "source_index" not in payload
     assert "semantic_refactor_gate" not in payload
     assert "finding_recipe_plan" not in payload
+
+
+def test_module_cli_emits_explicitly_requested_structural_overlap_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--json",
+            "--json-payload",
+            "summary",
+            "--include-structural-overlap",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    overlap = cast(dict[str, object], payload["structural_overlap"])
+    assert overlap["actionability"] == "structural_evidence_only"
+    assert set(overlap).isdisjoint(
+        {"rank", "score", "priority", "recommendation", "trajectory"}
+    )
 
 
 def test_module_cli_json_summary_uses_analysis_cache_before_parse(
@@ -13287,7 +13322,7 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
         preparse_cache_policy=JsonSummaryPreparseCachePolicy(
             json_enabled=True,
             payload_profile=JsonPayloadProfile.loop,
-            load_bearing_ranking_enabled=False,
+            structural_overlap_enabled=False,
             parsed_modules_required=False,
             analysis_cache_dir=tmp_path / ".nra-cache" / "analysis",
             focused_report_filter=True,
@@ -15013,7 +15048,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert delta.fulfilled_expected_removals(("a",)) is True
 
 
-def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(
+def test_module_cli_recipe_only_codemod_apply_without_structural_overlap(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -15050,7 +15085,7 @@ def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(
             "-m",
             "nominal_refactor_advisor",
             str(tmp_path),
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--raw-findings",
             "--codemod-plan",
             str(plan_path),
@@ -15126,7 +15161,7 @@ def test_module_cli_recipe_only_extract_authority_apply(
             "-m",
             "nominal_refactor_advisor",
             str(tmp_path),
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--raw-findings",
             "--codemod-plan",
             str(plan_path),
@@ -16725,7 +16760,7 @@ def test_json_payload_profiles_compact_execution_plan_edges(
     assert execution_plan_payload["edges"] == ()
 
 
-def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
+def test_module_cli_loop_payload_allows_no_structural_overlap_without_raw_bulk(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -16743,7 +16778,7 @@ def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
             "--json",
             "--json-payload",
             "loop",
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             (tmp_path / "pkg").as_posix(),
         ],
         cwd=repo_root,
@@ -16789,7 +16824,7 @@ def test_module_cli_cold_focused_loop_reports_partial_local_analysis(
         "--json",
         "--json-payload",
         "loop",
-        "--no-impact-ranking",
+        "--no-structural-overlap",
         focused_path.as_posix(),
     ]
     environment = os.environ.copy()
@@ -16854,7 +16889,7 @@ def test_module_cli_loop_execution_plan_survives_summary_cache_hit(
         "--json-payload",
         "loop",
         "--include-execution-plan",
-        "--no-impact-ranking",
+        "--no-structural-overlap",
         "--cache-dir",
         cache_dir.as_posix(),
         (tmp_path / "pkg").as_posix(),
@@ -17001,7 +17036,7 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
             "-m",
             "nominal_refactor_advisor",
             focused_path.as_posix(),
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--raw-findings",
             "--json",
             "--json-payload",
@@ -17061,7 +17096,7 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
         "-m",
         "nominal_refactor_advisor",
         focused_path.as_posix(),
-        "--no-impact-ranking",
+        "--no-structural-overlap",
         "--raw-findings",
         "--json",
         "--json-payload",
@@ -17174,7 +17209,7 @@ def test_module_cli_can_disable_auto_context_root_for_file_scope(
             "nominal_refactor_advisor",
             focused_path.as_posix(),
             "--no-auto-context-root",
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--raw-findings",
             "--json",
             "--json-payload",
@@ -17235,19 +17270,23 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
         source_index.finding_ids_by_target_id is source_index.finding_ids_by_target_id
     )
     assert target_keys
-    assert source_index.target_by_id[target_keys[0][0]].qualname == "Alpha.run"
-    assert target_keys[0][1] == f"{module_path.as_posix()}:Alpha.run"
+    assert source_index.target_by_id[target_keys[0].target_id].qualname == "Alpha.run"
+    assert target_keys[0].label == f"{module_path.as_posix()}:Alpha.run"
     assert (
-        source_index.targets_by_qualname["Alpha.run"][0].target_id == target_keys[0][0]
+        source_index.targets_by_qualname["Alpha.run"][0].target_id
+        == target_keys[0].target_id
     )
-    assert source_index.targets_matching_symbol("run")[0].target_id == target_keys[0][0]
+    assert (
+        source_index.targets_matching_symbol("run")[0].target_id
+        == target_keys[0].target_id
+    )
     assert (
         source_index.targets_by_file.smallest_enclosing_target(
             module_path.as_posix(),
             3,
             3,
         ).target_id
-        == target_keys[0][0]
+        == target_keys[0].target_id
     )
     assert set(source_index.to_dict()) == {"files", "ast_targets", "evidence"}
 
@@ -17329,7 +17368,7 @@ def test_source_index_retains_all_matching_evidence_targets(tmp_path: Path) -> N
     }
 
 
-def test_impact_ranking_preserves_public_output_shape_with_source_targets(
+def test_structural_overlap_preserves_public_output_shape_with_source_targets(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -17351,28 +17390,28 @@ def test_impact_ranking_preserves_public_output_shape_with_source_targets(
         (SourceLocation(str(module_path), 3, "Alpha.run"),),
     )
     source_index = build_source_index(modules, (finding,))
-    impact_ranking = build_refactor_impact_ranking(
+    structural_overlap = build_structural_overlap_report(
         (finding,),
         source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=5,
-            minimum_covered_findings=1,
+        limits=StructuralOverlapReportLimits(
+            maximum_group_count=5,
+            minimum_finding_count=1,
         ),
     )
 
-    payload = impact_ranking.to_dict()
-    opportunities = cast(tuple[dict[str, object], ...], payload["opportunities"])
-    opportunity = opportunities[0]
-    key = cast(dict[str, object], opportunity["key"])
+    payload = structural_overlap.to_dict()
+    groups = cast(tuple[dict[str, object], ...], payload["groups"])
+    group = groups[0]
+    key = cast(dict[str, object], group["key"])
 
     assert set(payload) == {
-        "opportunities",
-        "search_budget",
-        "candidate_key_count",
-        "opportunity_count",
+        "groups",
+        "limits",
+        "observed_key_count",
+        "group_count",
         "actionability",
     }
-    assert set(opportunity) == {
+    assert set(group) == {
         "key",
         "covered_finding_ids",
         "detector_ids",
@@ -17386,8 +17425,8 @@ def test_impact_ranking_preserves_public_output_shape_with_source_targets(
         "detector_count",
         "file_count",
     }
-    assert key["kind"] == "ast-target"
-    assert opportunity["covered_finding_ids"] == (finding.stable_id,)
+    assert key["axis"] == "ast-target"
+    assert group["covered_finding_ids"] == (finding.stable_id,)
 
 
 def test_structural_overlap_does_not_project_codemod_candidates(
@@ -17412,35 +17451,35 @@ def test_structural_overlap_does_not_project_codemod_candidates(
         (SourceLocation(str(module_path), 3, "Alpha.run"),),
     )
     source_index = build_source_index(modules, (finding,))
-    impact_ranking = build_refactor_impact_ranking(
+    structural_overlap = build_structural_overlap_report(
         (finding,),
         source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=5,
-            minimum_covered_findings=1,
+        limits=StructuralOverlapReportLimits(
+            maximum_group_count=5,
+            minimum_finding_count=1,
         ),
     )
     payload = JsonPayloadBuilder(
         findings=[finding],
         plans=[],
         modules=modules,
-        impact_ranking=impact_ranking,
+        structural_overlap=structural_overlap,
     ).to_dict()
 
     gated_markdown = MARKDOWN_RENDERER.report(
         [finding],
-        impact_ranking=impact_ranking,
+        structural_overlap=structural_overlap,
     )
     raw_markdown = MARKDOWN_RENDERER.report(
         [finding],
-        impact_ranking=impact_ranking,
+        structural_overlap=structural_overlap,
         raw_findings=True,
     )
-    impact_payload = cast(dict[str, object], payload["impact_ranking"])
+    overlap_payload = cast(dict[str, object], payload["structural_overlap"])
     gate_payload = cast(dict[str, object], payload["semantic_refactor_gate"])
 
     assert "codemod_candidates" not in payload
-    assert impact_payload["actionability"] == "structural_evidence_only"
+    assert overlap_payload["actionability"] == "structural_evidence_only"
     assert "Structural-overlap evidence (non-actionable):" in gated_markdown
     assert "do not prove" in gated_markdown
     assert not gated_markdown.startswith("Semantic refactor gate:")
@@ -17678,7 +17717,7 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
     assert evidence[0]["symbol"] == "ComponentAxisAuthority"
 
 
-def test_no_impact_ranking_does_not_disable_authority_gate(
+def test_no_structural_overlap_does_not_disable_authority_gate(
     tmp_path: Path,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
@@ -17688,7 +17727,7 @@ def test_no_impact_ranking_does_not_disable_authority_gate(
             "-m",
             "nominal_refactor_advisor",
             str(tmp_path),
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--json",
         ],
         capture_output=True,
@@ -17699,7 +17738,7 @@ def test_no_impact_ranking_does_not_disable_authority_gate(
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0
-    assert "impact_ranking" not in payload
+    assert "structural_overlap" not in payload
     assert "semantic_refactor_gate" in payload
 
 

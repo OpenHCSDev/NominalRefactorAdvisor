@@ -111,7 +111,7 @@ class FocusedScanBenchmark:
             "--json",
             "--json-payload",
             "loop",
-            "--no-impact-ranking",
+            "--no-structural-overlap",
             "--cache-dir",
             (self.cache_root / "ast").as_posix(),
             "--scan-budget-seconds",

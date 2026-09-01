@@ -10,7 +10,7 @@ from nominal_refactor_advisor.collection_algebra import (
     IdentityHandleCollisionError,
     UniqueIdentityIndexAuthority,
 )
-from nominal_refactor_advisor.impact_ranking import RefactorImpactRankingRequest
+from nominal_refactor_advisor.structural_overlap import StructuralOverlapRequest
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.source_index import (
@@ -103,7 +103,7 @@ def test_source_index_rejects_unequal_evidence_with_same_handle() -> None:
         _ = source_index.evidence_by_id
 
 
-def test_impact_ranking_rejects_forced_finding_handle_collision(
+def test_structural_overlap_rejects_forced_finding_handle_collision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spec = FindingSpec(
@@ -134,8 +134,6 @@ def test_impact_ranking_rejects_forced_finding_handle_collision(
     with pytest.raises(IdentityHandleCollisionError):
         build_source_index((), findings)
 
-    request = RefactorImpactRankingRequest(
-        findings=findings, source_index=SourceIndex()
-    )
+    request = StructuralOverlapRequest(findings=findings, source_index=SourceIndex())
     with pytest.raises(IdentityHandleCollisionError):
         _ = request._findings_by_id

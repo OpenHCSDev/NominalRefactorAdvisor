@@ -677,7 +677,7 @@ class SemanticRefactorGateReport(SemanticRecord):
             ),
             (
                 "   - A boundary evidence group is not an application order or a "
-                "recommended first transformation."
+                "trajectory recommendation."
             ),
             self.count_line,
             *self._evidence_context_lines(),
@@ -687,13 +687,12 @@ class SemanticRefactorGateReport(SemanticRecord):
         lines = []
         if self.ssot_authority_finding_count:
             lines.append(
-                "   - SSOT-critical signals: "
-                f"{self.ssot_authority_finding_count}."
+                f"   - SSOT-critical signals: {self.ssot_authority_finding_count}."
             )
         if self.ssot_authority_finding_count:
             lines.append(
                 "   - Boundary groups come only from the semantic-descent graph; "
-                "structural-overlap ranking does not order these groups."
+                "structural-overlap evidence does not order these groups."
             )
         return tuple(lines)
 

@@ -181,15 +181,14 @@ def stable_source_location_id(source_location: SourceLocation) -> str:
     """Return a compact, repeatable id for one source evidence coordinate."""
 
     payload = (
-        f"{source_location.file_path}:{source_location.line}:"
-        f"{source_location.symbol}"
+        f"{source_location.file_path}:{source_location.line}:{source_location.symbol}"
     )
     return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
 
 
 @dataclass(frozen=True)
 class ImpactDelta(SemanticRecord):
-    """Estimated structural impact of applying one refactor recommendation."""
+    """Finding-local compression delta, not a refactor action recommendation."""
 
     lower_bound_removable_loc: int = 0
     upper_bound_removable_loc: int = 0
@@ -240,6 +239,7 @@ class ImpactDelta(SemanticRecord):
             loci_of_change_after=1,
             repeated_mappings_centralized=removable,
         )
+
 
 @dataclass(frozen=True)
 class OutcomeEstimate(ImpactDelta):

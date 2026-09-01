@@ -762,7 +762,7 @@ class StructuralObservationProjectionDetector(
 
 
 def default_detectors() -> tuple[IssueDetector, ...]:
-    """Instantiate all registered detectors in deterministic priority order."""
+    """Instantiate all registered detectors in stable declaration order."""
     return tuple(
         (detector_type() for detector_type in IssueDetector.registered_detector_types())
     )

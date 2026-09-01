@@ -4271,7 +4271,7 @@ declare_candidate_rule_detector(
         f"declare_module_detector({candidate.candidate_type_name}, finding_spec, finding_renderer, detector_base={candidate.base_name})"
     ),
     codemod_patch=lambda candidate: (
-        f"# Replace `{candidate.class_name}` with `declare_module_detector(...)`.\n# Keep only true detector-specific values: spec, renderer, optional collector, base, and priority."
+        f"# Replace `{candidate.class_name}` with `declare_module_detector(...)`.\n# Keep only true detector-specific values: spec, renderer, optional collector, and base."
     ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.line_count,

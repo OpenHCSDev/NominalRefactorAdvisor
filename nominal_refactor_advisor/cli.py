@@ -107,10 +107,10 @@ from .economics import (
     build_economics_proof_report,
 )
 from .finding_counts import FindingSummary
-from .impact_ranking import (
-    RefactorImpactRankingReport,
-    RefactorImpactSearchBudget,
-    build_refactor_impact_ranking,
+from .structural_overlap import (
+    StructuralOverlapReport,
+    StructuralOverlapReportLimits,
+    build_structural_overlap_report,
 )
 from .models import RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
@@ -321,9 +321,9 @@ _CLI_ARGUMENT_SPECS = (
             help="Also split working-tree LOC changes by backend/detector/test role.",
         ),
         CliArgumentSpec(
-            flags=("--include-impact-ranking",),
+            flags=("--include-structural-overlap",),
             action="store_true",
-            dest="include_impact_ranking",
+            dest="include_structural_overlap",
             default=None,
             default_supplied=True,
             help=(
@@ -332,9 +332,9 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
-            flags=("--no-impact-ranking",),
+            flags=("--no-structural-overlap",),
             action="store_false",
-            dest="include_impact_ranking",
+            dest="include_structural_overlap",
             default=None,
             default_supplied=True,
             help=("Skip the non-actionable structural-overlap evidence report."),
@@ -376,16 +376,16 @@ _CLI_ARGUMENT_SPECS = (
             help="Git ref used for --include-change-budget.",
         ),
         CliArgumentSpec(
-            flags=("--impact-ranking-max",),
+            flags=("--structural-overlap-max-groups",),
             value_type=int,
             default=25,
-            help="Maximum load-bearing refactor opportunities to report.",
+            help="Maximum structural-overlap evidence groups to report.",
         ),
         CliArgumentSpec(
-            flags=("--impact-ranking-min-findings",),
+            flags=("--structural-overlap-min-findings",),
             value_type=int,
             default=2,
-            help="Minimum findings a refactor opportunity must cover.",
+            help="Minimum findings a structural-overlap group must contain.",
         ),
         CliArgumentSpec(
             flags=("--import-lean-export",),
@@ -674,7 +674,7 @@ class JsonPayloadSections:
     semantic_refactor_gate: bool = True
     finding_recipe_plan: bool = True
     payload_timing: bool = False
-    default_impact_ranking: bool = False
+    default_structural_overlap: bool = False
     execution_plan_payload_mode: JsonExecutionPlanPayloadMode = (
         JsonExecutionPlanPayloadMode.FULL
     )
@@ -691,7 +691,7 @@ class JsonPayloadSections:
             and not self.semantic_descent_graph
             and not self.semantic_refactor_gate
             and not self.finding_recipe_plan
-            and not self.default_impact_ranking
+            and not self.default_structural_overlap
         )
 
     @property
@@ -726,7 +726,7 @@ class JsonPayloadProfile(Enum):
         observation_fibers=False,
         finding_recipe_plan=False,
         payload_timing=True,
-        default_impact_ranking=False,
+        default_structural_overlap=False,
         execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
     summary = JsonPayloadSections(
@@ -737,7 +737,7 @@ class JsonPayloadProfile(Enum):
         semantic_refactor_gate=False,
         finding_recipe_plan=False,
         payload_timing=True,
-        default_impact_ranking=False,
+        default_structural_overlap=False,
         execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
     loop = JsonPayloadSections(
@@ -749,7 +749,7 @@ class JsonPayloadProfile(Enum):
         semantic_refactor_gate=False,
         finding_recipe_plan=False,
         payload_timing=True,
-        default_impact_ranking=False,
+        default_structural_overlap=False,
         execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
 
@@ -792,19 +792,19 @@ class FocusedLoopColdAnalysisPolicy:
 
 
 @dataclass(frozen=True)
-class JsonPayloadImpactRankingPolicy:
-    """Resolved impact-ranking policy for one CLI JSON payload profile."""
+class JsonPayloadStructuralOverlapPolicy:
+    """Resolved structural-overlap policy for one CLI JSON payload profile."""
 
     explicit_request: bool | None
     json_enabled: bool
     payload_profile: JsonPayloadProfile
 
     @property
-    def include_impact_ranking(self) -> bool:
+    def include_structural_overlap(self) -> bool:
         if self.explicit_request is not None:
             return self.explicit_request
         if self.json_enabled:
-            return self.payload_profile.sections.default_impact_ranking
+            return self.payload_profile.sections.default_structural_overlap
         return False
 
 
@@ -858,7 +858,7 @@ class JsonSummaryPreparseCachePolicy:
 
     json_enabled: bool
     payload_profile: JsonPayloadProfile
-    load_bearing_ranking_enabled: bool
+    structural_overlap_enabled: bool
     parsed_modules_required: bool
     analysis_cache_dir: Path | None
     focused_report_filter: bool = False
@@ -867,7 +867,7 @@ class JsonSummaryPreparseCachePolicy:
     def cache_lookup_enabled(self) -> bool:
         return (
             self.json_enabled
-            and not self.load_bearing_ranking_enabled
+            and not self.structural_overlap_enabled
             and not self.parsed_modules_required
             and self.analysis_cache_dir is not None
         )
@@ -946,14 +946,14 @@ class FastPreparseSemanticDescentSourceAuthority:
 class SourceSnapshotCacheEligibility:
     """Decide whether source-snapshot demand can use cached source context."""
 
-    include_impact_ranking: bool
+    include_structural_overlap: bool
     codemod_plan_sequence: CodemodPlanSequence
     codemod_command_type: type[CliCommand] | None
 
     @property
     def needs_source_snapshot(self) -> bool:
         return (
-            self.include_impact_ranking
+            self.include_structural_overlap
             or self.codemod_plan_sequence.requires_source_snapshot
             or (
                 self.codemod_command_type is not None
@@ -1087,7 +1087,7 @@ class JsonPayloadBuilder:
     economics: RefactorEvidenceEconomics | None = None
     change_budget: RepositoryChangeBudget | None = None
     timing: ScanTiming | None = None
-    impact_ranking: RefactorImpactRankingReport | None = None
+    structural_overlap: StructuralOverlapReport | None = None
     execution_plan: RefactorExecutionPlanReport | None = None
     scan_guard_report: ArchitectureGuardReport | None = None
     source_snapshot: CodemodSourceSnapshot | None = None
@@ -1181,8 +1181,8 @@ class JsonPayloadBuilder:
             payload["execution_plan"] = sections.execution_plan_payload_mode.payload(
                 self.execution_plan
             )
-        if self.impact_ranking is not None:
-            payload["impact_ranking"] = self.impact_ranking.to_dict()
+        if self.structural_overlap is not None:
+            payload["structural_overlap"] = self.structural_overlap.to_dict()
         semantic_refactor_gate_seconds = 0.0
         semantic_gate_report = SemanticRefactorGateReport.inactive()
         if sections.semantic_refactor_gate:
@@ -1658,28 +1658,27 @@ def format_economics_markdown(
     return "\n".join(lines)
 
 
-def format_impact_ranking_markdown(
-    impact_ranking: RefactorImpactRankingReport,
+def format_structural_overlap_markdown(
+    structural_overlap: StructuralOverlapReport,
 ) -> str:
     lines = [
         "Structural-overlap evidence (non-actionable):",
-        "   - Candidate keys: "
-        f"{impact_ranking.candidate_key_count}; opportunities: "
-        f"{impact_ranking.opportunity_count}",
+        "   - Observed keys: "
+        f"{structural_overlap.observed_key_count}; groups: "
+        f"{structural_overlap.group_count}",
         (
-            "   - These groups prioritize investigation only; they do not prove an "
-            "authority choice, finding removal, or a globally preferable trajectory."
+            "   - These groups share a current-snapshot coordinate. They do not "
+            "prove an authority choice, finding removal, or trajectory."
         ),
     ]
-    for index, opportunity in enumerate(impact_ranking.opportunities[:10], start=1):
+    for group in structural_overlap.groups[:10]:
         lines.append(
-            f"   - Opportunity {index}: {opportunity.key.kind} "
-            f"`{opportunity.key.label}` -> "
-            f"{opportunity.finding_count} finding(s), "
-            f"{opportunity.detector_count} detector(s), "
-            f"{opportunity.file_count} file(s)"
+            f"   - {group.key.axis.value} `{group.key.label}` -> "
+            f"{group.finding_count} finding(s), "
+            f"{group.detector_count} detector(s), "
+            f"{group.file_count} file(s)"
         )
-        lines.append("     detectors: " + ", ".join(opportunity.detector_ids))
+        lines.append("     detectors: " + ", ".join(group.detector_ids))
     return "\n".join(lines)
 
 
@@ -1723,7 +1722,7 @@ class MarkdownReportRenderer(ABC):
         economics: RefactorEvidenceEconomics | None = None,
         change_budget: RepositoryChangeBudget | None = None,
         timing: ScanTiming | None = None,
-        impact_ranking: RefactorImpactRankingReport | None = None,
+        structural_overlap: StructuralOverlapReport | None = None,
         architecture_guard_report: ArchitectureGuardReport | None = None,
         raw_findings: bool = False,
     ) -> str:
@@ -1742,8 +1741,8 @@ class MarkdownReportRenderer(ABC):
             sections.append(format_plans_markdown(plans))
         if economics is not None:
             sections.append(format_economics_markdown(economics, change_budget))
-        if impact_ranking is not None:
-            sections.append(format_impact_ranking_markdown(impact_ranking))
+        if structural_overlap is not None:
+            sections.append(format_structural_overlap_markdown(structural_overlap))
         if architecture_guard_report is not None:
             sections.append(
                 format_architecture_guard_markdown(architecture_guard_report)
@@ -3244,12 +3243,14 @@ def _main_without_deadline() -> int:
         json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
     except ValueError as error:
         parser.error(str(error))
-    impact_ranking_policy = JsonPayloadImpactRankingPolicy(
-        explicit_request=args.include_impact_ranking,
+    structural_overlap_policy = JsonPayloadStructuralOverlapPolicy(
+        explicit_request=args.include_structural_overlap,
         json_enabled=args.json,
         payload_profile=json_payload_profile,
     )
-    args.include_impact_ranking = impact_ranking_policy.include_impact_ranking
+    args.include_structural_overlap = (
+        structural_overlap_policy.include_structural_overlap
+    )
     JsonDocumentInputSet.from_option_paths(
         (
             ("--codemod-plan", (args.codemod_plan,)),
@@ -3405,7 +3406,7 @@ def _main_without_deadline() -> int:
     fast_codemod_source_snapshot = None
     if (
         codemod_execution_request.exact_recipe_execution
-        and not args.include_impact_ranking
+        and not args.include_structural_overlap
         and args.import_lean_export is None
         and selected_command_type is None
     ):
@@ -3425,7 +3426,7 @@ def _main_without_deadline() -> int:
             return fast_codemod_execution_result
 
     source_snapshot_cache_eligibility = SourceSnapshotCacheEligibility(
-        include_impact_ranking=args.include_impact_ranking,
+        include_structural_overlap=args.include_structural_overlap,
         codemod_plan_sequence=codemod_plan_sequence,
         codemod_command_type=selected_command_type,
     )
@@ -3434,7 +3435,7 @@ def _main_without_deadline() -> int:
         preparse_cache_policy = JsonSummaryPreparseCachePolicy(
             json_enabled=args.json,
             payload_profile=json_payload_profile,
-            load_bearing_ranking_enabled=args.include_impact_ranking,
+            structural_overlap_enabled=args.include_structural_overlap,
             parsed_modules_required=(
                 source_snapshot_cache_eligibility.requires_parsed_modules
             ),
@@ -3453,7 +3454,7 @@ def _main_without_deadline() -> int:
             auto_context_enabled=args.auto_context_root,
             explicit_context_roots=bool(args.context_roots),
             requires_full_analysis=(
-                args.include_impact_ranking
+                args.include_structural_overlap
                 or preparse_cache_policy.parsed_modules_required
                 or args.include_execution_plan
                 or args.include_plans
@@ -3465,7 +3466,7 @@ def _main_without_deadline() -> int:
             source_snapshot_cache_eligibility.can_use_cached_source_context
             and analysis_cache_dir is not None
             and args.use_parse_cache
-            and not args.include_impact_ranking
+            and not args.include_structural_overlap
         )
         cache_lookup_enabled = (
             preparse_cache_policy.cache_lookup_enabled and preparse_cache_mode.enabled
@@ -3789,7 +3790,7 @@ def _main_without_deadline() -> int:
         modules,
         architecture_guard_rules,
     )
-    impact_ranking = None
+    structural_overlap = None
     architecture_guard_report = None
     source_snapshot = None
     if source_snapshot_cache_eligibility.needs_source_snapshot:
@@ -3828,22 +3829,25 @@ def _main_without_deadline() -> int:
             codemod_execution_request,
         ).run()
 
-    if args.include_impact_ranking:
+    if args.include_structural_overlap:
         source_index = source_snapshot.source_index
-        impact_ranking = build_refactor_impact_ranking(
+        structural_overlap = build_structural_overlap_report(
             findings,
             source_index,
-            search_budget=RefactorImpactSearchBudget(
-                reported_opportunity_count=args.impact_ranking_max,
-                minimum_covered_findings=args.impact_ranking_min_findings,
+            limits=StructuralOverlapReportLimits(
+                maximum_group_count=args.structural_overlap_max_groups,
+                minimum_finding_count=args.structural_overlap_min_findings,
             ),
         )
+    if architecture_guard_rules:
         architecture_guard_report = architecture_guard_evaluator.report_for_snapshot(
             source_snapshot
         )
-    else:
-        if not codemod_plan_sequence.requires_source_snapshot:
-            source_snapshot = None
+    if (
+        not args.include_structural_overlap
+        and not codemod_plan_sequence.requires_source_snapshot
+    ):
+        source_snapshot = None
     timing = ScanTiming(
         parse_seconds=parse_seconds,
         analysis_seconds=analysis_seconds,
@@ -3873,7 +3877,7 @@ def _main_without_deadline() -> int:
                     economics=economics,
                     change_budget=change_budget,
                     timing=timing,
-                    impact_ranking=impact_ranking,
+                    structural_overlap=structural_overlap,
                     execution_plan=execution_plan,
                     scan_guard_report=architecture_guard_report,
                     source_snapshot=source_snapshot,
@@ -3907,8 +3911,8 @@ def _main_without_deadline() -> int:
             )
             if economics is not None:
                 sections.append(format_economics_markdown(economics, change_budget))
-            if impact_ranking is not None:
-                sections.append(format_impact_ranking_markdown(impact_ranking))
+            if structural_overlap is not None:
+                sections.append(format_structural_overlap_markdown(structural_overlap))
             if architecture_guard_report is not None:
                 sections.append(
                     format_architecture_guard_markdown(architecture_guard_report)
@@ -3924,7 +3928,7 @@ def _main_without_deadline() -> int:
                     economics=economics,
                     change_budget=change_budget,
                     timing=timing,
-                    impact_ranking=impact_ranking,
+                    structural_overlap=structural_overlap,
                     architecture_guard_report=architecture_guard_report,
                     raw_findings=args.raw_findings,
                 )

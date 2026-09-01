@@ -156,9 +156,6 @@ class SourceTargetKey:
     target_id: str
     label: str
 
-    def as_pair(self) -> tuple[str, str]:
-        return self.target_id, self.label
-
 
 @dataclass(frozen=True)
 class TupleIndex(Generic[IndexKeyT, IndexValueT]):
@@ -447,8 +444,8 @@ class SourceIndex:
 
     def source_target_keys_for_finding(
         self, finding: RefactorFinding
-    ) -> tuple[tuple[str, str], ...]:
-        """Return deterministic AST target id/label pairs touched by a finding."""
+    ) -> tuple[SourceTargetKey, ...]:
+        """Return deterministic AST target declarations touched by a finding."""
 
         keys_by_target_id: dict[str, SourceTargetKey] = {}
         for source_location in finding.evidence:
@@ -466,8 +463,7 @@ class SourceIndex:
                         label=f"{target.file_path}:{target.qualname}",
                     )
         return tuple(
-            keys_by_target_id[target_id].as_pair()
-            for target_id in sorted(keys_by_target_id)
+            keys_by_target_id[target_id] for target_id in sorted(keys_by_target_id)
         )
 
     def to_dict(self) -> dict[str, object]:
