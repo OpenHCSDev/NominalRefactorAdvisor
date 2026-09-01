@@ -14,6 +14,7 @@ import hashlib
 import io
 import re
 import tokenize
+from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
@@ -120,7 +121,16 @@ class CompactClassHeader(ClassDeclaration):
     """Class-index surface sufficient for inheritance reconstruction."""
 
     base_reference_parts: tuple[tuple[str, ...], ...]
+    base_references_are_complete: bool = False
     is_final: bool = False
+
+    @property
+    def base_resolution_is_complete(self) -> bool:
+        """Return whether every domain-bearing base resolves in the compact graph."""
+
+        return self.base_references_are_complete and len(
+            self.resolved_base_symbols
+        ) == declared_nominal_base_count(self)
 
 
 @dataclass(frozen=True)
@@ -238,11 +248,75 @@ def has_complete_concrete_mro_composite(
     )
 
 
+class CompactPublicNameExposure(StrEnum):
+    """Proof result for one name on a module's declared public surface."""
+
+    PUBLIC = "public"
+    PRIVATE = "private"
+    UNRESOLVED = "unresolved"
+
+
+class CompactModulePublicExportContract(ABC):
+    """Representation-independent declaration of one module's export policy."""
+
+    @abstractmethod
+    def exposure_for(self, name: str) -> CompactPublicNameExposure:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CompactImplicitPublicExportContract(CompactModulePublicExportContract):
+    """Python's implicit convention: leading-underscore bindings are private."""
+
+    def exposure_for(self, name: str) -> CompactPublicNameExposure:
+        return (
+            CompactPublicNameExposure.PRIVATE
+            if name.startswith("_")
+            else CompactPublicNameExposure.PUBLIC
+        )
+
+
+@dataclass(frozen=True)
+class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
+    """One statically complete ``__all__`` membership declaration."""
+
+    exported_names: tuple[str, ...]
+
+    def exposure_for(self, name: str) -> CompactPublicNameExposure:
+        return (
+            CompactPublicNameExposure.PUBLIC
+            if name in self.exported_names
+            else CompactPublicNameExposure.PRIVATE
+        )
+
+
+@dataclass(frozen=True)
+class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
+    """A dynamic or otherwise incomplete ``__all__`` declaration."""
+
+    def exposure_for(self, name: str) -> CompactPublicNameExposure:
+        del name
+        return CompactPublicNameExposure.UNRESOLVED
+
+
+@dataclass(frozen=True)
+class CompactModuleStarImportOrigin:
+    """One module-scope star import and its optional resolved module origin."""
+
+    module_name: str | None
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.module_name is not None
+
+
 @dataclass(frozen=True)
 class CompactModuleClassHeader(CompactModuleIdentity):
-    """Module surface required to reconstruct its compact class index."""
+    """Module namespace and class surface required by the compact family index."""
 
     import_aliases: tuple[tuple[str, str], ...]
+    public_export_contract: CompactModulePublicExportContract
+    star_import_origins: tuple[CompactModuleStarImportOrigin, ...]
     classes: tuple[CompactIndexedClass, ...]
 
 
@@ -1643,6 +1717,97 @@ def _resolve_relative_module(
     return ".".join(package_parts)
 
 
+class _ModuleScopeNameReferenceCollector(ast.NodeVisitor):
+    """Collect one module binding's syntax without entering child namespaces."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.references: list[ast.Name] = []
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id == self.name:
+            self.references.append(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
+def _module_scope_name_references(
+    module: ast.Module,
+    name: str,
+) -> tuple[ast.Name, ...]:
+    collector = _ModuleScopeNameReferenceCollector(name)
+    collector.visit(module)
+    return tuple(collector.references)
+
+
+def _public_export_assignment(
+    statement: ast.stmt,
+) -> tuple[ast.Name, ast.expr] | None:
+    if (
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+    ):
+        return statement.targets[0], statement.value
+    if (
+        isinstance(statement, ast.AnnAssign)
+        and isinstance(statement.target, ast.Name)
+        and statement.target.id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+        and statement.value is not None
+    ):
+        return statement.target, statement.value
+    return None
+
+
+def _literal_public_export_names(value: ast.expr) -> tuple[str, ...] | None:
+    if not isinstance(value, ast.List | ast.Tuple | ast.Set):
+        return None
+    if any(
+        not isinstance(element, ast.Constant) or not isinstance(element.value, str)
+        for element in value.elts
+    ):
+        return None
+    return sorted_tuple({element.value for element in value.elts})
+
+
+def _compact_module_public_export_contract(
+    parsed_module: ParsedModule,
+) -> CompactModulePublicExportContract:
+    module = parsed_module.module
+    if PYTHON_PUBLIC_EXPORT_ASSIGNMENT not in (
+        LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+    ):
+        return CompactImplicitPublicExportContract()
+    assignments = tuple(
+        assignment
+        for statement in module.body
+        if (assignment := _public_export_assignment(statement)) is not None
+    )
+    if len(assignments) != 1:
+        return CompactUnresolvedPublicExportContract()
+    target, value = assignments[0]
+    references = _module_scope_name_references(
+        module,
+        PYTHON_PUBLIC_EXPORT_ASSIGNMENT,
+    )
+    if references != (target,):
+        return CompactUnresolvedPublicExportContract()
+    exported_names = _literal_public_export_names(value)
+    if exported_names is None:
+        return CompactUnresolvedPublicExportContract()
+    return CompactExplicitPublicExportContract(exported_names)
+
+
 @lru_cache(maxsize=None)
 def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     aliases: dict[str, str] = {}
@@ -1665,6 +1830,39 @@ def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
                 local_name = alias.asname or alias.name
                 aliases[local_name] = f"{resolved_module}.{alias.name}"
     return aliases
+
+
+def _module_star_import_origins(
+    parsed_module: ParsedModule,
+) -> tuple[CompactModuleStarImportOrigin, ...]:
+    origins: list[CompactModuleStarImportOrigin] = []
+
+    class ModuleScopeStarImportCollector(ast.NodeVisitor):
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            if any(alias.name == "*" for alias in node.names):
+                origins.append(
+                    CompactModuleStarImportOrigin(
+                        _resolve_relative_module(
+                            parsed_module,
+                            imported_module=node.module,
+                            level=node.level,
+                        )
+                    )
+                )
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+    ModuleScopeStarImportCollector().visit(parsed_module.module)
+    return tuple(origins)
 
 
 @dataclass(frozen=True)
@@ -1783,6 +1981,23 @@ def _native_class_header_module(
 ) -> ParsedModule | None:
     if not syntax_index.is_complete:
         return None
+    public_export_name = PYTHON_PUBLIC_EXPORT_ASSIGNMENT.encode("utf-8")
+    has_public_export_syntax = any(
+        syntax_index.source_for(node) == public_export_name
+        for node in syntax_index.captures("(identifier) @identifier").get(
+            "identifier",
+            (),
+        )
+    )
+    has_star_import = any(
+        isinstance(statement := syntax_index.statement_for(node), ast.ImportFrom)
+        and any(alias.name == "*" for alias in statement.names)
+        for node in syntax_index.captures("(import_from_statement) @statement").get(
+            "statement", ()
+        )
+    )
+    if has_public_export_syntax or has_star_import:
+        return source_module.parse()
     body: list[ast.stmt] = []
     for child in syntax_index.tree.root_node.named_children:
         class_node = _native_definition_child(child, "class_definition")
@@ -1814,6 +2029,19 @@ def _collect_demanded_class_projection_from_source(
     return CompactModuleClassProjectionFamily._collect_header_core(parsed_module)
 
 
+def _compact_base_reference_parts(node: ast.ClassDef) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        parts
+        for base in node.bases
+        if (
+            parts := ATTRIBUTE_CHAIN_AUTHORITY.project(
+                ClassSymbolResolutionAuthority.reference_node(base)
+            )
+        )
+        is not None
+    )
+
+
 def _compact_indexed_classes(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
@@ -1839,16 +2067,8 @@ def _compact_indexed_classes(
                 )
                 is not None
             ),
-            base_reference_parts=tuple(
-                parts
-                for base in node.bases
-                if (
-                    parts := ATTRIBUTE_CHAIN_AUTHORITY.project(
-                        ClassSymbolResolutionAuthority.reference_node(base)
-                    )
-                )
-                is not None
-            ),
+            base_reference_parts=base_reference_parts,
+            base_references_are_complete=len(base_reference_parts) == len(node.bases),
             direct_assignment_expressions=tuple(
                 (target_name, ast.unparse(value) if value is not None else None)
                 for target_name, value in direct_assignments.items()
@@ -1940,6 +2160,7 @@ def _compact_indexed_classes(
         )
         for qualname, node in indexed_class_nodes
         for direct_assignments in (_direct_class_assignments(node),)
+        for base_reference_parts in (_compact_base_reference_parts(node),)
     )
 
 
@@ -1987,6 +2208,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 import_aliases=tuple(
                     sorted(_module_import_aliases(parsed_module).items())
                 ),
+                public_export_contract=_compact_module_public_export_contract(
+                    parsed_module
+                ),
+                star_import_origins=_module_star_import_origins(parsed_module),
                 classes=_compact_indexed_classes(
                     parsed_module,
                     indexed_class_nodes,
@@ -2039,6 +2264,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 import_aliases=tuple(
                     sorted(_module_import_aliases(parsed_module).items())
                 ),
+                public_export_contract=_compact_module_public_export_contract(
+                    parsed_module
+                ),
+                star_import_origins=_module_star_import_origins(parsed_module),
                 classes=classes,
                 sorted_key_calls=_compact_sorted_key_calls(parsed_module),
                 keyed_table_axes=_compact_keyed_table_axes(parsed_module),

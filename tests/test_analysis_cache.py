@@ -2791,6 +2791,10 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         module_name="pkg.target",
         file_path="/repo/pkg/target.py",
         import_aliases=(),
+        public_export_contract=(
+            class_index_module.CompactUnresolvedPublicExportContract()
+        ),
+        star_import_origins=(),
         classes=(),
     )
     base_class = class_index_module.CompactIndexedClass(
@@ -2922,6 +2926,10 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
         module_name="pkg.target",
         file_path=str(package_root / "target.py"),
         import_aliases=(),
+        public_export_contract=(
+            class_index_module.CompactUnresolvedPublicExportContract()
+        ),
+        star_import_origins=(),
         classes=(),
     )
     demand = family.report_demand((empty_target,), DetectorConfig())
@@ -3014,6 +3022,137 @@ def test_native_definition_headers_preserve_decorators_lines_and_full_span() -> 
     assert isinstance(function_header, ast.AsyncFunctionDef)
 
 
+def test_compact_base_resolution_fails_closed_for_unprojectable_bases() -> None:
+    source_module = SourceModule(
+        path=Path("/repo/pkg/families.py"),
+        module_name="pkg.families",
+        source=(
+            "from abc import ABC\n"
+            "\n"
+            "class Root:\n"
+            "    pass\n"
+            "\n"
+            "class Resolved(Root):\n"
+            "    pass\n"
+            "\n"
+            "class External(ExternalRoot):\n"
+            "    pass\n"
+            "\n"
+            "class Computed(base_factory()):\n"
+            "    pass\n"
+            "\n"
+            "class Neutral(ABC):\n"
+            "    pass\n"
+        ),
+    )
+    projection = class_index_module.CompactModuleClassProjectionFamily.collect(
+        source_module.parse()
+    )[0]
+    raw_classes = {item.simple_name: item for item in projection.classes}
+    class_index = class_index_module.build_compact_class_family_index((projection,))
+    indexed_classes = {
+        item.simple_name: item for item in class_index.classes_by_symbol.values()
+    }
+
+    assert raw_classes["Computed"].base_reference_parts == ()
+    assert raw_classes["Computed"].base_references_are_complete is False
+    assert indexed_classes["Computed"].base_resolution_is_complete is False
+    assert indexed_classes["External"].base_references_are_complete is True
+    assert indexed_classes["External"].base_resolution_is_complete is False
+    assert indexed_classes["Resolved"].resolved_base_symbols == ("pkg.families.Root",)
+    assert indexed_classes["Resolved"].base_resolution_is_complete is True
+    assert indexed_classes["Root"].base_resolution_is_complete is True
+    assert indexed_classes["Neutral"].base_resolution_is_complete is True
+
+
+def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> None:
+    family = class_index_module.CompactModuleClassProjectionFamily
+    implicit = family.collect(
+        SourceModule(
+            path=Path("/repo/pkg/implicit.py"),
+            module_name="pkg.implicit",
+            source=(
+                "def public(): pass\n"
+                "def _private(): pass\n"
+                "class Local:\n"
+                "    __all__ = ('class_local',)\n"
+            ),
+        ).parse()
+    )[0].public_export_contract
+    explicit = family.collect(
+        SourceModule(
+            path=Path("/repo/pkg/explicit.py"),
+            module_name="pkg.explicit",
+            source="__all__ = ('_private',)\n",
+        ).parse()
+    )[0].public_export_contract
+    dynamic = family.collect(
+        SourceModule(
+            path=Path("/repo/pkg/dynamic.py"),
+            module_name="pkg.dynamic",
+            source="__all__ = ['first']\n__all__.append('second')\n",
+        ).parse()
+    )[0].public_export_contract
+
+    assert isinstance(
+        implicit,
+        class_index_module.CompactImplicitPublicExportContract,
+    )
+    assert implicit.exposure_for("public") is (
+        class_index_module.CompactPublicNameExposure.PUBLIC
+    )
+    assert implicit.exposure_for("_private") is (
+        class_index_module.CompactPublicNameExposure.PRIVATE
+    )
+    assert isinstance(
+        explicit,
+        class_index_module.CompactExplicitPublicExportContract,
+    )
+    assert explicit.exported_names == ("_private",)
+    assert explicit.exposure_for("_private") is (
+        class_index_module.CompactPublicNameExposure.PUBLIC
+    )
+    assert explicit.exposure_for("public") is (
+        class_index_module.CompactPublicNameExposure.PRIVATE
+    )
+    assert isinstance(
+        dynamic,
+        class_index_module.CompactUnresolvedPublicExportContract,
+    )
+    assert dynamic.exposure_for("first") is (
+        class_index_module.CompactPublicNameExposure.UNRESOLVED
+    )
+
+
+def test_compact_module_star_import_origins_preserve_all_module_scope_edges() -> None:
+    projection = class_index_module.CompactModuleClassProjectionFamily.collect(
+        SourceModule(
+            path=Path("/repo/pkg/consumer.py"),
+            module_name="pkg.consumer",
+            source=(
+                "from .source import *\n"
+                "from external import *\n"
+                "if ENABLE_OPTIONAL:\n"
+                "    from .optional import *\n"
+                "from ... import *\n"
+            ),
+        ).parse()
+    )[0]
+
+    assert tuple(origin.module_name for origin in projection.star_import_origins) == (
+        "pkg.source",
+        "external",
+        "pkg.optional",
+        None,
+    )
+    assert tuple(origin.is_resolved for origin in projection.star_import_origins) == (
+        True,
+        True,
+        True,
+        False,
+    )
+
+
 def test_native_class_header_core_matches_cached_minimal_projection(
     tmp_path: Path,
 ) -> None:
@@ -3023,6 +3162,8 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     source = (
         "from __future__ import annotations\n"
         "from support import Parent as ImportedParent\n"
+        "from .exports import *\n"
+        "__all__ = ('Child',)\n"
         "\n"
         "@final\n"
         "class Child(ImportedParent):\n"
@@ -3060,6 +3201,16 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     assert child.direct_assignment_expressions == ()
     assert child.method_names == ()
     assert dict(actual[0].import_aliases)["ImportedParent"] == "support.Parent"
+    assert isinstance(
+        actual[0].public_export_contract,
+        class_index_module.CompactExplicitPublicExportContract,
+    )
+    assert actual[0].public_export_contract.exposure_for("Child") is (
+        class_index_module.CompactPublicNameExposure.PUBLIC
+    )
+    assert tuple(origin.module_name for origin in actual[0].star_import_origins) == (
+        "exports",
+    )
     assert class_index_module.CompactIndexedClass.__mro__[:3] == (
         class_index_module.CompactIndexedClass,
         class_index_module.CompactClassHeader,

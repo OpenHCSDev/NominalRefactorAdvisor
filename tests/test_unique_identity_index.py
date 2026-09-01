@@ -58,6 +58,28 @@ def test_unambiguous_identity_projection_excludes_every_repeated_handle() -> Non
     ) == {"unique": _Declaration("unique")}
 
 
+def test_identity_multiplicity_projection_exposes_repeated_handles_once() -> None:
+    declarations = (
+        _Declaration("unique"),
+        _Declaration("equal"),
+        _Declaration("equal"),
+        _Declaration("conflict"),
+        _Declaration("conflict-other"),
+    )
+
+    projection = UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(
+        declarations,
+        lambda declaration: (
+            "conflict" if declaration.name.startswith("conflict") else declaration.name
+        ),
+    )
+
+    assert projection.unambiguous_declarations_by_handle == {
+        "unique": _Declaration("unique")
+    }
+    assert projection.ambiguous_handles == frozenset(("conflict", "equal"))
+
+
 def test_source_index_rejects_forced_target_handle_collision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

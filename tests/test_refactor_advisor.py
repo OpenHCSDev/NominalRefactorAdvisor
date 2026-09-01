@@ -3675,6 +3675,19 @@ def test_exact_leaf_method_promotion_preserves_multiple_inheritance_mros(
                 "def render(self, value):\n"
                 "    normalized = value.strip()\n"
                 "    return normalized.lower()",
+                module_prefix="class CommonRole:\n    __slots__ = ()",
+                base_names_by_class={
+                    class_name: "CommonRole, base_factory()"
+                    for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+                },
+            ),
+            id="unprojectable-secondary-bases",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
                 module_prefix="\n\n".join(
                     (
                         "class CommonRole:\n    __slots__ = ()",

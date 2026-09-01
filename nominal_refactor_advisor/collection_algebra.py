@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 ItemT = TypeVar("ItemT")
@@ -27,6 +28,19 @@ class IdentityHandleCollisionError(ValueError):
             f"Identity handle {handle!r} resolves to unequal declarations: "
             f"{existing_declaration!r} and {colliding_declaration!r}"
         )
+
+
+@dataclass(frozen=True)
+class IdentityHandleMultiplicityProjection(
+    Generic[IdentityHandleT, IdentityDeclarationT]
+):
+    """Unique declarations and repeated handles derived in one cardinality pass."""
+
+    unambiguous_declarations_by_handle: dict[
+        IdentityHandleT,
+        IdentityDeclarationT,
+    ]
+    ambiguous_handles: frozenset[IdentityHandleT]
 
 
 class UniqueIdentityIndexAuthority(
@@ -81,6 +95,22 @@ class UniqueIdentityIndexAuthority(
     ) -> dict[IdentityHandleT, IdentityDeclarationT]:
         """Project only handles represented by exactly one declaration row."""
 
+        return cls.declaration_multiplicity_by_handle(
+            declarations,
+            handle_for,
+        ).unambiguous_declarations_by_handle
+
+    @classmethod
+    def declaration_multiplicity_by_handle(
+        cls,
+        declarations: Iterable[IdentityDeclarationT],
+        handle_for: Callable[[IdentityDeclarationT], IdentityHandleT],
+    ) -> IdentityHandleMultiplicityProjection[
+        IdentityHandleT,
+        IdentityDeclarationT,
+    ]:
+        """Derive unique rows and ambiguous handles from one declaration stream."""
+
         declarations_by_handle: dict[IdentityHandleT, IdentityDeclarationT] = {}
         duplicate_handles: set[IdentityHandleT] = set()
         for declaration in declarations:
@@ -91,7 +121,10 @@ class UniqueIdentityIndexAuthority(
                 declarations_by_handle[handle] = declaration
         for handle in duplicate_handles:
             del declarations_by_handle[handle]
-        return declarations_by_handle
+        return IdentityHandleMultiplicityProjection(
+            unambiguous_declarations_by_handle=declarations_by_handle,
+            ambiguous_handles=frozenset(duplicate_handles),
+        )
 
 
 def sorted_tuple(

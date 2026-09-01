@@ -44,7 +44,6 @@ from ..class_index import (
     CompactModuleClassProjection,
     ClassSymbolResolutionAuthority,
     build_compact_class_family_index,
-    declared_nominal_base_count,
 )
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
@@ -4532,8 +4531,7 @@ def _compact_closed_leaf_method_authority_proof(
                 symbol
                 for symbol in relevant_symbols
                 if (indexed_class := class_index.class_for(symbol)) is not None
-                and len(indexed_class.resolved_base_symbols)
-                != declared_nominal_base_count(indexed_class)
+                and not indexed_class.base_resolution_is_complete
             )
         ),
         method_ownership_sensitive_symbols=tuple(
