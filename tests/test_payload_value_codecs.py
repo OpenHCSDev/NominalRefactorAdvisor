@@ -6,18 +6,15 @@ import pytest
 
 from nominal_refactor_advisor import codemod as codemod_module
 from nominal_refactor_advisor.codemod import (
-    AuthorityClaimPayloadValueCodec,
     CodemodTargetSelector,
     MovedSymbolImportPolicy,
     NodeKindArrayPayloadValueCodec,
-    PayloadRecordArrayValueCodec,
     RecipeCallReplacement,
     RefactorRecipe,
     RefactorRecipeOperation,
     ReplacementImportPayloadValueCodec,
     SelectionCountExpectation,
     SelectionCountPayloadValueCodec,
-    SelectorObjectPayloadValueCodec,
     SourceIndexTargetSelector,
     SourceRewriteTarget,
 )
@@ -32,6 +29,8 @@ from nominal_refactor_advisor.codemod_payload import (
     OptionalStringArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadBindingSet,
+    PayloadRecordArrayValueCodec,
+    PayloadRecordValueCodec,
     PayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
@@ -100,13 +99,13 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         (RequiredIntegerPayloadValueCodec(), 3),
         (ObjectPayloadValueCodec(), {"owner": "AlphaAuthority"}),
         (NodeKindArrayPayloadValueCodec(), (AstTargetNodeKind.FUNCTION,)),
-        (SelectorObjectPayloadValueCodec(), selector),
+        (PayloadRecordValueCodec(CodemodTargetSelector), selector),
         (PayloadRecordArrayValueCodec(CodemodTargetSelector), (selector,)),
         (
             PayloadRecordArrayValueCodec(RecipeCallReplacement),
             (call_replacement,),
         ),
-        (AuthorityClaimPayloadValueCodec(), authority_claim),
+        (PayloadRecordValueCodec(AuthorityClaim), authority_claim),
         (SelectionCountPayloadValueCodec(), selection_count),
         (ReplacementImportPayloadValueCodec(), replacement_import),
     )
@@ -185,6 +184,12 @@ def test_payload_records_have_no_parallel_role_or_carrier() -> None:
     assert "from_json_value" in CodemodPayloadRecord.__dict__
     assert not hasattr(codemod_module, "CodemodPayload")
     assert not hasattr(codemod_module, "CodemodPayloadRole")
+    assert not hasattr(codemod_module, "SelectorObjectPayloadValueCodec")
+    assert not hasattr(codemod_module, "AuthorityClaimPayloadValueCodec")
+    assert not hasattr(codemod_module, "AuthorityClaimArrayPayloadValueCodec")
+    assert not {"from_mapping", "required_string", "optional_string"}.intersection(
+        AuthorityClaim.__dict__
+    )
 
 
 def test_optional_array_codec_leaves_own_missing_value_semantics() -> None:

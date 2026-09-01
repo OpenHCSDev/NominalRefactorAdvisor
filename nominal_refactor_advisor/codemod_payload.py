@@ -125,23 +125,23 @@ class PayloadValueCodec(Generic[PayloadValueT], ABC):
         return ((field_name, serialized),)
 
 
-PayloadRecordT = TypeVar("PayloadRecordT", bound=DataclassPayloadProjection)
+PayloadProjectionT = TypeVar("PayloadProjectionT", bound=DataclassPayloadProjection)
 
 
 @dataclass(frozen=True)
 class FlattenedPayloadRecordValueCodec(
-    PayloadValueCodec[PayloadRecordT],
-    Generic[PayloadRecordT],
+    PayloadValueCodec[PayloadProjectionT],
+    Generic[PayloadProjectionT],
 ):
     """Flatten one nested nominal record into its enclosing object payload."""
 
-    record_type: type[PayloadRecordT]
+    record_type: type[PayloadProjectionT]
 
     def read(
         self,
         payload: Mapping[str, JsonValue],
         field_name: str,
-    ) -> PayloadRecordT:
+    ) -> PayloadProjectionT:
         del field_name
         return self.record_type.from_payload_fields(payload)
 
@@ -477,6 +477,66 @@ class ObjectPayloadValueCodec(PayloadValueCodec[Mapping[str, JsonValue]]):
         if not isinstance(value, Mapping):
             raise TypeError("object payload codec requires a mapping value")
         return JsonObject(value)
+
+
+PayloadRecordT = TypeVar("PayloadRecordT", bound=CodemodPayloadRecord)
+
+
+@dataclass(frozen=True)
+class PayloadRecordValueCodec(
+    PayloadValueCodec[PayloadRecordT],
+    Generic[PayloadRecordT],
+):
+    """Required object payload decoded by its nominal record declaration."""
+
+    record_type: type[PayloadRecordT]
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> PayloadRecordT:
+        value = ObjectPayloadValueCodec().read(payload, field_name)
+        return self.record_type.from_json_value(cast(JsonValue, value))
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, self.record_type):
+            raise TypeError(
+                f"record payload codec requires {self.record_type.__name__}"
+            )
+        return value.to_dict()
+
+
+@dataclass(frozen=True)
+class PayloadRecordArrayValueCodec(
+    PayloadValueCodec[tuple[PayloadRecordT, ...]],
+    Generic[PayloadRecordT],
+):
+    """Optional array whose nominal record type owns each JSON object."""
+
+    record_type: type[PayloadRecordT]
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> tuple[PayloadRecordT, ...]:
+        value = payload.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected record array field {field_name!r}")
+        return tuple(self.record_type.from_json_value(item) for item in value)
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, self.record_type) for item in value
+        ):
+            raise TypeError(
+                f"record-array payload codec requires {self.record_type.__name__} "
+                "values"
+            )
+        return tuple(item.to_dict() for item in value)
 
 
 @dataclass(frozen=True)

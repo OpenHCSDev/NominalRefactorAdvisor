@@ -62,6 +62,12 @@ from .class_index import (
     overlay_class_family_index,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
+from .codemod_payload import (
+    CodemodPayloadRecord,
+    EmptyDefaultStringPayloadValueCodec,
+    RequiredStringPayloadValueCodec,
+    codemod_payload_field,
+)
 from .deadline import scan_deadline_checkpoint
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .implementation_identity import ImplementationSource, implementation_module_names
@@ -743,31 +749,26 @@ class SemanticAuthority(SemanticAuthorityReference):
 
 
 @dataclass(frozen=True)
-class AuthorityClaim(SemanticRecord):
+class AuthorityClaim(CodemodPayloadRecord, SemanticRecord):
     """Structured claim that a named authority exists or is being declared."""
 
-    claimed_symbol: str
-    authority_kind: str = ""
-    file_path: str = ""
-    qualname: str = ""
-    authority_id: str = ""
-
-    @classmethod
-    def from_mapping(cls, payload: Mapping[str, object]) -> "AuthorityClaim":
-        claim = cls(
-            claimed_symbol=cls.required_string(payload, "claimed_symbol"),
-            authority_kind=cls.optional_string(payload, "authority_kind"),
-            file_path=cls.optional_string(payload, "file_path"),
-            qualname=cls.optional_string(payload, "qualname"),
-            authority_id=cls.optional_string(payload, "authority_id"),
-        )
-        unsupported_fields = tuple(sorted(set(payload) - set(claim.to_dict())))
-        if unsupported_fields:
-            raise ValueError(
-                "Unsupported authority claim field(s): "
-                + ", ".join(repr(field) for field in unsupported_fields)
-            )
-        return claim
+    claimed_symbol: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    authority_kind: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(),
+        default="",
+    )
+    file_path: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(),
+        default="",
+    )
+    qualname: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(),
+        default="",
+    )
+    authority_id: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(),
+        default="",
+    )
 
     @classmethod
     def from_authority(cls, authority: SemanticAuthority) -> "AuthorityClaim":
@@ -839,22 +840,6 @@ class AuthorityClaim(SemanticRecord):
             or (allow_empty_candidate and not qualname)
             or qualname == self.qualname
         )
-
-    @staticmethod
-    def required_string(payload: Mapping[str, object], field_name: str) -> str:
-        value = payload.get(field_name)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"{field_name} is required")
-        return value
-
-    @staticmethod
-    def optional_string(payload: Mapping[str, object], field_name: str) -> str:
-        value = payload.get(field_name)
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise ValueError(f"{field_name} must be a string")
-        return value
 
 
 @dataclass(frozen=True, kw_only=True)

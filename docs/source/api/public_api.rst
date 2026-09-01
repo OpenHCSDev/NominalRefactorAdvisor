@@ -43,10 +43,13 @@ projection without an envelope exception.  ``CodemodPayloadRecord`` inherits
 object decoding and unknown-field rejection from the same nominal declaration;
 ``DiscriminatedPayloadRecord`` adds inherited discriminator decoding and
 projection while each polymorphic family resolves its own nominal registry.
-No parallel schema, payload carrier, or boundary-role catalogue is maintained.
+``PayloadRecordValueCodec`` and ``PayloadRecordArrayValueCodec`` reuse those
+declarations for nested records, including proof-carrying ``AuthorityClaim``
+values.  No parallel schema, payload carrier, or boundary-role catalogue is
+maintained.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
-   :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadValueCodec, PayloadBindingSet
+   :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet
 
 Rejected ``FindingRecipeSynthesisRecord`` values expose ``proof_obstacles``.
 Each obstacle identifies the nominal executable declaration that failed to

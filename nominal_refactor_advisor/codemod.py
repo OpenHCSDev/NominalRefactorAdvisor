@@ -87,6 +87,8 @@ from .codemod_payload import (
     OptionalStringArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadBindingSet,
+    PayloadRecordArrayValueCodec,
+    PayloadRecordValueCodec,
     PayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
@@ -172,7 +174,6 @@ from .taxonomy import CertificationLevel, ConfidenceLevel
 
 ExtractableMethodNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 ExtractableMethodNodes: TypeAlias = tuple[ExtractableMethodNode, ...]
-PayloadRecordT = TypeVar("PayloadRecordT", bound="CodemodPayloadRecord")
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",
     str,
@@ -2720,56 +2721,6 @@ class NodeKindArrayPayloadValueCodec(OptionalStringArrayPayloadValueCodec):
 
 
 @dataclass(frozen=True)
-class SelectorObjectPayloadValueCodec(PayloadValueCodec["CodemodTargetSelector"]):
-    """Registered target-selector object payload semantics."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> "CodemodTargetSelector":
-        value = ObjectPayloadValueCodec().read(payload, field_name)
-        return CodemodTargetSelector.from_json_value(value)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, CodemodTargetSelector):
-            raise TypeError("selector payload codec requires a target selector")
-        return value.to_dict()
-
-
-@dataclass(frozen=True)
-class PayloadRecordArrayValueCodec(
-    PayloadValueCodec[tuple[PayloadRecordT, ...]],
-    Generic[PayloadRecordT],
-):
-    """Optional array whose nominal record type owns each JSON object."""
-
-    record_type: type[PayloadRecordT]
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> tuple[PayloadRecordT, ...]:
-        value = payload.get(field_name)
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"Expected record array field {field_name!r}")
-        return tuple(self.record_type.from_json_value(item) for item in value)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, (list, tuple)) or not all(
-            isinstance(item, self.record_type) for item in value
-        ):
-            raise TypeError(
-                f"record-array payload codec requires {self.record_type.__name__} "
-                "values"
-            )
-        return tuple(item.to_dict() for item in value)
-
-
-@dataclass(frozen=True)
 class ArchitectureGuardSuitePayloadValueCodec(
     PayloadValueCodec[ArchitectureGuardSuite]
 ):
@@ -2788,59 +2739,6 @@ class ArchitectureGuardSuitePayloadValueCodec(
                 "architecture-guard payload codec requires ArchitectureGuardSuite"
             )
         return value.to_dict()
-
-
-@dataclass(frozen=True)
-class AuthorityClaimArrayPayloadValueCodec(
-    PayloadValueCodec[tuple[AuthorityClaim, ...]]
-):
-    """Optional array of proof-carrying authority claims."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> tuple[AuthorityClaim, ...]:
-        value = payload.get(field_name)
-        if value is None:
-            return ()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError(f"Expected authority-claim array field {field_name!r}")
-        claims: list[AuthorityClaim] = []
-        for item in value:
-            if not isinstance(item, Mapping):
-                raise ValueError(
-                    f"Expected authority-claim objects in field {field_name!r}"
-                )
-            claims.append(AuthorityClaim.from_mapping(item))
-        return tuple(claims)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, (list, tuple)) or not all(
-            isinstance(item, AuthorityClaim) for item in value
-        ):
-            raise TypeError(
-                "authority-claim array payload codec requires AuthorityClaim values"
-            )
-        return tuple(item.to_dict() for item in value)
-
-
-@dataclass(frozen=True)
-class AuthorityClaimPayloadValueCodec(PayloadValueCodec[AuthorityClaim]):
-    """Proof-carrying authority-claim object payload semantics."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> AuthorityClaim:
-        value = ObjectPayloadValueCodec().read(payload, field_name)
-        return AuthorityClaim.from_mapping(value)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, AuthorityClaim):
-            raise TypeError("authority-claim payload codec requires AuthorityClaim")
-        return JsonObject(value.to_dict())
 
 
 @dataclass(frozen=True)
@@ -6922,7 +6820,7 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
     """Operation base whose target set comes from a registered selector."""
 
     selector: CodemodTargetSelector = codemod_payload_field(
-        SelectorObjectPayloadValueCodec()
+        PayloadRecordValueCodec(CodemodTargetSelector)
     )
     selection_count: SelectionCountExpectation = codemod_payload_field(
         SelectionCountPayloadValueCodec(),
@@ -7061,7 +6959,7 @@ class DeclareAuthorityOperation(
     """Insert a declared authority boundary and bind it to an AuthorityClaim."""
 
     authority_claim: AuthorityClaim = codemod_payload_field(
-        AuthorityClaimPayloadValueCodec()
+        PayloadRecordValueCodec(AuthorityClaim)
     )
 
     @property
@@ -10801,7 +10699,7 @@ class RefactorRecipe(CodemodPayloadRecord):
         default="",
     )
     authority_claims: tuple[AuthorityClaim, ...] = codemod_payload_field(
-        AuthorityClaimArrayPayloadValueCodec(),
+        PayloadRecordArrayValueCodec(AuthorityClaim),
         default=(),
     )
 

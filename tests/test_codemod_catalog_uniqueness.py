@@ -27,6 +27,7 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
+from nominal_refactor_advisor.semantic_descent import AuthorityClaim
 
 
 def _binding(field_name: str, constructor_argument_name: str) -> PayloadBinding:
@@ -206,6 +207,13 @@ def test_selector_payload_derivation_rejects_unbound_constructor_fields() -> Non
 
 def test_payload_records_own_their_wire_schema() -> None:
     expected_binding_names = {
+        AuthorityClaim: (
+            ("claimed_symbol", "claimed_symbol"),
+            ("authority_kind", "authority_kind"),
+            ("file_path", "file_path"),
+            ("qualname", "qualname"),
+            ("authority_id", "authority_id"),
+        ),
         SourceRewriteContributor: (
             ("recipe_id", "recipe_id"),
             ("plan_item_declaration", "plan_item_declaration"),
