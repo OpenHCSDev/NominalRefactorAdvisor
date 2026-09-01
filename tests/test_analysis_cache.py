@@ -594,7 +594,7 @@ def test_detector_semantic_engine_derives_registered_declaration_dependencies() 
 
     assert {
         source.module_name
-        for family in CollectedFamily.all_registered_families()
+        for family in DetectorSemanticEngineSignature.projection_families()
         for source in family.implementation_identity().sources
     } <= module_names
     assert {
@@ -2805,7 +2805,7 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         file_path="/repo/pkg/target.py",
         line=1,
         declared_base_names=(),
-        base_reference_parts=(),
+        base_references=(),
     )
     autoregister_projection = replace(
         empty_projection,
@@ -2816,7 +2816,17 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         classes=(
             replace(
                 base_class,
-                direct_assignment_expressions=(("_registered_types", "[]"),),
+                direct_member_declarations=(
+                    class_index_module.CompactClassMemberDeclaration(
+                        "_registered_types",
+                        1,
+                        "[]",
+                        None,
+                        False,
+                        None,
+                        (),
+                    ),
+                ),
                 predicate_selected_methods=((2, "select", "matches", "context"),),
             ),
         ),
@@ -2826,7 +2836,17 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         classes=(
             replace(
                 base_class,
-                direct_assignment_expressions=(("registry_key_attr", "'kind'"),),
+                direct_member_declarations=(
+                    class_index_module.CompactClassMemberDeclaration(
+                        "registry_key_attr",
+                        1,
+                        "'kind'",
+                        "kind",
+                        False,
+                        None,
+                        (),
+                    ),
+                ),
                 keyed_family_key_type_name="Kind",
             ),
         ),
@@ -2971,7 +2991,7 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
         file_path=str(package_root / "target.py"),
         line=1,
         declared_base_names=(),
-        base_reference_parts=(),
+        base_references=(),
         declares_autoregister_meta=True,
     )
     positive_demand = family.report_demand(
@@ -3054,7 +3074,7 @@ def test_compact_base_resolution_fails_closed_for_unprojectable_bases() -> None:
         item.simple_name: item for item in class_index.classes_by_symbol.values()
     }
 
-    assert raw_classes["Computed"].base_reference_parts == ()
+    assert raw_classes["Computed"].base_references == ()
     assert raw_classes["Computed"].base_references_are_complete is False
     assert indexed_classes["Computed"].base_resolution_is_complete is False
     assert indexed_classes["External"].base_references_are_complete is True
@@ -5879,9 +5899,12 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
 
     def tracked_resolution(*args, **kwargs):
         graph_space, resolution = original_resolution(*args, **kwargs)
-        released_edge_refs.append(
-            weakref.ref(resolution.relations[0].missing_descent_relations()[0])
+        missing_edge = next(
+            missing_edge
+            for relation in resolution.relations
+            for missing_edge in relation.missing_descent_relations()
         )
+        released_edge_refs.append(weakref.ref(missing_edge))
         return graph_space, resolution
 
     monkeypatch.setattr(
@@ -6286,10 +6309,12 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
         encoding="utf-8",
     )
     (package_root / "members.py").write_text(
-        "class LoadStep(Step):\n    step_id = 'load'\n",
+        "from authority import Step\n\nclass LoadStep(Step):\n    step_id = 'load'\n",
         encoding="utf-8",
     )
     (package_root / "registry.py").write_text(
+        "from members import LoadStep, SaveStep\n"
+        "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
         encoding="utf-8",
     )
@@ -6308,6 +6333,8 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
     )
 
     (package_root / "members.py").write_text(
+        "from authority import Step\n"
+        "\n"
         "class LoadStep(Step):\n"
         "    step_id = 'load'\n"
         "\n"
@@ -6340,10 +6367,12 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
     registry_path = package_root / "registry.py"
     authority_path.write_text("class Step:\n    pass\n", encoding="utf-8")
     members_path.write_text(
-        "class LoadStep(Step):\n    step_id = 'load'\n",
+        "from authority import Step\n\nclass LoadStep(Step):\n    step_id = 'load'\n",
         encoding="utf-8",
     )
     registry_path.write_text(
+        "from members import LoadStep, SaveStep\n"
+        "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
         encoding="utf-8",
     )
@@ -6362,6 +6391,8 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
     )
 
     members_path.write_text(
+        "from authority import Step\n"
+        "\n"
         "class LoadStep(Step):\n"
         "    step_id = 'load'\n"
         "\n"
@@ -6420,10 +6451,12 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
         "class Step:\n    pass\n", encoding="utf-8"
     )
     members_path.write_text(
-        "class LoadStep(Step):\n    step_id = 'load'\n",
+        "from authority import Step\n\nclass LoadStep(Step):\n    step_id = 'load'\n",
         encoding="utf-8",
     )
     (package_root / "registry.py").write_text(
+        "from members import LoadStep, SaveStep\n"
+        "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
         encoding="utf-8",
     )
@@ -6450,6 +6483,8 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
     assert graph_cache_context.latest_graph() is None
 
     members_path.write_text(
+        "from authority import Step\n"
+        "\n"
         "class LoadStep(Step):\n"
         "    step_id = 'load'\n"
         "\n"
@@ -6490,6 +6525,8 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
     registry_path = package_root / "registry.py"
     authority_path.write_text("class Step:\n    pass\n", encoding="utf-8")
     members_path.write_text(
+        "from authority import Step\n"
+        "\n"
         "class LoadStep(Step):\n"
         "    step_id = 'load'\n"
         "\n"
@@ -6513,6 +6550,8 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
     )
 
     registry_path.write_text(
+        "from members import LoadStep, SaveStep\n"
+        "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
         encoding="utf-8",
     )

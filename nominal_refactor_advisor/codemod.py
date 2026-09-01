@@ -60,7 +60,6 @@ from .ast_tools import (
 from .class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     ClosedLeafMethodAuthorityProof,
-    ClassMethodPromotionSafeDecorator,
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
     ClassHeaderSourceSpan,
@@ -5771,18 +5770,11 @@ class ClassMethodPromotionOperation(ClassMemberPromotionOperation, ABC):
             indexed_classes,
             strict=True,
         ):
-            module = targets.module_nodes_by_file_path[class_target.file_path]
             if class_target.node.keywords:
                 raise self.failed_preflight(
                     "Method promotion does not support class keyword arguments"
                 )
-            if any(
-                not any(
-                    safe_decorator.is_proven_reference(module, decorator)
-                    for safe_decorator in ClassMethodPromotionSafeDecorator
-                )
-                for decorator in class_target.node.decorator_list
-            ):
+            if not indexed_class.class_decorators_are_promotion_safe:
                 raise self.failed_preflight(
                     "Method promotion requires proven direct-method-neutral class decorators"
                 )
@@ -6236,14 +6228,7 @@ class ExistingAncestorMethodPromotionTargets:
         self,
         indexed_class: IndexedClass,
     ) -> bool:
-        module = self.participants.module_nodes_by_file_path[indexed_class.file_path]
-        return all(
-            any(
-                safe_decorator.is_proven_reference(module, decorator)
-                for safe_decorator in ClassMethodPromotionSafeDecorator
-            )
-            for decorator in indexed_class.node.decorator_list
-        )
+        return indexed_class.class_decorators_are_promotion_safe
 
     def proof(self, method_names: tuple[str, ...]) -> ClosedLeafMethodAuthorityProof:
         common_direct_base_symbols = tuple(

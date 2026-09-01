@@ -6,11 +6,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
+from typing import Callable, Self, TypeAlias
 
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactModuleClassProjection,
+    CompactProductAuthority,
     CompactPublicNameExposure,
     CompactRepositoryPublicExposureIndex,
     build_compact_class_family_index,
@@ -22,31 +24,15 @@ from .collection_algebra import (
 from .product_flow import (
     CompactCallTargetReference,
     CompactCallableReferenceUse,
-    CompactFlowOwnerKind,
     CompactFlowPosition,
     CompactFunctionCall,
     CompactFunctionDeclaration,
     CompactFunctionFlow,
-    CompactMutationKind,
     CompactProductConstruction,
     CompactProductFlowModuleProjection,
     CompactValueOriginResolution,
     LexicalValueReference,
 )
-from .semantic_descent import (
-    CompactSemanticModuleProjection,
-    SemanticClassSupplement,
-)
-
-
-@dataclass(frozen=True)
-class CompactProductAuthority:
-    """One resolved dataclass schema which can own a parameter product."""
-
-    class_symbol: str
-    field_names: tuple[str, ...]
-    file_path: str
-    line: int
 
 
 @dataclass(frozen=True)
@@ -60,7 +46,7 @@ class CompactProductFlowContext:
 
     @property
     def owner_symbol(self) -> str:
-        if self.flow.owner.kind is CompactFlowOwnerKind.MODULE:
+        if self.flow.owner.kind.is_module_scope:
             return self.module_name
         return f"{self.module_name}.{self.flow.owner.qualname}"
 
@@ -223,13 +209,72 @@ class CompactResolvedProductConstruction:
     authority: CompactProductAuthority
 
 
+class CompactProductRuntimeViolation(StrEnum):
+    """Repository-flow evidence that opens an otherwise exact product class."""
+
+    CLASS_REBINDING_OR_MEMBER_MUTATION = "class_rebinding_or_member_mutation"
+    CLASS_OBJECT_ESCAPE = "class_object_escape"
+
+
+CompactClassReferencePartCountProjection: TypeAlias = Callable[
+    [LexicalValueReference],
+    tuple[int, ...],
+]
+
+
+def _exact_class_reference_part_counts(
+    reference: LexicalValueReference,
+) -> tuple[int, ...]:
+    return (len(reference.parts),)
+
+
+def _member_prefix_class_reference_part_counts(
+    reference: LexicalValueReference,
+) -> tuple[int, ...]:
+    return tuple(range(len(reference.parts), 0, -1))
+
+
+class CompactProductClassReferenceUse(StrEnum):
+    """Class-reference uses with member-prefix resolution owned by each leaf."""
+
+    EXACT_CLASS_OBJECT = "exact_class_object", _exact_class_reference_part_counts
+    MUTATION_TARGET = "mutation_target", _member_prefix_class_reference_part_counts
+
+    part_count_projection: CompactClassReferencePartCountProjection
+
+    def __new__(
+        cls,
+        value: str,
+        part_count_projection: CompactClassReferencePartCountProjection,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.part_count_projection = part_count_projection
+        return member
+
+    def candidate_part_counts(
+        self,
+        reference: LexicalValueReference,
+    ) -> tuple[int, ...]:
+        return self.part_count_projection(reference)
+
+
+@dataclass(frozen=True)
+class CompactProductRuntimeFailure:
+    """One runtime-opening product use retained at its exact flow source."""
+
+    authority_symbol: str
+    owner_symbol: str
+    line: int
+    violation: CompactProductRuntimeViolation
+
+
 @dataclass(frozen=True)
 class CompactProductFlowRepository:
-    """Derived query authority over product, class, and semantic projections."""
+    """Derived query authority over product flows and nominal class declarations."""
 
     product_projections: tuple[CompactProductFlowModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
-    semantic_projections: tuple[CompactSemanticModuleProjection, ...]
 
     @cached_property
     def class_index(self) -> CompactClassFamilyIndex:
@@ -279,19 +324,6 @@ class CompactProductFlowRepository:
         )
 
     @cached_property
-    def semantic_supplements_by_class_symbol(
-        self,
-    ) -> dict[str, SemanticClassSupplement]:
-        return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
-            (
-                supplement
-                for projection in self.semantic_projections
-                for supplement in projection.class_supplements
-            ),
-            lambda supplement: supplement.class_symbol,
-        )
-
-    @cached_property
     def flow_contexts(self) -> tuple[CompactProductFlowContext, ...]:
         contexts: list[CompactProductFlowContext] = []
         for projection in self.product_projections:
@@ -302,7 +334,7 @@ class CompactProductFlowRepository:
             for flow in projection.flows:
                 declaration = (
                     declarations_by_qualname.get(flow.owner.qualname)
-                    if flow.owner.kind is CompactFlowOwnerKind.FUNCTION
+                    if flow.owner.kind.is_function_scope
                     else None
                 )
                 contexts.append(
@@ -321,7 +353,7 @@ class CompactProductFlowRepository:
             (
                 context
                 for context in self.flow_contexts
-                if context.flow.owner.kind is CompactFlowOwnerKind.MODULE
+                if context.flow.owner.kind.is_module_scope
             ),
             lambda context: context.module_name,
         )
@@ -337,9 +369,129 @@ class CompactProductFlowRepository:
     def product_authorities_by_symbol(self) -> dict[str, CompactProductAuthority]:
         return {
             class_symbol: authority
-            for class_symbol in self.class_index.classes_by_symbol
-            if (authority := self.product_authority_for(class_symbol)) is not None
+            for class_symbol, resolution in (
+                self.class_index.product_authority_resolutions_by_symbol.items()
+            )
+            if (authority := resolution.authority) is not None
+            and len(authority.field_names) >= 2
+            and class_symbol not in self.product_runtime_failures_by_authority_symbol
         }
+
+    @cached_property
+    def product_runtime_failures_by_authority_symbol(
+        self,
+    ) -> dict[str, tuple[CompactProductRuntimeFailure, ...]]:
+        failures: dict[str, list[CompactProductRuntimeFailure]] = {}
+        for context in self.flow_contexts:
+            for mutation in context.flow.mutations:
+                if mutation.kind.preserves_nominal_identity:
+                    continue
+                class_symbol = self._class_symbol_for_reference(
+                    context,
+                    mutation.reference,
+                    line=mutation.line,
+                    use=CompactProductClassReferenceUse.MUTATION_TARGET,
+                )
+                if class_symbol is not None:
+                    failures.setdefault(class_symbol, []).append(
+                        CompactProductRuntimeFailure(
+                            class_symbol,
+                            context.owner_symbol,
+                            mutation.line,
+                            CompactProductRuntimeViolation.CLASS_REBINDING_OR_MEMBER_MUTATION,
+                        )
+                    )
+            for alias in context.flow.exact_value_aliases:
+                class_symbol = self._class_symbol_for_reference(
+                    context,
+                    alias.source,
+                    line=alias.binding_mutation.line,
+                    use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,
+                )
+                if class_symbol is not None:
+                    failures.setdefault(class_symbol, []).append(
+                        CompactProductRuntimeFailure(
+                            class_symbol,
+                            context.owner_symbol,
+                            alias.binding_mutation.line,
+                            CompactProductRuntimeViolation.CLASS_OBJECT_ESCAPE,
+                        )
+                    )
+            for call in context.flow.calls:
+                for value in (
+                    *(argument.value for argument in call.positional_arguments),
+                    *(argument.value for argument in call.keyword_arguments),
+                ):
+                    reference = value.lexical_reference
+                    if reference is None:
+                        continue
+                    exact_origin = context.flow.value_origin_for(
+                        reference,
+                        call.position,
+                    ).exact_origin
+                    class_symbol = self._class_symbol_for_reference(
+                        context,
+                        exact_origin or reference,
+                        line=call.line,
+                        use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,
+                    )
+                    if class_symbol is not None:
+                        failures.setdefault(class_symbol, []).append(
+                            CompactProductRuntimeFailure(
+                                class_symbol,
+                                context.owner_symbol,
+                                call.line,
+                                CompactProductRuntimeViolation.CLASS_OBJECT_ESCAPE,
+                            )
+                        )
+        return {
+            class_symbol: tuple(dict.fromkeys(class_failures))
+            for class_symbol, class_failures in failures.items()
+        }
+
+    def _class_symbol_for_reference(
+        self,
+        context: CompactProductFlowContext,
+        reference: LexicalValueReference,
+        *,
+        line: int,
+        use: CompactProductClassReferenceUse,
+    ) -> str | None:
+        """Resolve one exact class-object reference without crossing a local rebind."""
+
+        if context.declaration is not None and reference.root_name in {
+            parameter.name for parameter in context.declaration.signature.parameters
+        }:
+            return None
+        if not context.flow.owner.kind.is_module_scope:
+            if reference.root_name in context.flow.nonlocal_binding_names:
+                return None
+            if reference.root_name not in context.flow.global_binding_names and any(
+                mutation.reference.root_name == reference.root_name
+                and not mutation.reference.attribute_path
+                for mutation in context.flow.mutations
+            ):
+                return None
+
+        for part_count in use.candidate_part_counts(reference):
+            class_symbol = self.class_resolver.symbol_for(
+                module_name=context.module_name,
+                reference_parts=reference.parts[:part_count],
+                allow_unique_unqualified=False,
+            )
+            if class_symbol is None:
+                continue
+            indexed_class = self.class_index.class_for(class_symbol)
+            if indexed_class is None:
+                continue
+            if (
+                context.flow.owner.kind.is_module_scope
+                and indexed_class.module_name == context.module_name
+                and indexed_class.line >= line
+            ):
+                continue
+            return class_symbol
+        return None
 
     @cached_property
     def function_call_resolutions(self) -> tuple[CompactFunctionCallResolution, ...]:
@@ -466,55 +618,6 @@ class CompactProductFlowRepository:
             authority,
         )
 
-    def product_authority_for(
-        self,
-        class_symbol: str,
-    ) -> CompactProductAuthority | None:
-        indexed_class = self.class_index.class_for(class_symbol)
-        supplement = self.semantic_supplements_by_class_symbol.get(class_symbol)
-        if indexed_class is None or supplement is None or not supplement.is_dataclass:
-            return None
-        dataclass_lineage = tuple(
-            symbol
-            for symbol in reversed(self.class_index.ancestor_symbols(class_symbol))
-            if (
-                ancestor_supplement := self.semantic_supplements_by_class_symbol.get(
-                    symbol
-                )
-            )
-            is not None
-            and ancestor_supplement.is_dataclass
-        )
-        if any(
-            len(
-                tuple(
-                    base_symbol
-                    for base_symbol in self.class_index.class_for(
-                        symbol
-                    ).resolved_base_symbols
-                    if base_symbol in dataclass_lineage or base_symbol == class_symbol
-                )
-            )
-            > 1
-            for symbol in (*dataclass_lineage, class_symbol)
-        ):
-            return None
-        fields_by_name: dict[str, None] = {}
-        for symbol in (*dataclass_lineage, class_symbol):
-            lineage_supplement = self.semantic_supplements_by_class_symbol.get(symbol)
-            if lineage_supplement is None:
-                return None
-            for field_name, _line in lineage_supplement.annotated_fields:
-                fields_by_name.setdefault(field_name, None)
-        if len(fields_by_name) < 2:
-            return None
-        return CompactProductAuthority(
-            class_symbol=class_symbol,
-            field_names=tuple(fields_by_name),
-            file_path=indexed_class.file_path,
-            line=indexed_class.line,
-        )
-
     def incoming_calls_for(
         self,
         function_symbol: str,
@@ -594,7 +697,7 @@ class CompactProductFlowRepository:
             context.module_name
         )
         if (
-            context.flow.owner.kind is CompactFlowOwnerKind.MODULE
+            context.flow.owner.kind.is_module_scope
             and class_projection is not None
             and class_projection.star_import_origins
         ):
@@ -654,7 +757,7 @@ class CompactProductFlowRepository:
                     CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
                 )
             binding = dominating[-1]
-        elif context.flow.owner.kind is CompactFlowOwnerKind.MODULE:
+        elif context.flow.owner.kind.is_module_scope:
             binding = mutations[-1]
         elif len(mutations) == 1:
             binding = mutations[0]
@@ -664,7 +767,7 @@ class CompactProductFlowRepository:
                 CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
             )
 
-        if binding.kind is CompactMutationKind.IMPORT:
+        if binding.kind.is_import_binding:
             alias_target = (
                 None
                 if class_projection is None
@@ -679,7 +782,7 @@ class CompactProductFlowRepository:
                 ".".join((alias_target, *reference.attribute_path))
             )
 
-        if binding.kind is not CompactMutationKind.DEFINITION:
+        if not binding.kind.is_definition_binding:
             return OpenCompactFunctionTarget(
                 self._possible_binding_symbols(context, reference),
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
@@ -815,6 +918,11 @@ class CompactProductFlowRepository:
         if reference is None:
             return False
         root_name = reference.root_name
+        class_projection = self.class_projections_by_module_name.get(
+            context.module_name
+        )
+        if class_projection is not None and class_projection.star_import_origins:
+            return True
         if context.declaration is not None and root_name in {
             parameter.name for parameter in context.declaration.signature.parameters
         }:
@@ -824,10 +932,9 @@ class CompactProductFlowRepository:
             for mutation in context.flow.mutations
             if mutation.reference.root_name == root_name
         )
-        if context.flow.owner.kind is CompactFlowOwnerKind.FUNCTION:
+        if context.flow.owner.kind.is_function_scope:
             if any(
-                mutation.kind is not CompactMutationKind.DEFINITION
-                for mutation in local_mutations
+                not mutation.kind.is_definition_binding for mutation in local_mutations
             ):
                 return True
             if local_mutations and not any(
@@ -844,8 +951,13 @@ class CompactProductFlowRepository:
         )
         if any(mutation.position.branch_path for mutation in relevant_module_mutations):
             return True
+        if context.flow.owner.kind.is_module_scope and not any(
+            mutation.kind.preserves_nominal_identity
+            and mutation.position.dominates(position)
+            for mutation in relevant_module_mutations
+        ):
+            return True
         return any(
-            mutation.kind
-            not in {CompactMutationKind.DEFINITION, CompactMutationKind.IMPORT}
+            not mutation.kind.preserves_nominal_identity
             for mutation in relevant_module_mutations
         )

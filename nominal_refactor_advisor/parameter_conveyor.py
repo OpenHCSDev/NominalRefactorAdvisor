@@ -101,6 +101,21 @@ class ConstructedProductCallEdge(ParameterConveyorCallEdge):
     def authority(self) -> CompactProductAuthority:
         return self.construction.authority
 
+    @property
+    def carrier_binding_is_unobserved(self) -> bool:
+        return (
+            self.construction.construction.result_binding.root_name
+            not in self.construction.context.flow.loaded_value_root_names
+        )
+
+    @property
+    def source_values_are_stable_local_loads(self) -> bool:
+        return all(
+            reference is not None and not reference.attribute_path
+            for argument in self.construction.construction.field_arguments
+            for reference in (argument.value.lexical_reference,)
+        )
+
 
 @dataclass(frozen=True)
 class ForwardedProductCallEdge(ParameterConveyorCallEdge):
@@ -124,6 +139,24 @@ class ParameterConveyorParticipant:
     @property
     def symbol(self) -> str:
         return self.declaration.identity.symbol
+
+    def signature_is_closed_for(
+        self,
+        field_mapping: tuple[tuple[str, str], ...],
+    ) -> bool:
+        mapped_parameter_names = frozenset(
+            parameter_name for _field_name, parameter_name in field_mapping
+        )
+        return not (
+            self.declaration.signature_decorator_hazard
+            or self.context.flow.local_signature_is_observed
+            or self.declaration.nominal_receiver_name is None
+            and self.declaration.binding_kind.implicit_parameter_count
+        ) and all(
+            parameter.is_plain_required
+            for parameter in self.declaration.call_signature.parameters
+            if parameter.name in mapped_parameter_names
+        )
 
 
 ParameterConveyorAuthorityPredicate: TypeAlias = Callable[
@@ -212,6 +245,18 @@ def _has_rebinding_or_mutation(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
     return bool(proof.mutated_binding_symbols)
+
+
+def _has_observed_root_carrier(
+    proof: "ClosedParameterConveyorAuthorityProof",
+) -> bool:
+    return bool(proof.observed_root_carrier_symbols)
+
+
+def _has_repeated_source_evaluation(
+    proof: "ClosedParameterConveyorAuthorityProof",
+) -> bool:
+    return bool(proof.reevaluated_source_expression_symbols)
 
 
 def _has_signature_semantics_hazard(
@@ -306,9 +351,19 @@ class ClosedParameterConveyorAuthorityViolation(StrEnum):
         "a carrier, source value, or field parameter is mutated across the component",
         _has_rebinding_or_mutation,
     )
+    OBSERVED_ROOT_CARRIER = (
+        "observed_root_carrier",
+        "a fresh root carrier is observed outside the converted call",
+        _has_observed_root_carrier,
+    )
+    REPEATED_SOURCE_EVALUATION = (
+        "repeated_source_evaluation",
+        "a source expression can change when two evaluations collapse to one",
+        _has_repeated_source_evaluation,
+    )
     SIGNATURE_SEMANTICS_HAZARD = (
         "signature_semantics_hazard",
-        "a decorator or malformed implicit receiver makes signature binding uncertain",
+        "a decorator, parameter declaration, or receiver has non-plain signature semantics",
         _has_signature_semantics_hazard,
     )
     PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED = (
@@ -366,6 +421,8 @@ class ClosedParameterConveyorAuthorityProof:
     conflicting_mapping_symbols: tuple[str, ...]
     non_dominating_root_symbols: tuple[str, ...]
     mutated_binding_symbols: tuple[str, ...]
+    observed_root_carrier_symbols: tuple[str, ...]
+    reevaluated_source_expression_symbols: tuple[str, ...]
     signature_hazard_symbols: tuple[str, ...]
     open_boundary_symbols: tuple[str, ...]
     incomplete_method_family_symbols: tuple[str, ...]
@@ -953,6 +1010,13 @@ class ClosedParameterConveyorComponentBuilder:
         participant_module_names = {
             participant.declaration.identity.module_name for participant in participants
         }
+        open_boundary_symbols = {
+            participant.symbol
+            for participant in participants
+            if self.repository.callable_boundary_exposure(
+                participant.declaration
+            ).blocks_closed_boundary
+        }
         import_cost = len(participant_module_names - {authority_module_name})
         compression_delta = (len(seed.authority.field_names) - 1) * (
             len(participants) + len(edges)
@@ -1011,25 +1075,37 @@ class ClosedParameterConveyorComponentBuilder:
                 )
             ),
             mutated_binding_symbols=tuple(sorted(mutated_binding_symbols)),
+            observed_root_carrier_symbols=tuple(
+                sorted(
+                    {
+                        edge.construction.context.owner_symbol
+                        for edge in seed.root_edges
+                        if not edge.carrier_binding_is_unobserved
+                    }
+                )
+            ),
+            reevaluated_source_expression_symbols=tuple(
+                sorted(
+                    {
+                        edge.construction.context.owner_symbol
+                        for edge in seed.root_edges
+                        if not edge.source_values_are_stable_local_loads
+                    }
+                )
+            ),
             signature_hazard_symbols=tuple(
                 sorted(
                     participant.symbol
                     for participant in participants
-                    if participant.declaration.signature_decorator_hazard
-                    or participant.context.flow.local_signature_is_observed
-                    or participant.declaration.nominal_receiver_name is None
-                    and participant.declaration.binding_kind.implicit_parameter_count
+                    if not participant.signature_is_closed_for(
+                        exact_field_mapping_by_participant.get(
+                            participant.symbol,
+                            (),
+                        )
+                    )
                 )
             ),
-            open_boundary_symbols=tuple(
-                sorted(
-                    participant.symbol
-                    for participant in participants
-                    if self.repository.callable_boundary_exposure(
-                        participant.declaration
-                    ).blocks_closed_boundary
-                )
-            ),
+            open_boundary_symbols=tuple(sorted(open_boundary_symbols)),
             incomplete_method_family_symbols=tuple(
                 sorted(incomplete_method_family_symbols)
             ),

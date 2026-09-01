@@ -56,20 +56,29 @@ class CompactParameterKind(StrEnum):
 class CompactTransparentSignatureDecorator(StrEnum):
     """Known decorators which preserve callable binding/signature semantics."""
 
-    ABSTRACT_METHOD = "abstractmethod", (
-        ("abstractmethod",),
-        ("abc", "abstractmethod"),
+    ABSTRACT_METHOD = (
+        "abstractmethod",
+        (
+            ("abstractmethod",),
+            ("abc", "abstractmethod"),
+        ),
     )
     CLASS_METHOD = "classmethod", (("classmethod",),)
-    FINAL = "final", (
-        ("final",),
-        ("typing", "final"),
-        ("typing_extensions", "final"),
+    FINAL = (
+        "final",
+        (
+            ("final",),
+            ("typing", "final"),
+            ("typing_extensions", "final"),
+        ),
     )
-    OVERRIDE = "override", (
-        ("override",),
-        ("typing", "override"),
-        ("typing_extensions", "override"),
+    OVERRIDE = (
+        "override",
+        (
+            ("override",),
+            ("typing", "override"),
+            ("typing_extensions", "override"),
+        ),
     )
     STATIC_METHOD = "staticmethod", (("staticmethod",),)
 
@@ -180,9 +189,30 @@ class CompactCallBindingViolation(StrEnum):
 class CompactFlowOwnerKind(StrEnum):
     """Executable source scopes represented by compact flow facts."""
 
-    MODULE = "module"
-    CLASS_BODY = "class_body"
-    FUNCTION = "function"
+    MODULE = "module", True, False, False, True
+    CLASS_BODY = "class_body", False, False, True, False
+    FUNCTION = "function", False, True, False, True
+
+    is_module_scope: bool
+    is_function_scope: bool
+    is_class_body_scope: bool
+    supports_exact_value_aliases: bool
+
+    def __new__(
+        cls,
+        value: str,
+        is_module_scope: bool,
+        is_function_scope: bool,
+        is_class_body_scope: bool,
+        supports_exact_value_aliases: bool,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.is_module_scope = is_module_scope
+        member.is_function_scope = is_function_scope
+        member.is_class_body_scope = is_class_body_scope
+        member.supports_exact_value_aliases = supports_exact_value_aliases
+        return member
 
 
 class CompactControlBranchKind(StrEnum):
@@ -203,15 +233,33 @@ class CompactControlBranchKind(StrEnum):
 class CompactMutationKind(StrEnum):
     """Source operations which may change lexical value identity."""
 
-    ASSIGNMENT = "assignment"
-    AUGMENTED_ASSIGNMENT = "augmented_assignment"
-    DELETION = "deletion"
-    DEFINITION = "definition"
-    IMPORT = "import"
-    ITERATION_BINDING = "iteration_binding"
-    CONTEXT_BINDING = "context_binding"
-    EXCEPTION_BINDING = "exception_binding"
-    PATTERN_BINDING = "pattern_binding"
+    ASSIGNMENT = "assignment", False, False, False
+    AUGMENTED_ASSIGNMENT = "augmented_assignment", False, False, False
+    DELETION = "deletion", False, False, False
+    DEFINITION = "definition", True, False, True
+    IMPORT = "import", True, True, False
+    ITERATION_BINDING = "iteration_binding", False, False, False
+    CONTEXT_BINDING = "context_binding", False, False, False
+    EXCEPTION_BINDING = "exception_binding", False, False, False
+    PATTERN_BINDING = "pattern_binding", False, False, False
+
+    preserves_nominal_identity: bool
+    is_import_binding: bool
+    is_definition_binding: bool
+
+    def __new__(
+        cls,
+        value: str,
+        preserves_nominal_identity: bool,
+        is_import_binding: bool,
+        is_definition_binding: bool,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.preserves_nominal_identity = preserves_nominal_identity
+        member.is_import_binding = is_import_binding
+        member.is_definition_binding = is_definition_binding
+        return member
 
 
 class CompactCallResultUse(StrEnum):
@@ -326,10 +374,17 @@ class CompactFunctionParameter:
     name: str
     kind: CompactParameterKind
     has_default: bool = False
+    has_annotation: bool = False
 
     @property
     def required(self) -> bool:
         return not self.has_default and not self.kind.variadic
+
+    @property
+    def is_plain_required(self) -> bool:
+        """Whether removing this parameter erases no declaration-time semantics."""
+
+        return self.required and not self.has_annotation
 
 
 @dataclass(frozen=True)
@@ -420,6 +475,7 @@ class CompactFunctionSignature:
                     else CompactParameterKind.POSITIONAL_OR_KEYWORD
                 ),
                 has_default=index >= positional_default_start,
+                has_annotation=argument.annotation is not None,
             )
             for index, argument in enumerate(positional)
         ]
@@ -428,6 +484,7 @@ class CompactFunctionSignature:
                 CompactFunctionParameter(
                     arguments.vararg.arg,
                     CompactParameterKind.VAR_POSITIONAL,
+                    has_annotation=arguments.vararg.annotation is not None,
                 )
             )
         parameters.extend(
@@ -435,6 +492,7 @@ class CompactFunctionSignature:
                 argument.arg,
                 CompactParameterKind.KEYWORD_ONLY,
                 has_default=default is not None,
+                has_annotation=argument.annotation is not None,
             )
             for argument, default in zip(
                 arguments.kwonlyargs,
@@ -447,6 +505,7 @@ class CompactFunctionSignature:
                 CompactFunctionParameter(
                     arguments.kwarg.arg,
                     CompactParameterKind.VAR_KEYWORD,
+                    has_annotation=arguments.kwarg.annotation is not None,
                 )
             )
         return cls(tuple(parameters))
@@ -788,8 +847,8 @@ class OpenCompactValueOrigin(CompactValueOriginResolution):
 
 
 @dataclass(frozen=True)
-class CompactExactLocalValueAlias:
-    """One exact local-name binding to an unchanged lexical value."""
+class CompactExactValueAlias:
+    """One exact lexical binding to an unchanged value in a supported scope."""
 
     source: LexicalValueReference
     binding_mutation: CompactLexicalMutation
@@ -851,31 +910,51 @@ class CompactFunctionCall:
 class CompactLocalSignatureObserver(StrEnum):
     """Runtime operations which can observe a function's local signature."""
 
-    LOCAL_MAPPING = "local_mapping", (
-        ("locals",),
-        ("builtins", "locals"),
-    ), True
-    OBJECT_NAMESPACE = "object_namespace", (
-        ("vars",),
-        ("builtins", "vars"),
-    ), True
-    LOCAL_NAMES = "local_names", (
-        ("dir",),
-        ("builtins", "dir"),
-    ), True
-    DYNAMIC_EVALUATION = "dynamic_evaluation", (
-        ("eval",),
-        ("exec",),
-        ("builtins", "eval"),
-        ("builtins", "exec"),
-    ), False
-    FRAME_ACCESS = "frame_access", (
-        ("_getframe",),
-        ("currentframe",),
-        ("inspect", "currentframe"),
-        ("inspect", "stack"),
-        ("sys", "_getframe"),
-    ), False
+    LOCAL_MAPPING = (
+        "local_mapping",
+        (
+            ("locals",),
+            ("builtins", "locals"),
+        ),
+        True,
+    )
+    OBJECT_NAMESPACE = (
+        "object_namespace",
+        (
+            ("vars",),
+            ("builtins", "vars"),
+        ),
+        True,
+    )
+    LOCAL_NAMES = (
+        "local_names",
+        (
+            ("dir",),
+            ("builtins", "dir"),
+        ),
+        True,
+    )
+    DYNAMIC_EVALUATION = (
+        "dynamic_evaluation",
+        (
+            ("eval",),
+            ("exec",),
+            ("builtins", "eval"),
+            ("builtins", "exec"),
+        ),
+        False,
+    )
+    FRAME_ACCESS = (
+        "frame_access",
+        (
+            ("_getframe",),
+            ("currentframe",),
+            ("inspect", "currentframe"),
+            ("inspect", "stack"),
+            ("sys", "_getframe"),
+        ),
+        False,
+    )
 
     def __new__(
         cls,
@@ -1000,7 +1079,9 @@ class CompactFunctionFlow:
     calls: tuple[CompactFunctionCall, ...]
     callable_reference_uses: tuple[CompactCallableReferenceUse, ...]
     mutations: tuple[CompactLexicalMutation, ...]
-    exact_local_value_aliases: tuple[CompactExactLocalValueAlias, ...]
+    exact_value_aliases: tuple[CompactExactValueAlias, ...]
+    global_binding_names: tuple[str, ...]
+    nonlocal_binding_names: tuple[str, ...]
 
     @property
     def local_signature_is_observed(self) -> bool:
@@ -1018,10 +1099,8 @@ class CompactFunctionFlow:
     @cached_property
     def exact_aliases_by_binding_mutation(
         self,
-    ) -> dict[CompactLexicalMutation, CompactExactLocalValueAlias]:
-        return {
-            alias.binding_mutation: alias for alias in self.exact_local_value_aliases
-        }
+    ) -> dict[CompactLexicalMutation, CompactExactValueAlias]:
+        return {alias.binding_mutation: alias for alias in self.exact_value_aliases}
 
     def value_origin_for(
         self,
@@ -1194,7 +1273,7 @@ class _DeclarationCollector(ast.NodeVisitor):
     ) -> None:
         qualname = ".".join((*self.scope_names, node.name))
         direct_class_owner = bool(
-            self.scope_kinds and self.scope_kinds[-1] is CompactFlowOwnerKind.CLASS_BODY
+            self.scope_kinds and self.scope_kinds[-1].is_class_body_scope
         )
         decorators = tuple(
             (
@@ -1263,7 +1342,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.calls: list[CompactFunctionCall] = []
         self.callable_reference_uses: list[CompactCallableReferenceUse] = []
         self.mutations: list[CompactLexicalMutation] = []
-        self.exact_local_value_aliases: list[CompactExactLocalValueAlias] = []
+        self.exact_value_aliases: list[CompactExactValueAlias] = []
         self.loaded_value_root_names: set[str] = set()
         self.global_binding_names: set[str] = set()
         self.nonlocal_binding_names: set[str] = set()
@@ -1282,7 +1361,9 @@ class _CompactFlowCollector(ast.NodeVisitor):
             calls=tuple(self.calls),
             callable_reference_uses=tuple(self.callable_reference_uses),
             mutations=tuple(self.mutations),
-            exact_local_value_aliases=tuple(self.exact_local_value_aliases),
+            exact_value_aliases=tuple(self.exact_value_aliases),
+            global_binding_names=tuple(sorted(self.global_binding_names)),
+            nonlocal_binding_names=tuple(sorted(self.nonlocal_binding_names)),
         )
 
     def _collect_statements(self, statements: list[ast.stmt]) -> None:
@@ -1474,10 +1555,10 @@ class _CompactFlowCollector(ast.NodeVisitor):
             CompactMutationKind.ASSIGNMENT,
         )
         source = LexicalValueReference.from_expression(node.value)
-        if self._is_exact_local_alias_assignment(node.targets, source):
+        if self._is_exact_value_alias_assignment(node.targets, source):
             assert source is not None
-            self.exact_local_value_aliases.extend(
-                CompactExactLocalValueAlias(
+            self.exact_value_aliases.extend(
+                CompactExactValueAlias(
                     source=source,
                     binding_mutation=mutation,
                 )
@@ -1504,11 +1585,11 @@ class _CompactFlowCollector(ast.NodeVisitor):
             if node.value is None
             else LexicalValueReference.from_expression(node.value)
         )
-        if self._is_exact_local_alias_assignment((node.target,), source):
+        if self._is_exact_value_alias_assignment((node.target,), source):
             assert isinstance(node.target, ast.Name)
             assert source is not None
-            self.exact_local_value_aliases.append(
-                CompactExactLocalValueAlias(
+            self.exact_value_aliases.append(
+                CompactExactValueAlias(
                     source=source,
                     binding_mutation=mutations[0],
                 )
@@ -1563,19 +1644,22 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.mutation_kind = saved_kind
         return tuple(self.mutations[mutation_start:])
 
-    def _is_exact_local_alias_assignment(
+    def _is_exact_value_alias_assignment(
         self,
         targets: tuple[ast.expr, ...] | list[ast.expr],
         source: LexicalValueReference | None,
     ) -> bool:
         return bool(
-            self.owner.kind is CompactFlowOwnerKind.FUNCTION
+            self.owner.kind.supports_exact_value_aliases
             and source is not None
             and targets
             and all(
                 isinstance(target, ast.Name)
-                and target.id not in self.global_binding_names
-                and target.id not in self.nonlocal_binding_names
+                and (
+                    not self.owner.kind.is_function_scope
+                    or target.id not in self.global_binding_names
+                    and target.id not in self.nonlocal_binding_names
+                )
                 for target in targets
             )
         )

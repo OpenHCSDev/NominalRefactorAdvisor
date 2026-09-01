@@ -33,7 +33,11 @@ from .cache_checkout import (
     rebase_checkout_path,
     semantic_root_labels,
 )
-from .detectors import DetectorConfig, IssueDetector
+from .detectors import (
+    CompactModuleProjectionDetectorMixin,
+    DetectorConfig,
+    IssueDetector,
+)
 from .finding_counts import FindingSummary
 from .implementation_identity import declaration_implementation_module_names
 from .models import RefactorFinding, SourceLocation
@@ -313,15 +317,27 @@ class DetectorSemanticEngineSignature(AnalysisEngineSignature):
     """Shared finding semantics independent of orchestration and persistence."""
 
     @staticmethod
-    def module_names() -> tuple[str, ...]:
+    def projection_families() -> tuple[type[CollectedFamily], ...]:
+        """Return only projection families declared by registered detectors."""
+
         return tuple(
-            sorted(
-                set(
-                    declaration_implementation_module_names(
-                        IssueDetector.registered_detector_types()
-                    )
+            dict.fromkeys(
+                family
+                for detector_type in IssueDetector.registered_detector_types()
+                if issubclass(
+                    detector_type,
+                    CompactModuleProjectionDetectorMixin,
                 )
-                | set(CollectedFamily.registered_implementation_module_names())
+                for family in detector_type.compact_projection_families()
+            )
+        )
+
+    @classmethod
+    def module_names(cls) -> tuple[str, ...]:
+        return declaration_implementation_module_names(
+            (
+                *IssueDetector.registered_detector_types(),
+                *cls.projection_families(),
             )
         )
 

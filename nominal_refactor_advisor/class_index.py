@@ -20,7 +20,7 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from heapq import merge
-from typing import Callable, ClassVar, Self, TypeAlias
+from typing import Callable, ClassVar, NamedTuple, Self, TypeAlias
 
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .ast_tools import (
@@ -56,6 +56,11 @@ class ClassDeclaration:
     line: int
     declared_base_names: tuple[str, ...]
     resolved_base_symbols: tuple[str, ...] = field(default=(), kw_only=True)
+    dataclass_declaration: CompactDataclassDeclaration | None = field(
+        default=None,
+        kw_only=True,
+    )
+    class_decorators_are_promotion_safe: bool = field(default=True, kw_only=True)
 
     def with_resolved_base_symbols(
         self,
@@ -88,6 +93,7 @@ class IndexedClass(ClassDeclaration):
         parsed_module: ParsedModule,
         qualname: str,
         node: ast.ClassDef,
+        module_bindings: dict[str, CompactNominalBinding],
     ) -> "IndexedClass":
         return cls(
             symbol=f"{parsed_module.module_name}.{qualname}",
@@ -107,6 +113,25 @@ class IndexedClass(ClassDeclaration):
                 is not None
             ),
             resolved_base_symbols=(),
+            dataclass_declaration=_dataclass_declaration(
+                module_bindings,
+                qualname,
+                node,
+            ),
+            class_decorators_are_promotion_safe=all(
+                ClassMethodPromotionSafeDecorator.for_qualified_name(
+                    _class_scope_qualified_import_name(
+                        module_bindings,
+                        {},
+                        decorator.func
+                        if isinstance(decorator, ast.Call)
+                        else decorator,
+                        frozenset(),
+                    )
+                )
+                is not None
+                for decorator in node.decorator_list
+            ),
         )
 
 
@@ -120,12 +145,372 @@ class CompactClassValueConstruction:
     line: int
 
 
+class CompactNominalReference(NamedTuple):
+    """One source reference together with its declaration-time root binding."""
+
+    source_parts: tuple[str, ...]
+    root_binding: "CompactNominalBinding | None"
+
+    @property
+    def resolved_parts(self) -> tuple[str, ...]:
+        if self.root_binding is None:
+            return self.source_parts
+        return (
+            *self.root_binding.qualified_name.split("."),
+            *self.source_parts[1:],
+        )
+
+    @property
+    def permits_root_relative_resolution(self) -> bool:
+        return (
+            self.root_binding is not None
+            and self.root_binding.kind.projects_as_import_alias
+        )
+
+
+class CompactClassMemberDeclaration(NamedTuple):
+    """One direct class binding from which all member projections descend."""
+
+    name: str
+    line: int
+    expression: str | None
+    constant_string: str | None
+    value_is_none_literal: bool
+    constructor_name: str | None
+    constructor_keyword_names: tuple[str, ...]
+
+
+class CompactProductAuthorityViolation(StrEnum):
+    """One typed reason a dataclass declaration cannot prove a plain product."""
+
+    UNRESOLVED_DATACLASS_DECORATOR = (
+        "unresolved_dataclass_decorator",
+        "the dataclass decorator does not resolve to the standard-library declaration",
+        (),
+    )
+    MULTIPLE_DATACLASS_DECORATORS = (
+        "multiple_dataclass_decorators",
+        "more than one dataclass decorator applies to the same declaration",
+        (),
+    )
+    GENERATED_INIT_DISABLED = (
+        "generated_init_disabled",
+        "the dataclass declaration does not retain its generated initializer",
+        (),
+    )
+    DYNAMIC_DATACLASS_OPTIONS = (
+        "dynamic_dataclass_options",
+        "the dataclass constructor options cannot be resolved statically",
+        (),
+    )
+    CUSTOM_CLASS_DECORATOR = (
+        "custom_class_decorator",
+        "another class decorator can replace or mutate the dataclass declaration",
+        (),
+    )
+    CUSTOM_CLASS_CREATION = (
+        "custom_class_creation",
+        "class keywords or a custom metaclass can change construction semantics",
+        (),
+    )
+    CUSTOM_PRODUCT_LIFECYCLE = (
+        "custom_product_lifecycle",
+        "a class-owned lifecycle hook can change construction or field projection",
+        (
+            "__delattr__",
+            "__getattr__",
+            "__getattribute__",
+            "__init__",
+            "__init_subclass__",
+            "__new__",
+            "__post_init__",
+            "__setattr__",
+            "__slots__",
+        ),
+    )
+    FIELD_MEMBER_COLLISION = (
+        "field_member_collision",
+        "a dataclass field name is rebound by another class member",
+        (),
+    )
+    UNRESOLVED_FIELD_ROLE = (
+        "unresolved_field_role",
+        "a field role or default cannot be proven to preserve plain stored projection",
+        (),
+    )
+    INIT_ONLY_FIELD = (
+        "init_only_field",
+        "an InitVar constructor parameter is not a stored product field",
+        (),
+    )
+    NON_INIT_FIELD = (
+        "non_init_field",
+        "a stored field is excluded from the generated initializer",
+        (),
+    )
+    DYNAMIC_FIELD_SCHEMA = (
+        "dynamic_field_schema",
+        "class execution can add or replace annotations outside the direct field declarations",
+        (),
+    )
+    NESTED_CLASS_SCOPE = (
+        "nested_class_scope",
+        "the enclosing class namespace prevents exact module-binding recovery",
+        (),
+    )
+    INCOMPLETE_BASE_RESOLUTION = (
+        "incomplete_base_resolution",
+        "not every direct base resolves to one repository declaration",
+        (),
+    )
+    MULTIPLE_PRODUCT_BASES = (
+        "multiple_product_bases",
+        "the product schema requires an unproved multiple-inheritance linearization",
+        (),
+    )
+    NON_DATACLASS_BASE = (
+        "non_dataclass_base",
+        "a direct base lacks a closed dataclass product declaration",
+        (),
+    )
+    CYCLIC_PRODUCT_LINEAGE = (
+        "cyclic_product_lineage",
+        "the product declaration participates in a cyclic inheritance graph",
+        (),
+    )
+
+    explanation: str
+    implicated_member_names: tuple[str, ...]
+
+    def __new__(
+        cls,
+        value: str,
+        explanation: str,
+        implicated_member_names: tuple[str, ...],
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.explanation = explanation
+        member.implicated_member_names = implicated_member_names
+        return member
+
+    def is_violated_by_member_names(self, member_names: frozenset[str]) -> bool:
+        return bool(member_names.intersection(self.implicated_member_names))
+
+
+class CompactDataclassFieldRole(StrEnum):
+    """Dataclass field kinds with declaration-owned product admissibility."""
+
+    STORED_INIT = "stored_init", True, True, None, ()
+    CLASS_VARIABLE = "class_variable", False, False, None, ("typing.ClassVar",)
+    KEYWORD_ONLY_SENTINEL = (
+        "keyword_only_sentinel",
+        False,
+        False,
+        None,
+        ("dataclasses.KW_ONLY",),
+    )
+    STORED_NON_INIT = (
+        "stored_non_init",
+        False,
+        True,
+        CompactProductAuthorityViolation.NON_INIT_FIELD,
+        (),
+    )
+    INIT_ONLY = (
+        "init_only",
+        False,
+        True,
+        CompactProductAuthorityViolation.INIT_ONLY_FIELD,
+        ("dataclasses.InitVar",),
+    )
+    UNRESOLVED = (
+        "unresolved",
+        False,
+        False,
+        CompactProductAuthorityViolation.UNRESOLVED_FIELD_ROLE,
+        (),
+    )
+
+    contributes_stored_init_field: bool
+    contributes_semantic_field: bool
+    authority_violation: CompactProductAuthorityViolation | None
+    annotation_qualified_names: tuple[str, ...]
+
+    def __new__(
+        cls,
+        value: str,
+        contributes_stored_init_field: bool,
+        contributes_semantic_field: bool,
+        authority_violation: CompactProductAuthorityViolation | None,
+        annotation_qualified_names: tuple[str, ...],
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.contributes_stored_init_field = contributes_stored_init_field
+        member.contributes_semantic_field = contributes_semantic_field
+        member.authority_violation = authority_violation
+        member.annotation_qualified_names = annotation_qualified_names
+        return member
+
+    @classmethod
+    def for_qualified_annotation(
+        cls,
+        qualified_name: str | None,
+    ) -> Self | None:
+        return next(
+            (role for role in cls if qualified_name in role.annotation_qualified_names),
+            None,
+        )
+
+    @classmethod
+    def semantic_annotation_terminal_names(cls) -> frozenset[str]:
+        return frozenset(
+            qualified_name.rsplit(".", 1)[-1]
+            for role in cls
+            for qualified_name in role.annotation_qualified_names
+        )
+
+
+class DataclassRuntimeDeclaration(StrEnum):
+    """Standard-library dataclass declarations with nominal qualified identity."""
+
+    DATACLASS = "dataclass"
+    FIELD = "field"
+
+    @property
+    def qualified_name(self) -> str:
+        return f"dataclasses.{self.value}"
+
+    def matches(self, qualified_name: str | None) -> bool:
+        return qualified_name == self.qualified_name
+
+
+class CompactDataclassFieldDeclaration(NamedTuple):
+    """One direct annotated member and its exact dataclass role."""
+
+    name: str
+    line: int
+    role: CompactDataclassFieldRole
+
+
+class CompactProductDeclarationFailure(NamedTuple):
+    """One class-local product obligation retained at its exact source line."""
+
+    line: int
+    violation: CompactProductAuthorityViolation
+
+
+class CompactDataclassDeclaration(NamedTuple):
+    """One dataclass-like declaration, including fail-closed unknown semantics."""
+
+    runtime_declaration: DataclassRuntimeDeclaration | None
+    fields: tuple[CompactDataclassFieldDeclaration, ...]
+    failures: tuple[CompactProductDeclarationFailure, ...] = ()
+
+
+@dataclass(frozen=True)
+class CompactProductField:
+    """One effective dataclass field retaining its nominal declaration source."""
+
+    name: str
+    role: CompactDataclassFieldRole
+    declaring_class_symbol: str
+    file_path: str
+    line: int
+
+
+@dataclass(frozen=True)
+class CompactProductAuthority:
+    """One linearly composed dataclass schema with source-visible fields."""
+
+    class_symbol: str
+    effective_fields: tuple[CompactProductField, ...]
+    file_path: str
+    line: int
+
+    @property
+    def fields(self) -> tuple[CompactProductField, ...]:
+        return tuple(
+            field
+            for field in self.effective_fields
+            if field.role.contributes_stored_init_field
+        )
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(field.name for field in self.fields)
+
+
+@dataclass(frozen=True)
+class CompactProductAuthorityFailure:
+    """One failed product obligation attached to its declaration source."""
+
+    class_symbol: str
+    file_path: str
+    line: int
+    violation: CompactProductAuthorityViolation
+
+
+@dataclass(frozen=True)
+class CompactProductAuthorityResolution(ABC):
+    """Nominal result of composing one class into a product authority."""
+
+    class_symbol: str
+
+    @property
+    @abstractmethod
+    def authority(self) -> CompactProductAuthority | None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class AbsentCompactProductAuthority(CompactProductAuthorityResolution):
+    """A class declaration which does not claim dataclass product semantics."""
+
+    @property
+    def authority(self) -> None:
+        return None
+
+
+@dataclass(frozen=True)
+class OpenCompactProductAuthority(CompactProductAuthorityResolution):
+    """A dataclass-like declaration with unresolved product obligations."""
+
+    failures: tuple[CompactProductAuthorityFailure, ...]
+
+    @property
+    def authority(self) -> None:
+        return None
+
+
+@dataclass(frozen=True)
+class ResolvedCompactProductAuthority(CompactProductAuthorityResolution):
+    """A dataclass schema proven by a complete linear declaration chain."""
+
+    resolved_authority: CompactProductAuthority
+
+    @property
+    def authority(self) -> CompactProductAuthority:
+        return self.resolved_authority
+
+
+@dataclass(frozen=True)
+class _CompactProductLineage:
+    """Internal source-carrying schema before target-specific admissibility."""
+
+    effective_fields: tuple[CompactProductField, ...]
+    failures: tuple[CompactProductAuthorityFailure, ...]
+
+
 @dataclass(frozen=True)
 class CompactClassHeader(ClassDeclaration):
     """Class-index surface sufficient for inheritance reconstruction."""
 
-    base_reference_parts: tuple[tuple[str, ...], ...]
+    base_references: tuple[CompactNominalReference, ...]
+    direct_base_count: int = 0
     base_references_are_complete: bool = False
+    product_base_bindings_are_exact: bool = False
     is_final: bool = False
 
     @property
@@ -196,21 +581,15 @@ class ClassHeaderSourceSpan:
 class CompactIndexedClass(CompactClassHeader):
     """AST-free class declaration used to reconstruct inheritance globally."""
 
-    direct_assignment_expressions: tuple[tuple[str, str | None], ...] = ()
-    direct_assignment_lines: tuple[tuple[str, int], ...] = ()
-    direct_value_constructions: tuple[CompactClassValueConstruction, ...] = ()
-    direct_constant_string_assignments: tuple[tuple[str, str], ...] = ()
-    direct_non_none_assignment_names: tuple[str, ...] = ()
+    direct_member_declarations: tuple[CompactClassMemberDeclaration, ...] = ()
     metaclass_names: tuple[str, ...] = ()
     class_keyword_names: tuple[str, ...] = ()
-    class_decorators_are_promotion_safe: bool = True
     class_header_is_reconstructible: bool = True
     keyed_family_key_type_name: str | None = None
     end_line: int | None = None
     method_names: tuple[str, ...] = ()
     abstract_method_names: tuple[str, ...] = ()
     is_abstract: bool = False
-    is_dataclass: bool = False
     declares_autoregister_meta: bool = False
     is_registration_authority: bool = False
     autoregister_registry_key_attr_name: str | None = None
@@ -222,14 +601,64 @@ class CompactIndexedClass(CompactClassHeader):
 
     @property
     def assignments_by_name(self) -> dict[str, str | None]:
-        return dict(self.direct_assignment_expressions)
+        return {
+            name: declaration.expression
+            for name, declaration in self.direct_members_by_name.items()
+        }
+
+    @cached_property
+    def direct_members_by_name(self) -> dict[str, CompactClassMemberDeclaration]:
+        return {
+            declaration.name: declaration
+            for declaration in self.direct_member_declarations
+        }
+
+    @property
+    def direct_assignment_expressions(self) -> tuple[tuple[str, str | None], ...]:
+        return tuple(self.assignments_by_name.items())
+
+    @property
+    def direct_assignment_lines(self) -> tuple[tuple[str, int], ...]:
+        return tuple(
+            (declaration.name, declaration.line)
+            for declaration in self.direct_member_declarations
+        )
 
     @property
     def assignment_lines_by_name(self) -> dict[str, int]:
         lines: dict[str, int] = {}
-        for name, line in self.direct_assignment_lines:
-            lines.setdefault(name, line)
+        for declaration in self.direct_member_declarations:
+            lines.setdefault(declaration.name, declaration.line)
         return lines
+
+    @property
+    def direct_value_constructions(self) -> tuple[CompactClassValueConstruction, ...]:
+        return tuple(
+            CompactClassValueConstruction(
+                assigned_name=declaration.name,
+                constructor_name=declaration.constructor_name,
+                keyword_names=declaration.constructor_keyword_names,
+                line=declaration.line,
+            )
+            for declaration in self.direct_members_by_name.values()
+            if declaration.constructor_name is not None
+        )
+
+    @property
+    def direct_constant_string_assignments(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (declaration.name, declaration.constant_string)
+            for declaration in self.direct_members_by_name.values()
+            if declaration.constant_string is not None
+        )
+
+    @property
+    def direct_non_none_assignment_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            declaration.name
+            for declaration in self.direct_members_by_name.values()
+            if not declaration.value_is_none_literal
+        )
 
 
 def has_complete_concrete_mro_composite(
@@ -635,53 +1064,45 @@ _PROMOTABLE_METHOD_DECORATOR_NAMES = frozenset(
 class ClassMethodPromotionSafeDecorator(StrEnum):
     """Class decorators proven not to depend on direct method ownership."""
 
-    DATACLASS = ("dataclass", frozenset(("dataclasses",)))
-    FINAL = ("final", frozenset(("typing", "typing_extensions")))
+    DATACLASS = ("dataclass", frozenset(("dataclasses",)), True)
+    FINAL = ("final", frozenset(("typing", "typing_extensions")), True)
 
     import_module_names: frozenset[str]
+    preserves_product_schema: bool
 
     def __new__(
         cls,
         value: str,
         import_module_names: frozenset[str],
+        preserves_product_schema: bool,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member.import_module_names = import_module_names
+        member.preserves_product_schema = preserves_product_schema
         return member
 
-    def is_proven_reference(self, module: ast.Module, decorator: ast.expr) -> bool:
-        reference = decorator.func if isinstance(decorator, ast.Call) else decorator
-        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(reference)
-        if parts is None or parts[-1] != self.value:
-            return False
-        return any(
-            self._import_proves_parts(statement, parts)
-            for statement in module.body
-            if isinstance(statement, ast.Import | ast.ImportFrom)
+    @classmethod
+    def for_qualified_name(cls, qualified_name: str | None) -> Self | None:
+        return next(
+            (
+                decorator
+                for decorator in cls
+                if any(
+                    qualified_name == f"{module_name}.{decorator.value}"
+                    for module_name in decorator.import_module_names
+                )
+            ),
+            None,
         )
 
-    def _import_proves_parts(
-        self,
-        statement: ast.Import | ast.ImportFrom,
-        parts: tuple[str, ...],
+    @classmethod
+    def qualified_name_preserves_product_schema(
+        cls,
+        qualified_name: str | None,
     ) -> bool:
-        if isinstance(statement, ast.ImportFrom):
-            return (
-                statement.level == 0
-                and statement.module in self.import_module_names
-                and len(parts) == 1
-                and any(
-                    alias.name == self.value
-                    and (alias.asname or alias.name) == parts[0]
-                    for alias in statement.names
-                )
-            )
-        return len(parts) == 2 and any(
-            alias.name in self.import_module_names
-            and (alias.asname or alias.name) == parts[0]
-            for alias in statement.names
-        )
+        declaration = cls.for_qualified_name(qualified_name)
+        return declaration is not None and declaration.preserves_product_schema
 
 
 def _has_custom_method_decorator(inspection: MethodPromotionInspection) -> bool:
@@ -1433,6 +1854,145 @@ class CompactClassFamilyIndex:
     def ancestor_symbols(self, class_symbol: str) -> tuple[str, ...]:
         return self.ancestors_by_symbol.get(class_symbol, ())
 
+    @cached_property
+    def product_authority_resolutions_by_symbol(
+        self,
+    ) -> dict[str, CompactProductAuthorityResolution]:
+        """Compose every dataclass product through its exact direct-base chain."""
+
+        lineages: dict[str, _CompactProductLineage] = {}
+
+        def compose_lineage(
+            class_symbol: str,
+            pending_symbols: frozenset[str],
+        ) -> _CompactProductLineage:
+            if (lineage := lineages.get(class_symbol)) is not None:
+                return lineage
+            indexed_class = self.classes_by_symbol[class_symbol]
+            declaration = indexed_class.dataclass_declaration
+            if declaration is None:
+                raise ValueError("product lineage requires a dataclass declaration")
+            if class_symbol in pending_symbols:
+                return _CompactProductLineage(
+                    (),
+                    (
+                        self._product_authority_failure(
+                            indexed_class,
+                            CompactProductAuthorityViolation.CYCLIC_PRODUCT_LINEAGE,
+                        ),
+                    ),
+                )
+            failures = tuple(
+                self._product_authority_failure(
+                    indexed_class,
+                    failure.violation,
+                    line=failure.line,
+                )
+                for failure in declaration.failures
+            )
+            effective_fields: tuple[CompactProductField, ...] = ()
+            direct_base_count = indexed_class.direct_base_count
+            if (
+                not indexed_class.base_references_are_complete
+                or not indexed_class.product_base_bindings_are_exact
+                or len(indexed_class.resolved_base_symbols) != direct_base_count
+            ):
+                failures = (
+                    *failures,
+                    self._product_authority_failure(
+                        indexed_class,
+                        CompactProductAuthorityViolation.INCOMPLETE_BASE_RESOLUTION,
+                    ),
+                )
+            elif direct_base_count > 1:
+                failures = (
+                    *failures,
+                    self._product_authority_failure(
+                        indexed_class,
+                        CompactProductAuthorityViolation.MULTIPLE_PRODUCT_BASES,
+                    ),
+                )
+            elif direct_base_count == 1:
+                base_symbol = indexed_class.resolved_base_symbols[0]
+                base_class = self.classes_by_symbol[base_symbol]
+                if base_class.dataclass_declaration is None:
+                    failures = (
+                        *failures,
+                        self._product_authority_failure(
+                            indexed_class,
+                            CompactProductAuthorityViolation.NON_DATACLASS_BASE,
+                        ),
+                    )
+                else:
+                    base_lineage = compose_lineage(
+                        base_symbol,
+                        pending_symbols | frozenset((class_symbol,)),
+                    )
+                    effective_fields = base_lineage.effective_fields
+                    failures = (*failures, *base_lineage.failures)
+
+            fields_by_name = {field.name: field for field in effective_fields}
+            for field_declaration in declaration.fields:
+                fields_by_name[field_declaration.name] = CompactProductField(
+                    name=field_declaration.name,
+                    role=field_declaration.role,
+                    declaring_class_symbol=class_symbol,
+                    file_path=indexed_class.file_path,
+                    line=field_declaration.line,
+                )
+            lineage = _CompactProductLineage(
+                effective_fields=tuple(fields_by_name.values()),
+                failures=tuple(dict.fromkeys(failures)),
+            )
+            lineages[class_symbol] = lineage
+            return lineage
+
+        resolutions: dict[str, CompactProductAuthorityResolution] = {}
+        for class_symbol, indexed_class in self.classes_by_symbol.items():
+            if indexed_class.dataclass_declaration is None:
+                resolutions[class_symbol] = AbsentCompactProductAuthority(class_symbol)
+                continue
+            lineage = compose_lineage(class_symbol, frozenset())
+            role_failures = tuple(
+                CompactProductAuthorityFailure(
+                    class_symbol=class_symbol,
+                    file_path=field.file_path,
+                    line=field.line,
+                    violation=violation,
+                )
+                for field in lineage.effective_fields
+                if (violation := field.role.authority_violation) is not None
+            )
+            failures = tuple(dict.fromkeys((*lineage.failures, *role_failures)))
+            resolutions[class_symbol] = (
+                OpenCompactProductAuthority(class_symbol, failures)
+                if failures
+                else ResolvedCompactProductAuthority(
+                    class_symbol,
+                    CompactProductAuthority(
+                        class_symbol=class_symbol,
+                        effective_fields=lineage.effective_fields,
+                        file_path=indexed_class.file_path,
+                        line=indexed_class.line,
+                    ),
+                )
+            )
+        return resolutions
+
+    @staticmethod
+    def _product_authority_failure(
+        indexed_class: CompactIndexedClass,
+        violation: CompactProductAuthorityViolation,
+        *,
+        line: int | None = None,
+    ) -> CompactProductAuthorityFailure:
+        return CompactProductAuthorityFailure(
+            class_symbol=indexed_class.symbol,
+            file_path=indexed_class.file_path,
+            line=indexed_class.line if line is None else line,
+            violation=violation,
+        )
+
 
 ClosedLeafMethodAuthorityPredicate: TypeAlias = Callable[
     ["ClosedLeafMethodAuthorityProof"],
@@ -1774,6 +2334,19 @@ class _UniqueKnownSymbolSuffixIndex:
         self._matches_by_suffix[suffix] = match
         return match
 
+    def root_relative_match(self, qualified_name: str) -> str | None:
+        """Resolve one imported name across a narrower analysis-root boundary."""
+
+        parts = qualified_name.split(".")
+        return next(
+            (
+                match
+                for suffix_width in range(len(parts), 0, -1)
+                if (match := self.get(".".join(parts[-suffix_width:]))) is not None
+            ),
+            None,
+        )
+
 
 @lru_cache(maxsize=8)
 def _unique_known_symbol_by_suffix(
@@ -1895,28 +2468,235 @@ def _compact_module_public_export_contract(
     return CompactExplicitPublicExportContract(exported_names)
 
 
-@lru_cache(maxsize=None)
-def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for statement in parsed_module.module.body:
+class CompactNominalBindingKind(StrEnum):
+    """Kinds of exact module bindings and their exported-alias behavior."""
+
+    IMPORT = "import", True
+    LOCAL_CLASS = "local_class", False
+
+    projects_as_import_alias: bool
+
+    def __new__(cls, value: str, projects_as_import_alias: bool) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.projects_as_import_alias = projects_as_import_alias
+        return member
+
+
+class ModuleNominalBindingSnapshotPolicy(StrEnum):
+    """Typed ambiguity policy for exact proof versus named-import projection."""
+
+    EXACT = "exact", True
+    NAMED_IMPORT_PROJECTION = "named_import_projection", False
+
+    invalidates_on_star_import: bool
+
+    def __new__(cls, value: str, invalidates_on_star_import: bool) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.invalidates_on_star_import = invalidates_on_star_import
+        return member
+
+
+@dataclass(frozen=True)
+class CompactNominalBinding:
+    """One exact nominal origin selected by sequential module binding."""
+
+    qualified_name: str
+    kind: CompactNominalBindingKind
+
+
+@dataclass(frozen=True)
+class ModuleNominalBindingAuthority:
+    """Resolve nominal module bindings at an exact source position, fail closed."""
+
+    parsed_module: ParsedModule
+
+    def bindings_before(
+        self, line: int | None = None
+    ) -> dict[str, CompactNominalBinding]:
+        if line is None:
+            return _module_nominal_binding_snapshots(
+                self.parsed_module,
+                (),
+                include_final=True,
+            )[None]
+        return _module_nominal_binding_snapshots(
+            self.parsed_module,
+            (line,),
+            include_final=False,
+        )[line]
+
+    def qualified_name_at(
+        self,
+        reference: ast.AST,
+        *,
+        line: int,
+    ) -> str | None:
+        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(
+            ClassSymbolResolutionAuthority.reference_node(reference)
+        )
+        if parts is None:
+            return None
+        root_binding = self.bindings_before(line).get(parts[0])
+        if root_binding is None:
+            return None
+        return ".".join((root_binding.qualified_name, *parts[1:]))
+
+    def _direct_nominal_bindings(
+        self,
+        statement: ast.stmt,
+        preceding_bindings: dict[str, CompactNominalBinding],
+    ) -> dict[str, CompactNominalBinding]:
         if isinstance(statement, ast.Import):
-            for alias in statement.names:
-                local_name = alias.asname or alias.name.split(".", 1)[0]
-                aliases[local_name] = (
-                    alias.name if alias.asname else alias.name.split(".", 1)[0]
+            return {
+                alias.asname or alias.name.split(".", 1)[0]: CompactNominalBinding(
+                    qualified_name=(
+                        alias.name if alias.asname else alias.name.split(".", 1)[0]
+                    ),
+                    kind=CompactNominalBindingKind.IMPORT,
                 )
-        elif isinstance(statement, ast.ImportFrom):
+                for alias in statement.names
+            }
+        if isinstance(statement, ast.ImportFrom):
             resolved_module = _resolve_relative_module(
-                parsed_module, imported_module=statement.module, level=statement.level
+                self.parsed_module,
+                imported_module=statement.module,
+                level=statement.level,
             )
             if resolved_module is None:
-                continue
-            for alias in statement.names:
-                if alias.name == "*":
-                    continue
-                local_name = alias.asname or alias.name
-                aliases[local_name] = f"{resolved_module}.{alias.name}"
-    return aliases
+                return {}
+            return {
+                alias.asname or alias.name: CompactNominalBinding(
+                    qualified_name=f"{resolved_module}.{alias.name}",
+                    kind=CompactNominalBindingKind.IMPORT,
+                )
+                for alias in statement.names
+                if alias.name != "*"
+            }
+        if isinstance(statement, ast.ClassDef):
+            return {
+                statement.name: CompactNominalBinding(
+                    qualified_name=f"{self.parsed_module.module_name}.{statement.name}",
+                    kind=CompactNominalBindingKind.LOCAL_CLASS,
+                )
+            }
+        if not isinstance(statement, ast.Assign | ast.AnnAssign):
+            return {}
+        local_name = _single_assignment_target_name(statement)
+        value = statement.value
+        if local_name is None or value is None:
+            return {}
+        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(
+            ClassSymbolResolutionAuthority.reference_node(value)
+        )
+        if parts is None or (root_binding := preceding_bindings.get(parts[0])) is None:
+            return {}
+        return {
+            local_name: CompactNominalBinding(
+                qualified_name=".".join((root_binding.qualified_name, *parts[1:])),
+                kind=root_binding.kind,
+            )
+        }
+
+
+def _direct_binding_target_names(target: ast.AST) -> tuple[str, ...]:
+    if isinstance(target, ast.Name):
+        return (target.id,)
+    if isinstance(target, ast.Starred):
+        return _direct_binding_target_names(target.value)
+    if isinstance(target, ast.Tuple | ast.List):
+        return tuple(
+            name
+            for element in target.elts
+            for name in _direct_binding_target_names(element)
+        )
+    return ()
+
+
+def _direct_statement_bound_names(statement: ast.stmt) -> frozenset[str]:
+    """Project common direct bindings without allocating a scope visitor."""
+
+    if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return frozenset((statement.name,))
+    if isinstance(statement, ast.Import):
+        return frozenset(
+            alias.asname or alias.name.split(".", 1)[0] for alias in statement.names
+        )
+    if isinstance(statement, ast.ImportFrom):
+        return frozenset(
+            alias.asname or alias.name for alias in statement.names if alias.name != "*"
+        )
+    if isinstance(statement, ast.Assign):
+        return frozenset(
+            name
+            for target in statement.targets
+            for name in _direct_binding_target_names(target)
+        )
+    if isinstance(statement, ast.AnnAssign | ast.AugAssign):
+        return frozenset(_direct_binding_target_names(statement.target))
+    if isinstance(statement, ast.Delete):
+        return frozenset(
+            name
+            for target in statement.targets
+            for name in _direct_binding_target_names(target)
+        )
+    return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((statement,))
+
+
+def _module_nominal_binding_snapshots(
+    parsed_module: ParsedModule,
+    lines: tuple[int, ...],
+    *,
+    include_final: bool,
+    policy: ModuleNominalBindingSnapshotPolicy = (
+        ModuleNominalBindingSnapshotPolicy.EXACT
+    ),
+) -> dict[int | None, dict[str, CompactNominalBinding]]:
+    authority = ModuleNominalBindingAuthority(parsed_module)
+    bindings: dict[str, CompactNominalBinding] = {}
+    statements = iter(parsed_module.module.body)
+    statement = next(statements, None)
+    snapshots: dict[int | None, dict[str, CompactNominalBinding]] = {}
+
+    def apply(current: ast.stmt) -> None:
+        if (
+            policy.invalidates_on_star_import
+            and isinstance(current, ast.ImportFrom)
+            and any(alias.name == "*" for alias in current.names)
+        ):
+            bindings.clear()
+            return
+        direct_bindings = authority._direct_nominal_bindings(current, bindings)
+        for bound_name in _direct_statement_bound_names(current):
+            bindings.pop(bound_name, None)
+        bindings.update(direct_bindings)
+
+    for requested_line in sorted(frozenset(lines)):
+        while statement is not None and statement.lineno < requested_line:
+            apply(statement)
+            statement = next(statements, None)
+        snapshots[requested_line] = dict(bindings)
+    if include_final:
+        while statement is not None:
+            apply(statement)
+            statement = next(statements, None)
+        snapshots[None] = dict(bindings)
+    return snapshots
+
+
+@lru_cache(maxsize=None)
+def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
+    return {
+        local_name: binding.qualified_name
+        for local_name, binding in _module_nominal_binding_snapshots(
+            parsed_module,
+            (),
+            include_final=True,
+            policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+        )[None].items()
+        if binding.kind.projects_as_import_alias
+    }
 
 
 def _module_star_import_origins(
@@ -2116,9 +2896,12 @@ def _collect_demanded_class_projection_from_source(
     return CompactModuleClassProjectionFamily._collect_header_core(parsed_module)
 
 
-def _compact_base_reference_parts(node: ast.ClassDef) -> tuple[tuple[str, ...], ...]:
+def _compact_base_references(
+    node: ast.ClassDef,
+    module_bindings: dict[str, CompactNominalBinding],
+) -> tuple[CompactNominalReference, ...]:
     return tuple(
-        parts
+        CompactNominalReference(parts, module_bindings.get(parts[0]))
         for base in node.bases
         if (
             parts := ATTRIBUTE_CHAIN_AUTHORITY.project(
@@ -2136,6 +2919,11 @@ def _compact_indexed_classes(
     include_body_facets: bool,
 ) -> tuple[CompactIndexedClass, ...]:
     file_path = parsed_module.file_path
+    binding_snapshots = _module_nominal_binding_snapshots(
+        parsed_module,
+        tuple(node.lineno for _qualname, node in indexed_class_nodes),
+        include_final=False,
+    )
     return tuple(
         CompactIndexedClass(
             symbol=f"{parsed_module.module_name}.{qualname}",
@@ -2154,28 +2942,27 @@ def _compact_indexed_classes(
                 )
                 is not None
             ),
-            base_reference_parts=base_reference_parts,
-            base_references_are_complete=len(base_reference_parts) == len(node.bases),
-            direct_assignment_expressions=tuple(
-                (target_name, ast.unparse(value) if value is not None else None)
-                for target_name, value in direct_assignments.items()
+            base_references=base_references,
+            direct_base_count=sum(
+                ClassSymbolResolutionAuthority.establishes_nominal_family(
+                    declared_base_name
+                )
+                for base in node.bases
+                if (
+                    declared_base_name
+                    := ClassSymbolResolutionAuthority.declared_base_name(base)
+                )
+                is not None
             ),
-            direct_assignment_lines=tuple(_direct_class_assignment_lines(node)),
-            direct_value_constructions=_compact_class_value_constructions(
-                direct_assignments
-            ),
-            direct_constant_string_assignments=tuple(
-                sorted(
-                    (name, value.value)
-                    for name, value in direct_assignments.items()
-                    if isinstance(value, ast.Constant) and isinstance(value.value, str)
+            base_references_are_complete=len(base_references) == len(node.bases),
+            product_base_bindings_are_exact=all(
+                reference.root_binding is not None
+                for reference in base_references
+                if ClassSymbolResolutionAuthority.establishes_nominal_family(
+                    ".".join(reference.source_parts)
                 )
             ),
-            direct_non_none_assignment_names=sorted_tuple(
-                name
-                for name, value in direct_assignments.items()
-                if not (isinstance(value, ast.Constant) and value.value is None)
-            ),
+            direct_member_declarations=_compact_class_member_declarations(node),
             metaclass_names=tuple(
                 terminal_name
                 for keyword in node.keywords
@@ -2185,13 +2972,17 @@ def _compact_indexed_classes(
             ),
             class_keyword_names=tuple(keyword.arg or "**" for keyword in node.keywords),
             class_decorators_are_promotion_safe=all(
-                any(
-                    safe_decorator.is_proven_reference(
-                        parsed_module.module,
-                        decorator,
+                ClassMethodPromotionSafeDecorator.for_qualified_name(
+                    _class_scope_qualified_import_name(
+                        module_bindings,
+                        {},
+                        decorator.func
+                        if isinstance(decorator, ast.Call)
+                        else decorator,
+                        frozenset(),
                     )
-                    for safe_decorator in ClassMethodPromotionSafeDecorator
                 )
+                is not None
                 for decorator in node.decorator_list
             ),
             class_header_is_reconstructible=ClassHeaderSourceSpan.from_source(
@@ -2220,7 +3011,11 @@ def _compact_indexed_classes(
                 )
             ),
             is_abstract=_is_abstract_class(node),
-            is_dataclass=_is_dataclass_class(node),
+            dataclass_declaration=(
+                _dataclass_declaration(module_bindings, qualname, node)
+                if include_body_facets
+                else None
+            ),
             declares_autoregister_meta=_declares_autoregister_meta(node),
             is_registration_authority=_is_registration_authority(node),
             autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
@@ -2246,8 +3041,8 @@ def _compact_indexed_classes(
             ),
         )
         for qualname, node in indexed_class_nodes
-        for direct_assignments in (_direct_class_assignments(node),)
-        for base_reference_parts in (_compact_base_reference_parts(node),)
+        for module_bindings in (binding_snapshots[node.lineno],)
+        for base_references in (_compact_base_references(node, module_bindings),)
     )
 
 
@@ -4231,51 +5026,403 @@ def _is_abstract_class(node: ast.ClassDef) -> bool:
     )
 
 
-def _is_dataclass_class(node: ast.ClassDef) -> bool:
-    return any(
-        (isinstance(decorator, ast.Name) and decorator.id == "dataclass")
-        or (
-            isinstance(decorator, ast.Call)
-            and isinstance(decorator.func, ast.Name)
-            and decorator.func.id == "dataclass"
+def _class_scope_qualified_import_name(
+    module_bindings: dict[str, CompactNominalBinding],
+    class_aliases: dict[str, str],
+    reference: ast.AST,
+    preceding_class_bound_names: frozenset[str],
+) -> str | None:
+    parts = ATTRIBUTE_CHAIN_AUTHORITY.project(
+        ClassSymbolResolutionAuthority.reference_node(reference)
+    )
+    if parts is None:
+        return None
+    if (class_alias := class_aliases.get(parts[0])) is not None:
+        return ".".join((class_alias, *parts[1:]))
+    if parts[0] in preceding_class_bound_names:
+        return None
+    root_binding = module_bindings.get(parts[0])
+    if root_binding is None:
+        return None
+    return ".".join((root_binding.qualified_name, *parts[1:]))
+
+
+def _dataclass_field_role(
+    module_bindings: dict[str, CompactNominalBinding],
+    class_aliases: dict[str, str],
+    statement: ast.AnnAssign,
+    preceding_class_bound_names: frozenset[str],
+) -> CompactDataclassFieldRole:
+    annotation_root = (
+        statement.annotation.value
+        if isinstance(statement.annotation, ast.Subscript)
+        else statement.annotation
+    )
+    qualified_annotation = _class_scope_qualified_import_name(
+        module_bindings,
+        class_aliases,
+        annotation_root,
+        preceding_class_bound_names,
+    )
+    if (
+        semantic_role := CompactDataclassFieldRole.for_qualified_annotation(
+            qualified_annotation
         )
-        for decorator in node.decorator_list
+    ) is not None:
+        return semantic_role
+    terminal_name = _terminal_reference_name(annotation_root)
+    if terminal_name in (
+        CompactDataclassFieldRole.semantic_annotation_terminal_names()
+    ) or isinstance(statement.annotation, ast.Constant):
+        return CompactDataclassFieldRole.UNRESOLVED
+    if statement.value is None or isinstance(statement.value, ast.Constant):
+        return CompactDataclassFieldRole.STORED_INIT
+    if not isinstance(statement.value, ast.Call):
+        return CompactDataclassFieldRole.UNRESOLVED
+    qualified_default_factory = _class_scope_qualified_import_name(
+        module_bindings,
+        class_aliases,
+        statement.value.func,
+        preceding_class_bound_names,
+    )
+    if not DataclassRuntimeDeclaration.FIELD.matches(qualified_default_factory):
+        return CompactDataclassFieldRole.UNRESOLVED
+    if statement.value.args or any(
+        keyword.arg is None for keyword in statement.value.keywords
+    ):
+        return CompactDataclassFieldRole.UNRESOLVED
+    init_values = tuple(
+        keyword.value for keyword in statement.value.keywords if keyword.arg == "init"
+    )
+    if len(init_values) > 1:
+        return CompactDataclassFieldRole.UNRESOLVED
+    if not init_values:
+        return CompactDataclassFieldRole.STORED_INIT
+    init_value = init_values[0]
+    if not isinstance(init_value, ast.Constant) or not isinstance(
+        init_value.value,
+        bool,
+    ):
+        return CompactDataclassFieldRole.UNRESOLVED
+    return (
+        CompactDataclassFieldRole.STORED_INIT
+        if init_value.value
+        else CompactDataclassFieldRole.STORED_NON_INIT
     )
 
 
-def _direct_class_assignment_lines(node: ast.ClassDef) -> list[tuple[str, int]]:
-    lines: list[tuple[str, int]] = []
+def _dataclass_fields(
+    module_bindings: dict[str, CompactNominalBinding],
+    node: ast.ClassDef,
+) -> tuple[CompactDataclassFieldDeclaration, ...]:
+    fields: list[CompactDataclassFieldDeclaration] = []
+    preceding_bound_names: set[str] = set()
+    class_aliases: dict[str, str] = {}
     for statement in node.body:
         if isinstance(statement, ast.AnnAssign) and isinstance(
             statement.target,
             ast.Name,
         ):
-            lines.append((statement.target.id, statement.lineno))
-        elif isinstance(statement, ast.Assign):
-            lines.extend(
-                (target.id, statement.lineno)
-                for target in statement.targets
-                if isinstance(target, ast.Name)
+            fields.append(
+                CompactDataclassFieldDeclaration(
+                    name=statement.target.id,
+                    line=statement.lineno,
+                    role=_dataclass_field_role(
+                        module_bindings,
+                        class_aliases,
+                        statement,
+                        frozenset(preceding_bound_names),
+                    ),
+                )
             )
-    return lines
+        direct_aliases: dict[str, str] = {}
+        if isinstance(statement, ast.Assign | ast.AnnAssign):
+            alias_name = _single_assignment_target_name(statement)
+            if alias_name is not None and statement.value is not None:
+                qualified_value = _class_scope_qualified_import_name(
+                    module_bindings,
+                    class_aliases,
+                    statement.value,
+                    frozenset(preceding_bound_names),
+                )
+                if qualified_value is not None:
+                    direct_aliases[alias_name] = qualified_value
+        statement_bound_names = _direct_statement_bound_names(statement)
+        preceding_bound_names.update(statement_bound_names)
+        for bound_name in statement_bound_names:
+            class_aliases.pop(bound_name, None)
+        class_aliases.update(direct_aliases)
+    return tuple(fields)
 
 
-def _compact_class_value_constructions(
-    direct_assignments: dict[str, ast.expr | None],
-) -> tuple[CompactClassValueConstruction, ...]:
-    return tuple(
-        CompactClassValueConstruction(
-            assigned_name=assigned_name,
-            constructor_name=constructor_name,
-            keyword_names=sorted_tuple(
-                keyword.arg for keyword in value.keywords if keyword.arg is not None
-            ),
-            line=value.lineno,
-        )
-        for assigned_name, value in direct_assignments.items()
-        if isinstance(value, ast.Call)
-        if (constructor_name := _terminal_reference_name(value.func)) is not None
+def _dataclass_decorator_failures(
+    decorator: ast.expr,
+) -> tuple[CompactProductDeclarationFailure, ...]:
+    if not isinstance(decorator, ast.Call):
+        return ()
+    violations: list[CompactProductAuthorityViolation] = []
+    keyword_names = tuple(keyword.arg for keyword in decorator.keywords)
+    if decorator.args or any(name is None for name in keyword_names):
+        violations.append(CompactProductAuthorityViolation.DYNAMIC_DATACLASS_OPTIONS)
+    init_values = tuple(
+        keyword.value for keyword in decorator.keywords if keyword.arg == "init"
     )
+    if len(init_values) > 1 or (
+        init_values
+        and (
+            not isinstance(init_values[0], ast.Constant)
+            or not isinstance(init_values[0].value, bool)
+        )
+    ):
+        violations.append(CompactProductAuthorityViolation.DYNAMIC_DATACLASS_OPTIONS)
+    elif init_values and not init_values[0].value:
+        violations.append(CompactProductAuthorityViolation.GENERATED_INIT_DISABLED)
+    return tuple(
+        CompactProductDeclarationFailure(decorator.lineno, violation)
+        for violation in dict.fromkeys(violations)
+    )
+
+
+def _field_member_collision_lines(
+    node: ast.ClassDef,
+    fields: tuple[CompactDataclassFieldDeclaration, ...],
+) -> tuple[int, ...]:
+    field_names = frozenset(field.name for field in fields)
+    seen_field_bindings: set[str] = set()
+    collision_lines: set[int] = set()
+    for statement in node.body:
+        bound_fields = field_names.intersection(
+            _direct_statement_bound_names(statement)
+        )
+        if seen_field_bindings.intersection(bound_fields):
+            collision_lines.add(statement.lineno)
+        seen_field_bindings.update(bound_fields)
+    return tuple(sorted(collision_lines))
+
+
+def _dynamic_dataclass_schema_lines(node: ast.ClassDef) -> tuple[int, ...]:
+    """Return class-execution sites that can change the direct field schema."""
+
+    lines: set[int] = set()
+
+    class DynamicSchemaVisitor(ast.NodeVisitor):
+        def visit_ClassDef(self, child: ast.ClassDef) -> None:
+            return None
+
+        def visit_FunctionDef(self, child: ast.FunctionDef) -> None:
+            return None
+
+        def visit_AsyncFunctionDef(self, child: ast.AsyncFunctionDef) -> None:
+            return None
+
+        def visit_Lambda(self, child: ast.Lambda) -> None:
+            return None
+
+        def visit_AnnAssign(self, child: ast.AnnAssign) -> None:
+            lines.add(child.lineno)
+
+        def visit_Name(self, child: ast.Name) -> None:
+            if child.id == "__annotations__" and isinstance(child.ctx, ast.Store):
+                lines.add(child.lineno)
+
+        def visit_Subscript(self, child: ast.Subscript) -> None:
+            if (
+                isinstance(child.ctx, ast.Store | ast.Del)
+                and isinstance(child.value, ast.Name)
+                and child.value.id == "__annotations__"
+            ):
+                lines.add(child.lineno)
+            self.generic_visit(child)
+
+        def visit_Call(self, child: ast.Call) -> None:
+            called_parts = ATTRIBUTE_CHAIN_AUTHORITY.project(child.func)
+            if called_parts == ("exec",) or called_parts in {
+                ("__annotations__", "clear"),
+                ("__annotations__", "pop"),
+                ("__annotations__", "popitem"),
+                ("__annotations__", "setdefault"),
+                ("__annotations__", "update"),
+            }:
+                lines.add(child.lineno)
+            elif (
+                len(called_parts or ()) == 2
+                and called_parts[-1] in {"setdefault", "update"}
+                and isinstance(child.func, ast.Attribute)
+                and isinstance(child.func.value, ast.Call)
+                and ATTRIBUTE_CHAIN_AUTHORITY.project(child.func.value.func)
+                in {("locals",), ("vars",)}
+            ):
+                lines.add(child.lineno)
+            self.generic_visit(child)
+
+    visitor = DynamicSchemaVisitor()
+    for statement in node.body:
+        if isinstance(statement, ast.AnnAssign):
+            continue
+        visitor.visit(statement)
+    return tuple(sorted(lines))
+
+
+def _dataclass_declaration(
+    module_bindings: dict[str, CompactNominalBinding],
+    qualname: str,
+    node: ast.ClassDef,
+) -> CompactDataclassDeclaration | None:
+    decorator_qualified_names = tuple(
+        _class_scope_qualified_import_name(
+            module_bindings,
+            {},
+            decorator.func if isinstance(decorator, ast.Call) else decorator,
+            frozenset(),
+        )
+        for decorator in node.decorator_list
+    )
+    dataclass_decorator_indexes = tuple(
+        index
+        for index, qualified_name in enumerate(decorator_qualified_names)
+        if DataclassRuntimeDeclaration.DATACLASS.matches(qualified_name)
+    )
+    dataclass_like_indexes = tuple(
+        index
+        for index, decorator in enumerate(node.decorator_list)
+        if _terminal_reference_name(
+            decorator.func if isinstance(decorator, ast.Call) else decorator
+        )
+        == DataclassRuntimeDeclaration.DATACLASS.value
+    )
+    dataclass_candidate_indexes = frozenset(
+        (*dataclass_decorator_indexes, *dataclass_like_indexes)
+    )
+    if not dataclass_candidate_indexes:
+        return None
+
+    fields = _dataclass_fields(module_bindings, node)
+    failures: list[CompactProductDeclarationFailure] = []
+    if not dataclass_decorator_indexes:
+        failures.extend(
+            CompactProductDeclarationFailure(
+                node.decorator_list[index].lineno,
+                CompactProductAuthorityViolation.UNRESOLVED_DATACLASS_DECORATOR,
+            )
+            for index in dataclass_candidate_indexes
+        )
+    if len(dataclass_candidate_indexes) != 1:
+        failures.extend(
+            CompactProductDeclarationFailure(
+                node.decorator_list[index].lineno,
+                CompactProductAuthorityViolation.MULTIPLE_DATACLASS_DECORATORS,
+            )
+            for index in sorted(dataclass_candidate_indexes)
+        )
+    if dataclass_decorator_indexes:
+        failures.extend(
+            _dataclass_decorator_failures(
+                node.decorator_list[dataclass_decorator_indexes[0]]
+            )
+        )
+    failures.extend(
+        CompactProductDeclarationFailure(
+            node.decorator_list[index].lineno,
+            CompactProductAuthorityViolation.CUSTOM_CLASS_DECORATOR,
+        )
+        for index, qualified_name in enumerate(decorator_qualified_names)
+        if index not in dataclass_decorator_indexes
+        if not ClassMethodPromotionSafeDecorator.qualified_name_preserves_product_schema(
+            qualified_name
+        )
+    )
+    failures.extend(
+        CompactProductDeclarationFailure(
+            keyword.value.lineno,
+            CompactProductAuthorityViolation.CUSTOM_CLASS_CREATION,
+        )
+        for keyword in node.keywords
+    )
+    if "." in qualname:
+        failures.append(
+            CompactProductDeclarationFailure(
+                node.lineno,
+                CompactProductAuthorityViolation.NESTED_CLASS_SCOPE,
+            )
+        )
+    lifecycle_violation = CompactProductAuthorityViolation.CUSTOM_PRODUCT_LIFECYCLE
+    failures.extend(
+        CompactProductDeclarationFailure(statement.lineno, lifecycle_violation)
+        for statement in node.body
+        if lifecycle_violation.is_violated_by_member_names(
+            _direct_statement_bound_names(statement)
+        )
+    )
+    failures.extend(
+        CompactProductDeclarationFailure(
+            line,
+            CompactProductAuthorityViolation.FIELD_MEMBER_COLLISION,
+        )
+        for line in _field_member_collision_lines(node, fields)
+    )
+    failures.extend(
+        CompactProductDeclarationFailure(
+            line,
+            CompactProductAuthorityViolation.DYNAMIC_FIELD_SCHEMA,
+        )
+        for line in _dynamic_dataclass_schema_lines(node)
+    )
+    return CompactDataclassDeclaration(
+        runtime_declaration=(
+            DataclassRuntimeDeclaration.DATACLASS
+            if dataclass_decorator_indexes
+            else None
+        ),
+        fields=fields,
+        failures=tuple(dict.fromkeys(failures)),
+    )
+
+
+def _compact_class_member_declarations(
+    node: ast.ClassDef,
+) -> tuple[CompactClassMemberDeclaration, ...]:
+    declarations: list[CompactClassMemberDeclaration] = []
+    for statement in node.body:
+        if isinstance(statement, ast.AnnAssign):
+            targets = (statement.target,)
+            value = statement.value
+        elif isinstance(statement, ast.Assign):
+            targets = tuple(statement.targets)
+            value = statement.value
+        else:
+            continue
+        constructor_name = (
+            _terminal_reference_name(value.func)
+            if isinstance(value, ast.Call)
+            else None
+        )
+        constructor_keyword_names = (
+            sorted_tuple(
+                keyword.arg for keyword in value.keywords if keyword.arg is not None
+            )
+            if isinstance(value, ast.Call) and constructor_name is not None
+            else ()
+        )
+        declarations.extend(
+            CompactClassMemberDeclaration(
+                name=target.id,
+                line=statement.lineno,
+                expression=ast.unparse(value) if value is not None else None,
+                constant_string=(
+                    value.value
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str)
+                    else None
+                ),
+                value_is_none_literal=(
+                    isinstance(value, ast.Constant) and value.value is None
+                ),
+                constructor_name=constructor_name,
+                constructor_keyword_names=constructor_keyword_names,
+            )
+            for target in targets
+            if isinstance(target, ast.Name)
+        )
+    return tuple(declarations)
 
 
 def _compact_sorted_key_calls(
@@ -4352,27 +5499,18 @@ class CompactClassFamilyIndexBuilder:
         symbols_by_simple_name_lists: dict[str, list[str]] = defaultdict(list)
         for record in records:
             symbols_by_simple_name_lists[record.simple_name].append(record.symbol)
-        unique_symbols_by_name = {
-            name: symbols[0]
-            for name, symbols in symbols_by_simple_name_lists.items()
-            if len(symbols) == 1
-        }
-        import_aliases_by_module_name = {
-            projection.module_name: dict(projection.import_aliases)
-            for projection in self.projections
-        }
+        unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
         classes_by_symbol = {
             record.symbol: record.with_resolved_base_symbols(
                 tuple(
                     resolved
-                    for parts in record.base_reference_parts
+                    for reference in record.base_references
                     if (
-                        resolved := self._resolved_symbol(
-                            parts,
+                        resolved := self._resolved_bound_symbol(
+                            reference,
                             record.module_name,
-                            import_aliases_by_module_name,
                             known_symbols,
-                            unique_symbols_by_name,
+                            unique_symbols_by_suffix,
                         )
                     )
                     is not None
@@ -4400,6 +5538,23 @@ class CompactClassFamilyIndexBuilder:
         )
 
     @staticmethod
+    def _resolved_bound_symbol(
+        reference: CompactNominalReference,
+        module_name: str,
+        known_symbols: frozenset[str] | dict[str, CompactIndexedClass],
+        unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex,
+    ) -> str | None:
+        candidate = ".".join(reference.resolved_parts)
+        if candidate in known_symbols:
+            return candidate
+        module_local = ".".join((module_name, *reference.source_parts))
+        if module_local in known_symbols:
+            return module_local
+        if reference.permits_root_relative_resolution:
+            return unique_symbols_by_suffix.root_relative_match(candidate)
+        return None
+
+    @staticmethod
     def _resolved_symbol(
         parts: tuple[str, ...],
         module_name: str,
@@ -4416,17 +5571,17 @@ class CompactClassFamilyIndexBuilder:
             candidate = ".".join((alias_target, *rest)) if rest else alias_target
             if candidate in known_symbols:
                 return candidate
-            candidate_parts = candidate.split(".")
             unique_by_suffix = unique_symbols_by_suffix
             if unique_by_suffix is None:
                 unique_by_suffix = _unique_known_symbol_by_suffix(
                     frozenset(known_symbols)
                 )
-            for suffix_width in range(len(candidate_parts) - 1, 0, -1):
-                suffix = ".".join(candidate_parts[-suffix_width:])
-                match = unique_by_suffix.get(suffix)
-                if match is not None:
-                    return match
+            match = unique_by_suffix.root_relative_match(candidate)
+            if match is not None:
+                return match
+        qualified = ".".join(parts)
+        if qualified in known_symbols:
+            return qualified
         module_local = ".".join((module_name, *parts))
         if module_local in known_symbols:
             return module_local
@@ -4593,14 +5748,8 @@ class ClassSymbolResolutionAuthority:
         # source-root-relative while imports retain their full package prefix.
         # Resolve only a unique suffix match so unrelated same-named classes do
         # not create a speculative inheritance edge.
-        candidate_parts = candidate.split(".")
         unique_symbol_by_suffix = _unique_known_symbol_by_suffix(self.known_symbols)
-        for suffix_width in range(len(candidate_parts) - 1, 0, -1):
-            suffix = ".".join(candidate_parts[-suffix_width:])
-            match = unique_symbol_by_suffix.get(suffix)
-            if match is not None:
-                return match
-        return None
+        return unique_symbol_by_suffix.root_relative_match(candidate)
 
     def _module_local_symbol(self, parts: tuple[str, ...]) -> str | None:
         candidate = ".".join((self.parsed_module.module_name, *parts))
@@ -4769,16 +5918,10 @@ class ClassFamilyIndexBuilder:
         symbols_by_simple_name_multimap = self.symbols_by_simple_name_multimap(
             class_records
         )
-        unique_symbols_by_name = {
-            name: symbols[0]
-            for name, symbols in symbols_by_simple_name_multimap.items()
-            if len(symbols) == 1
-        }
         classes_by_symbol = {
             record.symbol: self.resolved_record(
                 record,
                 known_symbols,
-                unique_symbols_by_name,
             )
             for record in class_records
         }
@@ -4807,9 +5950,20 @@ class ClassFamilyIndexBuilder:
     def module_class_records(self) -> tuple[IndexedClass, ...]:
         records: list[IndexedClass] = []
         for parsed_module in self.modules:
-            for qualname, node in _iter_class_defs(list(parsed_module.module.body)):
+            indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
+            binding_snapshots = _module_nominal_binding_snapshots(
+                parsed_module,
+                tuple(node.lineno for _qualname, node in indexed_class_nodes),
+                include_final=False,
+            )
+            for qualname, node in indexed_class_nodes:
                 records.append(
-                    IndexedClass.from_parsed_class(parsed_module, qualname, node)
+                    IndexedClass.from_parsed_class(
+                        parsed_module,
+                        qualname,
+                        node,
+                        binding_snapshots[node.lineno],
+                    )
                 )
         return tuple(records)
 
@@ -4826,23 +5980,28 @@ class ClassFamilyIndexBuilder:
         self,
         record: IndexedClass,
         known_symbols: frozenset[str],
-        unique_symbols_by_name: dict[str, str],
     ) -> IndexedClass:
         parsed_module = self.parsed_module_by_name.get(record.module_name)
         if parsed_module is None:
             return self.base_record_with_current_bases(record, known_symbols)
-        base_resolution = ClassSymbolResolutionAuthority(
-            parsed_module=parsed_module,
-            import_aliases=_module_import_aliases(parsed_module),
-            known_symbols=known_symbols,
-            unique_symbols_by_name=unique_symbols_by_name,
-            allow_unique_unqualified=True,
+        base_references = _compact_base_references(
+            record.node,
+            ModuleNominalBindingAuthority(parsed_module).bindings_before(record.line),
         )
+        unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
         return record.with_resolved_base_symbols(
             tuple(
                 resolved
-                for base in record.node.bases
-                if (resolved := base_resolution.symbol_for_node(base)) is not None
+                for reference in base_references
+                if (
+                    resolved := CompactClassFamilyIndexBuilder._resolved_bound_symbol(
+                        reference,
+                        record.module_name,
+                        known_symbols,
+                        unique_symbols_by_suffix,
+                    )
+                )
+                is not None
             )
         )
 

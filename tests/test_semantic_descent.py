@@ -45,7 +45,9 @@ from nominal_refactor_advisor.semantic_descent import (
     rebase_semantic_descent_graph,
     semantic_descent_finding_projection_id,
 )
-from nominal_refactor_advisor.semantic_refactor_gate import SemanticRefactorBoundaryEvidence
+from nominal_refactor_advisor.semantic_refactor_gate import (
+    SemanticRefactorBoundaryEvidence,
+)
 
 
 def _write_module(root: Path, source: str) -> Path:
@@ -102,6 +104,39 @@ def test_semantic_authority_selection_is_one_mro_owned_fallback_chain() -> None:
         semantic_descent_module.CompactSemanticAuthorityBuildContext,
         semantic_descent_module.SemanticAuthorityBuildContext,
     )
+
+
+def test_dataclass_semantic_authority_uses_the_nominal_class_declaration(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass as dc\n"
+        "\n"
+        "def dataclass(cls):\n"
+        "    return cls\n"
+        "\n"
+        "@dataclass\n"
+        "class FalseProduct:\n"
+        "    left: object\n"
+        "    right: object\n"
+        "\n"
+        "@dc\n"
+        "class Product:\n"
+        "    left: object\n"
+        "    right: object\n",
+    )
+
+    graph = build_semantic_descent_graph(
+        parse_python_modules(tmp_path),
+        use_cache=False,
+    )
+
+    assert not any(authority.name == "FalseProduct" for authority in graph.authorities)
+    product = next(
+        authority for authority in graph.authorities if authority.name == "Product"
+    )
+    assert product.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
 
 
 def test_class_key_resolution_is_one_mro_owned_fallback_chain() -> None:
@@ -747,8 +782,7 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
     assert authority.name == "Step"
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
     assert (
-        authority.claim_provenance
-        is AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE
+        authority.claim_provenance is AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE
     )
     assert projection.kind is PresentationProjectionKind.DETECTOR_FINDING
     assert projection.projection_id == semantic_descent_finding_projection_id(finding)
@@ -789,8 +823,7 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
     assert authority.name == "AxisRoleAuthority"
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
     assert (
-        authority.claim_provenance
-        is AuthorityClaimProvenance.INFERRED_FROM_PROJECTION
+        authority.claim_provenance is AuthorityClaimProvenance.INFERRED_FROM_PROJECTION
     )
     assert {fact.name for fact in graph.facts} == {"alpha", "beta"}
     assert certificate.missing_derivation_path == finding.relation_context
@@ -1021,7 +1054,7 @@ def test_semantic_descent_ignores_suppression_vocabularies(
         "    defaults: str\n"
         "    doc: str\n"
         "\n"
-        "OPTIONS = ('bases', 'defaults', 'doc')\n"
+        "PRODUCT_RECORD_OPTION_FIELDS = ('bases', 'defaults', 'doc')\n"
         "OPTION_STOP_TOKENS = frozenset(('bases', 'defaults', 'doc'))\n"
         "OPTION_STOPWORDS = frozenset(('bases', 'defaults', 'doc'))\n"
         "EXCLUDED_OPTION_NAMES = frozenset(('bases', 'defaults', 'doc'))\n"
@@ -1034,7 +1067,7 @@ def test_semantic_descent_ignores_suppression_vocabularies(
     )
 
     assert any(
-        finding.metrics.plan_mapping_name == "OPTIONS"
+        finding.metrics.plan_mapping_name == "PRODUCT_RECORD_OPTION_FIELDS"
         and finding.metrics.plan_source_name == "ProductRecordOption"
         for finding in findings
     )
@@ -1532,8 +1565,7 @@ def test_repeated_builder_call_ignores_varying_owned_method_calls(
     )
 
     assert not any(
-        item.detector_id == "repeated_builder_calls"
-        for item in analyze_path(tmp_path)
+        item.detector_id == "repeated_builder_calls" for item in analyze_path(tmp_path)
     )
 
 
@@ -1563,8 +1595,7 @@ def test_repeated_builder_call_ignores_existing_owned_method_authority(
     )
 
     assert not any(
-        item.detector_id == "repeated_builder_calls"
-        for item in analyze_path(tmp_path)
+        item.detector_id == "repeated_builder_calls" for item in analyze_path(tmp_path)
     )
 
 
@@ -1896,9 +1927,10 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
     assert record.reason == (
         "no class-family recipe declaration proved an executable exact derivation"
     )
-    assert "class/key pairs are incomplete" in obstacles_by_declaration[
-        "AutoregisterInstanceViewRecipeBuilder"
-    ]
+    assert (
+        "class/key pairs are incomplete"
+        in obstacles_by_declaration["AutoregisterInstanceViewRecipeBuilder"]
+    )
     assert record.to_dict()["proof_obstacles"] == tuple(
         obstacle.to_dict() for obstacle in record.proof_obstacles
     )
@@ -1999,6 +2031,79 @@ def test_reused_dataclass_fields_do_not_invent_foreign_authority_mirrors(
     assert source_names == set()
 
 
+def test_other_authority_kinds_do_not_make_dataclass_fields_look_reused(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "from enum import Enum\n"
+        "\n"
+        "class RequestField(Enum):\n"
+        "    TITLE = 'title'\n"
+        "    STATUS = 'status'\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Request:\n"
+        "    title: str\n"
+        "    status: str\n"
+        "\n"
+        "REQUEST_FIELDS = ('title', 'status')\n",
+    )
+
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(
+            parse_python_modules(tmp_path),
+            DetectorConfig(),
+        )
+    )
+
+    assert any(
+        finding.metrics.plan_source_name == "Request"
+        and finding.metrics.plan_mapping_name == "REQUEST_FIELDS"
+        for finding in findings
+    )
+
+
+def test_typed_axis_selects_one_of_two_dataclasses_with_the_same_fields(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Report:\n"
+        "    backend: str\n"
+        "    parse_valid: bool\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Snapshot:\n"
+        "    backend: str\n"
+        "    parse_valid: bool\n"
+        "\n"
+        "def payload(report: Report):\n"
+        "    return {\n"
+        "        'backend': report.backend,\n"
+        "        'parse_valid': report.parse_valid,\n"
+        "    }\n",
+    )
+
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(
+            parse_python_modules(tmp_path),
+            DetectorConfig(),
+        )
+    )
+    source_names = {
+        finding.metrics.plan_source_name
+        for finding in findings
+        if finding.metrics.plan_mapping_name == "payload:return"
+    }
+
+    assert source_names == {"Report"}
+
+
 def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     tmp_path: Path,
 ) -> None:
@@ -2088,8 +2193,8 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
         "    seconds: float\n"
         "\n"
         "def field_names():\n"
-        "    fieldnames = ('run_id', 'seconds')\n"
-        "    return fieldnames\n",
+        "    phase_record_fields = ('run_id', 'seconds')\n"
+        "    return phase_record_fields\n",
     )
     modules = parse_python_modules(tmp_path)
     finding = next(
@@ -2099,7 +2204,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "PhaseRecord"
-        and item.metrics.plan_mapping_name == "fieldnames"
+        and item.metrics.plan_mapping_name == "phase_record_fields"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
@@ -2137,8 +2242,8 @@ def test_semantic_mirror_rejects_reordered_dataclass_field_name_collection(
         "    seconds: float\n"
         "\n"
         "def field_names():\n"
-        "    fieldnames = ('seconds', 'run_id')\n"
-        "    return fieldnames\n",
+        "    phase_record_fields = ('seconds', 'run_id')\n"
+        "    return phase_record_fields\n",
     )
     modules = parse_python_modules(tmp_path)
     finding = next(
@@ -2148,7 +2253,7 @@ def test_semantic_mirror_rejects_reordered_dataclass_field_name_collection(
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "PhaseRecord"
-        and item.metrics.plan_mapping_name == "fieldnames"
+        and item.metrics.plan_mapping_name == "phase_record_fields"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
@@ -2183,8 +2288,8 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
         "    from .model import PhaseRecord\n"
         "\n"
         "def field_names():\n"
-        "    fieldnames = ('run_id', 'seconds')\n"
-        "    return fieldnames\n",
+        "    phase_record_fields = ('run_id', 'seconds')\n"
+        "    return phase_record_fields\n",
         encoding="utf-8",
     )
     modules = parse_python_modules(tmp_path)
@@ -2195,7 +2300,7 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "PhaseRecord"
-        and item.metrics.plan_mapping_name == "fieldnames"
+        and item.metrics.plan_mapping_name == "phase_record_fields"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
@@ -2354,8 +2459,7 @@ def test_key_value_sequence_recipe_rejects_interleaving_and_comments(
         assert record.status.value == "rejected_by_safety_check"
         assert not record.recipe_id
         assert tuple(
-            obstacle.executable_declaration_name
-            for obstacle in record.proof_obstacles
+            obstacle.executable_declaration_name for obstacle in record.proof_obstacles
         ) == ("DataclassKeyValueSequenceProjectionMappingRecipeBuilder",)
 
 
@@ -2382,7 +2486,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         "\n"
         "@dataclass(frozen=True)\n"
         "class ActionReport:\n"
-        "    action: \"RefactorAction\"\n"
+        '    action: "RefactorAction"\n'
         "    emitted: bool\n"
         "\n"
         "    def to_dict(self):\n"
@@ -2435,8 +2539,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     report_path.write_text(
         report_path.read_text(encoding="utf-8").replace(
             "from dataclasses import dataclass\n",
-            "from dataclasses import dataclass\n"
-            "from .model import RefactorAction\n",
+            "from dataclasses import dataclass\nfrom .model import RefactorAction\n",
         ),
         encoding="utf-8",
     )
@@ -2514,11 +2617,17 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
         encoding="utf-8",
     )
     (package_dir / "report.py").write_text(
+        "from __future__ import annotations\n"
+        "\n"
         "from dataclasses import dataclass\n"
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from .model import RefactorAction\n"
         "\n"
         "@dataclass(frozen=True)\n"
         "class ActionReport:\n"
-        "    action: object\n"
+        "    action: RefactorAction\n"
         "    emitted: bool\n"
         "\n"
         "    def to_dict(self):\n"
@@ -2587,8 +2696,7 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         ),
         "interleaved": source.replace(
             "        'description': action.description,\n",
-            "        'unrelated': 1,\n"
-            "        'description': action.description,\n",
+            "        'unrelated': 1,\n        'description': action.description,\n",
         ),
         "commented": source.replace(
             "        'description': action.description,\n",
@@ -2601,7 +2709,7 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         ),
         "structural_owner": source.replace(
             "def project(action: RefactorAction):",
-            "def project(action: object):",
+            "def refactor_action_project(action: object):",
         ),
         "nested_authority_annotation": source.replace(
             "def project(action: RefactorAction):",
@@ -2609,7 +2717,7 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         ),
         "shadowed_constructor": source.replace(
             "def project(action: RefactorAction):\n",
-            "def project():\n"
+            "def refactor_action_project():\n"
             "    RefactorAction = lambda: object()\n"
             "    action = RefactorAction()\n",
         ),
@@ -2629,6 +2737,11 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         case_root = tmp_path / case_name
         _write_module(case_root, unsafe_source)
         modules = parse_python_modules(case_root)
+        expected_mapping_name = (
+            "refactor_action_project:return"
+            if case_name in {"shadowed_constructor", "structural_owner"}
+            else "project:return"
+        )
         finding = next(
             item
             for item in SemanticMirrorWithoutDescentDetector().detect(
@@ -2636,7 +2749,7 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
                 DetectorConfig(),
             )
             if item.metrics.plan_source_name == "RefactorAction"
-            and item.metrics.plan_mapping_name == "project:return"
+            and item.metrics.plan_mapping_name == expected_mapping_name
         )
         snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
@@ -2650,8 +2763,7 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         assert record.status.value == "rejected_by_safety_check"
         assert not record.recipe_id
         assert record.reason == (
-            "no inferred mapping recipe builder proved an executable exact "
-            "derivation"
+            "no inferred mapping recipe builder proved an executable exact derivation"
         )
         assert (
             "dataclass payload projection requires one contiguous, exhaustive"
@@ -3160,9 +3272,10 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
     }
 
     assert record.status.value == "rejected_by_safety_check"
-    assert "no complete runtime member query" in obstacles_by_declaration[
-        "ClassFamilyCollectionSemanticMirrorRecipeBuilder"
-    ]
+    assert (
+        "no complete runtime member query"
+        in obstacles_by_declaration["ClassFamilyCollectionSemanticMirrorRecipeBuilder"]
+    )
     assert plan.document.recipes == ()
 
 
@@ -3501,7 +3614,7 @@ def test_dataclass_branch_over_field_name_literals_still_reports_mirror(
         "    left: int\n"
         "    right: int\n"
         "\n"
-        "def compare(field_name):\n"
+        "def compare_edge_fields(field_name):\n"
         "    if field_name in ('left', 'right'):\n"
         "        return True\n"
         "    return False\n",
@@ -3516,7 +3629,7 @@ def test_dataclass_branch_over_field_name_literals_still_reports_mirror(
 
     assert any(
         finding.metrics.plan_source_name == "Edge"
-        and finding.metrics.plan_mapping_name == "compare:if"
+        and finding.metrics.plan_mapping_name == "compare_edge_fields:if"
         for finding in findings
     )
 
@@ -4141,7 +4254,7 @@ def test_semantic_descent_reports_external_dataclass_payload_projection(
         "    backend: str\n"
         "    parse_valid: bool\n"
         "\n"
-        "def payload(report):\n"
+        "def payload(report: Report):\n"
         "    row = {\n"
         "        'backend': report.backend,\n"
         "        'parse_valid': report.parse_valid,\n"

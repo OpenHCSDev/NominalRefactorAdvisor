@@ -239,7 +239,7 @@ def test_control_positions_reject_branch_local_binding_as_post_branch_authority(
     assert not construction_call.position.dominates(consumer_call.position)
 
 
-def test_product_flow_projects_only_exact_local_value_alias_events() -> None:
+def test_product_flow_projects_exact_value_alias_events_in_lexical_scopes() -> None:
     projection = compact_product_flow_projection(
         _parsed_module(
             "module_value = source\n"
@@ -260,10 +260,13 @@ def test_product_flow_projects_only_exact_local_value_alias_events() -> None:
         flow for flow in projection.flows if flow.owner.qualname == "wrapper"
     )
 
-    assert module_flow.exact_local_value_aliases == ()
     assert tuple(
         (alias.target.root_name, alias.source.root_name)
-        for alias in wrapper.exact_local_value_aliases
+        for alias in module_flow.exact_value_aliases
+    ) == (("module_value", "source"),)
+    assert tuple(
+        (alias.target.root_name, alias.source.root_name)
+        for alias in wrapper.exact_value_aliases
     ) == (
         ("direct", "source"),
         ("first", "source"),
@@ -272,7 +275,7 @@ def test_product_flow_projects_only_exact_local_value_alias_events() -> None:
     )
     assert all(
         alias.binding_mutation in wrapper.mutations
-        for alias in wrapper.exact_local_value_aliases
+        for alias in wrapper.exact_value_aliases
     )
 
 
@@ -302,7 +305,9 @@ def test_product_flow_resolves_straight_line_alias_origins_and_attribute_suffixe
 
     assert isinstance(resolution, ExactCompactValueOrigin)
     assert resolution.exact_origin == LexicalValueReference("source", ("value",))
-    assert tuple(mutation.reference.root_name for mutation in resolution.alias_chain) == (
+    assert tuple(
+        mutation.reference.root_name for mutation in resolution.alias_chain
+    ) == (
         "first",
         "second",
     )

@@ -38,6 +38,46 @@ def _resolution(
     )
 
 
+@pytest.mark.parametrize(
+    ("source", "expected_safe"),
+    (
+        (
+            "from typing import final\n"
+            "@final\n"
+            "class Target:\n"
+            "    pass\n"
+            "final = replacement\n",
+            True,
+        ),
+        (
+            "from typing import final\n"
+            "final = replacement\n"
+            "@final\n"
+            "class Target:\n"
+            "    pass\n",
+            False,
+        ),
+    ),
+)
+def test_method_promotion_decorator_safety_uses_declaration_time_bindings(
+    source: str,
+    expected_safe: bool,
+) -> None:
+    module = ParsedModule(
+        path=Path("pkg/decorators.py"),
+        module_name="pkg.decorators",
+        is_package_init=False,
+        module=ast.parse(source),
+        source=source,
+    )
+
+    indexed_class = build_class_family_index([module]).classes_by_symbol[
+        "pkg.decorators.Target"
+    ]
+
+    assert indexed_class.class_decorators_are_promotion_safe is expected_safe
+
+
 def test_import_alias_suffix_index_preserves_unique_root_relative_match() -> None:
     resolution = _resolution(
         frozenset(
@@ -102,7 +142,7 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
     package_root.mkdir()
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     (package_root / "base.py").write_text(
-        "class Root:\n" "    pass\n" "\n" "class Mid(Root):\n" "    pass\n",
+        "class Root:\n    pass\n\nclass Mid(Root):\n    pass\n",
         encoding="utf-8",
     )
     (package_root / "leaf.py").write_text(
@@ -123,7 +163,7 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
         encoding="utf-8",
     )
     (package_root / "unique.py").write_text(
-        "class UniqueLeaf(Root):\n" "    pass\n",
+        "class UniqueLeaf(Root):\n    pass\n",
         encoding="utf-8",
     )
     modules = parse_python_modules(tmp_path, use_parse_cache=False)

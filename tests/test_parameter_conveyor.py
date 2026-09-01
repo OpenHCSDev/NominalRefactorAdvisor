@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.parameter_conveyor import (
@@ -12,9 +14,6 @@ from nominal_refactor_advisor.parameter_conveyor import (
 from nominal_refactor_advisor.product_flow import compact_product_flow_projection
 from nominal_refactor_advisor.product_flow_authority import (
     CompactProductFlowRepository,
-)
-from nominal_refactor_advisor.semantic_descent import (
-    CompactSemanticModuleProjectionFamily,
 )
 
 
@@ -37,10 +36,6 @@ def _builder(*modules: ParsedModule) -> ClosedParameterConveyorComponentBuilder:
         class_projections=tuple(
             CompactModuleClassProjectionFamily.collect(module)[0] for module in modules
         ),
-        semantic_projections=tuple(
-            CompactSemanticModuleProjectionFamily.collect(module)[0]
-            for module in modules
-        ),
     )
     return ClosedParameterConveyorComponentBuilder(repository)
 
@@ -61,6 +56,126 @@ def _base_source(*, callee_body: str = "    return left, right\n") -> str:
         "    key = _CacheKey(left=left, right=right)\n"
         "    return _build(left, right)\n"
     )
+
+
+@pytest.mark.parametrize(
+    "product_declaration",
+    (
+        "@dataclass\nclass _CacheKey:\n    left: object\n    right: InitVar[object]\n",
+        "@dataclass\n"
+        "class _CacheKey:\n"
+        "    left: object\n"
+        "    right: object = field(init=False)\n",
+        "@dataclass(init=False)\n"
+        "class _CacheKey:\n"
+        "    left: object\n"
+        "    right: object\n"
+        "    def __init__(self, left, right):\n"
+        "        self.left, self.right = right, left\n",
+        "@dataclass(frozen=True)\n"
+        "class _CacheKey:\n"
+        "    left: object\n"
+        "    right: object\n"
+        "    def __post_init__(self):\n"
+        "        object.__setattr__(self, 'left', normalize(self.left))\n",
+        "@dataclass\n"
+        "class _CacheKey:\n"
+        "    left: object\n"
+        "    right: object\n"
+        "    def __getattribute__(self, name):\n"
+        "        return transform(super().__getattribute__(name))\n",
+    ),
+)
+def test_lifecycle_open_products_never_form_proven_parameter_conveyors(
+    product_declaration: str,
+) -> None:
+    builder = _builder(
+        _module(
+            "pkg.lifecycle_open",
+            "from dataclasses import InitVar, dataclass, field\n"
+            "\n"
+            f"{product_declaration}"
+            "\n"
+            "def _build(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def caller(left, right):\n"
+            "    key = _CacheKey(left=left, right=right)\n"
+            "    return _build(left, right)\n",
+        )
+    )
+
+    assert builder.proven_components() == ()
+
+
+def test_observed_root_carrier_keeps_parameter_conveyor_open() -> None:
+    builder = _builder(
+        _module(
+            "pkg.observed_carrier",
+            _base_source().replace(
+                "    return _build(left, right)\n",
+                "    audit(key)\n    return _build(left, right)\n",
+            ),
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert ClosedParameterConveyorAuthorityViolation.OBSERVED_ROOT_CARRIER in (
+        component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_attribute_source_evaluation_keeps_parameter_conveyor_open() -> None:
+    builder = _builder(
+        _module(
+            "pkg.repeated_source",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class _CacheKey:\n"
+            "    left: object\n"
+            "    right: object\n"
+            "\n"
+            "def _build(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def caller(source):\n"
+            "    key = _CacheKey(left=source.left, right=source.right)\n"
+            "    return _build(source.left, source.right)\n",
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert ClosedParameterConveyorAuthorityViolation.REPEATED_SOURCE_EVALUATION in (
+        component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+@pytest.mark.parametrize(
+    "signature",
+    (
+        "def _build(left: object, right: object):\n",
+        "def _build(left=None, right=None):\n",
+    ),
+)
+def test_parameter_declaration_semantics_keep_conveyor_open(signature: str) -> None:
+    builder = _builder(
+        _module(
+            "pkg.parameter_declaration",
+            _base_source().replace("def _build(left, right):\n", signature),
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert ClosedParameterConveyorAuthorityViolation.SIGNATURE_SEMANTICS_HAZARD in (
+        component.proof.violations
+    )
+    assert builder.proven_components() == ()
 
 
 def test_complete_closed_parameter_conveyor_is_proven_as_one_component() -> None:

@@ -1267,9 +1267,7 @@ class SourceLocationEvidenceProperty:
 
 
 @dataclass(frozen=True)
-class SourceLocationZipEvidenceProperty(
-    SourceLocationZipDescriptorShape, ABC, metaclass=AutoRegisterMeta
-):
+class SourceLocationZipEvidenceProperty(SourceLocationZipDescriptorShape, ABC):
     def __get__(
         self,
         instance: object | None,

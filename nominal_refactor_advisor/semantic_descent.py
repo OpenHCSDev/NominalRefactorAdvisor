@@ -54,6 +54,7 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassProjectionFamily,
     CompactModuleClassProjection,
+    DataclassRuntimeDeclaration,
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
@@ -718,9 +719,7 @@ class SemanticFact(SemanticFactReference):
             kind=SemanticFactKind.ENUM_MEMBER,
             name=name,
             aliases=(
-                (name,)
-                if string_value is None
-                else sorted_tuple((name, string_value))
+                (name,) if string_value is None else sorted_tuple((name, string_value))
             ),
             location=SourceLocation(
                 indexed_class.file_path,
@@ -910,6 +909,7 @@ class AuthorityProofEdge(SemanticRecord):
             symbol=location.symbol,
             detail=detail,
         )
+
 
 @dataclass(frozen=True)
 class AuthorityDiscoveryRequired(SemanticRecord):
@@ -1212,10 +1212,8 @@ class SemanticClassSupplement:
 
     class_symbol: str
     constant_assignments: tuple[tuple[str, int, str | None], ...]
-    annotated_fields: tuple[tuple[str, int], ...]
     declared_type_names: tuple[str, ...]
     constructed_type_names: tuple[str, ...]
-    is_dataclass: bool
     autoregister_authority_shape: bool
 
 
@@ -1857,16 +1855,26 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
+        names_authority = context.projection_semantics.names_authority(
+            candidate.projection,
+            candidate.authority,
+        )
+        has_declared_relation = (
+            context.projection_semantics.has_qualified_authority_reference(
+                candidate.projection,
+                candidate.authority,
+            )
+            or context.dataclass_descent.projection_has_nominal_authority_relation(
+                candidate.projection,
+                candidate.authority,
+                candidate.matched_facts,
+            )
+        )
+        if not (names_authority or has_declared_relation):
+            return False
         if (
-            not context.projection_semantics.has_authority_affinity(
-                candidate.projection,
-                candidate.authority,
-            )
-            and not context.projection_semantics.has_qualified_authority_reference(
-                candidate.projection,
-                candidate.authority,
-            )
-            and context.fact_specificity.matched_facts_are_reused_roles(
+            not has_declared_relation
+            and context.dataclass_descent.matched_facts_are_reused_roles(
                 candidate.matched_facts
             )
         ):
@@ -1874,10 +1882,7 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         if (
             candidate.match.coverage_ratio < 1.0
             and candidate.match.fact_count <= 2
-            and not context.projection_semantics.has_authority_affinity(
-                candidate.projection,
-                candidate.authority,
-            )
+            and not names_authority
         ):
             return False
         if (
@@ -1892,21 +1897,16 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
             )
         ):
             return False
-        if (
-            context.dataclass_descent.projection_constructs_distinct_dataclass_authority(
-                candidate.projection,
-                candidate.authority,
-            )
+        if context.dataclass_descent.projection_constructs_distinct_dataclass_authority(
+            candidate.projection,
+            candidate.authority,
         ):
             return False
         if (
             context.dataclass_descent.projection_materializes_any_dataclass_authority(
                 candidate.projection,
             )
-            and not context.projection_semantics.has_authority_affinity(
-                candidate.projection,
-                candidate.authority,
-            )
+            and not names_authority
             and not context.projection_semantics.has_qualified_authority_reference(
                 candidate.projection,
                 candidate.authority,
@@ -2747,9 +2747,7 @@ class FindingBackedAuthorityProjection:
         if evidence_index is not None and evidence_index < len(finding.evidence):
             return FindingBackedAuthorityEvidence(
                 location=finding.evidence[evidence_index],
-                claim_provenance=(
-                    AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE
-                ),
+                claim_provenance=(AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE),
             )
         return FindingBackedAuthorityEvidence(
             location=FindingBackedPresentationProjection.projection_location(finding),
@@ -3008,20 +3006,21 @@ class FindingAuthorityNamePolicy:
     """Select metric-derived authority names only when they carry identity."""
 
     bag_delimiters: ClassVar[frozenset[str]] = frozenset((",", "/", "|"))
-    generic_tokens: ClassVar[
-        frozenset[str]
-    ] = SemanticRoleIdentityToken.identity_axis_values() | frozenset(
-        (
-            "authority",
-            "candidate",
-            "generic",
-            "level",
-            "local",
-            "logic",
-            "mapping",
-            "projection",
-            "semantic",
-            "unknown",
+    generic_tokens: ClassVar[frozenset[str]] = (
+        SemanticRoleIdentityToken.identity_axis_values()
+        | frozenset(
+            (
+                "authority",
+                "candidate",
+                "generic",
+                "level",
+                "local",
+                "logic",
+                "mapping",
+                "projection",
+                "semantic",
+                "unknown",
+            )
         )
     )
 
@@ -3753,9 +3752,7 @@ class SemanticAuthorityBuildContext(ABC, Generic[IndexedClassDeclarationT]):
 
 
 @dataclass(frozen=True)
-class AstSemanticAuthorityBuildContext(
-    SemanticAuthorityBuildContext[IndexedClass]
-):
+class AstSemanticAuthorityBuildContext(SemanticAuthorityBuildContext[IndexedClass]):
     """Project AST-backed class declarations into provider input."""
 
     class_index: ClassFamilyIndex
@@ -3842,8 +3839,7 @@ class ClassFamilySemanticAuthorityProvider:
         return SemanticAuthorityProviderResult(
             (
                 SemanticAuthorityKind.AUTOREGISTER_FAMILY
-                if supplement is not None
-                and supplement.autoregister_authority_shape
+                if supplement is not None and supplement.autoregister_authority_shape
                 else SemanticAuthorityKind.CLASS_FAMILY
             ),
             declaration.class_facts,
@@ -3858,11 +3854,16 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
         declaration: SemanticAuthorityDeclaration,
     ) -> SemanticAuthorityProviderResult | None:
         indexed_class = declaration.indexed_class
-        supplement = declaration.supplement
-        if supplement is not None and supplement.is_dataclass:
+        dataclass_declaration = indexed_class.dataclass_declaration
+        if (
+            dataclass_declaration is not None
+            and dataclass_declaration.runtime_declaration
+            is DataclassRuntimeDeclaration.DATACLASS
+        ):
             facts = tuple(
-                SemanticFact.dataclass_field(indexed_class, name, line)
-                for name, line in supplement.annotated_fields
+                SemanticFact.dataclass_field(indexed_class, field.name, field.line)
+                for field in dataclass_declaration.fields
+                if field.role.contributes_semantic_field
             )
             if len(facts) >= 2:
                 return SemanticAuthorityProviderResult(
@@ -3949,10 +3950,6 @@ def _semantic_class_supplement(
     constructed_type_names: Iterable[str] | None = None,
 ) -> SemanticClassSupplement | None:
     authority = AutoRegisterClassAuthority(node)
-    is_dataclass = any(
-        AttributeChainAuthority.decorator_terminal_name(decorator) == "dataclass"
-        for decorator in node.decorator_list
-    )
     constant_assignments = tuple(
         (
             name,
@@ -3962,17 +3959,19 @@ def _semantic_class_supplement(
         for name, value in authority.assignment_pairs
         if isinstance(value, ast.Constant)
     )
-    annotated_fields = tuple(
-        (statement.target.id, statement.lineno)
-        for statement in node.body
-        if isinstance(statement, ast.AnnAssign)
-        if isinstance(statement.target, ast.Name)
-    )
     declared_type_names = sorted_tuple(
         {
             terminal_name
             for _, value in authority.assignment_pairs
             if (terminal_name := authority.terminal_name(value)) is not None
+        }
+        | {
+            type_name
+            for statement in node.body
+            if isinstance(statement, ast.AnnAssign)
+            for type_name in ProjectionTypeScope.annotation_type_names(
+                statement.annotation
+            )
         }
     )
     if constructed_type_names is None:
@@ -3991,20 +3990,16 @@ def _semantic_class_supplement(
         collected_constructed_type_names = set(constructed_type_names)
     if not (
         constant_assignments
-        or annotated_fields
         or declared_type_names
         or collected_constructed_type_names
-        or is_dataclass
         or authority.semantic_authority_shape
     ):
         return None
     return SemanticClassSupplement(
         class_symbol=class_symbol,
         constant_assignments=constant_assignments,
-        annotated_fields=annotated_fields,
         declared_type_names=declared_type_names,
         constructed_type_names=sorted_tuple(collected_constructed_type_names),
-        is_dataclass=is_dataclass,
         autoregister_authority_shape=authority.semantic_authority_shape,
     )
 
@@ -4324,14 +4319,17 @@ class ProjectionTypeScope:
         return cls(
             type_names_by_value=type_names_by_value,
             return_type_names=(
-                ()
-                if node.returns is None
-                else cls.annotation_type_names(node.returns)
+                () if node.returns is None else cls.annotation_type_names(node.returns)
             ),
         )
 
     @staticmethod
     def annotation_type_names(annotation: ast.AST) -> tuple[str, ...]:
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                annotation = ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:
+                return ()
         return sorted_tuple(
             {
                 name
@@ -4494,9 +4492,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
 
     def _axis_type_names_for_node(self, node: ast.AST) -> tuple[str, ...]:
         return (
-            self.type_scopes[-1].projection_type_names(node)
-            if self.type_scopes
-            else ()
+            self.type_scopes[-1].projection_type_names(node) if self.type_scopes else ()
         )
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -4625,7 +4621,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             value,
             label=label,
             allow_call_projection=self.current_function_name is None,
-            axis_type_names=axis_type_names,
+            axis_type_names=(axis_type_names or self._axis_type_names_for_node(value)),
         )
 
     def _collect_return_projection(self, node: ast.Return, value: ast.AST) -> bool:
@@ -4781,9 +4777,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         axis_type_names: tuple[str, ...] = (),
     ) -> None:
         line = node.lineno
-        projection_id = (
-            f"{self.parsed_module.file_path}:{line}:{self.qualname}:{kind.value}:{label}"
-        )
+        projection_id = f"{self.parsed_module.file_path}:{line}:{self.qualname}:{kind.value}:{label}"
         self.projections.append(
             PresentationProjection(
                 projection_id=projection_id,
@@ -4854,6 +4848,26 @@ class ProjectionSemanticAuthority:
             f"{projection.label} {projection.owner_symbol} {projection.location.symbol}"
         )
         return len(authority_tokens & projection_tokens) >= 2
+
+    @staticmethod
+    def names_authority(
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> bool:
+        projection_names = tuple(
+            NormalizeNameProjection.normalize(name)
+            for name in (
+                projection.label,
+                projection.owner_symbol,
+                projection.location.symbol,
+            )
+        )
+        return any(
+            f"_{authority_name}_" in f"_{projection_name}_"
+            for authority_name in normalized_name_variants(authority.name)
+            for projection_name in projection_names
+            if authority_name and projection_name
+        )
 
     @staticmethod
     def has_qualified_authority_reference(
@@ -4985,9 +4999,9 @@ class ConstructionAuthorityResolver:
     class_index: SemanticClassFamilyIndex
     authorities: tuple[SemanticAuthority, ...]
     projection_construction_type_names: frozenset[str] = frozenset()
-    compact_class_supplements_by_symbol: Mapping[
-        str, SemanticClassSupplement
-    ] = field(default_factory=dict)
+    compact_class_supplements_by_symbol: Mapping[str, SemanticClassSupplement] = field(
+        default_factory=dict
+    )
 
     @cached_property
     def construction_authority_class_cache(
@@ -5218,12 +5232,22 @@ class ConstructionAuthorityResolver:
                 frozenset(supplement.constructed_type_names),
             )
         declared_type_names = frozenset(
-            terminal_name
-            for _, value in AutoRegisterClassAuthority(
-                indexed_class.node
-            ).assignment_pairs
-            if (terminal_name := AttributeChainAuthority.terminal_name(value))
-            is not None
+            {
+                terminal_name
+                for _, value in AutoRegisterClassAuthority(
+                    indexed_class.node
+                ).assignment_pairs
+                if (terminal_name := AttributeChainAuthority.terminal_name(value))
+                is not None
+            }
+            | {
+                type_name
+                for statement in indexed_class.node.body
+                if isinstance(statement, ast.AnnAssign)
+                for type_name in ProjectionTypeScope.annotation_type_names(
+                    statement.annotation
+                )
+            }
         )
         constructed_type_names: set[str] = set()
         for statement in indexed_class.node.body:
@@ -5257,6 +5281,26 @@ class ConstructionAuthorityResolver:
     def resolved_additional_materialization_type_names(self) -> set[str]:
         return set()
 
+    @cached_property
+    def class_materialization_inputs_by_symbol(
+        self,
+    ) -> dict[str, tuple[frozenset[str], frozenset[str]]]:
+        return {}
+
+    def class_materialization_inputs(
+        self,
+        class_symbol: str,
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        cache = self.class_materialization_inputs_by_symbol
+        if class_symbol not in cache:
+            indexed_class = self.class_index.class_for(class_symbol)
+            cache[class_symbol] = (
+                (_EMPTY_STRING_FROZENSET, _EMPTY_STRING_FROZENSET)
+                if indexed_class is None
+                else self._class_materialization_inputs(indexed_class)
+            )
+        return cache[class_symbol]
+
     def _materialized_authority_ids_for_construction_type(
         self,
         construction_type: str,
@@ -5266,11 +5310,8 @@ class ConstructionAuthorityResolver:
             construction_type,
             (),
         ):
-            indexed_class = self.class_index.class_for(class_symbol)
-            if indexed_class is None:
-                continue
             declared_type_names, constructed_type_names = (
-                self._class_materialization_inputs(indexed_class)
+                self.class_materialization_inputs(class_symbol)
             )
             for type_name in declared_type_names:
                 declared_authority_ids = self.compact_authority_ids_by_name.get(
@@ -5313,6 +5354,24 @@ class DataclassProjectionDescentAuthority:
         return frozenset(
             authority.authority_id for authority in self.dataclass_authorities
         )
+
+    @cached_property
+    def fact_specificity(self) -> SemanticFactSpecificityIndex:
+        """Score field reuse only within the dataclass authority family."""
+
+        return SemanticFactSpecificityIndex(
+            tuple(
+                fact
+                for authority_id in sorted(self.dataclass_authority_ids)
+                for fact in self.fact_authority_index.facts_for_authority(authority_id)
+            )
+        )
+
+    def matched_facts_are_reused_roles(
+        self,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> bool:
+        return self.fact_specificity.matched_facts_are_reused_roles(matched_facts)
 
     @cached_property
     def dataclass_authorities_by_id(self) -> dict[str, SemanticAuthority]:
@@ -5409,6 +5468,45 @@ class DataclassProjectionDescentAuthority:
         return bool(
             self.constructed_dataclass_authority_ids(projection)
             - {authority.authority_id}
+        )
+
+    def projection_has_nominal_authority_relation(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> bool:
+        projection_class_symbol = (
+            self.projection_class_symbol_lineage.class_symbol_for_projection(projection)
+        )
+        owner_declared_type_names = (
+            _EMPTY_STRING_FROZENSET
+            if projection_class_symbol is None
+            else self.construction_resolver.class_materialization_inputs(
+                projection_class_symbol
+            )[0]
+        )
+        return (
+            authority.name in projection.axis_type_names
+            or authority.name in owner_declared_type_names
+            or authority.authority_id
+            in self.descent_authority_ids_for_projection(projection)
+            or authority.authority_id
+            in self.constructed_dataclass_authority_ids(projection)
+            or self.projection_owner_constructs_dataclass_authority(
+                projection,
+                authority,
+                matched_facts,
+            )
+            or self.projection_owner_materializes_dataclass_authority(
+                projection,
+                authority,
+                matched_facts,
+            )
+            or self.projection_shares_dataclass_base_with_authority(
+                projection,
+                authority,
+            )
         )
 
     def constructed_dataclass_authorities(
