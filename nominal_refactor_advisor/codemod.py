@@ -75,6 +75,7 @@ from .codemod_payload import (
     CodemodPayloadRecord,
     DataclassPayloadProjection,
     DefaultedStringPayloadValueCodec,
+    DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
@@ -2888,7 +2889,7 @@ class ReplacementImportPayloadValueCodec(PayloadValueCodec["MovedSymbolImportPol
 
 @dataclass(frozen=True)
 class CodemodTargetSelector(
-    CodemodPayloadRecord,
+    DiscriminatedPayloadRecord,
     ABC,
     metaclass=AutoRegisterMeta,
 ):
@@ -2900,39 +2901,21 @@ class CodemodTargetSelector(
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
     registry_key: ClassVar[str]
+    discriminator_field_name: ClassVar[str] = "selector"
 
     @classmethod
-    def from_json_value(cls, value: JsonValue) -> "CodemodTargetSelector":
-        payload = cls.payload_fields(value)
-        selector_key = RequiredStringPayloadValueCodec().read(
-            payload,
-            "selector",
-        )
-        selector_type = cls.__registry__.get(selector_key)
-        if selector_type is None:
-            raise ValueError(f"Unsupported target selector: {selector_key}")
-        selector = selector_type.from_selector_payload(payload)
-        selector.require_supported_payload_fields(payload)
-        return selector
+    def record_type_for_discriminator(cls, discriminator: str) -> type[Self]:
+        selector_type = cls.__registry__.get(discriminator)
+        if selector_type is None or not issubclass(selector_type, cls):
+            raise ValueError(f"Unsupported target selector: {discriminator}")
+        return cast(type[Self], selector_type)
 
     @classmethod
-    def from_selector_payload(
-        cls,
-        payload: Mapping[str, JsonValue],
-    ) -> "CodemodTargetSelector":
-        return cls.from_payload_fields(payload)
+    def discriminator_key(cls) -> str:
+        return cls.registry_key
 
     def select(self, context: CodemodSelectorContext) -> CodemodTargetSelection:
         return CodemodTargetSelection(self.target_ids(context))
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "selector": type(self).registry_key,
-            **self.selector_payload(),
-        }
-
-    def selector_payload(self) -> JsonObject:
-        return type(self).payload_bindings().payload(self)
 
     @abstractmethod
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -4514,7 +4497,7 @@ class SourceTargetEditor:
 @dataclass(frozen=True, kw_only=True)
 class RefactorRecipeOperation(
     SourceRewritePlanItem,
-    CodemodPayloadRecord,
+    DiscriminatedPayloadRecord,
     ABC,
     metaclass=AutoRegisterMeta,
 ):
@@ -4525,46 +4508,23 @@ class RefactorRecipeOperation(
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Operation"
     operation_key_value: ClassVar[str]
+    discriminator_field_name: ClassVar[str] = "operation"
+    omit_none_payload_values: ClassVar[bool] = True
 
     @classmethod
     def operation_key(cls) -> str:
         return cls.operation_key_value
 
     @classmethod
-    def from_json_value(cls, value: JsonValue) -> "RefactorRecipeOperation":
-        return cls.from_dict(cls.payload_fields(value))
-
-    @classmethod
-    def from_dict(
-        cls,
-        payload: Mapping[str, JsonValue],
-    ) -> "RefactorRecipeOperation":
-        operation_key = RequiredStringPayloadValueCodec().read(
-            payload,
-            "operation",
-        )
-        operation_type = cls.__registry__.get(operation_key)
+    def record_type_for_discriminator(cls, discriminator: str) -> type[Self]:
+        operation_type = cls.__registry__.get(discriminator)
         if operation_type is None or not issubclass(operation_type, cls):
-            raise ValueError(f"Unsupported recipe operation: {operation_key}")
-        operation = operation_type.from_operation_payload(payload)
-        operation.require_supported_payload_fields(payload)
-        return operation
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "operation": self.operation_key(),
-            **self.operation_payload(),
-        }
+            raise ValueError(f"Unsupported recipe operation: {discriminator}")
+        return cast(type[Self], operation_type)
 
     @classmethod
-    def from_operation_payload(
-        cls,
-        payload: Mapping[str, JsonValue],
-    ) -> "RefactorRecipeOperation":
-        return cls.from_payload_fields(payload)
-
-    def operation_payload(self) -> JsonObject:
-        return type(self).payload_bindings().payload(self, omit_none=True)
+    def discriminator_key(cls) -> str:
+        return cls.operation_key()
 
     @abstractmethod
     def source_edits(

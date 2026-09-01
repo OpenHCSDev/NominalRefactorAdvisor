@@ -41,11 +41,12 @@ projection from those declarations.  ``FlattenedPayloadRecordValueCodec`` lets
 a nested nominal record, such as a source-rewrite target, own a flattened wire
 projection without an envelope exception.  ``CodemodPayloadRecord`` inherits
 object decoding and unknown-field rejection from the same nominal declaration;
-polymorphic record families only specialize discriminator dispatch.  No
-parallel schema, payload carrier, or boundary-role catalogue is maintained.
+``DiscriminatedPayloadRecord`` adds inherited discriminator decoding and
+projection while each polymorphic family resolves its own nominal registry.
+No parallel schema, payload carrier, or boundary-role catalogue is maintained.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
-   :members: DataclassPayloadProjection, CodemodPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadValueCodec, PayloadBindingSet
+   :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadValueCodec, PayloadBindingSet
 
 Rejected ``FindingRecipeSynthesisRecord`` values expose ``proof_obstacles``.
 Each obstacle identifies the nominal executable declaration that failed to

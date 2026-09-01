@@ -20,6 +20,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
+    DiscriminatedPayloadRecord,
     FlattenedPayloadRecordValueCodec,
     PayloadBinding,
     PayloadBindingSet,
@@ -115,6 +116,20 @@ def test_registered_operation_payload_bindings_are_unique() -> None:
         assert len(
             {binding.constructor_argument_name for binding in binding_set}
         ) == len(binding_set)
+
+
+def test_discriminated_record_families_inherit_wire_mechanics_once() -> None:
+    for record_family, discriminator_field_name in (
+        (CodemodTargetSelector, "selector"),
+        (RefactorRecipeOperation, "operation"),
+    ):
+        assert issubclass(record_family, DiscriminatedPayloadRecord)
+        assert record_family.discriminator_field_name == discriminator_field_name
+        assert not {
+            "from_json_value",
+            "from_dict",
+            "to_dict",
+        }.intersection(record_family.__dict__)
 
 
 def test_operation_registry_covers_each_concrete_nominal_descendant_once() -> None:

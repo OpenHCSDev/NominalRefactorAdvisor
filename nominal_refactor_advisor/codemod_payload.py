@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from dataclasses import fields as dataclass_fields
 from enum import StrEnum
 from functools import lru_cache
-from typing import Generic, Self, TypeAlias, TypeVar, cast
+from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 
@@ -226,6 +226,54 @@ class RequiredStringPayloadValueCodec(StringPayloadValueCodec[str]):
 
     def value_when_missing(self, field_name: str) -> str:
         raise ValueError(f"Expected non-empty string field {field_name!r}")
+
+
+class DiscriminatedPayloadRecord(CodemodPayloadRecord, ABC):
+    """Nominal record family selected by one declaration-owned wire key."""
+
+    discriminator_field_name: ClassVar[str]
+    omit_none_payload_values: ClassVar[bool] = False
+
+    @classmethod
+    @abstractmethod
+    def record_type_for_discriminator(cls, discriminator: str) -> type[Self]:
+        """Resolve a registered nominal descendant for one wire key."""
+
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def discriminator_key(cls) -> str:
+        """Return this concrete declaration's wire key."""
+
+        raise NotImplementedError
+
+    @classmethod
+    def from_json_value(cls, value: JsonValue) -> Self:
+        return cls.from_dict(cls.payload_fields(value))
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, JsonValue]) -> Self:
+        discriminator = RequiredStringPayloadValueCodec().read(
+            payload,
+            cls.discriminator_field_name,
+        )
+        record_type = cls.record_type_for_discriminator(discriminator)
+        record = record_type.from_payload_fields(payload)
+        record.require_supported_payload_fields(payload)
+        return record
+
+    def to_dict(self) -> JsonObject:
+        record_type = type(self)
+        return JsonObject(
+            {
+                record_type.discriminator_field_name: record_type.discriminator_key(),
+                **record_type.payload_bindings().payload(
+                    self,
+                    omit_none=record_type.omit_none_payload_values,
+                ),
+            }
+        )
 
 
 @dataclass(frozen=True)
