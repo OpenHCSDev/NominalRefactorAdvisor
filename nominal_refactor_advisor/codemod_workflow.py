@@ -51,42 +51,63 @@ IdentityT = TypeVar("IdentityT", bound=Hashable)
 class CodemodWorkflowStopReason(StrEnum):
     """Terminal state for staged codemod workflows."""
 
-    ACHIEVED = "achieved"
-    ARCHITECTURE_GUARD_FAILED = "architecture_guard_failed"
-    APPLICATION_VERIFICATION_FAILED = "application_verification_failed"
-    UNPROVED_TRAJECTORY = "unproved_trajectory"
-    NO_PROVED_TRAJECTORY = "no_proved_trajectory"
+    def __new__(cls, value: str, completed: bool) -> "CodemodWorkflowStopReason":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._completed = completed
+        return member
+
+    ACHIEVED = ("achieved", True)
+    ARCHITECTURE_GUARD_FAILED = ("architecture_guard_failed", False)
+    APPLICATION_VERIFICATION_FAILED = ("application_verification_failed", False)
+    UNPROVED_TRAJECTORY = ("unproved_trajectory", False)
+    NO_PROVED_TRAJECTORY = ("no_proved_trajectory", False)
 
     @property
     def completed(self) -> bool:
-        return self is type(self).ACHIEVED
+        return self._completed
 
 
 class CodemodRefactorTrajectoryStatus(StrEnum):
     """Proof status for exhaustive reachable-state exploration."""
 
-    PROVED = ("proved", CodemodWorkflowStopReason.ACHIEVED)
+    PROVED = (
+        "proved",
+        CodemodWorkflowStopReason.ACHIEVED,
+        True,
+        lambda proof: not proof.obstacles and len(proof.terminals) == 1,
+    )
     NO_TERMINAL_STATE = (
         "no_terminal_state",
         CodemodWorkflowStopReason.NO_PROVED_TRAJECTORY,
+        False,
+        lambda proof: not proof.obstacles and not proof.terminals,
     )
     AMBIGUOUS_TERMINAL_STATES = (
         "ambiguous_terminal_states",
         CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
+        False,
+        lambda proof: not proof.obstacles and len(proof.terminals) > 1,
     )
     INCOMPLETE = (
         "incomplete",
         CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
+        False,
+        lambda proof: bool(proof.obstacles),
     )
 
     def __new__(
         cls,
         value: str,
         stop_reason: CodemodWorkflowStopReason,
+        proved: bool,
+        matcher: Callable[["CodemodRefactorTrajectoryProof"], bool],
     ) -> "CodemodRefactorTrajectoryStatus":
         member = str.__new__(cls, value)
         member._value_ = value
         member._stop_reason = stop_reason
+        member._proved = proved
+        member._matcher = matcher
         return member
 
     @property
@@ -95,7 +116,23 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
 
     @property
     def proved(self) -> bool:
-        return self is type(self).PROVED
+        return self._proved
+
+    def matches(self, proof: "CodemodRefactorTrajectoryProof") -> bool:
+        return self._matcher(proof)
+
+    @classmethod
+    def from_proof(
+        cls,
+        proof: "CodemodRefactorTrajectoryProof",
+    ) -> "CodemodRefactorTrajectoryStatus":
+        matching_statuses = frozenset(status for status in cls if status.matches(proof))
+        if len(matching_statuses) != 1:
+            raise TypeError(
+                "trajectory proof must match exactly one status; matched "
+                f"{tuple(sorted(status.value for status in matching_statuses))!r}"
+            )
+        return next(iter(matching_statuses))
 
 
 class CodemodRefactorTrajectoryObstacleKind(StrEnum):
@@ -928,19 +965,13 @@ class CodemodRefactorTrajectoryProof:
 
     @property
     def status(self) -> CodemodRefactorTrajectoryStatus:
-        if self.obstacles:
-            return CodemodRefactorTrajectoryStatus.INCOMPLETE
-        if not self.terminals:
-            return CodemodRefactorTrajectoryStatus.NO_TERMINAL_STATE
-        if len(self.terminals) > 1:
-            return CodemodRefactorTrajectoryStatus.AMBIGUOUS_TERMINAL_STATES
-        return CodemodRefactorTrajectoryStatus.PROVED
+        return CodemodRefactorTrajectoryStatus.from_proof(self)
 
     @property
     def proved_terminal(self) -> CodemodRefactorTrajectoryTerminal:
         if not self.status.proved:
             raise TypeError("trajectory proof has no unique proved terminal state")
-        return self.terminals[0]
+        return next(iter(self.terminals))
 
     def to_dict(self) -> JsonObject:
         return {

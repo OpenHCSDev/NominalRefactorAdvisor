@@ -13901,6 +13901,62 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
     )
 
 
+def test_trajectory_status_members_own_proof_classification() -> None:
+    from nominal_refactor_advisor.codemod_workflow import (
+        CodemodRefactorDepthBudgetObstacle,
+        CodemodRefactorTrajectoryProof,
+        CodemodRefactorTrajectoryState,
+        CodemodRefactorTrajectoryTerminal,
+        CodemodWorkflowScan,
+        CodemodWorkflowStopReason,
+    )
+
+    state = CodemodRefactorTrajectoryState(
+        scan=CodemodWorkflowScan(modules=[], findings=[])
+    )
+    terminal = CodemodRefactorTrajectoryTerminal(state=state)
+    proof_fields = {
+        "initial_source_state_id": "initial",
+        "budget": CodemodRefactorTrajectoryBudget(),
+        "visited_state_count": 1,
+        "transition_count": 0,
+    }
+
+    proved = CodemodRefactorTrajectoryProof(
+        **proof_fields,
+        terminals=(terminal,),
+    )
+    no_terminal = CodemodRefactorTrajectoryProof(**proof_fields)
+    ambiguous = CodemodRefactorTrajectoryProof(
+        **proof_fields,
+        terminals=(terminal, terminal),
+    )
+    incomplete = CodemodRefactorTrajectoryProof(
+        **proof_fields,
+        obstacles=(
+            CodemodRefactorDepthBudgetObstacle(
+                source_state_id="initial",
+                depth=1,
+                max_depth=1,
+            ),
+        ),
+    )
+
+    assert proved.status is CodemodRefactorTrajectoryStatus.PROVED
+    assert proved.proved_terminal is terminal
+    assert proved.status.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert proved.status.stop_reason.completed is True
+    assert no_terminal.status is CodemodRefactorTrajectoryStatus.NO_TERMINAL_STATE
+    assert ambiguous.status is (
+        CodemodRefactorTrajectoryStatus.AMBIGUOUS_TERMINAL_STATES
+    )
+    assert incomplete.status is CodemodRefactorTrajectoryStatus.INCOMPLETE
+    assert all(
+        not proof.status.stop_reason.completed
+        for proof in (no_terminal, ambiguous, incomplete)
+    )
+
+
 def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     tmp_path: Path,
 ) -> None:
